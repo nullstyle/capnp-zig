@@ -41,6 +41,7 @@ const vat_provisions = @import("../vat/provisions.zig");
 const peer_provision_hosting = @import("./provision/peer_provision_hosting.zig");
 const peer_provision_drain = @import("./provision/peer_provision_drain.zig");
 const peer_return_send = @import("./return/peer_return_send.zig");
+const peer_export_release = @import("./peer_export_release.zig");
 const vat_host = @import("../vat/host.zig");
 const promises_promised_answer = @import("../promises/promised_answer.zig");
 
@@ -2428,11 +2429,11 @@ pub const Peer = struct {
         }
     }
 
-    fn ensureCountLimit(found_existing: bool, current_count: usize, max_count: usize) !void {
+    pub fn ensureCountLimit(found_existing: bool, current_count: usize, max_count: usize) !void {
         if (!found_existing and current_count >= max_count) return error.PeerLimitExceeded;
     }
 
-    fn ensureByteLimit(current_bytes: usize, added_bytes: usize, max_bytes: usize) !void {
+    pub fn ensureByteLimit(current_bytes: usize, added_bytes: usize, max_bytes: usize) !void {
         if (current_bytes > max_bytes) return error.PeerLimitExceeded;
         if (added_bytes > max_bytes - current_bytes) return error.PeerLimitExceeded;
     }
@@ -2493,7 +2494,7 @@ pub const Peer = struct {
         return total;
     }
 
-    fn pendingThirdPartyReturnBytesExcluding(self: *const Peer, answer_id: u32) usize {
+    pub fn pendingThirdPartyReturnBytesExcluding(self: *const Peer, answer_id: u32) usize {
         var total: usize = 0;
         var it = self.pending_third_party_returns.iterator();
         while (it.next()) |entry| {
@@ -3623,7 +3624,7 @@ pub const Peer = struct {
 
     /// Free persistence state for an export that left the exports table
     /// (remote released it). The original handler is gone with the export.
-    fn dropPersistenceStateForRemovedExport(self: *Peer, export_id: u32) void {
+    pub fn dropPersistenceStateForRemovedExport(self: *Peer, export_id: u32) void {
         if (self.persistent_exports.fetchRemove(export_id)) |removed| {
             self.allocator.destroy(removed.value);
             if (self.restorer_export_id == export_id) self.restorer_export_id = null;
@@ -6657,449 +6658,152 @@ pub const Peer = struct {
         }
     }
 
+    // ================= Cap refcount / release / frame send ==================
+    //
+    // Bodies live in peer_export_release.zig, generic over Peer (the
+    // JoinCoordinator extraction contract). The thunks below keep every
+    // caller-visible name — including the FROZEN `releaseImport` — with its
+    // exact signature on Peer itself.
+
+    const ExportReleaseImpl = peer_export_release.ExportRelease(Peer);
+
     /// Release references to an imported capability, sending a Release message
     /// to the remote peer when the reference count drops to zero.
     ///
-    /// Error set is intentionally left open (`anyerror`). The Release send path
-    /// funnels through `sendFrameControl` → `sendFrame`, which synchronously
-    /// invokes any installed `SendFrameOverride` (`cb(ctx, frame)` — arbitrary
-    /// user code, see `setSendFrameOverride`). That callback's `anyerror`
-    /// propagates out of this function, so no honest named set can be narrower
-    /// than `anyerror` without changing the `SendFrameOverride` contract. This
-    /// stays open for the same reason as the user-callback typedefs above.
+    /// Error set is intentionally left open (`anyerror`): the Release send
+    /// path funnels through `sendFrameControl` -> `sendFrame`, whose
+    /// `SendFrameOverride` callback is arbitrary user code. Body in
+    /// `peer_export_release.zig`.
     pub fn releaseImport(self: *Peer, import_id: u32, count: u32) anyerror!void {
-        self.assertThreadAffinity();
-        log.debug("releasing import id={} count={}", .{ import_id, count });
-        try peer_cap_lifecycle.releaseImport(
-            Peer,
-            self,
-            import_id,
-            count,
-            peer_cap_lifecycle.importRefCountForPeerFn(Peer),
-            peer_cap_lifecycle.releaseImportRefForPeerFn(Peer),
-            Peer.releaseResolvedImport,
-            // The withhold seam: defers the Release while a handoff pin
-            // lives (see sendReleaseDeferringHandoffPin).
-            Peer.sendReleaseDeferringHandoffPin,
-        );
+        return ExportReleaseImpl.releaseImport(self, import_id, count);
     }
 
-    /// Send a Release message on behalf of a host integration, bypassing the
-    /// peer's own import tracking.
+    /// Body in `peer_export_release.zig`.
     pub fn sendReleaseForHost(self: *Peer, import_id: u32, count: u32) !void {
-        self.assertThreadAffinity();
-        try peer_outbound_control.sendReleaseViaSendFrame(
-            Peer,
-            self,
-            import_id,
-            count,
-            Peer.sendFrameControl,
-        );
+        return ExportReleaseImpl.sendReleaseForHost(self, import_id, count);
     }
 
-    /// Drop wire references the peer holds on an import WITHOUT sending a
-    /// Release frame. Used by host integrations when ownership of the
-    /// references transfers to the host (a relayed host-call Return with
-    /// `releaseParamCaps = false`): the host keeps the remote capability
-    /// alive and later sends its own Release, so the peer must forget its
-    /// bookkeeping silently or the reference would be spent twice.
+    /// Body in `peer_export_release.zig`.
     pub fn forgetImportRefsForHost(self: *Peer, import_id: u32, count: u32) !void {
-        self.assertThreadAffinity();
-        try peer_cap_lifecycle.releaseImport(
-            Peer,
-            self,
-            import_id,
-            count,
-            peer_cap_lifecycle.importRefCountForPeerFn(Peer),
-            peer_cap_lifecycle.releaseImportRefForPeerFn(Peer),
-            Peer.releaseResolvedImport,
-            noopSendReleaseForForgottenImport,
-        );
+        return ExportReleaseImpl.forgetImportRefsForHost(self, import_id, count);
     }
 
-    fn noopSendReleaseForForgottenImport(_: *Peer, _: u32, _: u32) anyerror!void {}
-
-    /// Send a Finish message on behalf of a host integration, with explicit
-    /// control over `releaseResultCaps` and `requireEarlyCancellation` flags.
+    /// Body in `peer_export_release.zig`.
     pub fn sendFinishForHost(
         self: *Peer,
         question_id: u32,
         release_result_caps: bool,
         require_early_cancellation: bool,
     ) !void {
-        self.assertThreadAffinity();
-        try peer_outbound_control.sendFinishWithFlagsViaSendFrame(
-            Peer,
-            self,
-            question_id,
-            release_result_caps,
-            require_early_cancellation,
-            Peer.sendFrameControl,
-        );
+        return ExportReleaseImpl.sendFinishForHost(self, question_id, release_result_caps, require_early_cancellation);
     }
 
+    /// Body in `peer_export_release.zig`.
     pub fn sendBuilder(self: *Peer, builder: *protocol.MessageBuilder) !void {
-        const bytes = try builder.finish();
-        defer self.allocator.free(bytes);
-        try self.sendFrame(bytes);
+        return ExportReleaseImpl.sendBuilder(self, builder);
     }
 
+    /// Body in `peer_export_release.zig`.
     fn sendBuilderControl(self: *Peer, builder: *protocol.MessageBuilder) !void {
-        const bytes = try builder.finish();
-        defer self.allocator.free(bytes);
-        try self.sendFrameControl(bytes);
+        return ExportReleaseImpl.sendBuilderControl(self, builder);
     }
 
-    /// Send a protocol-mandated frame (Return, Finish, Release, Resolve,
-    /// Disembargo, Abort, Unimplemented).
-    ///
-    /// Unlike caller-initiated sends — where a full write queue surfaces
-    /// `error.WriteQueueFull` / `error.WriteQueueBytesExceeded` to the
-    /// caller and the connection stays healthy — dropping a control frame
-    /// desynchronizes protocol state with the remote. The only safe
-    /// recovery is closing the connection, so enqueue overflow here emits
-    /// a peer-level backpressure event and initiates transport close.
+    /// Body in `peer_export_release.zig`.
     pub fn sendFrameControl(self: *Peer, frame: []const u8) !void {
-        self.sendFrame(frame) catch |err| {
-            switch (err) {
-                error.WriteQueueFull, error.WriteQueueBytesExceeded => {
-                    events.emitBackpressure(
-                        self.observer,
-                        .peer,
-                        .unknown,
-                        if (err == error.WriteQueueFull) .write_queue_items else .write_queue_bytes,
-                        frame.len,
-                        null,
-                        err,
-                    );
-                    log.warn("control frame dropped by saturated write queue; closing connection", .{});
-                    self.closeAttachedTransport();
-                },
-                else => {},
-            }
-            return err;
-        };
+        return ExportReleaseImpl.sendFrameControl(self, frame);
     }
 
+    /// Body in `peer_export_release.zig`.
     fn sendFrame(self: *Peer, frame: []const u8) !void {
-        if (self.send_frame_override) |cb| {
-            const ctx = self.send_frame_ctx orelse {
-                log.debug("send frame override missing callback context", .{});
-                return error.MissingCallbackContext;
-            };
-            try cb(ctx, frame);
-            events.emitFrame(self.observer, .peer, .unknown, .enqueued, frame.len);
-            return;
-        }
-        self.transport.sendFrame(frame) catch |err| {
-            if (err == error.TransportNotAttached) {
-                log.debug("cannot send frame: transport not attached", .{});
-            }
-            return err;
-        };
-        events.emitFrame(self.observer, .peer, .unknown, .enqueued, frame.len);
+        return ExportReleaseImpl.sendFrame(self, frame);
     }
 
+    /// Body in `peer_export_release.zig`.
     pub fn onOutboundCap(ctx: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) anyerror!void {
-        const peer: *Peer = castCtx(*Peer, ctx);
-        switch (tag) {
-            .senderHosted, .senderPromise => try peer.noteExportRef(id),
-            else => {},
-        }
+        return ExportReleaseImpl.onOutboundCap(ctx, tag, id);
     }
 
+    /// Body in `peer_export_release.zig`.
     pub fn rollbackOutboundCap(ctx: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) void {
-        const peer: *Peer = castCtx(*Peer, ctx);
-        switch (tag) {
-            .senderHosted, .senderPromise => peer.rollbackExportRef(id),
-            else => {},
-        }
+        return ExportReleaseImpl.rollbackOutboundCap(ctx, tag, id);
     }
 
+    /// Body in `peer_export_release.zig`.
     pub fn noteExportRef(self: *Peer, id: u32) !void {
-        try peer_cap_lifecycle.noteExportRef(
-            ExportEntry,
-            &self.exports,
-            id,
-        );
+        return ExportReleaseImpl.noteExportRef(self, id);
     }
 
+    /// Body in `peer_export_release.zig`.
     pub fn rollbackExportRef(self: *Peer, id: u32) void {
-        var entry = self.exports.getEntry(id) orelse return;
-        if (entry.value_ptr.ref_count == 0) return;
-        entry.value_ptr.ref_count -= 1;
+        return ExportReleaseImpl.rollbackExportRef(self, id);
     }
 
+    /// Body in `peer_export_release.zig`.
     fn noteAnswerExportRef(self: *Peer, id: u32) !void {
-        try peer_cap_lifecycle.noteAnswerExportRef(
-            ExportEntry,
-            &self.exports,
-            id,
-        );
+        return ExportReleaseImpl.noteAnswerExportRef(self, id);
     }
 
+    /// Body in `peer_export_release.zig`.
     fn rollbackAnswerExportRef(self: *Peer, id: u32) void {
-        var entry = self.exports.getEntry(id) orelse return;
-        if (entry.value_ptr.answer_ref_count == 0) return;
-        entry.value_ptr.answer_ref_count -= 1;
+        return ExportReleaseImpl.rollbackAnswerExportRef(self, id);
     }
 
+    /// Body in `peer_export_release.zig`.
     fn notePromiseExportRef(self: *Peer, id: u32) !void {
-        try peer_cap_lifecycle.notePromiseExportRef(
-            ExportEntry,
-            &self.exports,
-            id,
-        );
+        return ExportReleaseImpl.notePromiseExportRef(self, id);
     }
 
-    /// Take one handoff-held (Release-immune) reference on an export. See the
-    /// `handoff_ref_count` field doc on `ExportEntry`.
+    /// Body in `peer_export_release.zig`.
     pub fn noteHandoffExportRef(self: *Peer, id: u32) !void {
-        try peer_cap_lifecycle.noteHandoffExportRef(
-            ExportEntry,
-            &self.exports,
-            id,
-        );
+        return ExportReleaseImpl.noteHandoffExportRef(self, id);
     }
 
-    /// Release one handoff-held reference; destroys the entry only when every
-    /// ref class is zero AND the entry was wire-granted at least once (so a
-    /// Provide+Finish cycle can never destroy an app-held, never-emitted
-    /// export). Best-effort by design: unknown id / underflow are logged.
+    /// Body in `peer_export_release.zig`.
     pub fn releaseHandoffHeldExport(self: *Peer, id: u32) void {
-        const promise_target = self.promiseTargetOf(id);
-        const import_target = self.promiseImportTargetOf(id);
-        peer_cap_lifecycle.releaseHandoffHeldExport(
-            Peer,
-            ExportEntry,
-            PendingCall,
-            self,
-            self.allocator,
-            &self.exports,
-            &self.pending_export_promises,
-            self.bootstrap_export_id,
-            id,
-            peer_cap_lifecycle.clearExportForPeerFn(Peer),
-            pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
-        );
-        self.finalizeExportRelease(id, promise_target, import_target);
+        return ExportReleaseImpl.releaseHandoffHeldExport(self, id);
     }
 
-    /// Take one handoff pin on one of this peer's IMPORTS (the receiverHosted
-    /// lift). See `CapTable.noteHandoffImportPin` for the retention/withhold
-    /// contract.
+    /// Body in `peer_export_release.zig`.
     pub fn noteHandoffImportPin(self: *Peer, id: u32) !void {
-        try self.caps.noteHandoffImportPin(id);
+        return ExportReleaseImpl.noteHandoffImportPin(self, id);
     }
 
-    /// Roll back a handoff import pin taken by an OOM ladder that has NOT yet
-    /// transferred ownership (mirror of `rollbackHandoffExportRef`, import
-    /// table).
+    /// Body in `peer_export_release.zig`.
     pub fn rollbackHandoffImportPin(self: *Peer, id: u32) void {
-        self.caps.rollbackHandoffImportPin(id);
+        return ExportReleaseImpl.rollbackHandoffImportPin(self, id);
     }
 
-    /// Release one handoff pin on import `id`. When the LAST pin drops this
-    /// emits the withheld (deferred) `Release` via the RAW sender —
-    /// deliberately NOT `Peer.releaseImport`/the generic helper, which
-    /// early-returns with released == 0 before any send once the local wire
-    /// count is already 0 — and then performs the removal + resolved-import
-    /// cleanup that retention-under-pin deferred (`CapTable.releaseImport`
-    /// returns false for a pin-retained drain, so the generic's
-    /// `release_resolved_import` hook never fired). The deferred tally is
-    /// taken (zeroed) BEFORE the send, so a failed emission can never be
-    /// re-emitted stale by a second pin/unpin cycle.
-    ///
-    /// FAILURE POSTURE: fallible. Non-deinit callers must PROPAGATE — a lost
-    /// deferred Release breaks granted == released at the introducer.
-    /// Teardown/deinit callers catch-log under the documented deinit
-    /// best-effort exception: the connection is dying and the remote
-    /// reconciles at disconnect.
+    /// Body in `peer_export_release.zig`.
     pub fn releaseHandoffImportPin(self: *Peer, id: u32) anyerror!void {
-        const unpin = self.caps.releaseHandoffImportPin(id);
-        if (!unpin.last_pin_released) return;
-        if (unpin.deferred_release > 0) {
-            try peer_outbound_control.sendReleaseViaSendFrame(
-                Peer,
-                self,
-                id,
-                unpin.deferred_release,
-                Peer.sendFrameControl,
-            );
-        }
-        if (self.caps.removeImportIfFullyReleased(id)) {
-            try self.releaseResolvedImport(id);
-        }
+        return ExportReleaseImpl.releaseHandoffImportPin(self, id);
     }
 
-    /// The `send_release` binding for BOTH generic import-release walks
-    /// (`Peer.releaseImport` and the inbound-cap release in
-    /// `releaseInboundCaps`): WITHHOLDS the Release frame while the import is
-    /// pinned by a live handoff (`handoff_pin_count > 0`), accumulating the
-    /// released count into the entry's `deferred_release` for
-    /// `releaseHandoffImportPin` to emit at the last unpin. A receiverHosted
-    /// provide target is a capability this vat merely imports and its
-    /// descriptor granted the introducer nothing to hold on our behalf, so an
-    /// eagerly-emitted Release here would let the introducer destroy the very
-    /// capability a pending Accept still has to reach. An import with no
-    /// handoff pin — including one alive on `promise_ref_count` alone — still
-    /// releases eagerly: today's behaviour, bit for bit. The raw senders stay
-    /// eager on purpose: `sendReleaseForHost` (a deliberate host bypass) and
-    /// `releaseAllImports` (the deinit sweep) must never defer.
-    fn sendReleaseDeferringHandoffPin(self: *Peer, import_id: u32, count: u32) anyerror!void {
-        if (try self.caps.deferReleaseWhilePinned(import_id, count)) return;
-        try peer_outbound_control.sendReleaseViaSendFrame(
-            Peer,
-            self,
-            import_id,
-            count,
-            Peer.sendFrameControl,
-        );
-    }
-
+    /// Body in `peer_export_release.zig`.
     fn rollbackPromiseExportRef(self: *Peer, id: u32) void {
-        var entry = self.exports.getEntry(id) orelse return;
-        if (entry.value_ptr.promise_ref_count == 0) return;
-        entry.value_ptr.promise_ref_count -= 1;
+        return ExportReleaseImpl.rollbackPromiseExportRef(self, id);
     }
 
-    /// The resolution-target export id of a promise export that has resolved to
-    /// a concrete export, or null for any other export (unresolved, resolved to
-    /// an exception, or a plain hosted cap). Only such a resolution takes a
-    /// promise-held ref on its target (see `resolvePromiseExportToExport`), so
-    /// this is exactly the set of exports that must release one when destroyed.
-    fn promiseTargetOf(self: *Peer, id: u32) ?u32 {
-        const entry = self.exports.getEntry(id) orelse return null;
-        const resolved = entry.value_ptr.resolved orelse return null;
-        return switch (resolved) {
-            .exported => |cap| cap.id,
-            else => null,
-        };
-    }
-
-    /// The resolution-target IMPORT id of a promise export that has resolved to
-    /// an imported cap (the remote's own export), or null otherwise. Only
-    /// `resolvePromiseExportToImport` produces such a resolution, and it takes a
-    /// promise-held ref on that import; this is exactly the set of exports that
-    /// must release one when destroyed. Parallel to `promiseTargetOf`, but for
-    /// the import table rather than the export table.
-    fn promiseImportTargetOf(self: *Peer, id: u32) ?u32 {
-        const entry = self.exports.getEntry(id) orelse return null;
-        const resolved = entry.value_ptr.resolved orelse return null;
-        return switch (resolved) {
-            .imported => |cap| cap.id,
-            else => null,
-        };
-    }
-
-    /// Called after a release lowered one of export `id`'s ref classes. If that
-    /// dropped `id` out of the export table, free its persistence state and —
-    /// when `id` was a promise that had resolved — release the promise-held ref
-    /// it pinned on its resolution target: `promise_target` for an exported
-    /// target (cascading destruction down a resolution chain), or `import_target`
-    /// for an imported target (dropping the promise-held import pin). At most one
-    /// is set, since a resolution is either exported or imported. Both must be
-    /// captured *before* the release (the entry, and its `resolved` field, is
-    /// gone by the time we get here).
+    /// Body in `peer_export_release.zig`.
     fn finalizeExportRelease(self: *Peer, id: u32, promise_target: ?u32, import_target: ?u32) void {
-        if (self.exports.contains(id)) return;
-        self.dropPersistenceStateForRemovedExport(id);
-        if (promise_target) |target_id| {
-            if (target_id != id) {
-                self.releasePromiseHeldCap(target_id) catch |err| {
-                    log.warn("cascade promise-held release for export {} failed: {}", .{ target_id, err });
-                };
-            }
-        }
-        if (import_target) |import_id| {
-            // Drop the promise-held import pin this destroyed promise export
-            // took in resolvePromiseExportToImport. This is a LOCAL lease, not a
-            // wire reference: releasing it never sends a Release. The import's
-            // own wire references are owned and released separately by whoever
-            // received it as a call/return cap.
-            _ = self.caps.releasePromiseImportRef(import_id);
-        }
+        return ExportReleaseImpl.finalizeExportRelease(self, id, promise_target, import_target);
     }
 
-    /// Release one promise-held reference on export `id`, taken by
-    /// `resolvePromiseExportToExport` when a promise export resolved to `id` as
-    /// its target. Destroys the export once no wire, answer, or promise
-    /// references remain, cascading if `id` was itself a resolved promise.
+    /// Body in `peer_export_release.zig`.
     fn releasePromiseHeldCap(self: *Peer, id: u32) !void {
-        const promise_target = self.promiseTargetOf(id);
-        const import_target = self.promiseImportTargetOf(id);
-        try peer_cap_lifecycle.releasePromiseHeldExport(
-            Peer,
-            ExportEntry,
-            PendingCall,
-            self,
-            self.allocator,
-            &self.exports,
-            &self.pending_export_promises,
-            self.bootstrap_export_id,
-            id,
-            peer_cap_lifecycle.clearExportForPeerFn(Peer),
-            pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
-        );
-        self.finalizeExportRelease(id, promise_target, import_target);
+        return ExportReleaseImpl.releasePromiseHeldCap(self, id);
     }
 
-    /// Release one answer-held reference on export `id` (the `count` from the
-    /// releaseResultCaps-style frame walk is always 1 per descriptor).
-    fn releaseAnswerHeldCap(self: *Peer, id: u32, count: u32) !void {
-        _ = count;
-        const promise_target = self.promiseTargetOf(id);
-        const import_target = self.promiseImportTargetOf(id);
-        try peer_cap_lifecycle.releaseAnswerHeldExport(
-            Peer,
-            ExportEntry,
-            PendingCall,
-            self,
-            self.allocator,
-            &self.exports,
-            &self.pending_export_promises,
-            self.bootstrap_export_id,
-            id,
-            peer_cap_lifecycle.clearExportForPeerFn(Peer),
-            pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
-        );
-        self.finalizeExportRelease(id, promise_target, import_target);
-    }
-
+    /// Body in `peer_export_release.zig`.
     fn releaseExport(self: *Peer, id: u32, count: u32) !void {
-        const promise_target = self.promiseTargetOf(id);
-        const import_target = self.promiseImportTargetOf(id);
-        try peer_cap_lifecycle.releaseExport(
-            Peer,
-            ExportEntry,
-            PendingCall,
-            self,
-            self.allocator,
-            &self.exports,
-            &self.pending_export_promises,
-            self.bootstrap_export_id,
-            id,
-            count,
-            peer_cap_lifecycle.clearExportForPeerFn(Peer),
-            pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
-        );
-        self.finalizeExportRelease(id, promise_target, import_target);
+        return ExportReleaseImpl.releaseExport(self, id, count);
     }
 
+    /// Body in `peer_export_release.zig`.
     pub fn releaseInboundCaps(self: *Peer, inbound: *cap_table.InboundCapTable) !void {
-        try peer_inbound_release.releaseInboundCaps(
-            Peer,
-            self.allocator,
-            self,
-            inbound,
-            peer_cap_lifecycle.releaseImportRefForPeerFn(Peer),
-            Peer.releaseResolvedImport,
-            // The withhold seam: defers the Release while a handoff pin
-            // lives (see sendReleaseDeferringHandoffPin).
-            Peer.sendReleaseDeferringHandoffPin,
-        );
+        return ExportReleaseImpl.releaseInboundCaps(self, inbound);
     }
 
+    /// Body in `peer_export_release.zig`.
     fn storeResolvedImport(
         self: *Peer,
         promise_id: u32,
@@ -7107,146 +6811,57 @@ pub const Peer = struct {
         embargo_id: ?u32,
         embargoed: bool,
     ) !void {
-        const resolved_before = self.resolved_imports.count();
-        try ensureCountLimit(
-            self.resolved_imports.contains(promise_id),
-            resolved_before,
-            self.limits.max_resolved_imports,
-        );
-        try peer_cap_lifecycle.storeResolvedImport(
-            Peer,
-            ResolvedImport,
-            cap_table.ResolvedCap,
-            self,
-            &self.resolved_imports,
-            &self.pending_embargoes,
-            promise_id,
-            cap,
-            embargo_id,
-            embargoed,
-            Peer.releaseResolvedCap,
-        );
-        events.emitPressureCrossing(
-            self.observer,
-            .peer,
-            .unknown,
-            .resolved_imports,
-            resolved_before,
-            self.resolved_imports.count(),
-            self.limits.max_resolved_imports,
-        );
+        return ExportReleaseImpl.storeResolvedImport(self, promise_id, cap, embargo_id, embargoed);
     }
 
+    /// Body in `peer_export_release.zig`.
     fn rememberPendingEmbargo(self: *Peer, embargo_id: u32, promise_id: u32) !void {
-        try ensureCountLimit(
-            self.pending_embargoes.contains(embargo_id),
-            self.pending_embargoes.count(),
-            self.limits.max_pending_embargoes,
-        );
-        try resolve.rememberPendingEmbargoForPeer(Peer, self, embargo_id, promise_id);
+        return ExportReleaseImpl.rememberPendingEmbargo(self, embargo_id, promise_id);
     }
 
+    /// Body in `peer_export_release.zig`.
     fn releaseResolvedImport(self: *Peer, promise_id: u32) anyerror!void {
-        try peer_cap_lifecycle.releaseResolvedImport(
-            Peer,
-            ResolvedImport,
-            cap_table.ResolvedCap,
-            self,
-            &self.resolved_imports,
-            &self.pending_embargoes,
-            promise_id,
-            Peer.releaseResolvedCap,
-        );
+        return ExportReleaseImpl.releaseResolvedImport(self, promise_id);
     }
 
+    /// Body in `peer_export_release.zig`.
     fn bufferPendingThirdPartyReturn(self: *Peer, answer_id: u32, frame: []const u8) !void {
-        try ensureCountLimit(
-            self.pending_third_party_returns.contains(answer_id),
-            self.pending_third_party_returns.count(),
-            self.limits.max_pending_third_party_returns,
-        );
-        try ensureByteLimit(
-            self.pendingThirdPartyReturnBytesExcluding(answer_id),
-            frame.len,
-            self.limits.max_pending_third_party_return_bytes,
-        );
-        try third_party.returns.bufferPendingReturnForPeer(Peer, self, answer_id, frame);
+        return ExportReleaseImpl.bufferPendingThirdPartyReturn(self, answer_id, frame);
     }
 
+    /// Body in `peer_export_release.zig`.
     fn handleMissingReturnQuestion(self: *Peer, frame: []const u8, answer_id: u32) !void {
-        try third_party.handleMissingReturnQuestion(
-            Peer,
-            self,
-            frame,
-            answer_id,
-            third_party.isThirdPartyAnswerId,
-            third_party.returns.hasPendingReturnForPeerFn(Peer),
-            Peer.bufferPendingThirdPartyReturn,
-        );
+        return ExportReleaseImpl.handleMissingReturnQuestion(self, frame, answer_id);
     }
 
+    /// Body in `peer_export_release.zig`.
     pub fn releaseResolvedCap(self: *Peer, resolved: cap_table.ResolvedCap) anyerror!void {
-        switch (resolved) {
-            .imported => |cap| try self.releaseImport(cap.id, 1),
-            else => {},
-        }
+        return ExportReleaseImpl.releaseResolvedCap(self, resolved);
     }
 
+    /// Body in `peer_export_release.zig`.
     pub fn deliverLoopbackReturn(self: *Peer, frame: []const u8) !void {
-        var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
-        defer decoded.deinit();
-        if (decoded.tag != .@"return") return error.UnexpectedMessage;
-        try self.handleReturn(frame, try decoded.asReturn());
+        return ExportReleaseImpl.deliverLoopbackReturn(self, frame);
     }
 
-    /// Re-resolve a stored (ops-based) provide target against this peer's own
-    /// resolved-answer table — the id is consumed only on the peer whose
-    /// answer space it names; nothing reader-backed is constructed from ops.
+    /// Body in `peer_export_release.zig`.
     pub fn resolveProvidePromisedOps(self: *Peer, question_id: u32, ops: []const protocol.PromisedAnswerOp) !cap_table.ResolvedCap {
-        const entry = self.resolved_answers.get(question_id) orelse return error.PromiseUnresolved;
-        var decoded = try protocol.DecodedMessage.init(self.allocator, entry.frame);
-        defer decoded.deinit();
-        const ret = try decoded.asReturn();
-        if (ret.tag != .results or ret.results == null) return error.PromisedAnswerMissing;
-        return switch (try promises_promised_answer.resolvePromisedAnswerOps(ret.results.?, ops)) {
-            .none => .none,
-            .exported_id => |id| .{ .exported = .{ .id = id } },
-            .imported_id => |id| .{ .imported = .{ .id = id } },
-            .promised => |promised| .{ .promised = promised },
-        };
+        return ExportReleaseImpl.resolveProvidePromisedOps(self, question_id, ops);
     }
 
+    /// Body in `peer_export_release.zig`.
     pub fn resolvePromisedAnswer(self: *Peer, promised: protocol.PromisedAnswer) !cap_table.ResolvedCap {
-        const entry = self.resolved_answers.get(promised.question_id) orelse return error.PromiseUnresolved;
-        var decoded = try protocol.DecodedMessage.init(self.allocator, entry.frame);
-        defer decoded.deinit();
-        const ret = try decoded.asReturn();
-        if (ret.tag != .results or ret.results == null) return error.PromisedAnswerMissing;
-        return cap_table.resolvePromisedAnswer(ret.results.?, promised.transform);
+        return ExportReleaseImpl.resolvePromisedAnswer(self, promised);
     }
 
+    /// Body in `peer_export_release.zig`.
     pub fn releaseResultCaps(self: *Peer, frame: []const u8) !void {
-        try peer_cap_lifecycle.releaseResultCaps(
-            Peer,
-            self,
-            self.allocator,
-            frame,
-            Peer.releaseExport,
-        );
+        return ExportReleaseImpl.releaseResultCaps(self, frame);
     }
 
-    /// Release the answer-held references a recorded resolved answer took on
-    /// the exports in its results (see reserveResolvedAnswer). Same frame
-    /// walk as releaseResultCaps, but spending answer references, which an
-    /// inbound Release message can never touch.
+    /// Body in `peer_export_release.zig`.
     pub fn releaseAnswerHeldResultCaps(self: *Peer, frame: []const u8) !void {
-        try peer_cap_lifecycle.releaseResultCaps(
-            Peer,
-            self,
-            self.allocator,
-            frame,
-            Peer.releaseAnswerHeldCap,
-        );
+        return ExportReleaseImpl.releaseAnswerHeldResultCaps(self, frame);
     }
 
     pub fn allocateQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
