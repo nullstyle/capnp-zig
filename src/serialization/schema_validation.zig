@@ -1,6 +1,7 @@
 const std = @import("std");
 const message = @import("message.zig");
 const schema = @import("schema.zig");
+const type_resolver = @import("type_resolver.zig");
 
 const no_discriminant: u16 = 0xffff;
 
@@ -116,16 +117,59 @@ const StructSize = struct {
     pointer_words: u16,
 };
 
+/// Validate schema-owned type metadata without consulting message contents.
+///
+/// In particular, every field of every group is checked even when the group is
+/// an inactive union arm. Groups share their parent's lexical brand context,
+/// so this traversal deliberately reuses one resolver while bounding and
+/// cycle-checking the schema-only group graph.
+fn preflightStructMetadata(
+    nodes: []schema.Node,
+    node: *const schema.Node,
+    resolver: *const type_resolver.Resolver,
+    guard: RecursionGuard,
+) !void {
+    const inner_guard = try guard.enterGroup(nodes, node);
+    if (node.kind != .@"struct") return error.InvalidSchema;
+    const struct_info = node.struct_node orelse return error.InvalidSchema;
+
+    for (struct_info.fields) |field| {
+        if (field.slot) |slot| {
+            try resolver.validateExpression(resolver.cursor(.{
+                .type = slot.type,
+                .metadata = slot.type_metadata,
+            }));
+        } else if (field.group) |group| {
+            const group_node = findNodeById(nodes, group.type_id) orelse return error.InvalidSchema;
+            try preflightStructMetadata(nodes, group_node, resolver, inner_guard);
+        }
+    }
+}
+
 pub fn validateMessage(
     msg: *const message.Message,
     nodes: []schema.Node,
     root: *const schema.Node,
     options: ValidationOptions,
 ) !void {
+    return validateMessageWithBrand(msg, nodes, root, .{}, options);
+}
+
+/// Validate a message while applying a concrete brand to its root schema node.
+/// The parsed schema graph remains borrowed and no resolver allocation occurs.
+pub fn validateMessageWithBrand(
+    msg: *const message.Message,
+    nodes: []schema.Node,
+    root: *const schema.Node,
+    root_brand: schema.Brand,
+    options: ValidationOptions,
+) !void {
     try msg.validate(.{ .traversal_limit_words = options.traversal_limit_words, .nesting_limit = options.nesting_limit });
     const root_reader = try msg.getRootStruct();
     const guard = RecursionGuard{};
-    try validateStruct(nodes, root, root_reader, options, guard, true);
+    const resolver = try type_resolver.Resolver.init(nodes, root, root_brand);
+    try preflightStructMetadata(nodes, root, &resolver, .{});
+    try validateStruct(nodes, root, &resolver, root_reader, options, guard, true);
 }
 
 pub fn canonicalizeMessage(
@@ -135,7 +179,19 @@ pub fn canonicalizeMessage(
     root: *const schema.Node,
     options: CanonicalizeOptions,
 ) ![]u8 {
-    var builder = try canonicalizeToBuilder(allocator, msg, nodes, root, options);
+    return canonicalizeMessageWithBrand(allocator, msg, nodes, root, .{}, options);
+}
+
+/// Schema-driven canonicalization with an explicit root brand.
+pub fn canonicalizeMessageWithBrand(
+    allocator: std.mem.Allocator,
+    msg: *const message.Message,
+    nodes: []schema.Node,
+    root: *const schema.Node,
+    root_brand: schema.Brand,
+    options: CanonicalizeOptions,
+) ![]u8 {
+    var builder = try canonicalizeToBuilder(allocator, msg, nodes, root, root_brand, options);
     defer builder.deinit();
     const bytes = try builder.toBytes();
     // `toBytes` hands back freshly allocated, caller-owned memory but declares
@@ -158,7 +214,20 @@ pub fn canonicalizeMessageFlat(
     root: *const schema.Node,
     options: CanonicalizeOptions,
 ) ![]u8 {
-    var builder = try canonicalizeToBuilder(allocator, msg, nodes, root, options);
+    return canonicalizeMessageFlatWithBrand(allocator, msg, nodes, root, .{}, options);
+}
+
+/// Flat single-segment schema-driven canonicalization with an explicit root
+/// brand. The returned bytes are caller-owned.
+pub fn canonicalizeMessageFlatWithBrand(
+    allocator: std.mem.Allocator,
+    msg: *const message.Message,
+    nodes: []schema.Node,
+    root: *const schema.Node,
+    root_brand: schema.Brand,
+    options: CanonicalizeOptions,
+) ![]u8 {
+    var builder = try canonicalizeToBuilder(allocator, msg, nodes, root, root_brand, options);
     defer builder.deinit();
     if (builder.segments.items.len == 0) return allocator.alloc(u8, 0);
     if (builder.segments.items.len != 1) return error.NonCanonicalSegments;
@@ -173,10 +242,14 @@ fn canonicalizeToBuilder(
     msg: *const message.Message,
     nodes: []schema.Node,
     root: *const schema.Node,
+    root_brand: schema.Brand,
     options: CanonicalizeOptions,
 ) !message.MessageBuilder {
+    const resolver = try type_resolver.Resolver.init(nodes, root, root_brand);
+    try preflightStructMetadata(nodes, root, &resolver, .{});
+
     if (options.validate) {
-        try validateMessage(msg, nodes, root, .{
+        try validateMessageWithBrand(msg, nodes, root, root_brand, .{
             .traversal_limit_words = options.traversal_limit_words,
             .nesting_limit = options.nesting_limit,
             .strict_text_termination = options.strict_text_termination,
@@ -191,9 +264,9 @@ fn canonicalizeToBuilder(
     const root_reader = try msg.getRootStruct();
     const ctx = Context{ .allocator = allocator, .nodes = nodes };
     const guard = RecursionGuard{};
-    const root_size = try canonicalStructSize(&ctx, root, root_reader, options, guard, true);
+    const root_size = try canonicalStructSize(&ctx, root, &resolver, root_reader, options, guard, true);
     const root_builder = try builder.allocateStruct(root_size.data_words, root_size.pointer_words);
-    try canonicalizeStructInto(&ctx, root, root_reader, root_builder, options, guard, true);
+    try canonicalizeStructInto(&ctx, root, &resolver, root_reader, root_builder, options, guard, true);
 
     return builder;
 }
@@ -201,6 +274,7 @@ fn canonicalizeToBuilder(
 fn canonicalStructSize(
     ctx: *const Context,
     node: *const schema.Node,
+    resolver: *const type_resolver.Resolver,
     reader: message.StructReader,
     options: CanonicalizeOptions,
     guard: RecursionGuard,
@@ -236,8 +310,12 @@ fn canonicalStructSize(
         }
 
         if (field.slot) |slot| {
-            const byte_offset = try dataByteOffset(slot.type, slot.offset);
-            switch (slot.type) {
+            const cursor = resolver.cursor(.{ .type = slot.type, .metadata = slot.type_metadata });
+            try resolver.validateExpression(cursor);
+            const resolved = try resolver.resolve(cursor);
+            const effective_type = if (resolved.unbound) slot.type else resolved.cursor.expression.type;
+            const byte_offset = try dataByteOffset(effective_type, slot.offset);
+            switch (effective_type) {
                 .void => {},
                 .bool => {
                     const bit_offset: u3 = @intCast(slot.offset % 8);
@@ -266,7 +344,7 @@ fn canonicalStructSize(
             }
         } else if (field.group) |group| {
             const group_node = findNodeById(ctx.nodes, group.type_id) orelse return error.InvalidSchema;
-            const group_size = try canonicalStructSize(ctx, group_node, reader, options, inner_guard, false);
+            const group_size = try canonicalStructSize(ctx, group_node, resolver, reader, options, inner_guard, false);
             if (group_size.data_words > 0) {
                 const group_max = @as(isize, @intCast(group_size.data_words - 1));
                 if (group_max > max_data_word) max_data_word = group_max;
@@ -323,6 +401,7 @@ fn pointerShouldEmit(
 fn validateStruct(
     nodes: []schema.Node,
     node: *const schema.Node,
+    resolver: *const type_resolver.Resolver,
     reader: message.StructReader,
     options: ValidationOptions,
     guard: RecursionGuard,
@@ -356,23 +435,29 @@ fn validateStruct(
         }
 
         if (field.slot) |slot| {
-            try validateSlot(nodes, reader, slot, options, inner_guard);
+            try validateSlot(nodes, resolver, reader, slot, options, inner_guard);
         } else if (field.group) |group| {
             const group_node = findNodeById(nodes, group.type_id) orelse return error.InvalidSchema;
-            try validateStruct(nodes, group_node, reader, options, inner_guard, false);
+            try validateStruct(nodes, group_node, resolver, reader, options, inner_guard, false);
         }
     }
 }
 
 fn validateSlot(
     nodes: []schema.Node,
+    resolver: *const type_resolver.Resolver,
     reader: message.StructReader,
     slot: schema.FieldSlot,
     options: ValidationOptions,
     guard: RecursionGuard,
 ) anyerror!void {
-    const byte_offset = try dataByteOffset(slot.type, slot.offset);
-    switch (slot.type) {
+    const initial = resolver.cursor(.{ .type = slot.type, .metadata = slot.type_metadata });
+    try resolver.validateExpression(initial);
+    const resolution = try resolver.resolve(initial);
+    if (resolution.unbound) return;
+    const cursor = resolution.cursor;
+    const byte_offset = try dataByteOffset(cursor.expression.type, slot.offset);
+    switch (cursor.expression.type) {
         .void, .bool, .int8, .int16, .int32, .int64, .uint8, .uint16, .uint32, .uint64, .float32, .float64 => {},
         .@"enum" => |enum_info| {
             const raw = reader.readU16(byte_offset);
@@ -387,8 +472,8 @@ fn validateSlot(
         },
         .text => try validateTextPointer(reader, slot.offset, options),
         .data => try validateDataPointer(reader, slot.offset),
-        .list => |list_info| try validateListPointer(nodes, reader, slot.offset, list_info.element_type.*, options, guard),
-        .@"struct" => |struct_info| try validateStructPointer(nodes, reader, slot.offset, struct_info.type_id, options, guard),
+        .list => try validateListPointer(nodes, resolver, reader, slot.offset, cursor, options, guard),
+        .@"struct" => |struct_info| try validateStructPointer(nodes, resolver, reader, slot.offset, struct_info.type_id, cursor, options, guard),
         .interface => {
             const ptr = getPointer(reader, slot.offset) orelse return;
             if (ptr.word == 0) return;
@@ -400,9 +485,55 @@ fn validateSlot(
             };
             _ = try any.getCapability();
         },
-        .any_pointer => {
-            // No additional schema validation for any pointers.
-        },
+        .any_pointer => try validateConstrainedAnyPointer(reader, slot.offset, cursor),
+    }
+}
+
+fn validateConstrainedAnyPointer(
+    reader: message.StructReader,
+    pointer_index: u32,
+    cursor: type_resolver.Cursor,
+) anyerror!void {
+    const metadata = switch (cursor.expression.metadata) {
+        .none => return,
+        .any_pointer => |value| value,
+        else => return error.InvalidSchema,
+    };
+    const kind = switch (metadata) {
+        .unconstrained => |value| value,
+        // Valid unresolved parameters retain erased compatibility.
+        .parameter, .implicit_method_parameter => return,
+    };
+    if (kind == .any_kind) return;
+    const ptr = getPointer(reader, pointer_index) orelse return;
+    if (ptr.word == 0) return;
+    const any = message.AnyPointerReader{
+        .message = reader.message,
+        .segment_id = reader.segment_id,
+        .pointer_pos = ptr.pos,
+        .pointer_word = ptr.word,
+    };
+    try validateConstrainedAnyPointerValue(any, cursor);
+}
+
+fn validateConstrainedAnyPointerValue(
+    any: message.AnyPointerReader,
+    cursor: type_resolver.Cursor,
+) anyerror!void {
+    const metadata = switch (cursor.expression.metadata) {
+        .none => return,
+        .any_pointer => |value| value,
+        else => return error.InvalidSchema,
+    };
+    const kind = switch (metadata) {
+        .unconstrained => |value| value,
+        .parameter, .implicit_method_parameter => return,
+    };
+    switch (kind) {
+        .any_kind => {},
+        .@"struct" => _ = try any.getStruct(),
+        .list => _ = try message.AnyListReader.wrap(any),
+        .capability => _ = try any.getCapability(),
     }
 }
 
@@ -430,33 +561,55 @@ fn validateDataPointer(reader: message.StructReader, pointer_index: u32) anyerro
 
 fn validateStructPointer(
     nodes: []schema.Node,
+    resolver: *const type_resolver.Resolver,
     reader: message.StructReader,
     pointer_index: u32,
     type_id: schema.Id,
+    cursor: type_resolver.Cursor,
     options: ValidationOptions,
     guard: RecursionGuard,
 ) anyerror!void {
     const ptr = getPointer(reader, pointer_index) orelse return;
     if (ptr.word == 0) return;
     const struct_node = findNodeById(nodes, type_id) orelse return error.InvalidSchema;
+    const brand = try type_resolver.Resolver.namedBrand(cursor.expression);
+    const child_resolver = try resolver.enterNamed(type_id, brand, cursor.context_depth);
     const struct_reader = try reader.message.resolveStructPointer(reader.segment_id, ptr.pos, ptr.word);
-    try validateStruct(nodes, struct_node, struct_reader, options, guard, true);
+    try validateStruct(nodes, struct_node, &child_resolver, struct_reader, options, guard, true);
 }
 
 fn validateListPointer(
     nodes: []schema.Node,
+    resolver: *const type_resolver.Resolver,
     reader: message.StructReader,
     pointer_index: u32,
-    element_type: schema.Type,
+    list_cursor: type_resolver.Cursor,
     options: ValidationOptions,
     guard: RecursionGuard,
 ) anyerror!void {
     const ptr = getPointer(reader, pointer_index) orelse return;
     if (ptr.word == 0) return;
 
-    if (element_type == .@"struct") {
+    const element_initial = try type_resolver.Resolver.listElement(list_cursor);
+    try resolver.validateExpression(element_initial);
+    const element_resolution = try resolver.resolve(element_initial);
+    if (element_resolution.unbound) {
+        // An unbound list element is still physically a pointer list.
+        const list = try reader.message.resolveListPointer(reader.segment_id, ptr.pos, ptr.word);
+        if (list.element_size != 6) return error.InvalidListElementSize;
+        return;
+    }
+    const element_cursor = element_resolution.cursor;
+    const element_type = element_cursor.expression.type;
+
+    // A concrete struct written directly in the schema uses inline-composite
+    // layout. A generic `List(T)` is physically a pointer list even when T's
+    // brand resolves to a struct; validate each erased pointer as that struct.
+    if (element_type == .@"struct" and element_initial.expression.type == .@"struct") {
         const struct_info = element_type.@"struct";
         const struct_node = findNodeById(nodes, struct_info.type_id) orelse return error.InvalidSchema;
+        const brand = try type_resolver.Resolver.namedBrand(element_cursor.expression);
+        const child_resolver = try resolver.enterNamed(struct_info.type_id, brand, element_cursor.context_depth);
         const layout = try reader.message.resolveStructListPointer(reader.segment_id, ptr.pos, ptr.word);
         // The early-out keys on the stride, not on whole words: an upgraded
         // sub-word list has zero data/pointer *words* yet real elements, and
@@ -465,7 +618,7 @@ fn validateListPointer(
         var idx: u32 = 0;
         while (idx < layout.element_count) : (idx += 1) {
             const element_reader = structListElementReader(reader.message, layout, idx);
-            try validateStruct(nodes, struct_node, element_reader, options, guard, true);
+            try validateStruct(nodes, struct_node, &child_resolver, element_reader, options, guard, true);
         }
         return;
     }
@@ -492,7 +645,7 @@ fn validateListPointer(
         },
         .text, .data, .list, .@"struct", .any_pointer, .interface => {
             if (list.element_size != 6) return error.InvalidListElementSize;
-            try validatePointerList(nodes, reader.message, list, element_type, options, guard);
+            try validatePointerList(nodes, resolver, reader.message, list, element_cursor, options, guard);
         },
         else => {},
     }
@@ -500,9 +653,10 @@ fn validateListPointer(
 
 fn validatePointerList(
     nodes: []schema.Node,
+    resolver: *const type_resolver.Resolver,
     msg: *const message.Message,
     list: message.Message.ResolvedListPointer,
-    element_type: schema.Type,
+    element_cursor: type_resolver.Cursor,
     options: ValidationOptions,
     guard: RecursionGuard,
 ) anyerror!void {
@@ -521,7 +675,7 @@ fn validatePointerList(
             .pointer_pos = pos,
             .pointer_word = word,
         };
-        switch (element_type) {
+        switch (element_cursor.expression.type) {
             .text => {
                 _ = try any.getText();
                 if (options.strict_text_termination) {
@@ -538,13 +692,15 @@ fn validatePointerList(
             },
             .@"struct" => |struct_info| {
                 const struct_node = findNodeById(nodes, struct_info.type_id) orelse return error.InvalidSchema;
+                const brand = try type_resolver.Resolver.namedBrand(element_cursor.expression);
+                const child_resolver = try resolver.enterNamed(struct_info.type_id, brand, element_cursor.context_depth);
                 const struct_reader = try any.getStruct();
-                try validateStruct(nodes, struct_node, struct_reader, options, inner_guard, true);
+                try validateStruct(nodes, struct_node, &child_resolver, struct_reader, options, inner_guard, true);
             },
-            .list => |list_info| {
-                try validateListFromAnyPointer(nodes, any, list_info.element_type.*, options, inner_guard);
+            .list => {
+                try validateListFromAnyPointer(nodes, resolver, any, element_cursor, options, inner_guard);
             },
-            .any_pointer => {},
+            .any_pointer => try validateConstrainedAnyPointerValue(any, element_cursor),
             .interface => {
                 _ = try any.getCapability();
             },
@@ -555,16 +711,29 @@ fn validatePointerList(
 
 fn validateListFromAnyPointer(
     nodes: []schema.Node,
+    resolver: *const type_resolver.Resolver,
     any: message.AnyPointerReader,
-    element_type: schema.Type,
+    list_cursor: type_resolver.Cursor,
     options: ValidationOptions,
     guard: RecursionGuard,
 ) anyerror!void {
     if (any.isNull()) return;
     const inner_guard = try guard.descend();
-    if (element_type == .@"struct") {
+    const element_initial = try type_resolver.Resolver.listElement(list_cursor);
+    try resolver.validateExpression(element_initial);
+    const element_resolution = try resolver.resolve(element_initial);
+    if (element_resolution.unbound) {
+        const erased = try any.getList();
+        if (erased.element_size != 6) return error.InvalidListElementSize;
+        return;
+    }
+    const element_cursor = element_resolution.cursor;
+    const element_type = element_cursor.expression.type;
+    if (element_type == .@"struct" and element_initial.expression.type == .@"struct") {
         const struct_info = element_type.@"struct";
         const struct_node = findNodeById(nodes, struct_info.type_id) orelse return error.InvalidSchema;
+        const brand = try type_resolver.Resolver.namedBrand(element_cursor.expression);
+        const child_resolver = try resolver.enterNamed(struct_info.type_id, brand, element_cursor.context_depth);
         // Callers reach here only past an `isNull()` guard, so resolving the
         // pointer directly (rather than through `getInlineCompositeList`, whose
         // null-is-empty-list behavior does not exist here) cannot turn a null
@@ -574,7 +743,7 @@ fn validateListFromAnyPointer(
         var idx: u32 = 0;
         while (idx < layout.element_count) : (idx += 1) {
             const element_reader = structListElementReader(any.message, layout, idx);
-            try validateStruct(nodes, struct_node, element_reader, options, inner_guard, true);
+            try validateStruct(nodes, struct_node, &child_resolver, element_reader, options, inner_guard, true);
         }
         return;
     }
@@ -601,7 +770,7 @@ fn validateListFromAnyPointer(
         },
         .text, .data, .list, .@"struct", .any_pointer, .interface => {
             if (list.element_size != 6) return error.InvalidListElementSize;
-            try validatePointerList(nodes, any.message, list, element_type, options, inner_guard);
+            try validatePointerList(nodes, resolver, any.message, list, element_cursor, options, inner_guard);
         },
         else => {},
     }
@@ -610,6 +779,7 @@ fn validateListFromAnyPointer(
 fn canonicalizeStructInto(
     ctx: *const Context,
     node: *const schema.Node,
+    resolver: *const type_resolver.Resolver,
     reader: message.StructReader,
     dest: message.StructBuilder,
     options: CanonicalizeOptions,
@@ -640,24 +810,29 @@ fn canonicalizeStructInto(
         }
 
         if (field.slot) |slot| {
-            try canonicalizeSlot(ctx, reader, dest, slot, options, inner_guard);
+            try canonicalizeSlot(ctx, resolver, reader, dest, slot, options, inner_guard);
         } else if (field.group) |group| {
             const group_node = findNodeById(ctx.nodes, group.type_id) orelse return error.InvalidSchema;
-            try canonicalizeStructInto(ctx, group_node, reader, dest, options, inner_guard, false);
+            try canonicalizeStructInto(ctx, group_node, resolver, reader, dest, options, inner_guard, false);
         }
     }
 }
 
 fn canonicalizeSlot(
     ctx: *const Context,
+    resolver: *const type_resolver.Resolver,
     reader: message.StructReader,
     dest: message.StructBuilder,
     slot: schema.FieldSlot,
     options: CanonicalizeOptions,
     guard: RecursionGuard,
 ) anyerror!void {
-    const byte_offset = try dataByteOffset(slot.type, slot.offset);
-    switch (slot.type) {
+    const initial = resolver.cursor(.{ .type = slot.type, .metadata = slot.type_metadata });
+    try resolver.validateExpression(initial);
+    const resolution = try resolver.resolve(initial);
+    const cursor = if (resolution.unbound) initial else resolution.cursor;
+    const byte_offset = try dataByteOffset(cursor.expression.type, slot.offset);
+    switch (cursor.expression.type) {
         .void => {},
         .bool => {
             const bit_offset: u3 = @intCast(slot.offset % 8);
@@ -668,16 +843,18 @@ fn canonicalizeSlot(
         .int32, .uint32, .float32 => dest.writeU32(byte_offset, reader.readU32(byte_offset)),
         .int64, .uint64, .float64 => dest.writeU64(byte_offset, reader.readU64(byte_offset)),
         .text, .data, .list, .@"struct", .any_pointer, .interface => {
-            try canonicalizePointerField(ctx, reader, dest, slot, options, guard);
+            try canonicalizePointerField(ctx, resolver, reader, dest, slot, cursor, options, guard);
         },
     }
 }
 
 fn canonicalizePointerField(
     ctx: *const Context,
+    resolver: *const type_resolver.Resolver,
     reader: message.StructReader,
     dest: message.StructBuilder,
     slot: schema.FieldSlot,
+    cursor: type_resolver.Cursor,
     options: CanonicalizeOptions,
     guard: RecursionGuard,
 ) anyerror!void {
@@ -698,18 +875,19 @@ fn canonicalizePointerField(
     }
 
     const dest_any = try dest.getAnyPointer(pointer_index);
-    try canonicalizePointerValue(ctx, slot.type, src_any, dest_any, options, guard);
+    try canonicalizePointerValue(ctx, resolver, cursor, src_any, dest_any, options, guard);
 }
 
 fn canonicalizePointerValue(
     ctx: *const Context,
-    typ: schema.Type,
+    resolver: *const type_resolver.Resolver,
+    cursor: type_resolver.Cursor,
     src_any: message.AnyPointerReader,
     dest_any: message.AnyPointerBuilder,
     options: CanonicalizeOptions,
     guard: RecursionGuard,
 ) anyerror!void {
-    switch (typ) {
+    switch (cursor.expression.type) {
         .text => {
             const text = try src_any.getText();
             try dest_any.setText(text);
@@ -720,15 +898,18 @@ fn canonicalizePointerValue(
         },
         .@"struct" => |struct_info| {
             const struct_node = findNodeById(ctx.nodes, struct_info.type_id) orelse return error.InvalidSchema;
+            const brand = try type_resolver.Resolver.namedBrand(cursor.expression);
+            const child_resolver = try resolver.enterNamed(struct_info.type_id, brand, cursor.context_depth);
             const src_struct = try src_any.getStruct();
-            const size = try canonicalStructSize(ctx, struct_node, src_struct, options, guard, true);
+            const size = try canonicalStructSize(ctx, struct_node, &child_resolver, src_struct, options, guard, true);
             const dest_struct = try dest_any.initStruct(size.data_words, size.pointer_words);
-            try canonicalizeStructInto(ctx, struct_node, src_struct, dest_struct, options, guard, true);
+            try canonicalizeStructInto(ctx, struct_node, &child_resolver, src_struct, dest_struct, options, guard, true);
         },
-        .list => |list_info| {
-            try canonicalizeListFromAnyPointer(ctx, list_info.element_type.*, src_any, dest_any, options, guard);
+        .list => {
+            try canonicalizeListFromAnyPointer(ctx, resolver, cursor, src_any, dest_any, options, guard);
         },
         .any_pointer => {
+            try validateConstrainedAnyPointerValue(src_any, cursor);
             try message.cloneAnyPointer(src_any, dest_any);
         },
         .interface => {
@@ -741,7 +922,8 @@ fn canonicalizePointerValue(
 
 fn canonicalizeListFromAnyPointer(
     ctx: *const Context,
-    element_type: schema.Type,
+    resolver: *const type_resolver.Resolver,
+    list_cursor: type_resolver.Cursor,
     src_any: message.AnyPointerReader,
     dest_any: message.AnyPointerBuilder,
     options: CanonicalizeOptions,
@@ -750,9 +932,21 @@ fn canonicalizeListFromAnyPointer(
     if (src_any.isNull()) return;
     const inner_guard = try guard.descend();
 
-    if (element_type == .@"struct") {
+    const element_initial = try type_resolver.Resolver.listElement(list_cursor);
+    try resolver.validateExpression(element_initial);
+    const element_resolution = try resolver.resolve(element_initial);
+    if (element_resolution.unbound) {
+        try message.cloneAnyPointer(src_any, dest_any);
+        return;
+    }
+    const element_cursor = element_resolution.cursor;
+    const element_type = element_cursor.expression.type;
+
+    if (element_type == .@"struct" and element_initial.expression.type == .@"struct") {
         const struct_info = element_type.@"struct";
         const struct_node = findNodeById(ctx.nodes, struct_info.type_id) orelse return error.InvalidSchema;
+        const brand = try type_resolver.Resolver.namedBrand(element_cursor.expression);
+        const child_resolver = try resolver.enterNamed(struct_info.type_id, brand, element_cursor.context_depth);
         // Reached only past an `isNull()` guard (see the validator above).
         // Canonicalizing an upgraded list re-emits it in the inline-composite
         // encoding, which is the only legal encoding for a struct list — so a
@@ -766,7 +960,7 @@ fn canonicalizeListFromAnyPointer(
         var idx: u32 = 0;
         while (idx < layout.element_count) : (idx += 1) {
             const src_struct = structListElementReader(src_any.message, layout, idx);
-            const size = try canonicalStructSize(ctx, struct_node, src_struct, options, inner_guard, true);
+            const size = try canonicalStructSize(ctx, struct_node, &child_resolver, src_struct, options, inner_guard, true);
             if (size.data_words > max_data_words) max_data_words = size.data_words;
             if (size.pointer_words > max_pointer_words) max_pointer_words = size.pointer_words;
         }
@@ -778,7 +972,7 @@ fn canonicalizeListFromAnyPointer(
         while (idx < layout.element_count) : (idx += 1) {
             const src_struct = structListElementReader(src_any.message, layout, idx);
             const dest_struct = try out_list.get(idx);
-            try canonicalizeStructInto(ctx, struct_node, src_struct, dest_struct, options, inner_guard, true);
+            try canonicalizeStructInto(ctx, struct_node, &child_resolver, src_struct, dest_struct, options, inner_guard, true);
         }
         return;
     }
@@ -923,15 +1117,26 @@ fn canonicalizeListFromAnyPointer(
                     },
                     .@"struct" => |struct_info| {
                         const struct_node = findNodeById(ctx.nodes, struct_info.type_id) orelse return error.InvalidSchema;
-                        const struct_def = struct_node.struct_node orelse return error.InvalidSchema;
+                        const brand = try type_resolver.Resolver.namedBrand(element_cursor.expression);
+                        const child_resolver = try resolver.enterNamed(struct_info.type_id, brand, element_cursor.context_depth);
                         const src_struct = try src_elem.getStruct();
-                        const dest_struct = try dest_elem.initStruct(struct_def.data_word_count, struct_def.pointer_count);
-                        try canonicalizeStructInto(ctx, struct_node, src_struct, dest_struct, options, inner_guard, true);
+                        const size = try canonicalStructSize(
+                            ctx,
+                            struct_node,
+                            &child_resolver,
+                            src_struct,
+                            options,
+                            inner_guard,
+                            true,
+                        );
+                        const dest_struct = try dest_elem.initStruct(size.data_words, size.pointer_words);
+                        try canonicalizeStructInto(ctx, struct_node, &child_resolver, src_struct, dest_struct, options, inner_guard, true);
                     },
-                    .list => |list_info| {
-                        try canonicalizeListFromAnyPointer(ctx, list_info.element_type.*, src_elem, dest_elem, options, inner_guard);
+                    .list => {
+                        try canonicalizeListFromAnyPointer(ctx, resolver, element_cursor, src_elem, dest_elem, options, inner_guard);
                     },
                     .any_pointer => {
+                        try validateConstrainedAnyPointerValue(src_elem, element_cursor);
                         try message.cloneAnyPointer(src_elem, dest_elem);
                     },
                     .interface => {

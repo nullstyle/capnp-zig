@@ -783,6 +783,8 @@ test "MessageBuilder: inline composite list in same segment" {
     try testing.expectEqual(@as(u32, 2), list_reader.len());
     try testing.expectEqual(@as(u32, 10), (try list_reader.get(0)).readU32(0));
     try testing.expectEqual(@as(u32, 20), (try list_reader.get(1)).readU32(0));
+    const any = try root.readAnyPointer(0);
+    try testing.expectError(error.InvalidRootPointer, any.getStruct());
 }
 
 test "MessageBuilder: inline composite list with far pointer" {
@@ -1858,6 +1860,7 @@ test "AnyListBuilder reopens and mutates direct, single-far, and double-far stru
         const list = try (try message.AnyListBuilder.wrap(pointer)).getStructList();
         (try list.get(0)).writeU32(0, value);
     }
+    try testing.expectError(error.InvalidPointer, (try root.getAnyPointer(2)).getStruct());
 
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
@@ -1868,6 +1871,7 @@ test "AnyListBuilder reopens and mutates direct, single-far, and double-far stru
         const list = try reader.readStructList(index);
         try testing.expectEqual(value, (try list.get(0)).readU32(0));
     }
+    try testing.expectError(error.InvalidRootPointer, (try reader.readAnyPointer(2)).getStruct());
 }
 
 test "AnyList Reader and Builder reject a malformed direct C=7 tag" {

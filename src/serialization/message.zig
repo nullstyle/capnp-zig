@@ -817,6 +817,10 @@ pub const Message = struct {
 
         var struct_offset: usize = undefined;
         if (resolved.content_override) |override| {
+            // A Layout-A inline-composite list stores its element count in the
+            // struct-tag offset field. Only the zero-count wire ambiguity is
+            // indistinguishable from a genuine double-far struct pointer.
+            if (offset != 0) return error.InvalidRootPointer;
             struct_offset = override;
         } else {
             struct_offset = computeContentOffset(resolved.pointer_pos, offset, null) catch return error.InvalidRootPointer;
@@ -2813,6 +2817,9 @@ pub const MessageBuilder = struct {
 
         const data_size = @as(u16, @truncate((resolved.pointer_word >> 32) & 0xFFFF));
         const pointer_count = @as(u16, @truncate((resolved.pointer_word >> 48) & 0xFFFF));
+        if (resolved.content_override != null and decodeOffsetWords(resolved.pointer_word) != 0) {
+            return error.InvalidPointer;
+        }
         const struct_offset = resolved.content_override orelse try Message.computeContentOffset(
             resolved.pointer_pos,
             decodeOffsetWords(resolved.pointer_word),
