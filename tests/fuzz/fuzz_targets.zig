@@ -434,6 +434,91 @@ fn fuzzQuicNativeControlFramer(_: void, smith: *std.testing.Smith) anyerror!void
     }
 }
 
+const persistence = capnpc.rpc.peer.persistence;
+
+/// Restore/sturdy-ref decode fuzzing. Sturdy-ref bytes are attacker-controlled
+/// by definition (a remote peer names whatever it likes in `restore`), and the
+/// restore path — payload decode via readSturdyRefParam, the restorer hook, and
+/// RestoreOutcome handling (unknown / existing / host) — was reachable only
+/// through random bytes that essentially never hit the restorer interface id.
+/// This seeds a bootstrap export plus a restorer hook whose outcome is driven
+/// by the fuzzed ref, then feeds restore Calls with both well-formed and
+/// malformed payloads. Property: no crash, hang, or leak; full state drain.
+fn fuzzPersistenceRestore(_: void, smith: *std.testing.Smith) anyerror!void {
+    const Restorer = struct {
+        existing_id: u32,
+        fn onRestore(ctx: *anyopaque, _: *Peer, sturdy_ref: []const u8) anyerror!capnpc.rpc.peer.RestoreOutcome {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            // Drive every RestoreOutcome arm off the fuzzed ref's first byte so
+            // the existing/host/unknown handling all gets exercised.
+            if (sturdy_ref.len == 0) return .unknown;
+            return switch (sturdy_ref[0] & 0x3) {
+                0 => .unknown,
+                1 => .{ .existing = self.existing_id },
+                else => .{ .host = .{ .ctx = self, .on_call = struct {
+                    fn onCall(_: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+                        p.sendReturnEmptyStruct(call.question_id) catch {};
+                    }
+                }.onCall } },
+            };
+        }
+        fn onFrame(_: *anyopaque, _: []const u8) anyerror!void {}
+        fn onCall(_: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+            p.sendReturnEmptyStruct(call.question_id) catch {};
+        }
+    };
+
+    var peer = Peer.initDetached(std.testing.allocator);
+    defer peer.deinit();
+    var sink: u8 = 0;
+    peer.setSendFrameOverride(&sink, Restorer.onFrame);
+
+    const bootstrap_id = peer.setBootstrap(.{ .ctx = &sink, .on_call = Restorer.onCall }) catch return;
+    // A second live export id for the `.existing` outcome to re-expose.
+    const existing_id = peer.addExport(.{ .ctx = &sink, .on_call = Restorer.onCall }) catch return;
+    var restorer = Restorer{ .existing_id = existing_id };
+    peer.setRestorer(&restorer, Restorer.onRestore) catch return;
+
+    var ref_buf: [256]u8 = undefined;
+    var frames: u8 = 0;
+    while (frames < 32 and !smith.eosWeightedSimple(3, 1)) : (frames += 1) {
+        var builder = protocol.MessageBuilder.init(std.testing.allocator);
+        defer builder.deinit();
+
+        const qid = smith.valueRangeAtMost(u32, 0, 8);
+        // Target the bootstrap export most of the time (the only one that
+        // routes to the restorer), a wrong id occasionally.
+        const target: u32 = if (smith.boolWeighted(4, 1)) bootstrap_id else smith.valueRangeAtMost(u32, 0, 8);
+        var call = builder.beginCall(qid, persistence.restorer_interface_id, persistence.restore_method_id) catch continue;
+        call.setTargetImportedCap(target) catch continue;
+
+        switch (smith.valueRangeAtMost(u8, 0, 3)) {
+            0 => {
+                // Well-formed Data of fuzzed length/content.
+                const n: usize = smith.valueRangeAtMost(u16, 0, @intCast(ref_buf.len));
+                for (ref_buf[0..n]) |*b| b.* = smith.value(u8);
+                persistence.writeRestoreParams(&call, ref_buf[0..n]) catch continue;
+            },
+            1 => {
+                // Malformed: content struct present but the sturdyRef pointer
+                // is left null (MissingSturdyRef path).
+                var payload = call.payloadTyped() catch continue;
+                const any = payload.initContent() catch continue;
+                _ = any.initStruct(0, 1) catch continue;
+            },
+            else => {
+                // Malformed: no content at all.
+                _ = call.payloadTyped() catch continue;
+            },
+        }
+        _ = call.initCapTableTyped(0) catch continue;
+
+        const frame = builder.finish() catch continue;
+        defer std.testing.allocator.free(frame);
+        peer.handleFrame(frame) catch {};
+    }
+}
+
 /// The compiler plugin's untrusted-input surface: a hostile capnp toolchain
 /// (or a crafted CodeGeneratorRequest piped to stdin) must never crash, hang,
 /// leak, or blow the codegen budget. Parse random bytes as a request and run
@@ -500,4 +585,8 @@ test "fuzz: quic length-delimited framer chunking" {
 
 test "fuzz: quic native control framer chunking" {
     try std.testing.fuzz({}, fuzzQuicNativeControlFramer, .{});
+}
+
+test "fuzz: persistence restore / sturdy-ref decode" {
+    try std.testing.fuzz({}, fuzzPersistenceRestore, .{});
 }
