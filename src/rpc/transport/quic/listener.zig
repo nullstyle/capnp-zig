@@ -131,8 +131,9 @@ pub const Listener = struct {
             const received = try self.receiveConcurrent(self.receive_timeout);
             return switch (received) {
                 .timeout, .wake => null,
+                // Matches the POSIX arm below; see the note in Server.
+                .truncated => error.DatagramTooLarge,
                 .datagram => |msg| blk: {
-                    if (msg.flags.trunc) return error.DatagramTooLarge;
                     const outcome = try self.feedDatagram(msg.data, msg.from, self.nowUs());
                     try self.drainStatelessResponses();
                     break :blk outcome;

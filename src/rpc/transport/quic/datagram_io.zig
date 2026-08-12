@@ -81,12 +81,16 @@ fn receiveOneWindows(input: ReceiveInput) !ReceiveResult {
             result.wake_drained = input.wake.consumeRequested();
             return result;
         },
+        .truncated => {
+            // Same per-datagram fault the POSIX path treats as non-fatal: UDP
+            // is unauthenticated and spoofable, so one oversized datagram must
+            // not tear down the endpoint. Socket-fatal errors still propagate
+            // through the `try` above.
+            log.warn("dropping truncated UDP datagram (exceeds {d}-byte rx buffer)", .{input.rx_buf.len});
+            result.dropped_datagram = true;
+            return result;
+        },
         .datagram => |msg| {
-            if (msg.flags.trunc) {
-                log.warn("dropping truncated UDP datagram (exceeds {d}-byte rx buffer)", .{input.rx_buf.len});
-                result.dropped_datagram = true;
-                return result;
-            }
             result.received_datagram = true;
             _ = try input.driver.handleDatagram(msg.data, msg.from, input.now_us);
             return result;

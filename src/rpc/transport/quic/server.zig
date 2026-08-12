@@ -350,8 +350,14 @@ pub const Server = struct {
                     result.wake_drained = self.wake_state.consumeRequested();
                     return result;
                 },
+                // Deliberately identical to the POSIX arm below, which also
+                // fails the step on an oversized datagram. Whether the fanout
+                // server *should* survive one instead of tearing down (as the
+                // single-connection path does) is a real question, but it is a
+                // cross-platform behavior change and not this fix's business:
+                // here Windows only stops being the odd one out.
+                .truncated => return error.DatagramTooLarge,
                 .datagram => |msg| {
-                    if (msg.flags.trunc) return error.DatagramTooLarge;
                     result.received_datagram = true;
                     result.outcome = try self.listener.feedDatagram(
                         msg.data,

@@ -150,13 +150,12 @@ test "QUIC UDP receive bridge reports truncation without processing partial byte
         &rx,
         std.Io.Duration.fromSeconds(1),
     );
-    switch (result) {
-        .datagram => |datagram| {
-            try std.testing.expect(datagram.flags.trunc);
-            try std.testing.expectEqual(rx.len, datagram.data.len);
-        },
-        else => return error.ExpectedUdpDatagram,
-    }
+    // One outcome on every platform, which is the point: POSIX reports
+    // truncation through MSG_TRUNC while Windows fails the receive with
+    // MessageOversize. If the Windows arm regressed to propagating that error,
+    // this returns it instead and the test fails rather than silently
+    // exercising only the POSIX path.
+    try std.testing.expectEqual(UdpReceiveBridge.WaitResult.truncated, result);
 }
 
 test "QUIC UDP receive bridge retains the launch buffer across a later argument" {

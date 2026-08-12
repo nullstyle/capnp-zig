@@ -34,12 +34,23 @@ pub const Bridge = struct {
 
     pub const WaitResult = union(enum) {
         datagram: Datagram,
+        /// A datagram arrived that did not fit in `rx_buf`.  Reported as its
+        /// own outcome rather than as a `Datagram`, because the two platforms
+        /// hand back different amounts of it and neither is worth processing:
+        /// POSIX sets `MSG_TRUNC` and returns the prefix that fit, while
+        /// Windows fails the receive with `STATUS_BUFFER_OVERFLOW` and
+        /// discards the payload *and* the sender address.  Synthesizing a
+        /// `Datagram` here would mean inventing a `from` that Windows never
+        /// supplied, so callers get a fact instead: something oversized
+        /// arrived and there is nothing to feed to QUIC.
+        truncated,
         timeout,
         wake,
     };
 
     const Outcome = union(enum) {
         datagram: Datagram,
+        truncated,
         fail: anyerror,
     };
 
@@ -89,6 +100,7 @@ pub const Bridge = struct {
             self.future = null;
             return switch (ready) {
                 .datagram => |datagram| .{ .datagram = datagram },
+                .truncated => .truncated,
                 .fail => |err| return err,
             };
         }
@@ -168,7 +180,25 @@ pub const Bridge = struct {
 
     fn receiveTask(self: *Bridge, io: std.Io, socket: Net.Socket, rx_buf: []u8) void {
         const outcome: Outcome = blk: {
-            const msg = socket.receive(io, rx_buf) catch |err| break :blk .{ .fail = err };
+            const msg = socket.receive(io, rx_buf) catch |err| {
+                // Windows is the only platform that reports an oversized
+                // datagram as a *failed* receive: AFD returns
+                // STATUS_BUFFER_OVERFLOW, which std maps to MessageOversize,
+                // and that is the only source of this error on the Windows
+                // receive path.  Left as an error it would propagate out of
+                // the connection step and tear the endpoint down — so any
+                // host could kill a Windows QUIC endpoint (and, on a fanout
+                // server, every session on it) with one spoofed oversized
+                // UDP datagram.  Normalize it to the same per-datagram fault
+                // POSIX already reports through MSG_TRUNC.  Deliberately not
+                // applied off Windows, where EMSGSIZE on a receive does not
+                // carry this meaning.
+                if (comptime builtin.target.os.tag == .windows) {
+                    if (err == error.MessageOversize) break :blk .truncated;
+                }
+                break :blk .{ .fail = err };
+            };
+            if (msg.flags.trunc) break :blk .truncated;
             break :blk .{ .datagram = .{
                 .from = msg.from,
                 .data = msg.data,

@@ -132,8 +132,8 @@ const RawFaultClient = struct {
             );
             switch (received) {
                 .timeout, .wake => {},
+                .truncated => return error.DatagramTooLarge,
                 .datagram => |msg| {
-                    if (msg.flags.trunc) return error.DatagramTooLarge;
                     if (std.Io.net.IpAddress.eql(&msg.from, &self.remote_addr)) {
                         try self.client.conn.handle(
                             msg.data,
