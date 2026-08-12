@@ -52,6 +52,24 @@ pub fn report(
     );
 }
 
+/// Log one receive dropped because of remote-provoked ICMP feedback.
+///
+/// Same policy as `report` — remote-influenced, socket still usable, do not
+/// tear down the endpoint — but deliberately NOT the same reporting shape.
+/// `report` hardcodes `.udp_datagram_bytes` and `error.DatagramTooLarge`,
+/// and both are wrong here: nothing exceeded a buffer, and no datagram was
+/// even delivered. Emitting a `resource_rejection` would name a resource that
+/// was never exhausted, which is worse than the omission.
+///
+/// This is not silent to applications: the caller sets
+/// `ReceiveResult.dropped_datagram`, which `connection_loop` propagates as
+/// `StepResult.dropped_datagram`. If these ever need to be distinguished from
+/// truncation in metrics, that wants its own event kind rather than a
+/// borrowed one.
+pub fn reportPeerFault(err: anyerror) void {
+    log.warn("dropping UDP receive after transient peer fault: {t}", .{err});
+}
+
 pub fn eventSource(mode: quic_options.TransportMode) events.Source {
     return switch (mode) {
         .baseline => .quic_baseline,

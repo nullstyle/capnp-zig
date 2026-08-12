@@ -82,7 +82,7 @@ pub fn receiveOne(input: ReceiveInput) !ReceiveResult {
         error.Timeout => return result,
         else => {
             if (isTransientPeerFault(err)) {
-                log.warn("dropping UDP receive after transient peer fault: {t}", .{err});
+                datagram_drop.reportPeerFault(err);
                 result.dropped_datagram = true;
                 return result;
             }
@@ -114,7 +114,7 @@ fn receiveOneWindows(input: ReceiveInput) !ReceiveResult {
         input.wait_duration,
     ) catch |err| {
         if (isTransientPeerFault(err)) {
-            log.warn("dropping UDP receive after transient peer fault: {t}", .{err});
+            datagram_drop.reportPeerFault(err);
             result.dropped_datagram = true;
             return result;
         }

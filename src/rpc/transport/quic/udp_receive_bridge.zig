@@ -193,11 +193,12 @@ pub const Bridge = struct {
                 // Deliberately not applied off Windows, where EMSGSIZE on a
                 // receive does not carry this meaning.
                 //
-                // Scope: this makes the SINGLE-CONNECTION path (datagram_io)
-                // drop and keep serving on both platforms.  Server/Listener
-                // still fail the step with DatagramTooLarge on every
-                // platform, unchanged and filed separately — do not read this
-                // as covering the fanout server.
+                // Every receive path now routes its truncation arm through
+                // `datagram_drop`, so the single-connection loop, Server and
+                // Listener all drop and keep serving. This comment previously
+                // said Server/Listener still failed with DatagramTooLarge,
+                // which was true when written and stopped being true one
+                // commit later.
                 if (comptime builtin.target.os.tag == .windows) {
                     if (err == error.MessageOversize) break :blk .truncated;
                 }
