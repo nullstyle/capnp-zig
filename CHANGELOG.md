@@ -121,11 +121,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The ThreadSanitizer lane had never once finished.** It carried
   `timeout-minutes: 20` and was killed at exactly 20 minutes on every run since
-  it was added, so it reported no result while looking configured. Job caps are
-  now sized against measured runs (TSan 45; the `Test` job 45 with a 35-minute
-  step cap, after a run where every test passed but the step was killed at
-  20m50s). `docs/stability.md` no longer claimed TSan coverage it had not yet
-  earned.
+  it was added, so it reported no result while looking configured. Its cap is
+  now 45 minutes, and `docs/stability.md` no longer claims TSan coverage that
+  had not yet been earned.
+
+### Known issues
+
+- **The Linux full-suite CI legs hang, and the release is blocked on it.**
+  `Test (ubuntu-latest)` was green through `bf70eae` and has not passed since.
+
+  Proven for that job: the signature is a hang, not slowness. It emits its last
+  line, then goes completely silent until the step cap kills it — 16.7 minutes
+  of silence at a 20-minute cap, 32 minutes at a 35-minute cap — leaving
+  orphaned `maker` (the build process) and `test` (a test binary) behind. Two
+  runs with two different `--seed` values stall identically, so it is
+  deterministic rather than seed- or timing-flaky. macOS reaches `159/159 steps
+  succeeded; 1862/1862 tests passed` past the same point, and Windows passes
+  too.
+
+  Strongly indicated but not yet proven to be the same fault: the three other
+  Linux legs that run threaded suites never completed either. `ThreadSanitizer`
+  hit its (raised) 45-minute cap; `QUIC targeted transport (ubuntu-latest)` and
+  `ReleaseSafe hardening tests (ubuntu-latest)` were still running at 75+
+  minutes when the run ended, against 11m and 28m for the same jobs on Windows.
+  Those three were cancelled rather than observed to their conclusion, so they
+  are evidence, not proof.
+
+  Recorded here rather than papered over: raising the `Test` job's caps
+  (30→45 job, 20→35 step) was committed on the theory that the leg needed more
+  time, which the silence disproves — it hung longer. `just release-tag`
+  requires a fully green CI run for `HEAD`, so this blocks tagging, which is
+  the correct outcome.
+
+### Changed
 
 ### Changed
 
