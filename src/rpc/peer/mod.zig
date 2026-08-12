@@ -42,6 +42,8 @@ const peer_provision_hosting = @import("./provision/peer_provision_hosting.zig")
 const peer_provision_drain = @import("./provision/peer_provision_drain.zig");
 const peer_return_send = @import("./return/peer_return_send.zig");
 const peer_export_release = @import("./peer_export_release.zig");
+const peer_call_send = @import("./call/peer_call_send.zig");
+const peer_call_inbound = @import("./call/peer_call_inbound.zig");
 const vat_host = @import("../vat/host.zig");
 const promises_promised_answer = @import("../promises/promised_answer.zig");
 
@@ -526,42 +528,6 @@ fn msToNs(ms: u64) i64 {
     return @as(i64, @intCast(ms)) * std.time.ns_per_ms;
 }
 
-/// True when an inbound Call's params cap table contains at least one
-/// descriptor that grants this vat a wire reference — the descriptors
-/// `InboundCapTable.init` turns into `noteImport` calls, and therefore the
-/// ones this vat later settles with an explicit `Release` frame.
-///
-/// Read straight off the caller's frame (tags only; no import is taken here)
-/// so the answering Return's `releaseParamCaps` can be decided before dispatch
-/// runs — see `Peer.returnReleasesParamCaps`.
-///
-/// A descriptor this peer cannot even decode counts as ref-granting, but purely
-/// as a defensive default: no Return ever reads that value. `InboundCapTable`
-/// construction is about to fail on the same entry, and that failure unwinds
-/// `handleCall`, whose `errdefer` drops this answer's `active_inbound_questions`
-/// record — while the dispatch-error path sends no Return at all for a Call it
-/// could not dispatch. (Nor is a reference stranded: the table's own `errdefer`
-/// releases every import it noted before the failing entry.) The conservative
-/// direction is still the right one to be wrong in, because it can only ever
-/// withhold an implicit release, never invent a second one.
-fn callParamsGrantImportRefs(cap_table_list: ?message.StructListReader) bool {
-    const list = cap_table_list orelse return false;
-    var idx: u32 = 0;
-    while (idx < list.len()) : (idx += 1) {
-        const reader = list.get(idx) catch return true;
-        const descriptor = protocol.CapDescriptor.fromReader(reader) catch return true;
-        switch (descriptor.tag) {
-            // `resolveDescriptor` notes an import for each of these: the two
-            // sender-side forms, and the vine of a third-party hand-off.
-            .senderHosted, .senderPromise, .thirdPartyHosted => return true,
-            // `receiverHosted` names one of our own exports and `receiverAnswer`
-            // one of our own answers; neither grants us a reference to release.
-            .none, .receiverHosted, .receiverAnswer => {},
-        }
-    }
-    return false;
-}
-
 /// A Cap'n Proto RPC peer that manages one side of a two-party connection.
 ///
 /// `Peer` tracks exported capabilities, outstanding questions, promise
@@ -987,9 +953,6 @@ const JoinCoordinatorResultLink = struct {
 
 /// Reason sent when refusing an inbound Call whose results were redirected to a
 /// third vat that this peer cannot contact.
-const third_party_results_unsupported =
-    "sendResultsTo.thirdParty unsupported: this vat cannot route results to a third party";
-
 /// Reason sent to calls pipelined on an answer whose results went to a third
 /// vat: this peer never observes those results, so it cannot resolve a
 /// promised-answer target against them.
@@ -2400,7 +2363,7 @@ pub const Peer = struct {
         };
     }
 
-    const PendingQueuedCallStats = struct {
+    pub const PendingQueuedCallStats = struct {
         calls: usize = 0,
         bytes: usize = 0,
     };
@@ -2457,7 +2420,7 @@ pub const Peer = struct {
         }
     }
 
-    fn pendingQueuedCallStats(self: *const Peer) PendingQueuedCallStats {
+    pub fn pendingQueuedCallStats(self: *const Peer) PendingQueuedCallStats {
         var totals = PendingQueuedCallStats{};
         var pending_it = self.pending_promises.valueIterator();
         while (pending_it.next()) |list| addPendingQueuedCallStats(&totals, list);
@@ -2466,7 +2429,7 @@ pub const Peer = struct {
         return totals;
     }
 
-    fn ensurePendingQueuedCallBudget(
+    pub fn ensurePendingQueuedCallBudget(
         self: *const Peer,
         pending_map: *const std.AutoHashMap(u32, std.ArrayList(PendingCall)),
         key: u32,
@@ -2644,7 +2607,7 @@ pub const Peer = struct {
         );
     }
 
-    fn ensureThirdPartyAdoptionBudget(self: *Peer, adopted_answer_id: u32) !void {
+    pub fn ensureThirdPartyAdoptionBudget(self: *Peer, adopted_answer_id: u32) !void {
         try ensureCountLimit(false, self.questions.count(), self.limits.max_outbound_questions);
         try ensureCountLimit(
             self.adopted_third_party_answers.contains(adopted_answer_id),
@@ -3236,7 +3199,7 @@ pub const Peer = struct {
     /// `false` for any non-vine export or a torn-down provide peer, letting
     /// normal export dispatch — and thus
     /// `vineRejectingCall` for the vine — run.
-    fn maybeForwardVineCall(
+    pub fn maybeForwardVineCall(
         self: *Peer,
         call: protocol.Call,
         inbound_caps: *const cap_table.InboundCapTable,
@@ -4574,15 +4537,15 @@ pub const Peer = struct {
         }
     }
 
-    /// Send an RPC call to an imported capability, returning the question ID.
-    ///
-    /// Error set is intentionally left open (inferred/`anyerror`). Every send
-    /// path in this family synchronously invokes the caller-supplied `build`
-    /// closure (`CallBuildFn`, `try build_fn(ctx, &call)` in
-    /// `peer_call_sender`), whose `anyerror` propagates out. Narrowing below
-    /// `anyerror` would require changing the `CallBuildFn` contract, so — like
-    /// the user-callback typedefs above — this stays open. (Applies to all four
-    /// `sendCall*` entry points.)
+    // ================= Outbound Call send family ============================
+    //
+    // Bodies live in call/peer_call_send.zig, generic over Peer. The thunks
+    // below keep every caller-visible name — including the frozen sendCall
+    // entry points and generated-code callers — with exact signatures.
+
+    const CallSendImpl = peer_call_send.CallSend(Peer);
+
+    /// Body in `call/peer_call_send.zig`.
     pub fn sendCall(
         self: *Peer,
         target_id: u32,
@@ -4592,12 +4555,10 @@ pub const Peer = struct {
         build: ?CallBuildFn,
         on_return: QuestionCallback,
     ) !u32 {
-        return self.sendCallWithOptions(target_id, interface_id, method_id, ctx, build, on_return, .{});
+        return CallSendImpl.sendCall(self, target_id, interface_id, method_id, ctx, build, on_return);
     }
 
-    /// Send a call with an explicit result-lifetime policy. `.automatic`
-    /// preserves `sendCall` exactly; `.retained` withholds Finish after Return
-    /// until `finishRetainedQuestion` or an ownership transfer completes.
+    /// Body in `call/peer_call_send.zig`.
     pub fn sendCallWithOptions(
         self: *Peer,
         target_id: u32,
@@ -4608,22 +4569,10 @@ pub const Peer = struct {
         on_return: QuestionCallback,
         options: CallOptions,
     ) !u32 {
-        return self.sendCallWithOptionsRestore(
-            target_id,
-            interface_id,
-            method_id,
-            ctx,
-            build,
-            on_return,
-            options,
-            true,
-        );
+        return CallSendImpl.sendCallWithOptions(self, target_id, interface_id, method_id, ctx, build, on_return, options);
     }
 
-    /// Generator plumbing for heap-owned typed call contexts. Unlike the raw
-    /// callback API, generated callbacks own and free their context, so a
-    /// synchronous callback error must never restore a question that points at
-    /// freed memory.
+    /// Body in `call/peer_call_send.zig`.
     pub fn sendCallGeneratedWithOptions(
         self: *Peer,
         target_id: u32,
@@ -4634,94 +4583,10 @@ pub const Peer = struct {
         on_return: QuestionCallback,
         options: CallOptions,
     ) !u32 {
-        return self.sendCallWithOptionsRestore(
-            target_id,
-            interface_id,
-            method_id,
-            ctx,
-            build,
-            on_return,
-            options,
-            false,
-        );
+        return CallSendImpl.sendCallGeneratedWithOptions(self, target_id, interface_id, method_id, ctx, build, on_return, options);
     }
 
-    fn sendCallWithOptionsRestore(
-        self: *Peer,
-        target_id: u32,
-        interface_id: u64,
-        method_id: u16,
-        ctx: *anyopaque,
-        build: ?CallBuildFn,
-        on_return: QuestionCallback,
-        options: CallOptions,
-        restore_on_return_error: bool,
-    ) !u32 {
-        self.assertThreadAffinity();
-        if (self.is_shutting_down) return error.PeerShuttingDown;
-        log.debug("sendCall target_id={} interface_id=0x{x} method_id={}", .{ target_id, interface_id, method_id });
-        if (self.resolved_imports.get(target_id)) |entry| {
-            if (!entry.embargoed and entry.cap != null) {
-                return self.sendCallResolvedWithOptionsRestore(
-                    entry.cap.?,
-                    interface_id,
-                    method_id,
-                    ctx,
-                    build,
-                    on_return,
-                    options,
-                    restore_on_return_error,
-                );
-            }
-        }
-
-        const allocate_question: *const fn (*Peer, *anyopaque, QuestionCallback) anyerror!u32 = switch (options.result_lifetime) {
-            .automatic => if (restore_on_return_error) Peer.allocateQuestion else Peer.allocateQuestionNoRestore,
-            .retained => Peer.allocateRetainedQuestion,
-        };
-
-        const question_id = try peer_call_sender.sendCallToImport(
-            Peer,
-            CallBuildFn,
-            QuestionCallback,
-            self.allocator,
-            &self.caps,
-            self,
-            onOutboundCap,
-            rollbackOutboundCap,
-            self,
-            target_id,
-            interface_id,
-            method_id,
-            ctx,
-            build,
-            on_return,
-            allocate_question,
-            Peer.removeQuestion,
-            Peer.recordQuestionParamExports,
-            Peer.sendBuilder,
-        );
-        // Record the promise-import target on the question so the Level-3
-        // recipient auto-pickup can observe an in-flight pipelined call against
-        // this (as-yet unresolved) import — the spec condition for embargoing
-        // the handoff Accept (rpc.capnp:885-888). Only calls to imports NOT yet
-        // in `resolved_imports` reach here (resolved caps take the fast path
-        // above), so this marks exactly the still-in-flight-promise targets. The
-        // mark is dropped implicitly when the question leaves the table.
-        if (self.questions.getPtr(question_id)) |q| {
-            q.target_promise_import = target_id;
-        }
-        return question_id;
-    }
-
-    /// Send a forwarded L3 vine call to a plain import (issue #56). Mirrors the
-    /// import path of `sendCall` but allocates the question with
-    /// `restore_on_return_error = false` (`allocateQuestionNoRestore`): the return
-    /// callback (`forwardVineReturn`) frees the relay ctx, so a restore after a
-    /// post-callback error would re-reference freed memory. It deliberately skips
-    /// `sendCall`'s resolved-import fast path and the `target_promise_import` mark:
-    /// the forward targets B's own (non-promise, non-embargoed) import of VatC's
-    /// cap and must not be treated as an in-flight promise for auto-pickup.
+    /// Body in `call/peer_call_send.zig`.
     fn sendForwardedVineCall(
         self: *Peer,
         target_id: u32,
@@ -4731,35 +4596,10 @@ pub const Peer = struct {
         build: ?CallBuildFn,
         on_return: QuestionCallback,
     ) !u32 {
-        self.assertThreadAffinity();
-        if (self.is_shutting_down) return error.PeerShuttingDown;
-        return peer_call_sender.sendCallToImport(
-            Peer,
-            CallBuildFn,
-            QuestionCallback,
-            self.allocator,
-            &self.caps,
-            self,
-            onOutboundCap,
-            rollbackOutboundCap,
-            self,
-            target_id,
-            interface_id,
-            method_id,
-            ctx,
-            build,
-            on_return,
-            Peer.allocateQuestionNoRestore,
-            Peer.removeQuestion,
-            Peer.recordQuestionParamExports,
-            Peer.sendBuilder,
-        );
+        return CallSendImpl.sendForwardedVineCall(self, target_id, interface_id, method_id, ctx, build, on_return);
     }
 
-    /// Forward a fallback call to the exact target named by the original
-    /// Provide. The promised-answer branch deliberately uses the no-restore
-    /// allocator for the same callback-owns-context invariant as the imported
-    /// branch above.
+    /// Body in `call/peer_call_send.zig`.
     fn sendForwardedVineCallTarget(
         self: *Peer,
         target: provide_forward_target.ForwardTarget,
@@ -4769,44 +4609,10 @@ pub const Peer = struct {
         build: ?CallBuildFn,
         on_return: QuestionCallback,
     ) !u32 {
-        self.assertThreadAffinity();
-        if (self.is_shutting_down) return error.PeerShuttingDown;
-        return switch (target) {
-            .imported => |target_id| self.sendForwardedVineCall(
-                target_id,
-                interface_id,
-                method_id,
-                ctx,
-                build,
-                on_return,
-            ),
-            .promised => |promised| peer_call_sender.sendCallPromisedWithOps(
-                Peer,
-                CallBuildFn,
-                QuestionCallback,
-                self.allocator,
-                &self.caps,
-                self,
-                onOutboundCap,
-                rollbackOutboundCap,
-                self,
-                promised.question_id,
-                promised.ops,
-                interface_id,
-                method_id,
-                ctx,
-                build,
-                on_return,
-                Peer.allocateQuestionNoRestore,
-                Peer.removeQuestion,
-                Peer.recordQuestionParamExports,
-                Peer.sendBuilder,
-            ),
-        };
+        return CallSendImpl.sendForwardedVineCallTarget(self, target, interface_id, method_id, ctx, build, on_return);
     }
 
-    /// Send a call to a resolved (non-promise) capability. Dispatches to the
-    /// appropriate path based on the resolved cap type (imported, exported, or promised).
+    /// Body in `call/peer_call_send.zig`.
     pub fn sendCallResolved(
         self: *Peer,
         target: cap_table.ResolvedCap,
@@ -4816,9 +4622,10 @@ pub const Peer = struct {
         build: ?CallBuildFn,
         on_return: QuestionCallback,
     ) !u32 {
-        return self.sendCallResolvedWithOptions(target, interface_id, method_id, ctx, build, on_return, .{});
+        return CallSendImpl.sendCallResolved(self, target, interface_id, method_id, ctx, build, on_return);
     }
 
+    /// Body in `call/peer_call_send.zig`.
     pub fn sendCallResolvedWithOptions(
         self: *Peer,
         target: cap_table.ResolvedCap,
@@ -4829,101 +4636,10 @@ pub const Peer = struct {
         on_return: QuestionCallback,
         options: CallOptions,
     ) !u32 {
-        return self.sendCallResolvedWithOptionsRestore(
-            target,
-            interface_id,
-            method_id,
-            ctx,
-            build,
-            on_return,
-            options,
-            true,
-        );
+        return CallSendImpl.sendCallResolvedWithOptions(self, target, interface_id, method_id, ctx, build, on_return, options);
     }
 
-    fn sendCallResolvedWithOptionsRestore(
-        self: *Peer,
-        target: cap_table.ResolvedCap,
-        interface_id: u64,
-        method_id: u16,
-        ctx: *anyopaque,
-        build: ?CallBuildFn,
-        on_return: QuestionCallback,
-        options: CallOptions,
-        restore_on_return_error: bool,
-    ) !u32 {
-        self.assertThreadAffinity();
-        if (self.is_shutting_down) return error.PeerShuttingDown;
-        const allocate_question: *const fn (*Peer, *anyopaque, QuestionCallback) anyerror!u32 = switch (options.result_lifetime) {
-            .automatic => if (restore_on_return_error) Peer.allocateQuestion else Peer.allocateQuestionNoRestore,
-            .retained => Peer.allocateRetainedQuestion,
-        };
-        return switch (target) {
-            .imported => |cap| peer_call_sender.sendCallToImport(
-                Peer,
-                CallBuildFn,
-                QuestionCallback,
-                self.allocator,
-                &self.caps,
-                self,
-                onOutboundCap,
-                rollbackOutboundCap,
-                self,
-                cap.id,
-                interface_id,
-                method_id,
-                ctx,
-                build,
-                on_return,
-                allocate_question,
-                Peer.removeQuestion,
-                Peer.recordQuestionParamExports,
-                Peer.sendBuilder,
-            ),
-            .promised => |promised| self.sendCallPromisedWithOptionsRestore(
-                promised,
-                interface_id,
-                method_id,
-                ctx,
-                build,
-                on_return,
-                options,
-                restore_on_return_error,
-            ),
-            .exported => |cap| blk: {
-                try ensureCountLimit(false, self.loopback_questions.count(), self.limits.max_loopback_questions);
-                const allocate_loopback_question: *const fn (*Peer, *anyopaque, QuestionCallback) anyerror!u32 = switch (options.result_lifetime) {
-                    .automatic => if (restore_on_return_error) Peer.allocateLoopbackQuestion else Peer.allocateLoopbackQuestionNoRestore,
-                    .retained => Peer.allocateRetainedLoopbackQuestion,
-                };
-                break :blk peer_call_sender.sendCallToExport(
-                    Peer,
-                    Question,
-                    CallBuildFn,
-                    QuestionCallback,
-                    self.allocator,
-                    &self.caps,
-                    self,
-                    onOutboundCap,
-                    rollbackOutboundCap,
-                    self,
-                    &self.questions,
-                    &self.loopback_questions,
-                    cap.id,
-                    interface_id,
-                    method_id,
-                    ctx,
-                    build,
-                    on_return,
-                    allocate_loopback_question,
-                    Peer.removeQuestion,
-                    Peer.handleLoopbackFrame,
-                );
-            },
-            .none => error.CapabilityUnavailable,
-        };
-    }
-
+    /// Body in `call/peer_call_send.zig`.
     pub fn sendCallPromised(
         self: *Peer,
         promised: protocol.PromisedAnswer,
@@ -4933,9 +4649,10 @@ pub const Peer = struct {
         build: ?CallBuildFn,
         on_return: QuestionCallback,
     ) !u32 {
-        return self.sendCallPromisedWithOptions(promised, interface_id, method_id, ctx, build, on_return, .{});
+        return CallSendImpl.sendCallPromised(self, promised, interface_id, method_id, ctx, build, on_return);
     }
 
+    /// Body in `call/peer_call_send.zig`.
     pub fn sendCallPromisedWithOptions(
         self: *Peer,
         promised: protocol.PromisedAnswer,
@@ -4946,61 +4663,10 @@ pub const Peer = struct {
         on_return: QuestionCallback,
         options: CallOptions,
     ) !u32 {
-        return self.sendCallPromisedWithOptionsRestore(
-            promised,
-            interface_id,
-            method_id,
-            ctx,
-            build,
-            on_return,
-            options,
-            true,
-        );
+        return CallSendImpl.sendCallPromisedWithOptions(self, promised, interface_id, method_id, ctx, build, on_return, options);
     }
 
-    fn sendCallPromisedWithOptionsRestore(
-        self: *Peer,
-        promised: protocol.PromisedAnswer,
-        interface_id: u64,
-        method_id: u16,
-        ctx: *anyopaque,
-        build: ?CallBuildFn,
-        on_return: QuestionCallback,
-        options: CallOptions,
-        restore_on_return_error: bool,
-    ) !u32 {
-        self.assertThreadAffinity();
-        if (self.is_shutting_down) return error.PeerShuttingDown;
-        const allocate_question: *const fn (*Peer, *anyopaque, QuestionCallback) anyerror!u32 = switch (options.result_lifetime) {
-            .automatic => if (restore_on_return_error) Peer.allocateQuestion else Peer.allocateQuestionNoRestore,
-            .retained => Peer.allocateRetainedQuestion,
-        };
-        return peer_call_sender.sendCallPromised(
-            Peer,
-            CallBuildFn,
-            QuestionCallback,
-            self.allocator,
-            &self.caps,
-            self,
-            onOutboundCap,
-            rollbackOutboundCap,
-            self,
-            promised,
-            interface_id,
-            method_id,
-            ctx,
-            build,
-            on_return,
-            allocate_question,
-            Peer.removeQuestion,
-            Peer.recordQuestionParamExports,
-            Peer.sendBuilder,
-        );
-    }
-
-    /// Like `sendCallPromised` but takes a question ID and a slice of
-    /// `PromisedAnswerOp` directly, avoiding the need to build a reader-backed
-    /// `PromisedAnswer`. Used by generated pipeline code.
+    /// Body in `call/peer_call_send.zig`.
     pub fn sendCallPromisedWithOps(
         self: *Peer,
         question_id_target: u32,
@@ -5011,18 +4677,10 @@ pub const Peer = struct {
         build: ?CallBuildFn,
         on_return: QuestionCallback,
     ) !u32 {
-        return self.sendCallPromisedWithOpsWithOptions(
-            question_id_target,
-            ops,
-            interface_id,
-            method_id,
-            ctx,
-            build,
-            on_return,
-            .{},
-        );
+        return CallSendImpl.sendCallPromisedWithOps(self, question_id_target, ops, interface_id, method_id, ctx, build, on_return);
     }
 
+    /// Body in `call/peer_call_send.zig`.
     pub fn sendCallPromisedWithOpsWithOptions(
         self: *Peer,
         question_id_target: u32,
@@ -5034,21 +4692,10 @@ pub const Peer = struct {
         on_return: QuestionCallback,
         options: CallOptions,
     ) !u32 {
-        return self.sendCallPromisedWithOpsWithOptionsRestore(
-            question_id_target,
-            ops,
-            interface_id,
-            method_id,
-            ctx,
-            build,
-            on_return,
-            options,
-            true,
-        );
+        return CallSendImpl.sendCallPromisedWithOpsWithOptions(self, question_id_target, ops, interface_id, method_id, ctx, build, on_return, options);
     }
 
-    /// Generator plumbing for pipelined typed calls with heap-owned contexts;
-    /// see `sendCallGeneratedWithOptions`.
+    /// Body in `call/peer_call_send.zig`.
     pub fn sendCallPromisedWithOpsGeneratedWithOptions(
         self: *Peer,
         question_id_target: u32,
@@ -5060,62 +4707,10 @@ pub const Peer = struct {
         on_return: QuestionCallback,
         options: CallOptions,
     ) !u32 {
-        return self.sendCallPromisedWithOpsWithOptionsRestore(
-            question_id_target,
-            ops,
-            interface_id,
-            method_id,
-            ctx,
-            build,
-            on_return,
-            options,
-            false,
-        );
+        return CallSendImpl.sendCallPromisedWithOpsGeneratedWithOptions(self, question_id_target, ops, interface_id, method_id, ctx, build, on_return, options);
     }
 
-    fn sendCallPromisedWithOpsWithOptionsRestore(
-        self: *Peer,
-        question_id_target: u32,
-        ops: []const protocol.PromisedAnswerOp,
-        interface_id: u64,
-        method_id: u16,
-        ctx: *anyopaque,
-        build: ?CallBuildFn,
-        on_return: QuestionCallback,
-        options: CallOptions,
-        restore_on_return_error: bool,
-    ) !u32 {
-        self.assertThreadAffinity();
-        if (self.is_shutting_down) return error.PeerShuttingDown;
-        const allocate_question: *const fn (*Peer, *anyopaque, QuestionCallback) anyerror!u32 = switch (options.result_lifetime) {
-            .automatic => if (restore_on_return_error) Peer.allocateQuestion else Peer.allocateQuestionNoRestore,
-            .retained => Peer.allocateRetainedQuestion,
-        };
-        return peer_call_sender.sendCallPromisedWithOps(
-            Peer,
-            CallBuildFn,
-            QuestionCallback,
-            self.allocator,
-            &self.caps,
-            self,
-            onOutboundCap,
-            rollbackOutboundCap,
-            self,
-            question_id_target,
-            ops,
-            interface_id,
-            method_id,
-            ctx,
-            build,
-            on_return,
-            allocate_question,
-            Peer.removeQuestion,
-            Peer.recordQuestionParamExports,
-            Peer.sendBuilder,
-        );
-    }
-
-    fn forwardResolvedCall(
+    pub fn forwardResolvedCall(
         self: *Peer,
         call: protocol.Call,
         inbound_caps: *const cap_table.InboundCapTable,
@@ -5996,7 +5591,7 @@ pub const Peer = struct {
     /// Planner hook (`planPromisedTarget`): the recorded exception for an
     /// already-failed inbound answer, if any; body in
     /// `return/peer_return_send.zig`.
-    fn lookupFailedAnswer(self: *Peer, answer_id: u32) ?peer_call_targets.FailedAnswerView {
+    pub fn lookupFailedAnswer(self: *Peer, answer_id: u32) ?peer_call_targets.FailedAnswerView {
         return ReturnSendImpl.lookupFailedAnswer(self, answer_id);
     }
 
@@ -6478,7 +6073,7 @@ pub const Peer = struct {
         return @constCast(bytes);
     }
 
-    fn noteSendResultsToYourself(self: *Peer, answer_id: u32) !void {
+    pub fn noteSendResultsToYourself(self: *Peer, answer_id: u32) !void {
         try ensureCountLimit(
             self.send_results_to_yourself.contains(answer_id),
             self.send_results_to_yourself.count(),
@@ -6620,7 +6215,7 @@ pub const Peer = struct {
         route_owned = false;
     }
 
-    fn noteSendResultsToThirdParty(
+    pub fn noteSendResultsToThirdParty(
         self: *Peer,
         answer_id: u32,
         ptr: ?message.AnyPointerReader,
@@ -6739,12 +6334,12 @@ pub const Peer = struct {
     }
 
     /// Body in `peer_export_release.zig`.
-    fn noteAnswerExportRef(self: *Peer, id: u32) !void {
+    pub fn noteAnswerExportRef(self: *Peer, id: u32) !void {
         return ExportReleaseImpl.noteAnswerExportRef(self, id);
     }
 
     /// Body in `peer_export_release.zig`.
-    fn rollbackAnswerExportRef(self: *Peer, id: u32) void {
+    pub fn rollbackAnswerExportRef(self: *Peer, id: u32) void {
         return ExportReleaseImpl.rollbackAnswerExportRef(self, id);
     }
 
@@ -6872,7 +6467,7 @@ pub const Peer = struct {
     /// The outbound-question allocator can synchronously notify observers, so
     /// retained admission is checked both before allocation and immediately
     /// before registration. No Call is emitted until registration completes.
-    fn allocateRetainedQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+    pub fn allocateRetainedQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
         try self.checkRetainedQuestionAdmission();
 
         // A retained callback is delivered at most once. If it reports an
@@ -6925,7 +6520,7 @@ pub const Peer = struct {
     /// frees the relay ctx, and in synchronous loopback the return is processed
     /// INSIDE the send, so `restore_on_return_error` must be false from creation —
     /// it cannot be cleared after the send the way async paths do.
-    fn allocateQuestionNoRestore(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+    pub fn allocateQuestionNoRestore(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
         return self.allocateQuestionWithRestore(ctx, on_return, false);
     }
 
@@ -6947,11 +6542,11 @@ pub const Peer = struct {
     /// anything live in either namespace. No frame carrying one of these ids is
     /// ever written to a socket, and every implementation (this one included)
     /// hands out wire question ids ascending from 0, so the two stay apart.
-    fn allocateLoopbackQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+    pub fn allocateLoopbackQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
         return self.allocateLoopbackQuestionWithRestore(ctx, on_return, true);
     }
 
-    fn allocateLoopbackQuestionNoRestore(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+    pub fn allocateLoopbackQuestionNoRestore(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
         return self.allocateLoopbackQuestionWithRestore(ctx, on_return, false);
     }
 
@@ -6981,7 +6576,7 @@ pub const Peer = struct {
         return question_id;
     }
 
-    fn allocateRetainedLoopbackQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+    pub fn allocateRetainedLoopbackQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
         try self.checkRetainedQuestionAdmission();
         const question_id = try self.allocateLoopbackQuestion(ctx, on_return);
         errdefer self.removeQuestion(question_id);
@@ -7078,7 +6673,7 @@ pub const Peer = struct {
     /// and the senders' errdefers (question removal — which frees the record
     /// — plus cap-effects rollback) undo everything, so no partial record
     /// can survive a failed send.
-    fn recordQuestionParamExports(
+    pub fn recordQuestionParamExports(
         self: *Peer,
         question_id: u32,
         entries: []const cap_table.OutboundEntry,
@@ -7282,7 +6877,7 @@ pub const Peer = struct {
     /// capabilities deliberately remain callable after transport close (the
     /// L3 disconnect-after-Provide contract), while public/transport ingress
     /// is rejected by `handleFrame` once close has been notified.
-    fn handleLoopbackFrame(self: *Peer, frame: []const u8) !void {
+    pub fn handleLoopbackFrame(self: *Peer, frame: []const u8) !void {
         self.assertThreadAffinity();
         return self.handleFrameImpl(frame);
     }
@@ -10263,148 +9858,11 @@ pub const Peer = struct {
     /// Join questions. Used by handlers that own no question table of their own
     /// (Call, Bootstrap) so a spec-violating reuse across message types is
     /// rejected before a second Return can be emitted on the id.
-    fn inboundQuestionIdInUse(self: *Peer, question_id: u32) !bool {
+    pub fn inboundQuestionIdInUse(self: *Peer, question_id: u32) !bool {
         return (try self.inboundAnswerQuestionIdInUse(question_id)) or
             self.provides_by_question.contains(question_id) or
             self.pending_join_questions.contains(question_id) or
             self.pending_join_relays.contains(question_id);
-    }
-
-    fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
-        // Reject duplicate question IDs from the remote peer (spec violation).
-        // Covers the shared answer namespace plus in-flight Provide/Join
-        // questions so a Call can never collide with any other inbound question.
-        if (try self.inboundQuestionIdInUse(call.question_id)) {
-            return error.DuplicateQuestionId;
-        }
-
-        // `sendResultsTo = thirdParty` asks this vat to connect to a third vat
-        // and deliver the results there. Unless the host opted in, we cannot —
-        // and accepting the call only to drop its results is the one outcome the
-        // protocol never permits. Refuse with a single exception Return.
-        //
-        // Placement is load-bearing: after the duplicate-id check, so a reused
-        // id still reports DuplicateQuestionId; before the answer bookkeeping,
-        // so there is nothing to unwind; and before the inbound cap table is
-        // built, so no import references are taken and the exception Return's
-        // `releaseParamCaps` — still the schema default TRUE, because no
-        // `active_inbound_questions` entry exists yet to say otherwise —
-        // correctly tells the sender to drop its export refs. This also covers
-        // in-process loopback calls, which are delivered through handleFrame.
-        if (call.send_results_to.tag == .thirdParty and
-            self.third_party_result_policy == .reject)
-        {
-            try self.sendReturnException(call.question_id, third_party_results_unsupported);
-            return;
-        }
-
-        const inbound_before = self.active_inbound_questions.count();
-        try ensureCountLimit(false, inbound_before, self.limits.max_active_inbound_questions);
-        // Decide the answering Return's `releaseParamCaps` up front, from the
-        // frame the caller actually sent: a `senderHosted`/`senderPromise` param
-        // descriptor is a wire reference the caller recorded and this vat is
-        // about to take (`InboundCapTable.init`), and every such reference is
-        // settled here with an explicit `Release` frame — never implicitly.
-        // rpc.capnp: "If true, all capabilities that were in the params should
-        // be considered released. The sender must not send separate `Release`
-        // messages for them."
-        try self.active_inbound_questions.put(
-            call.question_id,
-            callParamsGrantImportRefs(call.params.cap_table),
-        );
-        errdefer _ = self.active_inbound_questions.remove(call.question_id);
-        events.emitPressureCrossing(
-            self.observer,
-            .peer,
-            .unknown,
-            .active_inbound_questions,
-            inbound_before,
-            self.active_inbound_questions.count(),
-            self.limits.max_active_inbound_questions,
-        );
-
-        peer_call_orchestration.handleCallForPeer(
-            Peer,
-            self,
-            frame,
-            call,
-            peer_call_orchestration.handleCallImportedTargetForPeerFn(
-                Peer,
-                cap_table.InboundCapTable,
-                Peer.queuePromiseExportCall,
-                Peer.releaseInboundCaps,
-                peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
-                third_party.noteCallSendResultsForPeerFn(
-                    Peer,
-                    Peer.noteSendResultsToYourself,
-                    Peer.noteSendResultsToThirdParty,
-                ),
-                Peer.sendReturnException,
-                Peer.handleResolvedCall,
-            ),
-            peer_call_orchestration.handleCallPromisedTargetForPeerFn(
-                Peer,
-                cap_table.InboundCapTable,
-                Peer.resolvePromisedAnswer,
-                peer_call_targets.hasUnresolvedPromiseExportForPeerFn(Peer),
-                Peer.lookupFailedAnswer,
-                Peer.queuePromisedCall,
-                Peer.queuePromiseExportCall,
-                Peer.sendReturnException,
-                Peer.sendReturnExceptionTyped,
-                Peer.handleResolvedCall,
-                Peer.releaseInboundCaps,
-                peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
-            ),
-        ) catch |err| {
-            log.debug("call routing error for question {}: {}", .{ call.question_id, err });
-            // The redirected result is already committed on the target
-            // connection and the resultsSentElsewhere write may itself have
-            // reached the source caller. Never risk a second terminal Return
-            // on that answer id; let the transport-level error close the peer.
-            if (err == error.AutomaticThirdPartySourceSettlementFailed) return err;
-            try self.sendReturnException(call.question_id, @errorName(err));
-        };
-        if (self.automatic_third_party_routes.get(call.question_id)) |route| {
-            if (route.source_marker_failed) {
-                self.finalizeAutomaticThirdPartyRoute(route, null);
-                return error.AutomaticThirdPartySourceSettlementFailed;
-            }
-        }
-    }
-
-    fn handleResolvedCall(
-        self: *Peer,
-        call: protocol.Call,
-        inbound_caps: *const cap_table.InboundCapTable,
-        resolved: cap_table.ResolvedCap,
-    ) !void {
-        try peer_forward_orchestration.handleResolvedCall(
-            Peer,
-            cap_table.InboundCapTable,
-            self,
-            call,
-            inbound_caps,
-            resolved,
-            peer_call_orchestration.handleResolvedExportedCallForPeerFn(
-                Peer,
-                cap_table.InboundCapTable,
-                third_party.noteCallSendResultsForPeerFn(
-                    Peer,
-                    Peer.noteSendResultsToYourself,
-                    Peer.noteSendResultsToThirdParty,
-                ),
-                Peer.handleResolvedCall,
-                Peer.sendReturnException,
-                Peer.maybeForwardVineCall,
-            ),
-            peer_forward_orchestration.forwardResolvedCallForPeerFn(
-                Peer,
-                cap_table.InboundCapTable,
-                Peer.forwardResolvedCall,
-            ),
-            Peer.sendReturnException,
-        );
     }
 
     /// Pre-reserved resources for recording a resolved answer, obtained from
@@ -10431,232 +9889,59 @@ pub const Peer = struct {
         }
     };
 
-    /// Reserve everything needed to record a resolved answer BEFORE the Return
-    /// frame is sent: the resolved-answers count budget, one unused map slot,
-    /// the frame copy, and the answer-held references on every export in the
-    /// frame's results cap table. This must precede the send so that recording
-    /// — which happens only once the frame is already on the wire — is
-    /// infallible.
-    ///
-    /// If the record step could fail after the send, the propagating error would
-    /// drive the call-dispatch catch to emit a SECOND (exception) Return for the
-    /// same answer_id: two Returns for one call, a remote-forceable protocol
-    /// violation (a peer fills resolved_answers to max_resolved_answers with
-    /// Finish-less calls, then any later successful call double-Returns). Audit
-    /// 2026-07-03 item 7.
-    ///
-    /// The answer-held references keep the answer's pipeline targets alive
-    /// until its Finish: without them the export dies as soon as the remote
-    /// Releases the caps it imported from this Return — legal even before
-    /// Finish — and a pipelined call on the answer can no longer dispatch.
-    pub fn reserveResolvedAnswer(self: *Peer, question_id: u32, frame: []const u8) !ResolvedAnswerReservation {
-        try ensureCountLimit(
-            self.resolved_answers.contains(question_id),
-            self.resolved_answers.count() + self.resolved_answer_reservations,
-            self.limits.max_resolved_answers,
-        );
-        // Reserve a map slot so the post-send getOrPutAssumeCapacity cannot
-        // OOM. Ensure one slot per OUTSTANDING reservation as well: a nested
-        // reserve→commit for a different answer id (a synchronous transport
-        // delivering a Call/Bootstrap while an outer send is on the stack)
-        // would otherwise consume the single slot the outer reservation's
-        // ensure counted on, and the outer infallible commit would underflow
-        // the map's reserved-slot accounting.
-        try self.resolved_answers.ensureUnusedCapacity(1 + self.resolved_answer_reservations);
-        const frame_copy = try self.allocator.dupe(u8, frame);
-        errdefer self.allocator.free(frame_copy);
-        const held_export_ids = try peer_cap_lifecycle.noteAnswerHeldResultCaps(
-            Peer,
-            self,
-            self.allocator,
-            frame,
-            Peer.noteAnswerExportRef,
-            rollbackAnswerExportRef,
-        );
-        self.resolved_answer_reservations += 1;
-        return .{ .frame_copy = frame_copy, .held_export_ids = held_export_ids };
+    // ================= Inbound Call path / resolved answers =================
+    //
+    // Bodies live in call/peer_call_inbound.zig, generic over Peer.
+
+    const CallInboundImpl = peer_call_inbound.CallInbound(Peer);
+
+    /// Body in `call/peer_call_inbound.zig`.
+    fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
+        return CallInboundImpl.handleCall(self, frame, call);
     }
 
-    /// Record a resolved answer using a reservation obtained (before the send)
-    /// from `reserveResolvedAnswer`. Infallible: the map slot, frame copy, and
-    /// answer-held export references are already reserved, so this only stores
-    /// into the map. Takes ownership of the reservation: `frame_copy` moves
-    /// into the map and the answer-held references now belong to the recorded
-    /// answer (released at Finish by re-walking the stored frame, so the id
-    /// list is no longer needed).
+    /// Body in `call/peer_call_inbound.zig`.
+    fn handleResolvedCall(
+        self: *Peer,
+        call: protocol.Call,
+        inbound_caps: *const cap_table.InboundCapTable,
+        resolved: cap_table.ResolvedCap,
+    ) !void {
+        return CallInboundImpl.handleResolvedCall(self, call, inbound_caps, resolved);
+    }
+
+    /// Body in `call/peer_call_inbound.zig`.
+    pub fn reserveResolvedAnswer(self: *Peer, question_id: u32, frame: []const u8) !ResolvedAnswerReservation {
+        return CallInboundImpl.reserveResolvedAnswer(self, question_id, frame);
+    }
+
+    /// Body in `call/peer_call_inbound.zig`.
     pub fn commitReservedResolvedAnswer(
         self: *Peer,
         question_id: u32,
         reservation: ResolvedAnswerReservation,
     ) void {
-        self.resolved_answer_reservations -= 1;
-        self.allocator.free(reservation.held_export_ids);
-        pending_calls.recordResolvedAnswerAssumeCapacity(
-            Peer,
-            ResolvedAnswer,
-            PendingCall,
-            cap_table.InboundCapTable,
-            self.allocator,
-            self,
-            question_id,
-            reservation.frame_copy,
-            &self.resolved_answers,
-            &self.pending_promises,
-            Peer.resolvePromisedAnswer,
-            Peer.sendReturnException,
-            Peer.handleResolvedCall,
-            Peer.releaseInboundCaps,
-            peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
-        );
+        return CallInboundImpl.commitReservedResolvedAnswer(self, question_id, reservation);
     }
 
-    fn recordResolvedAnswer(self: *Peer, question_id: u32, frame: []u8) !void {
-        try ensureCountLimit(
-            self.resolved_answers.contains(question_id),
-            self.resolved_answers.count(),
-            self.limits.max_resolved_answers,
-        );
-        try pending_calls.recordResolvedAnswer(
-            Peer,
-            ResolvedAnswer,
-            PendingCall,
-            cap_table.InboundCapTable,
-            self.allocator,
-            self,
-            question_id,
-            frame,
-            &self.resolved_answers,
-            &self.pending_promises,
-            Peer.resolvePromisedAnswer,
-            Peer.sendReturnException,
-            Peer.handleResolvedCall,
-            Peer.releaseInboundCaps,
-            peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
-        );
-    }
-
+    /// Body in `call/peer_call_inbound.zig`.
     fn queuePromisedCall(self: *Peer, question_id: u32, frame: []const u8, inbound_caps: cap_table.InboundCapTable) !void {
-        try self.ensurePendingQueuedCallBudget(
-            &self.pending_promises,
-            question_id,
-            frame.len,
-            self.limits.max_pending_promises,
-        );
-        const stats_before = self.pendingQueuedCallStats();
-        try pending_calls.queuePendingCall(
-            PendingCall,
-            cap_table.InboundCapTable,
-            self.allocator,
-            &self.pending_promises,
-            question_id,
-            frame,
-            inbound_caps,
-        );
-        self.emitQueuedCallPressure(stats_before, frame.len);
+        return CallInboundImpl.queuePromisedCall(self, question_id, frame, inbound_caps);
     }
 
-    fn queuePromiseExportCall(self: *Peer, export_id: u32, frame: []const u8, inbound_caps: cap_table.InboundCapTable) !void {
-        try self.ensurePendingQueuedCallBudget(
-            &self.pending_export_promises,
-            export_id,
-            frame.len,
-            self.limits.max_pending_export_promises,
-        );
-        const stats_before = self.pendingQueuedCallStats();
-        try pending_calls.queuePendingCall(
-            PendingCall,
-            cap_table.InboundCapTable,
-            self.allocator,
-            &self.pending_export_promises,
-            export_id,
-            frame,
-            inbound_caps,
-        );
-        self.emitQueuedCallPressure(stats_before, frame.len);
-    }
-
-    /// Emit queued-call pressure crossings after a successful enqueue.
-    fn emitQueuedCallPressure(self: *Peer, before: PendingQueuedCallStats, frame_len: usize) void {
-        events.emitPressureCrossing(
-            self.observer,
-            .peer,
-            .unknown,
-            .queued_calls,
-            before.calls,
-            before.calls + 1,
-            self.limits.max_pending_queued_calls,
-        );
-        events.emitPressureCrossing(
-            self.observer,
-            .peer,
-            .unknown,
-            .queued_call_bytes,
-            before.bytes,
-            before.bytes + frame_len,
-            self.limits.max_pending_queued_call_bytes,
-        );
-    }
-
+    /// Body in `call/peer_call_inbound.zig`.
     fn replayResolvedPromiseExport(self: *Peer, export_id: u32, resolved: cap_table.ResolvedCap) !void {
-        try pending_calls.replayResolvedPromiseExport(
-            Peer,
-            PendingCall,
-            cap_table.InboundCapTable,
-            self.allocator,
-            self,
-            export_id,
-            resolved,
-            &self.pending_export_promises,
-            Peer.handleResolvedCall,
-            Peer.sendReturnException,
-            Peer.releaseInboundCaps,
-            peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
-        );
+        return CallInboundImpl.replayResolvedPromiseExport(self, export_id, resolved);
     }
 
+    /// Body in `call/peer_call_inbound.zig`.
     fn adoptThirdPartyAnswer(
         self: *Peer,
         question_id: u32,
         adopted_answer_id: u32,
         question: Question,
     ) anyerror!void {
-        // A retained call is addressed publicly by its original caller-chosen
-        // question id, but after awaitFromThirdParty the open remote answer is
-        // the callee-chosen adopted id. Publish that wire identity before the
-        // adoption helper can replay an already-buffered terminal Return: its
-        // callback may synchronously Finish or transfer the retained answer.
-        var previous_retained_answer_id: ?u32 = null;
-        if (self.retained_questions.contains(question_id)) {
-            previous_retained_answer_id = try self.retained_questions.adoptWireAnswer(
-                question_id,
-                adopted_answer_id,
-            );
-        }
-        errdefer if (previous_retained_answer_id) |previous| {
-            self.retained_questions.rollbackWireAnswer(
-                question_id,
-                adopted_answer_id,
-                previous,
-            );
-        };
-        try third_party.adoption.adoptThirdPartyAnswer(
-            Peer,
-            Question,
-            self,
-            question_id,
-            adopted_answer_id,
-            question,
-            &self.questions,
-            &self.adopted_third_party_answers,
-            &self.pending_third_party_returns,
-            peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
-            Peer.ensureThirdPartyAdoptionBudget,
-            finish.freeOwnedFrameForPeerFn(Peer),
-            third_party.returns.handlePendingReturnFrameForPeerFn(
-                Peer,
-                Peer.handleReturn,
-            ),
-        );
+        return CallInboundImpl.adoptThirdPartyAnswer(self, question_id, adopted_answer_id, question);
     }
 
     pub fn handleReturn(self: *Peer, frame: []const u8, ret: protocol.Return) anyerror!void {
