@@ -821,3 +821,33 @@ test "QUIC deinit requested from error callback is deferred without panic" {
     try std.testing.expect(state.deinit_seen_in_error);
     try std.testing.expect(TestAccess.deinitRequested(&conn));
 }
+
+test "transient peer faults are per-datagram; local faults stay fatal" {
+    // Lives in this root, not beside the classifier in datagram_io.zig, because
+    // a `test` block there never runs — `refAllRecursive` does not reach that
+    // depth, so an inverted assertion left every gate exiting 0.
+    //
+    // Enumerates BOTH halves on purpose. Asserting only the tolerated set would
+    // still pass if the classifier were widened to swallow everything, which is
+    // the failure mode that matters: a local fault silently demoted to "dropped
+    // a datagram" turns a broken endpoint into a spin.
+    const isTransientPeerFault = quic.testing.isTransientPeerFault;
+
+    // ICMP-driven, remote-influenced, socket still usable. std documents
+    // PortUnreachable as ICMP feedback queued against the bound socket and
+    // reported at the next receive, so a peer that went away must not be able
+    // to tear down an endpoint.
+    try std.testing.expect(isTransientPeerFault(error.PortUnreachable));
+    try std.testing.expect(isTransientPeerFault(error.ConnectionResetByPeer));
+
+    // Local faults — these must keep propagating out of the connection step.
+    try std.testing.expect(!isTransientPeerFault(error.SystemResources));
+    try std.testing.expect(!isTransientPeerFault(error.ProcessFdQuotaExceeded));
+    try std.testing.expect(!isTransientPeerFault(error.SystemFdQuotaExceeded));
+    try std.testing.expect(!isTransientPeerFault(error.SocketUnconnected));
+    try std.testing.expect(!isTransientPeerFault(error.NetworkDown));
+    try std.testing.expect(!isTransientPeerFault(error.Unexpected));
+
+    // Truncation has its own outcome and must not be routed through here.
+    try std.testing.expect(!isTransientPeerFault(error.MessageOversize));
+}

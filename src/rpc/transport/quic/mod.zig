@@ -16,6 +16,7 @@ const adapter = @import("quic_zig_adapter.zig");
 pub const close = @import("close.zig");
 const conn = @import("connection.zig");
 const connection_testing = @import("connection_testing.zig");
+const datagram_io = @import("datagram_io.zig");
 pub const endpoint = @import("endpoint.zig");
 const framer = @import("length_framer.zig");
 const native_framer = @import("native_framer.zig");
@@ -67,6 +68,11 @@ pub const testing = if (builtin.is_test) struct {
     pub const ListenerAccess = listener.Listener.TestingHooks;
     pub const nonWindowsReceive = non_windows_receive.receive;
     pub const UdpReceiveBridge = udp_receive_bridge.Bridge;
+    /// Exposed through the seam rather than tested in place: a `test` block in
+    /// datagram_io.zig never runs, because `refAllRecursive` does not reach
+    /// that depth. Verified by ablation — an inverted assertion there left
+    /// `test-rpc-quic`, `test-lib` and `test` all exiting 0.
+    pub const isTransientPeerFault = datagram_io.isTransientPeerFault;
 } else struct {};
 
 pub const alpn = options.alpn;
