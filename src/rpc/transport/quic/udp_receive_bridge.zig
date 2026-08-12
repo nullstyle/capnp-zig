@@ -187,12 +187,17 @@ pub const Bridge = struct {
                 // and that is the only source of this error on the Windows
                 // receive path.  Left as an error it would propagate out of
                 // the connection step and tear the endpoint down — so any
-                // host could kill a Windows QUIC endpoint (and, on a fanout
-                // server, every session on it) with one spoofed oversized
-                // UDP datagram.  Normalize it to the same per-datagram fault
-                // POSIX already reports through MSG_TRUNC.  Deliberately not
-                // applied off Windows, where EMSGSIZE on a receive does not
-                // carry this meaning.
+                // host could kill a Windows QUIC connection with one spoofed
+                // oversized UDP datagram.  Normalize it to the same
+                // per-datagram fault POSIX already reports through MSG_TRUNC.
+                // Deliberately not applied off Windows, where EMSGSIZE on a
+                // receive does not carry this meaning.
+                //
+                // Scope: this makes the SINGLE-CONNECTION path (datagram_io)
+                // drop and keep serving on both platforms.  Server/Listener
+                // still fail the step with DatagramTooLarge on every
+                // platform, unchanged and filed separately — do not read this
+                // as covering the fanout server.
                 if (comptime builtin.target.os.tag == .windows) {
                     if (err == error.MessageOversize) break :blk .truncated;
                 }
