@@ -279,6 +279,12 @@ pub const Connection = struct {
             if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
                 return error.WakePipeCreateFailed;
             }
+            // Both ends non-blocking: `wake()` holds wake_mu across the write,
+            // and the only thread that drains this channel needs that same lock
+            // to close the fds in deinitNow. A blocking write therefore
+            // deadlocks the pair once the pipe fills. See wake_lock.setNonBlocking.
+            wake_lock.setNonBlocking(fds[0]);
+            wake_lock.setNonBlocking(fds[1]);
             self.lockWake();
             defer self.unlockWake();
             // Close a previously installed pair so a second enableWake does not
@@ -308,9 +314,11 @@ pub const Connection = struct {
         self.lockWake();
         defer self.unlockWake();
         const fds = self.wake_fds orelse return;
-        const pattern: []const u8 = &.{};
-        const data: [1][]const u8 = .{pattern};
-        _ = self.io.vtable.netWrite(self.io.userdata, fds[1], &[_]u8{1}, &data, 0) catch {};
+        // Raw write, not io.vtable.netWrite: the channel is non-blocking (see
+        // wake_lock.setNonBlocking) and Threaded.netWritePosix panics on EAGAIN
+        // as a "programmer bug", since it assumes a blocking fd. Same call the
+        // QUIC wake door uses.
+        wake_lock.writeByte(fds[1]);
     }
 
     /// Release all internal state: tears down the transport and framer.
