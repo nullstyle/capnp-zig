@@ -15,37 +15,22 @@ pub const disembargo = @import("./disembargo.zig");
 pub const provide_accept_join = @import("./provide_accept_join.zig");
 pub const third_party = @import("./third_party.zig");
 
-const peer_dispatch = dispatch;
-const peer_bootstrap = bootstrap;
-const peer_finish = finish;
-const peer_resolve = resolve;
-const peer_disembargo = disembargo;
-const peer_provide_accept_join = provide_accept_join;
-const peer_third_party = third_party;
 const peer_call_targets = @import("./call/peer_call_targets.zig");
 const peer_call_sender = @import("./call/peer_call_sender.zig");
 const payload_remap = @import("../caps/payload_remap.zig");
 const pending_calls = @import("../promises/pending_calls.zig");
 const peer_inbound_release = @import("./peer_inbound_release.zig");
-const peer_embargo_accepts = peer_provide_accept_join.embargo_accepts;
-const peer_join_state = peer_provide_accept_join.join_state;
-const peer_provides_state = peer_provide_accept_join.provides_state;
-const peer_provide_join_orchestration = peer_provide_accept_join.orchestration;
 const peer_forward_orchestration = @import("./forward/peer_forward_orchestration.zig");
 const peer_forward_return_callbacks = @import("./forward/peer_forward_return_callbacks.zig");
 const peer_cap_lifecycle = @import("./peer_cap_lifecycle.zig");
 const peer_outbound_control = @import("./peer_outbound_control.zig");
 const peer_call_orchestration = @import("./call/peer_call_orchestration.zig");
 const peer_return_orchestration = @import("./return/peer_return_orchestration.zig");
-const peer_third_party_adoption = peer_third_party.adoption;
 const peer_return_dispatch = @import("./return/peer_return_dispatch.zig");
-const peer_third_party_returns = peer_third_party.returns;
 const return_routing = @import("../promises/return_routing.zig");
 const return_send = @import("../promises/return_send.zig");
 const peer_transport = @import("./transport.zig");
 const vat_network = @import("../vat/network.zig");
-const peer_transport_callbacks = peer_transport.callbacks;
-const peer_transport_state = peer_transport.state;
 const peer_question_state = @import("./peer_question_state.zig");
 const retained_question_state = @import("./retained_questions.zig");
 const provide_forward_target = @import("./provide/forward_target.zig");
@@ -2419,7 +2404,7 @@ pub const Peer = struct {
         }
 
         self.attachTransportBinding(
-            peer_transport_callbacks.bindingForConnection(
+            peer_transport.callbacks.bindingForConnection(
                 Peer,
                 ConnPtr,
                 conn,
@@ -2435,7 +2420,7 @@ pub const Peer = struct {
         // via `setClockIo` (or `setClock`).
         const Conn = @typeInfo(ConnPtr).pointer.child;
         if (comptime @hasField(Conn, "on_tick")) {
-            conn.on_tick = peer_transport_callbacks.onConnectionTickFor(Peer, ConnPtr);
+            conn.on_tick = peer_transport.callbacks.onConnectionTickFor(Peer, ConnPtr);
         }
     }
 
@@ -2482,7 +2467,7 @@ pub const Peer = struct {
     /// Detach the transport without closing it, clearing all transport callbacks.
     pub fn detachTransport(self: *Peer) void {
         self.assertThreadAffinity();
-        peer_transport_state.detachTransportForPeer(Peer, self);
+        peer_transport.state.detachTransportForPeer(Peer, self);
     }
 
     /// Callee policy for an inbound `Call` carrying `sendResultsTo = thirdParty`.
@@ -2605,26 +2590,26 @@ pub const Peer = struct {
     /// Return whether a transport is currently attached to this peer.
     pub fn hasAttachedTransport(self: *const Peer) bool {
         self.assertThreadAffinity();
-        return peer_transport_state.hasAttachedTransportForPeer(Peer, self);
+        return peer_transport.state.hasAttachedTransportForPeer(Peer, self);
     }
 
     /// Close the attached transport, signaling the remote peer.
     pub fn closeAttachedTransport(self: *Peer) void {
         self.assertThreadAffinity();
-        peer_transport_state.closeAttachedTransportForPeer(Peer, self);
+        peer_transport.state.closeAttachedTransportForPeer(Peer, self);
     }
 
     /// Return whether the attached transport is currently in the process of closing.
     pub fn isAttachedTransportClosing(self: *const Peer) bool {
         self.assertThreadAffinity();
-        return peer_transport_state.isAttachedTransportClosingForPeer(Peer, self);
+        return peer_transport.state.isAttachedTransportClosingForPeer(Peer, self);
     }
 
     /// Detach and return the owned connection, cast to `ConnPtr`.
     /// Returns `null` if no transport is attached or the context type does not match.
     pub fn takeAttachedConnection(self: *Peer, comptime ConnPtr: type) ?ConnPtr {
         self.assertThreadAffinity();
-        return peer_transport_state.takeAttachedConnectionForPeer(
+        return peer_transport.state.takeAttachedConnectionForPeer(
             Peer,
             ConnPtr,
             self,
@@ -2636,7 +2621,7 @@ pub const Peer = struct {
     /// Returns `null` if no transport is attached.
     pub fn getAttachedConnection(self: *const Peer, comptime ConnPtr: type) ?ConnPtr {
         self.assertThreadAffinity();
-        return peer_transport_state.getAttachedConnectionForPeer(
+        return peer_transport.state.getAttachedConnectionForPeer(
             Peer,
             ConnPtr,
             self,
@@ -3717,7 +3702,7 @@ pub const Peer = struct {
     /// `ThirdPartyAnswer`. Per rpc.capnp:936-941 the value must have bit 30 set
     /// and bit 31 clear ([2^30, 2^31)); this is enforced by masking the counter
     /// back into range on every wrap, and asserted via
-    /// `peer_third_party.isThirdPartyAnswerId`. The chosen id is NOT recorded in
+    /// `third_party.isThirdPartyAnswerId`. The chosen id is NOT recorded in
     /// any local table on the callee: it names the answer on the *recipient's*
     /// (VatA's) connection, and the callee only re-uses it as the `answerId` of
     /// the follow-up `Return` (which is a plain outbound frame on the same
@@ -3732,7 +3717,7 @@ pub const Peer = struct {
         var next = id + 1;
         if (next >= third_party_answer_id_limit) next = third_party_answer_id_base;
         self.next_third_party_answer_id = next;
-        std.debug.assert(peer_third_party.isThirdPartyAnswerId(id));
+        std.debug.assert(third_party.isThirdPartyAnswerId(id));
         return id;
     }
 
@@ -3847,7 +3832,7 @@ pub const Peer = struct {
             // auto-finish must NOT be suppressed here.
         };
 
-        try peer_third_party.putPendingAwait(
+        try third_party.putPendingAwait(
             PendingThirdPartyAwait,
             &self.pending_third_party_awaits,
             completion_key,
@@ -5788,7 +5773,7 @@ pub const Peer = struct {
             self,
             mode,
             call.send_results_to.third_party,
-            peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+            third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
         );
         ctx.send_results_to = forwarded_plan.send_results_to;
         ctx.send_results_to_third_party_payload = forwarded_plan.send_results_to_third_party_payload;
@@ -5886,13 +5871,13 @@ pub const Peer = struct {
 
     fn buildForwardedCall(ctx_ptr: *anyopaque, call_builder: *protocol.CallBuilder) anyerror!void {
         const ctx: *const ForwardCallContext = castCtx(*const ForwardCallContext, ctx_ptr);
-        try peer_third_party.applyForwardedCallSendResults(
+        try third_party.applyForwardedCallSendResults(
             Peer,
             ctx.peer,
             call_builder,
             ctx.send_results_to,
             ctx.send_results_to_third_party_payload,
-            peer_third_party.setForwardedCallThirdPartyFromPayloadForPeerFn(Peer),
+            third_party.setForwardedCallThirdPartyFromPayloadForPeerFn(Peer),
         );
 
         const payload_builder = try call_builder.payloadTyped();
@@ -5927,8 +5912,8 @@ pub const Peer = struct {
             ctx.answer_id,
             ret,
             inbound_caps,
-            peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
-            peer_finish.freeOwnedFrameForPeerFn(Peer),
+            third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+            finish.freeOwnedFrameForPeerFn(Peer),
             ctx.send_results_to_third_party_payload,
             sendReturnTag,
             peer_forward_orchestration.lookupForwardedQuestionForPeerFn(Peer),
@@ -7073,15 +7058,15 @@ pub const Peer = struct {
     }
 
     fn cleanupResolvedAnswerAfterEarlyFinish(self: *Peer, answer_id: u32, release_result_caps: bool) void {
-        peer_finish.handleResolvedAnswerCleanup(
+        finish.handleResolvedAnswerCleanup(
             Peer,
             self,
             answer_id,
             release_result_caps,
-            peer_finish.takeResolvedAnswerFrameForPeerFn(Peer),
+            finish.takeResolvedAnswerFrameForPeerFn(Peer),
             releaseAnswerHeldResultCaps,
             releaseResultCaps,
-            peer_finish.freeOwnedFrameForPeerFn(Peer),
+            finish.freeOwnedFrameForPeerFn(Peer),
         ) catch |err| self.reportNonfatalError(err);
     }
 
@@ -7448,11 +7433,11 @@ pub const Peer = struct {
         // later `Provide` can ever adopt.
         _ = idx.sweepExpiredParkedAccepts();
 
-        const key_opt = try peer_provide_join_orchestration.captureAcceptProvisionForPeer(
+        const key_opt = try provide_accept_join.orchestration.captureAcceptProvisionForPeer(
             Peer,
             self,
             accept,
-            peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+            third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
         );
         defer if (key_opt) |bytes| self.allocator.free(bytes);
         const key = key_opt orelse
@@ -7487,7 +7472,7 @@ pub const Peer = struct {
         if (prov.owner == self and prov.state == .active) {
             // Degenerate same-peer arm: the same function, arguments, and
             // hooks as the no-index path.
-            return peer_provide_join_orchestration.handleAccept(
+            return provide_accept_join.orchestration.handleAccept(
                 Peer,
                 ProvideEntry,
                 ProvideTarget,
@@ -7495,11 +7480,11 @@ pub const Peer = struct {
                 accept,
                 &self.provides_by_question,
                 &self.provides_by_key,
-                peer_provide_join_orchestration.captureAcceptProvisionForPeerFn(
+                provide_accept_join.orchestration.captureAcceptProvisionForPeerFn(
                     Peer,
-                    peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+                    third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
                 ),
-                peer_finish.freeOwnedFrameForPeerFn(Peer),
+                finish.freeOwnedFrameForPeerFn(Peer),
                 Peer.queueEmbargoedAcceptRouted,
                 Peer.sendReturnProvidedTarget,
                 Peer.sendReturnException,
@@ -8285,7 +8270,7 @@ pub const Peer = struct {
                 prov.release(); // the slot's/parked entry's +1
             }
         }
-        peer_embargo_accepts.clearPendingAcceptQuestionForPeer(
+        provide_accept_join.embargo_accepts.clearPendingAcceptQuestionForPeer(
             Peer,
             PendingEmbargoedAccept,
             peer,
@@ -9790,7 +9775,7 @@ pub const Peer = struct {
             self.pending_embargoes.count(),
             self.limits.max_pending_embargoes,
         );
-        try peer_resolve.rememberPendingEmbargoForPeer(Peer, self, embargo_id, promise_id);
+        try resolve.rememberPendingEmbargoForPeer(Peer, self, embargo_id, promise_id);
     }
 
     fn releaseResolvedImport(self: *Peer, promise_id: u32) anyerror!void {
@@ -9817,17 +9802,17 @@ pub const Peer = struct {
             frame.len,
             self.limits.max_pending_third_party_return_bytes,
         );
-        try peer_third_party_returns.bufferPendingReturnForPeer(Peer, self, answer_id, frame);
+        try third_party.returns.bufferPendingReturnForPeer(Peer, self, answer_id, frame);
     }
 
     fn handleMissingReturnQuestion(self: *Peer, frame: []const u8, answer_id: u32) !void {
-        try peer_third_party.handleMissingReturnQuestion(
+        try third_party.handleMissingReturnQuestion(
             Peer,
             self,
             frame,
             answer_id,
-            peer_third_party.isThirdPartyAnswerId,
-            peer_third_party_returns.hasPendingReturnForPeerFn(Peer),
+            third_party.isThirdPartyAnswerId,
+            third_party.returns.hasPendingReturnForPeerFn(Peer),
             Peer.bufferPendingThirdPartyReturn,
         );
     }
@@ -10392,7 +10377,7 @@ pub const Peer = struct {
             self.completeDeferredAutomaticThirdPartyLifecycle();
         };
 
-        peer_dispatch.dispatchDecodedForPeer(
+        dispatch.dispatchDecodedForPeer(
             Peer,
             self,
             frame,
@@ -10472,11 +10457,11 @@ pub const Peer = struct {
             try self.handleUnimplementedResolve(echoed);
             return;
         }
-        try peer_bootstrap.handleUnimplemented(
+        try bootstrap.handleUnimplemented(
             Peer,
             self,
             unimplemented,
-            peer_bootstrap.handleUnimplementedQuestionForPeerFn(
+            bootstrap.handleUnimplementedQuestionForPeerFn(
                 Peer,
                 Peer.handleReturn,
             ),
@@ -10521,11 +10506,11 @@ pub const Peer = struct {
                 .type_value = abort.exception.type_value,
             },
         };
-        try peer_bootstrap.handleAbort(self.allocator, &self.last_remote_abort_reason, capped_abort);
+        try bootstrap.handleAbort(self.allocator, &self.last_remote_abort_reason, capped_abort);
     }
 
     fn handleBootstrap(self: *Peer, bootstrap_msg: protocol.Bootstrap) !void {
-        try peer_bootstrap.handleBootstrap(
+        try bootstrap.handleBootstrap(
             Peer,
             self,
             self.allocator,
@@ -10619,16 +10604,16 @@ pub const Peer = struct {
             // deliverable, cancel the queued call immediately.
             _ = try self.cancelQueuedPendingQuestion(finish_msg.question_id);
         }
-        const ops = peer_finish.FinishOps(Peer){
+        const ops = finish.FinishOps(Peer){
             .remove_send_results_to_yourself = peer_forward_orchestration.removeSendResultsToYourselfForPeerFn(Peer),
             .clear_send_results_to_third_party = clearSendResultsToThirdParty,
-            .clear_provide = peer_provides_state.clearProvideForPeerFn(
+            .clear_provide = provide_accept_join.provides_state.clearProvideForPeerFn(
                 Peer,
                 ProvideEntry,
                 ProvideTarget,
                 ProvideTarget.deinit,
             ),
-            .clear_pending_join_question = peer_join_state.clearPendingJoinQuestionForPeerFn(
+            .clear_pending_join_question = provide_accept_join.join_state.clearPendingJoinQuestionForPeerFn(
                 Peer,
                 JoinState,
                 PendingJoinQuestion,
@@ -10643,13 +10628,13 @@ pub const Peer = struct {
             // forwarded return is absorbed rather than re-emitted (see
             // sendTailFinishAndNeutralize / W1).
             .send_finish = Peer.sendTailFinishAndNeutralize,
-            .take_resolved_answer_frame = peer_finish.takeResolvedAnswerFrameForPeerFn(Peer),
+            .take_resolved_answer_frame = finish.takeResolvedAnswerFrameForPeerFn(Peer),
             .release_answer_caps_for_frame = releaseAnswerHeldResultCaps,
             .release_caps_for_frame = releaseResultCaps,
-            .free_frame = peer_finish.freeOwnedFrameForPeerFn(Peer),
+            .free_frame = finish.freeOwnedFrameForPeerFn(Peer),
         };
         const cleared_partial_join = self.pending_join_questions.contains(qid);
-        try peer_finish.handleFinishWithOps(
+        try finish.handleFinishWithOps(
             Peer,
             self,
             finish_msg.question_id,
@@ -11265,17 +11250,17 @@ pub const Peer = struct {
             }
         }
 
-        const ops = peer_resolve.ResolveOps(Peer){
-            .has_known_promise = peer_resolve.hasKnownResolvePromiseForPeerFn(Peer),
-            .resolve_cap_descriptor = peer_resolve.resolveCapDescriptorForPeerFn(Peer),
+        const ops = resolve.ResolveOps(Peer){
+            .has_known_promise = resolve.hasKnownResolvePromiseForPeerFn(Peer),
+            .resolve_cap_descriptor = resolve.resolveCapDescriptorForPeerFn(Peer),
             .release_resolved_cap = releaseResolvedCap,
-            .alloc_embargo_id = peer_resolve.allocateEmbargoIdForPeerFn(Peer),
+            .alloc_embargo_id = resolve.allocateEmbargoIdForPeerFn(Peer),
             .remember_pending_embargo = Peer.rememberPendingEmbargo,
-            .forget_pending_embargo = peer_resolve.forgetPendingEmbargoForPeerFn(Peer),
+            .forget_pending_embargo = resolve.forgetPendingEmbargoForPeerFn(Peer),
             .send_disembargo_sender_loopback = peer_outbound_control.sendDisembargoSenderLoopbackViaSendFrameForPeerFn(Peer, Peer.sendFrame),
             .store_resolved_import = storeResolvedImport,
         };
-        try peer_resolve.handleResolveWithOps(Peer, self, resolve_msg, ops);
+        try resolve.handleResolveWithOps(Peer, self, resolve_msg, ops);
     }
 
     /// Heap context threaded through the auto-pickup `Accept` question. Owns a
@@ -11669,14 +11654,14 @@ pub const Peer = struct {
     }
 
     fn handleDisembargo(self: *Peer, disembargo_msg: protocol.Disembargo) !void {
-        const ops = peer_disembargo.DisembargoOps(Peer){
+        const ops = disembargo.DisembargoOps(Peer){
             .has_known_disembargo_target = Peer.hasKnownDisembargoTarget,
             .send_disembargo_receiver_loopback = peer_outbound_control.sendDisembargoReceiverLoopbackViaSendFrameForPeerFn(Peer, Peer.sendFrame),
-            .take_pending_embargo_promise = peer_disembargo.takePendingEmbargoPromiseForPeerFn(Peer),
-            .clear_resolved_import_embargo = peer_disembargo.clearResolvedImportEmbargoForPeerFn(Peer),
+            .take_pending_embargo_promise = disembargo.takePendingEmbargoPromiseForPeerFn(Peer),
+            .clear_resolved_import_embargo = disembargo.clearResolvedImportEmbargoForPeerFn(Peer),
             .release_embargoed_accepts = Peer.handleAcceptDisembargo,
         };
-        try peer_disembargo.handleDisembargoWithOps(Peer, self, disembargo_msg, ops);
+        try disembargo.handleDisembargoWithOps(Peer, self, disembargo_msg, ops);
     }
 
     /// Dispatch an inbound `context.accept` Disembargo. Role is decided by state,
@@ -11704,7 +11689,7 @@ pub const Peer = struct {
     fn handleAcceptDisembargo(self: *Peer, target: protocol.MessageTarget, embargo: []const u8) !void {
         // HOST role: we hold the queued Accept for this embargo → release it.
         if (self.pending_accepts_by_embargo.contains(embargo)) {
-            try peer_embargo_accepts.releaseEmbargoedAcceptsForPeer(
+            try provide_accept_join.embargo_accepts.releaseEmbargoedAcceptsForPeer(
                 Peer,
                 PendingEmbargoedAccept,
                 ProvideEntry,
@@ -12702,7 +12687,7 @@ pub const Peer = struct {
             );
         }
 
-        try peer_embargo_accepts.queueEmbargoedAcceptForPeer(
+        try provide_accept_join.embargo_accepts.queueEmbargoedAcceptForPeer(
             Peer,
             PendingEmbargoedAccept,
             self,
@@ -12726,7 +12711,7 @@ pub const Peer = struct {
         {
             return error.DuplicateQuestionId;
         }
-        try peer_provide_join_orchestration.handleProvide(
+        try provide_accept_join.orchestration.handleProvide(
             Peer,
             ProvideEntry,
             ProvideTarget,
@@ -12735,17 +12720,17 @@ pub const Peer = struct {
             provide,
             &self.provides_by_question,
             &self.provides_by_key,
-            peer_provide_join_orchestration.captureProvideRecipientForPeerFn(
+            provide_accept_join.orchestration.captureProvideRecipientForPeerFn(
                 Peer,
-                peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+                third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
             ),
-            peer_finish.freeOwnedFrameForPeerFn(Peer),
+            finish.freeOwnedFrameForPeerFn(Peer),
             peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
             Peer.ensureProvideBudget,
-            peer_provide_accept_join.resolveProvideTargetForPeerFn(
+            provide_accept_join.resolveProvideTargetForPeerFn(
                 Peer,
-                peer_provide_accept_join.resolveProvideImportedCapForPeerFn(Peer),
-                peer_provide_accept_join.resolveProvidePromisedAnswerForPeerFn(Peer, Peer.resolvePromisedAnswer),
+                provide_accept_join.resolveProvideImportedCapForPeerFn(Peer),
+                provide_accept_join.resolveProvidePromisedAnswerForPeerFn(Peer, Peer.resolvePromisedAnswer),
             ),
             makeProvideTarget,
             ProvideTarget.deinit,
@@ -12757,7 +12742,7 @@ pub const Peer = struct {
         if (self.provision_index) |idx| {
             var adopted: ?*ProvisionIndex.Provision = null;
             self.registerProvisionForProvide(idx, provide.question_id, &adopted) catch |err| {
-                peer_provides_state.clearProvideForPeer(
+                provide_accept_join.provides_state.clearProvideForPeer(
                     Peer,
                     ProvideEntry,
                     ProvideTarget,
@@ -12785,7 +12770,7 @@ pub const Peer = struct {
     fn handleAccept(self: *Peer, accept: protocol.Accept) !void {
         if (try self.tryHandleJoinAccept(accept)) return;
         if (self.provision_index) |idx| return self.handleAcceptWithProvisionIndex(idx, accept);
-        try peer_provide_join_orchestration.handleAccept(
+        try provide_accept_join.orchestration.handleAccept(
             Peer,
             ProvideEntry,
             ProvideTarget,
@@ -12793,11 +12778,11 @@ pub const Peer = struct {
             accept,
             &self.provides_by_question,
             &self.provides_by_key,
-            peer_provide_join_orchestration.captureAcceptProvisionForPeerFn(
+            provide_accept_join.orchestration.captureAcceptProvisionForPeerFn(
                 Peer,
-                peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+                third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
             ),
-            peer_finish.freeOwnedFrameForPeerFn(Peer),
+            finish.freeOwnedFrameForPeerFn(Peer),
             Peer.queueEmbargoedAccept,
             Peer.sendReturnProvidedTarget,
             Peer.sendReturnException,
@@ -12805,11 +12790,11 @@ pub const Peer = struct {
     }
 
     fn tryHandleJoinAccept(self: *Peer, accept: protocol.Accept) !bool {
-        const key = try peer_provide_join_orchestration.captureAcceptProvisionForPeer(
+        const key = try provide_accept_join.orchestration.captureAcceptProvisionForPeer(
             Peer,
             self,
             accept,
-            peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+            third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
         );
         defer if (key) |bytes| self.allocator.free(bytes);
         const provision = key orelse return false;
@@ -13143,7 +13128,7 @@ pub const Peer = struct {
             return error.DuplicateQuestionId;
         }
         if (try self.tryHandleCrossPeerProxyJoin(join)) return;
-        const deadline_key = peer_join_state.parseJoinKeyPart(JoinKeyPart, join.key_part) catch null;
+        const deadline_key = provide_accept_join.join_state.parseJoinKeyPart(JoinKeyPart, join.key_part) catch null;
         const sampled_deadline = if (deadline_key) |key|
             if (!self.pending_joins.contains(key.join_id))
                 self.newJoinDeadline() catch {
@@ -13155,7 +13140,7 @@ pub const Peer = struct {
         else
             null;
         const records_before = self.joinRecordCount();
-        peer_provide_join_orchestration.handleJoin(
+        provide_accept_join.orchestration.handleJoin(
             Peer,
             JoinKeyPart,
             JoinState,
@@ -13167,10 +13152,10 @@ pub const Peer = struct {
             &self.pending_joins,
             &self.pending_join_questions,
             peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
-            peer_provide_accept_join.resolveProvideTargetForPeerFn(
+            provide_accept_join.resolveProvideTargetForPeerFn(
                 Peer,
-                peer_provide_accept_join.resolveProvideImportedCapForPeerFn(Peer),
-                peer_provide_accept_join.resolveProvidePromisedAnswerForPeerFn(Peer, Peer.resolvePromisedAnswer),
+                provide_accept_join.resolveProvideImportedCapForPeerFn(Peer),
+                provide_accept_join.resolveProvidePromisedAnswerForPeerFn(Peer, Peer.resolvePromisedAnswer),
             ),
             makeProvideTarget,
             ProvideTarget.deinit,
@@ -13213,7 +13198,7 @@ pub const Peer = struct {
     }
 
     fn handleThirdPartyAnswer(self: *Peer, third_party_answer: protocol.ThirdPartyAnswer) !void {
-        try peer_third_party_adoption.handleThirdPartyAnswer(
+        try third_party.adoption.handleThirdPartyAnswer(
             Peer,
             PendingThirdPartyAwait,
             self.allocator,
@@ -13221,14 +13206,14 @@ pub const Peer = struct {
             third_party_answer,
             &self.pending_third_party_awaits,
             &self.pending_third_party_answers,
-            peer_third_party_adoption.captureThirdPartyCompletionForPeerFn(
+            third_party.adoption.captureThirdPartyCompletionForPeerFn(
                 Peer,
-                peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+                third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
             ),
-            peer_finish.freeOwnedFrameForPeerFn(Peer),
+            finish.freeOwnedFrameForPeerFn(Peer),
             peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
             Peer.ensurePendingThirdPartyAnswerBudget,
-            peer_third_party_adoption.adoptPendingAwaitEntryForPeerFn(
+            third_party.adoption.adoptPendingAwaitEntryForPeerFn(
                 Peer,
                 Question,
                 PendingThirdPartyAwait,
@@ -13366,7 +13351,7 @@ pub const Peer = struct {
                 Peer.queuePromiseExportCall,
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
-                peer_third_party.noteCallSendResultsForPeerFn(
+                third_party.noteCallSendResultsForPeerFn(
                     Peer,
                     Peer.noteSendResultsToYourself,
                     Peer.noteSendResultsToThirdParty,
@@ -13421,7 +13406,7 @@ pub const Peer = struct {
             peer_call_orchestration.handleResolvedExportedCallForPeerFn(
                 Peer,
                 cap_table.InboundCapTable,
-                peer_third_party.noteCallSendResultsForPeerFn(
+                third_party.noteCallSendResultsForPeerFn(
                     Peer,
                     Peer.noteSendResultsToYourself,
                     Peer.noteSendResultsToThirdParty,
@@ -13671,7 +13656,7 @@ pub const Peer = struct {
                 previous,
             );
         };
-        try peer_third_party_adoption.adoptThirdPartyAnswer(
+        try third_party.adoption.adoptThirdPartyAnswer(
             Peer,
             Question,
             self,
@@ -13683,8 +13668,8 @@ pub const Peer = struct {
             &self.pending_third_party_returns,
             peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
             Peer.ensureThirdPartyAdoptionBudget,
-            peer_finish.freeOwnedFrameForPeerFn(Peer),
-            peer_third_party_returns.handlePendingReturnFrameForPeerFn(
+            finish.freeOwnedFrameForPeerFn(Peer),
+            third_party.returns.handlePendingReturnFrameForPeerFn(
                 Peer,
                 Peer.handleReturn,
             ),
@@ -13771,13 +13756,13 @@ pub const Peer = struct {
             Peer.handleMissingReturnQuestion,
             peer_return_orchestration.initInboundCapsForPeerFn(Peer, cap_table.InboundCapTable),
             peer_return_orchestration.deinitInboundCapsForTypeFn(cap_table.InboundCapTable),
-            peer_third_party_adoption.handleReturnAcceptFromThirdPartyForPeerFn(
+            third_party.adoption.handleReturnAcceptFromThirdPartyForPeerFn(
                 Peer,
                 Question,
                 PendingThirdPartyAwait,
                 cap_table.InboundCapTable,
-                peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
-                peer_finish.freeOwnedFrameForPeerFn(Peer),
+                third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+                finish.freeOwnedFrameForPeerFn(Peer),
                 peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
                 Peer.ensurePendingThirdPartyAwaitBudget,
                 adoptThirdPartyAnswer,
