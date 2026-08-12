@@ -1230,7 +1230,14 @@ pub fn buildImpl(b: *std.Build) !void {
                     },
                 }),
             });
-            registered_test_compile_steps.append(b.allocator, &t.step) catch @panic("OOM");
+            // Deliberately NOT registered into check-test-compile. TSan
+            // instrumentation is only available on a subset of architectures,
+            // so including these here made `check-test-compile` fail for any
+            // other target with "unable to build TSAN library:
+            // TSANUnsupportedCPUArchitecture" -- which is why that CI step had
+            // been pinned to x86_64-windows alone, and why a 32-bit test break
+            // went unnoticed from 2026-07-29. `check-tsan` below is the step
+            // that owns TSan compile coverage.
             check_tsan_step.dependOn(&t.step);
             if (tsan_host_ok) test_tsan_step.dependOn(&b.addRunArtifact(t).step);
         }

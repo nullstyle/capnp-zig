@@ -316,11 +316,18 @@ jobs:
         run: zig build check-compile -Dtarget=${{ matrix.target }} --summary all
 
       - name: Compile test suite for ${{ matrix.target }}
-        # Every target, not just Windows. This was Windows-only, so the
-        # 32-bit test compile was never checked -- and had been broken since
-        # 2026-07-29 (two `0xDEADBEEF00000000 + i` literals in
-        # message_test.zig evaluated as usize) without anything noticing.
-        # The lib already compiles for all four; the tests do too now.
+        # All four targets. This was pinned to x86_64-windows because the
+        # step could not pass anywhere else -- the TSan-instrumented suites
+        # were registered into check-test-compile, and TSan supports only a
+        # few architectures, so other targets died on
+        # "TSANUnsupportedCPUArchitecture" (and powerpc64 on the libc that
+        # TSan module pulled in). Those artifacts now belong to `check-tsan`
+        # alone, which is where TSan compile coverage was always meant to
+        # live, and all four targets compile the suite.
+        #
+        # The narrow pinning was not free: it hid a 32-bit test break from
+        # 2026-07-29 (two `0xDEADBEEF00000000 + i` literals evaluated as
+        # usize) until this step was widened.
         run: zig build check-test-compile -Dtarget=${{ matrix.target }} --summary all
 
   hardening:
