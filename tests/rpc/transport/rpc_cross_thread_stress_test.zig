@@ -17,6 +17,49 @@ const quic_wake = capnpc.rpc.transport.quic.wake;
 const quic_handle_reps = 200;
 const quic_waker_threads = 4;
 
+test "quic wake Handle: drain terminates on an empty pipe (raw-syscall signedness)" {
+    // Single-threaded, no storm, and it either passes in microseconds or the
+    // whole binary stops -- which is the point. The storm test above DID catch
+    // this defect, but only by hanging forever, which CI reports as an
+    // unexplained job timeout with no failing test named. This states the
+    // invariant directly so the next regression is legible.
+    //
+    // The invariant: consumeRequested() drains until the wake pipe is empty,
+    // and an empty non-blocking pipe reports EAGAIN. So EAGAIN is the ORDINARY
+    // way every drain finishes, not an edge case. On Linux
+    // `std.posix.system.read` is the raw syscall returning `usize`, so EAGAIN
+    // arrives as a huge positive value; classifying on `rc > 0` before errno
+    // therefore reads "bytes received" and loops forever. macOS/BSD go through
+    // the libc shim and return -1, which is why the broken ordering passed
+    // there and hung only on Linux.
+    if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
+
+    var handle = quic_wake.Handle.init();
+    defer handle.deinit();
+    try std.testing.expect(handle.isSupported());
+
+    // Nothing has been requested: consumeRequested reports false and must not
+    // touch the pipe at all.
+    try std.testing.expect(!handle.consumeRequested());
+
+    // One request writes one byte; the drain must consume it and then reach
+    // EAGAIN and RETURN rather than spinning on the empty pipe.
+    handle.request();
+    try std.testing.expect(handle.isRequested());
+    try std.testing.expect(handle.consumeRequested());
+    try std.testing.expect(!handle.isRequested());
+
+    // Repeated request/consume cycles keep terminating, including the
+    // dedupe case where several requests collapse into one pending byte.
+    var i: usize = 0;
+    while (i < 64) : (i += 1) {
+        handle.request();
+        handle.request();
+        try std.testing.expect(handle.consumeRequested());
+    }
+    try std.testing.expect(!handle.consumeRequested());
+}
+
 test "quic wake Handle: cross-thread request() storm vs owner deinit()" {
     const Waker = struct {
         fn run(handle: *quic_wake.Handle, stop: *std.atomic.Value(bool)) void {

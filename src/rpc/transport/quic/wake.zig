@@ -83,10 +83,16 @@ pub const Handle = struct {
         const timeout_ms = scheduler.durationToPollTimeoutMs(wait_duration);
         while (true) {
             const rc = std.posix.system.poll(@ptrCast(&poll_fds), poll_fds.len, timeout_ms);
-            if (rc > 0) break;
+            // Third instance of the signedness hazard in this file: sign-first
+            // classified a FAILED poll as "descriptors are ready" on Linux and
+            // fell through to read `revents` the kernel never populated.
+            switch (std.posix.errno(rc)) {
+                .SUCCESS => {},
+                .INTR => continue,
+                else => return error.PollFailed,
+            }
             if (rc == 0) return PollResult{};
-            if (std.posix.errno(rc) == .INTR) continue;
-            return error.PollFailed;
+            break;
         }
 
         var result = PollResult{};
@@ -107,13 +113,22 @@ pub const Handle = struct {
         var buf: [64]u8 = undefined;
         while (true) {
             const rc = std.posix.system.read(fds[0], &buf, buf.len);
-            if (rc > 0) continue;
-            if (rc == 0) return;
+            // Classify via errno BEFORE treating `rc` as a byte count, the same
+            // way `tcp.connection.pollRetryIntr` does. On Linux
+            // `std.posix.system.read` is the raw syscall and returns `usize`,
+            // so a failure arrives as -errno reinterpreted as a huge POSITIVE
+            // value: testing `rc > 0` first classifies EVERY error as "bytes
+            // read" and loops forever. On macOS/BSD the libc shim returns
+            // `isize`, where -1 fails that test and the errno switch runs --
+            // which is why the sign-first version hung only on Linux, and hung
+            // reliably, since EAGAIN is the ordinary way a drain finishes.
             switch (std.posix.errno(rc)) {
+                .SUCCESS => {},
                 .INTR => continue,
-                .AGAIN => return,
+                // AGAIN (socket empty) and anything else: nothing left to drain.
                 else => return,
             }
+            if (rc == 0) return; // EOF
         }
     }
 };
@@ -143,11 +158,16 @@ fn writeByte(fd: std.posix.fd_t) void {
     const byte = [_]u8{1};
     while (true) {
         const rc = std.posix.system.write(fd, &byte, byte.len);
-        if (rc > 0) return;
-        if (rc == 0) return;
+        // Same signedness hazard as `drain`: classify via errno first. The
+        // sign-first order did not hang here -- it returned on the `rc > 0`
+        // arm, treating every failure as a delivered wake and leaving the
+        // errno switch below unreachable on Linux.
         switch (std.posix.errno(rc)) {
+            .SUCCESS => return,
             .INTR => continue,
-            .AGAIN => return,
+            // AGAIN means the wake pipe is already full, which is exactly the
+            // state a wake is trying to produce, so it is success for our
+            // purposes; anything else is unrecoverable and must not spin.
             else => return,
         }
     }
