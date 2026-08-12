@@ -1913,6 +1913,7 @@ capnpc-zig.rpc.transport.quic.Connection.StepResult.wake_drained: field bool = f
 capnpc-zig.rpc.transport.quic.Connection.StepResult: struct
 capnpc-zig.rpc.transport.quic.Connection.TestingHooks: struct
 capnpc-zig.rpc.transport.quic.Connection.activeQuicConnection: fn (*rpc.transport.quic.connection.Connection) ?*conn.state.Connection
+capnpc-zig.rpc.transport.quic.Connection.adoptOwnerThread: fn (*rpc.transport.quic.connection.Connection) void
 capnpc-zig.rpc.transport.quic.Connection.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.quic.Connection.assertThreadAffinity: fn (*const rpc.transport.quic.connection.Connection) void
 capnpc-zig.rpc.transport.quic.Connection.baseline: field rpc.transport.quic.baseline_engine.BaselineEngine
@@ -1935,6 +1936,7 @@ capnpc-zig.rpc.transport.quic.Connection.owner_thread_id: field ?u64 = null
 capnpc-zig.rpc.transport.quic.Connection.requestClose: fn (*rpc.transport.quic.connection.Connection) void
 capnpc-zig.rpc.transport.quic.Connection.role: field rpc.transport.quic.endpoint.Role
 capnpc-zig.rpc.transport.quic.Connection.run: fn (*rpc.transport.quic.connection.Connection) void
+capnpc-zig.rpc.transport.quic.Connection.runtime_thread_checks: field bool = false
 capnpc-zig.rpc.transport.quic.Connection.sendFrame: fn (*rpc.transport.quic.connection.Connection, []const u8) error{BrokenPipe,FrameTooLarge,OutOfMemory,OutboundQueueFull}!void
 capnpc-zig.rpc.transport.quic.Connection.start: fn (*rpc.transport.quic.connection.Connection, *anyopaque, *const fn (*rpc.transport.quic.connection.Connection, []const u8) anyerror!void, *const fn (*rpc.transport.quic.connection.Connection, anyerror) void, *const fn (*rpc.transport.quic.connection.Connection) void) void
 capnpc-zig.rpc.transport.quic.Connection.step: fn (*rpc.transport.quic.connection.Connection) anyerror!void
@@ -2076,6 +2078,7 @@ capnpc-zig.rpc.transport.quic.Server.quicConnectionCount: fn (*const rpc.transpo
 capnpc-zig.rpc.transport.quic.Server.receiveOne: fn (*rpc.transport.quic.server.Server) error{AccessDenied,AddressFamilyUnsupported,AllowEarlyDataCallbackInstallFailed,AlpnInvalid,AlpnSetFailed,AlpnTooLong,BrokenPipe,Canceled,ConcurrencyUnavailable,ConnectionClosed,ConnectionRefused,ConnectionResetByPeer,DatagramTooLarge,DefaultVerifyPathsFailed,EarlyDataRejected,FastOpenAlreadyInProgress,HandshakeFailed,HostUnreachable,InvalidConfig,InvalidPem,KeyMismatch,KeylogSetupFailed,LoadCADirFailed,LoadCAFileFailed,MessageOversize,NetworkDown,NetworkUnreachable,NotClientContext,NotServerContext,OutOfMemory,PollFailed,PortUnreachable,ProcessFdQuotaExceeded,QuicEarlyDataContextFailed,QuicProvideDataFailed,QuicSetupFailed,QuicTransportParamsFailed,RandFailed,ReadFailed,SessionParseFailed,SessionSerializeFailed,SetSessionFailed,SocketUnconnected,SslAllocFailed,SslCtxAllocFailed,SslSetFdFailed,SslSetHostnameFailed,SyscallError,SystemFdQuotaExceeded,SystemResources,Timeout,Unexpected,UseCertFailed,UsePrivateKeyFailed,WantRead,WantWrite,WriteFailed}!?server.FeedOutcomeImpl
 capnpc-zig.rpc.transport.quic.Server.requestClose: fn (*rpc.transport.quic.server.Server) void
 capnpc-zig.rpc.transport.quic.Server.run: fn (*rpc.transport.quic.server.Server) void
+capnpc-zig.rpc.transport.quic.Server.runtime_thread_checks: field bool = false
 capnpc-zig.rpc.transport.quic.Server.sessionAt: fn (*rpc.transport.quic.server.Server, usize) ?*rpc.transport.quic.server.ServerSession
 capnpc-zig.rpc.transport.quic.Server.sessionById: fn (*rpc.transport.quic.server.Server, u64) ?*rpc.transport.quic.server.ServerSession
 capnpc-zig.rpc.transport.quic.Server.sessionCapacity: fn (*const rpc.transport.quic.server.Server) u32
