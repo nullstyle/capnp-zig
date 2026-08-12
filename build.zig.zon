@@ -9,6 +9,17 @@
         // plus one release commit that declares the version — no source
         // change, which is why this swap needed no behavioral re-validation
         // beyond re-running the QUIC gates.
+        //
+        // BEFORE BUMPING TO v0.11.0 OR LATER: that release changes default
+        // WIRE behavior — CUBIC congestion control, pacing, and HyStart++ all
+        // become default-on. Each is compiled in either way and has a
+        // one-line opt-out (`congestion_control = .new_reno`,
+        // `enable_pacing = false`, `enable_hystart = false`). Re-run
+        // `bench-check` across the bump: the RPC round-trip baselines in this
+        // repo were measured under the old defaults, so a regression there
+        // may be a deliberate upstream default change rather than our own
+        // regression. Decide explicitly whether to adopt the new defaults or
+        // pin the old behavior.
         .quic_zig = .{
             .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.10.1.tar.gz",
             .hash = "quic_zig-0.10.1-jMbGHbDUJQBuGJbmWaosSc4bmVg_uWMa_fOiPAQMmHLq",

@@ -40,6 +40,24 @@ handoff, macOS has run all 61 tests in both modes. Windows full-tree test
 cross-compilation passes 113/113, but native Windows runtime acceptance remains
 pending a hosted run after capnp-zig is pushed.
 
+That pending claim also rests on a layer below us, so it is worth stating
+precisely what the dependency does and does not prove. In quic-zig v0.10.1
+(the pinned tag), `windows-latest` is a tier-1 **blocking** CI leg —
+`advisory: false` in the test matrix — running the full `zig build test`, so
+the protocol engine, wire/frame codecs, conformance suite, and in-memory TLS
+handshakes genuinely execute on Windows rather than merely cross-compiling.
+Exactly three tests are excluded there, and all three are the real-socket loop
+smokes (two entering `runUdpServer`, one entering `runUdpClient`). They carry
+an unconditional `if (builtin.os.tag == .windows) return error.SkipZigTest`
+guard, so they have never run on Windows and have never reported a failure:
+the UDP socket loop is **untested on Windows, not known-broken**. Verified
+against the pinned tag, not taken on report.
+
+The practical consequence for our own Windows QUIC acceptance is that the
+socket layer is unproven on *both* sides of the boundary. Treat a Windows
+runtime run as genuine discovery work that may surface real defects, not as a
+formality expected to confirm a working path.
+
 Note on **Windows codegen**: the upstream prebuilt Windows tools still contain
 the executables but not the standard schema tree. The repository now routes
 every `capnp`-driven serialization/codegen invocation through one helper that
