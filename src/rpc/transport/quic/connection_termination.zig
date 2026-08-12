@@ -26,19 +26,33 @@ pub fn State(comptime Connection: type) type {
         }
 
         pub fn requestClose(conn: *Connection) void {
-            events.emitConnection(conn.observer, eventSource(conn.mode), eventRole(conn.role), .closing);
             // Defer the engine close and status record to the run loop so all
             // mutation of the close state and engines stays on one thread. The
             // loop drains the request via `drainPendingClose` (fanout server)
-            // or records it during teardown (compat connection).
+            // or records it during teardown (compat connection). The `.closing`
+            // observer event is deferred with it: observer callbacks fire on
+            // the loop thread only, never on a cross-thread requester.
             conn.close_controller.requestNormalCrossThread();
             conn.wake();
         }
 
         /// Loop-thread drain of a deferred cross-thread `requestClose`. Safe to
-        /// call every tick; only does work when a request is pending.
+        /// call every tick; only does work when a request is pending. Emits the
+        /// deferred `.closing` observer event when it consumes a request.
         pub fn drainPendingClose(conn: *Connection) void {
-            _ = conn.close_controller.drainPendingClose(&conn.baseline, &conn.native);
+            if (conn.close_controller.drainPendingClose(&conn.baseline, &conn.native)) {
+                emitClosingOnce(conn);
+            }
+        }
+
+        /// Emit the `.closing` connection phase at most once for this
+        /// connection or session. Loop/owner-thread only: called by the
+        /// owner-thread `close()` path synchronously, and by the loop when it
+        /// observes a deferred cross-thread close request.
+        pub fn emitClosingOnce(conn: *Connection) void {
+            if (conn.closing_emitted) return;
+            conn.closing_emitted = true;
+            events.emitConnection(conn.observer, eventSource(conn.mode), eventRole(conn.role), .closing);
         }
 
         pub fn isClosing(conn: *const Connection) bool {

@@ -95,6 +95,17 @@ pub const Connection = struct {
     /// Use this to drain a per-connection work queue on the correct thread.
     on_wake: ?*const fn (conn: *Connection) void = null,
 
+    /// Set by cross-thread `requestClose()` and consumed by the run loop,
+    /// which emits the deferred `.closing` observer event on its own thread.
+    /// Atomic because `requestClose` may run on any thread; the observer
+    /// itself is only ever invoked on the owner/loop thread (see
+    /// `events.Observer`).
+    close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    /// True once the `.closing` connection phase has been emitted, so the
+    /// event fires at most once per connection. Owner/loop-thread only.
+    closing_emitted: bool = false,
+
     /// Windows read-loop bridge; `{}` elsewhere. std's Windows sockets are
     /// raw AFD handles that `WSAPoll` rejects, so the run loop there runs
     /// each blocking read as a cancellable `io.async` task and waits on a
@@ -696,14 +707,19 @@ pub const Connection = struct {
     pub fn close(self: *Connection) void {
         self.assertThreadAffinity();
         log.debug("connection closing", .{});
-        events.emitConnection(self.observer, .tcp, .unknown, .closing);
+        self.emitClosingOnce();
         self.transport.close();
     }
 
     /// Signal the transport to stop from any thread. Wakes a blocked
     /// `run()` loop by shutting down the socket.
+    ///
+    /// Never invokes the observer directly: observer callbacks fire on the
+    /// owner/loop thread only, so the `.closing` event is deferred to the run
+    /// loop, which emits it when it observes the request. If the loop never
+    /// runs (or has already exited) the deferred event is dropped.
     pub fn requestClose(self: *Connection) void {
-        events.emitConnection(self.observer, .tcp, .unknown, .closing);
+        self.close_requested.store(true, .release);
         self.transport.shutdown();
         if (comptime builtin.target.os.tag == .windows) {
             // On Windows the run loop parks on win_read.cond when it has no tick
@@ -855,8 +871,21 @@ pub const Connection = struct {
     }
 
     fn emitClosed(self: *Connection) void {
+        // A cross-thread requestClose() defers its `.closing` event to this
+        // (the loop) thread; emit it before the terminal events so observers
+        // see closing → close → closed in order.
+        if (self.close_requested.load(.acquire)) self.emitClosingOnce();
         events.emitClose(self.observer, .tcp, .unknown, self.last_error);
         events.emitConnection(self.observer, .tcp, .unknown, .closed);
+    }
+
+    /// Emit the `.closing` connection phase at most once. Owner/loop-thread
+    /// only: called synchronously by `close()` and by the run loop when it
+    /// observes a cross-thread `requestClose()`.
+    fn emitClosingOnce(self: *Connection) void {
+        if (self.closing_emitted) return;
+        self.closing_emitted = true;
+        events.emitConnection(self.observer, .tcp, .unknown, .closing);
     }
 
     fn idleDeadlineExceeded(self: *const Connection) bool {

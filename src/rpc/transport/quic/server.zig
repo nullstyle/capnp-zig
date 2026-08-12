@@ -100,6 +100,14 @@ pub const Server = struct {
         };
     }
 
+    /// Tear down the server and every remaining session.
+    ///
+    /// Teardown contract: quiesce external wakers first. Any thread that
+    /// holds a `*ServerSession` (or calls `Server.wake`) must have stopped
+    /// and synchronized before `deinit` runs — sessions and the wake/receive
+    /// state they borrow are destroyed here, so a late cross-thread
+    /// `wake`/`close`/`sendFrame` is a use-after-free. See
+    /// `ServerSession.wake` for the per-session contract.
     pub fn deinit(self: *Server) void {
         self.requestClose();
         self.udp_receive.cancel(self.io);
@@ -561,6 +569,10 @@ pub const ServerSession = struct {
     io: std.Io,
     callback_lifecycle: CallbackLifecycle = .{},
     close_callback_invoked: bool = false,
+    /// True once the `.closing` connection phase has been emitted for this
+    /// session, so the event fires at most once. Loop-thread only (see
+    /// `Termination.emitClosingOnce`).
+    closing_emitted: bool = false,
 
     fn init(
         allocator: std.mem.Allocator,
@@ -634,13 +646,19 @@ pub const ServerSession = struct {
 
     /// Request a normal close of this session. Safe to call from any thread:
     /// only flags + wakes; the run loop performs the engine close and status
-    /// record on its own thread via `drainPendingClose`/`closeOnLoop`.
+    /// record on its own thread via `drainPendingClose`/`closeOnLoop`, and
+    /// emits the deferred `.closing` observer event there (observer callbacks
+    /// fire on the loop thread only).
+    ///
+    /// Lifetime: see `wake` — the `*ServerSession` and the Server-owned state
+    /// it reaches through borrowed pointers die when the session is reaped or
+    /// the `Server` is deinitialized, so external threads must quiesce first.
     pub fn close(self: *ServerSession) void {
         Termination.requestClose(self);
     }
 
     /// Request a normal close of this session. Safe to call from any thread;
-    /// see `close`.
+    /// see `close` for the threading and lifetime contract.
     pub fn requestClose(self: *ServerSession) void {
         Termination.requestClose(self);
     }
@@ -676,6 +694,17 @@ pub const ServerSession = struct {
         return self.peer_addr;
     }
 
+    /// Wake the server loop from any thread.
+    ///
+    /// Lifetime: `wake_state` and `udp_receive` are borrowed pointers into the
+    /// owning `Server`, and the `*ServerSession` itself is destroyed when the
+    /// server reaps the session (post-close) or in `Server.deinit`. There is
+    /// no handshake that stops an external waker mid-call, so any thread
+    /// holding a `*ServerSession` for cross-thread `wake`/`close`/`sendFrame`
+    /// must quiesce (stop calling and synchronize, e.g. join the thread or
+    /// drain its queue) before the session can be reaped or the server
+    /// deinitialized. Typically: `requestClose()` the session, wait for its
+    /// `on_close`, and stop using the pointer from then on.
     pub fn wake(self: *ServerSession) void {
         self.wake_state.request();
         if (comptime builtin.target.os.tag == .windows) {

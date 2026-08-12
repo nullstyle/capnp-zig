@@ -1921,6 +1921,7 @@ capnpc-zig.rpc.transport.quic.Connection.callback_lifecycle: field rpc.transport
 capnpc-zig.rpc.transport.quic.Connection.close: fn (*rpc.transport.quic.connection.Connection) void
 capnpc-zig.rpc.transport.quic.Connection.closeStatus: fn (*const rpc.transport.quic.connection.Connection) ?rpc.transport.quic.close.Status
 capnpc-zig.rpc.transport.quic.Connection.close_controller: field rpc.transport.quic.close_controller.Controller = <default>
+capnpc-zig.rpc.transport.quic.Connection.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.quic.Connection.context: fn (*const rpc.transport.quic.connection.Connection) ?*anyopaque
 capnpc-zig.rpc.transport.quic.Connection.deinit: fn (*rpc.transport.quic.connection.Connection) void
 capnpc-zig.rpc.transport.quic.Connection.endpoint: field rpc.transport.quic.endpoint.Runtime
@@ -2033,6 +2034,7 @@ capnpc-zig.rpc.transport.quic.Server.Session.close: fn (*rpc.transport.quic.serv
 capnpc-zig.rpc.transport.quic.Server.Session.closeStatus: fn (*const rpc.transport.quic.server.ServerSession) ?rpc.transport.quic.close.Status
 capnpc-zig.rpc.transport.quic.Server.Session.close_callback_invoked: field bool = false
 capnpc-zig.rpc.transport.quic.Server.Session.close_controller: field rpc.transport.quic.close_controller.Controller
+capnpc-zig.rpc.transport.quic.Server.Session.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.quic.Server.Session.context: fn (*const rpc.transport.quic.server.ServerSession) ?*anyopaque
 capnpc-zig.rpc.transport.quic.Server.Session.id: field u64
 capnpc-zig.rpc.transport.quic.Server.Session.io: field Io
@@ -2185,6 +2187,7 @@ capnpc-zig.rpc.transport.quic.ServerSession.baseline: field rpc.transport.quic.b
 capnpc-zig.rpc.transport.quic.ServerSession.callback_lifecycle: field rpc.transport.quic.callback_lifecycle.State(rpc.transport.quic.server.ServerSession) = <default>
 capnpc-zig.rpc.transport.quic.ServerSession.close_callback_invoked: field bool = false
 capnpc-zig.rpc.transport.quic.ServerSession.close_controller: field rpc.transport.quic.close_controller.Controller
+capnpc-zig.rpc.transport.quic.ServerSession.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.quic.ServerSession.id: field u64
 capnpc-zig.rpc.transport.quic.ServerSession.io: field Io
 capnpc-zig.rpc.transport.quic.ServerSession.max_message_bytes: field usize
@@ -2521,6 +2524,8 @@ capnpc-zig.rpc.transport.tcp.ConnectOptions.shutdown_drain_timeout_ms: field ?u6
 capnpc-zig.rpc.transport.tcp.ConnectOptions: struct
 capnpc-zig.rpc.transport.tcp.Connection.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.Connection.callback_depth: field usize = 0
+capnpc-zig.rpc.transport.tcp.Connection.close_requested: field atomic.Value(bool) = <default>
+capnpc-zig.rpc.transport.tcp.Connection.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.tcp.Connection.ctx: field ?*anyopaque = null
 capnpc-zig.rpc.transport.tcp.Connection.deinit_requested: field bool = false
 capnpc-zig.rpc.transport.tcp.Connection.deinitialized: field bool = false
@@ -2600,6 +2605,8 @@ capnpc-zig.rpc.transport.tcp.closeFd: fn (Io, rpc.transport.tcp.stream_transport
 capnpc-zig.rpc.transport.tcp.connection.Connection.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.connection.Connection.assertThreadAffinity: fn (*const rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.callback_depth: field usize = 0
+capnpc-zig.rpc.transport.tcp.connection.Connection.close_requested: field atomic.Value(bool) = <default>
+capnpc-zig.rpc.transport.tcp.connection.Connection.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.tcp.connection.Connection.context: fn (*const rpc.transport.tcp.connection.Connection) ?*anyopaque
 capnpc-zig.rpc.transport.tcp.connection.Connection.ctx: field ?*anyopaque = null
 capnpc-zig.rpc.transport.tcp.connection.Connection.deinit_requested: field bool = false

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The `.closing` observer event now always fires on the connection's
+  owner/run-loop thread (Experimental events surface).** Cross-thread
+  `requestClose()` — TCP and QUIC, including QUIC server sessions — no longer
+  invokes the observer on the requesting thread; the run loop emits the
+  deferred `.closing` when it observes the request, immediately before the
+  terminal `.close`/`.closed` pair. Owner-thread `close()` keeps its
+  synchronous emit, and the event fires at most once per connection either
+  way. Timing consequence: a deferred `.closing` needs a running loop to
+  observe the request — if the loop never runs, or has already exited, the
+  event is dropped. `events.Observer` now documents the full observer
+  threading contract, and `QuicServer.deinit`/`ServerSession.wake` document
+  the teardown contract for external waker threads (quiesce before
+  deinit/reap).
+
 ### Fixed
 
 - **Explicitly initialized zero-sized structs are no longer encoded as null.**

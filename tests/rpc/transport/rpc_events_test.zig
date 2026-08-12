@@ -34,6 +34,117 @@ const Recorder = struct {
     }
 };
 
+/// Records events together with the thread that delivered them, to pin the
+/// observer threading contract (`events.Observer`): callbacks fire on the
+/// owner/loop thread only. Safe without a mutex precisely because of that
+/// contract — the asserts below would fail before any data race mattered.
+const ThreadRecorder = struct {
+    events: [32]rpc_events.Event = undefined,
+    thread_ids: [32]std.Thread.Id = undefined,
+    count: usize = 0,
+
+    fn observer(self: *ThreadRecorder) rpc_events.Observer {
+        return rpc_events.Observer.init(self, onEvent);
+    }
+
+    fn onEvent(ctx: *anyopaque, event: rpc_events.Event) void {
+        const self: *ThreadRecorder = @ptrCast(@alignCast(ctx));
+        if (self.count >= self.events.len) @panic("too many RPC test events");
+        self.events[self.count] = event;
+        self.thread_ids[self.count] = std.Thread.getCurrentId();
+        self.count += 1;
+    }
+
+    fn indexOfPhase(self: *const ThreadRecorder, phase: rpc_events.ConnectionPhase) ?usize {
+        for (self.events[0..self.count], 0..) |event, i| {
+            if (event == .connection and event.connection.phase == phase) return i;
+        }
+        return null;
+    }
+
+    fn phaseCount(self: *const ThreadRecorder, phase: rpc_events.ConnectionPhase) usize {
+        var total: usize = 0;
+        for (self.events[0..self.count]) |event| {
+            if (event == .connection and event.connection.phase == phase) total += 1;
+        }
+        return total;
+    }
+};
+
+const TcpConnection = capnpc.rpc.transport.tcp.Connection;
+
+fn tcpNoopMessage(_: *TcpConnection, _: []const u8) anyerror!void {}
+fn tcpNoopError(_: *TcpConnection, _: anyerror) void {}
+fn tcpNoopClose(_: *TcpConnection) void {}
+
+fn tcpAdoptAndRun(conn: *TcpConnection) void {
+    // Adopt before entering the loop: the sanctioned handoff for running a
+    // connection on a thread other than the one that constructed it.
+    conn.adoptOwnerThread();
+    conn.run();
+}
+
+test "tcp cross-thread requestClose defers .closing to the run-loop thread, once" {
+    const tcp = capnpc.rpc.transport.tcp;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const fds = try tcp.createLoopbackSocketPair(io);
+    defer tcp.closeFd(io, fds[1]);
+
+    var recorder = ThreadRecorder{};
+    var conn = try TcpConnection.init(allocator, io, fds[0], .{ .observer = recorder.observer() });
+    var dummy: u8 = 0;
+    conn.start(&dummy, tcpNoopMessage, tcpNoopError, tcpNoopClose);
+
+    const runner = try std.Thread.spawn(.{}, tcpAdoptAndRun, .{&conn});
+    // Cross-thread close request: must not invoke the observer on THIS
+    // thread — the run loop emits the deferred `.closing` on its own thread
+    // when it observes the shutdown.
+    conn.requestClose();
+    runner.join();
+    // The run thread owned the connection; re-adopt (quiescent after join)
+    // for the owner-thread-only deinit.
+    conn.adoptOwnerThread();
+    conn.deinit();
+
+    const requester_tid = std.Thread.getCurrentId();
+    try std.testing.expectEqual(@as(usize, 1), recorder.phaseCount(.closing));
+    const closing_index = recorder.indexOfPhase(.closing).?;
+    const closed_index = recorder.indexOfPhase(.closed).?;
+    try std.testing.expect(closing_index < closed_index);
+    // `.closing` and `.closed` fired on the loop thread, not the requester.
+    try std.testing.expect(recorder.thread_ids[closing_index] != requester_tid);
+    try std.testing.expectEqual(recorder.thread_ids[closed_index], recorder.thread_ids[closing_index]);
+}
+
+test "tcp owner-thread close() emits .closing synchronously and the loop does not repeat it" {
+    const tcp = capnpc.rpc.transport.tcp;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const fds = try tcp.createLoopbackSocketPair(io);
+    defer tcp.closeFd(io, fds[1]);
+
+    var recorder = ThreadRecorder{};
+    var conn = try TcpConnection.init(allocator, io, fds[0], .{ .observer = recorder.observer() });
+    defer conn.deinit();
+    var dummy: u8 = 0;
+    conn.start(&dummy, tcpNoopMessage, tcpNoopError, tcpNoopClose);
+
+    // Raise the deferred-close flag too: the loop-exit path must yield to the
+    // synchronous owner-thread emit rather than double-firing.
+    conn.requestClose();
+    conn.close();
+    try std.testing.expectEqual(@as(usize, 1), recorder.phaseCount(.closing));
+
+    // Loop exits immediately (already closing) and must not emit a second
+    // `.closing` even though the cross-thread request flag is still raised.
+    conn.run();
+    try std.testing.expectEqual(@as(usize, 1), recorder.phaseCount(.closing));
+    try std.testing.expectEqual(@as(usize, 1), recorder.phaseCount(.closed));
+}
+
 test "tcp observer reports frame send metadata without frame bytes" {
     const net = std.Io.net;
 

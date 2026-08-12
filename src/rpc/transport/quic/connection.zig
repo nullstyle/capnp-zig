@@ -64,6 +64,11 @@ pub const Connection = struct {
     wake_state: wake_mod.Handle = .{},
     udp_receive: udp_receive_bridge.Bridge = .{},
 
+    /// True once the `.closing` connection phase has been emitted, so the
+    /// event fires at most once. Owner/loop-thread only (see
+    /// `Termination.emitClosingOnce`).
+    closing_emitted: bool = false,
+
     callback_lifecycle: CallbackLifecycle = .{},
 
     owner_thread_id: ?std.Thread.Id = null,
@@ -176,7 +181,7 @@ pub const Connection = struct {
     }
 
     pub fn close(self: *Connection) void {
-        events.emitConnection(self.observer, eventSource(self.mode), eventRole(self.role), .closing);
+        Termination.emitClosingOnce(self);
         Termination.close(self);
     }
 

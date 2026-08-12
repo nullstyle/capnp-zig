@@ -2023,6 +2023,8 @@ capnpc-zig.rpc.transport.tcp.ConnectOptions.shutdown_drain_timeout_ms: field ?u6
 capnpc-zig.rpc.transport.tcp.ConnectOptions: struct
 capnpc-zig.rpc.transport.tcp.Connection.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.Connection.callback_depth: field usize = 0
+capnpc-zig.rpc.transport.tcp.Connection.close_requested: field atomic.Value(bool) = <default>
+capnpc-zig.rpc.transport.tcp.Connection.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.tcp.Connection.ctx: field ?*anyopaque = null
 capnpc-zig.rpc.transport.tcp.Connection.deinit_requested: field bool = false
 capnpc-zig.rpc.transport.tcp.Connection.deinitialized: field bool = false
@@ -2102,6 +2104,8 @@ capnpc-zig.rpc.transport.tcp.closeFd: fn (Io, rpc.transport.tcp.stream_transport
 capnpc-zig.rpc.transport.tcp.connection.Connection.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.connection.Connection.assertThreadAffinity: fn (*const rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.callback_depth: field usize = 0
+capnpc-zig.rpc.transport.tcp.connection.Connection.close_requested: field atomic.Value(bool) = <default>
+capnpc-zig.rpc.transport.tcp.connection.Connection.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.tcp.connection.Connection.context: fn (*const rpc.transport.tcp.connection.Connection) ?*anyopaque
 capnpc-zig.rpc.transport.tcp.connection.Connection.ctx: field ?*anyopaque = null
 capnpc-zig.rpc.transport.tcp.connection.Connection.deinit_requested: field bool = false

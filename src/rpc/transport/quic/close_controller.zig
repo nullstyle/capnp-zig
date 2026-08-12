@@ -58,6 +58,14 @@ pub const Controller = struct {
         self.request();
     }
 
+    /// True while a cross-thread close request is still pending loop-thread
+    /// service. Lets teardown paths that never call `drainPendingClose`
+    /// (the compat connection loop) detect a deferred request so its
+    /// `.closing` observer event can be emitted on the loop thread.
+    pub fn hasPendingCrossThreadClose(self: *const Controller) bool {
+        return self.normal_close_pending.load(.acquire);
+    }
+
     /// Loop-thread side of `requestNormalCrossThread`. Runs the deferred
     /// engine close and status record exactly once, on the loop thread that
     /// owns the engines and close state. Returns true when a pending request

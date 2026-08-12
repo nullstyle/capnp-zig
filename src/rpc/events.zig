@@ -6,6 +6,28 @@ const std = @import("std");
 /// sizes, resource classes, message tags, and error names. They deliberately do
 /// not carry frame bytes, QUIC datagrams, application sideband payloads,
 /// certificates, keys, or wire close reason text.
+///
+/// ## Threading contract
+///
+/// Observer callbacks are invoked synchronously on the thread that owns the
+/// emitting component — for connections and sessions, the owner/run-loop
+/// thread; for `Peer`/`HostPeer`, the peer's owner thread. Cross-thread entry
+/// points (`requestClose`, `wake`, cross-thread `close` on QUIC server
+/// sessions) never invoke the observer directly: lifecycle events they
+/// trigger (`.closing`) are deferred to the loop thread, which emits them
+/// when it observes the request. Observers may therefore rely on:
+///
+/// - Callbacks for one connection never run concurrently, and its events are
+///   totally ordered: `.closing`, when it fires, precedes the terminal
+///   `.close`/`.closed` pair.
+/// - `.closing` fires at most once per connection, and only for a local
+///   deliberate close (`close`/`requestClose`), not for remote EOF or error
+///   teardown.
+/// - A deferred `.closing` needs a running loop to observe the request: if
+///   the loop never runs, or has already exited, the event is dropped.
+///
+/// Callbacks run inline in transport loops, so they should be cheap and must
+/// not call back into the emitting connection.
 pub const Observer = struct {
     ctx: *anyopaque,
     on_event: *const fn (ctx: *anyopaque, event: Event) void,
