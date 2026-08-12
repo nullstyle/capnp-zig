@@ -95,6 +95,14 @@ const experimental_overrides = [_]Rule{
     // necessarily adds a convenience entry under otherwise-Stable containers.
     // Keep these exact additions out of the frozen two-party/wire contract.
     e("capnpc-zig.rpc.peer.PeerLimits.max_retained_questions"),
+    // L4 Join lease controls are Experimental. The surrounding configuration
+    // structs are Stable because existing two-party entry points consume them,
+    // so exact exclusions prevent the broad prefixes below from accidentally
+    // freezing this pilot surface.
+    e("capnpc-zig.rpc.peer.PeerLimits.max_join_parts_per_join"),
+    e("capnpc-zig.rpc.peer.PeerLimits.max_pending_join_records"),
+    e("capnpc-zig.rpc.transport.tcp.client.ConnectOptions.join_timeout_ms"),
+    e("capnpc-zig.rpc.transport.tcp.server.ServeOptions.join_timeout_ms"),
     e("capnpc-zig.rpc.wire.protocol.MessageBuilder.buildProvidePromisedAnswerWithOps"),
     e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.markThirdPartyHosted"),
     e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.getThirdPartyHosted"),
