@@ -90,7 +90,7 @@ const allowlist = [_]Allow{
     .{ .path = ".github/workflows/ci.yml", .kind = .unsafe_optimize, .needle = "zig build -Doptimize=ReleaseFast bench-check", .reason = "benchmark-only job intentionally runs optimized code for stable timing" },
     .{ .path = "Justfile", .kind = .unsafe_optimize, .needle = "zig build -Doptimize=ReleaseFast bench-check", .reason = "benchmark-only local recipe intentionally runs optimized code for stable timing" },
     .{ .path = ".github/workflows/ci.yml", .kind = .unsafe_optimize, .needle = "Run teardown-heavy RPC suites under ReleaseFast", .reason = "memory-safety lane: ReleaseFast is the only mode that leaves freed memory unpoisoned, so a use-after-free reached from a destructor is observable there and nowhere else -- it caught the HostPeer.deinit ordering bug that Debug and ReleaseSafe both passed. Runs no shipped artifact and gates no release; accepts that `unreachable` is UB in this mode, which is why the lane is scoped to RPC teardown suites rather than the whole tree" },
-    .{ .path = "build.zig", .kind = .unsafe_optimize, .needle = "const release_fast_optimize: std.builtin.OptimizeMode = .ReleaseFast;", .reason = "reviewed compile mode for the bounded teardown and schema-ownership memory-safety lane; it builds no shipped artifact and exists specifically to expose unpoisoned use-after-free behavior" },
+    .{ .path = "build/build_impl.zig", .kind = .unsafe_optimize, .needle = "const release_fast_optimize: std.builtin.OptimizeMode = .ReleaseFast;", .reason = "reviewed compile mode for the bounded teardown and schema-ownership memory-safety lane; it builds no shipped artifact and exists specifically to expose unpoisoned use-after-free behavior" },
 
     // Reviewed exceptions in the compiler plugin, surfaced the first time
     // `src/capnpc-zig` was scanned for unsafe patterns (see `unsafe_dirs`).
@@ -146,6 +146,9 @@ const disclosure_extra_files = [_][]const u8{
 
 const build_policy_files = [_][]const u8{
     "build.zig",
+    // The B-series split: the graph (and its optimize-policy decisions) lives
+    // here; the repo-root build.zig is a thin driver. Both stay scanned.
+    "build/build_impl.zig",
     "Justfile",
     ".github/workflows/ci.yml",
 };
