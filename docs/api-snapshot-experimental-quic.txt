@@ -2887,9 +2887,9 @@ capnpc-zig.rpc.transport.tcp.ServerSession.user_ctx: field ?*anyopaque
 capnpc-zig.rpc.transport.tcp.ServerSession.user_on_close: field ?*const fn (?*anyopaque, *rpc.transport.tcp.server.ServerSession) void
 capnpc-zig.rpc.transport.tcp.ServerSession.user_on_error: field ?*const fn (?*anyopaque, *rpc.transport.tcp.server.ServerSession, anyerror) void
 capnpc-zig.rpc.transport.tcp.ServerSession: struct
-capnpc-zig.rpc.transport.tcp.SockAddrStorage.any: variant c.sockaddr__struct_*
-capnpc-zig.rpc.transport.tcp.SockAddrStorage.in6: variant c.sockaddr__struct_*.in6
-capnpc-zig.rpc.transport.tcp.SockAddrStorage.in: variant c.sockaddr__struct_*.in
+capnpc-zig.rpc.transport.tcp.SockAddrStorage.any: variant posix.sockaddr
+capnpc-zig.rpc.transport.tcp.SockAddrStorage.in6: variant posix.sockaddr.in6
+capnpc-zig.rpc.transport.tcp.SockAddrStorage.in: variant posix.sockaddr.in
 capnpc-zig.rpc.transport.tcp.SockAddrStorage: union
 capnpc-zig.rpc.transport.tcp.SocketFd.handle: field i32
 capnpc-zig.rpc.transport.tcp.Transport.allocator: field mem.Allocator
@@ -2966,9 +2966,9 @@ capnpc-zig.rpc.transport.tcp.runtime.Runtime.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.runtime.Runtime.deinit: fn (*rpc.transport.tcp.runtime.Runtime) void
 capnpc-zig.rpc.transport.tcp.runtime.Runtime.init: fn (mem.Allocator) error{}!rpc.transport.tcp.runtime.Runtime
 capnpc-zig.rpc.transport.tcp.runtime.Runtime: struct
-capnpc-zig.rpc.transport.tcp.runtime.SockAddrStorage.any: variant c.sockaddr__struct_*
-capnpc-zig.rpc.transport.tcp.runtime.SockAddrStorage.in6: variant c.sockaddr__struct_*.in6
-capnpc-zig.rpc.transport.tcp.runtime.SockAddrStorage.in: variant c.sockaddr__struct_*.in
+capnpc-zig.rpc.transport.tcp.runtime.SockAddrStorage.any: variant posix.sockaddr
+capnpc-zig.rpc.transport.tcp.runtime.SockAddrStorage.in6: variant posix.sockaddr.in6
+capnpc-zig.rpc.transport.tcp.runtime.SockAddrStorage.in: variant posix.sockaddr.in
 capnpc-zig.rpc.transport.tcp.runtime.SockAddrStorage: union
 capnpc-zig.rpc.transport.tcp.runtime.SocketFd.handle: field i32
 capnpc-zig.rpc.transport.tcp.runtime.closeFd: fn (Io, rpc.transport.tcp.stream_transport.SocketFd) void

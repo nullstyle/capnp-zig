@@ -789,6 +789,38 @@ fn lessThan(_: void, a: []const u8, b: []const u8) bool {
 /// Those suffixes are compiler-assigned anonymous-type counters: they shift
 /// whenever unrelated code changes and differ between targets, so keeping
 /// them verbatim would make the snapshot churn without any API change.
+/// std type spellings that name the SAME logical type with a different path
+/// per platform. `@typeName` reports the resolved declaration, so without this
+/// the rendered surface differs by the OS that generated it and no staleness
+/// gate can run in CI.
+///
+/// Concretely: `std.posix.sockaddr` resolves through translate-c on macOS
+/// (`c.sockaddr__struct_*`, after the numeric suffix is normalized above) and
+/// through `os.linux.sockaddr` on Linux. That is a property of std, not of our
+/// API — `SockAddrStorage` names `std.posix.sockaddr` on every platform — so
+/// the snapshot canonicalizes it rather than freezing one OS's spelling.
+/// Longest/base forms come first: replacing the base rewrites the `.in` and
+/// `.in6` members with it.
+const platform_type_aliases = [_]struct { from: []const u8, to: []const u8 }{
+    .{ .from = "c.sockaddr__struct_*", .to = "posix.sockaddr" },
+    .{ .from = "os.linux.sockaddr", .to = "posix.sockaddr" },
+    .{ .from = "os.darwin.sockaddr", .to = "posix.sockaddr" },
+    .{ .from = "os.windows.ws2_32.sockaddr", .to = "posix.sockaddr" },
+};
+
+fn canonicalizePlatformTypes(allocator: std.mem.Allocator, line: []u8) ![]u8 {
+    var current = line;
+    for (platform_type_aliases) |alias| {
+        if (std.mem.indexOf(u8, current, alias.from) == null) continue;
+        const size = std.mem.replacementSize(u8, current, alias.from, alias.to);
+        const next = try allocator.alloc(u8, size);
+        _ = std.mem.replace(u8, current, alias.from, alias.to, next);
+        allocator.free(current);
+        current = next;
+    }
+    return current;
+}
+
 fn normalizeLine(allocator: std.mem.Allocator, line: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -802,7 +834,7 @@ fn normalizeLine(allocator: std.mem.Allocator, line: []const u8) ![]u8 {
         rest = rest[end..];
     }
     try out.appendSlice(allocator, rest);
-    return out.toOwnedSlice(allocator);
+    return canonicalizePlatformTypes(allocator, try out.toOwnedSlice(allocator));
 }
 
 fn renderSnapshot(
