@@ -5541,7 +5541,10 @@ test "L3 affinity: an inbound Accept pins the index, exactly like a Provide does
     // Compared as an OPTIONAL on purpose: with the assert ablated this reports
     // `expected ..., found null` instead of unwrapping a null and aborting.
     try std.testing.expectEqual(
-        @as(?std.Thread.Id, std.Thread.getCurrentId()),
+        // u64, not std.Thread.Id: the stored id is widened so the
+        // api-snapshot renders platform-stably (Thread.Id is u32 on
+        // linux/windows, u64 on darwin).
+        @as(?u64, std.Thread.getCurrentId()),
         index.thread_id,
     );
 }
