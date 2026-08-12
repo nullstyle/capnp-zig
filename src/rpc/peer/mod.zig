@@ -46,6 +46,8 @@ const peer_call_send = @import("./call/peer_call_send.zig");
 const peer_call_inbound = @import("./call/peer_call_inbound.zig");
 const peer_join_accept = @import("./join/peer_join_accept.zig");
 const peer_join_relay = @import("./join/peer_join_relay.zig");
+const peer_provide_origination = @import("./provide/peer_provide_origination.zig");
+const peer_provide_inbound = @import("./provide/peer_provide_inbound.zig");
 const vat_host = @import("../vat/host.zig");
 const promises_promised_answer = @import("../promises/promised_answer.zig");
 
@@ -222,7 +224,7 @@ const ForwardCallContext = struct {
     answer_id: u32,
     mode: ForwardReturnMode,
 
-    fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+    pub fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
         const ctx: *ForwardCallContext = @ptrCast(@alignCast(ctx_ptr));
         ctx.inbound_caps.deinit();
         if (ctx.send_results_to_third_party_payload) |payload| allocator.free(payload);
@@ -300,7 +302,7 @@ const ForwardVineCallContext = struct {
         }
     }
 
-    fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+    pub fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
         const ctx: *ForwardVineCallContext = @ptrCast(@alignCast(ctx_ptr));
         if (ctx.recipient_peer) |recipient| {
             if (ctx.recipient_link_registered) {
@@ -353,7 +355,7 @@ const CrossPeerProxyContext = struct {
     /// if the source peer dies first — its import table dies with it.
     release_source_import_pin_id: ?u32 = null,
 
-    fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+    pub fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
         const ctx: *CrossPeerProxyContext = @ptrCast(@alignCast(ctx_ptr));
         if (ctx.source_peer) |source_peer| {
             source_peer.deregisterCrossPeerProxy(ctx.owner_peer, ctx.export_id);
@@ -411,7 +413,7 @@ const CrossPeerProxyCallContext = struct {
         }
     }
 
-    fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+    pub fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
         const ctx: *CrossPeerProxyCallContext = @ptrCast(@alignCast(ctx_ptr));
         ctx.rollbackParamProxies();
         ctx.created_param_proxy_ids.deinit(allocator);
@@ -455,7 +457,7 @@ const CrossPeerCapMapContext = struct {
         };
     }
 
-    fn deinit(ctx: *CrossPeerCapMapContext) void {
+    pub fn deinit(ctx: *CrossPeerCapMapContext) void {
         ctx.remapped_by_index.deinit();
     }
 };
@@ -481,7 +483,7 @@ const CrossPeerReturnRelayContext = struct {
         }
     }
 
-    fn deinit(ctx: *CrossPeerReturnRelayContext, allocator: std.mem.Allocator) void {
+    pub fn deinit(ctx: *CrossPeerReturnRelayContext, allocator: std.mem.Allocator) void {
         ctx.rollbackResultProxies();
         ctx.created_result_proxy_ids.deinit(allocator);
     }
@@ -783,7 +785,7 @@ const OutboundProvide = struct {
         op.stashed_accept_disembargo = null;
     }
 
-    fn deinit(op: *OutboundProvide, allocator: std.mem.Allocator) void {
+    pub fn deinit(op: *OutboundProvide, allocator: std.mem.Allocator) void {
         op.deinitStash(allocator);
         op.forward_target.deinit(allocator);
     }
@@ -796,7 +798,7 @@ const ProvideOriginationTarget = union(enum) {
         ops: []const protocol.PromisedAnswerOp,
     },
 
-    fn cloneForwardTarget(
+    pub fn cloneForwardTarget(
         target: ProvideOriginationTarget,
         allocator: std.mem.Allocator,
     ) !provide_forward_target.ForwardTarget {
@@ -813,7 +815,7 @@ const ProvideOriginationTarget = union(enum) {
         };
     }
 
-    fn buildProvide(
+    pub fn buildProvide(
         target: ProvideOriginationTarget,
         builder: *protocol.MessageBuilder,
         provide_question_id: u32,
@@ -1887,13 +1889,13 @@ pub const Peer = struct {
             self.hosted_joins.count() != 0;
     }
 
-    fn beginJoinNetworkBorrow(self: *Peer) !JoinNetwork {
+    pub fn beginJoinNetworkBorrow(self: *Peer) !JoinNetwork {
         const network = self.join_network orelse return error.NoJoinNetwork;
         self.join_network_borrows = try std.math.add(usize, self.join_network_borrows, 1);
         return network;
     }
 
-    fn endJoinNetworkBorrow(self: *Peer) void {
+    pub fn endJoinNetworkBorrow(self: *Peer) void {
         std.debug.assert(self.join_network_borrows > 0);
         self.join_network_borrows -= 1;
     }
@@ -2469,7 +2471,7 @@ pub const Peer = struct {
         return total;
     }
 
-    fn pendingAcceptEmbargoKeyBytes(self: *const Peer) usize {
+    pub fn pendingAcceptEmbargoKeyBytes(self: *const Peer) usize {
         var total: usize = 0;
         var it = self.pending_accepts_by_embargo.iterator();
         while (it.next()) |entry| {
@@ -2500,7 +2502,7 @@ pub const Peer = struct {
         return total;
     }
 
-    fn ensureProvideBudget(self: *Peer, question_id: u32, recipient_key: []const u8) !void {
+    pub fn ensureProvideBudget(self: *Peer, question_id: u32, recipient_key: []const u8) !void {
         try ensureCountLimit(
             self.provides_by_question.contains(question_id),
             self.provides_by_question.count(),
@@ -2518,7 +2520,7 @@ pub const Peer = struct {
         );
     }
 
-    fn ensureJoinBudget(self: *Peer, join_key_part: JoinKeyPart, question_id: u32) !void {
+    pub fn ensureJoinBudget(self: *Peer, join_key_part: JoinKeyPart, question_id: u32) !void {
         if (@as(usize, join_key_part.part_count) > self.limits.max_join_parts_per_join) {
             events.emitResourceRejection(
                 self.observer,
@@ -2583,7 +2585,7 @@ pub const Peer = struct {
         try self.pending_join_result_answers.ensureTotalCapacity(result_capacity);
     }
 
-    fn ensurePendingThirdPartyAwaitBudget(self: *Peer, completion_key: []const u8) !void {
+    pub fn ensurePendingThirdPartyAwaitBudget(self: *Peer, completion_key: []const u8) !void {
         try ensureCountLimit(
             self.pending_third_party_awaits.contains(completion_key),
             self.pending_third_party_awaits.count(),
@@ -2596,7 +2598,7 @@ pub const Peer = struct {
         );
     }
 
-    fn ensurePendingThirdPartyAnswerBudget(self: *Peer, completion_key: []const u8) !void {
+    pub fn ensurePendingThirdPartyAnswerBudget(self: *Peer, completion_key: []const u8) !void {
         try ensureCountLimit(
             self.pending_third_party_answers.contains(completion_key),
             self.pending_third_party_answers.count(),
@@ -2740,45 +2742,16 @@ pub const Peer = struct {
 
     // -- Three-party handoff ORIGINATION (Provide / Accept) -------------------
 
-    /// No-op Return callback for a held-open Provide question. A `Provide`
-    /// receives NO `Return` (rpc.capnp:834-847); the question is registered only
-    /// to reserve its id and to be Finished later (on vine release or teardown).
-    /// The single case that invokes this is the shutdown drain delivering a
-    /// synthetic local exception, which the held-open provision safely ignores.
-    fn onProvideNoReturn(
-        _: *anyopaque,
-        _: *Peer,
-        _: protocol.Return,
-        _: *const cap_table.InboundCapTable,
-    ) anyerror!void {}
+    // ================= L3 origination + inbound Provide/Accept/Join arms ====
+    //
+    // Bodies live in provide/peer_provide_origination.zig and
+    // provide/peer_provide_inbound.zig, generic over Peer (the
+    // JoinCoordinator extraction contract).
 
-    /// Originate a three-party handoff: hand the capability named by
-    /// `provided_target` (a `MessageTarget` local to the vat this peer is
-    /// connected to — the HOST of the provided cap, VatC in the spec) to a third
-    /// party (VatA), so VatA can pick it up directly with an `Accept`.
-    ///
-    /// Message direction follows rpc.capnp: the `Provide` goes to the HOST of
-    /// the provided cap (this `self` peer = the VatB↔VatC connection). The vine
-    /// export and the `thirdPartyHosted` descriptor, by contrast, belong on the
-    /// host-of-recipient connection (`host_of_recipient` = the VatB↔VatA
-    /// connection), since that is where VatA takes its wire reference and where
-    /// the vine's later `Release` arrives.
-    ///
-    /// Steps:
-    ///   1. Register a held-open Provide question on `self` (no Return; Finished
-    ///      when the recipient releases the vine — see `handleRelease`).
-    ///   2. Mint a vine export on `host_of_recipient` and mark it
-    ///      third-party-hosted with `contact_payload` (the `ThirdPartyToContact`)
-    ///      so the next descriptor emitted for the vine resolves to
-    ///      `thirdPartyHosted{ id = contact, vineId }`.
-    ///   3. Record the vine → Provide-question coupling on `host_of_recipient`.
-    ///   4. Send the `Provide` to `self` (VatC) with `recipient` = the
-    ///      `ThirdPartyToAwait`.
-    ///
-    /// Returns the vine id + Provide question id. The caller then drives the
-    /// `thirdPartyHosted` emission by sending `host_of_recipient` a payload that
-    /// carries the vine export (which is marked); the recipient picks it up and
-    /// eventually `sendAccept`s on its own connection to VatC.
+    const ProvideOriginationImpl = peer_provide_origination.ProvideOrigination(Peer);
+    const ProvideInboundImpl = peer_provide_inbound.ProvideInbound(Peer);
+
+    /// Body in `provide/peer_provide_origination.zig`.
     pub fn sendProvide(
         self: *Peer,
         provided_target: protocol.MessageTarget,
@@ -2786,20 +2759,10 @@ pub const Peer = struct {
         host_of_recipient: *Peer,
         contact_payload: []const u8,
     ) !ProvideHandle {
-        return self.sendProvideInternal(
-            .{ .message_target = provided_target },
-            recipient,
-            host_of_recipient,
-            contact_payload,
-            null,
-        );
+        return ProvideOriginationImpl.sendProvide(self, provided_target, recipient, host_of_recipient, contact_payload);
     }
 
-    /// Originate a Provide whose target is an explicitly retained outbound
-    /// answer on this peer. The answer must have returned and remain
-    /// caller-owned. A successful send transfers that answer into the
-    /// vine/Provide coupling; manual Finish then rejects it, and coupling
-    /// completion Finishes both the Provide and source questions.
+    /// Body in `provide/peer_provide_origination.zig`.
     pub fn sendProvideFromRetainedAnswer(
         self: *Peer,
         retained_question_id: u32,
@@ -2808,137 +2771,10 @@ pub const Peer = struct {
         host_of_recipient: *Peer,
         contact_payload: []const u8,
     ) !ProvideHandle {
-        self.assertThreadAffinity();
-        host_of_recipient.assertThreadAffinity();
-        const wire_answer_id = try self.claimRetainedQuestionForTransfer(retained_question_id);
-        var transfer_claimed = true;
-        errdefer if (transfer_claimed) self.rollbackRetainedQuestionTransfer(retained_question_id);
-
-        const handle = try self.sendProvideInternal(
-            .{ .retained_answer = .{
-                .question_id = wire_answer_id,
-                .ops = ops,
-            } },
-            recipient,
-            host_of_recipient,
-            contact_payload,
-            retained_question_id,
-        );
-        // `sendBuilder` may synchronously drive recipient teardown. A terminal
-        // close drains the coupling before this frame resumes; in that case the
-        // transfer never commits and caller ownership is restored by errdefer.
-        if (!host_of_recipient.outbound_provides.contains(handle.vine_id)) {
-            return error.HandoffClosedDuringTransfer;
-        }
-        self.commitRetainedQuestionTransfer(retained_question_id) catch |err| {
-            // The Provide and vine are already published, so a failed commit
-            // must explicitly unwind them rather than returning an ownerless
-            // handle. Finish publication is durable even if its wire send fails.
-            if (host_of_recipient.outbound_provides.fetchRemove(handle.vine_id)) |removed| {
-                var op = removed.value;
-                op.deinit(host_of_recipient.allocator);
-            }
-            host_of_recipient.caps.clearThirdPartyHosted(handle.vine_id);
-            host_of_recipient.releaseVineExport(handle.vine_id);
-            self.deregisterCoupledVine(host_of_recipient, handle.vine_id);
-            host_of_recipient.finishOriginatedProvide(
-                self,
-                handle.question_id,
-                retained_question_id,
-            );
-            return err;
-        };
-        transfer_claimed = false;
-        return handle;
+        return ProvideOriginationImpl.sendProvideFromRetainedAnswer(self, retained_question_id, ops, recipient, host_of_recipient, contact_payload);
     }
 
-    fn sendProvideInternal(
-        self: *Peer,
-        provided_target: ProvideOriginationTarget,
-        recipient: message.AnyPointerReader,
-        host_of_recipient: *Peer,
-        contact_payload: []const u8,
-        retained_source_question_id: ?u32,
-    ) !ProvideHandle {
-        self.assertThreadAffinity();
-        host_of_recipient.assertThreadAffinity();
-        if (self.is_shutting_down or host_of_recipient.is_shutting_down) return error.PeerShuttingDown;
-        if (self.transport_close_notified or host_of_recipient.transport_close_notified) {
-            return error.TransportClosed;
-        }
-
-        var forward_target = try provided_target.cloneForwardTarget(host_of_recipient.allocator);
-        var forward_target_owned = true;
-        defer if (forward_target_owned) forward_target.deinit(host_of_recipient.allocator);
-
-        // (1) Held-open Provide question on the host-of-provided-cap connection.
-        //     ctx is unused by onProvideNoReturn; pass a valid pointer (self)
-        //     rather than undefined so no dispatch path ever reads garbage.
-        const question_id = try self.allocateQuestion(self, onProvideNoReturn);
-        errdefer self.removeQuestion(question_id);
-        // A Provide is deliberately held open until the recipient drops its
-        // vine; it never receives a Return. The ordinary outbound-call timeout
-        // therefore must not cancel it while a valid handoff is in flight.
-        if (self.questions.getPtr(question_id)) |question| {
-            question.deadline_ns = null;
-        }
-
-        // (2) Vine export on the host-of-recipient connection. ctx is unused by
-        //     vineRejectingCall; pass host_of_recipient rather than undefined.
-        const vine_id = try host_of_recipient.addExport(.{
-            .ctx = host_of_recipient,
-            .on_call = vineRejectingCall,
-        });
-        errdefer host_of_recipient.releaseVineExport(vine_id);
-        try host_of_recipient.caps.markThirdPartyHosted(vine_id, contact_payload, vine_id);
-        errdefer host_of_recipient.caps.clearThirdPartyHosted(vine_id);
-
-        // (3) Couple the vine to the held-open Provide question so a later
-        //     vine Release (post-Accept) Finishes the provision on VatC.
-        try ensureCountLimit(
-            host_of_recipient.outbound_provides.contains(vine_id),
-            host_of_recipient.outbound_provides.count(),
-            host_of_recipient.limits.max_active_provides,
-        );
-        try host_of_recipient.outbound_provides.put(vine_id, .{
-            .provide_peer = self,
-            .provide_question_id = question_id,
-            .retained_source_question_id = retained_source_question_id,
-            .forward_target = forward_target,
-        });
-        forward_target_owned = false;
-        errdefer if (host_of_recipient.outbound_provides.fetchRemove(vine_id)) |removed| {
-            var op = removed.value;
-            op.deinit(host_of_recipient.allocator);
-        };
-
-        // (3b) LIVENESS (BUG #55): register the reverse back-link on `self` (the
-        //      host-of-provided-cap peer). If `self` deinits before the vine is
-        //      released, this lets it null the borrowed pointer above so the
-        //      later Release never dereferences freed memory. Must land or the
-        //      whole coupling unwinds (the errdefers above roll it back).
-        try self.registerCoupledVine(host_of_recipient, vine_id);
-        errdefer self.deregisterCoupledVine(host_of_recipient, vine_id);
-
-        // (4) Send the Provide to the host of the provided cap (VatC).
-        var builder = protocol.MessageBuilder.init(self.allocator);
-        defer builder.deinit();
-        try provided_target.buildProvide(&builder, question_id, recipient);
-        try self.sendBuilder(&builder);
-
-        log.debug("sent provide question_id={} vine_id={}", .{ question_id, vine_id });
-        return .{ .question_id = question_id, .vine_id = vine_id };
-    }
-
-    /// Pick up a capability a third party provided to us: send `Accept` to the
-    /// HOST of the provided cap (this `self` peer = the VatA↔VatC connection).
-    /// `provision` is the `ThirdPartyCompletion` obtained from the VatNetwork,
-    /// matching the `ThirdPartyToAwait` VatB placed in its `Provide`. The
-    /// `on_return` callback receives the `Return` carrying the accepted cap
-    /// (standard import-from-return; see the host side `sendReturnProvidedTarget`).
-    ///
-    /// This slice sends `embargo = null` (no in-flight-promise ordering — that
-    /// is Phase 4). Returns the Accept question id.
+    /// Body in `provide/peer_provide_origination.zig`.
     pub fn sendAccept(
         self: *Peer,
         provision: message.AnyPointerReader,
@@ -2946,21 +2782,10 @@ pub const Peer = struct {
         ctx: *anyopaque,
         on_return: QuestionCallback,
     ) !u32 {
-        self.assertThreadAffinity();
-        if (self.is_shutting_down) return error.PeerShuttingDown;
-
-        const question_id = try self.allocateQuestion(ctx, on_return);
-        errdefer self.removeQuestion(question_id);
-
-        var builder = protocol.MessageBuilder.init(self.allocator);
-        defer builder.deinit();
-        try builder.buildAccept(question_id, provision, embargo);
-        try self.sendBuilder(&builder);
-
-        log.debug("sent accept question_id={}", .{question_id});
-        return question_id;
+        return ProvideOriginationImpl.sendAccept(self, provision, embargo, ctx, on_return);
     }
 
+    /// Body in `provide/peer_provide_origination.zig`.
     pub fn sendAcceptNoRestore(
         self: *Peer,
         provision: message.AnyPointerReader,
@@ -2969,30 +2794,10 @@ pub const Peer = struct {
         on_return: QuestionCallback,
         suppress_auto_finish: bool,
     ) !u32 {
-        self.assertThreadAffinity();
-        if (self.is_shutting_down) return error.PeerShuttingDown;
-
-        const question_id = try self.allocateQuestionNoRestore(ctx, on_return);
-        errdefer self.removeQuestion(question_id);
-        if (suppress_auto_finish) {
-            const question = self.questions.getPtr(question_id) orelse return error.MissingAllocatedQuestion;
-            question.suppress_auto_finish = true;
-        }
-
-        var builder = protocol.MessageBuilder.init(self.allocator);
-        defer builder.deinit();
-        try builder.buildAccept(question_id, provision, embargo);
-        try self.sendBuilder(&builder);
-
-        log.debug("sent accept question_id={}", .{question_id});
-        return question_id;
+        return ProvideOriginationImpl.sendAcceptNoRestore(self, provision, embargo, ctx, on_return, suppress_auto_finish);
     }
 
-    /// Experimental Level-4 Join origination. This is a low-level/manual
-    /// helper: callers provide the raw `Join.keyPart` AnyPointer and receive the
-    /// ordinary `Return` callback for the Join question. It intentionally does
-    /// not implement the full E-join workflow, public `JoinResult` processing,
-    /// or direct-connection formation.
+    /// Body in `provide/peer_provide_origination.zig`.
     pub fn sendJoinExperimental(
         self: *Peer,
         target: protocol.MessageTarget,
@@ -3000,9 +2805,10 @@ pub const Peer = struct {
         ctx: *anyopaque,
         on_return: QuestionCallback,
     ) !u32 {
-        return self.sendJoinExperimentalWithAutoFinish(target, key_part, ctx, on_return, false);
+        return ProvideOriginationImpl.sendJoinExperimental(self, target, key_part, ctx, on_return);
     }
 
+    /// Body in `provide/peer_provide_origination.zig`.
     fn sendJoinExperimentalWithAutoFinish(
         self: *Peer,
         target: protocol.MessageTarget,
@@ -3011,166 +2817,74 @@ pub const Peer = struct {
         on_return: QuestionCallback,
         suppress_auto_finish: bool,
     ) !u32 {
-        self.assertThreadAffinity();
-        if (self.is_shutting_down) return error.PeerShuttingDown;
-
-        const question_id = try self.allocateQuestion(ctx, on_return);
-        errdefer self.removeQuestion(question_id);
-        if (suppress_auto_finish) {
-            const question = self.questions.getPtr(question_id) orelse return error.MissingAllocatedQuestion;
-            question.suppress_auto_finish = true;
-        }
-
-        var builder = protocol.MessageBuilder.init(self.allocator);
-        defer builder.deinit();
-        try builder.buildJoin(question_id, target, key_part);
-        try self.sendBuilder(&builder);
-
-        log.debug("sent experimental join question_id={}", .{question_id});
-        return question_id;
+        return ProvideOriginationImpl.sendJoinExperimentalWithAutoFinish(self, target, key_part, ctx, on_return, suppress_auto_finish);
     }
 
-    /// Allocate the next callee-chosen answer id for an outbound
-    /// `ThirdPartyAnswer`. Per rpc.capnp:936-941 the value must have bit 30 set
-    /// and bit 31 clear ([2^30, 2^31)); this is enforced by masking the counter
-    /// back into range on every wrap, and asserted via
-    /// `third_party.isThirdPartyAnswerId`. The chosen id is NOT recorded in
-    /// any local table on the callee: it names the answer on the *recipient's*
-    /// (VatA's) connection, and the callee only re-uses it as the `answerId` of
-    /// the follow-up `Return` (which is a plain outbound frame on the same
-    /// wire). Callee and recipient are different vats, so there is no collision
-    /// with the callee's own caller-allocated question ids.
-    fn allocateThirdPartyAnswerId(self: *Peer) u32 {
-        var id = self.next_third_party_answer_id;
-        // Keep bit 30 set / bit 31 clear even across a full-range wrap.
-        if (id < third_party_answer_id_base or id >= third_party_answer_id_limit) {
-            id = third_party_answer_id_base;
-        }
-        var next = id + 1;
-        if (next >= third_party_answer_id_limit) next = third_party_answer_id_base;
-        self.next_third_party_answer_id = next;
-        std.debug.assert(third_party.isThirdPartyAnswerId(id));
-        return id;
-    }
-
+    /// Body in `provide/peer_provide_origination.zig`.
     fn allocateUnusedThirdPartyAnswerId(self: *Peer) !u32 {
-        const first = self.next_third_party_answer_id;
-        while (true) {
-            const id = self.allocateThirdPartyAnswerId();
-            if (!(try self.inboundQuestionIdInUse(id)) and
-                !self.incoming_automatic_third_party_routes.contains(id))
-            {
-                return id;
-            }
-            if (self.next_third_party_answer_id == first) return error.AnswerIdExhausted;
-        }
+        return ProvideOriginationImpl.allocateUnusedThirdPartyAnswerId(self);
     }
 
+    /// Body in `provide/peer_provide_origination.zig`.
     fn sendThirdPartyAnswerWithId(
         self: *Peer,
         answer_id: u32,
         completion: message.AnyPointerReader,
     ) !void {
-        var builder = protocol.MessageBuilder.init(self.allocator);
-        defer builder.deinit();
-        try builder.buildThirdPartyAnswer(answer_id, completion);
-        try self.sendBuilder(&builder);
-        log.debug("sent thirdPartyAnswer answer_id={}", .{answer_id});
+        return ProvideOriginationImpl.sendThirdPartyAnswerWithId(self, answer_id, completion);
     }
 
-    /// Callee → third party: send a `ThirdPartyAnswer` on the connection to the
-    /// vat that will receive this call's results (VatA). This is the
-    /// redirected-return origination for a call that arrived with
-    /// `sendResultsTo = thirdParty` (rpc.capnp:494-505, 906-942): the callee
-    /// (VatC) connects to the third party and adopts the call into that
-    /// connection by announcing a callee-allocated `answerId`. The recipient
-    /// matches `completion` (the `ThirdPartyCompletion`) against the
-    /// `awaitFromThirdParty` bookkeeping it was primed with, adopts its parked
-    /// question under `answer_id`, and thereafter accepts the follow-up `Return`
-    /// (which the callee sends under the SAME `answer_id`) as that question's
-    /// results.
-    ///
-    /// `completion` must serialize to bytes byte-identical to the recipient's
-    /// awaited `ThirdPartyToAwait`/`ThirdPartyCompletion` — the recipient keys
-    /// its await table on those bytes (see `handleThirdPartyAnswer`).
-    ///
-    /// Returns the callee-allocated answer id, which the caller then re-uses as
-    /// the `answerId` of the follow-up results `Return` on this same peer.
+    /// Body in `provide/peer_provide_origination.zig`.
     pub fn sendThirdPartyAnswer(
         self: *Peer,
         completion: message.AnyPointerReader,
     ) !u32 {
-        self.assertThreadAffinity();
-        if (self.is_shutting_down) return error.PeerShuttingDown;
-
-        const answer_id = try self.allocateUnusedThirdPartyAnswerId();
-        try self.sendThirdPartyAnswerWithId(answer_id, completion);
-        return answer_id;
+        return ProvideOriginationImpl.sendThirdPartyAnswer(self, completion);
     }
 
-    /// Third-party (recipient) side: park an outbound question that awaits a
-    /// `ThirdPartyAnswer` from the callee, keyed by the completion bytes it will
-    /// present. This is the recipient-side half of the `awaitFromThirdParty`
-    /// bookkeeping the receive path already reads: when the callee later sends a
-    /// `ThirdPartyAnswer` whose completion matches `completion`, `handleThirdPartyAnswer`
-    /// adopts this parked question under the callee-allocated answer id, and the
-    /// follow-up `Return` completes it via `on_return`.
-    ///
-    /// In the spec's canonical proxy topology this parking happens implicitly
-    /// when the recipient receives a `Return{awaitFromThirdParty}` for a call it
-    /// itself made (`handleReturnAcceptFromThirdParty`). In a first-class
-    /// origination the recipient (VatA) never made that call — the introducer
-    /// (VatB) did — so the recipient is primed explicitly here. `completion`
-    /// must serialize byte-identically to the completion the callee will send.
-    ///
-    /// The parked question is delivered exactly one `Return` (carrying the real
-    /// results) and needs no auto-Finish of its own; adoption inserts it into
-    /// the normal questions table under the adopted id, after which it follows
-    /// the standard Return lifecycle.
+    /// Body in `provide/peer_provide_origination.zig`.
     pub fn registerPendingThirdPartyAwait(
         self: *Peer,
         completion: message.AnyPointerReader,
         ctx: *anyopaque,
         on_return: QuestionCallback,
     ) !void {
-        self.assertThreadAffinity();
-        if (self.is_shutting_down) return error.PeerShuttingDown;
+        return ProvideOriginationImpl.registerPendingThirdPartyAwait(self, completion, ctx, on_return);
+    }
 
-        const completion_key = (try captureAnyPointerPayload(self.allocator, completion)) orelse
-            return error.MissingThirdPartyPayload;
-        var owns_key = true;
-        errdefer if (owns_key) self.allocator.free(completion_key);
+    /// Body in `provide/peer_provide_inbound.zig`.
+    fn queueEmbargoedAccept(
+        self: *Peer,
+        answer_id: u32,
+        provided_question_id: u32,
+        embargo: []const u8,
+    ) !void {
+        return ProvideInboundImpl.queueEmbargoedAccept(self, answer_id, provided_question_id, embargo);
+    }
 
-        if (self.pending_third_party_awaits.contains(completion_key)) {
-            return error.DuplicateThirdPartyAwait;
-        }
+    /// Body in `provide/peer_provide_inbound.zig`.
+    fn handleProvide(self: *Peer, provide: protocol.Provide) !void {
+        return ProvideInboundImpl.handleProvide(self, provide);
+    }
 
-        // Reserve an answer-id slot's worth of question budget so the later
-        // adoption into `questions` cannot overflow silently. The parked
-        // question is a normal outbound question that has not yet been assigned
-        // a wire id (the callee chooses it), so it is NOT inserted into
-        // `questions` here — only into the await table.
-        try self.ensurePendingThirdPartyAwaitBudget(completion_key);
+    /// Body in `provide/peer_provide_inbound.zig`.
+    fn handleAccept(self: *Peer, accept: protocol.Accept) !void {
+        return ProvideInboundImpl.handleAccept(self, accept);
+    }
 
-        const question = Question{
-            .ctx = ctx,
-            .on_return = on_return,
-            // The adopted question follows the standard Return lifecycle: when
-            // the callee's follow-up results `Return` (under the callee-chosen
-            // answer id) arrives, the recipient sends a `Finish` for that id
-            // back to the callee, per rpc.capnp:924-926 ("the receiver ... must
-            // eventually send a Finish message"). That Finish clears the
-            // callee's answer-table entry for the redirected results, so
-            // auto-finish must NOT be suppressed here.
-        };
+    /// Body in `provide/peer_provide_inbound.zig`.
+    fn handleJoin(self: *Peer, join: protocol.Join) !void {
+        return ProvideInboundImpl.handleJoin(self, join);
+    }
 
-        try third_party.putPendingAwait(
-            PendingThirdPartyAwait,
-            &self.pending_third_party_awaits,
-            completion_key,
-            .{ .question_id = 0, .question = question },
-        );
-        owns_key = false;
+    /// Body in `provide/peer_provide_inbound.zig`.
+    fn handleThirdPartyAnswer(self: *Peer, third_party_answer: protocol.ThirdPartyAnswer) !void {
+        return ProvideInboundImpl.handleThirdPartyAnswer(self, third_party_answer);
+    }
+
+    /// Body in `provide/peer_provide_inbound.zig`.
+    fn completeJoinWithL4Runtime(self: *Peer, join_id: u32) !void {
+        return ProvideInboundImpl.completeJoinWithL4Runtime(self, join_id);
     }
 
     /// Call handler installed on a vine export. A vine is primarily a
@@ -3182,7 +2896,7 @@ pub const Peer = struct {
     /// torn down). That is genuine non-handoff misuse
     /// or a raced teardown; answer it with a clean exception rather than
     /// silently dropping it.
-    fn vineRejectingCall(
+    pub fn vineRejectingCall(
         _: *anyopaque,
         peer: *Peer,
         call: protocol.Call,
@@ -3429,7 +3143,7 @@ pub const Peer = struct {
     /// before any `thirdPartyHosted` descriptor has been emitted (so it holds no
     /// wire reference and no Release is owed). Removes the export table entry and
     /// clears its cap-table identity directly — `releaseExport(_, 0)` is a no-op.
-    fn releaseVineExport(self: *Peer, vine_id: u32) void {
+    pub fn releaseVineExport(self: *Peer, vine_id: u32) void {
         _ = self.exports.remove(vine_id);
         self.caps.clearExport(vine_id);
     }
@@ -3857,17 +3571,17 @@ pub const Peer = struct {
     /// allocation-free and is valid only after the terminal Return became
     /// callback-visible. Commit keeps the entry tracked as transferred until
     /// that lifecycle successfully Finishes the source answer.
-    fn claimRetainedQuestionForTransfer(self: *Peer, question_id: u32) !u32 {
+    pub fn claimRetainedQuestionForTransfer(self: *Peer, question_id: u32) !u32 {
         self.assertThreadAffinity();
         return try self.retained_questions.beginTransfer(question_id);
     }
 
-    fn rollbackRetainedQuestionTransfer(self: *Peer, question_id: u32) void {
+    pub fn rollbackRetainedQuestionTransfer(self: *Peer, question_id: u32) void {
         self.assertThreadAffinity();
         self.retained_questions.rollbackTransfer(question_id);
     }
 
-    fn commitRetainedQuestionTransfer(self: *Peer, question_id: u32) !void {
+    pub fn commitRetainedQuestionTransfer(self: *Peer, question_id: u32) !void {
         self.assertThreadAffinity();
         if (!self.retained_questions.commitTransfer(question_id)) {
             return error.RetainedQuestionTransferNotInProgress;
@@ -5701,7 +5415,7 @@ pub const Peer = struct {
 
     /// PHASE A of Provide registration into the vat index; body in
     /// `provision/peer_provision_hosting.zig`.
-    fn registerProvisionForProvide(
+    pub fn registerProvisionForProvide(
         self: *Peer,
         idx: *ProvisionIndex,
         provide_question_id: u32,
@@ -5711,7 +5425,7 @@ pub const Peer = struct {
     }
 
     /// Index-mode Accept path; body in `provision/peer_provision_hosting.zig`.
-    fn handleAcceptWithProvisionIndex(self: *Peer, idx: *ProvisionIndex, accept: protocol.Accept) !void {
+    pub fn handleAcceptWithProvisionIndex(self: *Peer, idx: *ProvisionIndex, accept: protocol.Accept) !void {
         return ProvisionHosting.handleAcceptWithProvisionIndex(self, idx, accept);
     }
 
@@ -5723,7 +5437,7 @@ pub const Peer = struct {
 
     /// PHASE B of adoption: transition parked accepts a Provide just adopted;
     /// body in `provision/peer_provision_hosting.zig`.
-    fn drainAdoptedParkedAccepts(self: *Peer, idx: *ProvisionIndex, prov: *ProvisionIndex.Provision) !void {
+    pub fn drainAdoptedParkedAccepts(self: *Peer, idx: *ProvisionIndex, prov: *ProvisionIndex.Provision) !void {
         return ProvisionHosting.drainAdoptedParkedAccepts(self, idx, prov);
     }
 
@@ -7380,7 +7094,7 @@ pub const Peer = struct {
         }
     }
 
-    fn finishOriginatedProvide(
+    pub fn finishOriginatedProvide(
         _: *Peer,
         provide_peer: *Peer,
         provide_question_id: u32,
@@ -7504,7 +7218,7 @@ pub const Peer = struct {
     /// Returns `error.OutOfMemory` if the back-link cannot be recorded; the
     /// caller must then unwind the coupling rather than leave a half-registered
     /// (untracked, thus un-neutralizable) borrow.
-    fn registerCoupledVine(self: *Peer, recipient_peer: *Peer, vine_id: u32) !void {
+    pub fn registerCoupledVine(self: *Peer, recipient_peer: *Peer, vine_id: u32) !void {
         try self.coupled_vines.append(self.allocator, .{
             .recipient_peer = recipient_peer,
             .vine_id = vine_id,
@@ -7516,7 +7230,7 @@ pub const Peer = struct {
     /// (vine Release on the recipient) or when the recipient peer deinits while
     /// this provide_peer is still alive. Idempotent: a missing link is a no-op
     /// (e.g. already removed, or never registered on a rollback path).
-    fn deregisterCoupledVine(self: *Peer, recipient_peer: *Peer, vine_id: u32) void {
+    pub fn deregisterCoupledVine(self: *Peer, recipient_peer: *Peer, vine_id: u32) void {
         var i: usize = 0;
         while (i < self.coupled_vines.items.len) {
             const link = self.coupled_vines.items[i];
@@ -8387,7 +8101,7 @@ pub const Peer = struct {
         };
     }
 
-    fn makeProvideTarget(self: *Peer, resolved: cap_table.ResolvedCap) !ProvideTarget {
+    pub fn makeProvideTarget(self: *Peer, resolved: cap_table.ResolvedCap) !ProvideTarget {
         const descriptors = cap_table.descriptors;
         return switch (resolved) {
             .none => error.PromisedAnswerMissing,
@@ -8400,7 +8114,7 @@ pub const Peer = struct {
         };
     }
 
-    fn cloneProvideTarget(self: *Peer, target: *const ProvideTarget) !ProvideTarget {
+    pub fn cloneProvideTarget(self: *Peer, target: *const ProvideTarget) !ProvideTarget {
         return switch (target.*) {
             .local => |local| .{ .local = local },
             .promised => |promised| .{
@@ -8425,18 +8139,24 @@ pub const Peer = struct {
     /// namespaces: the underlying structs are file-level and
     /// Peer-parameterized, so siblings reach them through Peer itself.
     pub const HostedJoinRecord = HostedJoin;
+    pub const ProvideHandleRecord = ProvideHandle;
+    /// Third-party answer-id space bounds, re-exported for the extracted
+    /// origination namespace (single source of truth stays file-level).
+    pub const third_party_answer_id_base_value = third_party_answer_id_base;
+    pub const third_party_answer_id_limit_value = third_party_answer_id_limit;
+    pub const ProvideOriginationTargetRecord = ProvideOriginationTarget;
     pub const CompletingJoinAnswerRecord = CompletingJoinAnswer;
     pub const CrossPeerJoinRelayRecord = CrossPeerJoinRelay;
     pub const CrossPeerProxyCtx = CrossPeerProxyContext;
     pub const CrossPeerJoinRelayCtx = CrossPeerJoinRelayContext;
 
     /// Body in `join/peer_join_accept.zig`.
-    fn putPendingJoinAcceptOwned(self: *Peer, hosted: *HostedJoin, target: ProvideTarget) !void {
+    pub fn putPendingJoinAcceptOwned(self: *Peer, hosted: *HostedJoin, target: ProvideTarget) !void {
         return JoinAcceptImpl.putPendingJoinAcceptOwned(self, hosted, target);
     }
 
     /// Body in `join/peer_join_accept.zig`.
-    fn takePendingJoinAccept(self: *Peer, provision: []const u8) ?ProvideTarget {
+    pub fn takePendingJoinAccept(self: *Peer, provision: []const u8) ?ProvideTarget {
         return JoinAcceptImpl.takePendingJoinAccept(self, provision);
     }
 
@@ -8446,7 +8166,7 @@ pub const Peer = struct {
     }
 
     /// Body in `join/peer_join_accept.zig`.
-    fn dropCompletingJoinResultRef(self: *Peer, completing: *CompletingJoinAnswer) void {
+    pub fn dropCompletingJoinResultRef(self: *Peer, completing: *CompletingJoinAnswer) void {
         return JoinAcceptImpl.dropCompletingJoinResultRef(self, completing);
     }
 
@@ -8475,7 +8195,7 @@ pub const Peer = struct {
     }
 
     /// Body in `join/peer_join_accept.zig`.
-    fn retireCompletingJoinTransitionAccounting(
+    pub fn retireCompletingJoinTransitionAccounting(
         self: *Peer,
         join_state: *JoinState,
         transition_live: *bool,
@@ -8484,22 +8204,22 @@ pub const Peer = struct {
     }
 
     /// Body in `join/peer_join_accept.zig`.
-    fn completeJoinLegacy(self: *Peer, join_id: u32) !void {
+    pub fn completeJoinLegacy(self: *Peer, join_id: u32) !void {
         return JoinAcceptImpl.completeJoinLegacy(self, join_id);
     }
 
     /// Body in `join/peer_join_accept.zig`.
-    fn ownHostedJoinFromCompletion(self: *Peer, hosted: *HostedJoin) !void {
+    pub fn ownHostedJoinFromCompletion(self: *Peer, hosted: *HostedJoin) !void {
         return JoinAcceptImpl.ownHostedJoinFromCompletion(self, hosted);
     }
 
     /// Body in `join/peer_join_accept.zig`.
-    fn maybeDestroyHostedJoin(self: *Peer, hosted: *HostedJoin) void {
+    pub fn maybeDestroyHostedJoin(self: *Peer, hosted: *HostedJoin) void {
         return JoinAcceptImpl.maybeDestroyHostedJoin(self, hosted);
     }
 
     /// Body in `join/peer_join_accept.zig`.
-    fn cancelHostedJoin(self: *Peer, hosted: *HostedJoin) void {
+    pub fn cancelHostedJoin(self: *Peer, hosted: *HostedJoin) void {
         return JoinAcceptImpl.cancelHostedJoin(self, hosted);
     }
 
@@ -8509,7 +8229,7 @@ pub const Peer = struct {
     }
 
     /// Body in `join/peer_join_accept.zig`.
-    fn sendReturnJoinResultPayload(self: *Peer, answer_id: u32, result_payload: []const u8) !void {
+    pub fn sendReturnJoinResultPayload(self: *Peer, answer_id: u32, result_payload: []const u8) !void {
         return JoinAcceptImpl.sendReturnJoinResultPayload(self, answer_id, result_payload);
     }
 
@@ -8534,567 +8254,8 @@ pub const Peer = struct {
     }
 
     /// Body in `join/peer_join_relay.zig`.
-    fn tryHandleCrossPeerProxyJoin(self: *Peer, join: protocol.Join) !bool {
+    pub fn tryHandleCrossPeerProxyJoin(self: *Peer, join: protocol.Join) !bool {
         return JoinRelayImpl.tryHandleCrossPeerProxyJoin(self, join);
-    }
-
-    fn queueEmbargoedAccept(
-        self: *Peer,
-        answer_id: u32,
-        provided_question_id: u32,
-        embargo: []const u8,
-    ) !void {
-        try ensureCountLimit(
-            self.pending_accept_embargo_by_question.contains(answer_id),
-            self.pending_accept_embargo_by_question.count(),
-            self.limits.max_pending_accepts,
-        );
-        if (!self.pending_accepts_by_embargo.contains(embargo)) {
-            try ensureCountLimit(
-                false,
-                self.pending_accepts_by_embargo.count(),
-                self.limits.max_pending_accept_embargo_buckets,
-            );
-            try ensureByteLimit(
-                self.pendingAcceptEmbargoKeyBytes(),
-                embargo.len,
-                self.limits.max_pending_accept_embargo_bytes,
-            );
-        }
-
-        try provide_accept_join.embargo_accepts.queueEmbargoedAcceptForPeer(
-            Peer,
-            PendingEmbargoedAccept,
-            self,
-            answer_id,
-            provided_question_id,
-            embargo,
-        );
-    }
-
-    fn handleProvide(self: *Peer, provide: protocol.Provide) !void {
-        // Expire due Accept-before-Provide reservations before a Provide can
-        // adopt them. The cached due check makes the common path O(1).
-        if (self.provision_index) |idx| _ = idx.sweepExpiredParkedAccepts();
-
-        // A Provide must not reuse a question id already live as a Call /
-        // Bootstrap answer or a pending Join (spec violation). Same-type
-        // (provide) collisions fall through to the orchestration's specific
-        // "duplicate provide question" abort below.
-        if (try self.inboundAnswerQuestionIdInUse(provide.question_id) or
-            self.pending_join_questions.contains(provide.question_id))
-        {
-            return error.DuplicateQuestionId;
-        }
-        try provide_accept_join.orchestration.handleProvide(
-            Peer,
-            ProvideEntry,
-            ProvideTarget,
-            self,
-            self.allocator,
-            provide,
-            &self.provides_by_question,
-            &self.provides_by_key,
-            provide_accept_join.orchestration.captureProvideRecipientForPeerFn(
-                Peer,
-                third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
-            ),
-            finish.freeOwnedFrameForPeerFn(Peer),
-            peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
-            Peer.ensureProvideBudget,
-            provide_accept_join.resolveProvideTargetForPeerFn(
-                Peer,
-                provide_accept_join.resolveProvideImportedCapForPeerFn(Peer),
-                provide_accept_join.resolveProvidePromisedAnswerForPeerFn(Peer, Peer.resolvePromisedAnswer),
-            ),
-            makeProvideTarget,
-            ProvideTarget.deinit,
-        );
-
-        // Vat-wide registration (index mode only). On failure, roll the
-        // just-stored per-peer provide back, send ONE abort with the matched
-        // reason, and propagate the ORIGINAL error.
-        if (self.provision_index) |idx| {
-            var adopted: ?*ProvisionIndex.Provision = null;
-            self.registerProvisionForProvide(idx, provide.question_id, &adopted) catch |err| {
-                provide_accept_join.provides_state.clearProvideForPeer(
-                    Peer,
-                    ProvideEntry,
-                    ProvideTarget,
-                    self,
-                    provide.question_id,
-                    ProvideTarget.deinit,
-                );
-                const reason: []const u8 = switch (err) {
-                    error.DuplicateProvideRecipient => "duplicate provide recipient",
-                    else => @errorName(err),
-                };
-                peer_outbound_control.sendAbortViaSendFrame(Peer, self, reason, Peer.sendFrameControl) catch |send_err| {
-                    log.debug("provide registration abort send failed: {}", .{send_err});
-                };
-                return err;
-            };
-            // PHASE B (adoption drain) runs OUTSIDE the rollback catch: the
-            // provision is active and may serve accepts — a Provide rollback
-            // would be wrong here. Only a terminal OOM re-raises, after every
-            // parked entry was terminally handled.
-            if (adopted) |prov| try self.drainAdoptedParkedAccepts(idx, prov);
-        }
-    }
-
-    fn handleAccept(self: *Peer, accept: protocol.Accept) !void {
-        if (try self.tryHandleJoinAccept(accept)) return;
-        if (self.provision_index) |idx| return self.handleAcceptWithProvisionIndex(idx, accept);
-        try provide_accept_join.orchestration.handleAccept(
-            Peer,
-            ProvideEntry,
-            ProvideTarget,
-            self,
-            accept,
-            &self.provides_by_question,
-            &self.provides_by_key,
-            provide_accept_join.orchestration.captureAcceptProvisionForPeerFn(
-                Peer,
-                third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
-            ),
-            finish.freeOwnedFrameForPeerFn(Peer),
-            Peer.queueEmbargoedAccept,
-            Peer.sendReturnProvidedTarget,
-            Peer.sendReturnException,
-        );
-    }
-
-    fn tryHandleJoinAccept(self: *Peer, accept: protocol.Accept) !bool {
-        const key = try provide_accept_join.orchestration.captureAcceptProvisionForPeer(
-            Peer,
-            self,
-            accept,
-            third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
-        );
-        defer if (key) |bytes| self.allocator.free(bytes);
-        const provision = key orelse return false;
-
-        // First establish that this token names an L4 lease without consuming
-        // it. The Accept answer ID must be free across the complete inbound
-        // namespace before canonical pickup becomes irreversible; a duplicate
-        // frame leaves the provision wholly live for a fresh ID retry.
-        if (!self.pending_join_accepts.contains(provision)) return false;
-        if (try self.inboundQuestionIdInUse(accept.question_id)) {
-            return error.DuplicateQuestionId;
-        }
-
-        var target = self.takePendingJoinAccept(provision) orelse return error.MissingJoinProvision;
-        defer target.deinit(self.allocator);
-
-        if (accept.embargo != null) {
-            try self.sendReturnException(accept.question_id, "l4 join accept embargo unsupported");
-            return true;
-        }
-
-        self.sendReturnProvidedTarget(accept.question_id, &target) catch |err| {
-            try self.sendReturnException(accept.question_id, joinWireReason(err));
-        };
-        return true;
-    }
-
-    fn completeJoinWithL4Runtime(self: *Peer, join_id: u32) !void {
-        self.enterJoinOperation();
-        defer self.leaveJoinOperation();
-        if (self.join_network == null) return error.NoJoinNetwork;
-        const pending = self.pending_joins.get(join_id) orelse return;
-        if (pending.parts.count() == 0) return;
-        const completing_records = try std.math.add(usize, self.completing_join_records, 1);
-        const network = try self.beginJoinNetworkBorrow();
-        defer self.endJoinNetworkBorrow();
-        const removed = self.pending_joins.fetchRemove(join_id) orelse return;
-        var join_state = removed.value;
-        defer JoinState.deinit(&join_state, self.allocator);
-        self.refreshNextJoinDeadline();
-
-        var first_target: ?*const ProvideTarget = null;
-        var all_equal = true;
-        var check_it = join_state.parts.iterator();
-        while (check_it.next()) |entry| {
-            if (first_target) |target| {
-                if (!provideTargetsEqual(target, &entry.value_ptr.target)) {
-                    all_equal = false;
-                    break;
-                }
-            } else {
-                first_target = &entry.value_ptr.target;
-            }
-        }
-
-        // Reserve every completing answer id before the first application
-        // callback or Return. These tombstones preserve the old bucket+parts
-        // aggregate footprint (one transition record plus one per answer), so
-        // callback reentry cannot steal capacity, Finish cannot vanish, and no
-        // later answer in this fanout can be reused under us.
-        self.completing_join_records = completing_records;
-        var transition_live = true;
-        defer if (transition_live) {
-            std.debug.assert(self.completing_join_records > 0);
-            self.completing_join_records -= 1;
-        };
-        var reserve_it = join_state.parts.valueIterator();
-        while (reserve_it.next()) |part| {
-            self.putCompletingJoinAnswerAssumeCapacity(part.question_id, true);
-        }
-        // This defer also owns any canonical result refs attached later. It is
-        // intentionally installed before fanout guards so their operation pin
-        // unwinds first; forced cleanup can then invoke callbacks without
-        // destroying a canonical still borrowed by the fanout stack.
-        defer {
-            var cleanup_answers = join_state.parts.valueIterator();
-            while (cleanup_answers.next()) |part| {
-                if (self.completing_join_answers.getPtr(part.question_id)) |completing| {
-                    self.retireCompletingJoinAnswerAccounting(completing);
-                    self.dropCompletingJoinResultRef(completing);
-                }
-                _ = self.removeCompletingJoinAnswer(part.question_id);
-                _ = self.finished_early_answers.remove(part.question_id);
-            }
-        }
-
-        // Detach every part record before host callbacks. The local join_state
-        // owns targets and the counted completion tombstones own IDs from here.
-        var cleanup_it = join_state.parts.iterator();
-        while (cleanup_it.next()) |entry| {
-            _ = self.pending_join_questions.remove(entry.value_ptr.question_id);
-        }
-
-        if (!all_equal) {
-            self.retireCompletingJoinTransitionAccounting(&join_state, &transition_live);
-            var mismatch_it = join_state.parts.iterator();
-            while (mismatch_it.next()) |entry| {
-                try self.sendReturnException(entry.value_ptr.question_id, "join target mismatch");
-            }
-            return;
-        }
-
-        const target = first_target orelse return;
-        const hosted_result = network.hostJoinResult(self.allocator, self, join_id) catch |err| {
-            self.retireCompletingJoinTransitionAccounting(&join_state, &transition_live);
-            var err_it = join_state.parts.iterator();
-            while (err_it.next()) |entry| {
-                try self.sendReturnException(entry.value_ptr.question_id, joinWireReason(err));
-            }
-            return;
-        };
-        const accept_peer = hosted_result.accept_peer;
-        if (accept_peer != self) accept_peer.enterJoinOperation();
-        defer if (accept_peer != self) accept_peer.leaveJoinOperation();
-        defer self.allocator.free(hosted_result.result);
-
-        // `hostJoinResult` is the only callback that can reveal the Accept
-        // peer. The detached transition already reserves the complete owner
-        // footprint; only the direct Accept is a positive record delta, and it
-        // belongs either here or to the distinct Accept host. Reentrant Join
-        // admission is refused while the captured network borrow is live, so
-        // this capacity cannot be stolen between preflight and publication.
-        const capacity_peer = accept_peer;
-        capacity_peer.ensureJoinRecordCapacity(1) catch {
-            const attempted_records = saturatingAdd(capacity_peer.joinRecordCount(), 1);
-            self.retireCompletingJoinTransitionAccounting(&join_state, &transition_live);
-            network.cancelHostJoinResult(hosted_result.provision);
-            self.allocator.free(hosted_result.provision);
-            events.emitResourceRejection(
-                capacity_peer.observer,
-                .peer,
-                .unknown,
-                .join_records,
-                attempted_records,
-                capacity_peer.limits.max_pending_join_records,
-                error.PeerLimitExceeded,
-            );
-            var err_it = join_state.parts.iterator();
-            while (err_it.next()) |entry| {
-                try self.sendReturnException(entry.value_ptr.question_id, "join unavailable");
-            }
-            return;
-        };
-
-        var target_copy = accept_peer.cloneProvideTarget(target) catch |err| {
-            self.retireCompletingJoinTransitionAccounting(&join_state, &transition_live);
-            network.cancelHostJoinResult(hosted_result.provision);
-            self.allocator.free(hosted_result.provision);
-            var err_it = join_state.parts.iterator();
-            while (err_it.next()) |entry| {
-                try self.sendReturnException(entry.value_ptr.question_id, joinWireReason(err));
-            }
-            return;
-        };
-        var target_owned = true;
-        defer if (target_owned) target_copy.deinit(accept_peer.allocator);
-
-        const canonical = self.allocator.create(HostedJoin) catch |err| {
-            self.retireCompletingJoinTransitionAccounting(&join_state, &transition_live);
-            network.cancelHostJoinResult(hosted_result.provision);
-            self.allocator.free(hosted_result.provision);
-            var err_it = join_state.parts.iterator();
-            while (err_it.next()) |entry| try self.sendReturnException(entry.value_ptr.question_id, joinWireReason(err));
-            return;
-        };
-        canonical.* = .{
-            .owner_peer = self,
-            .accept_peer = null,
-            .network = network,
-            .provision = hosted_result.provision,
-        };
-        var canonical_unpublished = true;
-        defer if (canonical_unpublished) {
-            network.cancelHostJoinResult(canonical.provision);
-            self.allocator.free(canonical.provision);
-            self.allocator.destroy(canonical);
-        };
-
-        self.ownHostedJoinFromCompletion(canonical) catch |err| {
-            const attempted_bytes = saturatingAdd(self.join_accept_bytes, canonical.provision.len);
-            self.retireCompletingJoinTransitionAccounting(&join_state, &transition_live);
-            canonical_unpublished = false;
-            network.cancelHostJoinResult(canonical.provision);
-            self.allocator.free(canonical.provision);
-            self.allocator.destroy(canonical);
-            if (err == error.PeerLimitExceeded) {
-                events.emitResourceRejection(
-                    self.observer,
-                    .peer,
-                    .unknown,
-                    .join_accept_bytes,
-                    attempted_bytes,
-                    self.limits.max_pending_join_accept_bytes,
-                    err,
-                );
-            }
-            var err_it = join_state.parts.iterator();
-            const reason = joinWireReason(err);
-            while (err_it.next()) |entry| try self.sendReturnException(entry.value_ptr.question_id, reason);
-            return;
-        };
-        canonical_unpublished = false;
-        transition_live = false;
-
-        accept_peer.putPendingJoinAcceptOwned(canonical, target_copy) catch |err| {
-            const attempted_records = saturatingAdd(accept_peer.joinRecordCount(), 1);
-            const emit_record_rejection = err == error.PeerLimitExceeded or
-                err == error.JoinRecordLimitExceeded;
-            self.retireCompletingJoinTransitionAccounting(&join_state, &transition_live);
-            self.cancelHostedJoin(canonical);
-            if (emit_record_rejection) {
-                events.emitResourceRejection(
-                    accept_peer.observer,
-                    .peer,
-                    .unknown,
-                    .join_records,
-                    attempted_records,
-                    accept_peer.limits.max_pending_join_records,
-                    error.PeerLimitExceeded,
-                );
-            }
-            var err_it = join_state.parts.iterator();
-            const reason = joinWireReason(err);
-            while (err_it.next()) |entry| try self.sendReturnException(entry.value_ptr.question_id, reason);
-            return;
-        };
-        target_owned = false;
-
-        // Attach every unfinished tombstone to the canonical before the first
-        // Return. The result map's capacity was reserved at part admission,
-        // but publication waits until all callback-bearing sends finish so the
-        // IDs remain coherently transitional as a group.
-        var result_refs: usize = 0;
-        var reserve_results_it = join_state.parts.valueIterator();
-        while (reserve_results_it.next()) |part| {
-            const completing = self.completing_join_answers.getPtr(part.question_id) orelse continue;
-            if (completing.finished) continue;
-            completing.hosted = canonical;
-            result_refs += 1;
-        }
-        canonical.result_refs = result_refs;
-
-        canonical.operation_depth += 1;
-        defer {
-            canonical.operation_depth -= 1;
-            self.maybeDestroyHostedJoin(canonical);
-        }
-        if (canonical.result_refs == 0) {
-            self.cancelHostedJoin(canonical);
-            return;
-        }
-
-        var send_it = join_state.parts.iterator();
-        while (send_it.next()) |entry| {
-            const answer_id = entry.value_ptr.question_id;
-            const before_send = self.completing_join_answers.get(answer_id) orelse continue;
-            if (before_send.finished) continue;
-            if (canonical.cancelled or before_send.hosted != canonical) {
-                if (self.completing_join_answers.getPtr(answer_id)) |completing| {
-                    self.retireCompletingJoinAnswerAccounting(completing);
-                }
-                try self.sendReturnException(answer_id, "join unavailable");
-                continue;
-            }
-
-            self.sendReturnJoinResultPayload(answer_id, hosted_result.result) catch |err| {
-                if (self.completing_join_answers.getPtr(answer_id)) |completing| {
-                    if (!completing.finished) {
-                        self.retireCompletingJoinAnswerAccounting(completing);
-                        self.dropCompletingJoinResultRef(completing);
-                        try self.sendReturnException(answer_id, joinWireReason(err));
-                    }
-                }
-                continue;
-            };
-            canonical.published_results += 1;
-            if (canonical.timeout_answer_id == null) {
-                canonical.timeout_answer_id = answer_id;
-            }
-            if (self.completing_join_answers.getPtr(answer_id)) |completing| {
-                if (!completing.finished and completing.hosted == canonical) {
-                    completing.result_sent = true;
-                }
-            }
-        }
-
-        // Atomically exchange each surviving tombstone for its steady-state
-        // result record. No callback occurs between remove and assume-capacity
-        // insert, so the answer namespace never observes a reusable ID.
-        var publish_it = join_state.parts.valueIterator();
-        while (publish_it.next()) |part| {
-            const answer_id = part.question_id;
-            const completing = self.completing_join_answers.getPtr(answer_id) orelse continue;
-            if (completing.result_sent and !completing.finished and completing.hosted == canonical) {
-                _ = self.removeCompletingJoinAnswer(answer_id);
-                self.pending_join_result_answers.putAssumeCapacity(answer_id, .{
-                    .hosted = canonical,
-                    .published = true,
-                });
-                continue;
-            }
-            self.retireCompletingJoinAnswerAccounting(completing);
-            self.dropCompletingJoinResultRef(completing);
-            _ = self.removeCompletingJoinAnswer(answer_id);
-            _ = self.finished_early_answers.remove(answer_id);
-        }
-
-        if (canonical.result_refs == 0 and canonical.accept_live) {
-            self.cancelHostedJoin(canonical);
-        }
-    }
-
-    fn handleJoin(self: *Peer, join: protocol.Join) !void {
-        // A captured JoinNetwork callback may synchronously inject another
-        // Join on this peer. The callback cannot reveal the final Accept host
-        // until it returns, so admitting nested work would let it consume the
-        // positive-delta slot preflighted for the outer canonical lease.
-        // Refuse generically; never reinterpret callback reentrancy as a
-        // TTL/quota opt-out or expose which completion is in flight.
-        if (self.join_network_borrows != 0) {
-            try self.sendReturnException(join.question_id, "join unavailable");
-            return;
-        }
-        // A Join must not reuse a question id already live as a Call /
-        // Bootstrap answer or a Provide (spec violation). Same-type (join)
-        // collisions fall through to the orchestration's specific "duplicate
-        // join question" abort below.
-        if (try self.inboundAnswerQuestionIdInUse(join.question_id) or
-            self.provides_by_question.contains(join.question_id))
-        {
-            return error.DuplicateQuestionId;
-        }
-        if (try self.tryHandleCrossPeerProxyJoin(join)) return;
-        const deadline_key = provide_accept_join.join_state.parseJoinKeyPart(JoinKeyPart, join.key_part) catch null;
-        const sampled_deadline = if (deadline_key) |key|
-            if (!self.pending_joins.contains(key.join_id))
-                self.newJoinDeadline() catch {
-                    try self.sendReturnException(join.question_id, "join unavailable");
-                    return;
-                }
-            else
-                null
-        else
-            null;
-        const records_before = self.joinRecordCount();
-        provide_accept_join.orchestration.handleJoin(
-            Peer,
-            JoinKeyPart,
-            JoinState,
-            PendingJoinQuestion,
-            ProvideTarget,
-            self,
-            self.allocator,
-            join,
-            &self.pending_joins,
-            &self.pending_join_questions,
-            peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
-            provide_accept_join.resolveProvideTargetForPeerFn(
-                Peer,
-                provide_accept_join.resolveProvideImportedCapForPeerFn(Peer),
-                provide_accept_join.resolveProvidePromisedAnswerForPeerFn(Peer, Peer.resolvePromisedAnswer),
-            ),
-            makeProvideTarget,
-            ProvideTarget.deinit,
-            JoinState.init,
-            JoinState.deinit,
-            Peer.ensureJoinBudget,
-            if (self.join_network != null)
-                Peer.completeJoinWithL4Runtime
-            else
-                Peer.completeJoinLegacy,
-            Peer.sendReturnException,
-        ) catch |err| {
-            if (err == error.PeerLimitExceeded or
-                err == error.JoinRecordLimitExceeded or
-                err == error.JoinClockReentrant)
-            {
-                try self.sendReturnException(join.question_id, "join unavailable");
-                return;
-            }
-            return err;
-        };
-        if (deadline_key) |key| {
-            if (self.pending_joins.getPtr(key.join_id)) |join_state| {
-                if (!join_state.deadline_initialized) {
-                    join_state.deadline_ns = sampled_deadline;
-                    join_state.deadline_initialized = true;
-                    self.noteJoinDeadline(join_state.deadline_ns);
-                }
-            }
-        }
-        events.emitPressureCrossing(
-            self.observer,
-            .peer,
-            .unknown,
-            .join_records,
-            records_before,
-            self.joinRecordCount(),
-            self.limits.max_pending_join_records,
-        );
-    }
-
-    fn handleThirdPartyAnswer(self: *Peer, third_party_answer: protocol.ThirdPartyAnswer) !void {
-        try third_party.adoption.handleThirdPartyAnswer(
-            Peer,
-            PendingThirdPartyAwait,
-            self.allocator,
-            self,
-            third_party_answer,
-            &self.pending_third_party_awaits,
-            &self.pending_third_party_answers,
-            third_party.adoption.captureThirdPartyCompletionForPeerFn(
-                Peer,
-                third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
-            ),
-            finish.freeOwnedFrameForPeerFn(Peer),
-            peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
-            Peer.ensurePendingThirdPartyAnswerBudget,
-            third_party.adoption.adoptPendingAwaitEntryForPeerFn(
-                Peer,
-                Question,
-                PendingThirdPartyAwait,
-                adoptThirdPartyAnswer,
-            ),
-        );
     }
 
     fn pendingMapHasQueuedQuestionId(
@@ -9132,7 +8293,7 @@ pub const Peer = struct {
     /// fetchRemove the STALE tombstone — skipping the record and applying the
     /// old Finish's releaseResultCaps flag to the new answer's result caps, a
     /// remote-forceable premature export release.
-    fn inboundAnswerQuestionIdInUse(self: *Peer, question_id: u32) !bool {
+    pub fn inboundAnswerQuestionIdInUse(self: *Peer, question_id: u32) !bool {
         return self.resolved_answers.contains(question_id) or
             self.failed_answers.contains(question_id) or
             self.active_inbound_questions.contains(question_id) or
@@ -9232,7 +8393,7 @@ pub const Peer = struct {
     }
 
     /// Body in `call/peer_call_inbound.zig`.
-    fn adoptThirdPartyAnswer(
+    pub fn adoptThirdPartyAnswer(
         self: *Peer,
         question_id: u32,
         adopted_answer_id: u32,
