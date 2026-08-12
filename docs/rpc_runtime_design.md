@@ -290,6 +290,23 @@ return either the legacy direct-cap pilot result or, with `JoinNetwork`
 attached, a compact Zig `JoinResult` that the coordinator can resolve into a
 direct `Accept`.
 
+Admission is bounded twice: at most 64 parts may be declared by one Join, and
+at most 4096 aggregate records may be live across partial buckets, parts,
+relays, canonical hosted provisions, result answers, and direct Accepts. A
+completed network-backed Join creates one origin-owned `HostedJoin`; it owns
+the provision, captured network, canonical byte charge, result counts,
+phase-local deadline, and reciprocal Accept-host backlink. Result answers and a
+distinct Accept host borrow that stable object rather than copying the
+provision per answer.
+
+Raw peers opt into expiry with `PeerTimeouts.join_timeout_ms`; TCP connect,
+TCP serve, and WorkerPool configuration default it to 30 seconds, with explicit
+null as the opt-out. The first part stamps an incomplete bucket and later parts
+cannot extend it. Relays and hosted Accept phases receive fresh deadlines in
+their local clock domains. A cached next deadline keeps the normal frame path
+O(1); sweeps occur before frame decode, before direct Accept lookup, from
+`checkDeadlines()`, or explicitly through `sweepExpiredJoins()`.
+
 Cleanup follows the same question lifecycle as Provide/Accept: `Finish` clears
 the matching Join part, deinitializes its target, and removes the join bucket
 when it becomes empty. Fresh join-bucket insertion is rollback-safe under OOM,
@@ -311,6 +328,16 @@ Dropping the coordinator
 best-effort cancels outstanding Join and direct Accept questions first, leaving
 cancelled question entries to absorb late Returns without calling back into
 freed coordinator state.
+
+Quota and TTL failures use only `"join unavailable"` on the wire. Metrics and
+events expose aggregate `join_records`, `join_parts`, and
+`join_accept_bytes`; a Join timeout carries only the inbound answer ID. All
+maps, counters, and backlinks detach before protocol sends, observers, network
+callbacks, or user close callbacks. Result-path transport close preserves a
+committed provision only when a distinct Accept host remains live; Accept-host
+close, TTL, explicit cleanup, and owner teardown cancel it. Rebinding via
+`detachTransport()` is non-terminal. Join-network replacement/detach is
+fallible while any state still depends on the captured network.
 
 Transparent cross-peer proxy exports can relay inbound `Join` requests to their
 source peer. The relay keeps an owner answer -> source question record plus a
@@ -345,6 +372,10 @@ Outbound call:
   thread drains the outbound queue, and on Windows a reader-thread bridge
   (`WinReadBridge`) stands in for `poll(2)` because std's sockets are AFD
   handles.
+- QUIC uses the same ownership rule on Windows through `UdpReceiveBridge`: one
+  blocking UDP receive runs in `io.concurrent`, while an `Io.Condition` wakes
+  the owner thread for completion, timer, explicit wake, or close. Timer ticks
+  retain the pending receive; teardown cancels and reaps it exactly once.
 - `Peer` and `Connection` are single-thread-affine by contract (debug-checked
   panics; `adoptOwnerThread` re-captures affinity at quiescent handoffs). All
   user handlers and callbacks run inside `run()` on that thread.

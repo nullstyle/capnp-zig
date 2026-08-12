@@ -161,15 +161,25 @@ that arm is active, even if another arm left nonzero data in shared storage.
 Brand-aware generation is additive and deliberately conservative. The parser
 always preserves the request's type parameters and bindings beside the frozen
 `schema.Type` union, but generated typed `brands()` access appears only for a
-fully concrete, resolvable generic data-struct field whose direct parameter
-slots have supported pointer shapes.
+finite concrete generic data-struct application. Supported wrappers compose
+arbitrary-depth lists, enum/Text/Data/struct/interface terminals, concretely
+branded nested structs, generic struct applications as list terminals,
+inherited lexical bindings, and cross-file imported applications/terminals.
 
-No view is emitted for an unbound, inherited, recursive, or unresolved brand;
-an unsupported nested pointer-list binding; or generic interface/implicit RPC
-method specialization. That absence prevents generated code from promising a
-type it cannot prove. Use the field's unchanged erased Reader/Builder accessor,
-and inspect `schema.TypeMetadata` / `TypeExpression` when schema tooling needs
-the original binding.
+No view is emitted for a valid unbound or recursively infinite application, or
+for generic interface/implicit RPC method specialization. That absence keeps
+the historical erased behavior instead of promising an application the
+generator cannot finitely emit. Use the field's unchanged erased Reader/Builder
+accessor and inspect `schema.TypeMetadata` / `TypeExpression` when tooling needs
+the original binding. Scalar generic bindings and malformed scope, arity,
+parameter-index, cycle, or depth graphs are different: they fail with
+`error.InvalidSchema`.
+
+If an otherwise finite schema fails with `CodegenBudgetExceeded`, it may have
+crossed the separate 4096-application default. Raise or lower it with
+`max-codegen-brand-specializations=` or
+`CAPNPC_ZIG_MAX_CODEGEN_BRAND_SPECIALIZATIONS` after reviewing the expected
+generated-code size.
 
 The related `pointerKinds()` view follows the same rule for constrained
 `AnyStruct`, `AnyList`, and bare `Capability` slots. A plain unconstrained

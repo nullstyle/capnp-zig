@@ -220,6 +220,14 @@ Returned by the peer state machine in `src/rpc/peer/mod.zig` and its submodules 
 |---|---|---|
 | `MissingJoinKeyPart` | A `join` message has no key part or the key part pointer is null. | The peer sent an incomplete join. Reject. |
 | `InvalidJoinKeyPart` | A join key part struct cannot be read or has invalid `partCount`/`partNum` fields. | The peer sent a malformed join key. Reject. |
+| `JoinNetworkInUse` | `attachJoinNetwork()` would replace, or `detachJoinNetwork()` would remove, a network still captured by partial/hosted Join state or an in-flight callback. | Leave the existing network alive and retry only after `PeerStats.join_records` drains or explicit cleanup completes. Reattaching the identical network is already a no-op. |
+| `JoinRecordLimitExceeded` / `PeerLimitExceeded` | A Join exceeds its part limit, aggregate record limit, a subordinate table limit, or canonical provision-byte budget. | Treat the attempted Join as unavailable. The peer converts admission failures to the generic wire reason `"join unavailable"`; do not expose local occupancy or target/provision details. |
+
+Raw peers default `PeerTimeouts.join_timeout_ms` to null. TCP connect/serve and
+`WorkerPool` use 30 seconds unless explicitly configured with null. Expiry
+returns the same generic wire reason. `Peer.sweepExpiredJoins()` returns the
+number of phase records detached; it does not add to `checkDeadlines()`'s
+historical outbound-cancellation count.
 
 ## Schema Validation Errors
 
@@ -227,7 +235,7 @@ Returned by functions in `src/serialization/schema_validation.zig` when validati
 
 | Error | When it occurs | What to do |
 |---|---|---|
-| `InvalidSchema` | A schema node reference is invalid, a required sub-node is missing, a struct node lacks its `struct_node` payload, or a field's type does not match expectations. | The schema or message is inconsistent. If validating external input, reject it. If this occurs with your own schemas, check your `.capnp` files and re-run codegen. |
+| `InvalidSchema` | A schema node reference is invalid, a required sub-node is missing, a struct node lacks its `struct_node` payload, a field's type does not match expectations, a generic parameter is bound to a scalar, or a brand graph has an invalid lexical scope, arity, parameter index, cycle, or depth. | The schema or message is inconsistent. If validating external input, reject it. If this occurs with your own schemas, check your `.capnp` files and re-run codegen. |
 | `SchemaRecursionLimitExceeded` | Schema traversal depth exceeds the internal limit during type/field validation. | The schema has excessively deep type nesting. Simplify the schema or report as a bug if the depth is reasonable. |
 | `SchemaCycleDetected` | A cycle is detected in the schema node graph during validation. | The schema is malformed (struct A contains struct B contains struct A without indirection through a pointer). Fix the `.capnp` schema. |
 | `StructSizeTooSmall` | A struct's declared data or pointer section is too small to hold all its fields. | The schema and message are inconsistent. Re-run codegen to ensure they match. |
@@ -238,6 +246,12 @@ Returned by functions in `src/serialization/schema_validation.zig` when validati
 | `NonCanonicalSegments` | Canonicalization requires exactly one segment but the message has multiple. | Re-serialize as a single-segment message before canonicalizing. |
 | `OffsetOverflow` | A field offset computation overflows during validation. | The schema declares an unreasonably large field offset. Reject. |
 | `IndexOutOfBounds` | A list element index exceeds the list's element count during schema validation. | The message is corrupt. Reject. |
+
+`validateMessageWithBrand`, `canonicalizeMessageWithBrand`, and
+`canonicalizeMessageFlatWithBrand` apply a concrete brand to the root schema
+node. The legacy entry points behave as an empty root brand but still enforce
+concrete nested metadata. A valid unbound parameter retains the historical
+erased behavior; a malformed brand graph is `InvalidSchema`.
 
 ## Best Practices
 

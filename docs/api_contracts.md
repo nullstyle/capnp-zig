@@ -36,6 +36,26 @@ Internal helper behavior may change, but exported type semantics and error class
 - Use one event-loop owner thread per peer/connection.
 - Cross-thread interactions must be serialized onto the owner loop before calling `Peer` methods.
 
+## Experimental L4 Join Lease Contract
+
+- Raw `Peer` construction keeps `PeerTimeouts.join_timeout_ms = null`. TCP
+  connect/serve and `WorkerPool` set 30 seconds unless the caller explicitly
+  opts out with null.
+- The first part fixes a partial Join's deadline; later parts cannot extend it.
+  Relay and hosted-Accept phases receive new deadlines in their own peer clock
+  domains.
+- `Peer.sweepExpiredJoins()` counts detached Join phases. It does not alter the
+  outbound-cancellation count returned by `checkDeadlines()`.
+- `attachJoinNetwork()` and `detachJoinNetwork()` return
+  `error.JoinNetworkInUse` while dependent state or a callback borrow exists;
+  identical reattachment is a no-op.
+- Result-path transport close preserves an already-committed pickup only when
+  its distinct Accept host remains live. Accept-host close, expiry, explicit
+  cleanup, or owner deinit cancels it. `detachTransport()` is non-terminal.
+- Quota and timeout failures disclose only `"join unavailable"` remotely.
+  Stats/events contain aggregate record, part, provision-byte, and inbound
+  answer-ID data, never targets, provisions, keys, or addresses.
+
 ## Error Taxonomy
 Errors are grouped by class for caller policy decisions:
 
@@ -127,16 +147,33 @@ Pointer-kind and brand fidelity are additive compatibility views:
   apply, and Builder getters reopen existing near or far pointers without
   replacing them. A layout-A double-far zero-offset struct tag is wire-identical
   to an empty inline-composite list and therefore cannot be distinguished.
-- Fully concrete, resolvable branded generic data-struct fields may expose a
-  generated `brands()` view for supported direct parameter slots. The legacy
-  erased target accessor remains the compatibility API.
-- No typed view is promised for unconstrained AnyPointer, unbound/inherited/
-  recursive/unresolved brands, unsupported nested pointer-list bindings, or
-  generic interface/RPC specialization. Preserved schema metadata does not by
-  itself imply generated specialization.
+- Finite concrete branded generic data-struct fields may expose a generated
+  `brands()` view. Supported composition includes arbitrary-depth lists,
+  enum/Text/Data/struct/interface terminals, concretely branded nested structs,
+  inherited lexical bindings, generic struct applications as list terminals,
+  and cross-file imported applications/terminals. The legacy erased target
+  accessor remains the compatibility API.
+- One allocation-free resolver shared by validation and codegen composes
+  `.bind` / `.inherit`, checks lexical scope, exact arity and parameter indexes,
+  and applies a 64-level cycle/depth bound. A valid unbound application retains
+  erased behavior; a malformed graph or scalar generic binding is
+  `InvalidSchema`.
+- No specialized client is promised for generic interfaces or implicit generic
+  RPC methods. Preserved schema metadata does not by itself imply generated
+  specialization. Emitted applications are independently bounded by
+  `CodegenBudget.max_brand_specializations` (4096 by default).
 - The generated names `Brands`, `brands`, `PointerKinds`, and `pointerKinds`
   participate in normal generated-name validation; a schema collision is an
   error rather than a shadowed declaration.
+
+Stable schema-aware entry points are additive:
+
+- `validateMessageWithBrand(...)`
+- `canonicalizeMessageWithBrand(...)`
+- `canonicalizeMessageFlatWithBrand(...)`
+
+Their existing counterparts use an empty root brand while honoring concrete
+nested metadata. The schema-free `canonical.*` surface is unchanged.
 
 ## Compatibility Policy
 - New error variants may be added.

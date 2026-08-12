@@ -1,8 +1,8 @@
 # RPC L4 Join Readiness
 
-Status: Experimental, Zig↔Zig JoinResult runtime pilot with addressed
-registry/connector proof, transparent proxy relay, raw origination, and
-receive-side readiness.
+Status: Experimental, Zig↔Zig JoinResult runtime pilot with bounded leases,
+addressed registry/connector proof, transparent proxy relay, raw origination,
+and receive-side readiness.
 
 `capnp-zig` has a guarded slice of Cap'n Proto RPC Level 4 `Join`: inbound
 Join state handling, a low-level Experimental sender for raw Join parts, and a
@@ -59,13 +59,21 @@ correct while L3 handoff grows toward cross-implementation use.
   proof, not a bundled production dialer or stable address format.
 - `Peer.handleJoin` accepts inbound `Join` messages and resolves their
   `target` through the same target machinery used by `Provide`.
+- Raw `Peer` instances leave `PeerTimeouts.join_timeout_ms` null. High-level
+  TCP connect/serve options and `WorkerPool.Config` default it to 30 seconds;
+  callers may explicitly set null to opt out.
+- `Peer.attachJoinNetwork()` / `detachJoinNetwork()` are fallible. An identical
+  reattachment is a no-op, while replacement or detach returns
+  `error.JoinNetworkInUse` if a partial, hosted, or in-flight callback still
+  depends on the captured network.
 - Join parts are collected in `pending_joins`, with question-to-part back-links
   in `pending_join_questions`.
 - When all parts for a join ID arrive, the peer compares the resolved targets.
   Without a `JoinNetwork`, matching targets still receive the legacy raw-pilot
   results Return carrying the provided target. With a `JoinNetwork`, matching
-  targets receive compact Zig `JoinResult` payloads, and the host stores a
-  one-shot pending direct Accept in `pending_join_accepts`.
+  targets receive compact Zig `JoinResult` payloads. One origin-owned
+  `HostedJoin` captures the network and provision, while the direct Accept host
+  borrows that canonical record through `pending_join_accepts`.
 - A joiner can resolve every Zig `JoinResult`, validate that the results agree,
   send `Accept` on the direct peer, receive the accepted cap, and invoke it on
   that direct peer.
@@ -83,6 +91,39 @@ correct while L3 handoff grows toward cross-implementation use.
   JoinResult Returns degrades each affected question to an exception Return and
   drains the pending maps. If no JoinResult Return is successfully sent, the
   pending direct Accept provision is rolled back.
+
+## Lease And Admission Model
+
+`PeerLimits.max_join_parts_per_join` defaults to 64. It is checked before
+target resolution or part allocation. `PeerLimits.max_pending_join_records`
+defaults to 4096 and is an aggregate ceiling over partial buckets, individual
+parts, relay records, canonical hosted provisions, result answers, and direct
+Accept records. Existing per-table bounds remain subordinate compatibility
+limits. Provision bytes are charged once, at the canonical `HostedJoin` owner,
+against `max_pending_join_accept_bytes`.
+
+A partial bucket is stamped when its first part arrives; later parts never
+extend that deadline. Cross-peer relays and hosted direct-Accept phases obtain
+fresh deadlines in their own peer clock domains. The peer caches the earliest
+deadline, sweeps before decoding another frame, before direct Accept lookup,
+and from `checkDeadlines()`, and exposes `sweepExpiredJoins()` for manual frame
+pumps. Its return value counts expired Join phases, not outbound call
+cancellations, so `checkDeadlines()` retains its historical cancellation-count
+contract.
+
+Quota and timeout failures disclose only `"join unavailable"` on the wire.
+`PeerStats` exposes `join_records`, `join_parts`, and `join_accept_bytes`;
+pressure/rejection events use the same redacted resource names. A
+`TimeoutKind.join` event carries only the inbound answer ID—never a Join key,
+part count, target, provision, address, or byte payload.
+
+Every terminal path detaches maps, counters, and cross-peer backlinks before
+it sends a Return/Finish, notifies an observer, invokes a network callback, or
+fires the user's close callback. A committed provision survives closure of the
+result-path transport when its distinct Accept host is still live. It is
+cancelled by Accept-host close, lease expiry, explicit cleanup, or owner
+deinit. `Peer.detachTransport()` remains non-terminal and does not perform that
+cleanup.
 
 The current local JoinKeyPart convention is an `AnyPointer` to a one-data-word
 struct:
@@ -129,10 +170,11 @@ checks. This is not a full C++ L4 Join runtime.
   peer deinit.
 - `pending_join_accepts` drains on direct Accept success, JoinResult send
   rollback when no result reached the joiner, fallback exception send failure
-  before any JoinResult is delivered, and peer deinit.
-- Pending direct-Accept provisions are cloned into the Accept peer's allocator
-  before insertion, so a Join completed on one peer can safely transfer a
-  promised target to a different Accept-host peer.
+  before any JoinResult is delivered, TTL, Accept-host close, and owner deinit.
+- One origin-owned `HostedJoin` owns the provision, captured network, result
+  counts, canonical byte charge, deadline, and Accept-host backlink. The
+  promised target is cloned into the Accept peer's allocator, so a Join
+  completed on one peer can safely transfer it to a distinct Accept host.
 - `pending_join_relays` and `cross_peer_join_relay_links` drain together on
   upstream Finish, downstream exception, owner/source teardown, downstream send
   failure, and allocation rollback. If relaying the downstream Finish fails,
@@ -172,14 +214,15 @@ checks. This is not a full C++ L4 Join runtime.
 - Coordinator deinit cancels outstanding Join questions and pending direct
   Accept questions before freeing the coordinator, leaving only cancelled
   question entries that absorb the peer's required late Return.
-- `pending_join_result_answers` records the peer that hosts the final direct
-  Accept provision. Cross-peer Accept-host back-links prevent stale pointers if
-  the Accept host deinitializes before the JoinResult answers Finish.
+- `pending_join_result_answers` borrows the canonical `HostedJoin`; the record
+  itself does not own another provision copy. Cross-peer Accept-host back-links
+  prevent stale pointers if the Accept host deinitializes before the
+  JoinResult answers Finish.
 - Target ownership is single-owner: once a part is inserted, the Join state owns
   its `ProvideTarget`; rejected or failed inserts return ownership to the caller
-  for cleanup. A completed JoinResult path clones the target into
-  `pending_join_accepts`, and the pending Accept state owns that clone until
-  Accept success or rollback.
+  for cleanup. A completed JoinResult path clones the target into the Accept
+  host's `pending_join_accepts`, which owns that clone until Accept success or
+  rollback, while the canonical provision remains origin-owned.
 
 ## Current Evidence
 
@@ -246,8 +289,9 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
   the fallback exception Return send also fails before any JoinResult is
   delivered,
 - distinct Join-host and Accept-host allocators for a promised target, proving
-  pending direct-Accept target/provision ownership follows the Accept peer and
-  caller-owned `JoinNetwork` results are freed with the supplied allocator,
+  the target copy follows the Accept peer, the provision remains canonical at
+  its origin owner, and caller-owned `JoinNetwork` results are freed with the
+  supplied allocator,
 - transparent proxy Join relay where A joins two caps through B/C proxy exports
   that forward to the same D-hosted cap, receives JoinResults through the real
   `JoinCoordinator`, sends direct Accept on A↔D, invokes the accepted cap
@@ -274,6 +318,16 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 - provided-target Return send failure fallback,
 - allocation-failure rollback for fresh join-bucket insertion.
 
+The same focused binary also covers part and aggregate-record exhaustion with
+recovery, exact canonical provision-byte charging/refund, first-part deadline
+stamping with no extension, expiry on the boundary, sweeps from ordinary and
+malformed traffic plus the explicit API, redacted gauges/events, same-network
+reattachment, detach/replacement refusal while borrowed, result-path close with
+live distinct-host pickup, Accept-host cancellation, and detach-before-callback
+ordering under OOM, send failure, and synchronous reentrancy. The focused
+`test-rpc-l4` gate passes 79/79 in Debug, ReleaseSafe, and ReleaseFast; the
+complete peer suite passes 499/499.
+
 Focused `rpc.vat.join` regressions cover the addressed registry itself:
 unknown direct peers, unknown/stale provisions, duplicate provision rollback,
 direct-peer removal, successful JoinResult resolution, connector resolution
@@ -285,13 +339,16 @@ The shared L3/L4 test harness now includes assertions for drained provide,
 join, Join relay, JoinResult accept-host back-link, pending direct-accept,
 embargoed-accept, third-party, and parked-call state.
 
-`just e2e-l4-zig` now runs a standalone Zig↔Zig loopback TCP scenario for the
-current addressed JoinResult→Accept path. The client obtains the server
-bootstrap cap over a real `ClientSession`/`ServerSession`, sends two Join parts,
-resolves two JoinResults through `AddressedJoinNetwork`, sends the direct
-Accept, calls the accepted cap, and verifies the addressed provision registry
-drains. The e2e gate uses pre-registered direct peers; the connector path is
-covered by focused unit/OOM regressions.
+`just e2e-l4-zig` runs a standalone Zig↔Zig loopback TCP scenario for the
+current addressed JoinResult→Accept path. It first uses a short TTL and small
+quota to prove an attacker cannot retain Join state, then performs a successful
+JoinResult→Accept→call flow on the same high-level lifecycle. The client obtains
+the server bootstrap cap over a real `ClientSession`/`ServerSession`, resolves
+the JoinResults through `AddressedJoinNetwork`, invokes the accepted cap, and
+verifies the provision registry drains. The nine-case gate passes 9/9 and is
+registered in the Linux, macOS, and Windows Test matrix. It uses pre-registered
+direct peers; the connector path remains covered by focused unit/OOM
+regressions.
 
 `just e2e-l3-cpp` adds cross-implementation recon checks for the `JoinKeyPart`
 and `JoinResult` shapes plus a source-backed C++ runtime-surface probe. The
