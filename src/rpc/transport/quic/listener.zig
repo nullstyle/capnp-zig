@@ -1,9 +1,12 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const quic_zig = @import("quic_zig");
 
 const quic_zig_adapter = @import("quic_zig_adapter.zig");
+const non_windows_receive = @import("non_windows_receive.zig");
 const quic_options = @import("options.zig");
 const session_mod = @import("session.zig");
+const udp_receive_bridge = @import("udp_receive_bridge.zig");
 
 const Net = std.Io.net;
 
@@ -27,9 +30,14 @@ pub const Listener = struct {
     io: std.Io,
     socket: Net.Socket,
     server: quic_zig.Server,
+    /// Stable storage for the cancellable Windows receive. A timed wait can
+    /// return while the kernel still owns this buffer, so it must not borrow a
+    /// different caller slice on each `receiveOne` invocation.
+    udp_rx_buf: []u8,
     start_timestamp: std.Io.Timestamp,
     receive_timeout: std.Io.Duration,
     max_concurrent_sessions: u32,
+    udp_receive: udp_receive_bridge.Bridge = .{},
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -37,6 +45,9 @@ pub const Listener = struct {
         options: quic_options.ServerOptions,
     ) !Listener {
         const server_config = try quic_options.serverConfigFromOptions(allocator, options);
+
+        const udp_rx_buf = try allocator.alloc(u8, options.udp_rx_buffer_size);
+        errdefer allocator.free(udp_rx_buf);
 
         const socket = try Net.IpAddress.bind(&options.listen_addr, io, .{
             .mode = .dgram,
@@ -52,6 +63,7 @@ pub const Listener = struct {
             .io = io,
             .socket = socket,
             .server = server,
+            .udp_rx_buf = udp_rx_buf,
             .start_timestamp = std.Io.Timestamp.now(io, .awake),
             .receive_timeout = options.receive_timeout,
             .max_concurrent_sessions = options.max_concurrent_connections,
@@ -59,8 +71,10 @@ pub const Listener = struct {
     }
 
     pub fn deinit(self: *Listener) void {
+        self.udp_receive.cancel(self.io);
         self.socket.close(self.io);
         self.server.deinit();
+        self.allocator.free(self.udp_rx_buf);
         self.* = undefined;
     }
 
@@ -113,12 +127,20 @@ pub const Listener = struct {
         self: *Listener,
         rx_buf: []u8,
     ) !?FeedOutcome {
-        const msg = self.socket.receiveTimeout(self.io, rx_buf, .{
-            .duration = .{
-                .raw = self.receive_timeout,
-                .clock = .awake,
-            },
-        }) catch |err| switch (err) {
+        if (comptime builtin.target.os.tag == .windows) {
+            const received = try self.receiveConcurrent(self.receive_timeout);
+            return switch (received) {
+                .timeout, .wake => null,
+                .datagram => |msg| blk: {
+                    if (msg.flags.trunc) return error.DatagramTooLarge;
+                    const outcome = try self.feedDatagram(msg.data, msg.from, self.nowUs());
+                    try self.drainStatelessResponses();
+                    break :blk outcome;
+                },
+            };
+        }
+
+        const msg = non_windows_receive.receive(&self.socket, self.io, rx_buf, self.receive_timeout) catch |err| switch (err) {
             error.Timeout => return null,
             else => return err,
         };
@@ -127,6 +149,36 @@ pub const Listener = struct {
         try self.drainStatelessResponses();
         return outcome;
     }
+
+    fn receiveConcurrent(
+        self: *Listener,
+        wait_duration: std.Io.Duration,
+    ) !udp_receive_bridge.Bridge.WaitResult {
+        return try self.udp_receive.receive(
+            self.io,
+            self.socket,
+            self.udp_rx_buf,
+            wait_duration,
+        );
+    }
+
+    pub const TestingHooks = if (builtin.is_test) struct {
+        /// Exercise the Windows receive shape on every host. `caller_buffer`
+        /// mirrors the public API argument but is deliberately ignored: the
+        /// retained kernel operation always borrows Listener-owned storage.
+        pub fn receiveConcurrent(
+            listener: *Listener,
+            caller_buffer: []u8,
+            wait_duration: std.Io.Duration,
+        ) !udp_receive_bridge.Bridge.WaitResult {
+            _ = caller_buffer;
+            return try listener.receiveConcurrent(wait_duration);
+        }
+
+        pub fn receiveStoragePtr(listener: *Listener) [*]u8 {
+            return listener.udp_rx_buf.ptr;
+        }
+    } else struct {};
 
     pub fn drainStatelessResponses(self: *Listener) !void {
         while (self.server.drainStatelessResponse()) |response| {

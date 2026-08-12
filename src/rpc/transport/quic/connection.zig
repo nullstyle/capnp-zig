@@ -16,6 +16,7 @@ const endpoint_mod = @import("endpoint.zig");
 const native_engine = @import("native_engine.zig");
 const quic_options = @import("options.zig");
 const quic_close = @import("close.zig");
+const udp_receive_bridge = @import("udp_receive_bridge.zig");
 const wake_mod = @import("wake.zig");
 
 const Net = std.Io.net;
@@ -61,6 +62,7 @@ pub const Connection = struct {
     native: NativeEngine,
     close_controller: CloseController = .{},
     wake_state: wake_mod.Handle = .{},
+    udp_receive: udp_receive_bridge.Bridge = .{},
 
     callback_lifecycle: CallbackLifecycle = .{},
 
@@ -100,6 +102,7 @@ pub const Connection = struct {
         self.baseline.deinit(self.allocator);
         self.native.deinit(self.allocator);
         self.callback_lifecycle.clearCallbacks();
+        self.udp_receive.cancel(self.endpoint.io);
         self.wake_state.deinit();
         self.endpoint.deinit();
         self.allocator.free(self.udp_rx_buf);
@@ -138,6 +141,9 @@ pub const Connection = struct {
     /// blocking waits to a short interval until a native event primitive lands.
     pub fn wake(self: *Connection) void {
         self.wake_state.request();
+        if (comptime builtin.target.os.tag == .windows) {
+            self.udp_receive.wake(self.endpoint.io);
+        }
     }
 
     pub fn close(self: *Connection) void {
@@ -251,6 +257,14 @@ pub const Connection = struct {
 
         pub fn deinitRequested(conn: *const Connection) bool {
             return conn.callback_lifecycle.deinitRequested();
+        }
+
+        pub fn udpReceiveInFlight(conn: *const Connection) bool {
+            return conn.udp_receive.hasInFlight();
+        }
+
+        pub fn udpReceiveCancellationCount(conn: *const Connection) usize {
+            return conn.udp_receive.cancellationCount();
         }
 
         pub fn invokeCloseCallback(

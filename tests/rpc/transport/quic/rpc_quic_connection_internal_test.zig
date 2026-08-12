@@ -7,6 +7,7 @@ const native_framer = quic.native;
 const Net = std.Io.net;
 const Connection = quic.Connection;
 const TestAccess = quic.testing.ConnectionAccess;
+const UdpReceiveBridge = quic.testing.UdpReceiveBridge;
 const NativeOptions = TestAccess.NativeOptions;
 
 fn testRemoteAddr() Net.IpAddress {
@@ -32,6 +33,215 @@ fn initTestNativeClient(allocator: std.mem.Allocator, native_options: NativeOpti
         .mode = .native,
         .native = native_options,
     });
+}
+
+fn bindUdpSocket() !Net.Socket {
+    const addr: Net.IpAddress = .{ .ip4 = .loopback(0) };
+    return try Net.IpAddress.bind(&addr, std.testing.io, .{
+        .mode = .dgram,
+        .protocol = .udp,
+    });
+}
+
+test "QUIC UDP receive bridge poll keeps one cancellable receive in flight" {
+    var socket = try bindUdpSocket();
+    defer socket.close(std.testing.io);
+
+    var bridge = UdpReceiveBridge{};
+    defer bridge.cancel(std.testing.io);
+    var rx: [64]u8 = undefined;
+
+    try std.testing.expectEqual(
+        UdpReceiveBridge.WaitResult.timeout,
+        try bridge.receive(std.testing.io, socket, &rx, std.Io.Duration.zero),
+    );
+    try std.testing.expect(bridge.hasInFlight());
+    try std.testing.expectEqual(@as(usize, 0), bridge.cancellationCount());
+
+    // A second poll observes the same still-valid task rather than launching a
+    // duplicate or canceling it merely because a timer/poll boundary fired.
+    try std.testing.expectEqual(
+        UdpReceiveBridge.WaitResult.timeout,
+        try bridge.receive(std.testing.io, socket, &rx, std.Io.Duration.zero),
+    );
+    try std.testing.expect(bridge.hasInFlight());
+}
+
+test "QUIC UDP receive bridge handles wake before and during wait" {
+    var socket = try bindUdpSocket();
+    defer socket.close(std.testing.io);
+
+    var bridge = UdpReceiveBridge{};
+    defer bridge.cancel(std.testing.io);
+    var rx: [64]u8 = undefined;
+
+    bridge.wake(std.testing.io);
+    try std.testing.expectEqual(
+        UdpReceiveBridge.WaitResult.wake,
+        try bridge.receive(std.testing.io, socket, &rx, std.Io.Duration.fromSeconds(1)),
+    );
+    try std.testing.expect(bridge.hasInFlight());
+
+    const Waker = struct {
+        fn run(target: *UdpReceiveBridge) void {
+            std.Io.sleep(std.testing.io, std.Io.Duration.fromMilliseconds(5), .awake) catch {};
+            target.wake(std.testing.io);
+        }
+    };
+    var thread = try std.Thread.spawn(.{}, Waker.run, .{&bridge});
+    defer thread.join();
+
+    try std.testing.expectEqual(
+        UdpReceiveBridge.WaitResult.wake,
+        try bridge.receive(std.testing.io, socket, &rx, std.Io.Duration.fromSeconds(1)),
+    );
+    try std.testing.expect(bridge.hasInFlight());
+}
+
+test "QUIC UDP receive bridge completes a pending receive after timer expiry" {
+    var receiver = try bindUdpSocket();
+    defer receiver.close(std.testing.io);
+    var sender = try bindUdpSocket();
+    defer sender.close(std.testing.io);
+
+    var bridge = UdpReceiveBridge{};
+    defer bridge.cancel(std.testing.io);
+    var rx: [64]u8 = undefined;
+
+    try std.testing.expectEqual(
+        UdpReceiveBridge.WaitResult.timeout,
+        try bridge.receive(std.testing.io, receiver, &rx, std.Io.Duration.fromMilliseconds(1)),
+    );
+    try std.testing.expect(bridge.hasInFlight());
+    try std.testing.expectEqual(@as(usize, 0), bridge.cancellationCount());
+
+    try sender.send(std.testing.io, &receiver.address, "after-timer");
+    const result = try bridge.receive(
+        std.testing.io,
+        receiver,
+        &rx,
+        std.Io.Duration.fromSeconds(1),
+    );
+    switch (result) {
+        .datagram => |datagram| {
+            try std.testing.expectEqualStrings("after-timer", datagram.data);
+            try std.testing.expect(!datagram.flags.trunc);
+        },
+        else => return error.ExpectedUdpDatagram,
+    }
+    try std.testing.expect(!bridge.hasInFlight());
+    try std.testing.expectEqual(@as(usize, 0), bridge.cancellationCount());
+}
+
+test "QUIC UDP receive bridge reports truncation without processing partial bytes" {
+    var receiver = try bindUdpSocket();
+    defer receiver.close(std.testing.io);
+    var sender = try bindUdpSocket();
+    defer sender.close(std.testing.io);
+
+    var bridge = UdpReceiveBridge{};
+    defer bridge.cancel(std.testing.io);
+    var rx: [2]u8 = undefined;
+    try sender.send(std.testing.io, &receiver.address, "oversized");
+
+    const result = try bridge.receive(
+        std.testing.io,
+        receiver,
+        &rx,
+        std.Io.Duration.fromSeconds(1),
+    );
+    switch (result) {
+        .datagram => |datagram| {
+            try std.testing.expect(datagram.flags.trunc);
+            try std.testing.expectEqual(rx.len, datagram.data.len);
+        },
+        else => return error.ExpectedUdpDatagram,
+    }
+}
+
+test "QUIC UDP receive bridge retains the launch buffer across a later argument" {
+    var receiver = try bindUdpSocket();
+    defer receiver.close(std.testing.io);
+    var sender = try bindUdpSocket();
+    defer sender.close(std.testing.io);
+
+    var bridge = UdpReceiveBridge{};
+    defer bridge.cancel(std.testing.io);
+    var launch_buffer: [64]u8 = @splat(0xa1);
+    var resume_buffer: [64]u8 = @splat(0xb2);
+
+    try std.testing.expectEqual(
+        UdpReceiveBridge.WaitResult.timeout,
+        try bridge.receive(
+            std.testing.io,
+            receiver,
+            &launch_buffer,
+            std.Io.Duration.fromMilliseconds(1),
+        ),
+    );
+    try sender.send(std.testing.io, &receiver.address, "retained-buffer");
+
+    const result = try bridge.receive(
+        std.testing.io,
+        receiver,
+        &resume_buffer,
+        std.Io.Duration.fromSeconds(1),
+    );
+    switch (result) {
+        .datagram => |datagram| {
+            try std.testing.expectEqual(@intFromPtr(&launch_buffer), @intFromPtr(datagram.data.ptr));
+            try std.testing.expectEqualStrings("retained-buffer", datagram.data);
+            try std.testing.expectEqual(@as(u8, 0xb2), resume_buffer[0]);
+        },
+        else => return error.ExpectedUdpDatagram,
+    }
+}
+
+test "QUIC UDP receive bridge cancellation is exactly once" {
+    var socket = try bindUdpSocket();
+    defer socket.close(std.testing.io);
+
+    var bridge = UdpReceiveBridge{};
+    var rx: [64]u8 = undefined;
+    _ = try bridge.receive(std.testing.io, socket, &rx, std.Io.Duration.zero);
+    try std.testing.expect(bridge.hasInFlight());
+
+    bridge.cancel(std.testing.io);
+    try std.testing.expect(!bridge.hasInFlight());
+    try std.testing.expectEqual(@as(usize, 1), bridge.cancellationCount());
+    bridge.cancel(std.testing.io);
+    try std.testing.expectEqual(@as(usize, 1), bridge.cancellationCount());
+}
+
+test "QUIC UDP receive bridge start failure is transactional and retryable" {
+    var socket = try bindUdpSocket();
+    defer socket.close(std.testing.io);
+
+    var bridge = UdpReceiveBridge{};
+    defer bridge.cancel(std.testing.io);
+    var rx: [64]u8 = undefined;
+
+    bridge.failNextStartForTesting();
+    try std.testing.expectError(
+        error.ConcurrencyUnavailable,
+        bridge.receive(std.testing.io, socket, &rx, std.Io.Duration.zero),
+    );
+    try std.testing.expect(!bridge.hasInFlight());
+    try std.testing.expectEqual(@as(usize, 0), bridge.cancellationCount());
+
+    try std.testing.expectEqual(
+        UdpReceiveBridge.WaitResult.timeout,
+        try bridge.receive(std.testing.io, socket, &rx, std.Io.Duration.zero),
+    );
+    try std.testing.expect(bridge.hasInFlight());
+}
+
+test "QUIC connection repeated close and deinit are idempotent" {
+    var conn = try initTestClient(std.testing.allocator);
+    conn.requestClose();
+    conn.requestClose();
+    conn.deinit();
+    conn.deinit();
 }
 
 test "QUIC sendFrame requests scheduler wake" {

@@ -1,10 +1,12 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const datagram_io = @import("datagram_io.zig");
 const endpoint_mod = @import("endpoint.zig");
 const engine_owner = @import("engine_owner.zig");
 const mode_router = @import("mode_router.zig");
 const scheduler = @import("scheduler.zig");
+const udp_receive_bridge = @import("udp_receive_bridge.zig");
 const wake_mod = @import("wake.zig");
 
 const log = std.log.scoped(.rpc_quic_transport);
@@ -19,6 +21,7 @@ pub const Owner = struct {
     udp_rx_buf: []u8,
     udp_tx_buf: []u8,
     wake: *wake_mod.Handle,
+    receive_bridge: *udp_receive_bridge.Bridge,
 
     driver: *const fn (ptr: *anyopaque) endpoint_mod.EndpointDriver,
     selected_mode: *const fn (ptr: *anyopaque) mode_router.Router,
@@ -29,6 +32,7 @@ pub const Owner = struct {
     terminate_internal_error: *const fn (ptr: *anyopaque, err: anyerror) void,
     flush_close_datagram: *const fn (ptr: *anyopaque) void,
     close_engines: *const fn (ptr: *anyopaque) void,
+    cancel_receive: *const fn (ptr: *anyopaque) void,
     notify_closed: *const fn (ptr: *anyopaque) void,
     invoke_close_callback: *const fn (ptr: *anyopaque) void,
     complete_deferred_deinit: *const fn (ptr: *anyopaque) void,
@@ -48,6 +52,9 @@ pub fn run(owner: Owner) void {
         }
     }
 
+    // Reap the cancellable Windows UDP receive while the socket and buffers
+    // are still alive, and before close callbacks can release their owner.
+    owner.cancel_receive(owner.ptr);
     owner.flush_close_datagram(owner.ptr);
     owner.close_engines(owner.ptr);
     owner.notify_closed(owner.ptr);
@@ -66,7 +73,7 @@ pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
         .now_us = now_us,
         .next_deadline_us = next_deadline_us,
         .immediate_work = hasImmediateWork(owner, driver),
-        .wake_supported = owner.wake.isSupported(),
+        .wake_supported = owner.wake.isSupported() or builtin.target.os.tag == .windows,
     });
     var result = StepResult{
         .waited_for = waited_for,
@@ -76,6 +83,7 @@ pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
         .io = owner.io,
         .driver = driver,
         .wake = owner.wake,
+        .receive_bridge = owner.receive_bridge,
         .rx_buf = owner.udp_rx_buf,
         .now_us = now_us,
         .wait_duration = waited_for,

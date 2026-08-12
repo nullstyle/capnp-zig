@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
 const quic_zig = @import("quic_zig");
 
@@ -17,6 +18,7 @@ const RawFaultClient = struct {
     start_timestamp: std.Io.Timestamp,
     rx_buf: []u8,
     tx_buf: []u8,
+    udp_receive: quic.testing.UdpReceiveBridge = .{},
 
     fn init(
         allocator: std.mem.Allocator,
@@ -57,6 +59,9 @@ const RawFaultClient = struct {
     }
 
     fn deinit(self: *RawFaultClient) void {
+        // The concurrent task borrows both socket and receive buffer. Reap it
+        // before either can be torn down, even when a fault case exits early.
+        self.udp_receive.cancel(self.io);
         self.client.deinit();
         self.socket.close(self.io);
         self.allocator.free(self.rx_buf);
@@ -118,22 +123,39 @@ const RawFaultClient = struct {
         try self.drainOutgoing(now_us);
 
         now_us = self.nowUs();
-        const msg = self.socket.receiveTimeout(self.io, self.rx_buf, .{
-            .duration = .{
-                .raw = receive_timeout,
-                .clock = .awake,
-            },
-        }) catch |err| switch (err) {
-            error.Timeout => null,
-            else => return err,
-        };
-        if (msg) |received| {
-            if (std.Io.net.IpAddress.eql(&received.from, &self.remote_addr)) {
-                try self.client.conn.handle(
-                    received.data,
-                    quic.ipAddressToPathAddress(received.from),
-                    now_us,
-                );
+        if (comptime builtin.target.os.tag == .windows) {
+            const received = try self.udp_receive.receive(
+                self.io,
+                self.socket,
+                self.rx_buf,
+                receive_timeout,
+            );
+            switch (received) {
+                .timeout, .wake => {},
+                .datagram => |msg| {
+                    if (msg.flags.trunc) return error.DatagramTooLarge;
+                    if (std.Io.net.IpAddress.eql(&msg.from, &self.remote_addr)) {
+                        try self.client.conn.handle(
+                            msg.data,
+                            quic.ipAddressToPathAddress(msg.from),
+                            now_us,
+                        );
+                    }
+                },
+            }
+        } else {
+            const msg = quic.testing.nonWindowsReceive(&self.socket, self.io, self.rx_buf, receive_timeout) catch |err| switch (err) {
+                error.Timeout => null,
+                else => return err,
+            };
+            if (msg) |received| {
+                if (std.Io.net.IpAddress.eql(&received.from, &self.remote_addr)) {
+                    try self.client.conn.handle(
+                        received.data,
+                        quic.ipAddressToPathAddress(received.from),
+                        now_us,
+                    );
+                }
             }
         }
 
