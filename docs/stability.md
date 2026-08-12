@@ -23,6 +23,8 @@ updated as phases land.
 | Self-interop e2e (zig↔zig loopback, `zig build e2e-self`) | full | full | full |
 | Cross-implementation e2e (docker reference impls) | full | full | local only (Docker Desktop/WSL2); hosted runners cannot run Linux containers |
 | Deterministic fuzz smoke | full | full | full |
+| Structural fuzz: L3/L4 peer frames, QUIC framers, persistence restore | full | full | full |
+| ThreadSanitizer lane (`test-tsan`, threaded transport suites) | full (CI job) | not available (libtsan SIGSEGVs at startup on this Zig pin) | not available |
 | Coverage-guided fuzzing (`--fuzz`) | full | full | blocked upstream (zig fuzzer is ELF/Mach-O only) |
 | Evented `std.Io` backend | compile-checked only — no sockets (see below) | compile-checked only — no sockets (see below) | blocked upstream (`EventedBackendUnsupported`) |
 | QUIC transport | experimental (`-Dquic=true`; four-root evidence runs in Debug + ReleaseSafe, and the full repository is also tested against the QUIC-enabled root) | experimental (four-root Debug + ReleaseSafe evidence; locally proven 61/61 on macOS) | experimental (native Debug + ReleaseSafe no-skip gate configured; local cross-compilation passes, but hosted runtime acceptance is pending the capnp-zig push) |
@@ -86,7 +88,14 @@ The two-party Cap'n Proto RPC Level-1 core is promoted to Stable in 0.3.0 on a
 **frozen public surface**: the Stable RPC entry points below are pinned by the
 `docs/api-snapshot.txt` snapshot and gated in CI (`zig build check-api`) — a
 diff is a reviewed breaking change, not an accident. The complementary
-Experimental surface evolves in `docs/api-snapshot-experimental.txt` (ungated).
+Experimental surface evolves in `docs/api-snapshot-experimental.txt`, which is
+**no longer ungated**: CI runs `check-api-experimental` (and, on Linux with
+QUIC enabled, `check-api-experimental-quic`), so the committed experimental
+snapshots must match the tree. Drift there is not a breaking change — the fix
+is to regenerate and commit — but it can no longer go unnoticed. This became
+possible once the stored thread ids were widened to `u64`: `std.Thread.Id` is
+u32 on Linux/Windows and u64 on macOS, and `@typeName` renders the resolved
+integer, so the snapshots used to differ by the platform that generated them.
 
 | Module | Path | Frozen surface |
 |---|---|---|

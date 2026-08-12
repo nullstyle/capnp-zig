@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The cross-target compile matrix builds again, on every target.** Two
+  independent breakages, both long-standing:
+
+  `tools/soak_rpc.zig` declared its twenty counters as
+  `std.atomic.Value(u64)`. Zig's atomic builtins reject operands wider than
+  the pointer width, so `zig build check-compile -Dtarget=x86-linux-gnu`
+  failed with nine errors inside `std/atomic.zig` — the `Cross-target compile
+  (x86-linux-gnu)` CI job had been red on this. The counters are now `usize`,
+  which is the same u64 on every 64-bit machine the soak harness actually runs
+  on; the 32-bit build exists purely as compile-only rot detection.
+
+  A thread-affinity assertion still compared `@as(?std.Thread.Id, ...)`
+  against a field widened to `?u64` (see the platform-stable snapshot work
+  below). `std.Thread.Id` is u32 on Linux and Windows but u64 on macOS, so
+  this compiled on a macOS host while `check-test-compile -Dtarget=
+  x86_64-windows` failed.
+
 ### Changed
+
+- **`quic-zig` is pinned to the `v0.10.1` tag instead of a raw commit.**
+  Dependency pins are now immutable, auditable release points. The tag
+  contains exactly the previously pinned tree plus one release commit that
+  declares the version (no source change), so the Windows socket-link and
+  BoringSSL fixes it carries are the same ones already under test.
 
 - **`rpc.peer` decomposed: `peer/mod.zig` shrank from 14,059 to 5,807 lines
   (-59%) with zero behavior change.** The full P0-P12 ladder extracted every
