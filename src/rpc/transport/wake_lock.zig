@@ -46,10 +46,16 @@ pub const Lock = struct {
     mu: std.atomic.Mutex = .unlocked,
     /// Thread currently holding the lock, or 0 when free. Diagnostic only —
     /// never consulted for correctness, only to name a holder in a panic.
-    /// Stored as u64 rather than `std.Thread.Id` so the rendered api-snapshot
-    /// stays platform-stable (`Thread.Id` is u32 on Linux/Windows, u64 on
-    /// macOS).
-    owner_thread_id: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    ///
+    /// `usize`, not `std.Thread.Id` and not `u64`. Not `Thread.Id` because it
+    /// is u32 on Linux/Windows and u64 on macOS, which would render the
+    /// api-snapshot differently per platform. Not `u64` because Zig's atomic
+    /// builtins reject operands wider than the pointer width, so a u64 atomic
+    /// fails to compile for 32-bit targets — `check-compile -Dtarget=
+    /// x86-linux-gnu` catches it, and has now caught it twice in one day
+    /// (see also tools/soak_rpc.zig's counters). `usize` is wide enough for a
+    /// thread id on every target we build.
+    owner_thread_id: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 
     /// Spins tolerated before the wait is declared stuck. See the module doc
     /// for why this is a count and not a duration.
@@ -82,7 +88,7 @@ pub const Lock = struct {
             spins += 1;
             if (spins < stall_limit_spins) continue;
             const holder = self.owner_thread_id.load(.acquire);
-            const waiter: u64 = std.Thread.getCurrentId();
+            const waiter: usize = @intCast(std.Thread.getCurrentId());
             std.debug.panic( // stuck-wake-lock diagnostic
                 "wake lock '" ++ site ++ "' still contended after {d} spins: held by thread {d}, " ++
                     "waiter is thread {d}. The holder is stuck inside the critical section; the usual " ++
@@ -95,7 +101,7 @@ pub const Lock = struct {
 
     fn noteOwner(self: *Lock, runtime_checks: bool) void {
         if (!diagnosticsEnabled(runtime_checks)) return;
-        self.owner_thread_id.store(std.Thread.getCurrentId(), .release);
+        self.owner_thread_id.store(@intCast(std.Thread.getCurrentId()), .release);
     }
 
     pub fn release(self: *Lock, runtime_checks: bool) void {

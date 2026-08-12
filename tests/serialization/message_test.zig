@@ -2407,7 +2407,9 @@ test "struct-list upgrade: List(UInt64) takes the existing whole-word path" {
 
     var root_builder = try builder.allocateStruct(0, 1);
     var list_builder = try root_builder.writeU64List(0, 3);
-    for (0..3) |i| try list_builder.set(@intCast(i), 0xDEADBEEF00000000 + i);
+    // `i` is usize, so the addend must be explicitly u64 or the constant is
+    // evaluated as usize and overflows on 32-bit targets.
+    for (0..3) |i| try list_builder.set(@intCast(i), 0xDEADBEEF00000000 + @as(u64, i));
 
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
@@ -2420,7 +2422,7 @@ test "struct-list upgrade: List(UInt64) takes the existing whole-word path" {
     try testing.expectEqual(@as(u8, 0), list.sub_word_data_bytes);
     for (0..3) |i| {
         const element = try list.get(@intCast(i));
-        try testing.expectEqual(@as(u64, 0xDEADBEEF00000000 + i), element.readU64(0));
+        try testing.expectEqual(0xDEADBEEF00000000 + @as(u64, i), element.readU64(0));
         try testing.expectEqual(@as(usize, 8), element.getDataSection().len);
     }
 }

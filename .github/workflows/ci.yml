@@ -316,10 +316,11 @@ jobs:
         run: zig build check-compile -Dtarget=${{ matrix.target }} --summary all
 
       - name: Compile test suite for ${{ matrix.target }}
-        # Windows-only: the native Test (windows) job runs the suite for
-        # real; this step exists so test compile breakage for Windows is
-        # caught even by contributors without Windows machines.
-        if: matrix.target == 'x86_64-windows'
+        # Every target, not just Windows. This was Windows-only, so the
+        # 32-bit test compile was never checked -- and had been broken since
+        # 2026-07-29 (two `0xDEADBEEF00000000 + i` literals in
+        # message_test.zig evaluated as usize) without anything noticing.
+        # The lib already compiles for all four; the tests do too now.
         run: zig build check-test-compile -Dtarget=${{ matrix.target }} --summary all
 
   hardening:
