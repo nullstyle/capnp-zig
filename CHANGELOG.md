@@ -26,7 +26,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this compiled on a macOS host while `check-test-compile -Dtarget=
   x86_64-windows` failed.
 
+- **QUIC's cross-thread wake door could write to a recycled file descriptor.**
+  `request()` (callable from any thread) read `Handle.fds` and wrote the
+  socketpair with no synchronization against `deinit()` (owner thread) nulling
+  and closing them — the exact write-to-recycled-fd shape `tcp/connection.zig`
+  already guarded with `wake_mu`. A spin mutex inside the `Handle` is now held
+  across the fds read+write in `request()` and across the null+close in
+  `deinit()`, covering the compat `Connection`, `Server`, and `ServerSession`
+  at once. Loop-thread paths stay unlocked: only the owner closes, and it
+  cannot poll and deinit simultaneously. A new 4-thread `request()` storm
+  racing owner `deinit()` over 200 handle lifecycles — plus a TCP `wake()`
+  storm racing `Connection.deinit` — exercises the interleavings the mutexes
+  exist for.
+
+- **A hostile or duplicated answer id could leak a results frame.**
+  `completeSelfLoopbackReturn` stashed the frame under the answer id with a
+  plain `HashMap.put`, so a second self-loopback Return on the same id before a
+  `takeFromOtherQuestion` consumed the first silently overwrote and leaked it.
+  Now `fetchPut` + free of the displaced frame. Found by the new
+  structure-aware fuzzing below within a two-minute coverage-guided run, and
+  pinned by a focused regression that drives the exact two-call sequence
+  (fails pre-fix under the testing allocator).
+
+- **Windows CI failed with every test passing, because of a listening-socket
+  `shutdown()`.** `Listener.close` called `shutdownFd` before `closeFd` since
+  on POSIX a bare close does not reliably wake a thread parked in `accept()`;
+  the comment claimed this was "harmless on Windows". It is not — `shutdown()`
+  on a *listening* socket is invalid there, fails with `INVALID_PARAMETER`, and
+  std routes that through `unexpectedStatus`, whose debug diagnostic prints a
+  stack trace and leaves the process exiting non-zero even though our
+  `catch {}` discards the error value. The result was 1858/1861 passing, zero
+  failing tests, and a red job. Windows `closesocket` already unblocks a
+  pending accept, so the call is now POSIX-only. Long-standing; it surfaced
+  only once a Windows leg survived long enough to finish.
+
+- **Five CI jobs could not pass, and had been red since before this branch.**
+  Only the primary `test` job installed `capnp` or checked out submodules, yet
+  the hardening, QUIC-transport and ReleaseSafe jobs all reach the
+  schema-fidelity and codegen roots, which **fail rather than skip** without
+  the tool (deliberate policy, so codegen parity cannot regress into silent
+  skips). The install and its presence assertion now live in a
+  `.github/actions/setup-capnp` composite action wired into all four
+  consumers, and the hardening job gained `submodules: recursive`.
+
+- **The experimental API-snapshot gate rendered differently per platform.**
+  `SockAddrStorage.any` names `std.posix.sockaddr` everywhere, but `@typeName`
+  reports the *resolved* declaration — translate-c on macOS,
+  `os.linux.sockaddr` on Linux — so the strict gate went red on Linux while
+  passing on macOS. Fixed at the renderer, where it belongs: the snapshot
+  exists to catch drift in *our* surface, not to freeze one OS's spelling of a
+  std type. A grep for the remaining platform-variant token families finds no
+  other cases, so the experimental surface is now platform-stable by
+  construction rather than by assumption.
+
+- **The ThreadSanitizer lane had never once finished.** It carried
+  `timeout-minutes: 20` and was killed at exactly 20 minutes on every run since
+  it was added, so it reported no result while looking configured. Job caps are
+  now sized against measured runs (TSan 45; the `Test` job 45 with a 35-minute
+  step cap, after a run where every test passed but the step was killed at
+  20m50s). `docs/stability.md` no longer claimed TSan coverage it had not yet
+  earned.
+
 ### Changed
+
+- **The toolchain moved to Zig `0.17.0-dev.1683+5ceec001b`, and one frozen
+  declaration changed with it.** `.minimum_zig_version` moves to
+  `0.17.0-dev.1683`; consumers on an older dev build must upgrade. One std API
+  break reached the source: `netClose` now takes `[]const Io.net.Socket`
+  instead of raw handles, so `tcp.runtime.closeFd` and
+  `stream_transport.ioClose` construct a `Socket` (the close path never reads
+  `address`).
+
+  The frozen-surface consequence, reviewed rather than regenerated blindly:
+
+      tcp.runtime.Listener.init: error set gains AccessDenied
+
+  That is inherited from std's `listen`, not invented here, and it is the
+  complete frozen diff. Narrowing it back would mean swallowing a genuine
+  bind-permission failure on privileged ports, so it is accepted and recorded.
+  **Consumers switching exhaustively on `Listener.init`'s error set must add a
+  case.** Cold-cache `zig build test` is 1862/1862, bit-identical to the
+  pre-upgrade cold baseline.
+
+  Operational note for anyone pinning a Zig dev build: `ziglang.org/builds/`
+  garbage-collects them. Measured at the time of writing, the current pin and
+  the previous one (`dev.1509`) still resolve while `dev.1252` returns 404 —
+  retention is finite but deeper than one bump. This repo therefore keeps
+  exactly one version specifier, in `mise.toml`; the nightly fuzz lane's former
+  private `dev.1252` pin would be un-installable today had it survived.
 
 - **`quic-zig` is pinned to the `v0.10.1` tag instead of a raw commit.**
   Dependency pins are now immutable, auditable release points. The tag
@@ -118,6 +205,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only found by a consumer build against a published tag.
 
 ### Added
+
+- **A ThreadSanitizer lane.** Nothing exercised the runtime under a race
+  detector, while recent work added threaded code (the Windows QUIC receive
+  bridge, the TCP reader bridge, `WorkerPool`) and the wake doors are
+  explicitly any-thread. `build.zig` gains an instrumented module
+  (`sanitize_thread` + `link_libc` — without libc `std.Thread` uses raw
+  `clone()`, which TSan cannot see) and three steps: `test-tsan` / `soak-tsan`
+  (which hard-fail off-Linux rather than pass vacuously) and `check-tsan`
+  (compile-only, usable from any host via `-Dtarget=*-linux-gnu`). The lane is
+  Linux-only by construction: a probe confirmed `sanitize_thread` reports a
+  seeded race on Linux but that libtsan SIGSEGVs at startup on darwin — re-
+  verified, not assumed, at the current toolchain.
+
+- **Structure-aware fuzzing of the L3/L4 and QUIC-framer surfaces.** The single
+  structured peer target emitted only Call and Return, leaving the ~4,900-line
+  three-party/Join surface (Provide, Accept, Join, ThirdPartyAnswer, Resolve,
+  Disembargo, Release, Finish, Bootstrap, Abort) reachable only through random
+  bytes that essentially never decode, and the QUIC framers coverage-fuzzed not
+  at all. `fuzzPeerL3Frame` seeds the peer with the state those handlers gate
+  on — a live export, imports, an attached provision index with small limits so
+  hostile embargo/park bytes stay bounded, a loopback Join network, and a
+  well-formed Provide preamble with a reachability self-check so the target
+  cannot silently rot into "bytes that never provide" — then feeds a weighted
+  mix of all twelve builders. `fuzzQuicLengthFramer` and
+  `fuzzQuicNativeControlFramer` are std-only and re-exported under both roots,
+  so they fuzz under the default `test-fuzz` with no `-Dquic` and no extra
+  build wiring. This is what found the self-loopback frame leak above.
+
+- **A persistence restore / sturdy-ref decode fuzz target.** Sturdy-ref bytes
+  are attacker-controlled by definition — a remote peer names whatever it likes
+  in `restore` — yet the restore path (payload decode, the restorer hook, and
+  `RestoreOutcome` handling for unknown/existing/host) was reachable only
+  through random bytes that essentially never carry the restorer interface id.
+  The target seeds a bootstrap export plus a restorer whose outcome is driven
+  off the fuzzed ref, then feeds restore Calls with well-formed Data payloads
+  of fuzzed length and content plus two malformed shapes (null `sturdyRef`
+  pointer, absent content). Property: no crash, hang, or leak, and full state
+  drain on deinit.
+
+- **QUIC thread-affinity checks now match TCP's, and both contracts are
+  documented.** QUIC `Connection` gains a `runtime_thread_checks` field so its
+  `assertThreadAffinity` runs Debug-always / release-opt-in like TCP's
+  (previously the whole check compiled out of release with no opt-in), plus the
+  `adoptOwnerThread` method it lacked. QUIC `Server` gains a read-side
+  `assertLoopThread` guarding `sessionCount`/`sessionAt`/`sessionById`.
+
+  Two asymmetries with TCP were flagged in review; both are resolved as
+  deliberate rather than by copying TCP. `Connection.sendFrame` stays
+  un-checked because it enqueues into a mutex-guarded outbound queue the loop
+  flushes, so it is thread-safe from any thread — TCP made the opposite choice
+  (owner-thread-only send, cross-thread work via `wake()`). And `deinit()`'s
+  callback-deferred branch intentionally does *not* assert affinity: it can be
+  re-entered from a callback on the run thread, which need not be the owner;
+  the real teardown still asserts. The sanctioned pattern for running a
+  connection off its constructing thread remains adopt-before-run, now covered
+  by a stress test.
 
 - **Schema parsing and generated code now preserve pointer-kind and brand
   fidelity without changing erased APIs.** The frozen `schema.Type` union keeps
