@@ -1349,6 +1349,86 @@ pub fn build(b: *std.Build) !void {
     test_release_fast_step.dependOn(run_release_fast_schema_fidelity_tests);
     test_release_fast_step.dependOn(run_release_fast_brand_fidelity_internal_tests);
 
+    // ThreadSanitizer lane. Linux-only: libtsan segfaults at startup on
+    // darwin at 0.17.0-dev.1509 (an instrumented binary dies with SIGSEGV
+    // before any output), while the same probe compiled for linux detects a
+    // seeded race. Races are optimize-mode-independent, so the lane runs
+    // Debug for the best stacks. The instrumented modules link libc: without
+    // it std.Thread uses raw clone() on Linux, which TSan cannot intercept,
+    // leaving every spawned thread invisible to the runtime. On unsupported
+    // hosts the steps hard-fail rather than pass vacuously.
+    const tsan_target_ok = target.result.os.tag == .linux;
+    const tsan_host_ok = tsan_target_ok and b.graph.host.result.os.tag == .linux;
+    const test_tsan_step = b.step("test-tsan", "Run threaded transport suites under ThreadSanitizer (Linux host+target only at this Zig pin)");
+    const soak_tsan_step = b.step("soak-tsan", "Run the RPC soak harness under ThreadSanitizer (Linux host+target only at this Zig pin; use -- --seconds N)");
+    const check_tsan_step = b.step("check-tsan", "Compile the ThreadSanitizer suites for a Linux target without running them (usable from any host via -Dtarget=aarch64-linux-gnu or x86_64-linux-gnu)");
+    if (tsan_target_ok) {
+        const tsan_lib_module = b.addModule("capnpc-zig-tsan", .{
+            .root_source_file = b.path(lib_root),
+            .target = target,
+            .optimize = .Debug,
+            .sanitize_thread = true,
+            .link_libc = true,
+            .imports = &.{},
+        });
+        tsan_lib_module.addImport("capnpc-zig", tsan_lib_module);
+        addQuicImport(tsan_lib_module, quic_zig_module);
+
+        const tsan_suites = [_][]const u8{
+            "tests/rpc/transport/rpc_cross_thread_stress_test.zig",
+            "tests/rpc/transport/tcp/rpc_connection_teardown_test.zig",
+            "tests/rpc/transport/tcp/rpc_client_session_test.zig",
+            "tests/rpc/transport/tcp/rpc_server_session_test.zig",
+            "tests/rpc/integration/rpc_worker_pool_test.zig",
+        };
+        for (tsan_suites) |suite_path| {
+            const t = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path(suite_path),
+                    .target = target,
+                    .optimize = .Debug,
+                    .sanitize_thread = true,
+                    .link_libc = true,
+                    .imports = &.{
+                        .{ .name = "capnpc-zig", .module = tsan_lib_module },
+                    },
+                }),
+            });
+            registered_test_compile_steps.append(b.allocator, &t.step) catch @panic("OOM");
+            check_tsan_step.dependOn(&t.step);
+            if (tsan_host_ok) test_tsan_step.dependOn(&b.addRunArtifact(t).step);
+        }
+
+        const soak_tsan = b.addExecutable(.{
+            .name = "soak-rpc-tsan",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/soak_rpc.zig"),
+                .target = target,
+                .optimize = .Debug,
+                .sanitize_thread = true,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "capnpc-zig", .module = tsan_lib_module },
+                },
+            }),
+        });
+        check_tsan_step.dependOn(&soak_tsan.step);
+        if (tsan_host_ok) {
+            const run_soak_tsan = b.addRunArtifact(soak_tsan);
+            run_soak_tsan.addPassthruArgs();
+            soak_tsan_step.dependOn(&run_soak_tsan.step);
+        } else {
+            const tsan_run_fail = b.addFail("test-tsan/soak-tsan run only on a Linux host at 0.17.0-dev.1509: libtsan segfaults at startup on darwin. Use check-tsan locally (compile-only) and run the lane in CI or a Linux container.");
+            test_tsan_step.dependOn(&tsan_run_fail.step);
+            soak_tsan_step.dependOn(&tsan_run_fail.step);
+        }
+    } else {
+        const tsan_fail = b.addFail("ThreadSanitizer steps need a Linux target at 0.17.0-dev.1509 (libtsan is broken on darwin): pass -Dtarget=aarch64-linux-gnu or x86_64-linux-gnu for check-tsan, or run test-tsan/soak-tsan on a Linux host.");
+        test_tsan_step.dependOn(&tsan_fail.step);
+        soak_tsan_step.dependOn(&tsan_fail.step);
+        check_tsan_step.dependOn(&tsan_fail.step);
+    }
+
     // Test step runs all tests
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(test_serialization_step);
