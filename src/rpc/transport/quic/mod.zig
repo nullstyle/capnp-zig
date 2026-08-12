@@ -19,9 +19,11 @@ const connection_testing = @import("connection_testing.zig");
 pub const endpoint = @import("endpoint.zig");
 const framer = @import("length_framer.zig");
 const native_framer = @import("native_framer.zig");
+const non_windows_receive = @import("non_windows_receive.zig");
 pub const listener = @import("listener.zig");
 const options = @import("options.zig");
 const scheduler_mod = @import("scheduler.zig");
+const udp_receive_bridge = @import("udp_receive_bridge.zig");
 const server_mod = @import("server.zig");
 pub const session = @import("session.zig");
 
@@ -61,6 +63,9 @@ pub const length_prefix_bytes = framer.length_prefix_bytes;
 pub const native = native_framer;
 pub const testing = if (builtin.is_test) struct {
     pub const ConnectionAccess = connection_testing.Access(conn.Connection);
+    pub const ListenerAccess = listener.Listener.TestingHooks;
+    pub const nonWindowsReceive = non_windows_receive.receive;
+    pub const UdpReceiveBridge = udp_receive_bridge.Bridge;
 } else struct {};
 
 pub const alpn = options.alpn;

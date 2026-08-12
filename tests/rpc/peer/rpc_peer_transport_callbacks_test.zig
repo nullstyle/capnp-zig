@@ -62,6 +62,11 @@ test "peer_transport_callbacks onConnectionErrorFor forwards errors to peer erro
 test "peer_transport_callbacks onConnectionCloseFor forwards close notifications" {
     const PeerState = struct {
         calls: usize = 0,
+        detached: bool = false,
+
+        pub fn detachTransport(self: *@This()) void {
+            self.detached = true;
+        }
     };
     const Conn = struct {
         ctx: ?*anyopaque = null,
@@ -72,6 +77,7 @@ test "peer_transport_callbacks onConnectionCloseFor forwards close notifications
     };
     const Hooks = struct {
         fn onClose(peer: *PeerState) void {
+            std.debug.assert(peer.detached);
             peer.calls += 1;
         }
     };
@@ -82,4 +88,46 @@ test "peer_transport_callbacks onConnectionCloseFor forwards close notifications
     cb(&conn);
 
     try std.testing.expectEqual(@as(usize, 1), peer.calls);
+    try std.testing.expect(peer.detached);
+}
+
+test "peer_transport_callbacks terminal close detaches a real Peer before notification" {
+    const Peer = capnpc.rpc.peer.Peer;
+    const peer_test_hooks = Peer.test_hooks;
+    const Conn = struct {
+        ctx: ?*anyopaque = null,
+
+        pub fn context(self: *const @This()) ?*anyopaque {
+            return self.ctx;
+        }
+    };
+    const Transport = struct {
+        fn send(_: *anyopaque, _: []const u8) anyerror!void {}
+    };
+    const Hooks = struct {
+        var saw_detached = false;
+
+        fn onClose(peer: *Peer) void {
+            saw_detached = !peer.hasAttachedTransport();
+            peer.notifyTransportClosed();
+        }
+    };
+
+    var peer = Peer.initDetached(std.testing.allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var conn = Conn{ .ctx = @ptrCast(&peer) };
+    peer.attachTransport(&conn, null, Transport.send, null, null);
+    try std.testing.expect(peer.hasAttachedTransport());
+
+    Hooks.saw_detached = false;
+    const cb = callbacks.onConnectionCloseFor(Peer, *Conn, Hooks.onClose);
+    cb(&conn);
+
+    try std.testing.expect(Hooks.saw_detached);
+    try std.testing.expect(!peer.hasAttachedTransport());
+    try std.testing.expectError(
+        error.TransportNotAttached,
+        peer_test_hooks.sendFrame(&peer, &.{0}),
+    );
 }

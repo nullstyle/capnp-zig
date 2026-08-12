@@ -14,6 +14,7 @@ capnpc-zig.codegen.ArrayListWriter: struct
 capnpc-zig.codegen.Generator.ApiProfile.compact: enumerant = 1
 capnpc-zig.codegen.Generator.ApiProfile.full: enumerant = 0
 capnpc-zig.codegen.Generator.ApiProfile: enum
+capnpc-zig.codegen.Generator.CodegenBudget.max_brand_specializations: field usize = 4096
 capnpc-zig.codegen.Generator.CodegenBudget.max_default_bytes: field usize = 16777216
 capnpc-zig.codegen.Generator.CodegenBudget.max_fields: field usize = 262144
 capnpc-zig.codegen.Generator.CodegenBudget.max_imports: field usize = 16384
@@ -1545,5 +1546,8 @@ capnpc-zig.schema_validation.ValidationOptions.traversal_limit_words: field usiz
 capnpc-zig.schema_validation.ValidationOptions: struct
 capnpc-zig.schema_validation.canonicalizeMessage: fn (mem.Allocator, *const serialization.message.Message, []serialization.schema.Node, *const serialization.schema.Node, serialization.schema_validation.CanonicalizeOptions) anyerror![]u8
 capnpc-zig.schema_validation.canonicalizeMessageFlat: fn (mem.Allocator, *const serialization.message.Message, []serialization.schema.Node, *const serialization.schema.Node, serialization.schema_validation.CanonicalizeOptions) anyerror![]u8
+capnpc-zig.schema_validation.canonicalizeMessageFlatWithBrand: fn (mem.Allocator, *const serialization.message.Message, []serialization.schema.Node, *const serialization.schema.Node, serialization.schema.Brand, serialization.schema_validation.CanonicalizeOptions) anyerror![]u8
+capnpc-zig.schema_validation.canonicalizeMessageWithBrand: fn (mem.Allocator, *const serialization.message.Message, []serialization.schema.Node, *const serialization.schema.Node, serialization.schema.Brand, serialization.schema_validation.CanonicalizeOptions) anyerror![]u8
 capnpc-zig.schema_validation.validateMessage: fn (*const serialization.message.Message, []serialization.schema.Node, *const serialization.schema.Node, serialization.schema_validation.ValidationOptions) anyerror!void
+capnpc-zig.schema_validation.validateMessageWithBrand: fn (*const serialization.message.Message, []serialization.schema.Node, *const serialization.schema.Node, serialization.schema.Brand, serialization.schema_validation.ValidationOptions) anyerror!void
 capnpc-zig.schema_validation: struct

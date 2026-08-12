@@ -493,19 +493,53 @@ superclass/method, and annotation-use brands, plus AnyPointer parameter kinds
 in `schema.TypeMetadata` / `TypeExpression`, while the frozen `schema.Type`
 union remains unchanged. Generated annotation constants intentionally retain
 their legacy id/value projection; tooling that needs an annotation-use brand
-should inspect the parsed request. A fully concrete, resolvable
-generic data-struct field may also generate a `brands()` view whose per-field
-wrapper reopens the existing target through `getXxx()`, materializes it through
-the Builder's `initXxx()`, and exposes typed access to supported direct generic
-parameter slots. Every wrapper has `raw()` for the legacy target.
+should inspect the parsed request. One allocation-free internal resolver is
+shared by validation and codegen: it composes `.bind` / `.inherit`, validates
+lexical scope, exact arity and parameter indexes, and rejects a cycle or depth
+beyond 64 as `error.InvalidSchema`.
+
+A finite concrete generic data-struct field may generate a `brands()` view
+whose per-field wrapper reopens the existing target through `getXxx()`,
+materializes it through the Builder's `initXxx()`, and supports arbitrary-depth
+lists, enum/Text/Data/struct/interface terminals, nested branded structs, and
+inherited lexical bindings. Generic struct applications may themselves be list
+terminals, including cross-file imported applications and terminals. Reader and
+Builder views preserve pointer defaults (recursively materializing them before
+Builder mutation), group/union guards, enum forwarding, null structs/lists, and
+near/far reopening. Every wrapper retains `raw()` for the legacy target.
 
 This is not general Zig generic specialization. The generator deliberately
-omits `brands()` for unbound, inherited, recursive, or unresolved bindings;
-unsupported nested pointer-list bindings; and generic interface/RPC method
-specialization. In those cases, keep using the erased accessor and inspect the
-schema metadata if tooling needs to understand the original type expression.
+omits `brands()` for valid unbound, recursively infinite, or otherwise
+non-finite applications. Generic interface clients and implicit generic RPC
+methods stay erased. In those cases, keep using the erased accessor and inspect
+the schema metadata if tooling needs the original type expression.
 Names that would collide with the generated `Brands` / `PointerKinds` surface
 are rejected during generation rather than emitted ambiguously.
+
+Schema-aware validation and canonicalization have additive concrete-root entry
+points:
+
+```zig
+try capnpc.schema_validation.validateMessageWithBrand(
+    &msg,
+    nodes,
+    root_node,
+    root_brand,
+    .{},
+);
+```
+
+`canonicalizeMessageWithBrand()` and
+`canonicalizeMessageFlatWithBrand()` take the same root brand. Existing entry
+points use an empty root brand but still honor concrete nested metadata. Valid
+unbound parameters keep erased compatibility; malformed brand graphs return
+`error.InvalidSchema`; scalar generic bindings are likewise invalid. The
+schema-free `canonical.*` API is unaffected.
+
+Generated specialization is separately bounded by
+`CodegenBudget.max_brand_specializations` (default 4096). Maintainers invoking
+the plugin directly can set `max-codegen-brand-specializations=` or
+`CAPNPC_ZIG_MAX_CODEGEN_BRAND_SPECIALIZATIONS`.
 
 ## Quick Reference
 
@@ -520,7 +554,7 @@ are rejected during generation rather than emitted ambiguously.
 | `List(T)` | typed list reader | `initField(count)` |
 | `List(List(T))` | raw pointer-list accessor, or typed `nestedLists().getField()` | raw `initField(count)`, or typed `nestedLists().initField(count)` |
 | `AnyStruct` / `AnyList` / bare `Capability` | erased accessor, or constrained `pointerKinds()` view | erased accessor, or `pointerKinds()` get/init/set |
-| concrete branded data struct | erased target accessor, or supported `brands()` view | erased target accessor, or `brands()` get/init |
+| finite concrete branded data struct | erased target accessor, or supported `brands()` view | erased target accessor, or `brands()` get/init |
 | `struct` | `StructName.Reader` | `initField()` |
 | `enum` | `EnumName`, or forwarding `u16` via `enumOrdinals()` | `setField(.Variant)` or `enumOrdinals().setField(value)` |
 | `union` | check `which()`; inspect unknown arms with `whichOrdinal()` | `setVariant()`/`initVariant()` |

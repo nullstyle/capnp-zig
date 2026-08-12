@@ -1,7 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_quic);
 
 const endpoint_mod = @import("endpoint.zig");
+const non_windows_receive = @import("non_windows_receive.zig");
+const udp_receive_bridge = @import("udp_receive_bridge.zig");
 const wake_mod = @import("wake.zig");
 
 pub const ReceiveResult = struct {
@@ -16,6 +19,7 @@ pub const ReceiveInput = struct {
     io: std.Io,
     driver: endpoint_mod.EndpointDriver,
     wake: *wake_mod.Handle,
+    receive_bridge: *udp_receive_bridge.Bridge,
     rx_buf: []u8,
     now_us: u64,
     wait_duration: std.Io.Duration,
@@ -24,8 +28,15 @@ pub const ReceiveInput = struct {
 pub fn receiveOne(input: ReceiveInput) !ReceiveResult {
     var result = ReceiveResult{};
     if (input.wake.consumeRequested()) {
+        if (comptime builtin.target.os.tag == .windows) {
+            input.receive_bridge.consumeWake(input.io);
+        }
         result.wake_drained = true;
         return result;
+    }
+
+    if (comptime builtin.target.os.tag == .windows) {
+        return receiveOneWindows(input);
     }
 
     var receive_timeout = input.wait_duration;
@@ -36,12 +47,7 @@ pub fn receiveOne(input: ReceiveInput) !ReceiveResult {
     }
 
     const socket = input.driver.activeSocket();
-    const msg = socket.receiveTimeout(input.io, input.rx_buf, .{
-        .duration = .{
-            .raw = receive_timeout,
-            .clock = .awake,
-        },
-    }) catch |err| switch (err) {
+    const msg = non_windows_receive.receive(socket, input.io, input.rx_buf, receive_timeout) catch |err| switch (err) {
         error.Timeout => return result,
         else => return err,
     };
@@ -59,6 +65,33 @@ pub fn receiveOne(input: ReceiveInput) !ReceiveResult {
 
     _ = try input.driver.handleDatagram(msg.data, msg.from, input.now_us);
     return result;
+}
+
+fn receiveOneWindows(input: ReceiveInput) !ReceiveResult {
+    var result = ReceiveResult{};
+    const received = try input.receive_bridge.receive(
+        input.io,
+        input.driver.activeSocket().*,
+        input.rx_buf,
+        input.wait_duration,
+    );
+    switch (received) {
+        .timeout => return result,
+        .wake => {
+            result.wake_drained = input.wake.consumeRequested();
+            return result;
+        },
+        .datagram => |msg| {
+            if (msg.flags.trunc) {
+                log.warn("dropping truncated UDP datagram (exceeds {d}-byte rx buffer)", .{input.rx_buf.len});
+                result.dropped_datagram = true;
+                return result;
+            }
+            result.received_datagram = true;
+            _ = try input.driver.handleDatagram(msg.data, msg.from, input.now_us);
+            return result;
+        },
+    }
 }
 
 pub fn drainOutgoingDatagrams(

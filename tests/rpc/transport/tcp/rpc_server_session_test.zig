@@ -130,5 +130,23 @@ test "ServerSession fromPeer recovers the session; deinit-without-run is leak-fr
     var session = try ServerSession.accept(allocator, &listener, .{});
     defer session.deinit();
     try std.testing.expectEqual(session, ServerSession.fromPeer(&session.peer));
+    try std.testing.expectEqual(@as(?u64, 30_000), session.peer.timeouts.join_timeout_ms);
+    try std.testing.expectEqual(@as(?u32, 100), session.conn.tick_interval_ms);
     // deinit (via defer) without ever calling run() must not leak.
+}
+
+test "TCP session Join lease options default secure and preserve explicit null opt-out" {
+    try std.testing.expectEqual(@as(?u64, 30_000), (tcp.ConnectOptions{}).join_timeout_ms);
+    try std.testing.expectEqual(@as(?u64, 30_000), (tcp.ServeOptions{}).join_timeout_ms);
+
+    const client_compat = tcp.ConnectOptions{
+        .default_call_timeout_ms = null,
+        .join_timeout_ms = null,
+    };
+    const server_compat = tcp.ServeOptions{
+        .default_call_timeout_ms = null,
+        .join_timeout_ms = null,
+    };
+    try std.testing.expectEqual(@as(?u64, null), client_compat.join_timeout_ms);
+    try std.testing.expectEqual(@as(?u64, null), server_compat.join_timeout_ms);
 }

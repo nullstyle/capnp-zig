@@ -180,6 +180,7 @@ fn applyEnvBudgetOptions(environ_map: *const std.process.Environ.Map, budget: *G
     if (getEnvUsizeOption(environ_map, "CAPNPC_ZIG_MAX_CODEGEN_DEFAULT_BYTES")) |value| budget.max_default_bytes = value;
     if (getEnvUsizeOption(environ_map, "CAPNPC_ZIG_MAX_SCHEMA_MANIFEST_BYTES")) |value| budget.max_manifest_bytes = value;
     if (getEnvUsizeOption(environ_map, "CAPNPC_ZIG_MAX_CODEGEN_OUTPUT_BYTES")) |value| budget.max_output_bytes = value;
+    if (getEnvUsizeOption(environ_map, "CAPNPC_ZIG_MAX_CODEGEN_BRAND_SPECIALIZATIONS")) |value| budget.max_brand_specializations = value;
 }
 
 fn applyBudgetOptionToken(token: []const u8, budget: *Generator.CodegenBudget) void {
@@ -190,6 +191,7 @@ fn applyBudgetOptionToken(token: []const u8, budget: *Generator.CodegenBudget) v
     if (parseUsizeAssignment(token, "max-codegen-default-bytes=")) |value| budget.max_default_bytes = value;
     if (parseUsizeAssignment(token, "max-schema-manifest-bytes=")) |value| budget.max_manifest_bytes = value;
     if (parseUsizeAssignment(token, "max-codegen-output-bytes=")) |value| budget.max_output_bytes = value;
+    if (parseUsizeAssignment(token, "max-codegen-brand-specializations=")) |value| budget.max_brand_specializations = value;
     if (parseUsizeAssignment(token, "max-output-bytes=")) |value| budget.max_output_bytes = value;
 }
 
@@ -494,10 +496,11 @@ test "parseRunOptions disables shape sharing explicitly" {
 }
 
 test "parseRunOptions applies codegen budget tokens" {
-    const argv = [_][]const u8{ "capnpc-zig", "out,max-codegen-output-bytes=4096,max-codegen-fields=12" };
+    const argv = [_][]const u8{ "capnpc-zig", "out,max-codegen-output-bytes=4096,max-codegen-fields=12,max-codegen-brand-specializations=27" };
     const options = parseRunOptions(argv[0..]);
     try std.testing.expectEqual(@as(usize, 4096), options.codegen_budget.max_output_bytes);
     try std.testing.expectEqual(@as(usize, 12), options.codegen_budget.max_fields);
+    try std.testing.expectEqual(@as(usize, 27), options.codegen_budget.max_brand_specializations);
 }
 
 test "parseBoolToken accepts common true values" {

@@ -11,11 +11,24 @@ struct Child {
   value @0 :UInt32;
 }
 
+enum Color {
+  red @0;
+  green @1;
+  blue @2;
+}
+
 struct Outer(T) {
   struct Inner(U) {
     outer @0 :T;
     inner @1 :U;
   }
+}
+
+struct Envelope(T) {
+  struct Inner {
+    inherited @0 :T;
+  }
+  inner @0 :Inner;
 }
 
 interface Service {
@@ -43,11 +56,24 @@ struct Fidelity {
   grouped :group {
     groupList @10 :AnyList;
     groupBox @11 :Box(Text);
+    groupDefaultBox @23 :Box(Child) = (value = (value = 91));
   }
 
 
   defaultBox @12 :Box(Child) = (value = (value = 77));
   lexicalBox @13 :Outer(Text).Inner(Data);
+  textListBox @14 :Box(List(Text));
+  enumListBox @15 :Box(List(Color));
+  structListBox @16 :Box(List(Child));
+  deepListBox @17 :Box(List(List(UInt16)));
+  serviceBox @18 :Box(Service);
+  nestedBox @19 :Box(Box(Text));
+  inheritedEnvelope @20 :Envelope(Text);
+  dataListBox @21 :Box(List(Data));
+  serviceListBox @22 :Box(List(Service));
+  nestedStructListBox @24 :Box(List(Box(Text)));
+  deepNestedStructListBox @25 :Box(List(List(Box(Text))));
+  inheritedStructListBox @26 :Box(List(Outer(Text).Inner(Data)));
 }
 
 interface GenericMethods {

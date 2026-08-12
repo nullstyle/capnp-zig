@@ -71,8 +71,8 @@ pub const ChatMessage = struct {
                 return self._reader.readUnionDiscriminant(0);
             }
 
-            pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {
-                return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+            pub fn which(self: @This()) error{InvalidEnumValue}!ChatMessage.Kind.WhichTag {
+                return std.enums.fromInt(ChatMessage.Kind.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
             }
 
             pub fn getNormal(self: @This()) !void {

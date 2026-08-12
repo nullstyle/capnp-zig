@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing-tool skips can no longer make the Windows lane look green. The
   platform matrix now records codegen as full on Linux, macOS, and Windows.
 
+- **Windows TCP soak and stream-transport evidence can no longer succeed by
+  doing no work.** Soak now requires positive session, call, chaos-close, and
+  applicable deadline-cancellation counters. The thirteen portable
+  stream-transport skips are removed; the sole retained exception is the
+  documented `TCP_NODELAY`-dependent timing case blocked by std's AFD socket
+  API on Windows.
+
 - **`rpc.vat` was missing from the core RPC surface, and the guard that should
   have caught it was too coarse.** `src/rpc/mod_core.zig` — the surface behind
   `capnpc-zig-core` and the wasm build — never exported `vat`, so
@@ -53,46 +60,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Structs and groups with constrained `AnyStruct`, `AnyList`, or bare
   `Capability` slots gain Reader/Builder `pointerKinds()` views in full and
-  compact profiles. Shape wrappers support non-destructive reads plus explicit
-  initialization/set operations; `AnyListReader` and all Builder wrappers
-  expose `raw()`. Fully concrete, resolvable branded generic data-struct fields
-  gain parallel `brands()` views:
-  they reopen or initialize the existing target and type supported direct
-  parameter slots for Text, Data, resolved non-generic structs, primitive
-  lists, and AnyPointer sub-kinds. All historical erased accessors remain.
+  compact profiles. Finite concrete branded data-struct fields gain parallel
+  `brands()` views covering arbitrary-depth lists, enum/Text/Data/struct/
+  interface terminals, concretely branded nested structs, and inherited
+  lexical bindings, including generic struct applications as list terminals
+  and cross-file imported applications/terminals. They preserve groups,
+  unions, recursively materialized Builder defaults, enum forwarding, null
+  structs/lists, and near/far reopening. All historical erased and `raw()`
+  accessors remain.
 
-  This is intentionally not general generic specialization. Unbound,
-  inherited, recursive, unresolved, unsupported nested pointer-list bindings,
-  generic interfaces, and implicit generic RPC methods emit no typed brand
-  view. The retained schema metadata remains available to tooling even when
-  generated access stays erased. Group and union Reader views preserve pointer
-  defaults and `WrongUnionMember` behavior; Builder getters remain structural
-  and reopen existing near,
-  single-far AnyStruct, and double-far AnyList values; null lists keep empty-list
-  casts; wire-distinguishable non-null wrong-kind pointers fail; and generated
-  sidecar-name collisions are rejected. Cap'n Proto's layout-A double-far
-  encoding makes a zero-offset struct tag indistinguishable from an empty
-  inline-composite list, so that one representation cannot be categorized more
-  narrowly on the wire.
+  One allocation-free resolver is shared by validation and generation. It
+  composes `.bind` / `.inherit`, validates lexical scope, exact arity and
+  parameter indexes, and enforces a 64-level cycle/depth bound. Additive Stable
+  `validateMessageWithBrand`, `canonicalizeMessageWithBrand`, and
+  `canonicalizeMessageFlatWithBrand` entry points apply a concrete root brand;
+  existing entry points use an empty root brand while honoring concrete nested
+  metadata. Valid unbound values remain erased, while malformed brand graphs
+  and scalar generic bindings return `InvalidSchema`.
 
-  The focused full + compact runtime harness, exact frozen-`Type`
-  representation check, Method/superclass brand fixtures, parser
-  allocation-failure sweep, all 81 codegen tests, 150 message tests, 32
-  schema-validation tests, hardening scan, and API-closure gate all pass.
+  This remains finite code generation, not general generic specialization:
+  generic RPC clients and implicit generic methods stay erased. A new
+  `CodegenBudget.max_brand_specializations = 4096` is configurable through
+  `max-codegen-brand-specializations=` or
+  `CAPNPC_ZIG_MAX_CODEGEN_BRAND_SPECIALIZATIONS`. Full and compact generation
+  of vendored `capnp/test.capnp` now compile recursively, closing the bounded
+  void-setter and nested `WhichTag`/`Reader`/`Builder` qualification failures.
+  Cap'n Proto's layout-A double-far empty struct/list representation remains
+  inherently ambiguous, while non-empty list-as-AnyStruct is rejected; wire
+  schemas and schema-free `canonical.*` are unchanged. Current focused evidence
+  is 83/83 codegen, 17/17 executable schema fidelity (including the dedicated
+  branching-budget proof), 32/32 validation, and 150/150 message tests in
+  Debug, with the focused fidelity/codegen matrix also green in ReleaseSafe.
+  The hardening scan reports 63 reviewed findings across 148 checked files.
 
-- **Optional QUIC transport evidence now targets all three native CI operating
-  systems in Debug and ReleaseSafe.** A shared
-  `just test-rpc-quic-evidence` recipe rejects `SkipZigTest`, asserts that the
-  three QUIC test roots still contain at least 44 tests, runs the transport
-  suite, and verifies a non-vacuous build graph. The QUIC job now includes
-  Linux, macOS, and Windows; registration also makes the complete QUIC test
-  tree part of Windows cross-compilation. Linux remains the only lane that
-  runs the entire repository through the QUIC-enabled library root.
+- **Windows QUIC now has a bounded native receive path and executable,
+  transport-truthful evidence.** Published boringssl-zig commit `292c70a`
+  links `ws2_32` with package-config lookup disabled; published quic-zig commit
+  `e00d449` pins that archive, and capnp-zig pins the resulting quic-zig
+  archive. Native shells and Git Bash therefore avoid the prior
+  `pkg-config.BAT` failure.
 
-  Local handoff evidence is deliberately narrower than the configured CI
-  claim: macOS passes 44/44 in both modes and Windows cross-compiles the full
-  tree. Native Windows execution remains provisional until the user's first
-  push produces a green `windows-latest` run.
+  QUIC's Windows UDP path keeps exactly one blocking receive in an
+  `io.concurrent` future. The owner thread alone advances QUIC and invokes
+  callbacks; an `Io.Condition` wakes it for completion, timer, explicit wake,
+  or close. Timer ticks retain the valid receive, while teardown cancels and
+  reaps it exactly once before socket/callback destruction. Buffer-retention,
+  poll, wake, timer, completion, truncation, start-failure, cancellation, and
+  repeated-close tests cover the bridge, and a compile-time tripwire prevents
+  Windows QUIC from calling `receiveTimeout()`.
+
+  A native Zig evidence scanner rejects `SkipZigTest` and requires exactly
+  four runnable roots with floors 26 + 1 + 17 + 8 = 52; there is no output
+  parser, Bash dependency, or CI-only package. Eight of the current 61 tests
+  are real `Peer` flows: verified-CA baseline; native
+  Bootstrap/Call/Return/Finish; returned-cap pipelining; native large frames;
+  graceful and abrupt close; two-session fanout; and fanout close isolation.
+  Fanout sessions live at stable heap addresses before `Peer` attachment.
+  macOS passes 61/61 in Debug and ReleaseSafe. Windows full-tree test
+  cross-compilation passes 113/113, but native runtime acceptance remains a
+  hosted gate after capnp-zig is pushed; no Windows parity claim is made yet.
+
+- **Experimental L4 Join state is now quota-bounded, leased, and observable
+  without exposing addressing data.** `PeerLimits` adds a 64-part per-Join
+  ceiling and a 4096-record aggregate limit over buckets, parts, relays,
+  hosted provisions, result answers, and direct Accepts. One origin-owned
+  `HostedJoin` owns the provision, captured network, byte charge, deadline,
+  result counts, and reciprocal Accept-host backlink. TCP connect/serve and
+  `WorkerPool` apply a secure 30-second lease by default; raw peers remain
+  opt-in and explicit null opts out.
+
+  The first part stamps a partial bucket and later parts cannot extend it;
+  relays and hosted Accept phases receive fresh local-clock deadlines. A cached
+  next deadline drives sweeps before frame decode, before Accept lookup, and
+  from deadline maintenance, with `Peer.sweepExpiredJoins()` available to
+  manual pumps. `attachJoinNetwork()` / `detachJoinNetwork()` are fallible
+  while dependent state exists, with identical reattachment a no-op.
+  `PeerStats`, resource events, and `TimeoutKind.join` expose only aggregate
+  record/part/provision-byte counts and an inbound answer ID. Quota and timeout
+  Returns say only `"join unavailable"`.
+
+  Cleanup detaches maps, counters, and backlinks before sends, observers,
+  network callbacks, or user close callbacks. A committed direct pickup
+  survives result-path transport close when a distinct Accept host remains
+  live, and is cancelled by Accept-host close, TTL, explicit cleanup, or owner
+  teardown; transport detach remains non-terminal. The focused L4 gate passes
+  79/79 in Debug, ReleaseSafe, and ReleaseFast, and the full peer suite passes
+  499/499. The nine-case Zig TCP e2e first exhausts a short lease/small quota
+  attacker and then completes JoinResult→Accept→call; it runs in the Linux,
+  macOS, and Windows Test matrix. This remains a Zig-only Experimental pilot,
+  not a production dialer, address/authentication policy, stable wire
+  convention, or cross-implementation L4 claim.
 
 - **Experimental redirected RPC results can now be routed automatically
   through an attached `VatNetwork`.** The additive

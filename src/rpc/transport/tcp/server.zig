@@ -32,8 +32,9 @@ const Listener = runtime.Listener;
 
 pub const ServeOptions = struct {
     /// Passed through to `Connection.init`. `tick_interval_ms` is filled with
-    /// 100 when null and `default_call_timeout_ms` is non-null, so deadlines
-    /// fire without extra wiring; an explicit user tick is never overridden.
+    /// 100 when null and either the call or Join timeout is finite, so
+    /// deadlines fire without extra wiring; an explicit user tick is never
+    /// overridden.
     conn: Connection.Options = .{},
 
     /// Deadline stamped on every outbound question this peer makes (a server
@@ -44,6 +45,10 @@ pub const ServeOptions = struct {
     /// Graceful-drain bound for close(); outstanding questions are
     /// force-cancelled after it expires.
     shutdown_drain_timeout_ms: ?u64 = 5_000,
+
+    /// Secure lease for inbound L4 Join phases. Null explicitly restores the
+    /// raw-Peer compatibility behavior (no Join expiry).
+    join_timeout_ms: ?u64 = 30_000,
 
     limits: peer_mod.PeerLimits = .{},
 
@@ -92,7 +97,9 @@ pub const ServerSession = struct {
         errdefer gpa.destroy(self);
 
         var conn_opts = options.conn;
-        if (options.default_call_timeout_ms != null and conn_opts.tick_interval_ms == null) {
+        if ((options.default_call_timeout_ms != null or options.join_timeout_ms != null) and
+            conn_opts.tick_interval_ms == null)
+        {
             conn_opts.tick_interval_ms = 100;
         }
         if (conn_opts.observer == null) conn_opts.observer = options.observer;
@@ -125,6 +132,7 @@ pub const ServerSession = struct {
         self.peer.setTimeouts(.{
             .default_call_timeout_ms = options.default_call_timeout_ms,
             .shutdown_drain_timeout_ms = options.shutdown_drain_timeout_ms,
+            .join_timeout_ms = options.join_timeout_ms,
         });
         if (options.observer) |obs| self.peer.setObserver(obs);
         return self;

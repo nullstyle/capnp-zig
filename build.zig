@@ -389,6 +389,19 @@ pub fn build(b: *std.Build) !void {
     const hardening_step = b.step("hardening", "Run static hardening gates");
     hardening_step.dependOn(&run_hardening_gate.step);
 
+    const quic_test_evidence = b.addExecutable(.{
+        .name = "quic-test-evidence",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/quic_test_evidence.zig"),
+            // The scanner validates source inventory while the four test
+            // roots keep their requested target. It must remain runnable
+            // during cross-compilation rather than inheriting that target.
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+    });
+    const run_quic_test_evidence = b.addRunArtifact(quic_test_evidence);
+
     const package_preflight = b.addExecutable(.{
         .name = "package-preflight",
         .root_module = b.createModule(.{
@@ -784,6 +797,8 @@ pub fn build(b: *std.Build) !void {
     const run_capnp_testdata_tests = addLibTest(b, "tests/serialization/capnp_testdata_test.zig", target, optimize, lib_module);
     const run_capnp_test_vendor_tests = addLibTest(b, "tests/serialization/capnp_test_vendor_test.zig", target, optimize, lib_module);
     const run_schema_validation_tests = addLibTest(b, "tests/serialization/schema_validation_test.zig", target, optimize, lib_module);
+    const run_schema_fidelity_tests = addLibTest(b, "tests/serialization/schema_fidelity_test.zig", target, optimize, lib_module);
+    const run_brand_fidelity_internal_tests = addLibTest(b, "src/brand_fidelity_test.zig", target, optimize, lib_module);
     const run_canonical_tests = addLibTest(b, "tests/serialization/canonical_test.zig", target, optimize, lib_module);
 
     // RPC tests (domain-organized)
@@ -814,6 +829,10 @@ pub fn build(b: *std.Build) !void {
         null;
     const run_rpc_quic_connection_internal_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, optimize, lib_module, qm)
+    else
+        null;
+    const run_rpc_quic_peer_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_peer_test.zig", target, optimize, lib_module, qm)
     else
         null;
     const run_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, optimize, lib_module);
@@ -1033,6 +1052,10 @@ pub fn build(b: *std.Build) !void {
     test_schema_validation_step.dependOn(run_schema_validation_tests);
     test_schema_validation_step.dependOn(run_canonical_tests);
 
+    const test_schema_fidelity_step = b.step("test-schema-fidelity", "Run executable brand fidelity and upstream schema closure tests");
+    test_schema_fidelity_step.dependOn(run_schema_fidelity_tests);
+    test_schema_fidelity_step.dependOn(run_brand_fidelity_internal_tests);
+
     const test_schema_evolution_step = b.step("test-schema-evolution", "Run checked-in V1/V2 schema-evolution API tests");
     test_schema_evolution_step.dependOn(run_schema_evolution_api_tests);
 
@@ -1062,6 +1085,8 @@ pub fn build(b: *std.Build) !void {
     test_serialization_step.dependOn(run_capnp_testdata_tests);
     test_serialization_step.dependOn(run_capnp_test_vendor_tests);
     test_serialization_step.dependOn(run_schema_validation_tests);
+    test_serialization_step.dependOn(run_schema_fidelity_tests);
+    test_serialization_step.dependOn(run_brand_fidelity_internal_tests);
     test_serialization_step.dependOn(run_canonical_tests);
 
     const test_rpc_wire_step = b.step("test-rpc-wire", "Run RPC wire framing/protocol tests");
@@ -1089,6 +1114,22 @@ pub fn build(b: *std.Build) !void {
     if (run_rpc_quic_transport_tests) |step| test_rpc_quic_step.dependOn(step);
     if (run_rpc_quic_public_api_tests) |step| test_rpc_quic_step.dependOn(step);
     if (run_rpc_quic_connection_internal_tests) |step| test_rpc_quic_step.dependOn(step);
+    if (run_rpc_quic_peer_tests) |step| test_rpc_quic_step.dependOn(step);
+
+    // Executable proof that the optional QUIC lane is both enabled and
+    // non-vacuous. The four run-artifact dependencies are stronger than
+    // parsing a target-dependent Build Summary, while the host scanner keeps
+    // the source inventory and no-skip contract explicit.
+    const test_rpc_quic_evidence_step = b.step("test-rpc-quic-evidence", "Run all QUIC evidence roots and enforce their inventory");
+    if (run_rpc_quic_transport_tests) |transport_step| {
+        test_rpc_quic_evidence_step.dependOn(transport_step);
+        test_rpc_quic_evidence_step.dependOn(run_rpc_quic_public_api_tests.?);
+        test_rpc_quic_evidence_step.dependOn(run_rpc_quic_connection_internal_tests.?);
+        test_rpc_quic_evidence_step.dependOn(run_rpc_quic_peer_tests.?);
+        test_rpc_quic_evidence_step.dependOn(&run_quic_test_evidence.step);
+    } else {
+        test_rpc_quic_evidence_step.dependOn(&b.addFail("test-rpc-quic-evidence requires -Dquic=true").step);
+    }
 
     const test_rpc_peer_step = b.step("test-rpc-peer", "Run RPC peer semantics tests");
     test_rpc_peer_step.dependOn(run_rpc_peer_transport_callbacks_tests);
@@ -1111,9 +1152,13 @@ pub fn build(b: *std.Build) !void {
     test_rpc_peer_step.dependOn(run_rpc_peer_semantic_helpers_tests);
     test_rpc_peer_step.dependOn(run_rpc_peer_release_and_failure_tests);
     test_rpc_peer_step.dependOn(run_rpc_return_release_param_caps_tests);
+
     test_rpc_peer_step.dependOn(run_rpc_concurrent_calls_tests);
     test_rpc_peer_step.dependOn(run_rpc_deadline_tests);
     test_rpc_peer_step.dependOn(run_rpc_persistence_tests);
+
+    const test_rpc_l4_step = b.step("test-rpc-l4", "Run Experimental L4 Join lease and lifecycle tests");
+    test_rpc_l4_step.dependOn(run_rpc_join_readiness_tests);
 
     // Focused Level-3 handoff gate. These are the same run nodes already
     // included by test-rpc-peer, so selecting both steps never duplicates a
@@ -1155,6 +1200,8 @@ pub fn build(b: *std.Build) !void {
     test_resource_budgets_step.dependOn(run_fuzz_smoke_tests);
     test_resource_budgets_step.dependOn(run_codegen_tests);
     test_resource_budgets_step.dependOn(run_schema_validation_tests);
+    test_resource_budgets_step.dependOn(run_schema_fidelity_tests);
+    test_resource_budgets_step.dependOn(run_brand_fidelity_internal_tests);
     test_resource_budgets_step.dependOn(run_canonical_tests);
     test_resource_budgets_step.dependOn(run_rpc_framing_tests);
     test_resource_budgets_step.dependOn(run_rpc_connection_failure_tests);
@@ -1163,6 +1210,7 @@ pub fn build(b: *std.Build) !void {
     test_resource_budgets_step.dependOn(run_rpc_three_party_handoff_vatc_tests);
     if (run_rpc_quic_transport_tests) |step| test_resource_budgets_step.dependOn(step);
     if (run_rpc_quic_connection_internal_tests) |step| test_resource_budgets_step.dependOn(step);
+    if (run_rpc_quic_peer_tests) |step| test_resource_budgets_step.dependOn(step);
     test_resource_budgets_step.dependOn(run_rpc_raw_frame_security_tests);
     test_resource_budgets_step.dependOn(&run_wasm_host_abi_tests.step);
 
@@ -1172,6 +1220,8 @@ pub fn build(b: *std.Build) !void {
     test_oom_step.dependOn(run_fuzz_smoke_tests);
     test_oom_step.dependOn(run_codegen_tests);
     test_oom_step.dependOn(run_codegen_defaults_tests);
+    test_oom_step.dependOn(run_schema_fidelity_tests);
+    test_oom_step.dependOn(run_brand_fidelity_internal_tests);
     test_oom_step.dependOn(run_rpc_framing_tests);
     test_oom_step.dependOn(run_rpc_connection_failure_tests);
     test_oom_step.dependOn(run_rpc_join_readiness_tests);
@@ -1183,7 +1233,7 @@ pub fn build(b: *std.Build) !void {
     const test_lib_step = b.step("test-lib", "Run source module tests from src/lib.zig");
     test_lib_step.dependOn(&run_lib_tests.step);
 
-    const release_safe_optimize: std.builtin.OptimizeMode = .safe;
+    const release_safe_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
     // Same contract as the debug-mode resolution above: propagate, never swallow.
     const release_safe_quic_zig_module: ?*std.Build.Module = if (enable_quic)
         (try b.dependencyLazy("quic_zig", .{
@@ -1209,6 +1259,8 @@ pub fn build(b: *std.Build) !void {
     const run_release_safe_codegen_defaults_tests = addLibTest(b, "tests/serialization/codegen_defaults_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_nested_lists_runtime_tests = addLibTest(b, "tests/serialization/nested_lists_runtime_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_schema_validation_tests = addLibTest(b, "tests/serialization/schema_validation_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_schema_fidelity_tests = addLibTest(b, "tests/serialization/schema_fidelity_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_brand_fidelity_internal_tests = addLibTest(b, "src/brand_fidelity_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_canonical_tests = addLibTest(b, "tests/serialization/canonical_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_framing_tests = addLibTest(b, "tests/rpc/wire/rpc_framing_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, release_safe_optimize, release_safe_lib_module);
@@ -1225,6 +1277,10 @@ pub fn build(b: *std.Build) !void {
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, release_safe_optimize, release_safe_lib_module, qm)
     else
         null;
+    const run_release_safe_rpc_quic_peer_tests: ?*std.Build.Step = if (release_safe_quic_zig_module) |qm|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_peer_test.zig", target, release_safe_optimize, release_safe_lib_module, qm)
+    else
+        null;
     const run_release_safe_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, release_safe_optimize, release_safe_lib_module);
 
     const test_release_safe_step = b.step("test-release-safe", "Run key hardening gates under ReleaseSafe");
@@ -1236,6 +1292,8 @@ pub fn build(b: *std.Build) !void {
     test_release_safe_step.dependOn(run_release_safe_codegen_defaults_tests);
     test_release_safe_step.dependOn(run_release_safe_nested_lists_runtime_tests);
     test_release_safe_step.dependOn(run_release_safe_schema_validation_tests);
+    test_release_safe_step.dependOn(run_release_safe_schema_fidelity_tests);
+    test_release_safe_step.dependOn(run_release_safe_brand_fidelity_internal_tests);
     test_release_safe_step.dependOn(run_release_safe_canonical_tests);
     test_release_safe_step.dependOn(run_release_safe_rpc_framing_tests);
     test_release_safe_step.dependOn(run_release_safe_rpc_connection_failure_tests);
@@ -1243,6 +1301,7 @@ pub fn build(b: *std.Build) !void {
     if (run_release_safe_rpc_quic_transport_tests) |step| test_release_safe_step.dependOn(step);
     if (run_release_safe_rpc_quic_public_api_tests) |step| test_release_safe_step.dependOn(step);
     if (run_release_safe_rpc_quic_connection_internal_tests) |step| test_release_safe_step.dependOn(step);
+    if (run_release_safe_rpc_quic_peer_tests) |step| test_release_safe_step.dependOn(step);
     test_release_safe_step.dependOn(run_release_safe_rpc_raw_frame_security_tests);
 
     // ReleaseFast lane. This exists because of a specific class the other lanes
@@ -1256,13 +1315,14 @@ pub fn build(b: *std.Build) !void {
     // `SafeAllocator`'s free-fill check catches it. No lane ran ReleaseFast, so
     // the bug was invisible for as long as it existed.
     //
-    // Scoped deliberately to the teardown-heavy RPC suites rather than the whole
-    // tree: those are where destructors do real work (cancel questions, release
-    // imports, drain provisions), and running everything here would buy little
-    // for the wall-clock. Note this lane is about MEMORY SAFETY, not assertions
+    // Scoped deliberately to the teardown-heavy RPC suites plus the bounded
+    // schema-fidelity ownership/brand resolver gate rather than the whole tree:
+    // those are where destructors and recursive ownership do real work, and
+    // running everything here would buy little for the wall-clock. Note this
+    // lane is about MEMORY SAFETY, not assertions
     // -- `unreachable` is UB rather than a panic here, so a failure in this lane
     // deserves reading before it is "fixed".
-    const release_fast_optimize: std.builtin.OptimizeMode = .fast;
+    const release_fast_optimize: std.builtin.OptimizeMode = .ReleaseFast;
     const release_fast_lib_module = b.addModule("capnpc-zig-release-fast", .{
         .root_source_file = b.path(lib_root),
         .target = target,
@@ -1276,12 +1336,16 @@ pub fn build(b: *std.Build) !void {
     const run_release_fast_rpc_persistence_reconnect_tests = addPersistenceLibTest(b, "tests/rpc/integration/rpc_persistence_reconnect_test.zig", target, release_fast_optimize, release_fast_lib_module);
     const run_release_fast_rpc_peer_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_test.zig", target, release_fast_optimize, release_fast_lib_module);
     const run_release_fast_rpc_vatc_tests = addLibTest(b, "tests/rpc/peer/rpc_three_party_handoff_vatc_test.zig", target, release_fast_optimize, release_fast_lib_module);
+    const run_release_fast_schema_fidelity_tests = addLibTest(b, "tests/serialization/schema_fidelity_test.zig", target, release_fast_optimize, release_fast_lib_module);
+    const run_release_fast_brand_fidelity_internal_tests = addLibTest(b, "src/brand_fidelity_test.zig", target, release_fast_optimize, release_fast_lib_module);
 
-    const test_release_fast_step = b.step("test-release-fast", "Run teardown-heavy RPC suites under ReleaseFast, where a use-after-free in a destructor is not masked by safety poisoning");
+    const test_release_fast_step = b.step("test-release-fast", "Run teardown-heavy RPC and schema-fidelity suites under ReleaseFast, where safety poisoning cannot mask ownership defects");
     test_release_fast_step.dependOn(run_release_fast_rpc_host_peer_tests);
     test_release_fast_step.dependOn(run_release_fast_rpc_persistence_reconnect_tests);
     test_release_fast_step.dependOn(run_release_fast_rpc_peer_tests);
     test_release_fast_step.dependOn(run_release_fast_rpc_vatc_tests);
+    test_release_fast_step.dependOn(run_release_fast_schema_fidelity_tests);
+    test_release_fast_step.dependOn(run_release_fast_brand_fidelity_internal_tests);
 
     // Test step runs all tests
     const test_step = b.step("test", "Run all tests");
@@ -1301,6 +1365,9 @@ pub fn build(b: *std.Build) !void {
     check_compile_step.dependOn(&main_tests.step);
     check_compile_step.dependOn(&rpc_pingpong_example.step);
     check_compile_step.dependOn(&serialization_demo_example.step);
+    // The soak is a real cross-platform executable; compile it for cross
+    // targets so a Windows-only no-op or POSIX API cannot regress silently.
+    check_compile_step.dependOn(&soak_rpc.step);
     check_compile_step.dependOn(&e2e_zig_client.step);
     check_compile_step.dependOn(&e2e_zig_server.step);
     // The Experimental L4 e2e driver otherwise only compiles inside its own

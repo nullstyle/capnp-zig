@@ -193,6 +193,51 @@ test "quic listener owns server endpoint before session attachment" {
     try std.testing.expect(listener.acceptedSessionAt(0) == null);
 }
 
+test "quic listener retains owned Windows receive storage across caller buffers" {
+    var listener = try quic.Listener.init(std.testing.allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+    });
+    defer listener.deinit();
+    const sender_addr = testListenAddr();
+    var sender = try std.Io.net.IpAddress.bind(&sender_addr, std.testing.io, .{
+        .mode = .dgram,
+        .protocol = .udp,
+    });
+    defer sender.close(std.testing.io);
+
+    var timeout_buffer: [32]u8 = @splat(0xa1);
+    var resume_buffer: [32]u8 = @splat(0xb2);
+    try std.testing.expectEqual(
+        quic.testing.UdpReceiveBridge.WaitResult.timeout,
+        try quic.testing.ListenerAccess.receiveConcurrent(
+            &listener,
+            &timeout_buffer,
+            std.Io.Duration.fromMilliseconds(1),
+        ),
+    );
+    try sender.send(std.testing.io, &listener.getAddress(), "listener-owned");
+
+    const received = try quic.testing.ListenerAccess.receiveConcurrent(
+        &listener,
+        &resume_buffer,
+        std.Io.Duration.fromSeconds(1),
+    );
+    switch (received) {
+        .datagram => |datagram| {
+            const owned_ptr = quic.testing.ListenerAccess.receiveStoragePtr(&listener);
+            try std.testing.expectEqual(@intFromPtr(owned_ptr), @intFromPtr(datagram.data.ptr));
+            try std.testing.expect(@intFromPtr(datagram.data.ptr) != @intFromPtr(&timeout_buffer));
+            try std.testing.expect(@intFromPtr(datagram.data.ptr) != @intFromPtr(&resume_buffer));
+            try std.testing.expectEqualStrings("listener-owned", datagram.data);
+            try std.testing.expectEqual(@as(u8, 0xb2), resume_buffer[0]);
+        },
+        else => return error.ExpectedUdpDatagram,
+    }
+}
+
 test "quic server options propagate quic_zig hardening controls" {
     const retry_key: quic.ServerRetryTokenKey = @splat(0x11);
     const new_token_key: quic.ServerNewTokenKey = @splat(0x22);

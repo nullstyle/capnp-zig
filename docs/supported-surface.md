@@ -20,7 +20,7 @@ version (`zig fetch --save …#v0.9.0`) and read the CHANGELOG before bumping.
   contract — and `zig build check-api` fails on any unreviewed drift. Breaking
   changes are avoided within 0.3.x and called out in the CHANGELOG when
   unavoidable.
-- **Experimental** (retained outbound-answer lifetimes, L3 three-party
+- **Experimental** (retained outbound-answer lifetimes, L3/L4 three-party
   origination, reflected-cap resolve, QUIC, persistence vat-restore, events,
   `io_backend`, the demoted transport/ctor variants): may break at any 0.x
   minor bump. Functional and tested, but the API
@@ -81,12 +81,12 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
 | Scalar (XOR) defaults, pointer defaults | supported | Applied on read for numeric/bool/enum and for text/data/struct/list pointer fields. Generated pointer-field `hasXxx()` methods report structural presence separately from the logical default. |
 | Flat lists (all element sizes incl. inline-composite struct lists); lists of enum/text/data/interface | supported | Typed `*ListReader` / `*ListBuilder`; `initXxx(count)` on the builder. Enum lists also provide `getOrdinal()` / `setOrdinal()` and retain their `raw()` accessors. |
 | Nested lists `List(List(T))` (including deeper nesting) | supported (additive typed view) | Existing raw `getXxx()` / `initXxx()` accessors remain `message.PointerListReader` / `PointerListBuilder`. In parallel, Readers and Builders expose `nestedLists()`: typed recursive `getXxx()` and `initXxx()` / `initXxxInSegment()` views cover scalars, Text, Data, enum, struct, interface/capability, and deeper lists in full and compact profiles; AnyPointer keeps the same raw pointer-list terminal as flat lists. Null inner pointers read as empty lists while `isNull()` preserves the absent/present distinction; every wrapper retains `raw()`. Unknown struct layouts fall back to raw struct-list access, and unresolved enum IDs use ordinal (`u16`) elements. |
-| `AnyPointer`, `AnyStruct`, `AnyList`, bare `Capability` | supported (additive shape view) | Existing fields still expose their erased `AnyPointerReader` / `AnyPointerBuilder` API. The request model retains the schema sub-kind in parallel metadata, and structs/groups with constrained `AnyStruct`, `AnyList`, or bare `Capability` slots also expose union-guarded `pointerKinds()` in full and compact profiles. Reader getters return `StructReader`, `AnyListReader`, or `Capability`; Builder getters reopen existing near/single-far/double-far values without replacing them, while init/set methods deliberately replace them. Null lists cast as empty with `isNull()` preserved, and wire-distinguishable wrong-kind pointers fail. A layout-A double-far zero-offset struct tag is indistinguishable from an empty inline-composite list. `AnyListReader` and all Builder shape wrappers retain `raw()`. Unconstrained `AnyPointer` intentionally stays erased. |
-| Generics / parameterized types / brands | partial (metadata + concrete data-struct views) | The frozen `schema.Type` union is unchanged. Additive `TypeMetadata` / `TypeExpression`, node/method parameters, named-type, annotation-use, and interface superclass/method brands retain the full parsed request shape. Generated annotation constants remain the legacy id/value projection. For a fully concrete, resolvable branded generic data-struct field, generated Reader/Builder `brands()` views reopen the existing target and expose supported direct parameter slots (Text, Data, resolved non-generic struct, primitive list, and AnyPointer sub-kinds). Existing erased field accessors remain. Unbound, inherited, recursive, unresolved, and unsupported nested-list bindings emit no typed view; generic interfaces and implicit generic RPC specialization remain unsupported. |
+| `AnyPointer`, `AnyStruct`, `AnyList`, bare `Capability` | supported (additive shape view) | Existing fields still expose their erased `AnyPointerReader` / `AnyPointerBuilder` API. The request model retains the schema sub-kind in parallel metadata, and structs/groups with constrained `AnyStruct`, `AnyList`, or bare `Capability` slots also expose union-guarded `pointerKinds()` in full and compact profiles. Reader getters return `StructReader`, `AnyListReader`, or `Capability`; Builder getters reopen existing near/single-far/double-far values without replacing them, while init/set methods deliberately replace them. Null lists cast as empty with `isNull()` preserved, malformed inline-composite tags and wire-distinguishable wrong-kind pointers fail, and a nonempty list cannot masquerade as AnyStruct. A layout-A double-far zero-offset struct tag remains indistinguishable from an empty inline-composite list. `AnyListReader` and all Builder shape wrappers retain `raw()`. Unconstrained `AnyPointer` intentionally stays erased. |
+| Generics / parameterized types / brands | partial (executable metadata + finite concrete views) | The frozen `schema.Type` union is unchanged. Additive metadata retains parameters, nested named applications, annotation-use brands, interface superclass/method brands, AnyPointer sub-kinds, and `.bind`/`.inherit` scopes. An allocation-free 64-level resolver is shared by validation and generation, checks lexical scope, exact arity, indexes, depth, and cycles, and leaves valid unbound values erased. Scalar generic bindings and malformed graphs are `InvalidSchema`. For finite concrete branded data-struct fields, full and compact Reader/Builder `brands()` views support arbitrary-depth lists, generic struct applications as list terminals, enum/Text/Data/struct/interface terminals, nested branded structs, inherited lexical bindings, and cross-file imported applications/terminals. Existing erased accessors remain; generic RPC clients and implicit generic methods stay erased. |
 | Annotations | supported (see caveat) | Parsed and emitted as `<Name>_annotations` / `_field_annotations` / … arrays plus `pub const` definition descriptors. File-level annotation *uses* are dropped. Parsed annotation-use brands are retained in `CodeGeneratorRequest`; generated annotation constants remain the legacy id/value projection. |
 | Constants (incl. struct/list/enum consts) | supported | Emitted as `pub const`; pointer-typed consts expose a `get()` reader. |
 | JSON / serde | descriptor only | `CAPNP_SCHEMA_MANIFEST_JSON` names the `capnp_<module>_<type>_to_json` / `_from_json` C-ABI symbols an *external* serde tool must supply; no `to_json` / `from_json` bodies are generated. |
-| Canonicalization | supported (spec form + schema-aware form) | Two implementations for two jobs. **`canonical.canonicalize` / `canonicalizeFlat` / `isCanonical` (Experimental)** is the spec's actual canonical form: a **schema-free** walk of the raw pointer graph mirroring the reference implementation's `canonicalize()`/`isCanonical()` (rules cited to `layout.c++` in-source, differentially tested byte-for-byte against `capnp convert binary:canonical`). It preserves data for fields no local schema knows about and keeps upgraded lists as written, so it is the one **appropriate as a signing input**. Capabilities cannot be canonicalized (same as the C++ reference). **`schema_validation.canonicalizeMessage` / `canonicalizeMessageFlat` / `validateMessage` (Stable)** stays for **schema-aware equality**: it re-encodes through builders using a loaded schema, so data written by a newer peer for unknown fields is **dropped** and upgraded lists are re-encoded — fine for canonicalize-and-compare between peers on the same schema, and the home of the opt-in `omit_default_pointers` extension (which diverges from every other implementation precisely on default-valued fields); do not use it for signing — use `canonical.canonicalize` for that. |
+| Canonicalization | supported (spec form + schema-aware form) | Two implementations for two jobs. **`canonical.canonicalize` / `canonicalizeFlat` / `isCanonical` (Experimental)** is the spec's actual canonical form: a **schema-free** walk of the raw pointer graph mirroring the reference implementation's `canonicalize()`/`isCanonical()` (rules cited to `layout.c++` in-source, differentially tested byte-for-byte against `capnp convert binary:canonical`). It preserves data for fields no local schema knows about and keeps upgraded lists as written, so it is the one **appropriate as a signing input**. Capabilities cannot be canonicalized (same as the C++ reference). **`schema_validation.canonicalizeMessage` / `canonicalizeMessageFlat` / `validateMessage` (Stable)** stays for **schema-aware equality**; additive `*WithBrand` forms apply a concrete root brand. Legacy forms use an empty root brand but honor concrete nested metadata. Schema-aware re-encoding drops unknown fields and re-encodes upgraded lists — fine for peers on the same schema, but not a signing input. The schema-free `canonical.*` API is unchanged. |
 | Cross-file `import` / `using` | supported | Correct relative `@import` for referenced types; only referenced imports are emitted. A `using` alias produces no declaration (frontend-resolved). |
 
 **Caveats worth pinning to memory:**
@@ -104,23 +104,33 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
   nonzero pointer is present, so its getter may still fail validation.
 - **Brand fidelity is additive, not whole-program generic specialization.**
   Existing field accessors keep the historically erased representation. Use
-  `brands()` only when it is emitted for a fully concrete, resolvable branded
-  data-struct field; the absence of that view means the binding is unbound,
-  inherited, recursive, unresolved, or otherwise outside the supported direct
-  parameter shapes. Generic interfaces, implicit generic RPC methods, and
-  unsupported nested pointer-list bindings still require erased/manual access.
-  Inspect `schema.TypeMetadata` when tooling needs the original schema
-  expression even though generated typed specialization is unavailable.
+  `brands()` only when it is emitted for a finite concrete branded data-struct
+  field. Supported views compose arbitrary-depth lists, enum/Text/Data/struct/
+  interface terminals, generic struct applications as list terminals, nested
+  branded structs, inherited lexical bindings, and cross-file imported
+  applications/terminals. A valid unbound or recursively infinite application
+  keeps erased/manual access; a scalar generic binding is invalid. Generic
+  interfaces and implicit generic RPC methods do not gain specialized clients.
+  Inspect `schema.TypeMetadata` when tooling needs the original expression even
+  though a typed sidecar is unavailable.
 - **Fidelity sidecars keep ordinary field safety rules.** `brands()` and
   `pointerKinds()` are generated for main structs and groups in full and compact
   profiles and return `error.WrongUnionMember` for an inactive union arm.
-  Reader sidecars apply pointer defaults; Builder getters are structural and
-  reopen only a stored near/far pointer, while init/set methods replace the
-  slot. A null constrained list is the usual empty Cap'n Proto list, and a
+  Reader sidecars apply pointer defaults; Builder getters recursively
+  materialize a schema pointer default before mutation when the physical slot
+  is null, otherwise reopening the stored near/far pointer, while init/set
+  methods replace the slot. A null constrained list is the usual empty Cap'n
+  Proto list and a null struct materializes its logical empty value; a
   wire-distinguishable non-null wrong kind is rejected. Layout-A double-far
   empty struct/list tags are inherently ambiguous. Generated-name collisions
   with `Brands` / `PointerKinds` are rejected rather than producing ambiguous
   Zig.
+
+- **Brand generation has a separate expansion budget.**
+  `CodegenBudget.max_brand_specializations` defaults to 4096. Configure it with
+  `max-codegen-brand-specializations=` on the plugin command line or
+  `CAPNPC_ZIG_MAX_CODEGEN_BRAND_SPECIALIZATIONS`; exhaustion fails with
+  `CodegenBudgetExceeded` before partial output is accepted.
 
 ## Error contract
 
@@ -160,6 +170,9 @@ capability release).
 evidence: `bench-rpc` measures round-trip latency (p50/p99) + calls/sec against
 a committed baseline (`bench-check`), and the RPC soak harness reports latency
 percentiles plus a memory-growth curve asserted flat at ≥100 concurrent peers.
+On Windows the soak cannot report success without positive session, call,
+chaos-close, and applicable deadline-cancellation counters; the old successful
+no-op is gone.
 In CI the *pipelined throughput* case is enforced; the *sequential latency*
 cases are advisory (a shared runner cannot measure a serialized round-trip
 reliably — see [`stability.md`](stability.md)), and gate on a quiet machine via
@@ -466,6 +479,21 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   `connectJoined()` take the allocator used for returned provision/result
   buffers, while network registry and connector lease internals remain owned by
   the network.
+  Receive-side state is now bounded by
+  `PeerLimits.max_join_parts_per_join = 64` and the aggregate
+  `max_pending_join_records = 4096`, which charges buckets, parts, relays,
+  canonical hosted provisions, result answers, and direct Accepts. Each
+  completed handoff has one origin-owned `HostedJoin`; result records and a
+  distinct Accept host borrow it, and provision bytes are charged once at the
+  owner. `PeerStats` and events expose only redacted Join record/part/byte
+  counts and inbound answer IDs.
+  Raw peers keep Join expiry opt-in. TCP connect/serve and WorkerPool default to
+  a 30-second lease, with explicit null as the opt-out. First-part deadlines do
+  not extend; relays and hosted Accepts get fresh local-clock deadlines. The
+  cached sweep runs at frame/deadline/Accept boundaries and is also available
+  as `sweepExpiredJoins()`. `attachJoinNetwork()` and `detachJoinNetwork()`
+  reject replacement while dependent state exists; identical reattachment is
+  a no-op.
   Regressions cover Finish/send-failure/OOM paths, pending direct-Accept
   rollback, coordinator duplicate-send rejection, post-JoinResult and
   post-Accept-send cancel cleanup, drop-time pending Join/Accept cancellation,
@@ -487,11 +515,13 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   results/exception Return relay failure, unexpected downstream Return cleanup,
   downstream Finish retry, owner teardown including downstream Finish send
   failure, source teardown before and after downstream Return, target mismatch
-  through relay, and relay setup OOM rollback. `just e2e-l4-zig` now runs a real
-  Zig↔Zig TCP gate for the addressed JoinResult→Accept path. There is no Stable
-  `Peer.sendJoin`, no production Join addressing policy or bundled dialer, no
-  multi-hop relay beyond transparent proxy relay, and no cross-implementation L4
-  interop claim. The C++ L3 e2e lane includes shape probes plus a source-backed
+  through relay, and relay setup OOM rollback. `just e2e-l4-zig` runs a
+  nine-case Zig↔Zig TCP gate that first proves short-TTL/small-quota attacker
+  cleanup and then completes the addressed JoinResult→Accept→call path. There
+  is no Stable `Peer.sendJoin`, no production Join addressing policy or bundled
+  dialer, no multi-hop relay beyond transparent proxy relay, and no
+  cross-implementation L4 interop claim. The C++ L3 e2e lane includes shape
+  probes plus a source-backed
   runtime-surface probe; it currently
   confirms that the C++ reference stack exposes no callable generic
   `VatNetwork` Join hook for this TCP harness.

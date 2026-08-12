@@ -37,6 +37,7 @@ pub fn State(comptime Connection: type) type {
                 .udp_rx_buf = conn.udp_rx_buf,
                 .udp_tx_buf = conn.udp_tx_buf,
                 .wake = &conn.wake_state,
+                .receive_bridge = &conn.udp_receive,
                 .driver = loopDriver,
                 .selected_mode = loopSelectedMode,
                 .selected_outbound_empty = loopSelectedOutboundEmpty,
@@ -46,6 +47,7 @@ pub fn State(comptime Connection: type) type {
                 .terminate_internal_error = loopTerminateInternalError,
                 .flush_close_datagram = loopFlushCloseDatagram,
                 .close_engines = loopCloseEngines,
+                .cancel_receive = loopCancelReceive,
                 .notify_closed = loopNotifyClosed,
                 .invoke_close_callback = loopInvokeCloseCallback,
                 .complete_deferred_deinit = loopCompleteDeferredDeinit,
@@ -133,6 +135,11 @@ pub fn State(comptime Connection: type) type {
         fn loopCloseEngines(ptr: *anyopaque) void {
             const conn = castConnection(ptr);
             conn.close_controller.closeEngines(&conn.baseline, &conn.native);
+        }
+
+        fn loopCancelReceive(ptr: *anyopaque) void {
+            const conn = castConnection(ptr);
+            conn.udp_receive.cancel(conn.endpoint.io);
         }
 
         fn loopNotifyClosed(ptr: *anyopaque) void {

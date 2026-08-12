@@ -4,7 +4,7 @@ A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serializ
 
 > **Status (v0.9.0):** serialization, codegen, the `capnpc-zig` plugin, and the
 > **two-party RPC core** are **Stable** on a **frozen, CI-gated** public surface
-> (`docs/api-snapshot.txt`). The L3 three-party arc, the reflected-cap resolver,
+> (`docs/api-snapshot.txt`). The L3/L4 three-party arc, the reflected-cap resolver,
 > QUIC, persistence vat-restore, events, and the demoted transport/ctor variants
 > remain **Experimental** and may change at any 0.x minor bump. Pre-1.0 — pin an
 > exact version. See [`docs/supported-surface.md`](docs/supported-surface.md) for
@@ -18,7 +18,10 @@ A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serializ
 - **Zero-Copy Deserialization**: Readers work directly with message bytes
 - **Builder Pattern**: Ergonomic API for constructing messages
 - **Schema-Driven Code Generation**: Generates idiomatic Zig Reader/Builder types from `.capnp` schemas
+- **Executable Type Fidelity**: Brand-aware schema validation/canonicalization
+  and finite typed generic views without removing erased APIs
 - **RPC Runtime**: Cap'n Proto RPC over TCP with capability-based messaging
+- **Optional QUIC RPC**: Baseline and native modes, including real `Peer` fanout and close-isolation coverage
 - **Comprehensive Tests**: Extensive message/codegen/RPC/interop coverage
 - **Type Safe**: Leverages Zig's compile-time type system
 
@@ -366,6 +369,7 @@ quic-zig dependency is listed in the package manifest for opt-in builds, but
 ```bash
 zig build -Dquic=true check --summary all
 zig build -Dquic=true test-rpc-quic --summary all
+zig build -Dquic=true test-rpc-quic-evidence --summary all
 ```
 
 QUIC defaults to baseline mode, which carries the same ordered RPC frame stream
@@ -373,6 +377,12 @@ as TCP over a QUIC connection. Native mode is an explicit opt-in on both peers
 for QUIC-specific control/data stream routing. For mode selection, helper
 module boundaries, and production hardening defaults, see
 `docs/quic-transport.md`.
+
+The native evidence step runs exactly four roots, rejects `SkipZigTest`, and
+fails when QUIC is not enabled. Local macOS Debug and ReleaseSafe evidence is
+61/61; Windows runtime acceptance remains a hosted gate after this capnp-zig
+revision is pushed, so the passing Windows cross-compile is not presented as a
+runtime claim.
 
 ### RPC Benchmarks
 
@@ -437,16 +447,20 @@ zig build test-rpc-transport  # TCP/raw-frame transport
 zig build test-rpc-peer       # Peer semantics
 zig build test-rpc-integration # HostPeer/WorkerPool integration
 zig build -Dquic=true test-rpc-quic # Optional QUIC transport
+zig build test-rpc-l4         # Experimental Join leases/lifecycle
 
 # Run specific focused suites
 zig build test-message       # Message tests
 zig build test-codegen       # Codegen tests
+zig build test-schema-fidelity # Brand-aware validation/codegen closure
+zig build -Dquic=true test-rpc-quic-evidence # Four-root no-skip QUIC evidence
 zig build docs-smoke         # Docs/examples public API smoke checks
 zig build test-docs-snippets # Compile documentation snippet fixtures
 zig build -Dquic=true test-docs-snippets-quic # Optional QUIC docs snippets
 zig build package-preflight # Filtered-package default/core/QUIC consumers
 just release-preflight      # Complete local release preflight
 just e2e                    # Cross-language interop harness
+zig build e2e-l4-zig        # Experimental Zig↔Zig Join attacker/recovery flow
 ```
 
 ### Run GitHub Actions Locally

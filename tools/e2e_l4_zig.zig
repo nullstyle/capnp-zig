@@ -84,7 +84,17 @@ const ServerCtx = struct {
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     fn main(self: *@This()) void {
-        var session = ServerSession.accept(self.allocator, self.listener, .{}) catch {
+        var session = ServerSession.accept(self.allocator, self.listener, .{
+            // Deliberately tiny deterministic lease/quota for the attacker
+            // phase. The legitimate two-part completion still fits exactly
+            // after expiry reclaims the attacker's partial bucket.
+            .conn = .{ .tick_interval_ms = 10 },
+            .join_timeout_ms = 50,
+            .limits = .{
+                .max_join_parts_per_join = 3,
+                .max_pending_join_records = 4,
+            },
+        }) catch {
             self.failed.store(true, .release);
             self.accepted.store(true, .release);
             self.done.store(true, .release);
@@ -106,7 +116,12 @@ const ServerCtx = struct {
             self.done.store(true, .release);
             return;
         };
-        session.peer.attachJoinNetwork(self.join_network);
+        session.peer.attachJoinNetwork(self.join_network) catch {
+            self.failed.store(true, .release);
+            session.deinit();
+            self.done.store(true, .release);
+            return;
+        };
         session.run();
         session.deinit();
         self.done.store(true, .release);
@@ -130,6 +145,11 @@ const ClientApp = struct {
     bootstrap_import_id: ?u32 = null,
     accept_import_id: ?u32 = null,
     join_id: u32 = 0x4c4a_1001,
+    attacker_join_id: u32 = 0x4c4a_10a0,
+    quota_join_id: u32 = 0x4c4a_10a1,
+    attacker_timeouts: u32 = 0,
+    quota_rejected: bool = false,
+    legitimate_started: bool = false,
     joined: std.ArrayList(vat_join.Joined(Peer)) = .empty,
     number_result: ?u32 = null,
     failed: bool = false,
@@ -147,9 +167,15 @@ const ClientApp = struct {
         return err;
     }
 
-    fn sendJoinPart(self: *@This(), part_count: u16, part_num: u16) !void {
+    fn sendJoinPartFor(
+        self: *@This(),
+        join_id: u32,
+        part_count: u16,
+        part_num: u16,
+        callback: rpc.peer.QuestionCallback,
+    ) !void {
         const target = self.bootstrap_import_id orelse return error.MissingBootstrapImport;
-        const bytes = try vat_join.encodeJoinKeyPart(self.allocator, self.join_id, part_count, part_num);
+        const bytes = try vat_join.encodeJoinKeyPart(self.allocator, join_id, part_count, part_num);
         defer self.allocator.free(bytes);
         var key_msg = try message.Message.init(self.allocator, bytes, .{});
         defer key_msg.deinit();
@@ -157,8 +183,19 @@ const ClientApp = struct {
             .{ .tag = .importedCap, .imported_cap = target, .promised_answer = null },
             try key_msg.getRootAnyPointer(),
             self,
-            ClientApp.onJoinReturn,
+            callback,
         );
+    }
+
+    fn sendJoinPart(self: *@This(), part_count: u16, part_num: u16) !void {
+        try self.sendJoinPartFor(self.join_id, part_count, part_num, ClientApp.onJoinReturn);
+    }
+
+    fn maybeStartLegitimateJoin(self: *@This()) !void {
+        if (self.legitimate_started or self.attacker_timeouts != 2 or !self.quota_rejected) return;
+        self.legitimate_started = true;
+        try self.sendJoinPart(2, 0);
+        try self.sendJoinPart(2, 1);
     }
 
     fn maybeAccept(self: *@This()) !void {
@@ -200,8 +237,46 @@ const ClientApp = struct {
         };
 
         _ = peer;
-        try self.sendJoinPart(2, 0);
-        try self.sendJoinPart(2, 1);
+        // Three aggregate records (bucket + two parts) occupy the tiny quota
+        // without completing. A sibling bucket is refused, then the short TTL
+        // expires both attacker answers and the legitimate handoff proceeds.
+        try self.sendJoinPartFor(self.attacker_join_id, 3, 0, ClientApp.onAttackerReturn);
+        try self.sendJoinPartFor(self.attacker_join_id, 3, 1, ClientApp.onAttackerReturn);
+        try self.sendJoinPartFor(self.quota_join_id, 2, 0, ClientApp.onQuotaReturn);
+    }
+
+    fn onAttackerReturn(
+        ctx_ptr: *anyopaque,
+        _: *Peer,
+        ret: protocol.Return,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        if (ret.tag != .exception or
+            ret.exception == null or
+            !std.mem.eql(u8, ret.exception.?.reason, "join unavailable"))
+        {
+            return self.fail(error.UnexpectedAttackerJoinReturn);
+        }
+        self.attacker_timeouts += 1;
+        try self.maybeStartLegitimateJoin();
+    }
+
+    fn onQuotaReturn(
+        ctx_ptr: *anyopaque,
+        _: *Peer,
+        ret: protocol.Return,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        if (ret.tag != .exception or
+            ret.exception == null or
+            !std.mem.eql(u8, ret.exception.?.reason, "join unavailable"))
+        {
+            return self.fail(error.UnexpectedQuotaJoinReturn);
+        }
+        self.quota_rejected = true;
+        try self.maybeStartLegitimateJoin();
     }
 
     fn onJoinReturn(
@@ -327,6 +402,9 @@ fn runScenario(allocator: std.mem.Allocator, io: std.Io, tap: *Tap) !void {
     server_thread_joined = true;
 
     tap.ok(!app.failed, "L4 Zig TCP scenario completed without callback failure");
+    tap.ok(app.quota_rejected, "attacker exhausted the small aggregate Join quota");
+    tap.ok(app.attacker_timeouts == 2, "short TTL expired both attacker Join parts");
+    tap.ok(app.legitimate_started, "quota recovery admitted the legitimate Join");
     tap.ok(app.joined.items.len == 2, "client consumed two JoinResult payloads");
     tap.ok(app.number_result == joined_value, "accepted Join cap returned the hosted number");
     tap.ok(server_ctx.number.calls == 1, "joined capability invocation reached the TCP server exactly once");

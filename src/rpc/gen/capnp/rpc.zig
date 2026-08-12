@@ -547,8 +547,8 @@ pub const Call = struct {
                 return self._reader.readUnionDiscriminant(6);
             }
 
-            pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {
-                return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+            pub fn which(self: @This()) error{InvalidEnumValue}!Call.SendResultsTo.WhichTag {
+                return std.enums.fromInt(Call.SendResultsTo.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
             }
 
             pub fn getCaller(self: @This()) !void {
@@ -1133,8 +1133,8 @@ pub const Disembargo = struct {
                 return self._reader.readUnionDiscriminant(4);
             }
 
-            pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {
-                return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+            pub fn which(self: @This()) error{InvalidEnumValue}!Disembargo.Context.WhichTag {
+                return std.enums.fromInt(Disembargo.Context.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
             }
 
             pub fn getSenderLoopback(self: @This()) !u32 {

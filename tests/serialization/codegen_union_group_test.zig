@@ -765,8 +765,8 @@ test "Codegen: group union generates WhichTag and which method" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "receiverLoopback = 1,"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "accept = 2,"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "mode = 3,"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn which(self: @This()) error{InvalidEnumValue}!Disembargo.Context.WhichTag"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(Disembargo.Context.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn whichOrdinal(self: @This()) u16"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self._reader.readUnionDiscriminant(4);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 2, "pub const EnumOrdinals = struct"));

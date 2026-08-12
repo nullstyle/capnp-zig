@@ -27,7 +27,6 @@
 //!                          [--mem-growth-pct P] [--no-chaos] [--no-deadlines]
 
 const std = @import("std");
-const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
 
 const rpc = capnpc.rpc;
@@ -607,20 +606,6 @@ fn sleepMs(io: std.Io, ms: u64) void {
     duration.sleep(io) catch {};
 }
 
-fn getSockPort(fd: std.posix.fd_t) !u16 {
-    var storage: std.posix.sockaddr.storage = undefined;
-    var addr_len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.storage);
-    if (std.posix.errno(std.posix.system.getsockname(fd, @ptrCast(&storage), &addr_len)) != .SUCCESS) {
-        return error.GetSockNameFailed;
-    }
-    const sa: *const std.posix.sockaddr = @ptrCast(&storage);
-    if (sa.family == std.posix.AF.INET) {
-        const sa_in: *const std.posix.sockaddr.in = @ptrCast(@alignCast(sa));
-        return std.mem.bigToNative(u16, sa_in.port);
-    }
-    return error.UnsupportedAddressFamily;
-}
-
 fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Config {
     var cfg = Config{};
     var iter = try std.process.Args.Iterator.initAllocator(args, allocator);
@@ -654,11 +639,6 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Config {
 }
 
 pub fn main(init: std.process.Init) !void {
-    if (comptime builtin.target.os.tag == .windows) {
-        std.debug.print("soak: unsupported on Windows (tick/poll path unavailable)\n", .{});
-        return;
-    }
-
     var gpa: std.heap.DebugAllocator(.{ .thread_safe = true }) = .init;
     var counter = CountingAllocator.init(gpa.allocator());
     const allocator = counter.allocator();
@@ -681,7 +661,10 @@ pub fn main(init: std.process.Init) !void {
         EchoServer.onAccept,
         .{ .concurrency = @max(2, cfg.workers / 2) },
     );
-    const port = try getSockPort(pool.server.socket.handle);
+    // `listen()` publishes the kernel-selected ephemeral port in its portable
+    // address value. Reading that value avoids POSIX `getsockname` and keeps
+    // the real soak path buildable under Windows' native socket handle type.
+    const port = pool.server.socket.address.getPort();
     const address: net.IpAddress = .{ .ip4 = .loopback(port) };
 
     const pool_thread = try std.Thread.spawn(.{}, poolThreadMain, .{&pool});
@@ -785,6 +768,10 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("soak: FAIL — no successful traffic\n", .{});
         failed = true;
     }
+    if (cfg.chaos and chaos_closes == 0) {
+        std.debug.print("soak: FAIL — chaos mode produced no transport closes\n", .{});
+        failed = true;
+    }
     if (unexpected != 0) {
         std.debug.print("soak: FAIL — unexpected exception reasons observed\n", .{});
         failed = true;
@@ -793,7 +780,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("soak: FAIL — more disconnected exceptions than chaos closes\n", .{});
         failed = true;
     }
-    if (cfg.deadlines and cancelled == 0 and sessions > 8) {
+    if (cfg.deadlines and cancelled == 0) {
         std.debug.print("soak: FAIL — deadline sessions produced no cancellations\n", .{});
         failed = true;
     }

@@ -1,5 +1,7 @@
 const std = @import("std");
 const schema = @import("../serialization/schema.zig");
+const type_resolver = @import("../serialization/type_resolver.zig");
+const brand_fidelity = @import("brand_fidelity.zig");
 const StructGenerator = @import("struct_gen.zig").StructGenerator;
 const types = @import("types.zig");
 pub const TypeGenerator = types.TypeGenerator;
@@ -57,6 +59,7 @@ pub const Generator = struct {
         max_default_bytes: usize = 16 * 1024 * 1024,
         max_manifest_bytes: usize = 8 * 1024 * 1024,
         max_output_bytes: usize = 32 * 1024 * 1024,
+        max_brand_specializations: usize = 4096,
     };
 
     allocator: std.mem.Allocator,
@@ -299,6 +302,7 @@ pub const Generator = struct {
         var field_count: usize = 0;
         var name_bytes: usize = 0;
         var default_bytes: usize = 0;
+        var brand_specializations: usize = 0;
 
         try addBudgeted(&name_bytes, requested_file.filename.len, self.codegen_budget.max_name_bytes);
         for (requested_file.imports) |imp| {
@@ -322,6 +326,18 @@ pub const Generator = struct {
                         try addBudgeted(&name_bytes, field.name.len, self.codegen_budget.max_name_bytes);
                         try addAnnotationBudget(field.annotations, &default_bytes, self.codegen_budget.max_default_bytes);
                         if (field.slot) |slot| {
+                            const specialization_count = try self.concreteBrandSpecializationCount(
+                                &node,
+                                slot,
+                                self.codegen_budget.max_brand_specializations - brand_specializations,
+                            );
+                            if (specialization_count != 0) {
+                                try addBudgeted(
+                                    &brand_specializations,
+                                    specialization_count,
+                                    self.codegen_budget.max_brand_specializations,
+                                );
+                            }
                             if (slot.default_value) |value| {
                                 try addValueBudget(value, &default_bytes, self.codegen_budget.max_default_bytes);
                             }
@@ -349,6 +365,42 @@ pub const Generator = struct {
                 .annotation => {},
             }
         }
+    }
+
+    fn concreteBrandSpecializationCount(
+        self: *const Generator,
+        owner: *const schema.Node,
+        slot: schema.FieldSlot,
+        remaining: usize,
+    ) !usize {
+        const inspection = (try self.concreteBrandInspection(owner, slot, remaining)) orelse return 0;
+        return inspection.specialization_count;
+    }
+
+    fn concreteBrandInspection(
+        self: *const Generator,
+        owner: *const schema.Node,
+        slot: schema.FieldSlot,
+        remaining: usize,
+    ) !?brand_fidelity.Inspection {
+        if (slot.type != .@"struct") return null;
+        const brand = switch (slot.type_metadata) {
+            .named => |value| value,
+            else => return null,
+        };
+        const target = self.getNode(slot.type.@"struct".type_id) orelse return error.InvalidStructNode;
+        const caller = type_resolver.Resolver.init(self.nodes, owner, .{}) catch return error.InvalidStructNode;
+        const resolver = caller.enterNamed(target.id, brand, caller.contextDepth()) catch return error.InvalidStructNode;
+        return brand_fidelity.inspectApplication(
+            target,
+            &resolver,
+            generatorBrandLookup,
+            @ptrCast(@constCast(self)),
+            remaining,
+        ) catch |err| switch (err) {
+            error.CodegenBudgetExceeded => return error.CodegenBudgetExceeded,
+            error.InvalidSchema => return error.InvalidStructNode,
+        };
     }
 
     fn addBudgeted(total: *usize, amount: usize, limit: usize) !void {
@@ -671,26 +723,22 @@ pub const Generator = struct {
                 .allocator = self.allocator,
                 .max_bytes = self.codegen_budget.max_output_bytes,
             };
-            // A struct's nested type declarations are shadowed by the parent
-            // struct's Reader/Builder/WhichTag → they must self-qualify. An
-            // interface declares no Reader/Builder, but a nested INTERFACE's own
-            // Client/Server/VTable/… ARE shadowed by the enclosing interface's
-            // same-named decls, so nested interfaces self-qualify too. An
-            // interface's method param/result structs (and nested structs/enums)
-            // are not shadowed by the interface (which has no Reader/Builder), so
-            // they stay bare — unless the nested child is itself an interface.
+            // Every named nested struct self-qualifies Reader/Builder/WhichTag:
+            // a lexical ancestor may itself be nested and expose the same names,
+            // even when the immediate parent is an interface. Nested interfaces
+            // likewise qualify Client/Server/VTable and related declarations.
             for (node.nested_nodes) |nested| {
                 const child = self.getNode(nested.id) orelse continue;
-                const child_self_qualify = node.kind == .@"struct" or child.kind == .interface;
+                const child_self_qualify = child.kind == .@"struct" or child.kind == .interface;
                 try self.generateNodeRecursive(nested.id, generated, child_writer, child_self_qualify);
             }
             if (node.kind == .interface) {
                 const iface = node.interface_node orelse return error.InvalidInterfaceNode;
                 for (iface.methods) |method| {
                     if (self.isAutoGeneratedMethodStruct(method.param_struct_type))
-                        try self.generateNodeRecursive(method.param_struct_type, generated, child_writer, false);
+                        try self.generateNodeRecursive(method.param_struct_type, generated, child_writer, self_qualify);
                     if (self.isAutoGeneratedMethodStruct(method.result_struct_type))
-                        try self.generateNodeRecursive(method.result_struct_type, generated, child_writer, false);
+                        try self.generateNodeRecursive(method.result_struct_type, generated, child_writer, self_qualify);
                 }
             }
         }
@@ -847,8 +895,8 @@ pub const Generator = struct {
             try self.validateStructGeneratedNames(group_node);
         }
 
-        try self.validateStructReaderNames(struct_info);
-        try self.validateStructBuilderNames(struct_info);
+        try self.validateStructReaderNames(node, struct_info);
+        try self.validateStructBuilderNames(node, struct_info);
         if (struct_info.discriminant_count > 0) {
             try self.validateUnionTagNames(struct_info.fields);
         }
@@ -890,7 +938,7 @@ pub const Generator = struct {
         }
     }
 
-    fn validateStructReaderNames(self: *Generator, struct_info: schema.StructNode) !void {
+    fn validateStructReaderNames(self: *Generator, node: *const schema.Node, struct_info: schema.StructNode) !void {
         var scope = GeneratedNameScope.init(self.allocator);
         defer scope.deinit();
 
@@ -909,7 +957,7 @@ pub const Generator = struct {
             try scope.addCopy("NestedLists");
             try scope.addCopy("nestedLists");
         }
-        if (self.structHasDirectConcreteBrandSlot(struct_info)) {
+        if (try self.structHasDirectConcreteBrandSlot(node, struct_info)) {
             try scope.addCopy("Brands");
             try scope.addCopy("brands");
         }
@@ -948,7 +996,7 @@ pub const Generator = struct {
         }
     }
 
-    fn validateStructBuilderNames(self: *Generator, struct_info: schema.StructNode) !void {
+    fn validateStructBuilderNames(self: *Generator, node: *const schema.Node, struct_info: schema.StructNode) !void {
         var scope = GeneratedNameScope.init(self.allocator);
         defer scope.deinit();
 
@@ -963,7 +1011,7 @@ pub const Generator = struct {
             try scope.addCopy("NestedLists");
             try scope.addCopy("nestedLists");
         }
-        if (self.structHasDirectConcreteBrandSlot(struct_info)) {
+        if (try self.structHasDirectConcreteBrandSlot(node, struct_info)) {
             try scope.addCopy("Brands");
             try scope.addCopy("brands");
         }
@@ -1066,124 +1114,34 @@ pub const Generator = struct {
         return false;
     }
 
-    fn supportsConcreteBrandBinding(self: *Generator, expression: schema.TypeExpression) bool {
-        return switch (expression.type) {
-            .text, .data => true,
-            .@"struct" => |info| blk: {
-                const node = self.getNode(info.type_id) orelse break :blk false;
-                break :blk node.kind == .@"struct" and node.struct_node != null and !node.is_generic;
-            },
-            .list => |info| switch (info.element_type.*) {
-                .void, .bool, .int8, .uint8, .int16, .uint16, .int32, .uint32, .float32, .int64, .uint64, .float64 => true,
-                else => false,
-            },
-            .any_pointer => switch (expression.metadata) {
-                .any_pointer => |metadata| switch (metadata) {
-                    .unconstrained => true,
-                    else => false,
-                },
-                else => false,
-            },
-            else => false,
-        };
+    fn generatorBrandLookup(context: ?*anyopaque, id: schema.Id) ?*const schema.Node {
+        const self: *const Generator = @ptrCast(@alignCast(context orelse return null));
+        return self.getNode(id);
     }
 
-    fn lexicalGenericScope(
-        self: *Generator,
-        target: *const schema.Node,
-        scope_id: schema.Id,
-    ) ?*const schema.Node {
-        var cursor: ?*const schema.Node = target;
-        while (cursor) |node| {
-            if (node.id == scope_id and node.parameters.len > 0) return node;
-            if (node.scope_id == 0) break;
-            cursor = self.getNode(node.scope_id) orelse return null;
-        }
-        return null;
-    }
-
-    fn concreteBrandBindingsForScope(
-        brand: schema.Brand,
-        scope_id: schema.Id,
-    ) ?[]const schema.Brand.Binding {
-        var found: ?[]const schema.Brand.Binding = null;
-        for (brand.scopes) |scope| {
-            if (scope.scope_id != scope_id) continue;
-            if (found != null) return null;
-            found = switch (scope.binding) {
-                .bind => |bindings| bindings,
-                .inherit => return null,
-            };
-        }
-        return found;
-    }
-
-    /// Accept a typed brand sidecar only when every generic scope in the
-    /// target's lexical chain is bound exactly once and at the declared arity.
-    /// This prevents a valid-looking inner binding from hiding an inherited or
-    /// malformed outer binding.
+    /// Compatibility predicate retained for the generator's focused tests.
+    /// Production eligibility and accounting both use `brand_fidelity`.
     fn isFullyConcreteBrand(
-        self: *Generator,
+        self: *const Generator,
         target: *const schema.Node,
         target_info: schema.StructNode,
         brand: schema.Brand,
     ) bool {
-        var expected_scope_count: usize = 0;
-        var cursor: ?*const schema.Node = target;
-        while (cursor) |node| {
-            if (node.parameters.len > 0) {
-                expected_scope_count += 1;
-                const bindings = concreteBrandBindingsForScope(brand, node.id) orelse return false;
-                if (bindings.len != node.parameters.len) return false;
-                for (bindings) |binding| {
-                    const expression = switch (binding) {
-                        .type => |value| value.*,
-                        .unbound => return false,
-                    };
-                    if (!self.supportsConcreteBrandBinding(expression)) return false;
-                }
-            }
-            if (node.scope_id == 0) break;
-            cursor = self.getNode(node.scope_id) orelse return false;
-        }
-        if (brand.scopes.len != expected_scope_count or expected_scope_count == 0) return false;
-
-        var has_direct_parameter = false;
-        for (target_info.fields) |target_field| {
-            const target_slot = target_field.slot orelse continue;
-            if (target_slot.type != .any_pointer) continue;
-            const parameter = switch (target_slot.type_metadata) {
-                .any_pointer => |metadata| switch (metadata) {
-                    .parameter => |value| value,
-                    else => continue,
-                },
-                else => continue,
-            };
-            const scope_node = self.lexicalGenericScope(target, parameter.scope_id) orelse return false;
-            if (parameter.parameter_index >= scope_node.parameters.len) return false;
-            const bindings = concreteBrandBindingsForScope(brand, parameter.scope_id) orelse return false;
-            if (parameter.parameter_index >= bindings.len) return false;
-            if (bindings[parameter.parameter_index] != .type) return false;
-            has_direct_parameter = true;
-        }
-        return has_direct_parameter;
+        _ = target_info;
+        const resolver = type_resolver.Resolver.init(self.nodes, target, brand) catch return false;
+        return (brand_fidelity.inspectApplication(
+            target,
+            &resolver,
+            generatorBrandLookup,
+            @ptrCast(@constCast(self)),
+            self.codegen_budget.max_brand_specializations,
+        ) catch return false) != null;
     }
 
-    fn structHasDirectConcreteBrandSlot(self: *Generator, struct_info: schema.StructNode) bool {
+    fn structHasDirectConcreteBrandSlot(self: *Generator, node: *const schema.Node, struct_info: schema.StructNode) !bool {
         for (struct_info.fields) |field| {
             const slot = field.slot orelse continue;
-            if (slot.type != .@"struct") continue;
-            const brand = switch (slot.type_metadata) {
-                .named => |value| value,
-                else => continue,
-            };
-            const target_id = slot.type.@"struct".type_id;
-            const target = self.getNode(target_id) orelse continue;
-            if (target.kind != .@"struct") continue;
-            const target_info = target.struct_node orelse continue;
-            if (target_info.is_group) continue;
-            if (!target.is_generic) continue;
-            if (self.isFullyConcreteBrand(target, target_info, brand)) return true;
+            if (try self.concreteBrandInspection(node, slot, self.codegen_budget.max_brand_specializations) != null) return true;
         }
         return false;
     }
@@ -1509,6 +1467,7 @@ pub const Generator = struct {
         var struct_gen = StructGenerator.initWithLookup(self.allocator, lookupNode, self);
         struct_gen.type_prefix_fn = lookupTypePrefix;
         struct_gen.parent_path_fn = lookupParentPath;
+        struct_gen.max_brand_specializations = self.codegen_budget.max_brand_specializations;
         struct_gen.setApiProfile(self.api_profile);
         try struct_gen.generate(node, writer, children, self_qualify);
     }
@@ -1683,6 +1642,9 @@ pub const Generator = struct {
         try writer.print("    pub const interface_id: u64 = 0x{x};\n", .{node.id});
         // Zero-method interfaces produce an empty enum; this is valid Zig but uninhabitable.
         try writer.writeAll("    pub const Method = enum(u16) {\n");
+        if (interface_info.methods.len == 0) {
+            try writer.writeAll("        _,\n");
+        }
         // The methods list is ordered by ordinal, not declaration order (code_order).
         // The wire ordinal IS the list index, so use it directly.
         for (interface_info.methods, 0..) |method, ordinal| {
@@ -3155,12 +3117,16 @@ pub const Generator = struct {
                     const element_size = try self.listElementSize(elem_type);
                     try writer.writeAll("        const list = try root.getList();\n");
                     try writer.print("        if (list.element_size != {}) return error.InvalidPointer;\n", .{element_size});
-                    try writer.print("        return {s}{{\n", .{return_type});
-                    try writer.writeAll("            .message = &_message,\n");
-                    try writer.writeAll("            .segment_id = list.segment_id,\n");
-                    try writer.writeAll("            .elements_offset = list.content_offset,\n");
-                    try writer.writeAll("            .element_count = list.element_count,\n");
-                    try writer.writeAll("        };\n");
+                    if (elem_type == .void) {
+                        try writer.writeAll("        return .{ .element_count = list.element_count };\n");
+                    } else {
+                        try writer.print("        return {s}{{\n", .{return_type});
+                        try writer.writeAll("            .message = &_message,\n");
+                        try writer.writeAll("            .segment_id = list.segment_id,\n");
+                        try writer.writeAll("            .elements_offset = list.content_offset,\n");
+                        try writer.writeAll("            .element_count = list.element_count,\n");
+                        try writer.writeAll("        };\n");
+                    }
                 }
             },
             .@"struct" => |struct_info| {

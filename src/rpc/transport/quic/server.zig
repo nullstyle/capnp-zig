@@ -14,10 +14,12 @@ const endpoint_mod = @import("endpoint.zig");
 const listener_mod = @import("listener.zig");
 const mode_router = @import("mode_router.zig");
 const native_engine = @import("native_engine.zig");
+const non_windows_receive = @import("non_windows_receive.zig");
 const quic_close = @import("close.zig");
 const quic_options = @import("options.zig");
 const scheduler = @import("scheduler.zig");
 const session_mod = @import("session.zig");
+const udp_receive_bridge = @import("udp_receive_bridge.zig");
 const wake_mod = @import("wake.zig");
 
 const Net = std.Io.net;
@@ -50,8 +52,12 @@ pub const Server = struct {
     config: Config,
     udp_rx_buf: []u8,
     udp_tx_buf: []u8,
-    sessions: std.ArrayList(ServerSession) = .empty,
+    // Session addresses are part of the transport binding once a Peer is
+    // attached. Keep each session in its own allocation so ArrayList growth
+    // and swap-removal can never move a live callback target.
+    sessions: std.ArrayList(*ServerSession) = .empty,
     wake_state: wake_mod.Handle = .{},
+    udp_receive: udp_receive_bridge.Bridge = .{},
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// Identifies the thread that drives the step/run loop. `sessions` is only
     /// ever appended to or swap-removed on this thread, so cross-thread
@@ -74,7 +80,7 @@ pub const Server = struct {
         const udp_tx_buf = try allocator.alloc(u8, options.udp_tx_buffer_size);
         errdefer allocator.free(udp_tx_buf);
 
-        var sessions = std.ArrayList(ServerSession).empty;
+        var sessions = std.ArrayList(*ServerSession).empty;
         errdefer sessions.deinit(allocator);
         try sessions.ensureTotalCapacity(allocator, options.max_concurrent_connections);
 
@@ -92,14 +98,17 @@ pub const Server = struct {
 
     pub fn deinit(self: *Server) void {
         self.requestClose();
+        self.udp_receive.cancel(self.io);
         var i: usize = self.sessions.items.len;
         while (i > 0) {
             i -= 1;
             // Fire on_close exactly once for every still-live session before
             // dropping it, so tearing down the server with active sessions
             // notifies their owners (matching connection_loop.run).
-            self.sessions.items[i].invokeCloseCallbackOnce();
-            self.sessions.items[i].deinit(self.allocator);
+            const session = self.sessions.items[i];
+            session.invokeCloseCallbackOnce();
+            session.deinit(self.allocator);
+            self.allocator.destroy(session);
         }
         self.sessions.deinit(self.allocator);
         self.wake_state.deinit();
@@ -127,12 +136,12 @@ pub const Server = struct {
 
     pub fn sessionAt(self: *Server, index: usize) ?*ServerSession {
         if (index >= self.sessions.items.len) return null;
-        return &self.sessions.items[index];
+        return self.sessions.items[index];
     }
 
     pub fn sessionById(self: *Server, id: u64) ?*ServerSession {
         const index = self.findSessionIndexById(id) orelse return null;
-        return &self.sessions.items[index];
+        return self.sessions.items[index];
     }
 
     pub fn receiveOne(self: *Server) !?listener_mod.FeedOutcome {
@@ -160,7 +169,7 @@ pub const Server = struct {
             .now_us = now_us,
             .next_deadline_us = next_deadline_us,
             .immediate_work = self.hasImmediateWork(),
-            .wake_supported = self.wake_state.isSupported(),
+            .wake_supported = self.wake_state.isSupported() or builtin.target.os.tag == .windows,
         });
 
         var result = StepResult{
@@ -168,9 +177,16 @@ pub const Server = struct {
             .next_deadline_us = next_deadline_us,
         };
 
-        const receive_result = try self.receiveOneFor(waited_for);
-        result.received_datagram = receive_result.received_datagram;
-        result.wake_drained = receive_result.wake_drained;
+        if (self.isClosing()) {
+            // Stop the sole Windows receive before any session close callback
+            // can free its transport owner. QUIC close datagrams are outbound
+            // and do not require another receive to be launched.
+            self.udp_receive.cancel(self.io);
+        } else {
+            const receive_result = try self.receiveOneFor(waited_for);
+            result.received_datagram = receive_result.received_datagram;
+            result.wake_drained = receive_result.wake_drained;
+        }
 
         now_us = self.listener.nowUs();
         try self.stepAllSessionsAt(now_us);
@@ -190,7 +206,7 @@ pub const Server = struct {
         self.drainSessionCloseRequests();
         if (index >= self.sessions.items.len) return error.InvalidSession;
         const now_us = self.listener.nowUs();
-        try self.stepSessionAt(&self.sessions.items[index], now_us);
+        try self.stepSessionAt(self.sessions.items[index], now_us);
         self.reapClosedSessions();
     }
 
@@ -237,6 +253,9 @@ pub const Server = struct {
 
     pub fn wake(self: *Server) void {
         self.wake_state.request();
+        if (comptime builtin.target.os.tag == .windows) {
+            self.udp_receive.wake(self.io);
+        }
     }
 
     /// Record the current thread as the loop thread on first step. Subsequent
@@ -260,7 +279,7 @@ pub const Server = struct {
     /// cannot race the accept/reap path.
     fn closeAllSessionsOnLoop(self: *Server) void {
         if (!self.isClosing()) return;
-        for (self.sessions.items) |*session| {
+        for (self.sessions.items) |session| {
             session.closeOnLoop();
         }
     }
@@ -268,7 +287,7 @@ pub const Server = struct {
     /// Loop-thread drain of any per-session cross-thread `requestClose`, run
     /// before the session list is otherwise touched.
     fn drainSessionCloseRequests(self: *Server) void {
-        for (self.sessions.items) |*session| {
+        for (self.sessions.items) |session| {
             session.drainPendingClose();
         }
     }
@@ -276,8 +295,39 @@ pub const Server = struct {
     fn receiveOneFor(self: *Server, wait_duration: std.Io.Duration) !ReceiveResult {
         var result = ReceiveResult{};
         if (self.wake_state.consumeRequested()) {
+            if (comptime builtin.target.os.tag == .windows) {
+                self.udp_receive.consumeWake(self.io);
+            }
             result.wake_drained = true;
             return result;
+        }
+
+        if (comptime builtin.target.os.tag == .windows) {
+            const received = try self.udp_receive.receive(
+                self.io,
+                self.listener.socket,
+                self.udp_rx_buf,
+                wait_duration,
+            );
+            switch (received) {
+                .timeout => return result,
+                .wake => {
+                    result.wake_drained = self.wake_state.consumeRequested();
+                    return result;
+                },
+                .datagram => |msg| {
+                    if (msg.flags.trunc) return error.DatagramTooLarge;
+                    result.received_datagram = true;
+                    result.outcome = try self.listener.feedDatagram(
+                        msg.data,
+                        msg.from,
+                        self.listener.nowUs(),
+                    );
+                    try self.listener.drainStatelessResponses();
+                    result.accepted_sessions = try self.adoptAcceptedSessions();
+                    return result;
+                },
+            }
         }
 
         var receive_timeout = wait_duration;
@@ -287,12 +337,7 @@ pub const Server = struct {
             receive_timeout = std.Io.Duration.zero;
         }
 
-        const msg = self.listener.socket.receiveTimeout(self.io, self.udp_rx_buf, .{
-            .duration = .{
-                .raw = receive_timeout,
-                .clock = .awake,
-            },
-        }) catch |err| switch (err) {
+        const msg = non_windows_receive.receive(&self.listener.socket, self.io, self.udp_rx_buf, receive_timeout) catch |err| switch (err) {
             error.Timeout => return result,
             else => return err,
         };
@@ -310,11 +355,15 @@ pub const Server = struct {
         const slots = self.listener.server.iterator();
         for (slots, 0..) |slot, ordinal| {
             if (self.findSessionIndexBySlot(slot) != null) continue;
-            var new_session = try ServerSession.init(
+            const new_session = try self.allocator.create(ServerSession);
+            errdefer self.allocator.destroy(new_session);
+            new_session.* = try ServerSession.init(
                 self.allocator,
                 session_mod.AcceptedSession.fromSession(ordinal, session_mod.Session.fromSlot(slot)),
                 self.config,
                 &self.wake_state,
+                &self.udp_receive,
+                self.io,
             );
             errdefer new_session.deinit(self.allocator);
             try self.sessions.append(self.allocator, new_session);
@@ -326,7 +375,7 @@ pub const Server = struct {
 
     fn refreshSessionOrdinals(self: *Server) void {
         const slots = self.listener.server.iterator();
-        for (self.sessions.items) |*server_session| {
+        for (self.sessions.items) |server_session| {
             for (slots, 0..) |slot, ordinal| {
                 if (server_session.slot == slot) {
                     server_session.ordinal = ordinal;
@@ -339,10 +388,11 @@ pub const Server = struct {
     fn stepAllSessionsAt(self: *Server, now_us: u64) !void {
         var index: usize = 0;
         while (index < self.sessions.items.len) : (index += 1) {
-            self.stepSessionAt(&self.sessions.items[index], now_us) catch |err| {
+            const session = self.sessions.items[index];
+            self.stepSessionAt(session, now_us) catch |err| {
                 log.debug("QUIC server session step failed: {}", .{err});
-                self.sessions.items[index].terminateInternalError(err);
-                try self.flushClosingSession(&self.sessions.items[index], now_us);
+                session.terminateInternalError(err);
+                try self.flushClosingSession(session, now_us);
             };
         }
     }
@@ -405,14 +455,15 @@ pub const Server = struct {
         // callback. invokeCloseCallbackOnce is idempotent (a session already
         // flushed through flushClosingSession will not double-fire) and a
         // no-op when no close callback is registered.
-        self.sessions.items[index].invokeCloseCallbackOnce();
-        self.sessions.items[index].deinit(self.allocator);
-        _ = self.sessions.swapRemove(index);
+        const session = self.sessions.swapRemove(index);
+        session.invokeCloseCallbackOnce();
+        session.deinit(self.allocator);
+        self.allocator.destroy(session);
     }
 
     fn hasImmediateWork(self: *Server) bool {
         if (self.wake_state.isRequested()) return true;
-        for (self.sessions.items) |*server_session| {
+        for (self.sessions.items) |server_session| {
             const conn = server_session.activeQuicConnection() orelse continue;
             if (conn.canSend()) return true;
             if (server_session.hasImmediateWork(conn)) return true;
@@ -423,7 +474,7 @@ pub const Server = struct {
 
     fn nextTimerDeadlineUs(self: *Server, now_us: u64) ?u64 {
         var next: ?u64 = null;
-        for (self.sessions.items) |*server_session| {
+        for (self.sessions.items) |server_session| {
             const conn = server_session.activeQuicConnection() orelse continue;
             const deadline = conn.nextTimerDeadline(now_us) orelse continue;
             if (next) |current| {
@@ -437,14 +488,14 @@ pub const Server = struct {
     }
 
     fn findSessionIndexBySlot(self: *Server, slot: *quic_zig.Server.Slot) ?usize {
-        for (self.sessions.items, 0..) |*server_session, index| {
+        for (self.sessions.items, 0..) |server_session, index| {
             if (server_session.slot == slot) return index;
         }
         return null;
     }
 
     fn findSessionIndexById(self: *Server, id: u64) ?usize {
-        for (self.sessions.items, 0..) |*server_session, index| {
+        for (self.sessions.items, 0..) |server_session, index| {
             if (server_session.id == id) return index;
         }
         return null;
@@ -481,6 +532,8 @@ pub const ServerSession = struct {
     native: NativeEngine,
     close_controller: CloseController,
     wake_state: *wake_mod.Handle,
+    udp_receive: *udp_receive_bridge.Bridge,
+    io: std.Io,
     callback_lifecycle: CallbackLifecycle = .{},
     close_callback_invoked: bool = false,
 
@@ -489,6 +542,8 @@ pub const ServerSession = struct {
         accepted: session_mod.AcceptedSession,
         config: Config,
         wake_state: *wake_mod.Handle,
+        udp_receive: *udp_receive_bridge.Bridge,
+        io: std.Io,
     ) !ServerSession {
         const stream_read_buf = try allocator.alloc(u8, config.stream_read_buffer_size);
         errdefer allocator.free(stream_read_buf);
@@ -520,6 +575,8 @@ pub const ServerSession = struct {
             ),
             .close_controller = CloseController.init(config.reveal_close_reason_on_wire),
             .wake_state = wake_state,
+            .udp_receive = udp_receive,
+            .io = io,
         };
     }
 
@@ -596,6 +653,9 @@ pub const ServerSession = struct {
 
     pub fn wake(self: *ServerSession) void {
         self.wake_state.request();
+        if (comptime builtin.target.os.tag == .windows) {
+            self.udp_receive.wake(self.io);
+        }
     }
 
     fn terminateInternalError(self: *ServerSession, err: anyerror) void {

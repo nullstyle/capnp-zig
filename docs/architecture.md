@@ -25,6 +25,7 @@ implementation of Cap'n Proto serialization, code generation, and RPC.
 |                                                                       |
 |   generator.zig      Driver: schema nodes -> Zig source               |
 |   struct_gen.zig     Field accessor generation                        |
+|   brand_fidelity.zig Shared finite-brand eligibility and accounting   |
 |   types.zig          Cap'n Proto type -> Zig type mapping             |
 +-----------------------------------------------------------------------+
         | reads schema nodes; emits code that imports the runtime
@@ -34,6 +35,7 @@ implementation of Cap'n Proto serialization, code generation, and RPC.
 |                                                                       |
 |   schema.zig              Type definitions                            |
 |   request_reader.zig      CodeGeneratorRequest parsing                |
+|   type_resolver.zig       Bounded allocation-free brand resolution    |
 |   schema_validation.zig   Schema graph validation and canonicalization |
 +-----------------------------------------------------------------------+
         | schema types reference wire-format element sizes and IDs
@@ -49,7 +51,8 @@ implementation of Cap'n Proto serialization, code generation, and RPC.
 
 Default builds use only Zig std and the vendored test fixtures. QUIC builds are
 opt-in with `-Dquic=true`, which resolves `quic-zig` and its BoringSSL support
-through `build.zig.zon`.
+through `build.zig.zon`. The manifest pins published quic-zig commit `e00d449`;
+that archive pins boringssl-zig commit `292c70a`.
 
 ## Key Types By Layer
 
@@ -73,6 +76,7 @@ through `build.zig.zon`.
 | `schema.Type` | Cap'n Proto type union. |
 | `schema.Value` | Default or constant values. |
 | `schema.RequestedFile` | A file entry from a `CodeGeneratorRequest`. |
+| `schema_validation.*WithBrand` | Stable additive validation/canonicalization entry points for a concrete root brand. |
 
 ### Layer 3: Code Generation
 
@@ -81,6 +85,7 @@ through `build.zig.zon`.
 | `Generator` | Main driver from schema nodes to `.zig` source. |
 | `StructGenerator` | Generates reader and builder types for a struct. |
 | `TypeGenerator` | Maps Cap'n Proto types to Zig type expressions. |
+| `CodegenBudget` | Bounds hostile schema expansion, including at most 4096 brand specializations by default. |
 
 ### Layer 4: RPC Runtime
 
@@ -170,6 +175,12 @@ TCP and QUIC transports both deliver complete standard RPC frames to
 `rpc.peer.Peer`. QUIC baseline mode carries those frames over bidirectional
 stream 0. QUIC native mode preserves the same frame callback contract while
 routing large frames through one-shot unidirectional data streams.
+
+On Windows, QUIC's socket wait is a single cancellable `io.concurrent` UDP
+receive. An `Io.Condition` returns the owner thread to timer, wake, close, or
+completion handling without moving QUIC state or callbacks to the worker.
+Fanout sessions live at stable heap addresses for the lifetime of any attached
+`Peer` transport.
 
 ## Public API Surface
 

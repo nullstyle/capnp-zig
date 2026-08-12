@@ -222,7 +222,7 @@ const brand_pointer_harness =
     \\    try std.testing.expectEqual(@as(usize, 0), generated.Annotated_annotations[0].brand.scopes.len);
     \\    var builder = message.MessageBuilder.init(std.testing.allocator);
     \\    defer builder.deinit();
-    \\    const raw_root = try builder.allocateStruct(1, 13);
+    \\    const raw_root = try builder.allocateStruct(1, 27);
     \\    var root = generated.Fidelity.Builder.wrap(raw_root);
     \\
     \\    const shaped_struct = try root.pointerKinds().initAnyStruct();
@@ -246,6 +246,61 @@ const brand_pointer_harness =
     \\    var lexical_box = try root.brands().initLexicalBox();
     \\    try lexical_box.setOuter("outer");
     \\    try lexical_box.setInner(&[_]u8{ 1, 2, 3 });
+    \\    var text_list_box = try root.brands().initTextListBox();
+    \\    var texts = try text_list_box.initValue(2);
+    \\    try texts.set(0, "alpha");
+    \\    try texts.set(1, "beta");
+    \\    var enum_list_box = try root.brands().initEnumListBox();
+    \\    var colors = try enum_list_box.initValue(1);
+    \\    try colors.set(0, .Green);
+    \\    var struct_list_box = try root.brands().initStructListBox();
+    \\    var children = try struct_list_box.initValue(1);
+    \\    var listed_child = try children.get(0);
+    \\    try listed_child.setValue(144);
+    \\    var deep_list_box = try root.brands().initDeepListBox();
+    \\    var deep = try deep_list_box.initValue(1);
+    \\    var deep_values = try deep.init(0, 2);
+    \\    try deep_values.set(0, 233);
+    \\    try deep_values.set(1, 377);
+    \\    var service_box = try root.brands().initServiceBox();
+    \\    try service_box.setValue(.{ .id = 610 });
+    \\    var nested_box = try root.brands().initNestedBox();
+    \\    var nested_value = try nested_box.initValue();
+    \\    try nested_value.setValue("nested");
+    \\    var inherited_envelope = try root.brands().initInheritedEnvelope();
+    \\    var inherited_inner = try inherited_envelope.initInner();
+    \\    try inherited_inner.setInherited("inherited");
+    \\    var data_list_box = try root.brands().initDataListBox();
+    \\    var data_values = try data_list_box.initValue(1);
+    \\    try data_values.set(0, &[_]u8{ 4, 5, 6 });
+    \\    var service_list_box = try root.brands().initServiceListBox();
+    \\    var service_values = try service_list_box.initValue(1);
+    \\    try service_values.set(0, .{ .id = 611 });
+    \\    var nested_struct_list_box = try root.brands().initNestedStructListBox();
+    \\    _ = nested_struct_list_box.raw();
+    \\    var nested_struct_values = try nested_struct_list_box.initValue(1);
+    \\    _ = nested_struct_values.raw();
+    \\    var nested_struct_item = try nested_struct_values.get(0);
+    \\    _ = nested_struct_item.raw();
+    \\    try nested_struct_item.setValue("list-box");
+    \\    var deep_nested_struct_list_box = try root.brands().initDeepNestedStructListBox();
+    \\    _ = deep_nested_struct_list_box.raw();
+    \\    var deep_nested_outer = try deep_nested_struct_list_box.initValue(2);
+    \\    _ = deep_nested_outer.raw();
+    \\    var deep_nested_inner = try deep_nested_outer.init(0, 1);
+    \\    _ = deep_nested_inner.raw();
+    \\    var deep_nested_item = try deep_nested_inner.get(0);
+    \\    _ = deep_nested_item.raw();
+    \\    try deep_nested_item.setValue("deep-list-box");
+    \\    try deep_nested_outer.setNull(1);
+    \\    var inherited_struct_list_box = try root.brands().initInheritedStructListBox();
+    \\    _ = inherited_struct_list_box.raw();
+    \\    var inherited_struct_values = try inherited_struct_list_box.initValue(1);
+    \\    _ = inherited_struct_values.raw();
+    \\    var inherited_struct_item = try inherited_struct_values.get(0);
+    \\    _ = inherited_struct_item.raw();
+    \\    try inherited_struct_item.setOuter("list-outer");
+    \\    try inherited_struct_item.setInner(&[_]u8{ 9, 8, 7 });
     \\    var union_list = try root.pointerKinds().initUnionList();
     \\    var union_numbers = try union_list.initU16List(1);
     \\    try union_numbers.set(0, 21);
@@ -287,17 +342,53 @@ const brand_pointer_harness =
     \\    const read_lexical = try reader.brands().getLexicalBox();
     \\    try std.testing.expectEqualStrings("outer", try read_lexical.getOuter());
     \\    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, try read_lexical.getInner());
+    \\    try std.testing.expectEqualStrings("beta", try (try (try reader.brands().getTextListBox()).getValue()).get(1));
+    \\    try std.testing.expectEqual(generated.Color.Green, try (try (try reader.brands().getEnumListBox()).getValue()).get(0));
+    \\    try std.testing.expectEqual(@as(u32, 144), try (try (try (try reader.brands().getStructListBox()).getValue()).get(0)).getValue());
+    \\    try std.testing.expectEqual(@as(u16, 377), try (try (try (try reader.brands().getDeepListBox()).getValue()).get(0)).get(1));
+    \\    try std.testing.expectEqual(@as(u32, 610), (try (try reader.brands().getServiceBox()).getValue()).id);
+    \\    try std.testing.expectEqualStrings("nested", try (try (try reader.brands().getNestedBox()).getValue()).getValue());
+    \\    try std.testing.expectEqualStrings("inherited", try (try (try reader.brands().getInheritedEnvelope()).getInner()).getInherited());
+    \\    try std.testing.expectEqualSlices(u8, &[_]u8{ 4, 5, 6 }, try (try (try reader.brands().getDataListBox()).getValue()).get(0));
+    \\    try std.testing.expectEqual(@as(u32, 611), (try (try (try reader.brands().getServiceListBox()).getValue()).get(0)).id);
+    \\    const read_nested_struct_list_box = try reader.brands().getNestedStructListBox();
+    \\    _ = read_nested_struct_list_box.raw();
+    \\    const read_nested_struct_values = try read_nested_struct_list_box.getValue();
+    \\    _ = read_nested_struct_values.raw();
+    \\    const read_nested_struct_item = try read_nested_struct_values.get(0);
+    \\    _ = read_nested_struct_item.raw();
+    \\    try std.testing.expectEqualStrings("list-box", try read_nested_struct_item.getValue());
+    \\    const read_deep_nested_struct_list_box = try reader.brands().getDeepNestedStructListBox();
+    \\    _ = read_deep_nested_struct_list_box.raw();
+    \\    const read_deep_nested_outer = try read_deep_nested_struct_list_box.getValue();
+    \\    _ = read_deep_nested_outer.raw();
+    \\    const read_deep_nested_inner = try read_deep_nested_outer.get(0);
+    \\    _ = read_deep_nested_inner.raw();
+    \\    const read_deep_nested_item = try read_deep_nested_inner.get(0);
+    \\    _ = read_deep_nested_item.raw();
+    \\    try std.testing.expectEqualStrings("deep-list-box", try read_deep_nested_item.getValue());
+    \\    try std.testing.expect(try read_deep_nested_outer.isNull(1));
+    \\    try std.testing.expectEqual(@as(u32, 0), (try read_deep_nested_outer.get(1)).len());
+    \\    const read_inherited_struct_list_box = try reader.brands().getInheritedStructListBox();
+    \\    _ = read_inherited_struct_list_box.raw();
+    \\    const read_inherited_struct_values = try read_inherited_struct_list_box.getValue();
+    \\    _ = read_inherited_struct_values.raw();
+    \\    const read_inherited_struct_item = try read_inherited_struct_values.get(0);
+    \\    _ = read_inherited_struct_item.raw();
+    \\    try std.testing.expectEqualStrings("list-outer", try read_inherited_struct_item.getOuter());
+    \\    try std.testing.expectEqualSlices(u8, &[_]u8{ 9, 8, 7 }, try read_inherited_struct_item.getInner());
     \\    try std.testing.expectEqual(@as(u16, 21), try (try (try reader.pointerKinds().getUnionList()).getU16List()).get(0));
     \\    try std.testing.expectError(error.WrongUnionMember, reader.pointerKinds().getUnionStruct());
     \\    const read_group = reader.getGrouped();
     \\    try std.testing.expectEqual(@as(u8, 34), try (try (try read_group.pointerKinds().getGroupList()).getU8List()).get(0));
     \\    try std.testing.expectEqualStrings("grouped", try (try read_group.brands().getGroupBox()).getValue());
+    \\    try std.testing.expectEqual(@as(u32, 91), try (try (try read_group.brands().getGroupDefaultBox()).getValue()).getValue());
     \\}
     \\
     \\test "null AnyList is an empty compatible list" {
     \\    var builder = message.MessageBuilder.init(std.testing.allocator);
     \\    defer builder.deinit();
-    \\    var root = generated.Fidelity.Builder.wrap(try builder.allocateStruct(1, 13));
+    \\    var root = generated.Fidelity.Builder.wrap(try builder.allocateStruct(1, 27));
     \\    const null_builder_list = try root.pointerKinds().getAnyList();
     \\    try std.testing.expect(null_builder_list.isNull());
     \\    try std.testing.expectEqual(@as(u32, 0), (try null_builder_list.getU32List()).len());
@@ -317,7 +408,7 @@ const brand_pointer_harness =
     \\test "constrained views reject a non-null wrong pointer kind" {
     \\    var builder = message.MessageBuilder.init(std.testing.allocator);
     \\    defer builder.deinit();
-    \\    var root = generated.Fidelity.Builder.wrap(try builder.allocateStruct(1, 13));
+    \\    var root = generated.Fidelity.Builder.wrap(try builder.allocateStruct(1, 27));
     \\    const erased = try root.initAnyList();
     \\    const wrong_struct = try erased.initStruct(1, 0);
     \\    wrong_struct.writeU32(0, 123);
@@ -333,7 +424,7 @@ const brand_pointer_harness =
     \\test "builder constrained views reopen single- and double-far pointers" {
     \\    var builder = message.MessageBuilder.init(std.testing.allocator);
     \\    defer builder.deinit();
-    \\    const raw_root = try builder.allocateStruct(1, 13);
+    \\    const raw_root = try builder.allocateStruct(1, 27);
     \\    var root = generated.Fidelity.Builder.wrap(raw_root);
     \\    const struct_segment = try builder.createSegment();
     \\    var far_struct = try raw_root.initStructInSegment(1, 1, 0, struct_segment);
@@ -343,11 +434,38 @@ const brand_pointer_harness =
     \\    var far_list = try raw_root.writeStructListInSegments(2, 1, 1, 0, landing_segment, content_segment);
     \\    var far_item = try far_list.get(0);
     \\    far_item.writeU32(0, 89);
+    \\    const brand_segment = try builder.createSegment();
+    \\    var far_brand = try raw_root.initStructInSegment(4, 0, 1, brand_segment);
+    \\    try far_brand.writeText(0, "far-brand");
+    \\    const nested_brand_segment = try builder.createSegment();
+    \\    var far_nested_brand = try raw_root.initStructInSegment(23, 0, 1, nested_brand_segment);
+    \\    const nested_landing = try builder.createSegment();
+    \\    const nested_content = try builder.createSegment();
+    \\    var far_nested_list = try far_nested_brand.writeStructListInSegments(0, 1, 0, 1, nested_landing, nested_content);
+    \\    var far_nested_item = try far_nested_list.get(0);
+    \\    try far_nested_item.writeText(0, "far-nested-brand");
+    \\    try std.testing.expectEqual(@as(u32, 1), (try (try far_nested_brand.getAnyPointer(0)).getStructList()).len());
     \\    var reopened = try (try root.pointerKinds().getAnyStruct()).get();
     \\    reopened.writeU32(0, 56);
     \\    var reopened_far_list = try (try root.pointerKinds().getAnyList()).getStructList();
     \\    far_item = try reopened_far_list.get(0);
     \\    far_item.writeU32(0, 90);
+    \\    var reopened_brand = try root.brands().getBox();
+    \\    try reopened_brand.setValue("far-brand-mutated");
+    \\    var reopened_nested_brand = try root.brands().getNestedStructListBox();
+    \\    var reopened_nested_raw = reopened_nested_brand.raw();
+    \\    const reopened_nested_pointer = try reopened_nested_raw.initValue();
+    \\    const direct_nested_pointer = try far_nested_brand.getAnyPointer(0);
+    \\    try std.testing.expectEqual(direct_nested_pointer.segment_id, reopened_nested_pointer.segment_id);
+    \\    try std.testing.expectEqual(direct_nested_pointer.pointer_pos, reopened_nested_pointer.pointer_pos);
+    \\    const direct_nested_any_list = try message.AnyListBuilder.wrap(direct_nested_pointer);
+    \\    try std.testing.expectEqual(@as(u32, 1), (try direct_nested_any_list.getStructList()).len());
+    \\    const reopened_nested_any_list = try message.AnyListBuilder.wrap(reopened_nested_pointer);
+    \\    try std.testing.expectEqual(@as(u32, 1), (try reopened_nested_any_list.getStructList()).len());
+    \\    var reopened_nested_list = try reopened_nested_brand.getValue();
+    \\    try std.testing.expectEqual(@as(u32, 1), reopened_nested_list.len());
+    \\    var reopened_nested_item = try reopened_nested_list.get(0);
+    \\    try reopened_nested_item.setValue("far-nested-mutated");
     \\    const bytes = try builder.toBytes();
     \\    defer std.testing.allocator.free(bytes);
     \\    var msg = try message.Message.initUnvalidated(std.testing.allocator, bytes);
@@ -356,13 +474,34 @@ const brand_pointer_harness =
     \\    try std.testing.expectEqual(@as(u32, 56), (try reader.pointerKinds().getAnyStruct()).readU32(0));
     \\    const read_far_list = try (try reader.pointerKinds().getAnyList()).getStructList();
     \\    try std.testing.expectEqual(@as(u32, 90), (try read_far_list.get(0)).readU32(0));
+    \\    try std.testing.expectEqualStrings("far-brand-mutated", try (try reader.brands().getBox()).getValue());
+    \\    try std.testing.expectEqualStrings("far-nested-mutated", try (try (try (try reader.brands().getNestedStructListBox()).getValue()).get(0)).getValue());
     \\}
     \\
-    \\test "branded struct defaults are Reader values while Builder get stays structural" {
+    \\test "branded struct defaults materialize once for mutable Builder access" {
     \\    var builder = message.MessageBuilder.init(std.testing.allocator);
     \\    defer builder.deinit();
-    \\    var root = generated.Fidelity.Builder.wrap(try builder.allocateStruct(1, 13));
-    \\    try std.testing.expectError(error.InvalidPointer, root.brands().getDefaultBox());
+    \\    var root = generated.Fidelity.Builder.wrap(try builder.allocateStruct(1, 27));
+    \\    var default_box_builder = try root.brands().getDefaultBox();
+    \\    var default_child_builder = try default_box_builder.getValue();
+    \\    var grouped = root.getGrouped();
+    \\    var group_default_box_builder = try grouped.brands().getGroupDefaultBox();
+    \\    var group_default_child_builder = try group_default_box_builder.getValue();
+    \\    const default_bytes = try builder.toBytes();
+    \\    defer std.testing.allocator.free(default_bytes);
+    \\    var default_msg = try message.Message.initUnvalidated(std.testing.allocator, default_bytes);
+    \\    defer default_msg.deinit();
+    \\    const default_reader = generated.Fidelity.Reader.wrap(try default_msg.getRootStruct());
+    \\    const initial_box = try default_reader.brands().getDefaultBox();
+    \\    const initial_child = try initial_box.getValue();
+    \\    try std.testing.expectEqual(@as(u32, 77), initial_child.getValue());
+    \\    const initial_group = default_reader.getGrouped();
+    \\    const initial_group_box = try initial_group.brands().getGroupDefaultBox();
+    \\    try std.testing.expectEqual(@as(u32, 91), try (try initial_group_box.getValue()).getValue());
+    \\    try default_child_builder.setValue(78);
+    \\    try group_default_child_builder.setValue(92);
+    \\    var reopened_box_builder = try root.brands().getDefaultBox();
+    \\    _ = try reopened_box_builder.getValue();
     \\    const bytes = try builder.toBytes();
     \\    defer std.testing.allocator.free(bytes);
     \\    var msg = try message.Message.initUnvalidated(std.testing.allocator, bytes);
@@ -370,7 +509,9 @@ const brand_pointer_harness =
     \\    const reader = generated.Fidelity.Reader.wrap(try msg.getRootStruct());
     \\    const default_box = try reader.brands().getDefaultBox();
     \\    const default_child = try default_box.getValue();
-    \\    try std.testing.expectEqual(@as(u32, 77), default_child.getValue());
+    \\    try std.testing.expectEqual(@as(u32, 78), default_child.getValue());
+    \\    const final_group = reader.getGrouped();
+    \\    try std.testing.expectEqual(@as(u32, 92), try (try (try final_group.brands().getGroupDefaultBox()).getValue()).getValue());
     \\}
     \\
 ;
@@ -389,6 +530,186 @@ test "generated brand and pointer-kind sidecars compile and run in full and comp
         brand_pointer_harness,
         .compact,
     );
+}
+
+const brand_application_edges_harness =
+    \\const std = @import("std");
+    \\const capnpc = @import("capnpc-zig");
+    \\const message = capnpc.message;
+    \\const generated = @import("generated.zig");
+    \\
+    \\test "application-aware brands preserve names, defaults, groups, and nulls" {
+    \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+    \\    defer builder.deinit();
+    \\    var root = generated.Root.Builder.wrap(try builder.allocateStruct(0, 6));
+    \\
+    \\    var empty_box = try root.brands().getBox();
+    \\    try empty_box.setValue("materialized-null");
+    \\    var color_box = try root.brands().initColor();
+    \\    var colors = try color_box.initValue(1);
+    \\    try colors.set(0, .Green);
+    \\    var child_box = try root.brands().initChild();
+    \\    var children = try child_box.initValue(1);
+    \\    var child = try children.get(0);
+    \\    try child.setValue("qualified-child");
+    \\
+    \\    var collision = try root.brands().initCollision();
+    \\    var foo = try collision.initFoo(1);
+    \\    var foo_item = try foo.get(0);
+    \\    try foo_item.setValue("list-adapter");
+    \\    var foo_element = try collision.initFooElement();
+    \\    try foo_element.setValue("sibling-field");
+    \\
+    \\    var defaults = try root.brands().initDefaults();
+    \\    var default_child = try defaults.getChild();
+    \\    var default_value = try default_child.getValue();
+    \\    var default_group = try defaults.getGrouped();
+    \\    var group_child = try default_group.getGroupChild();
+    \\    var group_value = try group_child.getValue();
+    \\    const default_bytes = try builder.toBytes();
+    \\    defer std.testing.allocator.free(default_bytes);
+    \\    var default_msg = try message.Message.initUnvalidated(std.testing.allocator, default_bytes);
+    \\    defer default_msg.deinit();
+    \\    const default_reader = generated.Root.Reader.wrap(try default_msg.getRootStruct());
+    \\    const default_read = try default_reader.brands().getDefaults();
+    \\    try std.testing.expectEqualStrings("nested-default", try (try (try default_read.getChild()).getValue()).getValue());
+    \\    try std.testing.expectEqualStrings("group-default", try (try (try (try default_read.getGrouped()).getGroupChild()).getValue()).getValue());
+    \\    try default_value.setValue("nested-mutated");
+    \\    try group_value.setValue("group-mutated");
+    \\
+    \\    var grouped = try root.brands().initGrouped();
+    \\    var plain_group = try grouped.getGrouped();
+    \\    var group_box = try plain_group.initBox();
+    \\    try group_box.setValue("group-binding");
+    \\    var raw_grouped = grouped.raw();
+    \\    try raw_grouped.setOther({});
+    \\    try std.testing.expectError(error.WrongUnionMember, grouped.getChoiceGroup());
+    \\    var choice_group = try grouped.initChoiceGroup();
+    \\    var choice = try choice_group.initChoice();
+    \\    try choice.setValue("choice-binding");
+    \\
+    \\    const bytes = try builder.toBytes();
+    \\    defer std.testing.allocator.free(bytes);
+    \\    var msg = try message.Message.initUnvalidated(std.testing.allocator, bytes);
+    \\    defer msg.deinit();
+    \\    const reader = generated.Root.Reader.wrap(try msg.getRootStruct());
+    \\    try std.testing.expectEqualStrings("materialized-null", try (try reader.brands().getBox()).getValue());
+    \\    try std.testing.expectEqual(generated.Color.Green, try (try (try reader.brands().getColor()).getValue()).get(0));
+    \\    try std.testing.expectEqualStrings("qualified-child", try (try (try (try reader.brands().getChild()).getValue()).get(0)).getValue());
+    \\    const read_collision = try reader.brands().getCollision();
+    \\    try std.testing.expectEqualStrings("list-adapter", try (try (try read_collision.getFoo()).get(0)).getValue());
+    \\    try std.testing.expectEqualStrings("sibling-field", try (try read_collision.getFooElement()).getValue());
+    \\    const read_defaults = try reader.brands().getDefaults();
+    \\    try std.testing.expectEqualStrings("nested-mutated", try (try (try read_defaults.getChild()).getValue()).getValue());
+    \\    try std.testing.expectEqualStrings("group-mutated", try (try (try (try read_defaults.getGrouped()).getGroupChild()).getValue()).getValue());
+    \\    const read_grouped = try reader.brands().getGrouped();
+    \\    try std.testing.expectEqualStrings("group-binding", try (try (try read_grouped.getGrouped()).getBox()).getValue());
+    \\    try std.testing.expectEqualStrings("choice-binding", try (try (try read_grouped.getChoiceGroup()).getChoice()).getValue());
+    \\}
+    \\
+;
+
+test "application-aware brand edge cases run in full and compact profiles" {
+    const allocator = std.testing.allocator;
+    inline for (.{ capnpc.codegen.Generator.ApiProfile.full, .compact }) |profile| {
+        try runGeneratedHarnessProfile(
+            allocator,
+            "tests/test_schemas/brand_application_edge_cases.capnp",
+            brand_application_edges_harness,
+            profile,
+        );
+    }
+}
+
+const cross_file_brand_harness =
+    \\const std = @import("std");
+    \\const capnpc = @import("capnpc-zig");
+    \\const message = capnpc.message;
+    \\const generated = @import("generated.zig");
+    \\
+    \\test "cross-file generic and terminal brands are executable" {
+    \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+    \\    defer builder.deinit();
+    \\    var root = generated.Root.Builder.wrap(try builder.allocateStruct(0, 1));
+    \\    var foreign = try root.brands().initForeignBox();
+    \\    var children = try foreign.initValue(1);
+    \\    var child = try children.get(0);
+    \\    try child.setValue("cross-file");
+    \\    const bytes = try builder.toBytes();
+    \\    defer std.testing.allocator.free(bytes);
+    \\    var msg = try message.Message.initUnvalidated(std.testing.allocator, bytes);
+    \\    defer msg.deinit();
+    \\    const reader = generated.Root.Reader.wrap(try msg.getRootStruct());
+    \\    try std.testing.expectEqualStrings("cross-file", try (try (try (try reader.brands().getForeignBox()).getValue()).get(0)).getValue());
+    \\}
+    \\
+;
+
+fn runCrossFileBrandHarnessProfile(
+    allocator: std.mem.Allocator,
+    profile: capnpc.codegen.Generator.ApiProfile,
+) !void {
+    const io = std.testing.io;
+    const result = try capnp_cli.run(allocator, io, &.{
+        "compile",
+        "-o-",
+        "tests/test_schemas/brand_cross_file.capnp",
+        "tests/test_schemas/brand_imported.capnp",
+    }, .{});
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
+    const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
+    defer request_reader.freeCodeGeneratorRequest(allocator, request);
+    try std.testing.expectEqual(@as(usize, 2), request.requested_files.len);
+
+    var generator = try capnpc.codegen.Generator.init(allocator, request.nodes);
+    defer generator.deinit();
+    generator.setApiProfile(profile);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for (request.requested_files) |file| {
+        const generated = try generator.generateFile(file);
+        defer allocator.free(generated);
+        const output_name = if (std.mem.endsWith(u8, file.filename, "brand_cross_file.capnp"))
+            "generated.zig"
+        else
+            "brand_imported.zig";
+        try writeFile(tmp.dir, output_name, generated);
+    }
+    try writeFile(tmp.dir, "harness.zig", cross_file_brand_harness);
+
+    const harness_path = try tmp.dir.realPathFileAlloc(io, "harness.zig", allocator);
+    defer allocator.free(harness_path);
+    const lib_path = try std.Io.Dir.cwd().realPathFileAlloc(io, "src/lib.zig", allocator);
+    defer allocator.free(lib_path);
+    const root_arg = try std.fmt.allocPrint(allocator, "-Mroot={s}", .{harness_path});
+    defer allocator.free(root_arg);
+    const lib_arg = try std.fmt.allocPrint(allocator, "-Mcapnpc-zig={s}", .{lib_path});
+    defer allocator.free(lib_arg);
+    const zig_result = try std.process.run(allocator, io, .{ .argv = &.{
+        "zig",
+        "test",
+        "--dep",
+        "capnpc-zig",
+        root_arg,
+        "--dep",
+        "capnpc-zig",
+        lib_arg,
+    } });
+    defer allocator.free(zig_result.stdout);
+    defer allocator.free(zig_result.stderr);
+    if (!(zig_result.term == .exited and zig_result.term.exited == 0)) {
+        std.debug.print("cross-file brand stdout:\n{s}\n", .{zig_result.stdout});
+        std.debug.print("cross-file brand stderr:\n{s}\n", .{zig_result.stderr});
+        return error.GeneratedRuntimeCompileFailed;
+    }
+}
+
+test "cross-file executable brands run in full and compact profiles" {
+    inline for (.{ capnpc.codegen.Generator.ApiProfile.full, .compact }) |profile| {
+        try runCrossFileBrandHarnessProfile(std.testing.allocator, profile);
+    }
 }
 
 fn runGeneratedHarness(
@@ -463,7 +784,7 @@ fn runGeneratedHarnessProfile(
     const zig_result = std.process.run(allocator, io, .{
         .argv = zig_argv.items,
     }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
+        error.FileNotFound => return error.ZigCompilerUnavailable,
         else => return err,
     };
     defer allocator.free(zig_result.stdout);

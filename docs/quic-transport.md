@@ -17,31 +17,41 @@ just test-rpc-quic-evidence Debug
 just test-rpc-quic-evidence ReleaseSafe
 ```
 
-The evidence recipe rejects `SkipZigTest`, requires the three QUIC test roots
-to retain at least 44 declared tests, runs the transport suite, and checks that
-the build graph actually executed the expected test binaries. CI is configured
-to run this Debug + ReleaseSafe pair natively on Linux, macOS, and Windows.
-Linux also runs the full repository build/check/test/API/docs surface against
-the QUIC-enabled root; that broader root-wide gate is not duplicated on macOS
-or Windows.
+The native Zig evidence executable scans the complete QUIC test directory,
+rejects `SkipZigTest`, and then requires exactly four runnable roots: transport,
+public API, internal implementation, and real `Peer`-over-QUIC behavior. Its
+per-root floors are 26 + 1 + 17 + 8 = 52 tests. The build step fails immediately
+when `-Dquic=true` is absent, and each root is a direct build dependency, so the
+gate neither parses test output nor relies on a CI-only shell or package.
 
-Current evidence is intentionally stated narrowly: macOS is locally proven at
-44/44 in both modes, while the full QUIC test tree cross-compiles for Windows.
-The native Windows lane is configured as a no-skip CI gate but remains
-provisional until the first user-pushed three-platform run is green.
+CI is configured to run the Debug + ReleaseSafe pair from each operating
+system's native shell on Linux, macOS, and Windows. Linux also runs the full
+repository build/check/test/API/docs surface against the QUIC-enabled root;
+that broader root-wide gate is not duplicated on macOS or Windows.
+
+Current evidence is intentionally stated narrowly: macOS passes all 61 tests
+from the four roots in both Debug and ReleaseSafe. The Windows QUIC tree passes
+full-tree test cross-compilation (113/113), but that is not runtime evidence.
+The native Windows no-skip lane remains a hosted acceptance gate after
+capnp-zig itself is pushed; do not infer Windows runtime parity from the
+dependency pushes or cross-compilation result.
 
 The transport uses ALPN `capnp-rpc/1`. One QUIC connection represents one
 Cap'n Proto RPC vat session. The payload above the QUIC transport is still the
 standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
 between peers, not the RPC protocol that `Peer` handles.
 
-The transport is pinned to `quic_zig` 0.7.x semantics: connection and server
+The manifest pins the published quic-zig commit `e00d449`, which in turn pins
+the published boringssl-zig commit `292c70a`. That BoringSSL wrapper links
+Windows sockets as `ws2_32` with package-config lookup disabled, removing the
+native-shell and Git Bash `pkg-config.BAT` failure path. Connection and server
 session loops drive `Connection.advance()` before waiting on datagrams and again
 during active service, then tick timers and drain outbound datagrams.
 
 The public API is intentionally close to the TCP transport while the QUIC layer
-is still maturing. Applications should treat `rpc.transport.quic.Connection` as the stable
-entry point for one client/server session. Servers that need one UDP listener to
+is still maturing. Applications should treat `rpc.transport.quic.Connection` as the primary
+entry point for one client/server session; the whole QUIC module remains
+Experimental. Servers that need one UDP listener to
 host multiple sessions should use `rpc.transport.quic.Server`, which accepts up to
 `ServerOptions.max_concurrent_connections` and exposes one `ServerSession`
 transport driver per accepted QUIC connection.
@@ -144,6 +154,30 @@ The connection callback shape is the same as baseline mode: `sendFrame()` takes
 one complete Cap'n Proto RPC frame, and inbound callbacks receive one complete
 RPC frame. Higher-level RPC code can therefore use the same `Peer` attachment
 path in both modes.
+
+The eight end-to-end `Peer` cases exercise a verified-CA baseline session;
+native Bootstrap/Call/Return/Finish; a pipelined call on the returned
+capability; a native large-frame data stream; graceful and abrupt close;
+two-session fanout; and fanout close isolation. The fanout server allocates
+sessions at stable heap addresses before a `Peer` borrows the transport, and it
+detaches that binding before reaping a session.
+
+## Windows UDP Receive Bridge
+
+Windows `std.Io` sockets use AFD handles and do not support the timed UDP
+receive path used on POSIX. QUIC therefore keeps one ordinary blocking receive
+in an `io.concurrent` future. Only the owner thread advances QUIC, processes a
+datagram, or invokes callbacks; an `Io.Condition` wakes it for completion,
+timer expiry, explicit wake, or close. A timer tick leaves a still-valid receive
+in flight. Teardown alone cancels and reaps the future, which drives the kernel
+cancellation path exactly once before the socket or callbacks are destroyed.
+
+The bridge carries the original receive buffer with its completion, so a timer
+return followed by a call with another buffer cannot mis-slice the retained
+datagram. Poll, wake-before/during-wait, timer-with-pending-receive, completion,
+truncation, buffer retention, start failure, exactly-once cancellation, and
+repeated close/deinit are deterministic regressions. A compile-time tripwire
+keeps Windows QUIC from calling `Socket.receiveTimeout()`.
 
 ## Server Fanout And Session Boundary
 

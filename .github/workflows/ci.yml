@@ -128,6 +128,9 @@ jobs:
       - name: Self-interop e2e (zig client vs zig server, loopback)
         run: zig build e2e-self --summary all
 
+      - name: Experimental L4 Join lease/recovery e2e (Zig, loopback)
+        run: zig build e2e-l4-zig --summary all
+
       - name: RPC ping-pong example (guards the connection teardown seam)
         run: zig build example-rpc
 
@@ -227,17 +230,15 @@ jobs:
           echo "dependency fetch failed after 3 attempts"
           exit 1
 
-      # This is the platform gate: all three real QUIC test binaries must
+      # This is the platform gate: all four real QUIC test binaries must
       # execute natively, in both Debug and ReleaseSafe, with a source inventory
       # floor and an explicit ban on SkipZigTest. A compile-only package
       # consumer is not transport evidence.
       - name: Run native QUIC transport evidence (Debug, no skips)
-        shell: bash
-        run: just test-rpc-quic-evidence Debug
+        run: zig build -Dquic=true -Doptimize=Debug test-rpc-quic-evidence --summary all
 
       - name: Run native QUIC transport evidence (ReleaseSafe, no skips)
-        shell: bash
-        run: just test-rpc-quic-evidence ReleaseSafe
+        run: zig build -Dquic=true -Doptimize=ReleaseSafe test-rpc-quic-evidence --summary all
 
       # The remaining steps validate the complete QUIC package root, rather
       # than the focused transport. Keep them on Linux to avoid tripling the

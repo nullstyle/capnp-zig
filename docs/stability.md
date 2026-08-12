@@ -19,24 +19,24 @@ updated as phases land.
 | TCP transport: connect/accept/read/write | full | full | full |
 | TCP transport: ticks, idle reaping, wake | full | full | full (reader-thread bridge; see plan doc) |
 | TCP transport: `TCP_NODELAY` | full | full | blocked upstream (std's AFD sockets accept no winsock setsockopt; AFD option helper not exposed) |
-| Soak harness | full | full | full (nightly lane) |
+| Soak harness | full | full | full (nightly lane; success requires positive traffic/chaos counters) |
 | Self-interop e2e (zig↔zig loopback, `zig build e2e-self`) | full | full | full |
 | Cross-implementation e2e (docker reference impls) | full | full | local only (Docker Desktop/WSL2); hosted runners cannot run Linux containers |
 | Deterministic fuzz smoke | full | full | full |
 | Coverage-guided fuzzing (`--fuzz`) | full | full | blocked upstream (zig fuzzer is ELF/Mach-O only) |
 | Evented `std.Io` backend | compile-checked only — no sockets (see below) | compile-checked only — no sockets (see below) | blocked upstream (`EventedBackendUnsupported`) |
-| QUIC transport | experimental (`-Dquic=true`; native transport evidence runs in Debug + ReleaseSafe, and the full repository is also tested against the QUIC-enabled root) | experimental (native transport evidence runs in Debug + ReleaseSafe; locally proven 44/44 on macOS) | experimental (native Debug + ReleaseSafe transport evidence is configured as a no-skip CI gate; provisional until the first user-pushed run is green; the full QUIC test tree cross-compiles) |
+| QUIC transport | experimental (`-Dquic=true`; four-root evidence runs in Debug + ReleaseSafe, and the full repository is also tested against the QUIC-enabled root) | experimental (four-root Debug + ReleaseSafe evidence; locally proven 61/61 on macOS) | experimental (native Debug + ReleaseSafe no-skip gate configured; local cross-compilation passes, but hosted runtime acceptance is pending the capnp-zig push) |
 
 The targeted QUIC evidence gate is intentionally different from testing the
 entire repository through the QUIC-enabled library root. The three-OS native
-CI matrix is configured to run the transport evidence in Debug and
-ReleaseSafe, with source-count and build-graph assertions that reject a
-missing, skipped, or vacuous suite. Linux alone also runs the full
+CI matrix runs exactly four roots in Debug and ReleaseSafe. A native Zig
+scanner rejects `SkipZigTest`, enforces per-root floors 26 + 1 + 17 + 8 = 52,
+and makes the four runnable artifacts direct build dependencies; it does not
+parse output or rely on a CI-only shell. Linux alone also runs the full
 build/check/test/API/docs surface against the QUIC root. At this sprint's local
-handoff, macOS has run all 44 transport tests in both modes and the complete
-Windows QUIC test tree has cross-compiled; native Windows execution remains a
-CI-enforced provisional claim until the user's first push supplies a green
-`windows-latest` run.
+handoff, macOS has run all 61 tests in both modes. Windows full-tree test
+cross-compilation passes 113/113, but native Windows runtime acceptance remains
+pending a hosted run after capnp-zig is pushed.
 
 Note on **Windows codegen**: the upstream prebuilt Windows tools still contain
 the executables but not the standard schema tree. The repository now routes
@@ -76,8 +76,8 @@ prove the backend works, and no lane executes it because none can.
 | Wire Format | `src/serialization/message.zig`, `src/serialization/message/*` | Core serialization: segments, pointers, structs, lists, text, data, packed encoding. Thoroughly tested and interop-validated. |
 | Schema Types | `src/serialization/schema.zig` | In-memory schema representation (Node, Field, Type, Value). The frozen `Type` union remains unchanged; additive `TypeMetadata`, `TypeExpression`, parameters, and brands preserve AnyPointer sub-kinds and generic applications beside it. |
 | Schema Parsing | `src/serialization/request_reader.zig` | Parses `CodeGeneratorRequest` from Cap'n Proto wire format, including bounded recursive brand bindings, node/method parameters, AnyPointer sub-kinds, and interface brands. |
-| Schema Validation | `src/serialization/schema_validation.zig` | Validates and canonicalizes schema graphs. |
-| Code Generation | `src/capnpc-zig/generator.zig`, `src/capnpc-zig/struct_gen.zig`, `src/capnpc-zig/types.zig` | Generates idiomatic Zig Reader/Builder types, including additive `nestedLists()`, constrained-AnyPointer `pointerKinds()`, and concrete data-struct `brands()` views while preserving every erased/raw field accessor. Brand specialization excludes inherited/unbound/recursive bindings, generic interfaces/RPC methods, and unsupported nested pointer-list shapes. |
+| Schema Validation | `src/serialization/schema_validation.zig` | Validates and canonicalizes schema graphs. Additive `*WithBrand` entry points enforce a concrete root brand; legacy entry points use an empty root brand while still honoring concrete nested metadata. |
+| Code Generation | `src/capnpc-zig/generator.zig`, `src/capnpc-zig/struct_gen.zig`, `src/capnpc-zig/types.zig` | Generates idiomatic Zig Reader/Builder types, including additive `nestedLists()`, constrained-AnyPointer `pointerKinds()`, and finite concrete `brands()` views while preserving every erased/raw field accessor. A shared bounded resolver handles arbitrary nested lists (including generic-struct terminals), cross-file applications, lexical inheritance, exact arity, and parameter indexes; `CodegenBudget.max_brand_specializations` bounds emitted applications. Pointer defaults recursively materialize before Builder mutation. Generic RPC clients remain erased. |
 | Reader Convenience | `src/serialization/reader.zig` | Segment-aware message reader with packed support. |
 
 #### Stable RPC — the two-party core (new in 0.3.0)
@@ -160,11 +160,22 @@ interop contract.
 | RPC Transport | `src/rpc/transport/tcp/stream_transport.zig` | Concurrent read/write I/O. |
 | RPC Events | `src/rpc/events.zig` | Redacted transport-general observer events. Event names may grow while payloads stay redacted. |
 | Switchable Io Backend | `src/io_backend.zig` | Backend selection (`process_init`/`threaded`/`evented`). Selector shape may change. |
-| RPC QUIC Transport | `src/rpc/transport/quic` | Optional QUIC baseline/native transport, gated by `-Dquic=true`. |
+| RPC QUIC Transport | `src/rpc/transport/quic` | Optional QUIC baseline/native transport, gated by `-Dquic=true`. Windows uses a single-in-flight cancellable UDP receive bridge; fanout sessions are heap-stable before `Peer` attachment. Native hosted-Windows acceptance is still pending. |
 | RPC Host Peer | `src/rpc/integration/host_peer.zig` | Host-neutral detached frame-pump for wasm environments. |
 | RPC Payload Remap | `src/rpc/caps/payload_remap.zig` | Capability descriptor remapping for outbound messages. |
 | RPC Persistence | `src/rpc/peer/persistence.zig` | Sturdy-ref save/restore (level 2): persistent-export hooks, restorer hook, and `Peer.sendSave`/`sendRestore`. Realm conventions and consumer flow are documented in `rpc_runtime_design.md` and `rpc-persistence.md`; reconnect, malformed-frame, send-failure, callback-failure, hook lifecycle, and OOM rollback paths are regression covered. Not frozen. |
 | Forwarded / 3-party internals | `src/rpc/peer/forward/*`, `src/rpc/peer/third_party/*` | Proxy/intermediary forwarding and third-party transfer internals. Not part of the frozen surface. |
+
+The L4 row includes lease hardening but remains Experimental. Raw peers keep
+`PeerTimeouts.join_timeout_ms = null`; TCP connect/serve and `WorkerPool`
+configure a secure 30-second default unless the caller explicitly supplies
+null. `PeerLimits` adds 64 parts per Join and 4096 aggregate lifecycle records,
+and `PeerStats`/events expose only redacted record, part, provision-byte, and
+answer-id data. One origin-owned `HostedJoin` holds the provision, captured
+network, deadline, result count, and Accept-host backlink. Attachment is
+fallible while dependent state exists. These safeguards do not add a
+production dialer, address/authentication policy, stable wire convention, or
+cross-implementation L4 claim.
 
 ### Internal
 

@@ -28,6 +28,8 @@ pub const WorkerPool = struct {
     ctx: *anyopaque,
     on_accept: AcceptFn,
     conn_options: Connection.Options,
+    peer_limits: peer_mod.PeerLimits,
+    join_timeout_ms: ?u64,
     active_connections: []?*Connection,
     active_mu: std.Io.Mutex,
     run_active: std.atomic.Value(bool),
@@ -38,6 +40,10 @@ pub const WorkerPool = struct {
         concurrency: ?u32 = null,
         listen_backlog: u31 = 128,
         connection_options: Connection.Options = .{},
+        peer_limits: peer_mod.PeerLimits = .{},
+        /// Secure default for inbound L4 Join phases. Null is the explicit
+        /// compatibility opt-out.
+        join_timeout_ms: ?u64 = 30_000,
     };
 
     /// Result returned by `AcceptFn`.
@@ -91,6 +97,11 @@ pub const WorkerPool = struct {
         errdefer allocator.free(active_connections);
         @memset(active_connections, null);
 
+        var connection_options = config.connection_options;
+        if (config.join_timeout_ms != null and connection_options.tick_interval_ms == null) {
+            connection_options.tick_interval_ms = 100;
+        }
+
         return .{
             .allocator = allocator,
             .io = io,
@@ -98,7 +109,9 @@ pub const WorkerPool = struct {
             .server = server,
             .ctx = ctx,
             .on_accept = on_accept,
-            .conn_options = config.connection_options,
+            .conn_options = connection_options,
+            .peer_limits = config.peer_limits,
+            .join_timeout_ms = config.join_timeout_ms,
             .active_connections = active_connections,
             .active_mu = .init,
             .run_active = std.atomic.Value(bool).init(false),
@@ -264,7 +277,9 @@ pub const WorkerPool = struct {
             };
 
             peer_ptr.* = Peer.init(pool.allocator, conn_ptr);
+            peer_ptr.setLimits(pool.peer_limits);
             peer_ptr.setClockIo(pool.io);
+            peer_ptr.setTimeouts(.{ .join_timeout_ms = pool.join_timeout_ms });
 
             // Fail closed, the way ServerSession refuses to construct without
             // secure entropy -- rejecting the connection is the closest

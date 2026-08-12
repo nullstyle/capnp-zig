@@ -78,7 +78,7 @@ test-release-safe:
 
 # Run the FULL suite under ReleaseSafe — the mode CI's per-OS job uses.
 #
-# Not the same thing as `test-release-safe`, which is an eleven-binary subset. This
+# Not the same thing as `test-release-safe`, which is a focused subset. This
 # lane exists because it has now caught two defects nothing else could see: an
 # OOM harness that reported a deterministic function as nondeterministic, and a
 # dangling `ctx` pointer that segfaults on amd64 while a still-mapped stack page
@@ -88,12 +88,16 @@ test-release-safe:
 test-release-safe-full:
     zig build test -Doptimize=ReleaseSafe --summary all
 
-# Run teardown-heavy RPC suites under ReleaseFast. This is a MEMORY-SAFETY lane,
+# Run teardown-heavy RPC plus schema-fidelity suites under ReleaseFast. This is a MEMORY-SAFETY lane,
 # not a performance one: ReleaseFast is the only mode that leaves a freed
 # pointer intact, so a use-after-free reached from a destructor shows up here
 # and nowhere else.
 test-release-fast:
     zig build test-release-fast --summary all
+
+# Run executable brand fidelity and vendored upstream schema closure tests
+test-schema-fidelity:
+    zig build test-schema-fidelity --summary all
 
 # Run raw-frame RPC security e2e tests
 test-e2e-security:
@@ -119,6 +123,10 @@ test-rpc-transport:
 test-rpc-peer:
     zig build test-rpc-peer --summary all
 
+# Run focused Experimental L4 Join lease/lifecycle tests
+test-rpc-l4:
+    zig build test-rpc-l4 --summary all
+
 # Run RPC integration tests
 test-rpc-integration:
     zig build test-rpc-integration --summary all
@@ -127,69 +135,11 @@ test-rpc-integration:
 test-rpc-quic:
     zig build -Dquic=true test-rpc-quic --summary all
 
-# Run the native QUIC suites and prove the lane is neither vacuous nor hiding
-# platform skips. The source-count floor remains useful on a warm local cache,
-# where Zig reports `run test cached` instead of repeating pass totals.
+# Run the native QUIC suites through the build graph's executable evidence
+# contract. The host scanner enforces four registered roots, per-root source
+# floors, and a repository-wide ban on QUIC SkipZigTest paths.
 test-rpc-quic-evidence optimize="Debug":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    files=(
-      tests/rpc/transport/quic/rpc_quic_transport_test.zig
-      tests/rpc/transport/quic/rpc_quic_public_api_test.zig
-      tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig
-    )
-    declared=0
-    for file in "${files[@]}"; do
-      while IFS= read -r source_line || [ -n "$source_line" ]; do
-        case "$source_line" in
-          *SkipZigTest*)
-            echo "ERROR: ${file} contains a skip path: ${source_line}" >&2
-            exit 1
-            ;;
-          'test "'*) declared=$((declared + 1)) ;;
-        esac
-      done < "$file"
-    done
-    if [ "$declared" -lt 44 ]; then
-      echo "ERROR: QUIC test inventory fell to ${declared}; expected at least 44" >&2
-      exit 1
-    fi
-
-    set +e
-    out="$(zig build -Dquic=true -Doptimize={{ optimize }} test-rpc-quic --summary all 2>&1)"
-    rc=$?
-    set -e
-    printf '%s\n' "$out"
-    if [ "$rc" -ne 0 ]; then
-      exit "$rc"
-    fi
-    run_steps=0
-    total=0
-    while IFS= read -r output_line || [ -n "$output_line" ]; do
-      if [[ "$output_line" =~ (^|[[:space:]])[0-9]+[[:space:]]+skip(ped)?([[:space:]]|$) ]]; then
-        echo "ERROR: QUIC transport evidence reported a skipped test" >&2
-        exit 1
-      fi
-      if [[ "$output_line" == *"run test"* ]]; then
-        run_steps=$((run_steps + 1))
-      fi
-      if [[ "$output_line" =~ Build[[:space:]]Summary:[[:space:]][0-9]+/([0-9]+)[[:space:]]steps[[:space:]]succeeded ]]; then
-        total="${BASH_REMATCH[1]}"
-      fi
-    done <<< "$out"
-    if [ "$run_steps" -lt 3 ]; then
-      echo "ERROR: QUIC lane exposed only ${run_steps} test run steps; expected all three suites" >&2
-      exit 1
-    fi
-    if [ "$total" -eq 0 ]; then
-      echo "ERROR: no Build Summary line; cannot prove the QUIC lane did any work" >&2
-      exit 1
-    fi
-    if [ "$total" -lt 13 ]; then
-      echo "ERROR: QUIC lane built only ${total} steps; expected at least 13" >&2
-      exit 1
-    fi
-    echo "QUIC {{ optimize }} evidence: ${declared} declared tests, ${run_steps} run steps, no skips"
+    zig build -Dquic=true -Doptimize={{ optimize }} test-rpc-quic-evidence --summary all
 
 # Run benchmark regression checks
 bench-check:
@@ -258,7 +208,7 @@ test-quic-full:
     zig build -Dquic=true test --summary all
 
 # Compatibility alias for the older non-vacuity recipe name. The evidence gate
-# now also asserts the three-suite inventory and bans skipped tests.
+# now also asserts the four-root inventory and bans skipped tests.
 check-quic-not-noop:
     just test-rpc-quic-evidence Debug
 

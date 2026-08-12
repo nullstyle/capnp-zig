@@ -105,6 +105,11 @@ pub fn onConnectionCloseFor(
     return struct {
         fn call(conn: ConnPtr) void {
             const peer = peerFromConnection(PeerType, ConnPtr, conn);
+            // The connection owns this callback and may free itself as soon as
+            // the terminal notification returns. Clear the peer's borrowed
+            // transport context while `conn` is still valid, before user close
+            // callbacks can destroy the enclosing session or re-enter Peer.
+            peer.detachTransport();
             notify_close(peer);
         }
     }.call;
