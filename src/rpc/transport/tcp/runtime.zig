@@ -120,10 +120,20 @@ pub const Listener = struct {
     /// This also unblocks any thread blocked in `accept()`.
     pub fn close(self: *Listener) void {
         if (self.close_requested.swap(true, .acq_rel)) return;
-        // Shut the socket down before closing: on POSIX a bare close does not
-        // reliably wake a thread parked in accept() on this fd (the documented
-        // contract of this method), while shutdown does.
-        shutdownFd(self.io, .{ .handle = self.server.socket.handle });
+        // POSIX: a bare close does not reliably wake a thread parked in
+        // accept() on this fd (the documented contract of this method), while
+        // shutdown does.
+        //
+        // WINDOWS: shutdown() on a LISTENING socket is invalid and fails with
+        // INVALID_PARAMETER. std routes that through `unexpectedStatus`, whose
+        // debug-mode diagnostic makes the test binary exit non-zero even
+        // though the `catch {}` below swallows the error value — a real CI
+        // failure with zero failing tests. `closesocket` already unblocks a
+        // pending accept there, so the shutdown is not merely harmful, it is
+        // unnecessary.
+        if (comptime builtin.target.os.tag != .windows) {
+            shutdownFd(self.io, .{ .handle = self.server.socket.handle });
+        }
         closeFd(self.io, .{ .handle = self.server.socket.handle });
     }
 
@@ -203,7 +213,10 @@ pub fn closeFd(io: std.Io, socket: SocketFd) void {
 /// Shut down a socket for both directions via Io, ignoring errors. On POSIX a
 /// bare `close()` does not reliably unblock a thread parked in `accept()`/
 /// `read()` on the fd; a prior `shutdown()` does.
-/// Harmless on Windows.
+///
+/// Safe for CONNECTED sockets on Windows, but NOT for listening ones: see
+/// `Listener.close`, which skips it there because Windows rejects shutdown on
+/// a listening socket with INVALID_PARAMETER.
 pub fn shutdownFd(io: std.Io, socket: SocketFd) void {
     io.vtable.netShutdown(io.userdata, socket.handle, .both) catch {};
 }
