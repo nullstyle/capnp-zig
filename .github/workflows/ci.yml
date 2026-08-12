@@ -59,9 +59,11 @@ jobs:
       - uses: ./.github/actions/setup-capnp
 
       - name: Run tests
-        # See the job timeout above: 20 minutes clipped a passing ubuntu run.
+        # See the job timeout above. Wrapped in the stall watchdog so a hang
+        # dumps every live test binary's threads and stacks into this log
+        # before the cap kills the step, instead of dying anonymously.
         timeout-minutes: 35
-        run: zig build test --summary all
+        run: tools/stall_watchdog.sh zig build test --summary all
 
       - name: Check compilation
         run: zig build check
@@ -237,7 +239,7 @@ jobs:
       # root a QUIC consumer actually gets.
       - name: Run the full suite against the QUIC library root
         if: runner.os == 'Linux'
-        run: zig build -Dquic=true test --summary all
+        run: tools/stall_watchdog.sh zig build -Dquic=true test --summary all
 
       # The default `check-api` job runs WITHOUT -Dquic=true, so it sees
       # `rpc.transport.quic` as the disabled stub and the real ServerOptions
@@ -389,7 +391,9 @@ jobs:
       # letting it pass vacuously. Instrumented modules link libc so
       # std.Thread goes through pthreads, which TSan can intercept.
       - name: Run threaded suites under ThreadSanitizer
-        run: zig build test-tsan --summary all
+        # This lane hung for its entire existence before the wake-drain fix and
+        # reported nothing. Watchdogged so a recurrence names itself.
+        run: tools/stall_watchdog.sh zig build test-tsan --summary all
 
   e2e-zig:
     name: Zig e2e interop
@@ -514,7 +518,7 @@ jobs:
       # three native CI platforms; the smaller `test-release-safe` step remains
       # only a fast local/preflight subset.
       - name: Run the full suite under ReleaseSafe
-        run: zig build test -Doptimize=ReleaseSafe --summary all
+        run: tools/stall_watchdog.sh zig build test -Doptimize=ReleaseSafe --summary all
 
       # ReleaseFast, not for speed but because it is the only mode that does NOT
       # poison a freed pointer. A use-after-free reached from a destructor is

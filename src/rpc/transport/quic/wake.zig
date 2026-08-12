@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const scheduler = @import("scheduler.zig");
+const wake_lock = @import("../wake_lock.zig");
 
 pub const PollResult = struct {
     socket_ready: bool = false,
@@ -22,7 +23,7 @@ pub const Handle = struct {
     /// paths (`waitForSocket`/`drain`/`consumeRequested`) stay unlocked: only
     /// the owner thread closes the fds, and it cannot be polling and in
     /// `deinit()` at the same time.
-    mu: std.atomic.Mutex = .unlocked,
+    mu: wake_lock.Lock = .{},
 
     pub fn init() Handle {
         return .{
@@ -31,7 +32,14 @@ pub const Handle = struct {
     }
 
     fn lock(self: *Handle) void {
-        while (!self.mu.tryLock()) std.atomic.spinLoopHint();
+        // `false`: the Handle has no owner-configurable checks field of its
+        // own, so the wake-lock diagnostics here are Debug-only. That is the
+        // mode CI runs the threaded suites in, which is where this matters.
+        self.mu.acquire("quic.wake.Handle.mu", false);
+    }
+
+    fn unlock(self: *Handle) void {
+        self.mu.release(false);
     }
 
     pub fn deinit(self: *Handle) void {
@@ -39,7 +47,7 @@ pub const Handle = struct {
         // Close under the lock so a `request()` mid-write cannot land on a
         // kernel-recycled descriptor.
         self.lock();
-        defer self.mu.unlock();
+        defer self.unlock();
         const fds = self.fds orelse return;
         self.fds = null;
         _ = std.posix.system.close(fds[0]);
@@ -49,9 +57,9 @@ pub const Handle = struct {
     pub fn request(self: *Handle) void {
         if (self.requested.swap(true, .acq_rel)) return;
         self.lock();
-        defer self.mu.unlock();
+        defer self.unlock();
         const fds = self.fds orelse return;
-        writeByte(fds[1]);
+        wake_lock.writeByte(fds[1]);
     }
 
     pub fn isRequested(self: *const Handle) bool {
@@ -139,36 +147,7 @@ fn createFds() ?[2]std.posix.fd_t {
     if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
         return null;
     }
-    setNonBlocking(fds[0]);
-    setNonBlocking(fds[1]);
+    wake_lock.setNonBlocking(fds[0]);
+    wake_lock.setNonBlocking(fds[1]);
     return fds;
-}
-
-fn setNonBlocking(fd: std.posix.fd_t) void {
-    if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
-    const rc = std.posix.system.fcntl(fd, std.posix.F.GETFL, @as(usize, 0));
-    if (std.posix.errno(rc) != .SUCCESS) return;
-    var flags: usize = @intCast(rc);
-    flags |= @as(usize, 1 << @bitOffsetOf(std.posix.O, "NONBLOCK"));
-    _ = std.posix.system.fcntl(fd, std.posix.F.SETFL, flags);
-}
-
-fn writeByte(fd: std.posix.fd_t) void {
-    if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
-    const byte = [_]u8{1};
-    while (true) {
-        const rc = std.posix.system.write(fd, &byte, byte.len);
-        // Same signedness hazard as `drain`: classify via errno first. The
-        // sign-first order did not hang here -- it returned on the `rc > 0`
-        // arm, treating every failure as a delivered wake and leaving the
-        // errno switch below unreachable on Linux.
-        switch (std.posix.errno(rc)) {
-            .SUCCESS => return,
-            .INTR => continue,
-            // AGAIN means the wake pipe is already full, which is exactly the
-            // state a wake is trying to produce, so it is success for our
-            // purposes; anything else is unrecoverable and must not spin.
-            else => return,
-        }
-    }
 }

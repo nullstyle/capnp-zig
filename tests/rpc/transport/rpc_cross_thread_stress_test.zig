@@ -14,6 +14,22 @@ const quic_wake = capnpc.rpc.transport.quic.wake;
 // shape (bounded reps, joined threads) but probabilistic in interleaving;
 // under the TSan lane a reintroduced race is reported on the first overlap.
 
+/// Repetition multiplier for the storm suites, from
+/// `CAPNP_ZIG_STRESS_MULTIPLIER`. These tests are RACES: a single pass proves
+/// very little, and the deadlocks they exist to catch have shown up in one CI
+/// leg while an identical suite passed in another on the same commit. A knob
+/// lets a soak job (or a bisect) run them 20x -- each rep is milliseconds --
+/// without making the default `zig build test` slower.
+///
+/// Thread counts stay comptime because they size fixed arrays; only the
+/// repetition counts scale.
+fn stressMultiplier() usize {
+    if (comptime builtin.target.os.tag == .windows) return 1;
+    const raw = std.process.Environ.getPosix(std.testing.environ, "CAPNP_ZIG_STRESS_MULTIPLIER") orelse return 1;
+    const parsed = std.fmt.parseInt(usize, raw, 10) catch return 1;
+    return @max(parsed, 1);
+}
+
 const quic_handle_reps = 200;
 const quic_waker_threads = 4;
 
@@ -71,7 +87,8 @@ test "quic wake Handle: cross-thread request() storm vs owner deinit()" {
     };
 
     var rep: usize = 0;
-    while (rep < quic_handle_reps) : (rep += 1) {
+    const quic_reps = quic_handle_reps * stressMultiplier();
+    while (rep < quic_reps) : (rep += 1) {
         var handle = quic_wake.Handle.init();
         var stop = std.atomic.Value(bool).init(false);
 
@@ -173,7 +190,8 @@ test "tcp Connection: cross-thread wake() storm vs owner deinit()" {
     };
 
     var rep: usize = 0;
-    while (rep < tcp_wake_reps) : (rep += 1) {
+    const tcp_reps = tcp_wake_reps * stressMultiplier();
+    while (rep < tcp_reps) : (rep += 1) {
         const fds = try tcp.createLoopbackSocketPair(io);
         defer tcp.closeFd(io, fds[1]);
 

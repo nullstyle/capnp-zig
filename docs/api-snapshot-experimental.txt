@@ -2294,7 +2294,7 @@ capnpc-zig.rpc.transport.quic.wake.Handle.fds: field ?[2]i32 = null
 capnpc-zig.rpc.transport.quic.wake.Handle.init: fn () rpc.transport.quic.wake.Handle
 capnpc-zig.rpc.transport.quic.wake.Handle.isRequested: fn (*const rpc.transport.quic.wake.Handle) bool
 capnpc-zig.rpc.transport.quic.wake.Handle.isSupported: fn (*const rpc.transport.quic.wake.Handle) bool
-capnpc-zig.rpc.transport.quic.wake.Handle.mu: field atomic.Mutex = .unlocked
+capnpc-zig.rpc.transport.quic.wake.Handle.mu: field rpc.transport.wake_lock.Lock = <default>
 capnpc-zig.rpc.transport.quic.wake.Handle.request: fn (*rpc.transport.quic.wake.Handle) void
 capnpc-zig.rpc.transport.quic.wake.Handle.requested: field atomic.Value(bool) = <default>
 capnpc-zig.rpc.transport.quic.wake.Handle.waitForSocket: fn (*rpc.transport.quic.wake.Handle, i32, Io.Duration) error{BrokenPipe,PollFailed}!?rpc.transport.quic.wake.PollResult
@@ -2358,7 +2358,7 @@ capnpc-zig.rpc.transport.tcp.Connection.runtime_thread_checks: field bool = fals
 capnpc-zig.rpc.transport.tcp.Connection.tick_interval_ms: field ?u32 = null
 capnpc-zig.rpc.transport.tcp.Connection.transport: field rpc.transport.tcp.stream_transport.Transport
 capnpc-zig.rpc.transport.tcp.Connection.wake_fds: field ?[2]i32 = null
-capnpc-zig.rpc.transport.tcp.Connection.wake_mu: field atomic.Mutex = .unlocked
+capnpc-zig.rpc.transport.tcp.Connection.wake_mu: field rpc.transport.wake_lock.Lock = <default>
 capnpc-zig.rpc.transport.tcp.Connection.win_read: field void = {}
 capnpc-zig.rpc.transport.tcp.Listener.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.Listener.close_requested: field atomic.Value(bool) = <default>
@@ -2445,7 +2445,7 @@ capnpc-zig.rpc.transport.tcp.connection.Connection.tick_interval_ms: field ?u32 
 capnpc-zig.rpc.transport.tcp.connection.Connection.transport: field rpc.transport.tcp.stream_transport.Transport
 capnpc-zig.rpc.transport.tcp.connection.Connection.wake: fn (*rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.wake_fds: field ?[2]i32 = null
-capnpc-zig.rpc.transport.tcp.connection.Connection.wake_mu: field atomic.Mutex = .unlocked
+capnpc-zig.rpc.transport.tcp.connection.Connection.wake_mu: field rpc.transport.wake_lock.Lock = <default>
 capnpc-zig.rpc.transport.tcp.connection.Connection.win_read: field void = {}
 capnpc-zig.rpc.transport.tcp.connection.Connection.writeQueueStats: fn (*rpc.transport.tcp.connection.Connection) rpc.transport.tcp.stream_transport.Transport.QueueStats
 capnpc-zig.rpc.transport.tcp.connection: struct

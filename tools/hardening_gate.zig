@@ -56,6 +56,7 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/integration/host_peer.zig", .kind = .catch_unreachable, .needle = ".imported => mutable_caps.retainIndex(cap_idx) catch unreachable,", .reason = "retainIndex fails only on index >= len; mutable_caps is a struct copy sharing the same entries/retained slices, so the loop bound proves the index in-bounds" },
 
     .{ .path = "src/rpc/transport/tcp/connection.zig", .kind = .panic_call, .needle = "Connection method called from wrong thread", .reason = "debug misuse guard, not input-driven protocol handling" },
+    .{ .path = "src/rpc/transport/wake_lock.zig", .kind = .panic_call, .needle = "stuck-wake-lock diagnostic", .reason = "debug-only stuck-lock diagnostic: converts an unbounded spin (which reaches CI as an anonymous job timeout) into a named crash. Bound is ~2 orders of magnitude past any legitimate contention on these few-syscall critical sections, and is not reachable from network input" },
     .{ .path = "src/rpc/transport/tcp/connection.zig", .kind = .optional_unwrap, .needle = "const bytes = frame.?;", .reason = "guarded by preceding null frame branch" },
     .{ .path = "src/rpc/transport/tcp/connection.zig", .kind = .optional_unwrap, .needle = "self.on_message.?", .reason = "checked before callback invocation" },
     .{ .path = "src/rpc/transport/stream_state.zig", .kind = .optional_unwrap, .needle = "cb(ctx.?, self.stream_error)", .reason = "callback context is paired with callback registration" },
@@ -221,7 +222,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !bool {
 fn kindName(kind: PatternKind) []const u8 {
     return switch (kind) {
         .catch_unreachable => "catch unreachable",
-        .panic_call => "@panic",
+        .panic_call => "@panic / std.debug.panic",
         .optional_unwrap => "optional unwrap",
         .unchecked_unreachable => "unchecked unreachable",
         .runtime_safety_disabled => "@setRuntimeSafety(false)",
@@ -326,7 +327,12 @@ fn isZigTestStart(code: []const u8) bool {
 fn scanUnsafeCode(ctx: *Context, path: []const u8, line_no: usize, raw_line: []const u8, code: []const u8) void {
     const catch_unreachable = std.mem.indexOf(u8, code, "catch unreachable") != null;
     if (catch_unreachable) ctx.record(path, line_no, .catch_unreachable, raw_line);
-    if (std.mem.indexOf(u8, code, "@panic(") != null) ctx.record(path, line_no, .panic_call, raw_line);
+    // Both spellings, because they are the same act. Scanning only `@panic`
+    // left `std.debug.panic` as an unreviewed way to abort the process -- a
+    // hole found 2026-08-12 by adding one and watching the gate stay green.
+    if (std.mem.indexOf(u8, code, "@panic(") != null or
+        std.mem.indexOf(u8, code, "std.debug.panic(") != null)
+        ctx.record(path, line_no, .panic_call, raw_line);
     if (std.mem.indexOf(u8, code, ".?") != null) ctx.record(path, line_no, .optional_unwrap, raw_line);
     if (std.mem.indexOf(u8, code, "@setRuntimeSafety(false)") != null) ctx.record(path, line_no, .runtime_safety_disabled, raw_line);
     if (!catch_unreachable and hasWord(code, "unreachable")) ctx.record(path, line_no, .unchecked_unreachable, raw_line);

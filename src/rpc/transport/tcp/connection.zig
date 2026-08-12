@@ -6,6 +6,7 @@ const transport_mod = @import("./stream_transport.zig");
 const runtime_helpers = @import("./runtime.zig");
 const message = @import("../../../serialization/message.zig");
 const events = @import("../../events.zig");
+const wake_lock = @import("../wake_lock.zig");
 
 /// A framed Cap'n Proto connection over TCP.
 ///
@@ -89,7 +90,7 @@ pub const Connection = struct {
     /// possibly kernel-recycled — descriptor. Uses `std.atomic.Mutex` (like the
     /// transport's fd lock) rather than `std.Io.Mutex` because `wake()` may run
     /// outside any io task; the critical sections are tiny so a spin is fine.
-    wake_mu: std.atomic.Mutex = .unlocked,
+    wake_mu: wake_lock.Lock = .{},
 
     /// Called on the run loop's thread when woken by `wake()`.
     /// Use this to drain a per-connection work queue on the correct thread.
@@ -261,7 +262,11 @@ pub const Connection = struct {
     /// timed condition (see `WinReadBridge`) that `wake()` signals
     /// directly.
     fn lockWake(self: *Connection) void {
-        while (!self.wake_mu.tryLock()) std.atomic.spinLoopHint();
+        self.wake_mu.acquire("tcp.Connection.wake_mu", self.runtime_thread_checks);
+    }
+
+    fn unlockWake(self: *Connection) void {
+        self.wake_mu.release(self.runtime_thread_checks);
     }
 
     pub fn enableWake(
@@ -275,7 +280,7 @@ pub const Connection = struct {
                 return error.WakePipeCreateFailed;
             }
             self.lockWake();
-            defer self.wake_mu.unlock();
+            defer self.unlockWake();
             // Close a previously installed pair so a second enableWake does not
             // leak the first socketpair.
             if (self.wake_fds) |old| {
@@ -301,7 +306,7 @@ pub const Connection = struct {
         // Hold wake_mu across the write so deinitNow cannot close the fd
         // mid-write (which could otherwise land on a kernel-recycled fd).
         self.lockWake();
-        defer self.wake_mu.unlock();
+        defer self.unlockWake();
         const fds = self.wake_fds orelse return;
         const pattern: []const u8 = &.{};
         const data: [1][]const u8 = .{pattern};
@@ -352,7 +357,7 @@ pub const Connection = struct {
             // Serialize with wake(): take wake_mu so no concurrent waker is
             // mid-write when we close and null the fds.
             self.lockWake();
-            defer self.wake_mu.unlock();
+            defer self.unlockWake();
             if (self.wake_fds) |fds| {
                 runtime_helpers.closeFd(self.io, .{ .handle = fds[0] });
                 runtime_helpers.closeFd(self.io, .{ .handle = fds[1] });
