@@ -160,6 +160,9 @@ jobs:
   quic-transport:
     name: QUIC targeted transport (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Slowest healthy run measured across the matrix: 11m (windows). A hung
+    # test binary otherwise burns the 6-hour default before anyone sees it.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -320,6 +323,8 @@ jobs:
   hardening:
     name: Hardening gate (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Slowest healthy run measured across the matrix: 4m (windows).
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -389,6 +394,9 @@ jobs:
   e2e-zig:
     name: Zig e2e interop
     runs-on: ubuntu-latest
+    # Slowest healthy run measured: 7m. Higher headroom than the ratio used
+    # elsewhere because this lane drives Docker.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
         with:
@@ -481,6 +489,9 @@ jobs:
   release-safe-tests:
     name: ReleaseSafe hardening tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Slowest healthy run measured across the matrix: 28m (windows) — the same
+    # shape as the Test job, so the same 45.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
