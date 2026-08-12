@@ -64,9 +64,22 @@ pub const Connection = struct {
     wake_state: wake_mod.Handle = .{},
     udp_receive: udp_receive_bridge.Bridge = .{},
 
+    /// True once the `.closing` connection phase has been emitted, so the
+    /// event fires at most once. Owner/loop-thread only (see
+    /// `Termination.emitClosingOnce`).
+    closing_emitted: bool = false,
+
     callback_lifecycle: CallbackLifecycle = .{},
 
-    owner_thread_id: ?std.Thread.Id = null,
+    /// Thread ID captured at init. Widened to `u64` (not `std.Thread.Id`,
+    /// whose width varies by target) so the rendered api-snapshot surface is
+    /// platform-stable.
+    owner_thread_id: ?u64 = null,
+
+    /// When true, thread-affinity checks also run in release builds (always on
+    /// in Debug). Mirrors the TCP connection's field and
+    /// `Peer.enableRuntimeThreadChecks`.
+    runtime_thread_checks: bool = false,
 
     pub fn initClient(
         allocator: std.mem.Allocator,
@@ -84,10 +97,21 @@ pub const Connection = struct {
         return try connection_init.initServer(Connection, allocator, io, options);
     }
 
+    /// Re-capture thread affinity on the current thread. Legal only at a
+    /// quiescent handoff point — no other thread may touch this connection
+    /// concurrently (mirrors the TCP connection's `adoptOwnerThread`).
+    pub fn adoptOwnerThread(self: *Connection) void {
+        if (comptime builtin.target.os.tag == .freestanding) return;
+        self.owner_thread_id = std.Thread.getCurrentId();
+    }
+
     pub fn deinit(self: *Connection) void {
         switch (self.callback_lifecycle.decideDeinit()) {
             .already_deinitialized => return,
             .defer_until_callback_exits => {
+                // Re-entrant deinit from a callback on the run-loop thread,
+                // which need not be the owner: do not assert affinity here, only
+                // request close. deinitNow (the real teardown) asserts.
                 self.requestClose();
                 return;
             },
@@ -103,6 +127,10 @@ pub const Connection = struct {
         self.native.deinit(self.allocator);
         self.callback_lifecycle.clearCallbacks();
         self.udp_receive.cancel(self.endpoint.io);
+        // Mark the wake as already-requested so late cross-thread wakers
+        // short-circuit before touching the fds; the Handle's internal mutex
+        // is the actual close-vs-write correctness mechanism.
+        self.wake_state.requested.store(true, .release);
         self.wake_state.deinit();
         self.endpoint.deinit();
         self.allocator.free(self.udp_rx_buf);
@@ -127,10 +155,19 @@ pub const Connection = struct {
     }
 
     pub fn run(self: *Connection) void {
+        // Does NOT auto-adopt affinity (see the TCP connection's run() for the
+        // rationale): a connection run on a thread other than its constructor's
+        // must adopt first via adoptOwnerThread().
         connection_loop.run(self.loopOwner());
     }
 
     pub fn sendFrame(self: *Connection, frame: []const u8) !void {
+        // Intentionally NOT affinity-checked, unlike the TCP connection. QUIC
+        // sendFrame enqueues into a mutex-guarded outbound queue that the loop
+        // flushes (mode_router.enqueue), so it is safe to call from any thread.
+        // The TCP transport made the opposite contract choice (owner-thread-only
+        // sendFrame, cross-thread work via wake()); that asymmetry is by design,
+        // not a missing check.
         return try Dispatch.sendFrame(self, frame);
     }
 
@@ -147,7 +184,7 @@ pub const Connection = struct {
     }
 
     pub fn close(self: *Connection) void {
-        events.emitConnection(self.observer, eventSource(self.mode), eventRole(self.role), .closing);
+        Termination.emitClosingOnce(self);
         Termination.close(self);
     }
 
@@ -171,14 +208,23 @@ pub const Connection = struct {
         return self.endpoint.activeQuicConnection();
     }
 
+    /// Assert that the caller is on the thread that owns this connection.
+    /// Always enforced in Debug; enforced in release only when
+    /// `runtime_thread_checks` is set — parity with the TCP connection, which
+    /// previously had a per-connection release opt-in the QUIC side lacked
+    /// (the check here compiled out of release entirely). Panics on violation:
+    /// a wrong-thread call means unsynchronized access is already happening,
+    /// which is not something an error return can make safe. Enable the opt-in
+    /// via `runtime_thread_checks` (mirrors `Peer.enableRuntimeThreadChecks`).
     pub fn assertThreadAffinity(self: *const Connection) void {
         if (comptime builtin.target.os.tag == .freestanding) return;
-        if (builtin.mode == .debug) {
-            const owner = self.owner_thread_id orelse return;
-            const current = std.Thread.getCurrentId();
-            if (current != owner) {
-                @panic("QUIC Connection method called from wrong thread");
-            }
+        if (comptime builtin.mode != .debug) {
+            if (!self.runtime_thread_checks) return;
+        }
+        const owner = self.owner_thread_id orelse return;
+        const current = std.Thread.getCurrentId();
+        if (current != owner) {
+            @panic("QUIC Connection method called from wrong thread: not thread-safe; all calls must be on the owner thread (see adoptOwnerThread / runtime_thread_checks)");
         }
     }
 

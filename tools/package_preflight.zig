@@ -37,6 +37,10 @@ const build_cases = [_]BuildCase{
 const allowed_package_roots = [_][]const u8{
     "build.zig",
     "build.zig.zon",
+    // The B-series build decomposition: build.zig is a thin driver over
+    // build/*.zig, so the package must ship the directory or a consumer's
+    // `zig build` cannot even parse the graph. Required, like src/.
+    "build",
     "src",
     "README.md",
     "LICENSE",

@@ -1,4 +1,5 @@
 const connection_loop = @import("connection_loop.zig");
+const connection_termination = @import("connection_termination.zig");
 const events = @import("../../events.zig");
 const engine_owner_mod = @import("engine_owner.zig");
 const endpoint_mod = @import("endpoint.zig");
@@ -144,6 +145,14 @@ pub fn State(comptime Connection: type) type {
 
         fn loopNotifyClosed(ptr: *anyopaque) void {
             const conn = castConnection(ptr);
+            // A cross-thread requestClose() defers its `.closing` observer
+            // event to this (the loop) thread. The compat connection never
+            // calls drainPendingClose, so the pending request is still set
+            // here; emit the deferred event before the terminal pair so
+            // observers see closing → close → closed in order.
+            if (conn.close_controller.hasPendingCrossThreadClose()) {
+                connection_termination.State(Connection).emitClosingOnce(conn);
+            }
             events.emitClose(conn.observer, eventSource(conn.mode), eventRole(conn.role), closeErr(conn));
             events.emitConnection(conn.observer, eventSource(conn.mode), eventRole(conn.role), .closed);
         }

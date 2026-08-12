@@ -13,6 +13,16 @@ pub const Handle = struct {
     /// POSIX-only run-loop wake pipe. [0] is read by the run loop; [1] is
     /// written by cross-thread wake requests.
     fds: ?[2]std.posix.fd_t = null,
+    /// Serializes `request()` (called from any thread) against the fd close in
+    /// `deinit()` (owner thread). Without it a wake racing teardown reads
+    /// `fds` just before deinit closes them and writes to a closed — possibly
+    /// kernel-recycled — descriptor. Uses `std.atomic.Mutex` (mirroring the
+    /// TCP connection's `wake_mu`) because `request()` may run outside any io
+    /// task; the critical sections are tiny so a spin is fine. Loop-thread
+    /// paths (`waitForSocket`/`drain`/`consumeRequested`) stay unlocked: only
+    /// the owner thread closes the fds, and it cannot be polling and in
+    /// `deinit()` at the same time.
+    mu: std.atomic.Mutex = .unlocked,
 
     pub fn init() Handle {
         return .{
@@ -20,8 +30,16 @@ pub const Handle = struct {
         };
     }
 
+    fn lock(self: *Handle) void {
+        while (!self.mu.tryLock()) std.atomic.spinLoopHint();
+    }
+
     pub fn deinit(self: *Handle) void {
         if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
+        // Close under the lock so a `request()` mid-write cannot land on a
+        // kernel-recycled descriptor.
+        self.lock();
+        defer self.mu.unlock();
         const fds = self.fds orelse return;
         self.fds = null;
         _ = std.posix.system.close(fds[0]);
@@ -30,6 +48,8 @@ pub const Handle = struct {
 
     pub fn request(self: *Handle) void {
         if (self.requested.swap(true, .acq_rel)) return;
+        self.lock();
+        defer self.mu.unlock();
         const fds = self.fds orelse return;
         writeByte(fds[1]);
     }

@@ -232,8 +232,10 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
         /// public due predicate and deadline stamping. A clock is arbitrary
         /// host code and may synchronously re-enter either path.
         park_clock_sample_in_progress: bool = false,
-        /// Debug-only thread pin, recorded at first attach.
-        thread_id: if (builtin.mode == .debug) ?std.Thread.Id else void =
+        /// Debug-only thread pin, recorded at first attach. Widened to `u64`
+        /// (not `std.Thread.Id`, whose width varies by target) so the
+        /// rendered api-snapshot surface is platform-stable.
+        thread_id: if (builtin.mode == .debug) ?u64 else void =
             if (builtin.mode == .debug) null else {},
         thread_affinity_enabled: bool = true,
 

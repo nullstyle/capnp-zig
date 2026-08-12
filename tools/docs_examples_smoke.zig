@@ -347,7 +347,14 @@ fn hasJustRecipe(justfile: []const u8, recipe: []const u8) bool {
 }
 
 fn verifyBuildAndJustfile(ctx: *Context) !void {
-    const build_zig = try readFile(ctx, "build.zig");
+    // The B-series build decomposition made build.zig a thin driver; the step
+    // registrations live in build/build_impl.zig. Scan both so the documented
+    // step check keeps its teeth against the real registration site.
+    const build_zig_driver = try readFile(ctx, "build.zig");
+    defer ctx.allocator.free(build_zig_driver);
+    const build_zig_impl = try readFile(ctx, "build/build_impl.zig");
+    defer ctx.allocator.free(build_zig_impl);
+    const build_zig = try std.mem.concat(ctx.allocator, u8, &.{ build_zig_driver, build_zig_impl });
     defer ctx.allocator.free(build_zig);
     const justfile = try readFile(ctx, "Justfile");
     defer ctx.allocator.free(justfile);

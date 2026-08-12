@@ -266,24 +266,21 @@ jobs:
       # The default `check-api` job runs WITHOUT -Dquic=true, so it sees
       # `rpc.transport.quic` as the disabled stub and the real ServerOptions
       # fields not at all — quic-zig v0.10.0's breaking Config rename moved
-      # ZERO snapshot lines. This checks the QUIC-enabled surface, and gates the
-      # invariant that matters: enabling an Experimental transport must leave
-      # docs/api-snapshot.txt (the FROZEN contract) byte-identical.
-      - name: QUIC-enabled API snapshot
+      # ZERO snapshot lines. This checks the QUIC-enabled surface with
+      # --strict-experimental, gating BOTH invariants: enabling an
+      # Experimental transport must leave docs/api-snapshot.txt (the FROZEN
+      # contract) byte-identical, and the committed
+      # docs/api-snapshot-experimental-quic.txt must match the tree.
+      #
+      # The staleness half used to be impossible: `std.Thread.Id` is u64 on
+      # macOS and u32 on Linux, so the stored thread-id fields rendered
+      # differently depending on where the tool ran. Those fields are now
+      # widened to u64 at the source, which makes the experimental files
+      # platform-stable between Linux and macOS. Linux-only because Windows
+      # renders genuinely differ (`win_read` bridge, socket handle types).
+      - name: QUIC-enabled API snapshot (strict, incl. experimental staleness)
         if: runner.os == 'Linux'
-        run: zig build -Dquic=true check-api-quic
-
-      # NO staleness check on docs/api-snapshot-experimental-quic.txt, and that
-      # is deliberate: the EXPERIMENTAL surface is not byte-stable across
-      # platforms. `std.Thread.Id` is u64 on macOS and u32 on Linux, so
-      # `OwnerThreadId.value`, `ProvisionIndex.thread_id`,
-      # `Connection.owner_thread_id` and `Server.loop_thread_id` all render
-      # differently depending on where the tool ran. A `git diff --exit-code` on
-      # that file therefore fails for whoever did not regenerate it on the CI
-      # platform -- which is what it did the first time this step existed.
-      # `docs/api-snapshot-experimental.txt` has never been diff-checked for the
-      # same reason. What IS gated is above: the FROZEN api-snapshot.txt must be
-      # byte-identical with QUIC enabled, and that holds on every platform.
+        run: zig build -Dquic=true check-api-experimental-quic
 
       - name: Compile QUIC documentation snippet fixtures
         if: runner.os == 'Linux'
@@ -309,8 +306,11 @@ jobs:
       - name: Run documentation/examples smoke gate
         run: zig build docs-smoke --summary all
 
-      - name: Check public API snapshot
-        run: zig build check-api --summary all
+      # Strict mode also fails when the committed experimental snapshot is
+      # stale (possible since stored thread ids were widened to u64, making
+      # the rendered surface platform-stable between Linux and macOS).
+      - name: Check public API snapshot (strict, incl. experimental staleness)
+        run: zig build check-api-experimental --summary all
 
   cross-targets:
     name: Cross-target compile (${{ matrix.target }})
@@ -377,6 +377,28 @@ jobs:
 
       - name: Run raw-frame security e2e tests
         run: zig build test-e2e-security --summary all
+
+  tsan:
+    name: ThreadSanitizer lane
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.17
+
+      - uses: ./.github/actions/setup-zig
+
+      # Races are optimize-mode-independent, so the lane runs Debug for the
+      # best stacks. Linux-only by design: libtsan segfaults at startup on
+      # darwin at the pinned Zig (build.zig's tsan block documents the
+      # probe), and build.zig hard-fails the step elsewhere rather than
+      # letting it pass vacuously. Instrumented modules link libc so
+      # std.Thread goes through pthreads, which TSan can intercept.
+      - name: Run threaded suites under ThreadSanitizer
+        run: zig build test-tsan --summary all
 
   e2e-zig:
     name: Zig e2e interop

@@ -64,8 +64,14 @@ pub const Server = struct {
     /// `close`/`requestClose` must never touch the list — they only raise the
     /// `close_requested` flag and wake the loop, which then closes every
     /// session on its own thread. Claimed on the first loop-thread step and
-    /// used by `assertLoopThread` for a debug-only affinity check.
-    loop_thread_id: ?std.Thread.Id = null,
+    /// used by `assertLoopThread` for a debug-only affinity check. Widened to
+    /// `u64` (not `std.Thread.Id`, whose width varies by target) so the
+    /// rendered api-snapshot surface is platform-stable.
+    loop_thread_id: ?u64 = null,
+
+    /// When true, the loop-thread affinity checks also run in release builds
+    /// (always on in Debug). Mirrors the connection field.
+    runtime_thread_checks: bool = false,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -96,6 +102,14 @@ pub const Server = struct {
         };
     }
 
+    /// Tear down the server and every remaining session.
+    ///
+    /// Teardown contract: quiesce external wakers first. Any thread that
+    /// holds a `*ServerSession` (or calls `Server.wake`) must have stopped
+    /// and synchronized before `deinit` runs — sessions and the wake/receive
+    /// state they borrow are destroyed here, so a late cross-thread
+    /// `wake`/`close`/`sendFrame` is a use-after-free. See
+    /// `ServerSession.wake` for the per-session contract.
     pub fn deinit(self: *Server) void {
         self.requestClose();
         self.udp_receive.cancel(self.io);
@@ -118,6 +132,8 @@ pub const Server = struct {
         self.* = undefined;
     }
 
+    /// Listener address, immutable after init, so intentionally not
+    /// loop-thread-guarded (safe to read from any thread).
     pub fn getAddress(self: *const Server) Net.IpAddress {
         return self.listener.getAddress();
     }
@@ -131,15 +147,18 @@ pub const Server = struct {
     }
 
     pub fn sessionCount(self: *const Server) usize {
+        self.assertLoopThread();
         return self.sessions.items.len;
     }
 
     pub fn sessionAt(self: *Server, index: usize) ?*ServerSession {
+        self.assertLoopThread();
         if (index >= self.sessions.items.len) return null;
         return self.sessions.items[index];
     }
 
     pub fn sessionById(self: *Server, id: u64) ?*ServerSession {
+        self.assertLoopThread();
         const index = self.findSessionIndexById(id) orelse return null;
         return self.sessions.items[index];
     }
@@ -271,6 +290,22 @@ pub const Server = struct {
             if (std.Thread.getCurrentId() != loop_tid) {
                 @panic("QUIC Server stepped from a thread other than the loop thread");
             }
+        }
+    }
+
+    /// Read-side counterpart to `claimLoopThread`: asserts the caller is on the
+    /// loop thread without latching, so it is safe on `*const Server`. Skips
+    /// until the loop thread is claimed. Guards the session-list accessors,
+    /// which read `sessions` (mutated loop-thread-only). Debug-always, release
+    /// opt-in via `runtime_thread_checks`.
+    fn assertLoopThread(self: *const Server) void {
+        if (comptime builtin.target.os.tag == .freestanding) return;
+        if (comptime builtin.mode != .debug) {
+            if (!self.runtime_thread_checks) return;
+        }
+        const loop_tid = self.loop_thread_id orelse return;
+        if (std.Thread.getCurrentId() != loop_tid) {
+            @panic("QUIC Server session accessor called from a thread other than the loop thread");
         }
     }
 
@@ -536,6 +571,10 @@ pub const ServerSession = struct {
     io: std.Io,
     callback_lifecycle: CallbackLifecycle = .{},
     close_callback_invoked: bool = false,
+    /// True once the `.closing` connection phase has been emitted for this
+    /// session, so the event fires at most once. Loop-thread only (see
+    /// `Termination.emitClosingOnce`).
+    closing_emitted: bool = false,
 
     fn init(
         allocator: std.mem.Allocator,
@@ -609,13 +648,19 @@ pub const ServerSession = struct {
 
     /// Request a normal close of this session. Safe to call from any thread:
     /// only flags + wakes; the run loop performs the engine close and status
-    /// record on its own thread via `drainPendingClose`/`closeOnLoop`.
+    /// record on its own thread via `drainPendingClose`/`closeOnLoop`, and
+    /// emits the deferred `.closing` observer event there (observer callbacks
+    /// fire on the loop thread only).
+    ///
+    /// Lifetime: see `wake` — the `*ServerSession` and the Server-owned state
+    /// it reaches through borrowed pointers die when the session is reaped or
+    /// the `Server` is deinitialized, so external threads must quiesce first.
     pub fn close(self: *ServerSession) void {
         Termination.requestClose(self);
     }
 
     /// Request a normal close of this session. Safe to call from any thread;
-    /// see `close`.
+    /// see `close` for the threading and lifetime contract.
     pub fn requestClose(self: *ServerSession) void {
         Termination.requestClose(self);
     }
@@ -651,6 +696,17 @@ pub const ServerSession = struct {
         return self.peer_addr;
     }
 
+    /// Wake the server loop from any thread.
+    ///
+    /// Lifetime: `wake_state` and `udp_receive` are borrowed pointers into the
+    /// owning `Server`, and the `*ServerSession` itself is destroyed when the
+    /// server reaps the session (post-close) or in `Server.deinit`. There is
+    /// no handshake that stops an external waker mid-call, so any thread
+    /// holding a `*ServerSession` for cross-thread `wake`/`close`/`sendFrame`
+    /// must quiesce (stop calling and synchronize, e.g. join the thread or
+    /// drain its queue) before the session can be reaped or the server
+    /// deinitialized. Typically: `requestClose()` the session, wait for its
+    /// `on_close`, and stop using the pointer from then on.
     pub fn wake(self: *ServerSession) void {
         self.wake_state.request();
         if (comptime builtin.target.os.tag == .windows) {

@@ -95,6 +95,17 @@ pub const Connection = struct {
     /// Use this to drain a per-connection work queue on the correct thread.
     on_wake: ?*const fn (conn: *Connection) void = null,
 
+    /// Set by cross-thread `requestClose()` and consumed by the run loop,
+    /// which emits the deferred `.closing` observer event on its own thread.
+    /// Atomic because `requestClose` may run on any thread; the observer
+    /// itself is only ever invoked on the owner/loop thread (see
+    /// `events.Observer`).
+    close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    /// True once the `.closing` connection phase has been emitted, so the
+    /// event fires at most once per connection. Owner/loop-thread only.
+    closing_emitted: bool = false,
+
     /// Windows read-loop bridge; `{}` elsewhere. std's Windows sockets are
     /// raw AFD handles that `WSAPoll` rejects, so the run loop there runs
     /// each blocking read as a cancellable `io.async` task and waits on a
@@ -128,8 +139,10 @@ pub const Connection = struct {
     // -- Thread-affinity check (debug only) ---------------------------------
 
     /// Thread ID captured at init time. In debug builds, key entry points
-    /// assert that the current thread matches this value.
-    owner_thread_id: ?std.Thread.Id = null,
+    /// assert that the current thread matches this value. Stored widened to
+    /// `u64` (not `std.Thread.Id`, whose width varies by target) so the
+    /// rendered api-snapshot surface is platform-stable.
+    owner_thread_id: ?u64 = null,
 
     /// When true, thread-affinity checks also run in release builds
     /// (always on in Debug). Mirrors `Peer.enableRuntimeThreadChecks`.
@@ -312,6 +325,11 @@ pub const Connection = struct {
     pub fn deinit(self: *Connection) void {
         if (self.deinitialized) return;
         if (self.callback_depth != 0) {
+            // Deferred: deinit() was called re-entrantly from a callback on the
+            // run-loop thread, which need not be the owner thread — so this
+            // branch must NOT assert affinity. It only flags intent and wakes
+            // the loop; the real teardown runs later via deinitNow, which does
+            // assert.
             self.deinit_requested = true;
             self.requestClose();
             return;
@@ -388,6 +406,14 @@ pub const Connection = struct {
     ///
     /// After `run()` returns, the `on_close` callback is invoked.
     pub fn run(self: *Connection) void {
+        // run() does NOT auto-adopt thread affinity. A connection run on a
+        // thread other than the one that constructed it must adopt first (the
+        // ClientSession/ServerSession wrappers call adoptOwnerThread() right
+        // before run() for exactly this reason). Auto-adopting here was tried
+        // and rejected: it cannot be un-done on exit (run() may free `self` via
+        // its on_close/on_destroy teardown, so a restore-on-return would be a
+        // use-after-free), which left every construct-here / run-on-a-worker /
+        // deinit-here caller owning the connection on a dead thread.
         self.transport.startWriter() catch |err| {
             log.debug("failed to start writer thread: {}", .{err});
             self.last_error = err;
@@ -683,14 +709,19 @@ pub const Connection = struct {
     pub fn close(self: *Connection) void {
         self.assertThreadAffinity();
         log.debug("connection closing", .{});
-        events.emitConnection(self.observer, .tcp, .unknown, .closing);
+        self.emitClosingOnce();
         self.transport.close();
     }
 
     /// Signal the transport to stop from any thread. Wakes a blocked
     /// `run()` loop by shutting down the socket.
+    ///
+    /// Never invokes the observer directly: observer callbacks fire on the
+    /// owner/loop thread only, so the `.closing` event is deferred to the run
+    /// loop, which emits it when it observes the request. If the loop never
+    /// runs (or has already exited) the deferred event is dropped.
     pub fn requestClose(self: *Connection) void {
-        events.emitConnection(self.observer, .tcp, .unknown, .closing);
+        self.close_requested.store(true, .release);
         self.transport.shutdown();
         if (comptime builtin.target.os.tag == .windows) {
             // On Windows the run loop parks on win_read.cond when it has no tick
@@ -842,8 +873,21 @@ pub const Connection = struct {
     }
 
     fn emitClosed(self: *Connection) void {
+        // A cross-thread requestClose() defers its `.closing` event to this
+        // (the loop) thread; emit it before the terminal events so observers
+        // see closing → close → closed in order.
+        if (self.close_requested.load(.acquire)) self.emitClosingOnce();
         events.emitClose(self.observer, .tcp, .unknown, self.last_error);
         events.emitConnection(self.observer, .tcp, .unknown, .closed);
+    }
+
+    /// Emit the `.closing` connection phase at most once. Owner/loop-thread
+    /// only: called synchronously by `close()` and by the run loop when it
+    /// observes a cross-thread `requestClose()`.
+    fn emitClosingOnce(self: *Connection) void {
+        if (self.closing_emitted) return;
+        self.closing_emitted = true;
+        events.emitConnection(self.observer, .tcp, .unknown, .closing);
     }
 
     fn idleDeadlineExceeded(self: *const Connection) bool {

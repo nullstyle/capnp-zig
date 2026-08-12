@@ -23,6 +23,8 @@ updated as phases land.
 | Self-interop e2e (zig↔zig loopback, `zig build e2e-self`) | full | full | full |
 | Cross-implementation e2e (docker reference impls) | full | full | local only (Docker Desktop/WSL2); hosted runners cannot run Linux containers |
 | Deterministic fuzz smoke | full | full | full |
+| Structural fuzz: L3/L4 peer frames, QUIC framers, persistence restore | full | full | full |
+| ThreadSanitizer lane (`test-tsan`, threaded transport suites) | full (CI job) | not available (libtsan SIGSEGVs at startup on this Zig pin) | not available |
 | Coverage-guided fuzzing (`--fuzz`) | full | full | blocked upstream (zig fuzzer is ELF/Mach-O only) |
 | Evented `std.Io` backend | compile-checked only — no sockets (see below) | compile-checked only — no sockets (see below) | blocked upstream (`EventedBackendUnsupported`) |
 | QUIC transport | experimental (`-Dquic=true`; four-root evidence runs in Debug + ReleaseSafe, and the full repository is also tested against the QUIC-enabled root) | experimental (four-root Debug + ReleaseSafe evidence; locally proven 61/61 on macOS) | experimental (native Debug + ReleaseSafe no-skip gate configured; local cross-compilation passes, but hosted runtime acceptance is pending the capnp-zig push) |
@@ -37,6 +39,24 @@ build/check/test/API/docs surface against the QUIC root. At this sprint's local
 handoff, macOS has run all 61 tests in both modes. Windows full-tree test
 cross-compilation passes 113/113, but native Windows runtime acceptance remains
 pending a hosted run after capnp-zig is pushed.
+
+That pending claim also rests on a layer below us, so it is worth stating
+precisely what the dependency does and does not prove. In quic-zig v0.10.1
+(the pinned tag), `windows-latest` is a tier-1 **blocking** CI leg —
+`advisory: false` in the test matrix — running the full `zig build test`, so
+the protocol engine, wire/frame codecs, conformance suite, and in-memory TLS
+handshakes genuinely execute on Windows rather than merely cross-compiling.
+Exactly three tests are excluded there, and all three are the real-socket loop
+smokes (two entering `runUdpServer`, one entering `runUdpClient`). They carry
+an unconditional `if (builtin.os.tag == .windows) return error.SkipZigTest`
+guard, so they have never run on Windows and have never reported a failure:
+the UDP socket loop is **untested on Windows, not known-broken**. Verified
+against the pinned tag, not taken on report.
+
+The practical consequence for our own Windows QUIC acceptance is that the
+socket layer is unproven on *both* sides of the boundary. Treat a Windows
+runtime run as genuine discovery work that may surface real defects, not as a
+formality expected to confirm a working path.
 
 Note on **Windows codegen**: the upstream prebuilt Windows tools still contain
 the executables but not the standard schema tree. The repository now routes
@@ -86,7 +106,14 @@ The two-party Cap'n Proto RPC Level-1 core is promoted to Stable in 0.3.0 on a
 **frozen public surface**: the Stable RPC entry points below are pinned by the
 `docs/api-snapshot.txt` snapshot and gated in CI (`zig build check-api`) — a
 diff is a reviewed breaking change, not an accident. The complementary
-Experimental surface evolves in `docs/api-snapshot-experimental.txt` (ungated).
+Experimental surface evolves in `docs/api-snapshot-experimental.txt`, which is
+**no longer ungated**: CI runs `check-api-experimental` (and, on Linux with
+QUIC enabled, `check-api-experimental-quic`), so the committed experimental
+snapshots must match the tree. Drift there is not a breaking change — the fix
+is to regenerate and commit — but it can no longer go unnoticed. This became
+possible once the stored thread ids were widened to `u64`: `std.Thread.Id` is
+u32 on Linux/Windows and u64 on macOS, and `@typeName` renders the resolved
+integer, so the snapshots used to differ by the platform that generated them.
 
 | Module | Path | Frozen surface |
 |---|---|---|

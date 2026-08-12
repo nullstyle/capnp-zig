@@ -26,6 +26,7 @@ const scheduler_mod = @import("scheduler.zig");
 const udp_receive_bridge = @import("udp_receive_bridge.zig");
 const server_mod = @import("server.zig");
 pub const session = @import("session.zig");
+pub const wake = @import("wake.zig");
 
 pub const enabled = true;
 /// Compatibility transport for a single vat-to-vat QUIC RPC session.

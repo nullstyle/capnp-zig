@@ -16,6 +16,9 @@ const framing = capnpc.rpc.wire.framing;
 const protocol = capnpc.rpc.wire.protocol;
 const cap_table = capnpc.rpc.caps.table;
 const Peer = capnpc.rpc.peer.Peer;
+const ProvisionIndex = capnpc.rpc.peer.ProvisionIndex;
+const vat_join = capnpc.rpc.vat.join;
+const quic_wire = capnpc.rpc.transport.quic;
 const request_reader = capnpc.request;
 const Generator = capnpc.codegen.Generator;
 
@@ -220,6 +223,302 @@ fn fuzzPeerStructuredFrame(_: void, smith: *std.testing.Smith) anyerror!void {
     }
 }
 
+/// A fuzzed MessageTarget: an importedCap at a small id (overlapping seeded
+/// imports/exports) or a PromisedAnswer with a short transform path. Returned
+/// by value; the PromisedAnswer variant carries a null transform list because
+/// the builder path (`buildProvidePromisedAnswerWithOps`) takes ops directly —
+/// here the value is only used for the importedCap arm of Provide/Join.
+fn fuzzImportedTarget(smith: *std.testing.Smith) protocol.MessageTarget {
+    return .{
+        .tag = .importedCap,
+        .imported_cap = smith.valueRangeAtMost(u32, 0, 8),
+        .promised_answer = null,
+    };
+}
+
+/// Optionally hand back a small, well-formed AnyPointer reader (the shared
+/// fixture) or null — so recipient/provision/completion/key_part fields
+/// exercise both the present and absent decode arms without fabricating wire
+/// bytes per frame.
+fn maybeAnyPointer(fixture: message.AnyPointerReader, smith: *std.testing.Smith) ?message.AnyPointerReader {
+    return if (smith.boolWeighted(1, 2)) fixture else null;
+}
+
+/// Build a fuzzed embargo byte slice for Accept/Disembargo, bounded so hostile
+/// inputs cannot balloon the provision index's attributable-byte budget.
+fn fuzzEmbargoBytes(buf: []u8, smith: *std.testing.Smith) []const u8 {
+    const n: usize = smith.valueRangeAtMost(u16, 0, @intCast(buf.len));
+    for (buf[0..n]) |*b| b.* = smith.value(u8);
+    return buf[0..n];
+}
+
+/// STRUCTURE-AWARE L3/L4 dispatch fuzzing. `fuzzPeerStructuredFrame` only emits
+/// Call and Return, so the 3-party handoff / Join surface (Provide, Accept,
+/// Join, ThirdPartyAnswer, Resolve, Disembargo, Release, Finish, Bootstrap,
+/// Abort) was reachable only through random bytes that essentially never
+/// decode. This target seeds the peer with the state those handlers gate on — a
+/// live export, imports, an attached provision index (small limits so hostile
+/// embargo/park bytes stay bounded), an attached loopback Join network, and a
+/// well-formed Provide preamble so a matching Accept can hit the live-provision
+/// path — then feeds a weighted mix of hostile frames across all message types.
+/// Property: no crash, hang, or leak, and full state drain on deinit, whatever
+/// the peer accepts or rejects.
+fn fuzzPeerL3Frame(_: void, smith: *std.testing.Smith) anyerror!void {
+    const H = struct {
+        fn onCall(_: *anyopaque, peer: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+            peer.sendReturnEmptyStruct(call.question_id) catch {};
+        }
+        fn onFrame(_: *anyopaque, _: []const u8) anyerror!void {}
+    };
+
+    // A shared, well-formed AnyPointer fixture (a tiny struct's root) reused as
+    // recipient/provision/completion/key_part. Built once; its backing message
+    // outlives every frame that clones from it.
+    var fixture_builder = protocol.MessageBuilder.init(std.testing.allocator);
+    defer fixture_builder.deinit();
+    {
+        var seed_call = fixture_builder.beginCall(0, 0, 0) catch return;
+        seed_call.setTargetImportedCap(0) catch return;
+        seed_call.setSendResultsToCaller();
+        _ = seed_call.payloadTyped() catch return;
+    }
+    const fixture_frame = fixture_builder.finish() catch return;
+    defer std.testing.allocator.free(fixture_frame);
+    var fixture_msg = message.Message.initUnvalidated(std.testing.allocator, fixture_frame) catch return;
+    defer fixture_msg.deinit();
+    const fixture = fixture_msg.getRootAnyPointer() catch return;
+
+    // Small provision-index limits: a hostile Accept storm must not amplify a
+    // tiny fuzz input into large parked-accept memory.
+    var index = ProvisionIndex.init(std.testing.allocator, .{
+        .max_provisions = 32,
+        .max_provision_key_bytes = 4096,
+        .max_parked_accepts = 32,
+        .max_parked_accepts_per_peer = 16,
+        .max_parked_accept_bytes = 8192,
+        .max_parked_accept_bytes_per_peer = 4096,
+    });
+    index.disableThreadAffinity();
+    defer index.deinit();
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(std.testing.allocator);
+    defer join_net.deinit();
+
+    var peer = Peer.initDetached(std.testing.allocator);
+    defer peer.deinit();
+    var sink: u8 = 0;
+    peer.setSendFrameOverride(&sink, H.onFrame);
+    const export_id = peer.addExport(.{ .ctx = &sink, .on_call = H.onCall }) catch return;
+    peer.caps.noteImport(2) catch {};
+    peer.caps.noteImport(3) catch {};
+    peer.attachProvisionIndex(&index) catch {};
+    join_net.registerDirectPeer(&peer, &peer) catch {};
+    peer.attachJoinNetwork(join_net.network()) catch {};
+
+    // Deterministic Provide preamble (question 7, target = the live export) so
+    // the peer holds at least one live provision for a fuzzed Accept to match.
+    // The reachability self-check fails loudly if a future refactor closes the
+    // gate (e.g. renames the provide bookkeeping or changes target resolution)
+    // so this target cannot silently rot into "random bytes that never
+    // provide". Seeded once, before the hostile loop.
+    {
+        var preamble = protocol.MessageBuilder.init(std.testing.allocator);
+        defer preamble.deinit();
+        preamble.buildProvide(7, .{ .tag = .importedCap, .imported_cap = export_id, .promised_answer = null }, fixture) catch return;
+        const frame = preamble.finish() catch return;
+        defer std.testing.allocator.free(frame);
+        peer.handleFrame(frame) catch {};
+    }
+    std.debug.assert(peer.provides_by_question.count() > 0);
+
+    var embargo_buf: [32]u8 = undefined;
+    var frames: u8 = 0;
+    while (frames < 48 and !smith.eosWeightedSimple(3, 1)) : (frames += 1) {
+        var builder = protocol.MessageBuilder.init(std.testing.allocator);
+        defer builder.deinit();
+
+        const ok = switch (smith.valueRangeAtMost(u8, 0, 13)) {
+            0 => builder.buildBootstrap(smith.valueRangeAtMost(u32, 0, 8)),
+            1 => builder.buildFinish(smith.valueRangeAtMost(u32, 0, 8), smith.boolWeighted(1, 1), smith.boolWeighted(1, 3)),
+            2 => builder.buildRelease(smith.valueRangeAtMost(u32, 0, 8), smith.value(u32)),
+            3 => builder.buildResolveCap(smith.valueRangeAtMost(u32, 0, 8), .{
+                .tag = .senderHosted,
+                .id = smith.valueRangeAtMost(u32, 0, 8),
+            }),
+            4 => builder.buildResolveException(smith.valueRangeAtMost(u32, 0, 8), "fuzz"),
+            5 => builder.buildDisembargoSenderLoopback(fuzzImportedTarget(smith), smith.value(u32)),
+            6 => builder.buildDisembargoReceiverLoopback(fuzzImportedTarget(smith), smith.value(u32)),
+            7 => builder.buildDisembargoAccept(fuzzImportedTarget(smith), fuzzEmbargoBytes(&embargo_buf, smith)),
+            8 => builder.buildProvide(smith.valueRangeAtMost(u32, 0, 8), fuzzImportedTarget(smith), maybeAnyPointer(fixture, smith)),
+            9 => builder.buildAccept(
+                smith.valueRangeAtMost(u32, 0, 8),
+                maybeAnyPointer(fixture, smith),
+                if (smith.boolWeighted(1, 1)) fuzzEmbargoBytes(&embargo_buf, smith) else null,
+            ),
+            10 => builder.buildJoin(smith.valueRangeAtMost(u32, 0, 8), fuzzImportedTarget(smith), maybeAnyPointer(fixture, smith)),
+            11 => builder.buildThirdPartyAnswer(smith.valueRangeAtMost(u32, 0, 8), maybeAnyPointer(fixture, smith)),
+            else => builder.buildAbortTyped("fuzz", .failed),
+        };
+        ok catch continue;
+
+        const frame = builder.finish() catch continue;
+        defer std.testing.allocator.free(frame);
+        peer.handleFrame(frame) catch {};
+    }
+}
+
+/// QUIC length-delimited framer at arbitrary chunk boundaries: like `fuzzFramer`
+/// for the TCP stream framer, but for the QUIC transport's frame codec, which
+/// is never reached by the default `test-fuzz` root otherwise (the `-Dquic=true`
+/// build swaps the library root, and `test-fuzz` runs without it). The framer
+/// itself is std-only and re-exported under both roots, so it fuzzes here with
+/// no QUIC dependency.
+fn fuzzQuicLengthFramer(_: void, smith: *std.testing.Smith) anyerror!void {
+    var framer = quic_wire.LengthDelimitedFramer.initWithOptions(std.testing.allocator, .{
+        .max_message_bytes = 4096,
+        .max_buffered_bytes = 16 * 1024,
+    });
+    defer framer.deinit();
+
+    var chunk_buf: [512]u8 = undefined;
+    while (!smith.eosWeightedSimple(7, 1)) {
+        const chunk_len = smith.slice(&chunk_buf);
+        framer.push(chunk_buf[0..chunk_len]) catch {
+            framer.reset();
+            continue;
+        };
+        while (true) {
+            const frame = framer.popFrame() catch {
+                framer.reset();
+                break;
+            };
+            if (frame) |bytes| {
+                std.testing.allocator.free(bytes);
+            } else break;
+        }
+    }
+}
+
+/// QUIC native control framer: decodes the hello/inline_rpc/data_rpc control
+/// stream. A weighted arm prefixes the valid preface so a share of inputs get
+/// past the version gate into real frame parsing instead of bouncing at the
+/// preface check.
+fn fuzzQuicNativeControlFramer(_: void, smith: *std.testing.Smith) anyerror!void {
+    var framer = quic_wire.NativeControlFramer.init(std.testing.allocator, .{
+        .max_control_frame_bytes = 4096,
+        .max_rpc_frame_bytes = 4096,
+        .max_buffered_bytes = 16 * 1024,
+    });
+    defer framer.deinit();
+
+    if (smith.boolWeighted(1, 1)) {
+        framer.push(quic_wire.native.preface) catch return;
+    }
+
+    var chunk_buf: [512]u8 = undefined;
+    while (!smith.eosWeightedSimple(7, 1)) {
+        const chunk_len = smith.slice(&chunk_buf);
+        framer.push(chunk_buf[0..chunk_len]) catch {
+            framer.reset();
+            continue;
+        };
+        while (true) {
+            const frame = framer.popFrame() catch {
+                framer.reset();
+                break;
+            };
+            if (frame) |f| {
+                f.deinit(std.testing.allocator);
+            } else break;
+        }
+    }
+}
+
+const persistence = capnpc.rpc.peer.persistence;
+
+/// Restore/sturdy-ref decode fuzzing. Sturdy-ref bytes are attacker-controlled
+/// by definition (a remote peer names whatever it likes in `restore`), and the
+/// restore path — payload decode via readSturdyRefParam, the restorer hook, and
+/// RestoreOutcome handling (unknown / existing / host) — was reachable only
+/// through random bytes that essentially never hit the restorer interface id.
+/// This seeds a bootstrap export plus a restorer hook whose outcome is driven
+/// by the fuzzed ref, then feeds restore Calls with both well-formed and
+/// malformed payloads. Property: no crash, hang, or leak; full state drain.
+fn fuzzPersistenceRestore(_: void, smith: *std.testing.Smith) anyerror!void {
+    const Restorer = struct {
+        existing_id: u32,
+        fn onRestore(ctx: *anyopaque, _: *Peer, sturdy_ref: []const u8) anyerror!capnpc.rpc.peer.RestoreOutcome {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            // Drive every RestoreOutcome arm off the fuzzed ref's first byte so
+            // the existing/host/unknown handling all gets exercised.
+            if (sturdy_ref.len == 0) return .unknown;
+            return switch (sturdy_ref[0] & 0x3) {
+                0 => .unknown,
+                1 => .{ .existing = self.existing_id },
+                else => .{ .host = .{ .ctx = self, .on_call = struct {
+                    fn onCall(_: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+                        p.sendReturnEmptyStruct(call.question_id) catch {};
+                    }
+                }.onCall } },
+            };
+        }
+        fn onFrame(_: *anyopaque, _: []const u8) anyerror!void {}
+        fn onCall(_: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+            p.sendReturnEmptyStruct(call.question_id) catch {};
+        }
+    };
+
+    var peer = Peer.initDetached(std.testing.allocator);
+    defer peer.deinit();
+    var sink: u8 = 0;
+    peer.setSendFrameOverride(&sink, Restorer.onFrame);
+
+    const bootstrap_id = peer.setBootstrap(.{ .ctx = &sink, .on_call = Restorer.onCall }) catch return;
+    // A second live export id for the `.existing` outcome to re-expose.
+    const existing_id = peer.addExport(.{ .ctx = &sink, .on_call = Restorer.onCall }) catch return;
+    var restorer = Restorer{ .existing_id = existing_id };
+    peer.setRestorer(&restorer, Restorer.onRestore) catch return;
+
+    var ref_buf: [256]u8 = undefined;
+    var frames: u8 = 0;
+    while (frames < 32 and !smith.eosWeightedSimple(3, 1)) : (frames += 1) {
+        var builder = protocol.MessageBuilder.init(std.testing.allocator);
+        defer builder.deinit();
+
+        const qid = smith.valueRangeAtMost(u32, 0, 8);
+        // Target the bootstrap export most of the time (the only one that
+        // routes to the restorer), a wrong id occasionally.
+        const target: u32 = if (smith.boolWeighted(4, 1)) bootstrap_id else smith.valueRangeAtMost(u32, 0, 8);
+        var call = builder.beginCall(qid, persistence.restorer_interface_id, persistence.restore_method_id) catch continue;
+        call.setTargetImportedCap(target) catch continue;
+
+        switch (smith.valueRangeAtMost(u8, 0, 3)) {
+            0 => {
+                // Well-formed Data of fuzzed length/content.
+                const n: usize = smith.valueRangeAtMost(u16, 0, @intCast(ref_buf.len));
+                for (ref_buf[0..n]) |*b| b.* = smith.value(u8);
+                persistence.writeRestoreParams(&call, ref_buf[0..n]) catch continue;
+            },
+            1 => {
+                // Malformed: content struct present but the sturdyRef pointer
+                // is left null (MissingSturdyRef path).
+                var payload = call.payloadTyped() catch continue;
+                const any = payload.initContent() catch continue;
+                _ = any.initStruct(0, 1) catch continue;
+            },
+            else => {
+                // Malformed: no content at all.
+                _ = call.payloadTyped() catch continue;
+            },
+        }
+        _ = call.initCapTableTyped(0) catch continue;
+
+        const frame = builder.finish() catch continue;
+        defer std.testing.allocator.free(frame);
+        peer.handleFrame(frame) catch {};
+    }
+}
+
 /// The compiler plugin's untrusted-input surface: a hostile capnp toolchain
 /// (or a crafted CodeGeneratorRequest piped to stdin) must never crash, hang,
 /// leak, or blow the codegen budget. Parse random bytes as a request and run
@@ -274,4 +573,20 @@ test "fuzz: peer frame dispatch" {
 
 test "fuzz: peer structured frame dispatch" {
     try std.testing.fuzz({}, fuzzPeerStructuredFrame, .{});
+}
+
+test "fuzz: peer L3/L4 frame dispatch" {
+    try std.testing.fuzz({}, fuzzPeerL3Frame, .{});
+}
+
+test "fuzz: quic length-delimited framer chunking" {
+    try std.testing.fuzz({}, fuzzQuicLengthFramer, .{});
+}
+
+test "fuzz: quic native control framer chunking" {
+    try std.testing.fuzz({}, fuzzQuicNativeControlFramer, .{});
+}
+
+test "fuzz: persistence restore / sturdy-ref decode" {
+    try std.testing.fuzz({}, fuzzPersistenceRestore, .{});
 }

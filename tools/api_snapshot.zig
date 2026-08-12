@@ -7,13 +7,17 @@
 //!
 //!   docs/api-snapshot.txt              — STABLE, the FROZEN contract. Any
 //!                                        drift here fails `check-api` (RED).
-//!   docs/api-snapshot-experimental.txt — EXPERIMENTAL, informational only.
-//!                                        Regenerated on every run; drift here
-//!                                        is expected and NEVER fails the gate.
+//!   docs/api-snapshot-experimental.txt — EXPERIMENTAL, not frozen. Refreshed
+//!                                        in place by local `check-api`; CI's
+//!                                        strict mode fails when the committed
+//!                                        file is stale.
 //!
-//!   zig build api-snapshot   # regenerate BOTH files
-//!   zig build check-api      # fail ONLY on Stable-file drift; refresh the
-//!                            # experimental file in place
+//!   zig build api-snapshot             # regenerate BOTH files
+//!   zig build check-api                # fail ONLY on Stable-file drift;
+//!                                      # refresh the experimental file
+//!   zig build check-api-experimental   # CI: fail on Stable drift OR a stale
+//!                                      # committed experimental file
+//!                                      # (--strict-experimental)
 //!
 //! Stability tiers for individual modules live in docs/stability.md and the
 //! F4 "Freeze scope" section of docs/rpc-stable-plan.md, which is authoritative
@@ -141,6 +145,23 @@ const stable_rules = [_]Rule{
     p("capnpc-zig.schema_validation"),
     p("capnpc-zig.reader"),
     p("capnpc-zig.request"),
+    // NOTE for anyone about to split generator.zig / struct_gen.zig: this
+    // prefix freezes their ENTIRE pub surface (33 `codegen.Generator.*`
+    // entries today), and Zig's privacy is FILE-scoped. So moving a cluster of
+    // private `Generator` methods into a sibling file forces every private
+    // helper it calls back into to become `pub` — and each one then lands in
+    // this FROZEN tier, permanently. Measured on the interface/RPC emission
+    // cluster (~840 contiguous lines, the largest single win): it calls back
+    // into 11 private helpers, 3 of them genuinely shared
+    // (`toZigIdentifier` 9x, `lowerFirst` 3x, `allocTypeDeclName`), so the
+    // extraction cannot be done snapshot-neutrally. The `rpc.peer`
+    // decomposition was unaffected because Peer's pub surface is Experimental
+    // (only ~15 frozen entries); codegen is the opposite case.
+    //
+    // Splitting these files therefore needs an explicit API decision first —
+    // narrow this rule to the reviewed consumer entry points (so codegen
+    // INTERNALS stop being frozen), or accept the new frozen entries. Do not
+    // widen helpers to `pub` as a side effect of a refactor.
     p("capnpc-zig.codegen"),
 
     // --- RPC wire protocol + framing (promoted). ---
@@ -883,6 +904,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
     var mode: enum { check, write, closure } = .check;
+    var strict_experimental = false;
     var stable_path: []const u8 = stable_path_default;
     var experimental_path: []const u8 = experimental_path_default;
 
@@ -899,6 +921,8 @@ pub fn main(init: std.process.Init) !void {
             mode = .check;
         } else if (std.mem.eql(u8, arg, "--closure")) {
             mode = .closure;
+        } else if (std.mem.eql(u8, arg, "--strict-experimental")) {
+            strict_experimental = true;
         } else if (std.mem.eql(u8, arg, "--path")) {
             stable_path = iter.next() orelse return error.InvalidArgument;
         } else if (std.mem.eql(u8, arg, "--experimental-path")) {
@@ -947,14 +971,31 @@ pub fn main(init: std.process.Init) !void {
             );
         },
         .check => {
-            // The Experimental file is informational: refresh it in place so
-            // it never goes stale, but its content NEVER fails the gate.
-            writeFile(io, experimental_path, experimental_rendered) catch |err| {
-                std.debug.print(
-                    "api-snapshot: note: could not refresh {s} ({}); continuing\n",
-                    .{ experimental_path, err },
-                );
-            };
+            if (strict_experimental) {
+                // Strict mode (CI): the Experimental file is not a frozen
+                // contract, but the COMMITTED snapshot must match the tree —
+                // otherwise the "informational" surface silently goes stale
+                // and platform-dependent renderings slip through unnoticed.
+                // Drift is RED with a refresh instruction, not a review one.
+                const experimental_ok = try diffAndReport(allocator, io, experimental_path, experimental_rendered);
+                if (!experimental_ok) {
+                    std.debug.print(
+                        "api-snapshot: EXPERIMENTAL surface drifted from the committed {s}. Not a frozen contract — refresh it: run `zig build api-snapshot` (and `-Dquic=true api-snapshot-quic`) and commit the result.\n",
+                        .{experimental_path},
+                    );
+                    return error.ExperimentalSnapshotDrift;
+                }
+            } else {
+                // The Experimental file is informational: refresh it in place
+                // so it never goes stale, but its content does not fail the
+                // default gate (CI enforces it via --strict-experimental).
+                writeFile(io, experimental_path, experimental_rendered) catch |err| {
+                    std.debug.print(
+                        "api-snapshot: note: could not refresh {s} ({}); continuing\n",
+                        .{ experimental_path, err },
+                    );
+                };
+            }
 
             // The Stable file is the frozen contract: drift here is RED.
             const stable_ok = try diffAndReport(allocator, io, stable_path, stable_rendered);
@@ -966,8 +1007,8 @@ pub fn main(init: std.process.Init) !void {
                 return error.ApiSnapshotDrift;
             }
             std.debug.print(
-                "api-snapshot: OK ({} stable declarations frozen; {} experimental refreshed)\n",
-                .{ stable_lines.len, experimental_lines.len },
+                "api-snapshot: OK ({} stable declarations frozen; {} experimental {s})\n",
+                .{ stable_lines.len, experimental_lines.len, if (strict_experimental) @as([]const u8, "verified") else "refreshed" },
             );
         },
     }

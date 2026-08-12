@@ -3,9 +3,26 @@
     .version = "0.9.0",
     .minimum_zig_version = "0.17.0-dev.1509",
     .dependencies = .{
+        // Pinned to a TAG, not a raw commit: tags are immutable release
+        // points, so the pin is auditable and reproducible. v0.10.1 is the
+        // previously-pinned commit e00d449 ("Merge boringssl Windows pin")
+        // plus one release commit that declares the version — no source
+        // change, which is why this swap needed no behavioral re-validation
+        // beyond re-running the QUIC gates.
+        //
+        // BEFORE BUMPING TO v0.11.0 OR LATER: that release changes default
+        // WIRE behavior — CUBIC congestion control, pacing, and HyStart++ all
+        // become default-on. Each is compiled in either way and has a
+        // one-line opt-out (`congestion_control = .new_reno`,
+        // `enable_pacing = false`, `enable_hystart = false`). Re-run
+        // `bench-check` across the bump: the RPC round-trip baselines in this
+        // repo were measured under the old defaults, so a regression there
+        // may be a deliberate upstream default change rather than our own
+        // regression. Decide explicitly whether to adopt the new defaults or
+        // pin the old behavior.
         .quic_zig = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/e00d449278bb4fe74f8f72cb1ec8a56de0e31cd9.tar.gz",
-            .hash = "quic_zig-0.10.0-jMbGHQ3RJQB3btHgs1ZjtRmVdPBbIgFsDuncpYcWTqbL",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.10.1.tar.gz",
+            .hash = "quic_zig-0.10.1-jMbGHbDUJQBuGJbmWaosSc4bmVg_uWMa_fOiPAQMmHLq",
             .lazy = true,
         },
     },
@@ -16,6 +33,7 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "build",
         "src",
         "README.md",
         "LICENSE",

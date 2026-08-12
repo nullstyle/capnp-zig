@@ -9,6 +9,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The cross-target compile matrix builds again, on every target.** Two
+  independent breakages, both long-standing:
+
+  `tools/soak_rpc.zig` declared its twenty counters as
+  `std.atomic.Value(u64)`. Zig's atomic builtins reject operands wider than
+  the pointer width, so `zig build check-compile -Dtarget=x86-linux-gnu`
+  failed with nine errors inside `std/atomic.zig` — the `Cross-target compile
+  (x86-linux-gnu)` CI job had been red on this. The counters are now `usize`,
+  which is the same u64 on every 64-bit machine the soak harness actually runs
+  on; the 32-bit build exists purely as compile-only rot detection.
+
+  A thread-affinity assertion still compared `@as(?std.Thread.Id, ...)`
+  against a field widened to `?u64` (see the platform-stable snapshot work
+  below). `std.Thread.Id` is u32 on Linux and Windows but u64 on macOS, so
+  this compiled on a macOS host while `check-test-compile -Dtarget=
+  x86_64-windows` failed.
+
+### Changed
+
+- **`quic-zig` is pinned to the `v0.10.1` tag instead of a raw commit.**
+  Dependency pins are now immutable, auditable release points. The tag
+  contains exactly the previously pinned tree plus one release commit that
+  declares the version (no source change), so the Windows socket-link and
+  BoringSSL fixes it carries are the same ones already under test.
+
+- **`rpc.peer` decomposed: `peer/mod.zig` shrank from 14,059 to 5,807 lines
+  (-59%) with zero behavior change.** The full P0-P12 ladder extracted every
+  major subsystem into comptime-generic sibling modules (the JoinCoordinator
+  extraction contract — `Namespace(comptime Peer)` files one directory level
+  deep): L3 provision hosting + the canonical drain/teardown procedure
+  (`provision/`), the outbound Return send family (`return/`), cap
+  refcount/release/frame-send, the sendCall family + inbound call path
+  (`call/`), L4 join accept/completion + cross-peer relay (`join/`), L3
+  origination + inbound Provide/Accept/Join arms (`provide/`), the
+  cross-peer proxy + automatic third-party routes (`third_party/`),
+  promise-export resolution + inbound Resolve, persistence hooks, question
+  allocation, the 26 Peer-parameterized context/record structs
+  (`peer_context_types.zig`), and — moved as one unit because its teardown
+  order is load-bearing — the deinit/shutdown/cancel/deadline lifecycle
+  (`peer_lifecycle.zig`). Every frozen Stable declaration
+  (`docs/api-snapshot.txt`, 1548 lines) stayed byte-identical throughout;
+  cold-cache `zig build test` totals are bit-equal before and after the
+  ladder (1862/1862). Consumers of Experimental internals will see many
+  previously-private `Peer` helpers now `pub` (they back the extracted
+  namespaces); the experimental snapshots track all of it.
+
+- **`build.zig` is now a 14-line driver; the build graph lives in
+  `build/build_impl.zig`.** Step names, registration order, and option
+  handling are unchanged (`zig build -l`, with and without `-Dquic=true`, is
+  byte-identical). `build/` joined the `build.zig.zon` `.paths` whitelist and
+  `package-preflight`'s REQUIRED package roots — without it a consumer's
+  `zig build` cannot parse the graph — and the docs-smoke documented-step
+  check now scans the real registration site.
+
+- **The `.closing` observer event now always fires on the connection's
+  owner/run-loop thread (Experimental events surface).** Cross-thread
+  `requestClose()` — TCP and QUIC, including QUIC server sessions — no longer
+  invokes the observer on the requesting thread; the run loop emits the
+  deferred `.closing` when it observes the request, immediately before the
+  terminal `.close`/`.closed` pair. Owner-thread `close()` keeps its
+  synchronous emit, and the event fires at most once per connection either
+  way. Timing consequence: a deferred `.closing` needs a running loop to
+  observe the request — if the loop never runs, or has already exited, the
+  event is dropped. `events.Observer` now documents the full observer
+  threading contract, and `QuicServer.deinit`/`ServerSession.wake` document
+  the teardown contract for external waker threads (quiesce before
+  deinit/reap).
+
+### Fixed
+
 - **Explicitly initialized zero-sized structs are no longer encoded as null.**
   Root, nested, AnyPointer, and segment-targeted construction now use Cap'n
   Proto's reference-compatible offset -1 struct pointer when both the data and

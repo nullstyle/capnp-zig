@@ -992,7 +992,7 @@ capnpc-zig.rpc.peer.Introduction: struct
 capnpc-zig.rpc.peer.JoinCoordinator.Accepted.cap: field rpc.caps.descriptors.ResolvedCap
 capnpc-zig.rpc.peer.JoinCoordinator.Accepted.peer: field *rpc.peer.mod.Peer
 capnpc-zig.rpc.peer.JoinCoordinator.Accepted: struct
-capnpc-zig.rpc.peer.JoinCoordinator.acceptFirst: fn (*rpc.peer.mod.JoinCoordinator) anyerror!u32
+capnpc-zig.rpc.peer.JoinCoordinator.acceptFirst: fn (*rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer)) anyerror!u32
 capnpc-zig.rpc.peer.JoinCoordinator.accept_answer_finished: field bool = true
 capnpc-zig.rpc.peer.JoinCoordinator.accept_answer_id: field ?u32 = null
 capnpc-zig.rpc.peer.JoinCoordinator.accept_answer_peer: field ?*rpc.peer.mod.Peer = null
@@ -1001,33 +1001,35 @@ capnpc-zig.rpc.peer.JoinCoordinator.accept_link_peer: field ?*rpc.peer.mod.Peer 
 capnpc-zig.rpc.peer.JoinCoordinator.accept_peer: field ?*rpc.peer.mod.Peer = null
 capnpc-zig.rpc.peer.JoinCoordinator.accept_question_id: field ?u32 = null
 capnpc-zig.rpc.peer.JoinCoordinator.accept_send_in_progress: field bool = false
-capnpc-zig.rpc.peer.JoinCoordinator.acceptedCap: fn (*const rpc.peer.mod.JoinCoordinator) ?rpc.caps.descriptors.ResolvedCap
-capnpc-zig.rpc.peer.JoinCoordinator.acceptedPeer: fn (*const rpc.peer.mod.JoinCoordinator) ?*rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.JoinCoordinator.acceptedCap: fn (*const rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer)) ?rpc.caps.descriptors.ResolvedCap
+capnpc-zig.rpc.peer.JoinCoordinator.acceptedPeer: fn (*const rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer)) ?*rpc.peer.mod.Peer
 capnpc-zig.rpc.peer.JoinCoordinator.accepted_cap: field ?rpc.caps.descriptors.ResolvedCap = null
 capnpc-zig.rpc.peer.JoinCoordinator.accepted_peer: field ?*rpc.peer.mod.Peer = null
 capnpc-zig.rpc.peer.JoinCoordinator.allocator: field mem.Allocator
-capnpc-zig.rpc.peer.JoinCoordinator.cancelPending: fn (*rpc.peer.mod.JoinCoordinator, []const u8) anyerror!void
+capnpc-zig.rpc.peer.JoinCoordinator.cancelPending: fn (*rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer), []const u8) anyerror!void
 capnpc-zig.rpc.peer.JoinCoordinator.cancel_exceptions: field u32 = 0
 capnpc-zig.rpc.peer.JoinCoordinator.canceled: field bool = false
-capnpc-zig.rpc.peer.JoinCoordinator.deinit: fn (*rpc.peer.mod.JoinCoordinator) void
+capnpc-zig.rpc.peer.JoinCoordinator.deinit: fn (*rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer)) void
 capnpc-zig.rpc.peer.JoinCoordinator.expected_parts: field u16
-capnpc-zig.rpc.peer.JoinCoordinator.finishJoinResults: fn (*rpc.peer.mod.JoinCoordinator) anyerror!void
+capnpc-zig.rpc.peer.JoinCoordinator.finishJoinResults: fn (*rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer)) anyerror!void
 capnpc-zig.rpc.peer.JoinCoordinator.finish_failures: field u32 = 0
-capnpc-zig.rpc.peer.JoinCoordinator.init: fn (mem.Allocator, *rpc.peer.mod.Peer, rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer), u32, u16) rpc.peer.mod.JoinCoordinator
+capnpc-zig.rpc.peer.JoinCoordinator.init: fn (mem.Allocator, *rpc.peer.mod.Peer, rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer), u32, u16) rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer)
 capnpc-zig.rpc.peer.JoinCoordinator.join_id: field u32
 capnpc-zig.rpc.peer.JoinCoordinator.join_network: field rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer)
 capnpc-zig.rpc.peer.JoinCoordinator.join_results_finished: field bool = false
 capnpc-zig.rpc.peer.JoinCoordinator.joined: field array_list.Aligned(rpc.vat.join.Joined(rpc.peer.mod.Peer),null) = <default>
 capnpc-zig.rpc.peer.JoinCoordinator.mismatch_exceptions: field u32 = 0
+capnpc-zig.rpc.peer.JoinCoordinator.neutralizeAcceptedPeer: fn (*rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer), *rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.JoinCoordinator.neutralizeResultPeer: fn (*rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer), *rpc.peer.mod.Peer, u32) void
 capnpc-zig.rpc.peer.JoinCoordinator.origin_peer: field *rpc.peer.mod.Peer
 capnpc-zig.rpc.peer.JoinCoordinator.question_finished: field array_list.Aligned(bool,null) = <default>
 capnpc-zig.rpc.peer.JoinCoordinator.question_ids: field array_list.Aligned(u32,null) = <default>
 capnpc-zig.rpc.peer.JoinCoordinator.question_peers: field array_list.Aligned(?*rpc.peer.mod.Peer,null) = <default>
-capnpc-zig.rpc.peer.JoinCoordinator.releaseAccepted: fn (*rpc.peer.mod.JoinCoordinator) anyerror!void
-capnpc-zig.rpc.peer.JoinCoordinator.sendImportedCapPart: fn (*rpc.peer.mod.JoinCoordinator, *rpc.peer.mod.Peer, u32, u16, u16) anyerror!u32
-capnpc-zig.rpc.peer.JoinCoordinator.sendPart: fn (*rpc.peer.mod.JoinCoordinator, *rpc.peer.mod.Peer, rpc.wire.protocol.MessageTarget, u16, u16) anyerror!u32
+capnpc-zig.rpc.peer.JoinCoordinator.releaseAccepted: fn (*rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer)) anyerror!void
+capnpc-zig.rpc.peer.JoinCoordinator.sendImportedCapPart: fn (*rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer), *rpc.peer.mod.Peer, u32, u16, u16) anyerror!u32
+capnpc-zig.rpc.peer.JoinCoordinator.sendPart: fn (*rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer), *rpc.peer.mod.Peer, rpc.wire.protocol.MessageTarget, u16, u16) anyerror!u32
 capnpc-zig.rpc.peer.JoinCoordinator.sent_parts: field hash_map.HashMap(u16,u32,hash_map.AutoContext(u16),80)
-capnpc-zig.rpc.peer.JoinCoordinator.takeAccepted: fn (*rpc.peer.mod.JoinCoordinator) ?rpc.peer.mod.JoinCoordinator.Accepted
+capnpc-zig.rpc.peer.JoinCoordinator.takeAccepted: fn (*rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer)) ?rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer).Accepted
 capnpc-zig.rpc.peer.JoinCoordinator.unexpected_exceptions: field u32 = 0
 capnpc-zig.rpc.peer.JoinCoordinator: struct
 capnpc-zig.rpc.peer.JoinNetwork.CancelHostJoinResultFn: type = *const fn (*anyopaque, []const u8) void
@@ -1058,6 +1060,123 @@ capnpc-zig.rpc.peer.Joined.provision: field []u8
 capnpc-zig.rpc.peer.Joined.release_ctx: field ?*anyopaque = null
 capnpc-zig.rpc.peer.Joined.release_provision: field ?*const fn (*anyopaque, []const u8) void = null
 capnpc-zig.rpc.peer.Joined: struct
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyFinishGuards.add: fn (*rpc.peer.mod.Peer.AutomaticThirdPartyFinishGuards, *rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyFinishGuards.len: field usize = 0
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyFinishGuards.peers: field [3]*rpc.peer.mod.Peer = <default>
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyFinishGuards: struct
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyRouteRecord.clear_requested: field bool = false
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyRouteRecord.delivering_result: field bool = false
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyRouteRecord.operation_active: field bool = false
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyRouteRecord.source_answer_id: field u32
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyRouteRecord.source_marker_failed: field bool = false
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyRouteRecord.source_peer: field ?*rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyRouteRecord.target_answer_id: field u32
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyRouteRecord.target_outcome: field rpc.peer.peer_context_types.AutomaticThirdPartyRouteOf(rpc.peer.mod.Peer).TargetOutcome = .connected
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyRouteRecord.target_peer: field ?*rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.AutomaticThirdPartyRouteRecord: struct
+capnpc-zig.rpc.peer.Peer.CompletingJoinAnswerRecord.counts_as_join_record: field bool = false
+capnpc-zig.rpc.peer.Peer.CompletingJoinAnswerRecord.finished: field bool = false
+capnpc-zig.rpc.peer.Peer.CompletingJoinAnswerRecord.hosted: field ?*rpc.peer.peer_context_types.HostedJoinOf(rpc.peer.mod.Peer) = null
+capnpc-zig.rpc.peer.Peer.CompletingJoinAnswerRecord.release_result_caps: field bool = false
+capnpc-zig.rpc.peer.Peer.CompletingJoinAnswerRecord.result_sent: field bool = false
+capnpc-zig.rpc.peer.Peer.CompletingJoinAnswerRecord: struct
+capnpc-zig.rpc.peer.Peer.CrossPeerCapMapCtx.created_proxy_ids: field *array_list.Aligned(u32,null)
+capnpc-zig.rpc.peer.Peer.CrossPeerCapMapCtx.deinit: fn (*rpc.peer.peer_context_types.CrossPeerCapMapContextOf(rpc.peer.mod.Peer)) void
+capnpc-zig.rpc.peer.Peer.CrossPeerCapMapCtx.inbound_caps: field *rpc.caps.inbound.InboundCapTable
+capnpc-zig.rpc.peer.Peer.CrossPeerCapMapCtx.inbound_peer: field *rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.CrossPeerCapMapCtx.init: fn (*rpc.peer.mod.Peer, *rpc.peer.mod.Peer, *rpc.caps.inbound.InboundCapTable, *array_list.Aligned(u32,null), bool) rpc.peer.peer_context_types.CrossPeerCapMapContextOf(rpc.peer.mod.Peer)
+capnpc-zig.rpc.peer.Peer.CrossPeerCapMapCtx.outbound_peer: field *rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.CrossPeerCapMapCtx.pin_source_caps: field bool
+capnpc-zig.rpc.peer.Peer.CrossPeerCapMapCtx.remapped_by_index: field hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.CrossPeerCapMapCtx: struct
+capnpc-zig.rpc.peer.Peer.CrossPeerJoinRelayCtx.deinit: fn (mem.Allocator, *anyopaque) void
+capnpc-zig.rpc.peer.Peer.CrossPeerJoinRelayCtx.owner_answer_id: field u32
+capnpc-zig.rpc.peer.Peer.CrossPeerJoinRelayCtx.owner_peer: field *rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.CrossPeerJoinRelayCtx.settled_flag: field ?*bool = null
+capnpc-zig.rpc.peer.Peer.CrossPeerJoinRelayCtx: struct
+capnpc-zig.rpc.peer.Peer.CrossPeerJoinRelayRecord.deadline_ns: field ?i64 = null
+capnpc-zig.rpc.peer.Peer.CrossPeerJoinRelayRecord.source_peer: field ?*rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.CrossPeerJoinRelayRecord.source_question_id: field u32
+capnpc-zig.rpc.peer.Peer.CrossPeerJoinRelayRecord.upstream_terminal_started: field bool = false
+capnpc-zig.rpc.peer.Peer.CrossPeerJoinRelayRecord: struct
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCallCtx.created_param_proxy_ids: field array_list.Aligned(u32,null) = <default>
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCallCtx.deinit: fn (mem.Allocator, *anyopaque) void
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCallCtx.forward_peer: field *rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCallCtx.param_proxies_committed: field bool = false
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCallCtx.recipient_answer_id: field u32
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCallCtx.recipient_peer: field *rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCallCtx.settled_flag: field ?*bool = null
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCallCtx.source_inbound_caps: field *rpc.caps.inbound.InboundCapTable
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCallCtx.source_params: field rpc.wire.protocol.Payload
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCallCtx.target: field rpc.caps.descriptors.ResolvedCap
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCallCtx: struct
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCtx.deinit: fn (mem.Allocator, *anyopaque) void
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCtx.export_id: field u32 = 0
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCtx.onCall: fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Call, *const rpc.caps.inbound.InboundCapTable) anyerror!void
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCtx.owner_peer: field *rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCtx.release_source_export_pin_id: field ?u32 = null
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCtx.release_source_import_id: field ?u32 = null
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCtx.release_source_import_pin_id: field ?u32 = null
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCtx.source_peer: field ?*rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCtx.target: field rpc.caps.descriptors.ResolvedCap
+capnpc-zig.rpc.peer.Peer.CrossPeerProxyCtx: struct
+capnpc-zig.rpc.peer.Peer.CrossPeerReturnRelayCtx.created_result_proxy_ids: field array_list.Aligned(u32,null) = <default>
+capnpc-zig.rpc.peer.Peer.CrossPeerReturnRelayCtx.deinit: fn (*rpc.peer.peer_context_types.CrossPeerReturnRelayContextOf(rpc.peer.mod.Peer), mem.Allocator) void
+capnpc-zig.rpc.peer.Peer.CrossPeerReturnRelayCtx.pin_source_caps: field bool = false
+capnpc-zig.rpc.peer.Peer.CrossPeerReturnRelayCtx.release_param_caps: field bool = true
+capnpc-zig.rpc.peer.Peer.CrossPeerReturnRelayCtx.result_proxies_committed: field bool = false
+capnpc-zig.rpc.peer.Peer.CrossPeerReturnRelayCtx.source: field rpc.wire.protocol.Payload
+capnpc-zig.rpc.peer.Peer.CrossPeerReturnRelayCtx.source_inbound_caps: field *rpc.caps.inbound.InboundCapTable
+capnpc-zig.rpc.peer.Peer.CrossPeerReturnRelayCtx.source_peer: field *rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.CrossPeerReturnRelayCtx.target_peer: field *rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.CrossPeerReturnRelayCtx: struct
+capnpc-zig.rpc.peer.Peer.ExportRecord.ctx: field *anyopaque
+capnpc-zig.rpc.peer.Peer.ExportRecord.on_call: field *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Call, *const rpc.caps.inbound.InboundCapTable) anyerror!void
+capnpc-zig.rpc.peer.Peer.ExportRecord: struct
+capnpc-zig.rpc.peer.Peer.ForwardReturnModeEnum.propagate_accept_from_third_party: enumerant = 3
+capnpc-zig.rpc.peer.Peer.ForwardReturnModeEnum.propagate_results_sent_elsewhere: enumerant = 2
+capnpc-zig.rpc.peer.Peer.ForwardReturnModeEnum.sent_elsewhere: enumerant = 1
+capnpc-zig.rpc.peer.Peer.ForwardReturnModeEnum.translate_to_caller: enumerant = 0
+capnpc-zig.rpc.peer.Peer.ForwardReturnModeEnum: enum
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.accept_answer_id: field ?u32 = null
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.accept_no_finish_needed: field bool = false
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.allocator: field mem.Allocator
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.deferred_failed_imports: field array_list.Aligned(u32,null) = <default>
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.deinitCtx: fn (mem.Allocator, *anyopaque) void
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.deinitSelf: fn (*rpc.peer.mod.Peer.HandoffPickupContext) void
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.finishAcceptAnswer: fn (*rpc.peer.mod.Peer.HandoffPickupContext, *rpc.peer.mod.Peer, u32, bool) void
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.promise_id: field u32
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.promise_link_registered: field bool = false
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.promise_peer: field ?*rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.releaseDeferredFailedImports: fn (*rpc.peer.mod.Peer.HandoffPickupContext, *rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.retainFailedUnretainedImports: fn (*rpc.peer.mod.Peer.HandoffPickupContext, *const rpc.caps.inbound.InboundCapTable) error{CapabilityIndexOutOfBounds,OutOfMemory}!void
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.settled_flag: field ?*bool = null
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.user_cb: field *const fn (*anyopaque, *rpc.peer.mod.Peer, u32, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.user_ctx: field *anyopaque
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.vine_id: field u32
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext.vine_owned: field bool = false
+capnpc-zig.rpc.peer.Peer.HandoffPickupContext: struct
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.accept_live: field bool = false
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.accept_peer: field ?*rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.bytes_charged: field bool = false
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.cancelled: field bool = false
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.deadline_ns: field ?i64 = null
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.network: field rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer)
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.network_live: field bool = true
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.operation_depth: field u32 = 0
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.owner_peer: field *rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.owner_record_live: field bool = false
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.provision: field []u8
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.published_results: field usize = 0
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.result_refs: field usize = 0
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord.timeout_answer_id: field ?u32 = null
+capnpc-zig.rpc.peer.Peer.HostedJoinRecord: struct
+capnpc-zig.rpc.peer.Peer.JoinOperationGuards.add: fn (*rpc.peer.mod.Peer.JoinOperationGuards, *rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.JoinOperationGuards.enter: fn (*rpc.peer.mod.Peer.JoinOperationGuards) void
+capnpc-zig.rpc.peer.Peer.JoinOperationGuards.leave: fn (*rpc.peer.mod.Peer.JoinOperationGuards) void
+capnpc-zig.rpc.peer.Peer.JoinOperationGuards.len: field usize = 0
+capnpc-zig.rpc.peer.Peer.JoinOperationGuards.peers: field [3]*rpc.peer.mod.Peer = <default>
+capnpc-zig.rpc.peer.Peer.JoinOperationGuards: struct
 capnpc-zig.rpc.peer.Peer.PeerStats.active_inbound_questions: field u32
 capnpc-zig.rpc.peer.Peer.PeerStats.cancelled_questions: field u32
 capnpc-zig.rpc.peer.Peer.PeerStats.exports: field u32
@@ -1077,15 +1196,63 @@ capnpc-zig.rpc.peer.Peer.PeerStats.retained_questions: field usize
 capnpc-zig.rpc.peer.Peer.PeerStats.saves_served: field u64
 capnpc-zig.rpc.peer.Peer.PeerStats.transferred_retained_questions: field usize
 capnpc-zig.rpc.peer.Peer.PeerStats: struct
+capnpc-zig.rpc.peer.Peer.PendingQueuedCallStats.bytes: field usize = 0
+capnpc-zig.rpc.peer.Peer.PendingQueuedCallStats.calls: field usize = 0
+capnpc-zig.rpc.peer.Peer.PendingQueuedCallStats: struct
+capnpc-zig.rpc.peer.Peer.PersistenceStateRecord.export_id: field u32
+capnpc-zig.rpc.peer.Peer.PersistenceStateRecord.original: field rpc.peer.mod.Export
+capnpc-zig.rpc.peer.Peer.PersistenceStateRecord.restore: field ?rpc.peer.peer_context_types.RestoreHookOf(rpc.peer.mod.Peer) = null
+capnpc-zig.rpc.peer.Peer.PersistenceStateRecord.save: field ?rpc.peer.peer_context_types.SaveHookOf(rpc.peer.mod.Peer) = null
+capnpc-zig.rpc.peer.Peer.PersistenceStateRecord: struct
+capnpc-zig.rpc.peer.Peer.ProvideHandleRecord.question_id: field u32
+capnpc-zig.rpc.peer.Peer.ProvideHandleRecord.vine_id: field u32
+capnpc-zig.rpc.peer.Peer.ProvideHandleRecord: struct
+capnpc-zig.rpc.peer.Peer.ProvideOriginationTargetRecord.buildProvide: fn (rpc.peer.peer_context_types.ProvideOriginationTargetOf(rpc.peer.mod.Peer), *rpc.wire.protocol.MessageBuilder, u32, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!void
+capnpc-zig.rpc.peer.Peer.ProvideOriginationTargetRecord.cloneForwardTarget: fn (rpc.peer.peer_context_types.ProvideOriginationTargetOf(rpc.peer.mod.Peer), mem.Allocator) error{IndexOutOfBounds,InvalidDiscriminant,MissingImportedCap,MissingPromisedAnswer,OutOfBounds,OutOfMemory,TransformTooLong}!rpc.peer.provide.forward_target.ForwardTarget
+capnpc-zig.rpc.peer.Peer.ProvideOriginationTargetRecord.message_target: variant rpc.wire.protocol.MessageTarget
+capnpc-zig.rpc.peer.Peer.ProvideOriginationTargetRecord.retained_answer: variant rpc.peer.peer_context_types.ProvideOriginationTargetOf(rpc.peer.mod.Peer)__struct_*
+capnpc-zig.rpc.peer.Peer.ProvideOriginationTargetRecord: union
 capnpc-zig.rpc.peer.Peer.ProvideTargetType.local: variant rpc.peer.peer_state_types.LocalProvideTarget
 capnpc-zig.rpc.peer.Peer.ProvideTargetType.promised: variant rpc.promises.promised_answer.OwnedPromisedAnswer
 capnpc-zig.rpc.peer.Peer.ProvideTargetType: union
+capnpc-zig.rpc.peer.Peer.ResolvedAnswerReservation.deinit: fn (rpc.peer.mod.Peer.ResolvedAnswerReservation, *rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.ResolvedAnswerReservation.frame_copy: field []u8
+capnpc-zig.rpc.peer.Peer.ResolvedAnswerReservation.held_export_ids: field []u32
+capnpc-zig.rpc.peer.Peer.ResolvedAnswerReservation: struct
+capnpc-zig.rpc.peer.Peer.RestoreHandlerFn: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, []const u8) anyerror!rpc.peer.persistence.RestoreOutcome(rpc.peer.mod.Export)
+capnpc-zig.rpc.peer.Peer.RestoreHookRecord.ctx: field *anyopaque
+capnpc-zig.rpc.peer.Peer.RestoreHookRecord.on_restore: field *const fn (*anyopaque, *rpc.peer.mod.Peer, []const u8) anyerror!rpc.peer.persistence.RestoreOutcome(rpc.peer.mod.Export)
+capnpc-zig.rpc.peer.Peer.RestoreHookRecord: struct
+capnpc-zig.rpc.peer.Peer.RestoreResponseCallbackFn: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.peer.mod.RestoreResponse) anyerror!void
+capnpc-zig.rpc.peer.Peer.RestoreResponseUnion.cap: variant rpc.caps.descriptors.ResolvedCap
+capnpc-zig.rpc.peer.Peer.RestoreResponseUnion.exception: variant rpc.wire.protocol.Exception
+capnpc-zig.rpc.peer.Peer.RestoreResponseUnion.other: variant rpc.gen.capnp.rpc.Return.WhichTag
+capnpc-zig.rpc.peer.Peer.RestoreResponseUnion: union
+capnpc-zig.rpc.peer.Peer.SaveHandlerFn: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, u32, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror![]u8
+capnpc-zig.rpc.peer.Peer.SaveHookRecord.ctx: field *anyopaque
+capnpc-zig.rpc.peer.Peer.SaveHookRecord.on_save: field *const fn (*anyopaque, *rpc.peer.mod.Peer, u32, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror![]u8
+capnpc-zig.rpc.peer.Peer.SaveHookRecord: struct
+capnpc-zig.rpc.peer.Peer.SaveResponseCallbackFn: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.peer.mod.SaveResponse) anyerror!void
+capnpc-zig.rpc.peer.Peer.SaveResponseUnion.exception: variant rpc.wire.protocol.Exception
+capnpc-zig.rpc.peer.Peer.SaveResponseUnion.other: variant rpc.gen.capnp.rpc.Return.WhichTag
+capnpc-zig.rpc.peer.Peer.SaveResponseUnion.sturdy_ref: variant []const u8
+capnpc-zig.rpc.peer.Peer.SaveResponseUnion: union
 capnpc-zig.rpc.peer.Peer.ThirdPartyResultPolicy.application: enumerant = 1
 capnpc-zig.rpc.peer.Peer.ThirdPartyResultPolicy.reject: enumerant = 0
 capnpc-zig.rpc.peer.Peer.ThirdPartyResultPolicy.vat_network: enumerant = 2
 capnpc-zig.rpc.peer.Peer.ThirdPartyResultPolicy: enum
 capnpc-zig.rpc.peer.Peer.active_inbound_questions: field hash_map.HashMap(u32,bool,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.addCrossPeerProxyExport: fn (*rpc.peer.mod.Peer, *rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap, ?u32, ?u32, ?u32) error{CapTableFull,OutOfMemory}!u32
+capnpc-zig.rpc.peer.Peer.addExportWithDeinit: fn (*rpc.peer.mod.Peer, rpc.peer.mod.Export, ?*const fn (mem.Allocator, *anyopaque) void) error{CapTableFull,OutOfMemory}!u32
+capnpc-zig.rpc.peer.Peer.adoptThirdPartyAnswer: fn (*rpc.peer.mod.Peer, u32, u32, rpc.peer.state.Question(*const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void)) anyerror!void
 capnpc-zig.rpc.peer.Peer.adopted_third_party_answers: field hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.allocateLoopbackQuestion: fn (*rpc.peer.mod.Peer, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void) error{OutOfMemory,PeerLimitExceeded,QuestionIdExhausted}!u32
+capnpc-zig.rpc.peer.Peer.allocateLoopbackQuestionNoRestore: fn (*rpc.peer.mod.Peer, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void) error{OutOfMemory,PeerLimitExceeded,QuestionIdExhausted}!u32
+capnpc-zig.rpc.peer.Peer.allocateQuestion: fn (*rpc.peer.mod.Peer, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void) error{OutOfMemory,PeerLimitExceeded,QuestionIdExhausted}!u32
+capnpc-zig.rpc.peer.Peer.allocateQuestionNoRestore: fn (*rpc.peer.mod.Peer, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void) error{OutOfMemory,PeerLimitExceeded,QuestionIdExhausted}!u32
+capnpc-zig.rpc.peer.Peer.allocateRetainedLoopbackQuestion: fn (*rpc.peer.mod.Peer, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void) error{OutOfMemory,PeerLimitExceeded,QuestionClosed,QuestionIdExhausted}!u32
+capnpc-zig.rpc.peer.Peer.allocateRetainedQuestion: fn (*rpc.peer.mod.Peer, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void) error{OutOfMemory,PeerLimitExceeded,QuestionClosed,QuestionIdExhausted}!u32
+capnpc-zig.rpc.peer.Peer.allocateUnusedThirdPartyAnswerId: fn (*rpc.peer.mod.Peer) error{AnswerIdExhausted}!u32
 capnpc-zig.rpc.peer.Peer.allocator: field mem.Allocator
 capnpc-zig.rpc.peer.Peer.assertThreadAffinity: fn (*const rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.attachJoinNetwork: fn (*rpc.peer.mod.Peer, rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer)) error{JoinNetworkInUse}!void
@@ -1097,114 +1264,238 @@ capnpc-zig.rpc.peer.Peer.automatic_third_party_close_deferred: field bool = fals
 capnpc-zig.rpc.peer.Peer.automatic_third_party_deinit_deferred: field bool = false
 capnpc-zig.rpc.peer.Peer.automatic_third_party_dispatch_depth: field u32 = 0
 capnpc-zig.rpc.peer.Peer.automatic_third_party_operation_depth: field u32 = 0
-capnpc-zig.rpc.peer.Peer.automatic_third_party_routes: field hash_map.HashMap(u32,*rpc.peer.mod.AutomaticThirdPartyRoute,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.automatic_third_party_routes: field hash_map.HashMap(u32,*rpc.peer.peer_context_types.AutomaticThirdPartyRouteOf(rpc.peer.mod.Peer),hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.automatic_third_party_target_canceled_reason: const *const [63:0]u8
+capnpc-zig.rpc.peer.Peer.beginJoinNetworkBorrow: fn (*rpc.peer.mod.Peer) error{NoJoinNetwork,Overflow}!rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer)
 capnpc-zig.rpc.peer.Peer.bootstrap_export_id: field ?u32 = null
+capnpc-zig.rpc.peer.Peer.buildCrossPeerReturnResults: fn (*anyopaque, *rpc.wire.protocol.ReturnBuilder) anyerror!void
 capnpc-zig.rpc.peer.Peer.callback_ctx: field ?*anyopaque = null
+capnpc-zig.rpc.peer.Peer.cancelAllHostedJoins: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.cancelHostedJoin: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_context_types.HostedJoinOf(rpc.peer.mod.Peer)) void
+capnpc-zig.rpc.peer.Peer.cancelJoinAcceptHostLinks: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.cancelQuestion: fn (*rpc.peer.mod.Peer, u32, []const u8) error{CannotUpgradeBitList,CapTableFull,EmptyMessage,FarPointerOffsetTooLarge,IndexOutOfBounds,InvalidDiscriminant,InvalidEnumValue,InvalidFarPointer,InvalidInlineCompositePointer,InvalidMessageSize,InvalidMessageTag,InvalidPointer,InvalidReturnTag,InvalidRootPointer,InvalidSegmentCount,InvalidSegmentId,InvalidTextPointer,ListTooLarge,MessageTooLarge,MissingCapDescriptorId,MissingPromisedAnswer,MissingThirdPartyCapDescriptor,NestingLimitExceeded,OffsetOutOfRange,OutOfBounds,OutOfMemory,PointerDepthLimit,PointerIndexOutOfBounds,RefCountOverflow,SegmentCountLimitExceeded,TextTooLong,TooManySegments,TransformTooLong,TraversalLimitExceeded,TruncatedMessage,UnexpectedMessage,UnknownExport,UnknownQuestion,WrongUnionMember}!void
 capnpc-zig.rpc.peer.Peer.cancelQuestionTyped: fn (*rpc.peer.mod.Peer, u32, []const u8, rpc.wire.protocol.ExceptionType) error{CannotUpgradeBitList,CapTableFull,EmptyMessage,FarPointerOffsetTooLarge,IndexOutOfBounds,InvalidDiscriminant,InvalidEnumValue,InvalidFarPointer,InvalidInlineCompositePointer,InvalidMessageSize,InvalidMessageTag,InvalidPointer,InvalidReturnTag,InvalidRootPointer,InvalidSegmentCount,InvalidSegmentId,InvalidTextPointer,ListTooLarge,MessageTooLarge,MissingCapDescriptorId,MissingPromisedAnswer,MissingThirdPartyCapDescriptor,NestingLimitExceeded,OffsetOutOfRange,OutOfBounds,OutOfMemory,PointerDepthLimit,PointerIndexOutOfBounds,RefCountOverflow,SegmentCountLimitExceeded,TextTooLong,TooManySegments,TransformTooLong,TraversalLimitExceeded,TruncatedMessage,UnexpectedMessage,UnknownExport,UnknownQuestion,WrongUnionMember}!void
 capnpc-zig.rpc.peer.Peer.caps: field rpc.caps.lifecycle.CapTable
+capnpc-zig.rpc.peer.Peer.captureAnyPointerPayload: fn (mem.Allocator, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!?[]u8
 capnpc-zig.rpc.peer.Peer.checkDeadlines: fn (*rpc.peer.mod.Peer) usize
+capnpc-zig.rpc.peer.Peer.claimRetainedQuestionForTransfer: fn (*rpc.peer.mod.Peer, u32) error{RetainedLoopbackQuestion,RetainedQuestionAlreadyTransferred,RetainedQuestionFinishInProgress,RetainedQuestionNoFinishNeeded,RetainedQuestionPending,RetainedQuestionTransferInProgress,UnknownRetainedQuestion}!u32
 capnpc-zig.rpc.peer.Peer.clearHandoffPickupHandler: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.clearPersistentExport: fn (*rpc.peer.mod.Peer, u32) void
 capnpc-zig.rpc.peer.Peer.clearQuestionDeadline: fn (*rpc.peer.mod.Peer, u32) error{UnknownQuestion}!void
 capnpc-zig.rpc.peer.Peer.clearRestorer: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.clearSendResultsToThirdParty: fn (*rpc.peer.mod.Peer, u32) void
 capnpc-zig.rpc.peer.Peer.clock: field ?rpc.time.Clock = null
+capnpc-zig.rpc.peer.Peer.clockNow: fn (*const rpc.peer.mod.Peer) ?i64
 capnpc-zig.rpc.peer.Peer.clock_io: field ?Io = null
+capnpc-zig.rpc.peer.Peer.clonePayloadAcrossPeers: fn (*rpc.peer.mod.Peer, *serialization.message.MessageBuilder, rpc.gen.capnp.rpc.Payload.Builder, rpc.wire.protocol.Payload, *rpc.peer.mod.Peer, *rpc.caps.inbound.InboundCapTable, *array_list.Aligned(u32,null), bool) anyerror!void
+capnpc-zig.rpc.peer.Peer.cloneProvideTarget: fn (*rpc.peer.mod.Peer, *const rpc.peer.peer_state_types.ProvideTarget) error{OutOfMemory}!rpc.peer.peer_state_types.ProvideTarget
 capnpc-zig.rpc.peer.Peer.closeAttachedTransport: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.commitReservedResolvedAnswer: fn (*rpc.peer.mod.Peer, u32, rpc.peer.mod.Peer.ResolvedAnswerReservation) void
+capnpc-zig.rpc.peer.Peer.commitRetainedQuestionTransfer: fn (*rpc.peer.mod.Peer, u32) error{RetainedQuestionTransferNotInProgress}!void
+capnpc-zig.rpc.peer.Peer.completeDeferredAutomaticThirdPartyLifecycle: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.completeJoinLegacy: fn (*rpc.peer.mod.Peer, u32) anyerror!void
 capnpc-zig.rpc.peer.Peer.completeShutdown: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.completing_join_answer_records: field usize = 0
-capnpc-zig.rpc.peer.Peer.completing_join_answers: field hash_map.HashMap(u32,rpc.peer.mod.CompletingJoinAnswer,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.completing_join_answers: field hash_map.HashMap(u32,rpc.peer.peer_context_types.CompletingJoinAnswerOf(rpc.peer.mod.Peer),hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.completing_join_records: field usize = 0
-capnpc-zig.rpc.peer.Peer.coupled_vines: field array_list.Aligned(rpc.peer.mod.CoupledVine,null)
-capnpc-zig.rpc.peer.Peer.cross_peer_join_relay_links: field array_list.Aligned(rpc.peer.mod.CrossPeerJoinRelayLink,null)
-capnpc-zig.rpc.peer.Peer.cross_peer_pending_accepts: field hash_map.HashMap(u32,rpc.peer.mod.CrossPeerAcceptRecord,hash_map.AutoContext(u32),80)
-capnpc-zig.rpc.peer.Peer.cross_peer_proxy_links: field array_list.Aligned(rpc.peer.mod.CrossPeerProxyLink,null)
+capnpc-zig.rpc.peer.Peer.coupled_vines: field array_list.Aligned(rpc.peer.peer_context_types.CoupledVineOf(rpc.peer.mod.Peer),null)
+capnpc-zig.rpc.peer.Peer.cross_peer_join_relay_links: field array_list.Aligned(rpc.peer.peer_context_types.CrossPeerJoinRelayLinkOf(rpc.peer.mod.Peer),null)
+capnpc-zig.rpc.peer.Peer.cross_peer_pending_accepts: field hash_map.HashMap(u32,rpc.peer.peer_context_types.CrossPeerAcceptRecordOf(rpc.peer.mod.Peer),hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.cross_peer_proxy_links: field array_list.Aligned(rpc.peer.peer_context_types.CrossPeerProxyLinkOf(rpc.peer.mod.Peer),null)
+capnpc-zig.rpc.peer.Peer.deadline_reason_text: const *const [17:0]u8
+capnpc-zig.rpc.peer.Peer.deliverLoopbackReturn: fn (*rpc.peer.mod.Peer, []const u8) anyerror!void
+capnpc-zig.rpc.peer.Peer.deregisterCoupledVine: fn (*rpc.peer.mod.Peer, *rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.deregisterCrossPeerJoinRelay: fn (*rpc.peer.mod.Peer, *rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.deregisterCrossPeerProxy: fn (*rpc.peer.mod.Peer, *rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.deregisterForwardVineRelay: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_context_types.ForwardVineCallContextOf(rpc.peer.mod.Peer)) void
+capnpc-zig.rpc.peer.Peer.deregisterHandoffPickup: fn (*rpc.peer.mod.Peer, *rpc.peer.mod.Peer.HandoffPickupContext) void
+capnpc-zig.rpc.peer.Peer.deregisterJoinAcceptHost: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_context_types.HostedJoinOf(rpc.peer.mod.Peer)) void
+capnpc-zig.rpc.peer.Peer.deregisterJoinCoordinatorAccept: fn (*rpc.peer.mod.Peer, *rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer)) void
+capnpc-zig.rpc.peer.Peer.deregisterJoinCoordinatorResult: fn (*rpc.peer.mod.Peer, *rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer), u32) void
+capnpc-zig.rpc.peer.Peer.destroyUnreferencedExport: fn (*rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.destroyUnreferencedProxyExport: fn (*rpc.peer.mod.Peer, u32) void
 capnpc-zig.rpc.peer.Peer.detachConnection: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.detachCrossPeerAcceptsOnHolderPeer: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.detachJoinNetwork: fn (*rpc.peer.mod.Peer) error{JoinNetworkInUse}!void
 capnpc-zig.rpc.peer.Peer.detachProvisionIndex: fn (*rpc.peer.mod.Peer) error{PeerHasActiveHandoffState}!void
 capnpc-zig.rpc.peer.Peer.detachTransport: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.detachVatNetwork: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.disableThreadAffinity: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.disconnected_reason_text: const *const [12:0]u8
+capnpc-zig.rpc.peer.Peer.drainAdoptedParkedAccepts: fn (*rpc.peer.mod.Peer, *rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer), *rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer).Provision) error{OutOfMemory}!void
+capnpc-zig.rpc.peer.Peer.drainClosedProvisionsOnOwnerPeer: fn (*rpc.peer.mod.Peer, *rpc.peer.provision.peer_provision_drain.Drain(rpc.peer.mod.Peer).OwnerProvisionTeardown) void
+capnpc-zig.rpc.peer.Peer.drainOutboundProvidesOnRecipientPeer: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.dropCompletingJoinResultRef: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_context_types.CompletingJoinAnswerOf(rpc.peer.mod.Peer)) void
+capnpc-zig.rpc.peer.Peer.dropPersistenceStateForRemovedExport: fn (*rpc.peer.mod.Peer, u32) void
 capnpc-zig.rpc.peer.Peer.enableRuntimeThreadChecks: fn (*rpc.peer.mod.Peer, bool) void
+capnpc-zig.rpc.peer.Peer.endJoinNetworkBorrow: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.ensureByteLimit: fn (usize, usize, usize) error{PeerLimitExceeded}!void
+capnpc-zig.rpc.peer.Peer.ensureCountLimit: fn (bool, usize, usize) error{PeerLimitExceeded}!void
 capnpc-zig.rpc.peer.Peer.ensureExportAt: fn (*rpc.peer.mod.Peer, u32, rpc.peer.mod.Export) error{CapTableFull,OutOfMemory}!bool
+capnpc-zig.rpc.peer.Peer.ensureJoinBudget: fn (*rpc.peer.mod.Peer, rpc.peer.peer_state_types.JoinKeyPart, u32) error{OutOfMemory,PeerLimitExceeded}!void
+capnpc-zig.rpc.peer.Peer.ensureJoinRecordCapacity: fn (*const rpc.peer.mod.Peer, usize) error{JoinRecordLimitExceeded}!void
+capnpc-zig.rpc.peer.Peer.ensurePendingQueuedCallBudget: fn (*const rpc.peer.mod.Peer, *const hash_map.HashMap(u32,array_list.Aligned(rpc.peer.state.PendingCall,null),hash_map.AutoContext(u32),80), u32, usize, usize) error{PeerLimitExceeded}!void
+capnpc-zig.rpc.peer.Peer.ensurePendingThirdPartyAnswerBudget: fn (*rpc.peer.mod.Peer, []const u8) error{PeerLimitExceeded}!void
+capnpc-zig.rpc.peer.Peer.ensurePendingThirdPartyAwaitBudget: fn (*rpc.peer.mod.Peer, []const u8) error{PeerLimitExceeded}!void
+capnpc-zig.rpc.peer.Peer.ensureProvideBudget: fn (*rpc.peer.mod.Peer, u32, []const u8) error{PeerLimitExceeded}!void
+capnpc-zig.rpc.peer.Peer.ensureThirdPartyAdoptionBudget: fn (*rpc.peer.mod.Peer, u32) error{PeerLimitExceeded}!void
+capnpc-zig.rpc.peer.Peer.enterAutomaticThirdPartyOperation: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.enterJoinOperation: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.entropy: field ?rpc.peer.mod.EntropySource = null
 capnpc-zig.rpc.peer.Peer.exports: field hash_map.HashMap(u32,rpc.peer.state.ExportEntry(rpc.peer.mod.Export),hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.failQueuedPromisedCalls: fn (*rpc.peer.mod.Peer, u32, []const u8, rpc.wire.protocol.ExceptionType) void
 capnpc-zig.rpc.peer.Peer.failed_answers: field hash_map.HashMap(u32,rpc.peer.state.FailedAnswer,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.finalizeAutomaticThirdPartyRoute: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_context_types.AutomaticThirdPartyRouteOf(rpc.peer.mod.Peer), ?[]const u8) void
+capnpc-zig.rpc.peer.Peer.finishOriginatedProvide: fn (*rpc.peer.mod.Peer, *rpc.peer.mod.Peer, u32, ?u32) void
 capnpc-zig.rpc.peer.Peer.finishRetainedQuestion: fn (*rpc.peer.mod.Peer, u32, bool) anyerror!void
+capnpc-zig.rpc.peer.Peer.finishTransportClosedNotification: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.finish_maintenance_in_progress: field bool = false
 capnpc-zig.rpc.peer.Peer.finished_early_answers: field hash_map.HashMap(u32,bool,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.flushStashedAcceptDisembargo: fn (*rpc.peer.mod.Peer, u32) void
 capnpc-zig.rpc.peer.Peer.forgetImportRefsForHost: fn (*rpc.peer.mod.Peer, u32, u32) anyerror!void
-capnpc-zig.rpc.peer.Peer.forward_vine_relay_links: field array_list.Aligned(*rpc.peer.mod.ForwardVineCallContext,null)
+capnpc-zig.rpc.peer.Peer.forwardCrossPeerProxyCall: fn (*rpc.peer.mod.Peer, rpc.wire.protocol.Call, *const rpc.caps.inbound.InboundCapTable, *rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap) anyerror!void
+capnpc-zig.rpc.peer.Peer.forwardResolvedCall: fn (*rpc.peer.mod.Peer, rpc.wire.protocol.Call, *const rpc.caps.inbound.InboundCapTable, rpc.caps.descriptors.ResolvedCap, rpc.peer.forward.peer_forward_orchestration.ForwardReturnMode) anyerror!void
+capnpc-zig.rpc.peer.Peer.forward_vine_relay_links: field array_list.Aligned(*rpc.peer.peer_context_types.ForwardVineCallContextOf(rpc.peer.mod.Peer),null)
 capnpc-zig.rpc.peer.Peer.forwarded_questions: field hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.forwarded_tail_questions: field hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.freeQuestionParamExports: fn (*rpc.peer.mod.Peer, u32) void
 capnpc-zig.rpc.peer.Peer.getAttachedConnection: fn (*const rpc.peer.mod.Peer, comptime type) anytype
 capnpc-zig.rpc.peer.Peer.getLastInboundTag: fn (*const rpc.peer.mod.Peer) ?rpc.gen.capnp.rpc.Message.WhichTag
 capnpc-zig.rpc.peer.Peer.getLastRemoteAbortReason: fn (*const rpc.peer.mod.Peer) ?[]const u8
+capnpc-zig.rpc.peer.Peer.handleAcceptWithProvisionIndex: fn (*rpc.peer.mod.Peer, *rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer), rpc.wire.protocol.Accept) anyerror!void
 capnpc-zig.rpc.peer.Peer.handleFrame: fn (*rpc.peer.mod.Peer, []const u8) anyerror!void
+capnpc-zig.rpc.peer.Peer.handleLoopbackFrame: fn (*rpc.peer.mod.Peer, []const u8) anyerror!void
+capnpc-zig.rpc.peer.Peer.handleReturn: fn (*rpc.peer.mod.Peer, []const u8, rpc.wire.protocol.Return) anyerror!void
 capnpc-zig.rpc.peer.Peer.handoff_pickup_ctx: field ?*anyopaque = null
 capnpc-zig.rpc.peer.Peer.handoff_pickup_links: field array_list.Aligned(*rpc.peer.mod.Peer.HandoffPickupContext,null)
 capnpc-zig.rpc.peer.Peer.hasAttachedTransport: fn (*const rpc.peer.mod.Peer) bool
-capnpc-zig.rpc.peer.Peer.hosted_joins: field hash_map.HashMap(*rpc.peer.mod.HostedJoin,void,hash_map.AutoContext(*rpc.peer.mod.HostedJoin),80)
+capnpc-zig.rpc.peer.Peer.hosted_joins: field hash_map.HashMap(*rpc.peer.peer_context_types.HostedJoinOf(rpc.peer.mod.Peer),void,hash_map.AutoContext(*rpc.peer.peer_context_types.HostedJoinOf(rpc.peer.mod.Peer)),80)
 capnpc-zig.rpc.peer.Peer.in_deinit: field bool = false
-capnpc-zig.rpc.peer.Peer.incoming_automatic_third_party_routes: field hash_map.HashMap(u32,*rpc.peer.mod.AutomaticThirdPartyRoute,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.inboundAnswerQuestionIdInUse: fn (*rpc.peer.mod.Peer, u32) error{}!bool
+capnpc-zig.rpc.peer.Peer.inboundQuestionIdInUse: fn (*rpc.peer.mod.Peer, u32) error{}!bool
+capnpc-zig.rpc.peer.Peer.incoming_automatic_third_party_routes: field hash_map.HashMap(u32,*rpc.peer.peer_context_types.AutomaticThirdPartyRouteOf(rpc.peer.mod.Peer),hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.initDetached: fn (mem.Allocator) rpc.peer.mod.Peer
 capnpc-zig.rpc.peer.Peer.initDetachedWithLimits: fn (mem.Allocator, rpc.peer.state.PeerLimits) rpc.peer.mod.Peer
 capnpc-zig.rpc.peer.Peer.isAttachedTransportClosing: fn (*const rpc.peer.mod.Peer) bool
 capnpc-zig.rpc.peer.Peer.is_shutting_down: field bool = false
+capnpc-zig.rpc.peer.Peer.joinRecordCount: fn (*const rpc.peer.mod.Peer) usize
+capnpc-zig.rpc.peer.Peer.joinWireReason: fn (anyerror) []const u8
 capnpc-zig.rpc.peer.Peer.join_accept_bytes: field usize = 0
-capnpc-zig.rpc.peer.Peer.join_accept_host_links: field array_list.Aligned(rpc.peer.mod.JoinAcceptHostLink,null)
+capnpc-zig.rpc.peer.Peer.join_accept_host_links: field array_list.Aligned(rpc.peer.peer_context_types.JoinAcceptHostLinkOf(rpc.peer.mod.Peer),null)
 capnpc-zig.rpc.peer.Peer.join_clock_sample_in_progress: field bool = false
-capnpc-zig.rpc.peer.Peer.join_coordinator_accept_links: field array_list.Aligned(rpc.peer.mod.JoinCoordinatorAcceptLink,null)
-capnpc-zig.rpc.peer.Peer.join_coordinator_result_links: field array_list.Aligned(rpc.peer.mod.JoinCoordinatorResultLink,null)
+capnpc-zig.rpc.peer.Peer.join_coordinator_accept_links: field array_list.Aligned(rpc.peer.peer_context_types.JoinCoordinatorAcceptLinkOf(rpc.peer.mod.Peer),null)
+capnpc-zig.rpc.peer.Peer.join_coordinator_result_links: field array_list.Aligned(rpc.peer.peer_context_types.JoinCoordinatorResultLinkOf(rpc.peer.mod.Peer),null)
 capnpc-zig.rpc.peer.Peer.join_network: field ?rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer) = null
 capnpc-zig.rpc.peer.Peer.join_network_borrows: field usize = 0
 capnpc-zig.rpc.peer.Peer.join_operation_depth: field u32 = 0
 capnpc-zig.rpc.peer.Peer.join_sweep_in_progress: field bool = false
 capnpc-zig.rpc.peer.Peer.last_inbound_tag: field ?rpc.gen.capnp.rpc.Message.WhichTag = null
 capnpc-zig.rpc.peer.Peer.last_remote_abort_reason: field ?[]u8 = null
+capnpc-zig.rpc.peer.Peer.leaveAutomaticThirdPartyOperation: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.leaveJoinOperation: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.limits: field rpc.peer.state.PeerLimits
+capnpc-zig.rpc.peer.Peer.lookupFailedAnswer: fn (*rpc.peer.mod.Peer, u32) ?rpc.peer.call.peer_call_targets.FailedAnswerView
 capnpc-zig.rpc.peer.Peer.loopback_questions: field hash_map.HashMap(u32,void,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.loopback_result_stash: field hash_map.HashMap(u32,[]u8,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.makeProvideTarget: fn (*rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap) error{IndexOutOfBounds,InvalidDiscriminant,OutOfBounds,OutOfMemory,PromisedAnswerMissing,TransformTooLong}!rpc.peer.peer_state_types.ProvideTarget
+capnpc-zig.rpc.peer.Peer.maybeDestroyHostedJoin: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_context_types.HostedJoinOf(rpc.peer.mod.Peer)) void
+capnpc-zig.rpc.peer.Peer.maybeForwardVineCall: fn (*rpc.peer.mod.Peer, rpc.wire.protocol.Call, *const rpc.caps.inbound.InboundCapTable, u32) anyerror!bool
+capnpc-zig.rpc.peer.Peer.msToNsHelper: fn (u64) i64
+capnpc-zig.rpc.peer.Peer.neutralizeAutomaticThirdPartyRoutesOnSourcePeer: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.neutralizeAutomaticThirdPartyRoutesOnTargetPeer: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.neutralizeCoupledVinesOnProvidePeer: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.neutralizeCrossPeerJoinRelaysOnSourcePeer: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.neutralizeCrossPeerProxiesOnSourcePeer: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.neutralizeForwardVineRelaysOnRecipientPeer: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.neutralizeHandoffPickupsOnPromisePeer: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.neutralizeJoinCoordinatorAcceptLinks: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.neutralizeJoinCoordinatorResultLinks: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.neutralizeJoinRelayQuestion: fn (*rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.neutralizeProvisionsOnOwnerPeer: fn (*rpc.peer.mod.Peer) rpc.peer.provision.peer_provision_drain.Drain(rpc.peer.mod.Peer).OwnerProvisionTeardown
+capnpc-zig.rpc.peer.Peer.newJoinDeadline: fn (*rpc.peer.mod.Peer) error{JoinClockReentrant}!?i64
 capnpc-zig.rpc.peer.Peer.next_accept_embargo_id: field u64 = 0
 capnpc-zig.rpc.peer.Peer.next_embargo_id: field u32 = 0
 capnpc-zig.rpc.peer.Peer.next_join_deadline_ns: field ?i64 = null
 capnpc-zig.rpc.peer.Peer.next_loopback_question_id: field u32 = 4294967295
 capnpc-zig.rpc.peer.Peer.next_question_id: field u32 = 0
 capnpc-zig.rpc.peer.Peer.next_third_party_answer_id: field u32 = 1073741824
+capnpc-zig.rpc.peer.Peer.noteAnswerExportRef: fn (*rpc.peer.mod.Peer, u32) error{RefCountOverflow,UnknownExport}!void
+capnpc-zig.rpc.peer.Peer.noteAutomaticThirdPartyTargetFinish: fn (*rpc.peer.mod.Peer, u32) bool
+capnpc-zig.rpc.peer.Peer.noteExportRef: fn (*rpc.peer.mod.Peer, u32) error{RefCountOverflow,UnknownExport}!void
+capnpc-zig.rpc.peer.Peer.noteHandoffExportRef: fn (*rpc.peer.mod.Peer, u32) error{RefCountOverflow,UnknownExport}!void
+capnpc-zig.rpc.peer.Peer.noteHandoffImportPin: fn (*rpc.peer.mod.Peer, u32) error{RefCountOverflow,UnknownImport}!void
+capnpc-zig.rpc.peer.Peer.noteJoinDeadline: fn (*rpc.peer.mod.Peer, ?i64) void
+capnpc-zig.rpc.peer.Peer.notePromiseExportRef: fn (*rpc.peer.mod.Peer, u32) error{RefCountOverflow,UnknownExport}!void
+capnpc-zig.rpc.peer.Peer.noteSendResultsToThirdParty: fn (*rpc.peer.mod.Peer, u32, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!void
+capnpc-zig.rpc.peer.Peer.noteSendResultsToYourself: fn (*rpc.peer.mod.Peer, u32) error{OutOfMemory,PeerLimitExceeded}!void
 capnpc-zig.rpc.peer.Peer.notifyTransportClosed: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.observer: field ?rpc.events.Observer = null
+capnpc-zig.rpc.peer.Peer.onOutboundCap: fn (*anyopaque, rpc.gen.capnp.rpc.CapDescriptor.WhichTag, u32) anyerror!void
 capnpc-zig.rpc.peer.Peer.on_close: field ?*const fn (?*anyopaque, *rpc.peer.mod.Peer) void = null
 capnpc-zig.rpc.peer.Peer.on_error: field ?*const fn (?*anyopaque, *rpc.peer.mod.Peer, anyerror) void = null
 capnpc-zig.rpc.peer.Peer.on_handoff_pickup: field ?*const fn (*anyopaque, *rpc.peer.mod.Peer, u32, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void = null
-capnpc-zig.rpc.peer.Peer.outbound_provides: field hash_map.HashMap(u32,rpc.peer.mod.OutboundProvide,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.optionalPayloadBytes: fn (?[]u8) usize
+capnpc-zig.rpc.peer.Peer.outbound_provides: field hash_map.HashMap(u32,rpc.peer.peer_context_types.OutboundProvideOf(rpc.peer.mod.Peer),hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.ownHostedJoinFromCompletion: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_context_types.HostedJoinOf(rpc.peer.mod.Peer)) error{OutOfMemory,PeerLimitExceeded}!void
 capnpc-zig.rpc.peer.Peer.owner_thread_id: field ?rpc.peer.state.OwnerThreadId = null
 capnpc-zig.rpc.peer.Peer.parked_accept_bytes: field usize = 0
 capnpc-zig.rpc.peer.Peer.parked_accept_count: field usize = 0
+capnpc-zig.rpc.peer.Peer.pendingAcceptEmbargoKeyBytes: fn (*const rpc.peer.mod.Peer) usize
+capnpc-zig.rpc.peer.Peer.pendingQueuedCallStats: fn (*const rpc.peer.mod.Peer) rpc.peer.mod.Peer.PendingQueuedCallStats
+capnpc-zig.rpc.peer.Peer.pendingThirdPartyReturnBytesExcluding: fn (*const rpc.peer.mod.Peer, u32) usize
 capnpc-zig.rpc.peer.Peer.pending_accept_embargo_by_question: field hash_map.HashMap(u32,[]u8,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.pending_accepts_by_embargo: field hash_map.HashMap([]const u8,array_list.Aligned(rpc.peer.peer_state_types.PendingEmbargoedAccept,null),hash_map.StringContext,80)
 capnpc-zig.rpc.peer.Peer.pending_embargoes: field hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.pending_export_promises: field hash_map.HashMap(u32,array_list.Aligned(rpc.peer.state.PendingCall,null),hash_map.AutoContext(u32),80)
-capnpc-zig.rpc.peer.Peer.pending_join_accepts: field hash_map.HashMap([]const u8,rpc.peer.mod.PendingJoinAccept,hash_map.StringContext,80)
+capnpc-zig.rpc.peer.Peer.pending_join_accepts: field hash_map.HashMap([]const u8,rpc.peer.peer_context_types.PendingJoinAcceptOf(rpc.peer.mod.Peer),hash_map.StringContext,80)
 capnpc-zig.rpc.peer.Peer.pending_join_questions: field hash_map.HashMap(u32,rpc.peer.peer_state_types.PendingJoinQuestion,hash_map.AutoContext(u32),80)
-capnpc-zig.rpc.peer.Peer.pending_join_relays: field hash_map.HashMap(u32,rpc.peer.mod.CrossPeerJoinRelay,hash_map.AutoContext(u32),80)
-capnpc-zig.rpc.peer.Peer.pending_join_result_answers: field hash_map.HashMap(u32,rpc.peer.mod.PendingJoinResultAnswer,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.pending_join_relays: field hash_map.HashMap(u32,rpc.peer.peer_context_types.CrossPeerJoinRelayOf(rpc.peer.mod.Peer),hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.pending_join_result_answers: field hash_map.HashMap(u32,rpc.peer.peer_context_types.PendingJoinResultAnswerOf(rpc.peer.mod.Peer),hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.pending_joins: field hash_map.HashMap(u32,rpc.peer.peer_state_types.JoinState,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.pending_promises: field hash_map.HashMap(u32,array_list.Aligned(rpc.peer.state.PendingCall,null),hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.pending_third_party_answers: field hash_map.HashMap([]const u8,u32,hash_map.StringContext,80)
 capnpc-zig.rpc.peer.Peer.pending_third_party_awaits: field hash_map.HashMap([]const u8,rpc.peer.state.PendingThirdPartyAwait(rpc.peer.state.Question(*const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void)),hash_map.StringContext,80)
 capnpc-zig.rpc.peer.Peer.pending_third_party_returns: field hash_map.HashMap(u32,[]u8,hash_map.AutoContext(u32),80)
-capnpc-zig.rpc.peer.Peer.persistent_exports: field hash_map.HashMap(u32,*rpc.peer.mod.PersistenceState,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.persistent_exports: field hash_map.HashMap(u32,*rpc.peer.peer_context_types.PersistenceStateOf(rpc.peer.mod.Peer),hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.provideTargetsEqual: fn (*const rpc.peer.peer_state_types.ProvideTarget, *const rpc.peer.peer_state_types.ProvideTarget) bool
 capnpc-zig.rpc.peer.Peer.provides_by_key: field hash_map.HashMap([]const u8,u32,hash_map.StringContext,80)
 capnpc-zig.rpc.peer.Peer.provides_by_question: field hash_map.HashMap(u32,rpc.peer.peer_state_types.ProvideEntry,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.provision_index: field ?*rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer) = null
 capnpc-zig.rpc.peer.Peer.provisions_by_question: field hash_map.HashMap(u32,*rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer).Provision,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.putCompletingJoinAnswerAssumeCapacity: fn (*rpc.peer.mod.Peer, u32, bool) void
+capnpc-zig.rpc.peer.Peer.putPendingJoinAcceptOwned: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_context_types.HostedJoinOf(rpc.peer.mod.Peer), rpc.peer.peer_state_types.ProvideTarget) error{DuplicateJoinProvision,JoinClockReentrant,JoinRecordLimitExceeded,OutOfMemory,PeerLimitExceeded}!void
 capnpc-zig.rpc.peer.Peer.question_param_export_refs: field hash_map.HashMap(u32,array_list.Aligned(u32,null),hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.questions: field hash_map.HashMap(u32,rpc.peer.state.Question(*const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void),hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.recordQuestionParamExports: fn (*rpc.peer.mod.Peer, u32, []const rpc.caps.outbound.OutboundEntry) error{OutOfMemory}!void
+capnpc-zig.rpc.peer.Peer.refreshNextJoinDeadline: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.registerCoupledVine: fn (*rpc.peer.mod.Peer, *rpc.peer.mod.Peer, u32) error{OutOfMemory}!void
+capnpc-zig.rpc.peer.Peer.registerCrossPeerJoinRelay: fn (*rpc.peer.mod.Peer, *rpc.peer.mod.Peer, u32) error{OutOfMemory}!void
+capnpc-zig.rpc.peer.Peer.registerCrossPeerProxy: fn (*rpc.peer.mod.Peer, *rpc.peer.mod.Peer, u32) error{OutOfMemory}!void
+capnpc-zig.rpc.peer.Peer.registerHandoffPickup: fn (*rpc.peer.mod.Peer, *rpc.peer.mod.Peer.HandoffPickupContext) error{OutOfMemory}!void
+capnpc-zig.rpc.peer.Peer.registerJoinAcceptHost: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_context_types.HostedJoinOf(rpc.peer.mod.Peer)) error{OutOfMemory}!void
+capnpc-zig.rpc.peer.Peer.registerJoinCoordinatorAccept: fn (*rpc.peer.mod.Peer, *rpc.peer.join.join_coordinator.JoinCoordinator(rpc.peer.mod.Peer)) error{OutOfMemory}!void
 capnpc-zig.rpc.peer.Peer.registerPendingThirdPartyAwait: fn (*rpc.peer.mod.Peer, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void) anyerror!void
+capnpc-zig.rpc.peer.Peer.registerProvisionForProvide: fn (*rpc.peer.mod.Peer, *rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer), u32, *?*rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer).Provision) error{DuplicateProvideRecipient,InvalidCapabilityOrigin,OutOfMemory,ProvisionBudgetExceeded,RefCountOverflow,UnknownExport,UnknownImport,UnknownProvision}!void
+capnpc-zig.rpc.peer.Peer.relayReturnAcrossPeers: fn (*rpc.peer.mod.Peer, u32, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable, bool) anyerror!void
+capnpc-zig.rpc.peer.Peer.releaseAnswerHeldResultCaps: fn (*rpc.peer.mod.Peer, []const u8) anyerror!void
+capnpc-zig.rpc.peer.Peer.releaseHandoffHeldExport: fn (*rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.releaseHandoffImportPin: fn (*rpc.peer.mod.Peer, u32) anyerror!void
+capnpc-zig.rpc.peer.Peer.releaseInboundCaps: fn (*rpc.peer.mod.Peer, *rpc.caps.inbound.InboundCapTable) anyerror!void
+capnpc-zig.rpc.peer.Peer.releaseResolvedCap: fn (*rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap) anyerror!void
+capnpc-zig.rpc.peer.Peer.releaseResultCaps: fn (*rpc.peer.mod.Peer, []const u8) anyerror!void
+capnpc-zig.rpc.peer.Peer.releaseVineExport: fn (*rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.rememberPendingEmbargo: fn (*rpc.peer.mod.Peer, u32, u32) error{OutOfMemory,PeerLimitExceeded}!void
+capnpc-zig.rpc.peer.Peer.removeCompletingJoinAnswer: fn (*rpc.peer.mod.Peer, u32) bool
+capnpc-zig.rpc.peer.Peer.removeQuestion: fn (*rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.removeQuestionAndDeinit: fn (*rpc.peer.mod.Peer, u32) void
 capnpc-zig.rpc.peer.Peer.removeUnreferencedExport: fn (*rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.replayResolvedPromiseExport: fn (*rpc.peer.mod.Peer, u32, rpc.caps.descriptors.ResolvedCap) error{}!void
+capnpc-zig.rpc.peer.Peer.reserveResolvedAnswer: fn (*rpc.peer.mod.Peer, u32, []const u8) anyerror!rpc.peer.mod.Peer.ResolvedAnswerReservation
 capnpc-zig.rpc.peer.Peer.resolvePromiseExportToImport: fn (*rpc.peer.mod.Peer, u32, u32) anyerror!void
 capnpc-zig.rpc.peer.Peer.resolvePromiseExportToThirdParty: fn (*rpc.peer.mod.Peer, u32, *rpc.peer.mod.Peer, rpc.wire.protocol.MessageTarget, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader, []const u8) anyerror!rpc.peer.mod.ProvideHandle
 capnpc-zig.rpc.peer.Peer.resolvePromiseExportToThirdPartyFromRetainedAnswer: fn (*rpc.peer.mod.Peer, u32, *rpc.peer.mod.Peer, u32, []const rpc.wire.protocol.PromisedAnswerOp, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader, []const u8) anyerror!rpc.peer.mod.ProvideHandle
+capnpc-zig.rpc.peer.Peer.resolvePromisedAnswer: fn (*rpc.peer.mod.Peer, rpc.wire.protocol.PromisedAnswer) anyerror!rpc.caps.descriptors.ResolvedCap
+capnpc-zig.rpc.peer.Peer.resolveProvidePromisedOps: fn (*rpc.peer.mod.Peer, u32, []const rpc.wire.protocol.PromisedAnswerOp) anyerror!rpc.caps.descriptors.ResolvedCap
 capnpc-zig.rpc.peer.Peer.resolved_answer_reservations: field u32 = 0
 capnpc-zig.rpc.peer.Peer.resolved_answers: field hash_map.HashMap(u32,rpc.peer.state.ResolvedAnswer,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.resolved_imports: field hash_map.HashMap(u32,rpc.peer.state.ResolvedImport,hash_map.AutoContext(u32),80)
@@ -1212,9 +1503,25 @@ capnpc-zig.rpc.peer.Peer.resolving_answers: field hash_map.HashMap(u32,void,hash
 capnpc-zig.rpc.peer.Peer.restorer_export_id: field ?u32 = null
 capnpc-zig.rpc.peer.Peer.restores_served: field u64 = 0
 capnpc-zig.rpc.peer.Peer.retained_questions: field rpc.peer.retained_questions.Registry
+capnpc-zig.rpc.peer.Peer.retireCompletingJoinAnswerAccounting: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_context_types.CompletingJoinAnswerOf(rpc.peer.mod.Peer)) void
+capnpc-zig.rpc.peer.Peer.retireCompletingJoinTransitionAccounting: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_state_types.JoinState, *bool) void
+capnpc-zig.rpc.peer.Peer.retryDeferredFinishes: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.returnReleasesParamCaps: fn (*rpc.peer.mod.Peer, u32) bool
+capnpc-zig.rpc.peer.Peer.rollbackAnswerExportRef: fn (*rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.rollbackExportRef: fn (*rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.rollbackHandoffExportRef: fn (*rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.rollbackHandoffImportPin: fn (*rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.rollbackOutboundCap: fn (*anyopaque, rpc.gen.capnp.rpc.CapDescriptor.WhichTag, u32) void
+capnpc-zig.rpc.peer.Peer.rollbackPromiseExportRef: fn (*rpc.peer.mod.Peer, u32) void
+capnpc-zig.rpc.peer.Peer.rollbackRetainedQuestionTransfer: fn (*rpc.peer.mod.Peer, u32) void
 capnpc-zig.rpc.peer.Peer.runtime_thread_checks: field bool = false
+capnpc-zig.rpc.peer.Peer.saturatingAdd: fn (usize, usize) usize
 capnpc-zig.rpc.peer.Peer.saves_served: field u64 = 0
 capnpc-zig.rpc.peer.Peer.sendAccept: fn (*rpc.peer.mod.Peer, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader, ?[]const u8, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void) anyerror!u32
+capnpc-zig.rpc.peer.Peer.sendAcceptNoRestore: fn (*rpc.peer.mod.Peer, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader, ?[]const u8, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void, bool) anyerror!u32
+capnpc-zig.rpc.peer.Peer.sendAutomaticThirdPartyException: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_context_types.AutomaticThirdPartyRouteOf(rpc.peer.mod.Peer), []const u8, rpc.wire.protocol.ExceptionType) anyerror!void
+capnpc-zig.rpc.peer.Peer.sendAutomaticThirdPartyResults: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_context_types.AutomaticThirdPartyRouteOf(rpc.peer.mod.Peer), *anyopaque, *const fn (*anyopaque, *rpc.wire.protocol.ReturnBuilder) anyerror!void) anyerror!void
+capnpc-zig.rpc.peer.Peer.sendBuilder: fn (*rpc.peer.mod.Peer, *rpc.wire.protocol.MessageBuilder) anyerror!void
 capnpc-zig.rpc.peer.Peer.sendCallGeneratedWithOptions: fn (*rpc.peer.mod.Peer, u32, u64, u16, *anyopaque, ?*const fn (*anyopaque, *rpc.wire.protocol.CallBuilder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void, rpc.peer.retained_questions.CallOptions) anyerror!u32
 capnpc-zig.rpc.peer.Peer.sendCallPromisedWithOpsGeneratedWithOptions: fn (*rpc.peer.mod.Peer, u32, []const rpc.wire.protocol.PromisedAnswerOp, u64, u16, *anyopaque, ?*const fn (*anyopaque, *rpc.wire.protocol.CallBuilder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void, rpc.peer.retained_questions.CallOptions) anyerror!u32
 capnpc-zig.rpc.peer.Peer.sendCallPromisedWithOpsWithOptions: fn (*rpc.peer.mod.Peer, u32, []const rpc.wire.protocol.PromisedAnswerOp, u64, u16, *anyopaque, ?*const fn (*anyopaque, *rpc.wire.protocol.CallBuilder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void, rpc.peer.retained_questions.CallOptions) anyerror!u32
@@ -1222,19 +1529,28 @@ capnpc-zig.rpc.peer.Peer.sendCallPromisedWithOptions: fn (*rpc.peer.mod.Peer, rp
 capnpc-zig.rpc.peer.Peer.sendCallResolvedWithOptions: fn (*rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap, u64, u16, *anyopaque, ?*const fn (*anyopaque, *rpc.wire.protocol.CallBuilder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void, rpc.peer.retained_questions.CallOptions) anyerror!u32
 capnpc-zig.rpc.peer.Peer.sendCallWithOptions: fn (*rpc.peer.mod.Peer, u32, u64, u16, *anyopaque, ?*const fn (*anyopaque, *rpc.wire.protocol.CallBuilder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void, rpc.peer.retained_questions.CallOptions) anyerror!u32
 capnpc-zig.rpc.peer.Peer.sendFinishForHost: fn (*rpc.peer.mod.Peer, u32, bool, bool) anyerror!void
+capnpc-zig.rpc.peer.Peer.sendForwardedVineCall: fn (*rpc.peer.mod.Peer, u32, u64, u16, *anyopaque, ?*const fn (*anyopaque, *rpc.wire.protocol.CallBuilder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void) anyerror!u32
+capnpc-zig.rpc.peer.Peer.sendFrame: fn (*rpc.peer.mod.Peer, []const u8) anyerror!void
+capnpc-zig.rpc.peer.Peer.sendFrameControl: fn (*rpc.peer.mod.Peer, []const u8) anyerror!void
 capnpc-zig.rpc.peer.Peer.sendJoinExperimental: fn (*rpc.peer.mod.Peer, rpc.wire.protocol.MessageTarget, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void) anyerror!u32
+capnpc-zig.rpc.peer.Peer.sendJoinRelayFinishAndNeutralize: fn (*rpc.peer.mod.Peer, u32, bool) anyerror!void
 capnpc-zig.rpc.peer.Peer.sendPrebuiltReturnFrame: fn (*rpc.peer.mod.Peer, rpc.wire.protocol.Return, []const u8) anyerror!void
 capnpc-zig.rpc.peer.Peer.sendProvide: fn (*rpc.peer.mod.Peer, rpc.wire.protocol.MessageTarget, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader, *rpc.peer.mod.Peer, []const u8) anyerror!rpc.peer.mod.ProvideHandle
 capnpc-zig.rpc.peer.Peer.sendProvideFromRetainedAnswer: fn (*rpc.peer.mod.Peer, u32, []const rpc.wire.protocol.PromisedAnswerOp, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader, *rpc.peer.mod.Peer, []const u8) anyerror!rpc.peer.mod.ProvideHandle
 capnpc-zig.rpc.peer.Peer.sendReleaseForHost: fn (*rpc.peer.mod.Peer, u32, u32) anyerror!void
 capnpc-zig.rpc.peer.Peer.sendRestore: fn (*rpc.peer.mod.Peer, u32, []const u8, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.peer.mod.RestoreResponse) anyerror!void) anyerror!u32
+capnpc-zig.rpc.peer.Peer.sendResultsToThirdPartyBytesExcluding: fn (*const rpc.peer.mod.Peer, u32) usize
 capnpc-zig.rpc.peer.Peer.sendReturnEmptyStruct: fn (*rpc.peer.mod.Peer, u32) anyerror!void
 capnpc-zig.rpc.peer.Peer.sendReturnException: fn (*rpc.peer.mod.Peer, u32, []const u8) anyerror!void
+capnpc-zig.rpc.peer.Peer.sendReturnExceptionNoDrain: fn (*rpc.peer.mod.Peer, u32, []const u8, rpc.wire.protocol.ExceptionType) anyerror!void
 capnpc-zig.rpc.peer.Peer.sendReturnExceptionTyped: fn (*rpc.peer.mod.Peer, u32, []const u8, rpc.wire.protocol.ExceptionType) anyerror!void
+capnpc-zig.rpc.peer.Peer.sendReturnJoinResultPayload: fn (*rpc.peer.mod.Peer, u32, []const u8) anyerror!void
+capnpc-zig.rpc.peer.Peer.sendReturnProvidedTarget: fn (*rpc.peer.mod.Peer, u32, *const rpc.peer.peer_state_types.ProvideTarget) anyerror!void
 capnpc-zig.rpc.peer.Peer.sendReturnResults: fn (*rpc.peer.mod.Peer, u32, *anyopaque, *const fn (*anyopaque, *rpc.wire.protocol.ReturnBuilder) anyerror!void) anyerror!void
 capnpc-zig.rpc.peer.Peer.sendReturnResultsSentElsewhere: fn (*rpc.peer.mod.Peer, u32) anyerror!void
 capnpc-zig.rpc.peer.Peer.sendSave: fn (*rpc.peer.mod.Peer, u32, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.peer.mod.SaveResponse) anyerror!void) anyerror!u32
 capnpc-zig.rpc.peer.Peer.sendThirdPartyAnswer: fn (*rpc.peer.mod.Peer, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!u32
+capnpc-zig.rpc.peer.Peer.sendThirdPartyAnswerWithId: fn (*rpc.peer.mod.Peer, u32, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!void
 capnpc-zig.rpc.peer.Peer.send_frame_ctx: field ?*anyopaque = null
 capnpc-zig.rpc.peer.Peer.send_frame_override: field ?*const fn (*anyopaque, []const u8) anyerror!void = null
 capnpc-zig.rpc.peer.Peer.send_results_to_third_party: field hash_map.HashMap(u32,?[]u8,hash_map.AutoContext(u32),80)
@@ -1255,19 +1571,27 @@ capnpc-zig.rpc.peer.Peer.setTimeouts: fn (*rpc.peer.mod.Peer, rpc.peer.state.Pee
 capnpc-zig.rpc.peer.Peer.shutdown: fn (*rpc.peer.mod.Peer, ?*const fn (*rpc.peer.mod.Peer) void) void
 capnpc-zig.rpc.peer.Peer.shutdown_callback: field ?*const fn (*rpc.peer.mod.Peer) void = null
 capnpc-zig.rpc.peer.Peer.shutdown_deadline_ns: field ?i64 = null
+capnpc-zig.rpc.peer.Peer.shutdown_reason_text: const *const [18:0]u8
 capnpc-zig.rpc.peer.Peer.start: fn (*rpc.peer.mod.Peer, ?*anyopaque, ?*const fn (?*anyopaque, *rpc.peer.mod.Peer, anyerror) void, ?*const fn (?*anyopaque, *rpc.peer.mod.Peer) void) void
 capnpc-zig.rpc.peer.Peer.stats: fn (*const rpc.peer.mod.Peer) rpc.peer.mod.Peer.PeerStats
+capnpc-zig.rpc.peer.Peer.storeResolvedImport: fn (*rpc.peer.mod.Peer, u32, ?rpc.caps.descriptors.ResolvedCap, ?u32, bool) error{DuplicateResolve,OutOfMemory,PeerLimitExceeded}!void
 capnpc-zig.rpc.peer.Peer.sweepExpiredJoins: fn (*rpc.peer.mod.Peer) usize
 capnpc-zig.rpc.peer.Peer.sweepExpiredParkedAcceptsForProvisionIndex: fn (*rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer)) usize
+capnpc-zig.rpc.peer.Peer.sweepThirdPartyAwaits: fn (*rpc.peer.mod.Peer, bool) usize
 capnpc-zig.rpc.peer.Peer.takeAttachedConnection: fn (*rpc.peer.mod.Peer, comptime type) anytype
+capnpc-zig.rpc.peer.Peer.takePendingJoinAccept: fn (*rpc.peer.mod.Peer, []const u8) ?rpc.peer.peer_state_types.ProvideTarget
 capnpc-zig.rpc.peer.Peer.test_hooks: struct
+capnpc-zig.rpc.peer.Peer.third_party_answer_id_base_value: const u32
+capnpc-zig.rpc.peer.Peer.third_party_answer_id_limit_value: const u32
 capnpc-zig.rpc.peer.Peer.third_party_result_policy: field rpc.peer.mod.Peer.ThirdPartyResultPolicy = .reject
 capnpc-zig.rpc.peer.Peer.timeouts: field rpc.peer.state.PeerTimeouts = <default>
 capnpc-zig.rpc.peer.Peer.transport: field rpc.transport.binding.Binding(rpc.peer.mod.Peer) = <default>
 capnpc-zig.rpc.peer.Peer.transport_close_notified: field bool = false
+capnpc-zig.rpc.peer.Peer.tryHandleCrossPeerProxyJoin: fn (*rpc.peer.mod.Peer, rpc.wire.protocol.Join) anyerror!bool
 capnpc-zig.rpc.peer.Peer.validation_last_refill_ns: field ?i64 = null
 capnpc-zig.rpc.peer.Peer.validation_tokens: field i64 = 0
 capnpc-zig.rpc.peer.Peer.vat_network: field ?rpc.vat.network.VatNetwork(rpc.peer.mod.Peer) = null
+capnpc-zig.rpc.peer.Peer.vineRejectingCall: fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Call, *const rpc.caps.inbound.InboundCapTable) anyerror!void
 capnpc-zig.rpc.peer.PeerLimits.max_join_parts_per_join: field usize = 64
 capnpc-zig.rpc.peer.PeerLimits.max_pending_join_records: field usize = 4096
 capnpc-zig.rpc.peer.PeerLimits.max_retained_questions: field usize = 1024
@@ -1963,6 +2287,21 @@ capnpc-zig.rpc.transport.quic.native: struct
 capnpc-zig.rpc.transport.quic.requireEnabled: fn () void
 capnpc-zig.rpc.transport.quic.supported_max_concurrent_sessions: const u32
 capnpc-zig.rpc.transport.quic.unavailable_message: const *const [99:0]u8
+capnpc-zig.rpc.transport.quic.wake.Handle.consumeRequested: fn (*rpc.transport.quic.wake.Handle) bool
+capnpc-zig.rpc.transport.quic.wake.Handle.deinit: fn (*rpc.transport.quic.wake.Handle) void
+capnpc-zig.rpc.transport.quic.wake.Handle.fds: field ?[2]i32 = null
+capnpc-zig.rpc.transport.quic.wake.Handle.init: fn () rpc.transport.quic.wake.Handle
+capnpc-zig.rpc.transport.quic.wake.Handle.isRequested: fn (*const rpc.transport.quic.wake.Handle) bool
+capnpc-zig.rpc.transport.quic.wake.Handle.isSupported: fn (*const rpc.transport.quic.wake.Handle) bool
+capnpc-zig.rpc.transport.quic.wake.Handle.mu: field atomic.Mutex = .unlocked
+capnpc-zig.rpc.transport.quic.wake.Handle.request: fn (*rpc.transport.quic.wake.Handle) void
+capnpc-zig.rpc.transport.quic.wake.Handle.requested: field atomic.Value(bool) = <default>
+capnpc-zig.rpc.transport.quic.wake.Handle.waitForSocket: fn (*rpc.transport.quic.wake.Handle, i32, Io.Duration) error{BrokenPipe,PollFailed}!?rpc.transport.quic.wake.PollResult
+capnpc-zig.rpc.transport.quic.wake.Handle: struct
+capnpc-zig.rpc.transport.quic.wake.PollResult.socket_ready: field bool = false
+capnpc-zig.rpc.transport.quic.wake.PollResult.wake_drained: field bool = false
+capnpc-zig.rpc.transport.quic.wake.PollResult: struct
+capnpc-zig.rpc.transport.quic.wake: struct
 capnpc-zig.rpc.transport.quic: struct
 capnpc-zig.rpc.transport.stream_state.StreamState.DrainCallback: type = *const fn (*anyopaque, ?anyerror) void
 capnpc-zig.rpc.transport.stream_state.StreamState.handleReturn: fn (*rpc.transport.stream_state.StreamState, bool) void
@@ -1996,6 +2335,8 @@ capnpc-zig.rpc.transport.tcp.ConnectOptions.shutdown_drain_timeout_ms: field ?u6
 capnpc-zig.rpc.transport.tcp.ConnectOptions: struct
 capnpc-zig.rpc.transport.tcp.Connection.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.Connection.callback_depth: field usize = 0
+capnpc-zig.rpc.transport.tcp.Connection.close_requested: field atomic.Value(bool) = <default>
+capnpc-zig.rpc.transport.tcp.Connection.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.tcp.Connection.ctx: field ?*anyopaque = null
 capnpc-zig.rpc.transport.tcp.Connection.deinit_requested: field bool = false
 capnpc-zig.rpc.transport.tcp.Connection.deinitialized: field bool = false
@@ -2075,6 +2416,8 @@ capnpc-zig.rpc.transport.tcp.closeFd: fn (Io, rpc.transport.tcp.stream_transport
 capnpc-zig.rpc.transport.tcp.connection.Connection.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.connection.Connection.assertThreadAffinity: fn (*const rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.callback_depth: field usize = 0
+capnpc-zig.rpc.transport.tcp.connection.Connection.close_requested: field atomic.Value(bool) = <default>
+capnpc-zig.rpc.transport.tcp.connection.Connection.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.tcp.connection.Connection.context: fn (*const rpc.transport.tcp.connection.Connection) ?*anyopaque
 capnpc-zig.rpc.transport.tcp.connection.Connection.ctx: field ?*anyopaque = null
 capnpc-zig.rpc.transport.tcp.connection.Connection.deinit_requested: field bool = false

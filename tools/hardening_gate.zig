@@ -41,12 +41,12 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/peer/state.zig", .kind = .panic_call, .needle = "Peer method called from wrong thread", .reason = "debug misuse guard, not input-driven protocol handling" },
     .{ .path = "src/rpc/peer/mod.zig", .kind = .panic_call, .needle = "attachConnection called while a transport is already attached", .reason = "programmer misuse guard" },
     .{ .path = "src/rpc/peer/mod.zig", .kind = .panic_call, .needle = "attachTransportBinding called while a transport is already attached", .reason = "programmer misuse guard" },
-    .{ .path = "src/rpc/peer/mod.zig", .kind = .optional_unwrap, .needle = "promise_entry.value_ptr.resolved.?", .reason = "guarded by resolved export state check" },
-    .{ .path = "src/rpc/peer/mod.zig", .kind = .optional_unwrap, .needle = "promise_entry.value_ptr.resolved.?", .reason = "resolvePromiseExportToImport: set to .imported immediately above, guarded by earlier resolved==null check" },
-    .{ .path = "src/rpc/peer/mod.zig", .kind = .optional_unwrap, .needle = "promise_entry.value_ptr.resolved.?", .reason = "resolvePromiseExportToThirdParty: set to .exported{vine_id} immediately above, guarded by earlier resolved==null check" },
-    .{ .path = "src/rpc/peer/mod.zig", .kind = .optional_unwrap, .needle = "entry.cap.?", .reason = "resolved import cap is checked before dispatch" },
-    .{ .path = "src/rpc/peer/mod.zig", .kind = .optional_unwrap, .needle = "ret.results.?", .reason = "guarded by Return tag/results presence check" },
-    .{ .path = "src/rpc/peer/mod.zig", .kind = .optional_unwrap, .needle = "ret.results.?", .reason = "resolveProvidePromisedOps: guarded by the identical tag/results presence check as resolvePromisedAnswer directly below" },
+    .{ .path = "src/rpc/peer/peer_promise_exports.zig", .kind = .optional_unwrap, .needle = "promise_entry.value_ptr.resolved.?", .reason = "guarded by resolved export state check" },
+    .{ .path = "src/rpc/peer/peer_promise_exports.zig", .kind = .optional_unwrap, .needle = "promise_entry.value_ptr.resolved.?", .reason = "resolvePromiseExportToImport: set to .imported immediately above, guarded by earlier resolved==null check" },
+    .{ .path = "src/rpc/peer/peer_promise_exports.zig", .kind = .optional_unwrap, .needle = "promise_entry.value_ptr.resolved.?", .reason = "resolvePromiseExportToThirdParty: set to .exported{vine_id} immediately above, guarded by earlier resolved==null check" },
+    .{ .path = "src/rpc/peer/call/peer_call_send.zig", .kind = .optional_unwrap, .needle = "entry.cap.?", .reason = "resolved import cap is checked before dispatch" },
+    .{ .path = "src/rpc/peer/peer_export_release.zig", .kind = .optional_unwrap, .needle = "ret.results.?", .reason = "guarded by Return tag/results presence check" },
+    .{ .path = "src/rpc/peer/peer_export_release.zig", .kind = .optional_unwrap, .needle = "ret.results.?", .reason = "resolveProvidePromisedOps: guarded by the identical tag/results presence check as resolvePromisedAnswer directly below" },
     .{ .path = "src/rpc/peer/peer_cap_lifecycle.zig", .kind = .optional_unwrap, .needle = "ret.results.?.cap_table", .reason = "guarded by Return results tag path" },
     .{ .path = "src/rpc/peer/peer_transport_callbacks.zig", .kind = .optional_unwrap, .needle = "conn.context().?", .reason = "transport callback only installed with context" },
     .{ .path = "src/rpc/peer/return/peer_return_orchestration.zig", .kind = .optional_unwrap, .needle = "ret.results.?.cap_table", .reason = "guarded by Return results tag/path check" },
@@ -61,6 +61,7 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/transport/stream_state.zig", .kind = .optional_unwrap, .needle = "cb(ctx.?, self.stream_error)", .reason = "callback context is paired with callback registration" },
     .{ .path = "src/rpc/transport/quic/connection.zig", .kind = .panic_call, .needle = "QUIC Connection method called from wrong thread", .reason = "debug misuse guard, not input-driven protocol handling" },
     .{ .path = "src/rpc/transport/quic/server.zig", .kind = .panic_call, .needle = "QUIC Server stepped from a thread other than the loop thread", .reason = "debug loop-affinity misuse guard; deferred-close architecture requires all list/close mutation on the loop thread" },
+    .{ .path = "src/rpc/transport/quic/server.zig", .kind = .panic_call, .needle = "QUIC Server session accessor called from a thread other than the loop thread", .reason = "debug loop-affinity misuse guard for the read-side session-list accessors; same invariant as the step guard, not input-driven protocol handling" },
 
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "generated.setSenderHosted(id) catch unreachable", .reason = "generated builder setter is infallible for scalar capability descriptor" },
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "generated.setSenderPromise(id) catch unreachable", .reason = "generated builder setter is infallible for scalar capability descriptor" },
@@ -89,7 +90,7 @@ const allowlist = [_]Allow{
     .{ .path = ".github/workflows/ci.yml", .kind = .unsafe_optimize, .needle = "zig build -Doptimize=ReleaseFast bench-check", .reason = "benchmark-only job intentionally runs optimized code for stable timing" },
     .{ .path = "Justfile", .kind = .unsafe_optimize, .needle = "zig build -Doptimize=ReleaseFast bench-check", .reason = "benchmark-only local recipe intentionally runs optimized code for stable timing" },
     .{ .path = ".github/workflows/ci.yml", .kind = .unsafe_optimize, .needle = "Run teardown-heavy RPC suites under ReleaseFast", .reason = "memory-safety lane: ReleaseFast is the only mode that leaves freed memory unpoisoned, so a use-after-free reached from a destructor is observable there and nowhere else -- it caught the HostPeer.deinit ordering bug that Debug and ReleaseSafe both passed. Runs no shipped artifact and gates no release; accepts that `unreachable` is UB in this mode, which is why the lane is scoped to RPC teardown suites rather than the whole tree" },
-    .{ .path = "build.zig", .kind = .unsafe_optimize, .needle = "const release_fast_optimize: std.builtin.OptimizeMode = .ReleaseFast;", .reason = "reviewed compile mode for the bounded teardown and schema-ownership memory-safety lane; it builds no shipped artifact and exists specifically to expose unpoisoned use-after-free behavior" },
+    .{ .path = "build/build_impl.zig", .kind = .unsafe_optimize, .needle = "const release_fast_optimize: std.builtin.OptimizeMode = .ReleaseFast;", .reason = "reviewed compile mode for the bounded teardown and schema-ownership memory-safety lane; it builds no shipped artifact and exists specifically to expose unpoisoned use-after-free behavior" },
 
     // Reviewed exceptions in the compiler plugin, surfaced the first time
     // `src/capnpc-zig` was scanned for unsafe patterns (see `unsafe_dirs`).
@@ -145,6 +146,9 @@ const disclosure_extra_files = [_][]const u8{
 
 const build_policy_files = [_][]const u8{
     "build.zig",
+    // The B-series split: the graph (and its optimize-policy decisions) lives
+    // here; the repo-root build.zig is a thin driver. Both stay scanned.
+    "build/build_impl.zig",
     "Justfile",
     ".github/workflows/ci.yml",
 };

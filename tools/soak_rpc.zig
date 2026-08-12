@@ -51,17 +51,23 @@ const Config = struct {
     mem_growth_pct: f64 = 25.0,
 };
 
+/// Counters are `usize`, not `u64`, so this harness cross-compiles for
+/// 32-bit targets: `@atomicLoad`/`@atomicRmw` reject operands wider than the
+/// pointer width, and `zig build check-compile -Dtarget=x86-linux-gnu` builds
+/// this file. `usize` is u64 on every machine the soak actually runs on, so
+/// the counters are unchanged there; the 32-bit build is compile-only rot
+/// detection, never an execution target.
 const Totals = struct {
-    sessions: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    calls_ok: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    calls_cancelled: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    chaos_closes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    transport_errors: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    expected_disconnects: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    sessions: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    calls_ok: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    calls_cancelled: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    chaos_closes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    transport_errors: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    expected_disconnects: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     // Disconnect-reason Returns on non-chaos sessions: legitimate at high peer
     // counts (idle-timeout drops under contention), not a correctness failure.
-    contention_disconnects: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    unexpected_exceptions: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    contention_disconnects: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    unexpected_exceptions: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 };
 
 fn nowNs(io: std.Io) i64 {
@@ -82,8 +88,8 @@ fn nowNsU(io: std.Io) u64 {
 
 const CountingAllocator = struct {
     backing: std.mem.Allocator,
-    allocated: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    freed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    allocated: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    freed: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 
     const vtable = std.mem.Allocator.VTable{
         .alloc = alloc,
@@ -102,7 +108,7 @@ const CountingAllocator = struct {
 
     /// Live bytes = allocated − freed. Saturating so a transient read that
     /// observes freed slightly ahead of allocated cannot underflow.
-    fn liveBytes(self: *const CountingAllocator) u64 {
+    fn liveBytes(self: *const CountingAllocator) usize {
         return self.allocated.load(.monotonic) -| self.freed.load(.monotonic);
     }
 

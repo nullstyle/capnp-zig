@@ -32,6 +32,15 @@ jobs:
       - name: Run soak harness under ReleaseSafe (1 minute)
         run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 8
 
+      # Linux-only: libtsan segfaults at startup on darwin at the pinned Zig,
+      # and Windows has no zig TSan runtime; build.zig hard-fails the step on
+      # unsupported hosts rather than passing vacuously. 30 seconds is enough
+      # for the worker/connection churn to cross-schedule under TSan's ~5-15x
+      # slowdown.
+      - name: Run soak harness under ThreadSanitizer (30 seconds)
+        if: runner.os == 'Linux'
+        run: zig build soak-tsan -- --seconds 30 --workers 8
+
   fuzz:
     name: Coverage-guided fuzzing (10 minutes)
     # arm64, not ubuntu-latest: on x86_64 the zig fuzzer's maker dies with
