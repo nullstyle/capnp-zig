@@ -260,6 +260,52 @@ test "peer provide+accept returns provided capability" {
     try std.testing.expectEqual(export_id, descriptor.id.?);
 }
 
+test "peer self-loopback return stash does not leak on duplicate answer id" {
+    // Regression (found by the L3/L4 structured fuzz target): two Calls reusing
+    // the same question id, each routed send-results-to-yourself and each
+    // completed via a self-loopback empty return, stash a results frame under
+    // the same answer-id key. A plain HashMap.put on the second stash would
+    // overwrite and leak the first frame; completeSelfLoopbackReturn must free
+    // the displaced frame. The testing allocator fails this test if it does not.
+    const allocator = std.testing.allocator;
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
+
+    const Loopback = struct {
+        fn onCall(_: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+            try p.sendReturnEmptyStruct(call.question_id);
+        }
+    };
+
+    var handler_state: u8 = 0;
+    const export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = Loopback.onCall,
+    });
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8).empty,
+    };
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var round: usize = 0;
+    while (round < 2) : (round += 1) {
+        var call_builder = protocol.MessageBuilder.init(allocator);
+        defer call_builder.deinit();
+        var call = try call_builder.beginCall(7, 0, 0);
+        try call.setTargetImportedCap(export_id);
+        call.setSendResultsToYourself();
+        _ = try call.payloadTyped();
+        const call_frame = try call_builder.finish();
+        defer allocator.free(call_frame);
+        try peer.handleFrame(call_frame);
+    }
+}
+
 test "peer finish clears stored provide entry" {
     const allocator = std.testing.allocator;
 

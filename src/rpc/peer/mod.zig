@@ -6753,7 +6753,13 @@ pub const Peer = struct {
             self.loopback_result_stash.count() < self.limits.max_loopback_result_stash)
         {
             // toBytes returned an owned copy; hand ownership to the stash.
-            try self.loopback_result_stash.put(answer_id, @constCast(frame));
+            // fetchPut, not put: a duplicate/hostile answer_id can complete a
+            // self-loopback return twice before a takeFromOtherQuestion
+            // consumes the first, and a plain put would overwrite — and leak —
+            // the previously stashed frame.
+            if (try self.loopback_result_stash.fetchPut(answer_id, @constCast(frame))) |old| {
+                self.allocator.free(old.value);
+            }
             owns_frame = false;
         }
 
