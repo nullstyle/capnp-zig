@@ -60,6 +60,56 @@ test "quic wake Handle: cross-thread request() storm vs owner deinit()" {
     }
 }
 
+test "tcp Connection: adopt-before-run lets run-thread callbacks call checked methods" {
+    // A bare Connection constructed on this thread but run on another must
+    // adopt affinity before run() (as the session wrappers do); then an
+    // affinity-checked method called from a callback on the run thread (here
+    // isClosing, from on_tick) does not panic. Without the adopt it would,
+    // because the owner is still the constructing thread.
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const fds = try tcp.createLoopbackSocketPair(io);
+    defer tcp.closeFd(io, fds[1]);
+
+    checked_from_run_ok.store(false, .release);
+
+    const Cbs = struct {
+        fn onMessage(_: *Connection, _: []const u8) anyerror!void {}
+        fn onError(_: *Connection, _: anyerror) void {}
+        fn onClose(_: *Connection) void {}
+        fn onTick(conn: *Connection) void {
+            // isClosing() asserts thread affinity; reaching here without a
+            // panic proves this thread owns the connection.
+            _ = conn.isClosing();
+            checked_from_run_ok.store(true, .release);
+            conn.requestClose();
+        }
+        fn run(conn: *Connection) void {
+            // Adopt before entering the loop, the sanctioned handoff.
+            conn.adoptOwnerThread();
+            conn.run();
+        }
+    };
+
+    var conn = try Connection.init(allocator, io, fds[0], .{ .tick_interval_ms = 5 });
+    var dummy: u8 = 0;
+    conn.start(&dummy, Cbs.onMessage, Cbs.onError, Cbs.onClose);
+    conn.on_tick = Cbs.onTick;
+
+    // Run on a DIFFERENT thread; the first tick fires the checked callback.
+    const t = try std.Thread.spawn(.{}, Cbs.run, .{&conn});
+    t.join();
+    // The run thread owns the connection now; re-adopt here (quiescent after
+    // join) for the owner-thread-only deinit.
+    conn.adoptOwnerThread();
+    conn.deinit();
+
+    try std.testing.expect(checked_from_run_ok.load(.acquire));
+}
+
+var checked_from_run_ok = std.atomic.Value(bool).init(false);
+
 const tcp_wake_reps = 30;
 const tcp_waker_threads = 3;
 const tcp_wakes_per_thread = 200;

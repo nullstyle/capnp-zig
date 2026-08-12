@@ -67,6 +67,10 @@ pub const Server = struct {
     /// used by `assertLoopThread` for a debug-only affinity check.
     loop_thread_id: ?std.Thread.Id = null,
 
+    /// When true, the loop-thread affinity checks also run in release builds
+    /// (always on in Debug). Mirrors the connection field.
+    runtime_thread_checks: bool = false,
+
     pub fn init(
         allocator: std.mem.Allocator,
         io: std.Io,
@@ -118,6 +122,8 @@ pub const Server = struct {
         self.* = undefined;
     }
 
+    /// Listener address, immutable after init, so intentionally not
+    /// loop-thread-guarded (safe to read from any thread).
     pub fn getAddress(self: *const Server) Net.IpAddress {
         return self.listener.getAddress();
     }
@@ -131,15 +137,18 @@ pub const Server = struct {
     }
 
     pub fn sessionCount(self: *const Server) usize {
+        self.assertLoopThread();
         return self.sessions.items.len;
     }
 
     pub fn sessionAt(self: *Server, index: usize) ?*ServerSession {
+        self.assertLoopThread();
         if (index >= self.sessions.items.len) return null;
         return self.sessions.items[index];
     }
 
     pub fn sessionById(self: *Server, id: u64) ?*ServerSession {
+        self.assertLoopThread();
         const index = self.findSessionIndexById(id) orelse return null;
         return self.sessions.items[index];
     }
@@ -271,6 +280,22 @@ pub const Server = struct {
             if (std.Thread.getCurrentId() != loop_tid) {
                 @panic("QUIC Server stepped from a thread other than the loop thread");
             }
+        }
+    }
+
+    /// Read-side counterpart to `claimLoopThread`: asserts the caller is on the
+    /// loop thread without latching, so it is safe on `*const Server`. Skips
+    /// until the loop thread is claimed. Guards the session-list accessors,
+    /// which read `sessions` (mutated loop-thread-only). Debug-always, release
+    /// opt-in via `runtime_thread_checks`.
+    fn assertLoopThread(self: *const Server) void {
+        if (comptime builtin.target.os.tag == .freestanding) return;
+        if (comptime builtin.mode != .debug) {
+            if (!self.runtime_thread_checks) return;
+        }
+        const loop_tid = self.loop_thread_id orelse return;
+        if (std.Thread.getCurrentId() != loop_tid) {
+            @panic("QUIC Server session accessor called from a thread other than the loop thread");
         }
     }
 

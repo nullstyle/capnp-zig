@@ -312,6 +312,11 @@ pub const Connection = struct {
     pub fn deinit(self: *Connection) void {
         if (self.deinitialized) return;
         if (self.callback_depth != 0) {
+            // Deferred: deinit() was called re-entrantly from a callback on the
+            // run-loop thread, which need not be the owner thread — so this
+            // branch must NOT assert affinity. It only flags intent and wakes
+            // the loop; the real teardown runs later via deinitNow, which does
+            // assert.
             self.deinit_requested = true;
             self.requestClose();
             return;
@@ -388,6 +393,14 @@ pub const Connection = struct {
     ///
     /// After `run()` returns, the `on_close` callback is invoked.
     pub fn run(self: *Connection) void {
+        // run() does NOT auto-adopt thread affinity. A connection run on a
+        // thread other than the one that constructed it must adopt first (the
+        // ClientSession/ServerSession wrappers call adoptOwnerThread() right
+        // before run() for exactly this reason). Auto-adopting here was tried
+        // and rejected: it cannot be un-done on exit (run() may free `self` via
+        // its on_close/on_destroy teardown, so a restore-on-return would be a
+        // use-after-free), which left every construct-here / run-on-a-worker /
+        // deinit-here caller owning the connection on a dead thread.
         self.transport.startWriter() catch |err| {
             log.debug("failed to start writer thread: {}", .{err});
             self.last_error = err;
