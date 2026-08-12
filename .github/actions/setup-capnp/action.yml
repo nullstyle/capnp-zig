@@ -1,0 +1,55 @@
+name: Install the Cap'n Proto compiler
+description: >
+  Put `capnp` on PATH for every host OS and assert it is actually there.
+
+  Ten serialization/codegen suites are gated on this tool, and several of them
+  (schema fidelity against the vendored capnp/test corpus, codegen defaults)
+  FAIL rather than skip when it is missing. Any job that runs the full test
+  suite — or `test-oom` / `test-resource-budgets`, which pull those roots in —
+  needs this, not just the primary `test` job. Extracted from that job so the
+  install cannot drift between the jobs that depend on it.
+
+  Pair it with `submodules: recursive` on checkout: the fidelity corpus lives
+  in vendor/ext, and the standard schemas the helper injects
+  (-Ivendor/ext/capnproto/c++/src) come from a submodule too.
+runs:
+  using: composite
+  steps:
+    - name: Install Cap'n Proto compiler (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        if command -v sudo >/dev/null 2>&1; then
+          sudo apt-get update
+          sudo apt-get install -y capnproto libcapnp-dev
+        else
+          apt-get update
+          apt-get install -y capnproto libcapnp-dev
+        fi
+
+    - name: Install Cap'n Proto compiler (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: brew install capnp
+
+    - name: Install Cap'n Proto compiler (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $url = 'https://capnproto.org/capnproto-c++-win32-1.0.2.zip'
+        $expected = '48a69e9c10350e2c90041e7b8d7a610a43889c178b6431145da62610c9b5435a'
+        $archive = Join-Path $env:RUNNER_TEMP 'capnproto-c++-win32-1.0.2.zip'
+        $install = Join-Path $env:RUNNER_TEMP 'capnproto-win32'
+        Invoke-WebRequest -Uri $url -OutFile $archive
+        $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+        if ($actual -ne $expected) { throw "Cap'n Proto archive checksum mismatch: $actual" }
+        Expand-Archive -Path $archive -DestinationPath $install -Force
+        $capnp = Get-ChildItem -Path $install -Filter capnp.exe -Recurse | Select-Object -First 1
+        if ($null -eq $capnp) { throw 'capnp.exe not found in the verified archive' }
+        $capnp.Directory.FullName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+    # Turn a missing tool into a hard job failure instead of suites quietly
+    # degrading. This step is the assertion.
+    - name: Verify the toolchain the tests depend on is present
+      shell: bash
+      run: capnp --version

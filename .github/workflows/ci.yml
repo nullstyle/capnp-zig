@@ -46,47 +46,12 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
 
-      # capnp gates ten serialization/codegen suites, which skip when it is
-      # missing. Install it on every native test tier and fail the job if the
-      # executable is unavailable, so codegen parity cannot regress into skips.
-      - name: Install Cap'n Proto compiler (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          if command -v sudo >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y capnproto libcapnp-dev
-          else
-            apt-get update
-            apt-get install -y capnproto libcapnp-dev
-          fi
-
-      - name: Install Cap'n Proto compiler (macOS)
-        if: runner.os == 'macOS'
-        run: brew install capnp
-
-      - name: Install Cap'n Proto compiler (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $url = 'https://capnproto.org/capnproto-c++-win32-1.0.2.zip'
-          $expected = '48a69e9c10350e2c90041e7b8d7a610a43889c178b6431145da62610c9b5435a'
-          $archive = Join-Path $env:RUNNER_TEMP 'capnproto-c++-win32-1.0.2.zip'
-          $install = Join-Path $env:RUNNER_TEMP 'capnproto-win32'
-          Invoke-WebRequest -Uri $url -OutFile $archive
-          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) { throw "Cap'n Proto archive checksum mismatch: $actual" }
-          Expand-Archive -Path $archive -DestinationPath $install -Force
-          $capnp = Get-ChildItem -Path $install -Filter capnp.exe -Recurse | Select-Object -First 1
-          if ($null -eq $capnp) { throw 'capnp.exe not found in the verified archive' }
-          $capnp.Directory.FullName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      # Turn a missing tool into a hard job failure instead of ~10 test files
-      # quietly returning SkipZigTest and the suite reporting green. This step
-      # is the assertion; tests/hardening/toolchain_gate_test.zig covers
-      # committed fixtures but cannot read the environment to check the tool.
-      - name: Verify the toolchain the tests depend on is present
-        shell: bash
-        run: capnp --version
+      # capnp gates ten serialization/codegen suites, several of which FAIL
+      # rather than skip without it. The install + presence assertion lives in
+      # a composite action because five jobs need it, not just this one.
+      # tests/hardening/toolchain_gate_test.zig covers committed fixtures but
+      # cannot read the environment to check the tool.
+      - uses: ./.github/actions/setup-capnp
 
       - name: Run tests
         timeout-minutes: 20
@@ -203,6 +168,8 @@ jobs:
           version: 2026.7.17
 
       - uses: ./.github/actions/setup-zig
+
+      - uses: ./.github/actions/setup-capnp
 
       # Package store cached separately from setup-zig's per-run cache; the
       # key is shared with nightly.yml's extended-gates job so nightly QUIC
@@ -353,12 +320,18 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
+        with:
+          # test-oom / test-resource-budgets pull in the schema-fidelity and
+          # codegen roots, which read the vendored capnp/test corpus.
+          submodules: recursive
 
       - uses: jdx/mise-action@v4
         with:
           version: 2026.7.17
 
       - uses: ./.github/actions/setup-zig
+
+      - uses: ./.github/actions/setup-capnp
 
       - name: Run hardening gate
         run: zig build hardening
@@ -509,6 +482,8 @@ jobs:
           version: 2026.7.17
 
       - uses: ./.github/actions/setup-zig
+
+      - uses: ./.github/actions/setup-capnp
 
       # Run every registered test binary with safety checks enabled in an
       # optimized build. This includes the L3 VatC hardening regressions on all
