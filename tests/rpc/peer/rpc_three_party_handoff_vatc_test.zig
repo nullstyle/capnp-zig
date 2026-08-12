@@ -5508,7 +5508,7 @@ test "L3 affinity: an inbound Accept pins the index, exactly like a Provide does
     // other two effects.
     try index.attached_peers.append(index.allocator, &peer);
     peer.provision_index = &index;
-    try std.testing.expectEqual(@as(?std.Thread.Id, null), index.thread_id);
+    try std.testing.expectEqual(@as(?u64, null), index.thread_id);
 
     const token = blk: {
         const d_network = dummy.vat_network orelse return error.NoVatNetwork;

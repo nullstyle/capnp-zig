@@ -971,6 +971,23 @@ pub fn build(b: *std.Build) !void {
     const check_api_step = b.step("check-api", "Fail when the public API drifts from docs/api-snapshot.txt");
     check_api_step.dependOn(&run_api_snapshot_check.step);
 
+    // Strict CI twin of `check-api`: also fails when the COMMITTED
+    // experimental snapshot is stale, instead of silently refreshing it.
+    // Locally `check-api` keeps the refresh-in-place behavior; in CI the
+    // rendered surface must match the committed file byte-for-byte, which is
+    // what makes platform-dependent renderings (the u32/u64 `std.Thread.Id`
+    // shape) and forgotten-refresh commits visible. Requires the stored
+    // surface to render platform-stably — thread ids are widened to u64 for
+    // exactly this gate.
+    const run_api_snapshot_check_strict = b.addRunArtifact(api_snapshot_tool);
+    run_api_snapshot_check_strict.addArgs(&.{ "--check", "--strict-experimental" });
+    run_api_snapshot_check_strict.setCwd(b.path("."));
+    const check_api_experimental_step = b.step(
+        "check-api-experimental",
+        "Fail when the committed experimental snapshot is stale (strict CI mode)",
+    );
+    check_api_experimental_step.dependOn(&run_api_snapshot_check_strict.step);
+
     // The QUIC-enabled surface, snapshotted separately.
     //
     // `check-api` runs WITHOUT `-Dquic=true`, so the snapshot it maintains sees
@@ -1014,6 +1031,22 @@ pub fn build(b: *std.Build) !void {
             "Fail when the QUIC-enabled public API drifts (requires -Dquic=true)",
         );
         check_api_quic_step.dependOn(&run_api_snapshot_check_quic.step);
+
+        // Strict CI twin for the QUIC-enabled experimental snapshot; see
+        // `check-api-experimental`.
+        const run_api_snapshot_check_quic_strict = b.addRunArtifact(api_snapshot_tool);
+        run_api_snapshot_check_quic_strict.addArgs(&.{
+            "--check",
+            "--strict-experimental",
+            "--experimental-path",
+            "docs/api-snapshot-experimental-quic.txt",
+        });
+        run_api_snapshot_check_quic_strict.setCwd(b.path("."));
+        const check_api_experimental_quic_step = b.step(
+            "check-api-experimental-quic",
+            "Fail when the committed QUIC experimental snapshot is stale (strict CI mode, requires -Dquic=true)",
+        );
+        check_api_experimental_quic_step.dependOn(&run_api_snapshot_check_quic_strict.step);
     }
 
     const test_codegen_step = b.step("test-codegen", "Run code generation tests");

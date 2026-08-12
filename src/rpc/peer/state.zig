@@ -214,12 +214,14 @@ pub fn PendingThirdPartyAwait(comptime QuestionType: type) type {
     };
 }
 
-/// Owner-thread identity captured at peer init. Wraps `std.Thread.Id`
-/// because its integer width varies by target (u32 on linux, u64 on
-/// darwin); the wrapper keeps the rendered public surface — and the
-/// docs/api-snapshot.txt gate built from it — identical on every platform.
+/// Owner-thread identity captured at peer init. Stored as `u64` — not
+/// `std.Thread.Id` — because the alias's integer width varies by target
+/// (u32 on linux/windows, u64 on darwin) and `@typeName` renders the
+/// resolved integer, which would make the api-snapshot gates
+/// platform-dependent. `std.Thread.getCurrentId()` widens losslessly on
+/// assignment and comparison.
 pub const OwnerThreadId = struct {
-    value: std.Thread.Id,
+    value: u64,
 };
 
 pub fn initialOwnerThreadId() ?OwnerThreadId {

@@ -139,8 +139,10 @@ pub const Connection = struct {
     // -- Thread-affinity check (debug only) ---------------------------------
 
     /// Thread ID captured at init time. In debug builds, key entry points
-    /// assert that the current thread matches this value.
-    owner_thread_id: ?std.Thread.Id = null,
+    /// assert that the current thread matches this value. Stored widened to
+    /// `u64` (not `std.Thread.Id`, whose width varies by target) so the
+    /// rendered api-snapshot surface is platform-stable.
+    owner_thread_id: ?u64 = null,
 
     /// When true, thread-affinity checks also run in release builds
     /// (always on in Debug). Mirrors `Peer.enableRuntimeThreadChecks`.

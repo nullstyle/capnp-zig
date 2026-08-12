@@ -71,7 +71,10 @@ pub const Connection = struct {
 
     callback_lifecycle: CallbackLifecycle = .{},
 
-    owner_thread_id: ?std.Thread.Id = null,
+    /// Thread ID captured at init. Widened to `u64` (not `std.Thread.Id`,
+    /// whose width varies by target) so the rendered api-snapshot surface is
+    /// platform-stable.
+    owner_thread_id: ?u64 = null,
 
     /// When true, thread-affinity checks also run in release builds (always on
     /// in Debug). Mirrors the TCP connection's field and

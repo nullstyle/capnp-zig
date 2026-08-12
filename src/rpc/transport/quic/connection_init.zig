@@ -161,7 +161,7 @@ pub fn init(
     return conn;
 }
 
-fn ownerThreadId() ?std.Thread.Id {
+fn ownerThreadId() ?u64 {
     if (comptime builtin.target.os.tag == .freestanding) return null;
     return std.Thread.getCurrentId();
 }

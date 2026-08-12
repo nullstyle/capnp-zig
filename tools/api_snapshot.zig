@@ -7,13 +7,17 @@
 //!
 //!   docs/api-snapshot.txt              — STABLE, the FROZEN contract. Any
 //!                                        drift here fails `check-api` (RED).
-//!   docs/api-snapshot-experimental.txt — EXPERIMENTAL, informational only.
-//!                                        Regenerated on every run; drift here
-//!                                        is expected and NEVER fails the gate.
+//!   docs/api-snapshot-experimental.txt — EXPERIMENTAL, not frozen. Refreshed
+//!                                        in place by local `check-api`; CI's
+//!                                        strict mode fails when the committed
+//!                                        file is stale.
 //!
-//!   zig build api-snapshot   # regenerate BOTH files
-//!   zig build check-api      # fail ONLY on Stable-file drift; refresh the
-//!                            # experimental file in place
+//!   zig build api-snapshot             # regenerate BOTH files
+//!   zig build check-api                # fail ONLY on Stable-file drift;
+//!                                      # refresh the experimental file
+//!   zig build check-api-experimental   # CI: fail on Stable drift OR a stale
+//!                                      # committed experimental file
+//!                                      # (--strict-experimental)
 //!
 //! Stability tiers for individual modules live in docs/stability.md and the
 //! F4 "Freeze scope" section of docs/rpc-stable-plan.md, which is authoritative
@@ -883,6 +887,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
     var mode: enum { check, write, closure } = .check;
+    var strict_experimental = false;
     var stable_path: []const u8 = stable_path_default;
     var experimental_path: []const u8 = experimental_path_default;
 
@@ -899,6 +904,8 @@ pub fn main(init: std.process.Init) !void {
             mode = .check;
         } else if (std.mem.eql(u8, arg, "--closure")) {
             mode = .closure;
+        } else if (std.mem.eql(u8, arg, "--strict-experimental")) {
+            strict_experimental = true;
         } else if (std.mem.eql(u8, arg, "--path")) {
             stable_path = iter.next() orelse return error.InvalidArgument;
         } else if (std.mem.eql(u8, arg, "--experimental-path")) {
@@ -947,14 +954,31 @@ pub fn main(init: std.process.Init) !void {
             );
         },
         .check => {
-            // The Experimental file is informational: refresh it in place so
-            // it never goes stale, but its content NEVER fails the gate.
-            writeFile(io, experimental_path, experimental_rendered) catch |err| {
-                std.debug.print(
-                    "api-snapshot: note: could not refresh {s} ({}); continuing\n",
-                    .{ experimental_path, err },
-                );
-            };
+            if (strict_experimental) {
+                // Strict mode (CI): the Experimental file is not a frozen
+                // contract, but the COMMITTED snapshot must match the tree —
+                // otherwise the "informational" surface silently goes stale
+                // and platform-dependent renderings slip through unnoticed.
+                // Drift is RED with a refresh instruction, not a review one.
+                const experimental_ok = try diffAndReport(allocator, io, experimental_path, experimental_rendered);
+                if (!experimental_ok) {
+                    std.debug.print(
+                        "api-snapshot: EXPERIMENTAL surface drifted from the committed {s}. Not a frozen contract — refresh it: run `zig build api-snapshot` (and `-Dquic=true api-snapshot-quic`) and commit the result.\n",
+                        .{experimental_path},
+                    );
+                    return error.ExperimentalSnapshotDrift;
+                }
+            } else {
+                // The Experimental file is informational: refresh it in place
+                // so it never goes stale, but its content does not fail the
+                // default gate (CI enforces it via --strict-experimental).
+                writeFile(io, experimental_path, experimental_rendered) catch |err| {
+                    std.debug.print(
+                        "api-snapshot: note: could not refresh {s} ({}); continuing\n",
+                        .{ experimental_path, err },
+                    );
+                };
+            }
 
             // The Stable file is the frozen contract: drift here is RED.
             const stable_ok = try diffAndReport(allocator, io, stable_path, stable_rendered);
@@ -966,8 +990,8 @@ pub fn main(init: std.process.Init) !void {
                 return error.ApiSnapshotDrift;
             }
             std.debug.print(
-                "api-snapshot: OK ({} stable declarations frozen; {} experimental refreshed)\n",
-                .{ stable_lines.len, experimental_lines.len },
+                "api-snapshot: OK ({} stable declarations frozen; {} experimental {s})\n",
+                .{ stable_lines.len, experimental_lines.len, if (strict_experimental) @as([]const u8, "verified") else "refreshed" },
             );
         },
     }

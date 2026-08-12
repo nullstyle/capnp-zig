@@ -64,8 +64,10 @@ pub const Server = struct {
     /// `close`/`requestClose` must never touch the list — they only raise the
     /// `close_requested` flag and wake the loop, which then closes every
     /// session on its own thread. Claimed on the first loop-thread step and
-    /// used by `assertLoopThread` for a debug-only affinity check.
-    loop_thread_id: ?std.Thread.Id = null,
+    /// used by `assertLoopThread` for a debug-only affinity check. Widened to
+    /// `u64` (not `std.Thread.Id`, whose width varies by target) so the
+    /// rendered api-snapshot surface is platform-stable.
+    loop_thread_id: ?u64 = null,
 
     /// When true, the loop-thread affinity checks also run in release builds
     /// (always on in Debug). Mirrors the connection field.
