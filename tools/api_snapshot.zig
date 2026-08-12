@@ -145,6 +145,23 @@ const stable_rules = [_]Rule{
     p("capnpc-zig.schema_validation"),
     p("capnpc-zig.reader"),
     p("capnpc-zig.request"),
+    // NOTE for anyone about to split generator.zig / struct_gen.zig: this
+    // prefix freezes their ENTIRE pub surface (33 `codegen.Generator.*`
+    // entries today), and Zig's privacy is FILE-scoped. So moving a cluster of
+    // private `Generator` methods into a sibling file forces every private
+    // helper it calls back into to become `pub` — and each one then lands in
+    // this FROZEN tier, permanently. Measured on the interface/RPC emission
+    // cluster (~840 contiguous lines, the largest single win): it calls back
+    // into 11 private helpers, 3 of them genuinely shared
+    // (`toZigIdentifier` 9x, `lowerFirst` 3x, `allocTypeDeclName`), so the
+    // extraction cannot be done snapshot-neutrally. The `rpc.peer`
+    // decomposition was unaffected because Peer's pub surface is Experimental
+    // (only ~15 frozen entries); codegen is the opposite case.
+    //
+    // Splitting these files therefore needs an explicit API decision first —
+    // narrow this rule to the reviewed consumer entry points (so codegen
+    // INTERNALS stop being frozen), or accept the new frozen entries. Do not
+    // widen helpers to `pub` as a side effect of a refactor.
     p("capnpc-zig.codegen"),
 
     // --- RPC wire protocol + framing (promoted). ---
