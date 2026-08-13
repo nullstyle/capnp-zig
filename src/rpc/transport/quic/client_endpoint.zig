@@ -1,5 +1,5 @@
 const std = @import("std");
-const quic_zig = @import("quic_zig");
+const quic_zig = @import("quic");
 
 const quic_zig_adapter = @import("quic_zig_adapter.zig");
 

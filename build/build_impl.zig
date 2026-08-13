@@ -1074,10 +1074,10 @@ pub fn buildImpl(b: *std.Build) !void {
     const release_safe_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
     // Same contract as the debug-mode resolution above: propagate, never swallow.
     const release_safe_quic_zig_module: ?*std.Build.Module = if (enable_quic)
-        (try b.dependencyLazy("quic_zig", .{
+        (try b.dependencyLazy("quic", .{
             .target = target,
             .optimize = release_safe_optimize,
-        })).module("quic_zig")
+        })).module("quic")
     else
         null;
     const release_safe_lib_module = b.addModule("capnpc-zig-release-safe", .{

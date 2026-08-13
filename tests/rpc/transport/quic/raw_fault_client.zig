@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
-const quic_zig = @import("quic_zig");
+const quic_zig = @import("quic");
 
 const quic = capnpc.rpc.transport.quic;
 const loopback = @import("loopback_test_support.zig");

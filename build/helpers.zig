@@ -82,7 +82,7 @@ pub fn addQuicLibTest(
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "capnpc-zig", .module = lib_module },
-                .{ .name = "quic_zig", .module = quic_zig_module },
+                .{ .name = "quic", .module = quic_zig_module },
             },
         }),
     });
@@ -112,5 +112,5 @@ pub fn addMainTest(
 }
 
 pub fn addQuicImport(module: *std.Build.Module, quic_zig_module: ?*std.Build.Module) void {
-    if (quic_zig_module) |m| module.addImport("quic_zig", m);
+    if (quic_zig_module) |m| module.addImport("quic", m);
 }

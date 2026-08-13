@@ -2263,9 +2263,9 @@ capnpc-zig.rpc.transport.quic.Connection.udp_tx_buf: field []u8
 capnpc-zig.rpc.transport.quic.Connection.wake: fn (*rpc.transport.quic.connection.Connection) void
 capnpc-zig.rpc.transport.quic.Connection.wake_state: field rpc.transport.quic.wake.Handle = <default>
 capnpc-zig.rpc.transport.quic.Connection: struct
-capnpc-zig.rpc.transport.quic.EarlyData.antiReplayTracker: fn (server.EarlyDataImpl) ?*tls.anti_replay.AntiReplayTracker
+capnpc-zig.rpc.transport.quic.EarlyData.antiReplayTracker: fn (server.config.EarlyData) ?*tls.anti_replay.AntiReplayTracker
 capnpc-zig.rpc.transport.quic.EarlyData.disabled: variant void
-capnpc-zig.rpc.transport.quic.EarlyData.enabled: fn (server.EarlyDataImpl) bool
+capnpc-zig.rpc.transport.quic.EarlyData.enabled: fn (server.config.EarlyData) bool
 capnpc-zig.rpc.transport.quic.EarlyData.with_anti_replay: variant *tls.anti_replay.AntiReplayTracker
 capnpc-zig.rpc.transport.quic.EarlyData.without_replay_protection: variant void
 capnpc-zig.rpc.transport.quic.EarlyData: union
@@ -2334,7 +2334,7 @@ capnpc-zig.rpc.transport.quic.NativeOptions: struct
 capnpc-zig.rpc.transport.quic.RateLimit.default: variant void
 capnpc-zig.rpc.transport.quic.RateLimit.disabled: variant void
 capnpc-zig.rpc.transport.quic.RateLimit.limit: variant u64
-capnpc-zig.rpc.transport.quic.RateLimit.resolve: fn (server.RateLimitImpl, u64) ?u64
+capnpc-zig.rpc.transport.quic.RateLimit.resolve: fn (server.config.RateLimit, u64) ?u64
 capnpc-zig.rpc.transport.quic.RateLimit: union
 capnpc-zig.rpc.transport.quic.Role.client: enumerant = 0
 capnpc-zig.rpc.transport.quic.Role.server: enumerant = 1
@@ -2435,26 +2435,26 @@ capnpc-zig.rpc.transport.quic.ServerAntiReplayTracker: struct
 capnpc-zig.rpc.transport.quic.ServerEndpoint.listener: field rpc.transport.quic.listener.Listener
 capnpc-zig.rpc.transport.quic.ServerEndpoint.session: field rpc.transport.quic.session.AcceptedSessionDriver = <default>
 capnpc-zig.rpc.transport.quic.ServerEndpoint: struct
-capnpc-zig.rpc.transport.quic.ServerLogCallback: type = *const fn (?*anyopaque, server.LogEventImpl) void
-capnpc-zig.rpc.transport.quic.ServerLogEvent.connection_accepted: variant server.LogEventImpl__struct_*
-capnpc-zig.rpc.transport.quic.ServerLogEvent.connection_closed: variant server.LogEventImpl__struct_*
-capnpc-zig.rpc.transport.quic.ServerLogEvent.feed_rate_limited: variant server.LogEventImpl__struct_*
-capnpc-zig.rpc.transport.quic.ServerLogEvent.retry_minted: variant server.LogEventImpl__struct_*
-capnpc-zig.rpc.transport.quic.ServerLogEvent.stateless_queue_evicted: variant server.LogEventImpl__struct_*
-capnpc-zig.rpc.transport.quic.ServerLogEvent.table_full: variant server.LogEventImpl__struct_*
-capnpc-zig.rpc.transport.quic.ServerLogEvent.version_negotiated: variant server.LogEventImpl__struct_*
+capnpc-zig.rpc.transport.quic.ServerLogCallback: type = *const fn (?*anyopaque, server.observability.LogEvent) void
+capnpc-zig.rpc.transport.quic.ServerLogEvent.connection_accepted: variant server.observability.LogEvent__struct_*
+capnpc-zig.rpc.transport.quic.ServerLogEvent.connection_closed: variant server.observability.LogEvent__struct_*
+capnpc-zig.rpc.transport.quic.ServerLogEvent.feed_rate_limited: variant server.observability.LogEvent__struct_*
+capnpc-zig.rpc.transport.quic.ServerLogEvent.retry_minted: variant server.observability.LogEvent__struct_*
+capnpc-zig.rpc.transport.quic.ServerLogEvent.stateless_queue_evicted: variant server.observability.LogEvent__struct_*
+capnpc-zig.rpc.transport.quic.ServerLogEvent.table_full: variant server.observability.LogEvent__struct_*
+capnpc-zig.rpc.transport.quic.ServerLogEvent.version_negotiated: variant server.observability.LogEvent__struct_*
 capnpc-zig.rpc.transport.quic.ServerLogEvent: union
 capnpc-zig.rpc.transport.quic.ServerNewTokenKey: type = [32]u8
 capnpc-zig.rpc.transport.quic.ServerOptions.alpn_protocols: field []const []const u8 = <default>
-capnpc-zig.rpc.transport.quic.ServerOptions.early_data: field server.EarlyDataImpl = <default>
-capnpc-zig.rpc.transport.quic.ServerOptions.initial_source_rate_limit: field server.RateLimitImpl = <default>
+capnpc-zig.rpc.transport.quic.ServerOptions.early_data: field server.config.EarlyData = <default>
+capnpc-zig.rpc.transport.quic.ServerOptions.initial_source_rate_limit: field server.config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerOptions.listen_addr: field Io.net.IpAddress
-capnpc-zig.rpc.transport.quic.ServerOptions.listener_byte_rate_limit: field server.RateLimitImpl = <default>
-capnpc-zig.rpc.transport.quic.ServerOptions.listener_datagram_rate_limit: field server.RateLimitImpl = <default>
+capnpc-zig.rpc.transport.quic.ServerOptions.listener_byte_rate_limit: field server.config.RateLimit = <default>
+capnpc-zig.rpc.transport.quic.ServerOptions.listener_datagram_rate_limit: field server.config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerOptions.listener_rate_window_us: field u64 = 1000000
 capnpc-zig.rpc.transport.quic.ServerOptions.local_cid_len: field u8 = 8
-capnpc-zig.rpc.transport.quic.ServerOptions.log_callback: field ?*const fn (?*anyopaque, server.LogEventImpl) void = null
-capnpc-zig.rpc.transport.quic.ServerOptions.log_source_rate_limit: field server.RateLimitImpl = <default>
+capnpc-zig.rpc.transport.quic.ServerOptions.log_callback: field ?*const fn (?*anyopaque, server.observability.LogEvent) void = null
+capnpc-zig.rpc.transport.quic.ServerOptions.log_source_rate_limit: field server.config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerOptions.log_user_data: field ?*anyopaque = null
 capnpc-zig.rpc.transport.quic.ServerOptions.max_concurrent_connections: field u32 = 1
 capnpc-zig.rpc.transport.quic.ServerOptions.max_connection_memory: field u64 = 33554432
@@ -2466,14 +2466,14 @@ capnpc-zig.rpc.transport.quic.ServerOptions.native: field rpc.transport.quic.opt
 capnpc-zig.rpc.transport.quic.ServerOptions.new_token_key: field ?[32]u8 = null
 capnpc-zig.rpc.transport.quic.ServerOptions.new_token_lifetime_us: field u64 = 86400000000
 capnpc-zig.rpc.transport.quic.ServerOptions.observer: field ?rpc.events.Observer = null
-capnpc-zig.rpc.transport.quic.ServerOptions.qlog_callback: field ?*const fn (?*anyopaque, conn.state.QlogEvent) void = null
+capnpc-zig.rpc.transport.quic.ServerOptions.qlog_callback: field ?*const fn (?*anyopaque, conn.conn_qlog.QlogEvent) void = null
 capnpc-zig.rpc.transport.quic.ServerOptions.qlog_user_data: field ?*anyopaque = null
 capnpc-zig.rpc.transport.quic.ServerOptions.receive_timeout: field Io.Duration = <default>
 capnpc-zig.rpc.transport.quic.ServerOptions.retry_state_table_capacity: field u32 = 4096
 capnpc-zig.rpc.transport.quic.ServerOptions.retry_token_key: field ?[32]u8 = null
 capnpc-zig.rpc.transport.quic.ServerOptions.retry_token_lifetime_us: field u64 = 10000000
 capnpc-zig.rpc.transport.quic.ServerOptions.reveal_close_reason_on_wire: field bool = false
-capnpc-zig.rpc.transport.quic.ServerOptions.source_byte_rate_limit: field server.RateLimitImpl = <default>
+capnpc-zig.rpc.transport.quic.ServerOptions.source_byte_rate_limit: field server.config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerOptions.source_rate_table_capacity: field u32 = 4096
 capnpc-zig.rpc.transport.quic.ServerOptions.source_rate_window_us: field u64 = 1000000
 capnpc-zig.rpc.transport.quic.ServerOptions.stream_read_buffer_size: field usize = 65536
@@ -2482,19 +2482,19 @@ capnpc-zig.rpc.transport.quic.ServerOptions.tls_key_pem: field []const u8
 capnpc-zig.rpc.transport.quic.ServerOptions.transport_params: field tls.transport_params.Params = <default>
 capnpc-zig.rpc.transport.quic.ServerOptions.udp_rx_buffer_size: field usize = 65536
 capnpc-zig.rpc.transport.quic.ServerOptions.udp_tx_buffer_size: field usize = 1500
-capnpc-zig.rpc.transport.quic.ServerOptions.vn_source_rate_limit: field server.RateLimitImpl = <default>
+capnpc-zig.rpc.transport.quic.ServerOptions.vn_source_rate_limit: field server.config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerOptions: struct
-capnpc-zig.rpc.transport.quic.ServerProductionHardening.initial_source_rate_limit: field server.RateLimitImpl = <default>
-capnpc-zig.rpc.transport.quic.ServerProductionHardening.listener_byte_rate_limit: field server.RateLimitImpl = <default>
-capnpc-zig.rpc.transport.quic.ServerProductionHardening.listener_datagram_rate_limit: field server.RateLimitImpl = <default>
-capnpc-zig.rpc.transport.quic.ServerProductionHardening.log_source_rate_limit: field server.RateLimitImpl = <default>
+capnpc-zig.rpc.transport.quic.ServerProductionHardening.initial_source_rate_limit: field server.config.RateLimit = <default>
+capnpc-zig.rpc.transport.quic.ServerProductionHardening.listener_byte_rate_limit: field server.config.RateLimit = <default>
+capnpc-zig.rpc.transport.quic.ServerProductionHardening.listener_datagram_rate_limit: field server.config.RateLimit = <default>
+capnpc-zig.rpc.transport.quic.ServerProductionHardening.log_source_rate_limit: field server.config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.max_connection_memory: field u64 = 33554432
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.new_token_key: field ?[32]u8 = null
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.retry_token_key: field [32]u8
-capnpc-zig.rpc.transport.quic.ServerProductionHardening.source_byte_rate_limit: field server.RateLimitImpl = <default>
-capnpc-zig.rpc.transport.quic.ServerProductionHardening.vn_source_rate_limit: field server.RateLimitImpl = <default>
+capnpc-zig.rpc.transport.quic.ServerProductionHardening.source_byte_rate_limit: field server.config.RateLimit = <default>
+capnpc-zig.rpc.transport.quic.ServerProductionHardening.vn_source_rate_limit: field server.config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerProductionHardening: struct
-capnpc-zig.rpc.transport.quic.ServerQlogCallback: type = *const fn (?*anyopaque, conn.state.QlogEvent) void
+capnpc-zig.rpc.transport.quic.ServerQlogCallback: type = *const fn (?*anyopaque, conn.conn_qlog.QlogEvent) void
 capnpc-zig.rpc.transport.quic.ServerReceiveResult.accepted_sessions: field usize = 0
 capnpc-zig.rpc.transport.quic.ServerReceiveResult.dropped_datagram: field bool = false
 capnpc-zig.rpc.transport.quic.ServerReceiveResult.outcome: field ?server.FeedOutcomeImpl = null
@@ -2774,7 +2774,7 @@ capnpc-zig.rpc.transport.quic.scheduler.fallback_no_wake_wait: const Io.Duration
 capnpc-zig.rpc.transport.quic.scheduler.minDuration: fn (Io.Duration, Io.Duration) Io.Duration
 capnpc-zig.rpc.transport.quic.scheduler.receiveWaitDuration: fn (rpc.transport.quic.scheduler.ReceiveWaitInput) Io.Duration
 capnpc-zig.rpc.transport.quic.scheduler: struct
-capnpc-zig.rpc.transport.quic.serverConfigFromOptions: fn (mem.Allocator, rpc.transport.quic.options.ServerOptions) error{InvalidConfig,NativeControlFrameLimitExceedsWireLimit,NativeControlFrameLimitTooSmall,NativeDataStreamDeadlineRequired,NativeInlineFrameExceedsControlFrameLimit,NativePendingDataByteLimitRequired,NativePendingDataStreamLimitRequired}!server.ConfigImpl
+capnpc-zig.rpc.transport.quic.serverConfigFromOptions: fn (mem.Allocator, rpc.transport.quic.options.ServerOptions) error{InvalidConfig,NativeControlFrameLimitExceedsWireLimit,NativeControlFrameLimitTooSmall,NativeDataStreamDeadlineRequired,NativeInlineFrameExceedsControlFrameLimit,NativePendingDataByteLimitRequired,NativePendingDataStreamLimitRequired}!server.config.Config
 capnpc-zig.rpc.transport.quic.session.AcceptedSession.ordinal: field usize
 capnpc-zig.rpc.transport.quic.session.AcceptedSession.session: field rpc.transport.quic.session.Session
 capnpc-zig.rpc.transport.quic.session.AcceptedSession: struct

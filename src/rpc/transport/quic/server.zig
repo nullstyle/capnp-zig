@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const quic_zig = @import("quic_zig");
+const quic_zig = @import("quic");
 
 const baseline_engine = @import("baseline_engine.zig");
 const callback_lifecycle_mod = @import("callback_lifecycle.zig");

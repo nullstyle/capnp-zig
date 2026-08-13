@@ -1,5 +1,5 @@
 const std = @import("std");
-const quic_zig = @import("quic_zig");
+const quic_zig = @import("quic");
 
 const client_endpoint = @import("client_endpoint.zig");
 const server_endpoint = @import("server_endpoint.zig");

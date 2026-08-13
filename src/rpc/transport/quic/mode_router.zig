@@ -1,5 +1,5 @@
 const std = @import("std");
-const quic_zig = @import("quic_zig");
+const quic_zig = @import("quic");
 
 const baseline_engine = @import("baseline_engine.zig");
 const engine_owner = @import("engine_owner.zig");

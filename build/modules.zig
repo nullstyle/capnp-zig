@@ -83,10 +83,10 @@ pub fn setup(b: *std.Build) !Graph {
     // is declared lazy in build.zig.zon so non-QUIC builds neither fetch it nor
     // compile its build.zig; it is resolved only for `.quic = true` consumers.
     const quic_zig_module: ?*std.Build.Module = if (enable_quic)
-        (try b.dependencyLazy("quic_zig", .{
+        (try b.dependencyLazy("quic", .{
             .target = target,
             .optimize = optimize,
-        })).module("quic_zig")
+        })).module("quic")
     else
         null;
     helpers.addQuicImport(lib_module, quic_zig_module);

@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const quic_zig = @import("quic_zig");
+const quic_zig = @import("quic");
 
 const datagram_drop = @import("datagram_drop.zig");
 const events = @import("../../events.zig");

@@ -229,6 +229,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The QUIC dependency is renamed and bumped: `quic_zig` v0.10.1 → `quic`
+  v0.12.0.** Upstream renamed the package (the *repository* is still
+  `quic-zig`, so only the manifest key, the `dep.module(...)` name and our
+  imports move). The manifest fingerprint changed with the name, so this is a
+  new package identity with no hash continuity. Pinned by annotated tag,
+  verified before pinning: `refs/tags/v0.12.0` → tag object `716fcb45…` →
+  commit `0a0dbed878…`.
+
+  **Wire defaults changed, but not in 0.12.0 — in 0.11.0, which this jump
+  crosses.** CUBIC congestion control, packet pacing and HyStart++ are now
+  default-on; 0.12.0 keeps those and adds BBRv3 strictly opt-in. Each flip has
+  a one-line lever for attributing a behavioural change:
+  `congestion_control = .new_reno`, `enable_pacing = false`,
+  `enable_hystart = false`.
+
+  Scope of what our gates actually prove here, since the obvious reading
+  overstates it: `bench-check` passes 19/19, but it exercises **TCP only**
+  (`bench/rpc_round_trip.zig` uses `rpc.transport.tcp.Connection`, and no
+  benchmark references QUIC), so it is silent on the new congestion defaults.
+  The real evidence is the QUIC suites — `test-rpc-quic` and the four-root
+  evidence gate at 64 tests, zero skips, including receive-timeout cases that
+  pacing would plausibly disturb — plus the full suite against the QUIC library
+  root. We have no QUIC *throughput* benchmark, so the defaults are unmeasured
+  rather than measured-and-unchanged.
+
+  Upstream API breakage in this range does not reach us: `initClient` /
+  `initServer` / `bind()` were removed from the raw sans-IO `Connection`, but
+  every one of our 36 references is a borrowed `*quic_zig.Connection`
+  parameter. Our only entry points are `Client.connect` and `Server.init`,
+  whose wrapper APIs are unchanged.
+
 - **The toolchain moved to Zig `0.17.0-dev.1683+5ceec001b`, and one frozen
   declaration changed with it.** `.minimum_zig_version` moves to
   `0.17.0-dev.1683`; consumers on an older dev build must upgrade. One std API
