@@ -8,6 +8,56 @@ capnpc-zig.canonical.canonicalize: fn (mem.Allocator, *const serialization.messa
 capnpc-zig.canonical.canonicalizeFlat: fn (mem.Allocator, *const serialization.message.Message) error{CannotCanonicalizeCapability,InvalidFarPointer,InvalidInlineCompositePointer,InvalidPointer,InvalidRootPointer,InvalidSegmentId,MessageTooLarge,NestingLimitExceeded,OutOfBounds,OutOfMemory,PointerDepthLimit}![]u8
 capnpc-zig.canonical.isCanonical: fn (*const serialization.message.Message) bool
 capnpc-zig.canonical: struct
+capnpc-zig.codegen.ArrayListWriter.allocator: field mem.Allocator
+capnpc-zig.codegen.ArrayListWriter.list: field *array_list.Aligned(u8,null)
+capnpc-zig.codegen.ArrayListWriter.max_bytes: field ?usize = null
+capnpc-zig.codegen.ArrayListWriter.print: fn (capnpc-zig.generator.ArrayListWriter, comptime []const u8, anytype) error{CodegenBudgetExceeded,OutOfMemory}!void
+capnpc-zig.codegen.ArrayListWriter.writeAll: fn (capnpc-zig.generator.ArrayListWriter, []const u8) error{CodegenBudgetExceeded,OutOfMemory}!void
+capnpc-zig.codegen.ArrayListWriter.writeByte: fn (capnpc-zig.generator.ArrayListWriter, u8) error{CodegenBudgetExceeded,OutOfMemory}!void
+capnpc-zig.codegen.ArrayListWriter.writeByteNTimes: fn (capnpc-zig.generator.ArrayListWriter, u8, usize) error{CodegenBudgetExceeded,OutOfMemory}!void
+capnpc-zig.codegen.ArrayListWriter: struct
+capnpc-zig.codegen.Generator.AncestorInfo.interface_id: field u64
+capnpc-zig.codegen.Generator.AncestorInfo.methods: field []const serialization.schema.Method
+capnpc-zig.codegen.Generator.AncestorInfo.name: field []const u8
+capnpc-zig.codegen.Generator.AncestorInfo: struct
+capnpc-zig.codegen.Generator.allocMethodPipelineName: fn (*capnpc-zig.generator.Generator, []const u8) error{OutOfMemory}![]const u8
+capnpc-zig.codegen.Generator.allocTypeDeclName: fn (*capnpc-zig.generator.Generator, *const serialization.schema.Node) error{OutOfMemory}![]const u8
+capnpc-zig.codegen.Generator.allocator: field mem.Allocator
+capnpc-zig.codegen.Generator.api_profile: field capnpc-zig.struct_gen.StructGenerator.ApiProfile = .full
+capnpc-zig.codegen.Generator.codegen_budget: field capnpc-zig.generator.Generator.CodegenBudget = <default>
+capnpc-zig.codegen.Generator.collectAncestors: fn (*capnpc-zig.generator.Generator, *const serialization.schema.Node) error{OutOfMemory}![]capnpc-zig.generator.Generator.AncestorInfo
+capnpc-zig.codegen.Generator.current_file_id: field ?u64 = null
+capnpc-zig.codegen.Generator.emit_schema_manifest: field bool = true
+capnpc-zig.codegen.Generator.freeAncestors: fn (*capnpc-zig.generator.Generator, []capnpc-zig.generator.Generator.AncestorInfo) void
+capnpc-zig.codegen.Generator.freeInterfaceFields: fn (*capnpc-zig.generator.Generator, []capnpc-zig.generator.Generator.InterfaceFieldInfo) void
+capnpc-zig.codegen.Generator.getInterfaceFields: fn (*capnpc-zig.generator.Generator, u64) error{OutOfMemory}![]capnpc-zig.generator.Generator.InterfaceFieldInfo
+capnpc-zig.codegen.Generator.getNode: fn (*const capnpc-zig.generator.Generator, u64) ?*const serialization.schema.Node
+capnpc-zig.codegen.Generator.hasStreamingMethods: fn (*capnpc-zig.generator.Generator, *const serialization.schema.Node, []const capnpc-zig.generator.Generator.AncestorInfo) bool
+capnpc-zig.codegen.Generator.import_modules: field hash_map.HashMap(u64,[]const u8,hash_map.AutoContext(u64),80)
+capnpc-zig.codegen.Generator.lowerFirst: fn (*capnpc-zig.generator.Generator, []const u8) error{OutOfMemory}![]const u8
+capnpc-zig.codegen.Generator.node_map: field hash_map.HashMap(u64,usize,hash_map.AutoContext(u64),80)
+capnpc-zig.codegen.Generator.nodes: field []const serialization.schema.Node
+capnpc-zig.codegen.Generator.resolveMethodStructName: fn (*capnpc-zig.generator.Generator, *const serialization.schema.Node, u64) error{OutOfMemory}![]const u8
+capnpc-zig.codegen.Generator.shape_share_map: field hash_map.HashMap([]const u8,[]const u8,hash_map.StringContext,80)
+capnpc-zig.codegen.Generator.shape_sharing: field bool = false
+capnpc-zig.codegen.Generator.structLayout: fn (*capnpc-zig.generator.Generator, u64) ?capnpc-zig.generator.Generator.structLayout__struct_*
+capnpc-zig.codegen.Generator.toZigIdentifier: fn (*capnpc-zig.generator.Generator, []const u8) error{OutOfMemory}![]const u8
+capnpc-zig.codegen.Generator.used_import_file_ids: field hash_map.HashMap(u64,void,hash_map.AutoContext(u64),80)
+capnpc-zig.codegen.Generator.verbose: field bool = false
+capnpc-zig.codegen.Generator.writeReindented: fn (anytype, []const u8, usize) @typeInfo(@typeInfo(@TypeOf(capnpc-zig.generator.Generator.writeReindented)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.codegen.Generator: struct
+capnpc-zig.codegen.TypeGenerator.allocator: field mem.Allocator
+capnpc-zig.codegen.TypeGenerator.init: fn (mem.Allocator) capnpc-zig.types.TypeGenerator
+capnpc-zig.codegen.TypeGenerator.initWithLookup: fn (mem.Allocator, *const fn (?*anyopaque, u64) ?*const serialization.schema.Node, ?*anyopaque) capnpc-zig.types.TypeGenerator
+capnpc-zig.codegen.TypeGenerator.isPointer: fn (serialization.schema.Type) bool
+capnpc-zig.codegen.TypeGenerator.node_lookup: field ?*const fn (?*anyopaque, u64) ?*const serialization.schema.Node
+capnpc-zig.codegen.TypeGenerator.node_lookup_ctx: field ?*anyopaque
+capnpc-zig.codegen.TypeGenerator.toZigIdentifier: fn (*capnpc-zig.types.TypeGenerator, []const u8) error{OutOfMemory}![]const u8
+capnpc-zig.codegen.TypeGenerator.toZigTypeName: fn (*capnpc-zig.types.TypeGenerator, []const u8) error{OutOfMemory}![]const u8
+capnpc-zig.codegen.TypeGenerator.typeSize: fn (serialization.schema.Type) usize
+capnpc-zig.codegen.TypeGenerator.typeToZig: fn (*capnpc-zig.types.TypeGenerator, serialization.schema.Type) error{OutOfMemory}![]const u8
+capnpc-zig.codegen.TypeGenerator: struct
+capnpc-zig.codegen: struct
 capnpc-zig.io_backend.Backend.deinit: fn (*io_backend.Backend) void
 capnpc-zig.io_backend.Backend.evented: variant io_backend.EventedState__struct_*
 capnpc-zig.io_backend.Backend.fromInit: fn (Io) io_backend.Backend

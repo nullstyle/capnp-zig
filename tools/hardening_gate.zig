@@ -106,7 +106,7 @@ const allowlist = [_]Allow{
     // arm is only taken when `interface_id_expr` is null, which the caller
     // establishes only for an inherited method, and an inherited method always
     // carries the ancestor whose name this is.
-    .{ .path = "src/capnpc-zig/generator.zig", .kind = .optional_unwrap, .needle = "{s}.interface_id\", .{ancestor_name.?}", .reason = "the null-interface_id_expr branch is reached only for an inherited method, which always has an ancestor name" },
+    .{ .path = "src/capnpc-zig/interface_gen.zig", .kind = .optional_unwrap, .needle = "{s}.interface_id\", .{ancestor_name.?}", .reason = "the null-interface_id_expr branch is reached only for an inherited method, which always has an ancestor name" },
     // Callback trampolines. `ctx` is `?*anyopaque` only because the callback
     // ABI demands it; every registration site passes `self`, and the pointer is
     // never null for a constructed Generator.
