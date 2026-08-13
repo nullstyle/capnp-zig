@@ -28,25 +28,6 @@ pub const testing = base.testing;
 // exists in std. Hence the bounded walk below. The depth cap is what keeps a
 // self-referential declaration (`pub const Self = @This()`) from recursing
 // forever; it only needs to cover mod -> namespace -> file -> nested namespace.
-fn refAllRecursive(comptime T: type, comptime depth: u8) void {
-    if (depth == 0) return;
-    inline for (comptime @import("std").meta.declarations(T)) |decl_name| {
-        // `transport.quic` is `quic_disabled` unless built with -Dquic=true,
-        // and every declaration in that stub is a deliberate `@compileError`
-        // telling you to pass the flag. Referencing it here would turn that
-        // intentional diagnostic into a build failure for everyone.
-        if (comptime @import("std").mem.eql(u8, decl_name, "quic")) continue;
-        const field = @field(T, decl_name);
-        if (@TypeOf(field) == type) {
-            switch (@typeInfo(field)) {
-                .@"struct", .@"union", .@"enum", .@"opaque" => refAllRecursive(field, depth - 1),
-                else => {},
-            }
-        }
-        _ = &field;
-    }
-}
-
 test {
-    refAllRecursive(@This(), 4);
+    base.refAllRecursive(@This(), 4, true);
 }

@@ -239,7 +239,11 @@ fn reservedIsZero(bytes: []const u8) bool {
 test "native QUIC control framer decodes hello inline and data frames" {
     var framer = ControlFramer.init(std.testing.allocator, .{
         .max_control_frame_bytes = 1024,
-        .max_rpc_frame_bytes = 1024,
+        // Must exceed the 4096-byte length the data frame below DECLARES, or
+        // decodeDataRpc rejects it as FrameTooLarge before this test can check
+        // anything. That bound is a guard on an attacker-supplied length and
+        // is correct; this limit was simply stale against it.
+        .max_rpc_frame_bytes = 8192,
     });
     defer framer.deinit();
 
@@ -252,24 +256,29 @@ test "native QUIC control framer decodes hello inline and data frames" {
 
     try framer.push(hello_buf[0..hello_len]);
     try framer.push(inline_control[0..5]);
-    var frame = (try framer.popFrame()).?;
-    try std.testing.expect(frame == .hello);
-    try std.testing.expectEqual(version, frame.hello.version);
+    const hello_frame = (try framer.popFrame()).?;
+    try std.testing.expect(hello_frame == .hello);
+    try std.testing.expectEqual(version, hello_frame.hello.version);
 
     try std.testing.expect(try framer.popFrame() == null);
     try framer.push(inline_control[5..]);
-    frame = (try framer.popFrame()).?;
-    defer frame.deinit(std.testing.allocator);
-    try std.testing.expect(frame == .inline_rpc);
-    try std.testing.expectEqual(@as(u64, 7), frame.inline_rpc.sequence);
-    try std.testing.expectEqualStrings("rpc", frame.inline_rpc.frame);
+    // Separate bindings per frame. Reassigning one variable that already
+    // carries a `defer frame.deinit(...)` runs the deinit against whatever it
+    // holds LAST, so the inline frame's payload allocation was leaked -- which
+    // only became visible once this test started running.
+    var inline_frame = (try framer.popFrame()).?;
+    defer inline_frame.deinit(std.testing.allocator);
+    try std.testing.expect(inline_frame == .inline_rpc);
+    try std.testing.expectEqual(@as(u64, 7), inline_frame.inline_rpc.sequence);
+    try std.testing.expectEqualStrings("rpc", inline_frame.inline_rpc.frame);
 
     try framer.push(data);
-    frame = (try framer.popFrame()).?;
-    try std.testing.expect(frame == .data_rpc);
-    try std.testing.expectEqual(@as(u64, 8), frame.data_rpc.sequence);
-    try std.testing.expectEqual(@as(u64, 2), frame.data_rpc.stream_id);
-    try std.testing.expectEqual(@as(usize, 4096), frame.data_rpc.length);
+    var data_frame = (try framer.popFrame()).?;
+    defer data_frame.deinit(std.testing.allocator);
+    try std.testing.expect(data_frame == .data_rpc);
+    try std.testing.expectEqual(@as(u64, 8), data_frame.data_rpc.sequence);
+    try std.testing.expectEqual(@as(u64, 2), data_frame.data_rpc.stream_id);
+    try std.testing.expectEqual(@as(usize, 4096), data_frame.data_rpc.length);
 }
 
 test "native QUIC control framer rejects malformed frames" {
@@ -284,12 +293,20 @@ test "native QUIC control framer rejects malformed frames" {
     try framer.push(&oversized);
     try std.testing.expectError(error.FrameTooLarge, framer.popFrame());
 
-    framer.reset();
+    // Second case needs its own framer. Reusing the 8-byte one above meant
+    // `push` tripped the buffered-bytes budget with FrameTooLarge, so the
+    // reserved-byte validation this case exists to check never ran.
+    var reserved_framer = ControlFramer.init(std.testing.allocator, .{
+        .max_control_frame_bytes = 64,
+        .max_rpc_frame_bytes = 64,
+    });
+    defer reserved_framer.deinit();
+
     var bad_reserved = try encodeInlineRpc(std.testing.allocator, 0, "a", 32);
     defer std.testing.allocator.free(bad_reserved);
     bad_reserved[5] = 1;
-    try framer.push(bad_reserved);
-    try std.testing.expectError(error.InvalidFrame, framer.popFrame());
+    try reserved_framer.push(bad_reserved);
+    try std.testing.expectError(error.InvalidFrame, reserved_framer.popFrame());
 }
 
 test "native QUIC control framer rejects malformed envelope headers" {

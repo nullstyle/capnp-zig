@@ -15,3 +15,13 @@ pub const vat = base.vat;
 pub const integration = base.integration;
 pub const generated = base.generated;
 pub const testing = base.testing;
+
+// Mirrors the walk in mod.zig, with `skip_quic = false`: here
+// `transport.quic` is the REAL module, not the compileError stub, so it must
+// be walked. Without this root having any walk at all, `-Dquic=true` compiled
+// none of the src/rpc test blocks -- including the QUIC transport's own.
+// Proven by ablation: inverting an assertion in
+// src/rpc/transport/quic/close.zig used to leave `-Dquic=true test` at 0.
+test {
+    base.refAllRecursive(@This(), 4, false);
+}

@@ -89,3 +89,34 @@ pub const generated = struct {
 /// (`is_test == true`) see the full facade; the RPC test suites reach it via
 /// `capnpc-zig`.rpc.testing unchanged.
 pub const testing = if (builtin.is_test) @import("./testing.zig") else struct {};
+
+/// Force a namespace subtree through semantic analysis so its `test` blocks
+/// join the compilation. Zig analyses container declarations lazily, and a
+/// file that is never analysed contributes no tests — so a re-export alone
+/// leaves everything behind it invisible to `zig build test`.
+///
+/// `skip_quic` exists because `transport.quic` is two different things: the
+/// `quic_disabled` stub in a default build, where every declaration is a
+/// deliberate `@compileError` telling you to pass `-Dquic=true` (referencing
+/// it would turn that diagnostic into a build failure for everyone), and the
+/// real module under `-Dquic=true`, where it must be walked or the QUIC
+/// transport's own tests never run. Pass true from the default root, false
+/// from the QUIC root.
+///
+/// The depth cap stops a self-referential declaration (`pub const Self =
+/// @This()`) recursing forever; it only needs to cover
+/// mod -> namespace -> file -> nested namespace.
+pub fn refAllRecursive(comptime T: type, comptime depth: u8, comptime skip_quic: bool) void {
+    if (depth == 0) return;
+    inline for (comptime @import("std").meta.declarations(T)) |decl_name| {
+        if (skip_quic and comptime @import("std").mem.eql(u8, decl_name, "quic")) continue;
+        const field = @field(T, decl_name);
+        if (@TypeOf(field) == type) {
+            switch (@typeInfo(field)) {
+                .@"struct", .@"union", .@"enum", .@"opaque" => refAllRecursive(field, depth - 1, skip_quic),
+                else => {},
+            }
+        }
+        _ = &field;
+    }
+}
