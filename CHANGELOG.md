@@ -35,6 +35,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and this benchmark does not pretend otherwise; what changed is that our
   transport is now measured at all.
 
+### Changed
+
+- **Codegen internals are no longer part of the frozen API contract.** The
+  Stable tier claimed 54 declarations under `codegen`; it now claims 20. What
+  stays frozen is the plugin contract a consumer actually depends on —
+  `Generator.init` / `deinit` / `generateFile`, the five `set*` configurators,
+  and the shapes of `ApiProfile` and `CodegenBudget`, which callers construct.
+
+  What moved to Experimental is internal state that was frozen by accident of
+  prefix breadth rather than by decision: `Generator`'s own fields
+  (`node_map`, `shape_share_map`, `allocator`, …), `TypeGenerator`'s helpers,
+  and `ArrayListWriter` in its entirety — a writer named in no frozen
+  signature. **Migration:** none expected, but anything reaching into those
+  is now explicitly outside the stability promise and free to move.
+
+  This was a blocking decision, not housekeeping. Because Zig's privacy is
+  file-scoped, a blanket freeze over `codegen` made `generator.zig` and
+  `struct_gen.zig` — 9,029 lines, the largest un-decomposed units in the tree —
+  effectively unsplittable: extracting any cluster of private methods forces
+  the helpers it calls back into to become `pub`, and each one would have
+  landed in the frozen tier permanently. The rule is now an explicit list, so
+  freezing a new entry point is a deliberate act rather than a side effect of
+  how wide a prefix happens to be.
+
 ### Fixed
 
 - **QUIC congestion knobs were unreachable through this transport.**

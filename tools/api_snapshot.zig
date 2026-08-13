@@ -145,24 +145,42 @@ const stable_rules = [_]Rule{
     p("capnpc-zig.schema_validation"),
     p("capnpc-zig.reader"),
     p("capnpc-zig.request"),
-    // NOTE for anyone about to split generator.zig / struct_gen.zig: this
-    // prefix freezes their ENTIRE pub surface (33 `codegen.Generator.*`
-    // entries today), and Zig's privacy is FILE-scoped. So moving a cluster of
-    // private `Generator` methods into a sibling file forces every private
-    // helper it calls back into to become `pub` — and each one then lands in
-    // this FROZEN tier, permanently. Measured on the interface/RPC emission
-    // cluster (~840 contiguous lines, the largest single win): it calls back
-    // into 11 private helpers, 3 of them genuinely shared
-    // (`toZigIdentifier` 9x, `lowerFirst` 3x, `allocTypeDeclName`), so the
-    // extraction cannot be done snapshot-neutrally. The `rpc.peer`
-    // decomposition was unaffected because Peer's pub surface is Experimental
-    // (only ~15 frozen entries); codegen is the opposite case.
+    // CODEGEN: entry points are frozen, INTERNALS are not. Decided
+    // deliberately (2026-08-13) rather than inherited.
     //
-    // Splitting these files therefore needs an explicit API decision first —
-    // narrow this rule to the reviewed consumer entry points (so codegen
-    // INTERNALS stop being frozen), or accept the new frozen entries. Do not
-    // widen helpers to `pub` as a side effect of a refactor.
-    p("capnpc-zig.codegen"),
+    // This was `p("capnpc-zig.codegen")`, a blanket prefix that froze the
+    // whole pub surface of generator.zig and struct_gen.zig — 54 entries,
+    // most of them internal state. Because Zig's privacy is FILE-scoped, that
+    // made those two files (9,029 lines, the largest un-decomposed units in
+    // the tree) effectively unsplittable: moving any cluster of private
+    // `Generator` methods into a sibling forces the helpers it calls back into
+    // to become `pub`, and every one of those would have landed here
+    // permanently. The `rpc.peer` decomposition was unaffected only because
+    // Peer's surface is Experimental.
+    //
+    // What a consumer of this library actually depends on is the plugin
+    // contract: construct a Generator, configure it, generate a file. That is
+    // frozen below, by exact rule. Everything else under `codegen` — struct
+    // fields, `ArrayListWriter` (not named in any frozen signature),
+    // `TypeGenerator`'s helpers — is Experimental, free to move, and tracked
+    // in the experimental snapshot rather than contractually pinned.
+    //
+    // Adding a genuine new entry point means adding a rule here on purpose.
+    // That is the point: freezing should be an act, not an accident of prefix
+    // breadth.
+    e("capnpc-zig.codegen.Generator.init"),
+    e("capnpc-zig.codegen.Generator.deinit"),
+    e("capnpc-zig.codegen.Generator.generateFile"),
+    e("capnpc-zig.codegen.Generator.setApiProfile"),
+    e("capnpc-zig.codegen.Generator.setCodegenBudget"),
+    e("capnpc-zig.codegen.Generator.setEmitSchemaManifest"),
+    e("capnpc-zig.codegen.Generator.setShapeSharing"),
+    e("capnpc-zig.codegen.Generator.setVerbose"),
+    // Types named in those signatures, with their fields/enumerants: a
+    // consumer configures a budget and selects a profile, so their shape is
+    // part of the contract even though the Generator's own fields are not.
+    p("capnpc-zig.codegen.Generator.ApiProfile"),
+    p("capnpc-zig.codegen.Generator.CodegenBudget"),
 
     // --- RPC wire protocol + framing (promoted). ---
     p("capnpc-zig.rpc.wire.protocol"),
