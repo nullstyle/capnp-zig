@@ -270,6 +270,34 @@ fn copyTree(ctx: *const Context, source_path: []const u8, destination_path: []co
     }
 }
 
+/// Upstream package name for the QUIC backend. Renamed from `quic_zig` to
+/// `quic` at v0.12.0, which is why this is a named constant: the two checks
+/// below are the ONLY place the package name is spelled outside the manifest,
+/// and when it drifted the gate did not soften — it failed shut with
+/// `QuicConsumerDidNotFetchQuicPackage`, correctly reporting that no QUIC
+/// package had been fetched under the name it knew.
+const quic_package_name = "quic";
+
+/// True when the manifest declares exactly our QUIC package.
+///
+/// A bare substring test is wrong here: `.name = .quic_zig` CONTAINS
+/// `.name = .quic`, so matching the prefix alone would report the pre-rename
+/// package as a match and let the gate pass for the wrong reason. Require an
+/// identifier boundary after the name.
+fn manifestDeclaresQuicPackage(bytes: []const u8) bool {
+    const needle = ".name = ." ++ quic_package_name;
+    var search: usize = 0;
+    while (std.mem.indexOfPos(u8, bytes, search, needle)) |pos| {
+        const after = pos + needle.len;
+        if (after >= bytes.len) return true;
+        const c = bytes[after];
+        const continues_identifier = c == '_' or std.ascii.isAlphanumeric(c);
+        if (!continues_identifier) return true;
+        search = after;
+    }
+    return false;
+}
+
 fn cacheContainsQuicPackage(ctx: *const Context, cache_path: []const u8) !bool {
     var cache = std.Io.Dir.cwd().openDir(ctx.io, cache_path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return false,
@@ -282,11 +310,11 @@ fn cacheContainsQuicPackage(ctx: *const Context, cache_path: []const u8) !bool {
     while (try walker.next(ctx.io)) |entry| {
         // Zig may keep a fetched package as a content-addressed archive in the
         // global `p/` directory rather than extracting its manifest there.
-        if (std.mem.startsWith(u8, std.fs.path.basename(entry.path), "quic_zig-")) return true;
+        if (std.mem.startsWith(u8, std.fs.path.basename(entry.path), quic_package_name ++ "-")) return true;
         if (entry.kind != .file or !std.mem.eql(u8, std.fs.path.basename(entry.path), "build.zig.zon")) continue;
         const bytes = try cache.readFileAlloc(ctx.io, entry.path, ctx.allocator, .limited(max_fixture_file));
         defer ctx.allocator.free(bytes);
-        if (std.mem.indexOf(u8, bytes, ".name = .quic_zig") != null) return true;
+        if (manifestDeclaresQuicPackage(bytes)) return true;
     }
     return false;
 }
