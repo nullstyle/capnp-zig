@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.10.0] - 2026-08-13
+
+### Breaking
+
+- **Minimum Zig is now `0.17.0-dev.1683`.** Earlier dev builds will not
+  compile this release. **Migration:** upgrade your toolchain; `mise.toml`
+  carries the exact pin this repo builds and tests against. Note that
+  `ziglang.org/builds/` garbage-collects dev tarballs, so a pin much older
+  than the current master eventually stops resolving.
+
+- **`rpc.transport.tcp.runtime.Listener.init` gained `AccessDenied` in its
+  error set.** This is a *frozen-tier* change, inherited from std's `listen`
+  rather than invented here. **Migration:** consumers switching exhaustively
+  on that error set must add a case. Narrowing it back was rejected — it would
+  mean swallowing a genuine bind-permission failure on privileged ports.
+
+- **The QUIC dependency is renamed `quic_zig` → `quic` and bumped to
+  v0.12.0.** Only opt-in QUIC consumers are affected. **Migration:** the
+  `build.zig.zon` dependency key and the `dep.module(...)` name both become
+  `"quic"`; the repository URL is unchanged (still `quic-zig`). The manifest
+  fingerprint changed with the rename, so there is no hash continuity — expect
+  a fresh fetch. Crossing this bump also adopts quic-zig v0.11.0's wire
+  defaults (CUBIC, pacing, HyStart++ all default-on), each with a one-line
+  opt-out: `congestion_control = .new_reno`, `enable_pacing = false`,
+  `enable_hystart = false`.
+
+- **`error.DatagramTooLarge` no longer appears in the QUIC `Server` /
+  `Listener` `receiveOne` error sets.** An oversized datagram is now dropped
+  and counted rather than failing the step, so the error became unreachable.
+  **Migration:** remove the arm; observe drops through
+  `droppedDatagramCount()`, `StepResult.dropped_datagram`, or the
+  `udp_datagram_bytes` resource event.
+
+
 ### Fixed
 
 - **One spoofed UDP datagram could take down a QUIC fanout server and every
@@ -3028,7 +3064,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/nullstyle/capnp-zig/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/nullstyle/capnp-zig/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/nullstyle/capnp-zig/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/nullstyle/capnp-zig/compare/v0.6.0...v0.7.0
