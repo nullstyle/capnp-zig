@@ -7,7 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **A QUIC throughput benchmark (`bench-quic`, gated by `bench-check-quic`).**
+  Nothing in this repo measured the QUIC transport, so a green `bench-check`
+  said nothing about it — all benchmarks were TCP. Three modes: `sequential`
+  (round-trip latency), `pipelined` (call throughput), and `bulk`, which pushes
+  large payloads with several transfers outstanding and reports bytes/sec.
+  Separately baselined in `bench/baselines-quic.json`, because the binary only
+  exists under `-Dquic=true`.
+
+  **Scope, measured rather than assumed.** It exercises our QUIC stack end to
+  end — TLS handshake, framing, stream scheduling, the Peer call path — and
+  will catch a regression in any of them. It does **not** separate
+  congestion-control variants. The `--no-pacing` flag exists to demonstrate
+  that rather than to hide it; on loopback, 300×64KiB:
+
+      pacing on   11.44  11.73  12.52  MiB/s
+      pacing off  11.30  11.37  11.74  MiB/s
+
+  A ~4% difference in means inside a ~9% run-to-run spread is not signal. That
+  is structural: loopback has no bottleneck, so cwnd grows unbounded, the
+  pacer's rate ceiling never binds, and the limiting factor is our own
+  serialization rather than the network. Validating CUBIC/pacing/HyStart++
+  needs a constrained link — upstream's QUIC Network Simulator and quic-go
+  interop gates. So quic-zig's congestion defaults remain unvalidated *here*,
+  and this benchmark does not pretend otherwise; what changed is that our
+  transport is now measured at all.
+
+### Fixed
+
+- **QUIC congestion knobs were unreachable through this transport.**
+  `ClientOptions` now carries `congestion_control`, `enable_pacing` and
+  `enable_hystart`, forwarded verbatim to quic-zig. The v0.10.0 notes told
+  consumers each default flip had a one-line opt-out — true of quic-zig, but
+  our client factory forwarded only TLS/ALPN/transport-params, so the
+  documented lever was not reachable from here. Defaults mirror upstream's
+  rather than pinning the old behaviour: this transport follows its backend,
+  and pinning silently would hide the very change the fields exist to expose.
 
 ## [0.10.0] - 2026-08-13
 

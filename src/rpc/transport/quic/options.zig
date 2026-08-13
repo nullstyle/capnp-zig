@@ -161,6 +161,23 @@ pub const ClientOptions = struct {
     /// tests or controlled interop with self-signed peers.
     insecure_skip_verify: bool = false,
     observer: ?events.Observer = null,
+
+    /// Congestion-control selection, forwarded verbatim to quic-zig.
+    ///
+    /// These exist because the defaults changed underneath us: quic-zig
+    /// v0.11.0 flipped CUBIC, pacing and HyStart++ to default-on. Upstream
+    /// documents a one-line opt-out per flip, but that lever is only real for
+    /// a capnp-zig consumer if this transport forwards it — before these
+    /// fields it did not, so the documented escape hatch was unreachable from
+    /// here. They also make the behaviour A/B-testable, which is what
+    /// `bench-quic` uses to show its bulk mode actually observes the pacer.
+    ///
+    /// Defaults deliberately mirror upstream's rather than pinning the old
+    /// behaviour: this transport follows its backend's defaults, and pinning
+    /// silently would hide the very change these fields exist to expose.
+    congestion_control: quic_zig.CongestionAlgorithm = .cubic,
+    enable_pacing: bool = true,
+    enable_hystart: bool = true,
 };
 
 pub const ServerOptions = struct {

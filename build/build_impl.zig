@@ -139,6 +139,36 @@ pub fn buildImpl(b: *std.Build) !void {
     const bench_rpc_step = b.step("bench-rpc", "Run RPC round-trip benchmark (use -- --mode pipelined --inflight K)");
     bench_rpc_step.dependOn(&run_rpc_round_trip.step);
 
+    // QUIC RPC benchmark. Gated on -Dquic=true because the transport is an
+    // opt-in lazy dependency; without it there is nothing to measure. The TLS
+    // fixtures are the loopback cert/key the QUIC tests already use, imported
+    // rather than copied so the two cannot drift.
+    const quic_round_trip_bench: ?*std.Build.Step.Compile = if (quic_zig_module) |qm| quic_bench: {
+        const bench_exe = b.addExecutable(.{
+            .name = "bench-quic",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("bench/quic_round_trip.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "capnpc-zig", .module = lib_module },
+                },
+            }),
+        });
+        addQuicImport(bench_exe.root_module, qm);
+        bench_exe.root_module.addAnonymousImport("quic_bench_cert", .{
+            .root_source_file = b.path("tests/rpc/transport/quic/loopback_cert.pem"),
+        });
+        bench_exe.root_module.addAnonymousImport("quic_bench_key", .{
+            .root_source_file = b.path("tests/rpc/transport/quic/loopback_key.pem"),
+        });
+        const run = b.addRunArtifact(bench_exe);
+        run.addPassthruArgs();
+        const step = b.step("bench-quic", "Run the QUIC RPC benchmark (requires -Dquic=true; -- --mode bulk for throughput)");
+        step.dependOn(&run.step);
+        break :quic_bench bench_exe;
+    } else null;
+
     // RPC soak harness (loopback TCP, chaos + deadline sessions)
     const soak_rpc = b.addExecutable(.{
         .name = "soak-rpc",
@@ -178,6 +208,19 @@ pub fn buildImpl(b: *std.Build) !void {
 
     const bench_check_step = b.step("bench-check", "Run benchmark regression checks");
     bench_check_step.dependOn(&run_bench_check.step);
+
+    // QUIC benchmark gate. Separate from `bench-check` and separately
+    // baselined, because the QUIC binary only exists under -Dquic=true:
+    // folding these cases into bench/baselines.json would make the ordinary
+    // gate fail on a missing binary in every non-QUIC build.
+    if (quic_round_trip_bench) |bench_exe| {
+        const run_quic_check = b.addRunArtifact(bench_check);
+        run_quic_check.addArgs(&.{ "--baseline", "bench/baselines-quic.json" });
+        run_quic_check.addPassthruArgs();
+        run_quic_check.step.dependOn(&b.addInstallArtifact(bench_exe, .{}).step);
+        const step = b.step("bench-check-quic", "Run QUIC benchmark regression checks (requires -Dquic=true)");
+        step.dependOn(&run_quic_check.step);
+    }
 
     const hardening_gate = b.addExecutable(.{
         .name = "hardening-gate",

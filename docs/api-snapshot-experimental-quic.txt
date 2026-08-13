@@ -2189,6 +2189,9 @@ capnpc-zig.rpc.transport.quic.ClientEndpoint.transport: field client.Client
 capnpc-zig.rpc.transport.quic.ClientEndpoint: struct
 capnpc-zig.rpc.transport.quic.ClientOptions.alpn_protocols: field []const []const u8 = <default>
 capnpc-zig.rpc.transport.quic.ClientOptions.ca_pem: field ?[]const u8 = null
+capnpc-zig.rpc.transport.quic.ClientOptions.congestion_control: field conn.congestion.Algorithm = .cubic
+capnpc-zig.rpc.transport.quic.ClientOptions.enable_hystart: field bool = true
+capnpc-zig.rpc.transport.quic.ClientOptions.enable_pacing: field bool = true
 capnpc-zig.rpc.transport.quic.ClientOptions.insecure_skip_verify: field bool = false
 capnpc-zig.rpc.transport.quic.ClientOptions.local_addr: field ?Io.net.IpAddress = null
 capnpc-zig.rpc.transport.quic.ClientOptions.max_message_bytes: field usize = 67108864

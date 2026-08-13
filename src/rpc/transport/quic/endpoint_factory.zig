@@ -42,6 +42,11 @@ pub fn initClient(
         .transport_params = options.transport_params,
         .ca_pem = options.ca_pem,
         .insecure_skip_verify = options.insecure_skip_verify,
+        // Forwarded so the documented per-flip opt-outs are reachable from
+        // this transport; see ClientOptions for why that was not true before.
+        .congestion_control = options.congestion_control,
+        .enable_pacing = options.enable_pacing,
+        .enable_hystart = options.enable_hystart,
     });
     errdefer client.deinit();
 

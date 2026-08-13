@@ -1,0 +1,50 @@
+{
+  "max_regression_pct": 50.0,
+  "cases": [
+    {
+      "name": "quic_round_trip_seq_p50",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "sequential", "--calls", "500", "--warmup", "100", "--json"],
+      "metric": "p50_ns",
+      "baseline": 136250.0,
+      "max_regression_pct": 60.0,
+      "advisory": true
+    },
+    {
+      "name": "quic_round_trip_seq_p99",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "sequential", "--calls", "500", "--warmup", "100", "--json"],
+      "metric": "p99_ns",
+      "baseline": 182042.0,
+      "max_regression_pct": 75.0,
+      "advisory": true
+    },
+    {
+      "name": "quic_round_trip_seq_calls_per_sec",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "sequential", "--calls", "500", "--warmup", "100", "--json"],
+      "metric": "calls_per_sec",
+      "baseline": 7188.0,
+      "max_regression_pct": 40.0,
+      "higher_is_better": true
+    },
+    {
+      "name": "quic_round_trip_pipelined_calls_per_sec",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "pipelined", "--calls", "500", "--warmup", "100", "--inflight", "16", "--json"],
+      "metric": "calls_per_sec",
+      "baseline": 35670.0,
+      "max_regression_pct": 40.0,
+      "higher_is_better": true
+    },
+    {
+      "name": "quic_bulk_bytes_per_sec",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "bulk", "--calls", "300", "--warmup", "50", "--payload", "65536", "--json"],
+      "metric": "bytes_per_sec",
+      "baseline": 11441000.0,
+      "max_regression_pct": 40.0,
+      "higher_is_better": true
+    }
+  ]
+}
