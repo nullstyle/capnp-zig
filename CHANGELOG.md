@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.11.0] - 2026-08-13
+
+### Breaking
+
+- **The frozen API contract for `codegen` narrowed from 54 declarations to
+  20.** Only the plugin contract stays frozen: `Generator.init` / `deinit` /
+  `generateFile`, the five `set*` configurators, and `ApiProfile` /
+  `CodegenBudget` with their shapes. **Migration:** none expected — what left
+  the frozen tier is internal state that was swept in by prefix breadth rather
+  than by decision (`Generator`'s own fields, `TypeGenerator`'s helpers, and
+  `ArrayListWriter`, which appears in no frozen signature). Anything reaching
+  into those is now explicitly outside the stability promise and free to move.
+  See the Changed entry below for why this was worth doing.
+
 ### Added
 
 - **A QUIC throughput benchmark (`bench-quic`, gated by `bench-check-quic`).**
@@ -37,6 +53,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`generator.zig` decomposed: 4,517 → 3,251 lines, with generated output
+  byte-identical.** Two tranches, both comptime-generic siblings over the
+  Generator type with thunks left behind, so every call site is unchanged:
+  `interface_gen.zig` (868 lines — interface/RPC emission, the generated
+  `Client`/`Server`/`VTable`, per-method structs, streaming and pipelined call
+  machinery) and `name_validation.zig` (625 lines — every check that runs
+  before emission, so a bad schema becomes a clear error rather than code that
+  will not compile).
+
+  The `Generator` type itself does not move: the API snapshot renders literal
+  declaration paths and its entry points are still frozen. What did move is
+  internal, and what widened to `pub` is Experimental — which is precisely what
+  the freeze narrowing below bought, and why this was impossible before it.
+
+  Verified by regenerating every committed artifact (RPC schemas, e2e
+  bindings, goldens, all four examples, WASM) and diffing: identical. The
+  decomposition stopped here on measurement — `Generator` now ends around line
+  1956, the rest of the file is inline tests, and the largest remaining cluster
+  is 103 lines.
+
 - **Codegen internals are no longer part of the frozen API contract.** The
   Stable tier claimed 54 declarations under `codegen`; it now claims 20. What
   stays frozen is the plugin contract a consumer actually depends on —
@@ -60,6 +96,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   how wide a prefix happens to be.
 
 ### Fixed
+
+- **The QUIC library root ran none of its own tests.** `src/rpc/mod.zig` forces
+  its subtree through semantic analysis so `test` blocks join the compilation,
+  but deliberately skips the `quic` declaration — correct there, since in a
+  default build it is the disabled stub whose every declaration is an
+  intentional `@compileError`. The bug was that `src/rpc/mod_quic.zig`, where
+  the module is real, had no walk at all, so under `-Dquic=true` nothing under
+  `src/rpc` was analysed, the QUIC transport included. The walk is now shared
+  with a `skip_quic` parameter.
+
+  That surfaced 19 previously-dead tests (325 → 344) and three defects in them,
+  all invisible while they never ran: a framer test declaring a 4096-byte frame
+  against a 1024-byte ceiling, so decode rejected it before any assertion ran;
+  a malformed-frame case reusing an 8-byte framer, so `push` tripped the buffer
+  budget and the reserved-byte validation it exists to check never executed;
+  and a leak from reassigning a variable that already carried a deferred
+  `deinit`. In all three the code was correct and the tests were stale — the
+  bounds guard attacker-declared lengths and were added after those tests were
+  written, with nothing re-running them to notice.
 
 - **QUIC congestion knobs were unreachable through this transport.**
   `ClientOptions` now carries `congestion_control`, `enable_pacing` and
@@ -3125,7 +3180,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/nullstyle/capnp-zig/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/nullstyle/capnp-zig/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/nullstyle/capnp-zig/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/nullstyle/capnp-zig/compare/v0.7.0...v0.8.0
