@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const quic_zig = @import("quic");
 
 const datagram_drop = @import("datagram_drop.zig");
+const datagram_io = @import("datagram_io.zig");
 const events = @import("../../events.zig");
 const quic_zig_adapter = @import("quic_zig_adapter.zig");
 const non_windows_receive = @import("non_windows_receive.zig");
@@ -148,7 +149,17 @@ pub const Listener = struct {
         rx_buf: []u8,
     ) !?FeedOutcome {
         if (comptime builtin.target.os.tag == .windows) {
-            const received = try self.receiveConcurrent(self.receive_timeout);
+            // ICMP-driven faults (PortUnreachable / ConnectionResetByPeer)
+            // are per-datagram, never endpoint-fatal: an off-path packet can
+            // provoke them, and a departed peer's ICMP feedback must not fail
+            // the listener. Same classification as `datagram_io.receiveOne`.
+            const received = self.receiveConcurrent(self.receive_timeout) catch |err| {
+                if (datagram_io.isTransientPeerFault(err)) {
+                    datagram_drop.reportPeerFault(err);
+                    return null;
+                }
+                return err;
+            };
             return switch (received) {
                 .timeout, .wake => null,
                 // The Windows receive always borrows Listener-owned storage,
@@ -168,7 +179,14 @@ pub const Listener = struct {
 
         const msg = non_windows_receive.receive(&self.socket, self.io, rx_buf, self.receive_timeout) catch |err| switch (err) {
             error.Timeout => return null,
-            else => return err,
+            else => {
+                // Mirror of the Windows arm above.
+                if (datagram_io.isTransientPeerFault(err)) {
+                    datagram_drop.reportPeerFault(err);
+                    return null;
+                }
+                return err;
+            },
         };
         if (msg.flags.trunc) {
             self.recordDroppedDatagram(rx_buf.len);

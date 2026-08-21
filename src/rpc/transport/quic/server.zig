@@ -4,6 +4,8 @@ const quic_zig = @import("quic");
 
 const baseline_engine = @import("baseline_engine.zig");
 const callback_lifecycle_mod = @import("callback_lifecycle.zig");
+const datagram_drop = @import("datagram_drop.zig");
+const datagram_io = @import("datagram_io.zig");
 const close_controller_mod = @import("close_controller.zig");
 const connection_dispatch = @import("connection_dispatch.zig");
 const connection_init = @import("connection_init.zig");
@@ -366,12 +368,25 @@ pub const Server = struct {
         }
 
         if (comptime builtin.target.os.tag == .windows) {
-            const received = try self.udp_receive.receive(
+            // Same ICMP-fault classification as `datagram_io.receiveOneWindows`
+            // (the single-connection loop): PortUnreachable /
+            // ConnectionResetByPeer describe a datagram that did not arrive,
+            // not a broken endpoint, and an off-path packet can provoke them.
+            // A bare `try` here let a departed peer's ICMP feedback fail
+            // `stepOnce` — on Windows that killed the whole fanout endpoint.
+            const received = self.udp_receive.receive(
                 self.io,
                 self.listener.socket,
                 self.udp_rx_buf,
                 wait_duration,
-            );
+            ) catch |err| {
+                if (datagram_io.isTransientPeerFault(err)) {
+                    datagram_drop.reportPeerFault(err);
+                    result.dropped_datagram = true;
+                    return result;
+                }
+                return err;
+            };
             switch (received) {
                 .timeout => return result,
                 .wake => {
@@ -406,7 +421,17 @@ pub const Server = struct {
 
         const msg = non_windows_receive.receive(&self.listener.socket, self.io, self.udp_rx_buf, receive_timeout) catch |err| switch (err) {
             error.Timeout => return result,
-            else => return err,
+            else => {
+                // Mirror of the Windows arm above and of
+                // `datagram_io.receiveOne`: ICMP-driven faults are
+                // per-datagram, never endpoint-fatal.
+                if (datagram_io.isTransientPeerFault(err)) {
+                    datagram_drop.reportPeerFault(err);
+                    result.dropped_datagram = true;
+                    return result;
+                }
+                return err;
+            },
         };
         if (msg.flags.trunc) {
             self.listener.recordDroppedDatagram(self.udp_rx_buf.len);
