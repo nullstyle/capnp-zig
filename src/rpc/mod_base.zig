@@ -26,6 +26,7 @@ pub const peer = @import("./peer/mod.zig");
 
 pub const vat = struct {
     pub const network = @import("./vat/network.zig");
+    pub const quic_network = @import("./vat/quic_network.zig");
     pub const join = @import("./vat/join.zig");
     pub const provisions = @import("./vat/provisions.zig");
     pub const host = @import("./vat/host.zig");

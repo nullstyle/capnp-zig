@@ -685,6 +685,7 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, optimize, lib_module);
     const run_rpc_peer_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_test.zig", target, optimize, lib_module);
     const run_rpc_peer_from_peer_zig_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_from_peer_zig_test.zig", target, optimize, lib_module);
+    const run_rpc_quic_vat_network_tests = addLibTest(b, "tests/rpc/peer/rpc_quic_vat_network_test.zig", target, optimize, lib_module);
     const run_rpc_reflected_resolve_disembargo_tests = addLibTest(b, "tests/rpc/peer/rpc_reflected_resolve_disembargo_test.zig", target, optimize, lib_module);
     const run_rpc_three_party_handoff_origination_tests = addLibTest(b, "tests/rpc/peer/rpc_three_party_handoff_origination_test.zig", target, optimize, lib_module);
     const run_rpc_three_party_handoff_pickup_tests = addLibTest(b, "tests/rpc/peer/rpc_three_party_handoff_pickup_test.zig", target, optimize, lib_module);
@@ -1018,6 +1019,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_peer_step.dependOn(run_rpc_peer_cleanup_tests);
     test_rpc_peer_step.dependOn(run_rpc_peer_tests);
     test_rpc_peer_step.dependOn(run_rpc_peer_from_peer_zig_tests);
+    test_rpc_peer_step.dependOn(run_rpc_quic_vat_network_tests);
     test_rpc_peer_step.dependOn(run_rpc_reflected_resolve_disembargo_tests);
     test_rpc_peer_step.dependOn(run_rpc_three_party_handoff_origination_tests);
     test_rpc_peer_step.dependOn(run_rpc_three_party_handoff_pickup_tests);
