@@ -67,6 +67,12 @@ pub const NativeEngine = struct {
     /// fresh dials.
     early_open: bool = false,
 
+    /// Server replay-window guard (see Config.defer_early_dispatch):
+    /// while the handshake is incomplete and the control stream's data
+    /// arrived in early data, envelopes buffer but frames do not
+    /// dispatch.
+    defer_early_dispatch: bool = false,
+
     pub fn init(
         allocator: std.mem.Allocator,
         role: Role,
@@ -75,6 +81,7 @@ pub const NativeEngine = struct {
         max_outbound_queue_bytes: usize,
         native_options: NativeOptions,
         early_open: bool,
+        defer_early_dispatch: bool,
     ) NativeEngine {
         return .{
             .inbound = NativeControlFramer.init(allocator, .{
@@ -89,6 +96,7 @@ pub const NativeEngine = struct {
             ),
             .data_stream_completion_deadline_us = native_options.data_stream_completion_deadline_us,
             .early_open = early_open,
+            .defer_early_dispatch = defer_early_dispatch,
         };
     }
 
@@ -137,6 +145,23 @@ pub const NativeEngine = struct {
         if (!try self.ensureControlStream(owner.role, conn)) return;
         if (!try self.flushPreamble(conn)) return;
         try self.outbound.flush(owner.allocator, conn, owner.observer);
+        // Replay-window hold (mirror of the baseline engine): buffer
+        // early-data envelopes, dispatch nothing until the handshake
+        // completes. A replayed first flight can never complete one.
+        if (self.defer_early_dispatch and
+            owner.role == .server and
+            !conn.handshakeDone() and
+            (conn.streamArrivedInEarlyData(quic_options.baseline_stream_id) orelse false))
+        {
+            self.readControlStream(owner, conn) catch |err| {
+                if (isNativeFrameError(err)) {
+                    owner.terminate_frame_error(owner.ptr, err);
+                    return;
+                }
+                return err;
+            };
+            return;
+        }
         self.readControlStream(owner, conn) catch |err| {
             if (isNativeFrameError(err)) {
                 owner.terminate_frame_error(owner.ptr, err);

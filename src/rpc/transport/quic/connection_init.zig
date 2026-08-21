@@ -42,6 +42,16 @@ pub const Config = struct {
     /// frames ride early data. Always false for servers.
     early_open: bool = false,
 
+    /// Server accepted 0-RTT WITHOUT TLS-level anti-replay
+    /// (`early_data = .without_replay_protection`): hold dispatch of RPC
+    /// frames that arrived in early data until the handshake completes.
+    /// A replayed first flight can never complete a handshake, so
+    /// deferral closes the replay-execution window at the transport
+    /// while still banking the round trip (the frames are already here
+    /// when the handshake lands). `.with_anti_replay` dispatches
+    /// immediately — the tracker already guarantees single use.
+    defer_early_dispatch: bool = false,
+
     pub fn fromClient(options: quic_options.ClientOptions) Config {
         return .{
             .udp_rx_buffer_size = options.udp_rx_buffer_size,
@@ -69,6 +79,7 @@ pub const Config = struct {
             .native_options = options.native,
             .reveal_close_reason_on_wire = options.reveal_close_reason_on_wire,
             .observer = options.observer,
+            .defer_early_dispatch = std.meta.activeTag(options.early_data) == .without_replay_protection,
         };
     }
 };
@@ -150,6 +161,7 @@ pub fn init(
             config.max_outbound_queue_items,
             config.max_outbound_queue_bytes,
             config.early_open,
+            config.defer_early_dispatch,
         ),
         .native = NativeEngine.init(
             allocator,
@@ -159,6 +171,7 @@ pub fn init(
             config.max_outbound_queue_bytes,
             config.native_options,
             config.early_open,
+            config.defer_early_dispatch,
         ),
         .wake_state = wake_mod.Handle.init(),
         .close_controller = CloseController.init(config.reveal_close_reason_on_wire),

@@ -685,6 +685,7 @@ pub const ServerSession = struct {
                 config.max_outbound_queue_items,
                 config.max_outbound_queue_bytes,
                 false,
+                config.defer_early_dispatch,
             ),
             .native = NativeEngine.init(
                 allocator,
@@ -694,6 +695,7 @@ pub const ServerSession = struct {
                 config.max_outbound_queue_bytes,
                 config.native_options,
                 false,
+                config.defer_early_dispatch,
             ),
             .close_controller = CloseController.init(config.reveal_close_reason_on_wire),
             .wake_state = wake_state,

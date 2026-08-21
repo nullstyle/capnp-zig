@@ -1595,6 +1595,40 @@ const ResumptionSink = struct {
     }
 };
 
+/// Echo callback that also records whether any dispatch happened while the
+/// session's QUIC handshake was still incomplete. Under
+/// `early_data = .without_replay_protection` the transport defers
+/// dispatch of early-data frames until the handshake completes (the
+/// replay-execution guard), so this must never observe an incomplete
+/// handshake at dispatch time. (`.with_anti_replay` would legitimately
+/// dispatch early — the tracker guarantees single use — but that posture
+/// needs a tracker instance and is not exercised here.)
+const EarlyGateState = struct {
+    inner: QuicEndpointState = .{},
+    dispatched_before_handshake: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+};
+
+fn echoRecordingHandshakePhase(session: *quic.ServerSession, frame: []const u8) !void {
+    const st: *EarlyGateState = @ptrCast(@alignCast(session.context().?));
+    if (session.activeQuicConnection()) |q| {
+        if (!q.handshakeDone()) st.dispatched_before_handshake.store(true, .release);
+    }
+    try st.inner.recordMessage(frame);
+    try session.sendFrame(frame);
+}
+
+fn earlyGateServerError(session: *quic.ServerSession, err: anyerror) void {
+    const st: *EarlyGateState = @ptrCast(@alignCast(session.context().?));
+    st.inner.last_error = err;
+    _ = st.inner.errors.fetchAdd(1, .acq_rel);
+    session.requestClose();
+}
+
+fn earlyGateServerClose(session: *quic.ServerSession) void {
+    const st: *EarlyGateState = @ptrCast(@alignCast(session.context().?));
+    _ = st.inner.closes.fetchAdd(1, .acq_rel);
+}
+
 /// Drive the fanout server until `client_state` has a message AND the sink
 /// captured a ticket — the resumed dial needs both the echo and the envelope.
 fn driveUntilEchoAndTicket(
@@ -1717,8 +1751,8 @@ test "quic warm restore: resumed dial sends its first RPC frame as accepted 0-RT
     };
 
     try driveUntilSessions(&server, 1);
-    var server2_state = QuicEndpointState{};
-    server.sessionAt(0).?.start(&server2_state, echoQuicServerMessage, recordQuicServerError, recordQuicServerClose);
+    var server2_state = EarlyGateState{};
+    server.sessionAt(0).?.start(&server2_state, echoRecordingHandshakePhase, earlyGateServerError, earlyGateServerClose);
     // 0-RTT ordering contract: the restore frame arrived DURING the
     // handshake — before these callbacks were bound — so it sits parsed in
     // the session engine with nothing left on the wire to trigger another
@@ -1731,7 +1765,7 @@ test "quic warm restore: resumed dial sends its first RPC frame as accepted 0-RT
     while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
         _ = try server.stepOnce(.wait);
         if (client2_state.messages.load(.acquire) > 0) break;
-        if (client2_state.errors.load(.acquire) > 0 or server2_state.errors.load(.acquire) > 0) {
+        if (client2_state.errors.load(.acquire) > 0 or server2_state.inner.errors.load(.acquire) > 0) {
             return error.QuicLoopbackUnexpectedError;
         }
         loopback.sleepMs(loopback.loopback_poll_ms);
@@ -1749,6 +1783,11 @@ test "quic warm restore: resumed dial sends its first RPC frame as accepted 0-RT
     // the restore frame rode 0-RTT, not a post-handshake stream.
     const q2 = client2.endpoint.activeQuicConnection() orelse return error.QuicConnectionGone;
     try std.testing.expectEqual(quic.EarlyDataStatus.accepted, q2.earlyDataStatus());
+    // And the replay-execution guard held: with
+    // `.without_replay_protection`, the frame that ARRIVED in 0-RTT was
+    // not DISPATCHED until the handshake completed (a replayed first
+    // flight can never complete one).
+    try std.testing.expect(!server2_state.dispatched_before_handshake.load(.acquire));
 }
 
 test "quic warm restore: stale ticket is rejected but the staged frame still arrives at 1-RTT" {

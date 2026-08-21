@@ -39,17 +39,26 @@ pub const BaselineEngine = struct {
     /// fresh dials.
     early_open: bool = false,
 
+    /// Server replay-window guard (see Config.defer_early_dispatch):
+    /// while the handshake is incomplete and stream 0's data arrived in
+    /// early data, frames buffer but do not dispatch. Recomputed into
+    /// `hold_dispatch` each service pass.
+    defer_early_dispatch: bool = false,
+    hold_dispatch: bool = false,
+
     pub fn init(
         allocator: std.mem.Allocator,
         max_message_bytes: usize,
         max_outbound_queue_items: usize,
         max_outbound_queue_bytes: usize,
         early_open: bool,
+        defer_early_dispatch: bool,
     ) BaselineEngine {
         return .{
             .inbound = LengthDelimitedFramer.init(allocator, max_message_bytes),
             .outbound = OutboundQueue.init(max_outbound_queue_items, max_outbound_queue_bytes),
             .early_open = early_open,
+            .defer_early_dispatch = defer_early_dispatch,
         };
     }
 
@@ -93,6 +102,16 @@ pub const BaselineEngine = struct {
         conn: *quic_zig.Connection,
     ) !void {
         if (!try self.ensureStream(owner.role, conn)) return;
+        // Replay-window hold: with 0-RTT accepted and no TLS-level
+        // anti-replay, a replayed first flight could otherwise execute
+        // RPC frames. A replay can never complete a handshake, so
+        // buffering until handshakeDone closes the window; the frames
+        // are already here when the handshake lands, keeping the saved
+        // round trip.
+        self.hold_dispatch = self.defer_early_dispatch and
+            owner.role == .server and
+            !conn.handshakeDone() and
+            (conn.streamArrivedInEarlyData(quic_options.baseline_stream_id) orelse false);
         try self.outbound.flush(owner.allocator, conn, owner.observer);
         // Frames can buffer in the inbound framer while callbacks are not
         // yet bound (0-RTT data read during the handshake, before `start`).
@@ -147,6 +166,7 @@ pub const BaselineEngine = struct {
         self: *BaselineEngine,
         owner: Owner,
     ) !void {
+        if (self.hold_dispatch) return;
         while (true) {
             if (!owner.callbacks_ready(owner.ptr)) return;
             const frame = self.inbound.popFrame() catch |err| {
