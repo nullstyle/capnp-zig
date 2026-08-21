@@ -39,10 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   field default). `.cubic` remains the one-line rollback on either
   side. The soak gained `--cc default|cubic|bbr|newreno` for A/B runs;
   measured on identical v0.16 code (60s, 8 workers, churn + deadline
-  traffic, loopback caveats apply): BBR vs CUBIC showed no regression
-  — +3.7% calls, p50 2.28→2.99ms, p99 15.75→14.78ms, steady heap
-  unchanged (~30.3MB) — and v0.15.1→v0.16 CUBIC-to-CUBIC gained ~10%
-  call throughput (the sub-ms delivery-rate sampler fix).
+  traffic, loopback caveats apply): BBR vs CUBIC is a strict
+  no-regression — every metric (calls, p50, p99, steady heap ~30.3MB)
+  within the cubic configuration's own run-to-run spread, with p50
+  ~0.7ms higher as the only consistent visible shift. An earlier
+  version of this entry attributed a +10% cubic-to-cubic throughput
+  gain across the bump to upstream's delivery-rate sampler fix; that
+  was wrong twice over — the sampler feeds only BBR's model, and
+  repeat runs (v0.15.1: 6101/7220/6823 calls; v0.16: 6723/6736/6586)
+  show the original baseline was simply the low outlier. Cubic
+  throughput across the bump is flat within variance.
 - **quic pin: v0.12.0 → v0.14.0 → v0.15.0** (each validated by building
   against a pristine cache; full suite, QUIC suite, api-snapshot, and
   docs-snippet gates green). v0.14 brings `Client.Config.initial_dcid`
