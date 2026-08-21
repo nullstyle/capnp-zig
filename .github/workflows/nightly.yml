@@ -142,6 +142,12 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
 
+      # The full suite hard-requires the capnp CLI since 380e12e
+      # (schema_fidelity_test runs it with missing=.required). Every ci.yml
+      # job that runs the suite installs it; this job broke every Nightly
+      # from 2026-08-12 to 2026-08-20 by omitting it.
+      - uses: ./.github/actions/setup-capnp
+
       # setup-zig's built-in cache saves a fresh per-job entry every run, so
       # CI churn evicts it from the repo's 10 GB quota long before the next
       # nightly. Keep the package store in its own small entry keyed on the
