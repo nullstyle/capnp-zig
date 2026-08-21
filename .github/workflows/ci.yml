@@ -257,14 +257,17 @@ jobs:
       # platform-stable between Linux and macOS. Linux-only because Windows
       # renders genuinely differ (`win_read` bridge, socket handle types).
       #
-      # CAVEAT (quic v0.14.0): one line is Linux-vs-macOS unstable again.
-      # The pinned package resolves an internal lowercase `client.zig`
-      # import against its `Client.zig` on case-insensitive filesystems,
-      # so `ClientEndpoint.transport` renders as `client.Client` on macOS
-      # and `Client` on Linux. THE COMMITTED FILE CARRIES THE LINUX
-      # RENDER because this strict gate is the only consumer. If you
-      # regenerate `api-snapshot-quic` on macOS, hand-restore that line
-      # (or regenerate on Linux) before committing.
+      # PIN-BUMP TRAP (found on the quic v0.14.0 bump): regenerate AND
+      # check the snapshot against a FRESH module graph after bumping a
+      # dependency. A stale local cache/zig-pkg mapping can leave the
+      # api-snapshot tool rendering the OLD pin's type names (v0.12's
+      # `conn.state.Connection` vs v0.14's `Connection`) while the test
+      # binaries already build the new pin — and the stale render
+      # happily verifies against its own stale file, so the drift only
+      # surfaces on CI's clean checkout. The renders themselves are
+      # Linux/macOS-identical (verified byte-for-byte on the v0.14
+      # surface); when local and CI disagree, suspect the local cache,
+      # not the platform.
       - name: QUIC-enabled API snapshot (strict, incl. experimental staleness)
         if: runner.os == 'Linux'
         run: zig build -Dquic=true check-api-experimental-quic

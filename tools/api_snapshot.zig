@@ -930,6 +930,13 @@ fn diffAndReport(
     var existing_it = std.mem.splitScalar(u8, existing, '\n');
     var rendered_it = std.mem.splitScalar(u8, rendered, '\n');
     var line_no: usize = 1;
+    // Report EVERY drifting line (capped), not just the first: platform-
+    // render drifts are same-line substitutions scattered through the file,
+    // and first-only reporting costs one full CI round trip per line. An
+    // insertion/deletion makes every later line "drift"; the cap keeps that
+    // cascade readable.
+    var drifts: usize = 0;
+    const max_reported = 25;
     while (true) : (line_no += 1) {
         const a = existing_it.next();
         const b = rendered_it.next();
@@ -937,12 +944,20 @@ fn diffAndReport(
         const a_line = a orelse "<end of snapshot>";
         const b_line = b orelse "<end of live surface>";
         if (!std.mem.eql(u8, a_line, b_line)) {
-            std.debug.print(
-                "api-snapshot: drift in {s} at line {}:\n  snapshot: {s}\n  live:     {s}\n",
-                .{ path, line_no, a_line, b_line },
-            );
-            break;
+            drifts += 1;
+            if (drifts <= max_reported) {
+                std.debug.print(
+                    "api-snapshot: drift in {s} at line {}:\n  snapshot: {s}\n  live:     {s}\n",
+                    .{ path, line_no, a_line, b_line },
+                );
+            }
         }
+    }
+    if (drifts > max_reported) {
+        std.debug.print(
+            "api-snapshot: ... and {} more drifting lines (an insertion or deletion cascades; regenerate to resolve)\n",
+            .{drifts - max_reported},
+        );
     }
     return false;
 }
