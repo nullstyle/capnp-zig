@@ -194,7 +194,11 @@ pub const ClientOptions = struct {
     /// Defaults deliberately mirror upstream's rather than pinning the old
     /// behaviour: this transport follows its backend's defaults, and pinning
     /// silently would hide the very change these fields exist to expose.
-    congestion_control: quic_zig.CongestionAlgorithm = .cubic,
+    /// Followed through quic-zig v0.16.0's default flip to BBRv3 (their
+    /// fairness-battery-gated change); `.cubic` remains the one-line
+    /// rollback at this layer, mirrored server-side by
+    /// `ServerOptions.congestion_control`.
+    congestion_control: quic_zig.CongestionAlgorithm = .bbr,
     enable_pacing: bool = true,
     enable_hystart: bool = true,
 
@@ -247,6 +251,13 @@ pub const ServerOptions = struct {
     new_token_key: ?ServerNewTokenKey = null,
     new_token_lifetime_us: u64 = default_quic_new_token_lifetime_us,
     early_data: EarlyData = .disabled,
+    /// Congestion-control selection for accepted connections, forwarded
+    /// verbatim to quic-zig. Mirrors `ClientOptions.congestion_control`
+    /// (same follow-upstream default policy — BBRv3 since quic-zig
+    /// v0.16.0; `.cubic` is the rollback). This field previously did not
+    /// exist, which silently split posture: servers followed upstream's
+    /// default while clients used this transport's own field default.
+    congestion_control: quic_zig.CongestionAlgorithm = .bbr,
     reveal_close_reason_on_wire: bool = false,
     max_connection_memory: u64 = default_quic_max_connection_memory,
     /// Listener-wide and per-source bandwidth ceilings. quic-zig's `.default`
@@ -327,6 +338,7 @@ pub fn serverConfigFromOptions(
         .new_token_key = options.new_token_key,
         .new_token_lifetime_us = options.new_token_lifetime_us,
         .early_data = options.early_data,
+        .congestion_control = options.congestion_control,
         .reveal_close_reason_on_wire = options.reveal_close_reason_on_wire,
         .max_connection_memory = options.max_connection_memory,
         .listener_datagram_rate_limit = options.listener_datagram_rate_limit,

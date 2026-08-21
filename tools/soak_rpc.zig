@@ -26,6 +26,7 @@
 //!                          [--inflight K] [--mem-sample-ms N]
 //!                          [--mem-growth-pct P] [--no-chaos] [--no-deadlines]
 //!                          [--transport tcp|quic]  (quic needs -Dquic=true)
+//!                          [--cc default|cubic|bbr|newreno]  (quic only)
 
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
@@ -41,6 +42,12 @@ const net = std.Io.net;
 
 const Transport = enum { tcp, quic };
 
+/// Congestion-control selection for the QUIC soak (--cc). A local enum so
+/// the TCP-only build never references the quic module's types; mapped to
+/// quic-zig's CongestionAlgorithm at the guarded call sites. `default`
+/// leaves both sides on the transport's own defaults.
+const CcChoice = enum { default, cubic, bbr, newreno };
+
 const Config = struct {
     seconds: u64 = 2,
     workers: u32 = 4,
@@ -49,6 +56,8 @@ const Config = struct {
     // are measurable BEFORE/AFTER a quic-zig pin bump (a rig that cannot
     // observe a change reports "no change").
     transport: Transport = .tcp,
+    // QUIC congestion-control override for A/B runs (ignored over tcp).
+    cc: CcChoice = .default,
     calls_per_session: u32 = 25,
     // High-in-flight mode: max outstanding questions per session. 1 keeps the
     // classic sequential behavior; larger values keep many calls in flight.
@@ -418,7 +427,7 @@ fn SessionOf(comptime ConnT: type) type {
 
 const Session = SessionOf(Connection);
 
-fn dialTcp(allocator: std.mem.Allocator, io: std.Io, address: net.IpAddress) anyerror!Connection {
+fn dialTcp(allocator: std.mem.Allocator, io: std.Io, address: net.IpAddress, _: *const Config) anyerror!Connection {
     var addr = address;
     const stream = try net.IpAddress.connect(&addr, io, .{ .mode = .stream });
     return try Connection.init(allocator, io, .{ .handle = stream.socket.handle }, .{
@@ -431,19 +440,32 @@ fn dialTcp(allocator: std.mem.Allocator, io: std.Io, address: net.IpAddress) any
     });
 }
 
-fn dialQuic(allocator: std.mem.Allocator, io: std.Io, address: net.IpAddress) anyerror!quic.Connection {
-    return try quic.Connection.initClient(allocator, io, .{
+fn dialQuic(allocator: std.mem.Allocator, io: std.Io, address: net.IpAddress, cfg: *const Config) anyerror!quic.Connection {
+    var options = quic.ClientOptions{
         .remote_addr = address,
         .server_name = "localhost",
         // Loopback soak against the checked-in self-signed fixture cert.
         .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(5),
-    });
+    };
+    applyCc(&options.congestion_control, cfg.cc);
+    return try quic.Connection.initClient(allocator, io, options);
+}
+
+/// Map the soak's local `--cc` choice onto quic-zig's enum; `.default`
+/// leaves the transport's own default in place.
+fn applyCc(field: anytype, choice: CcChoice) void {
+    switch (choice) {
+        .default => {},
+        .cubic => field.* = .cubic,
+        .bbr => field.* = .bbr,
+        .newreno => field.* = .new_reno,
+    }
 }
 
 fn WorkerOf(
     comptime ConnT: type,
-    comptime dialFn: fn (std.mem.Allocator, std.Io, net.IpAddress) anyerror!ConnT,
+    comptime dialFn: fn (std.mem.Allocator, std.Io, net.IpAddress, *const Config) anyerror!ConnT,
 ) type {
     return struct {
         const Self = @This();
@@ -480,7 +502,7 @@ fn WorkerOf(
         fn runSession(self: Self, session_index: u64) !void {
             const conn = try self.allocator.create(ConnT);
             errdefer self.allocator.destroy(conn);
-            conn.* = try dialFn(self.allocator, self.io, self.address);
+            conn.* = try dialFn(self.allocator, self.io, self.address, self.cfg);
 
             const peer = try self.allocator.create(Peer);
             errdefer self.allocator.destroy(peer);
@@ -558,13 +580,13 @@ const QuicServerHarness = struct {
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     bound: if (quic.enabled) std.AutoHashMap(u64, *Peer) else void = undefined,
 
-    fn start(self: *QuicServerHarness, allocator: std.mem.Allocator, io: std.Io, workers: u32) !net.IpAddress {
+    fn start(self: *QuicServerHarness, allocator: std.mem.Allocator, io: std.Io, workers: u32, cc: CcChoice) !net.IpAddress {
         if (comptime !quic.enabled) unreachable;
         self.allocator = allocator;
         self.bound = std.AutoHashMap(u64, *Peer).init(allocator);
         const server = try allocator.create(quic.Server);
         errdefer allocator.destroy(server);
-        server.* = try quic.Server.init(allocator, io, .{
+        var server_options = quic.ServerOptions{
             .listen_addr = .{ .ip4 = .loopback(0) },
             .tls_cert_pem = soak_quic_cert_pem,
             .tls_key_pem = soak_quic_key_pem,
@@ -572,7 +594,9 @@ const QuicServerHarness = struct {
             // Each worker holds at most one live session; x2 covers
             // close/reap overlap during churn.
             .max_concurrent_connections = workers * 2 + 4,
-        });
+        };
+        applyCc(&server_options.congestion_control, cc);
+        server.* = try quic.Server.init(allocator, io, server_options);
         self.server = server;
         self.thread = try std.Thread.spawn(.{}, QuicServerHarness.threadMain, .{self});
         return server.getAddress();
@@ -821,6 +845,10 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Config {
             const value = iter.next() orelse return error.InvalidArgument;
             cfg.transport = std.meta.stringToEnum(Transport, value) orelse
                 return error.InvalidArgument;
+        } else if (std.mem.eql(u8, arg, "--cc")) {
+            const value = iter.next() orelse return error.InvalidArgument;
+            cfg.cc = std.meta.stringToEnum(CcChoice, value) orelse
+                return error.InvalidArgument;
         } else {
             std.debug.print("soak: unknown argument: {s}\n", .{arg});
             return error.InvalidArgument;
@@ -886,7 +914,7 @@ pub fn main(init: std.process.Init) !void {
             // parseArgs already rejected .quic on a non-QUIC build, so this
             // branch is only reachable when the harness compiles for real.
             if (comptime quic.enabled) {
-                address = try quic_srv.start(allocator, io, cfg.workers);
+                address = try quic_srv.start(allocator, io, cfg.workers, cfg.cc);
                 std.debug.print(
                     "soak: quic server listening on port {} (workers {}, inflight {})\n",
                     .{ address.getPort(), cfg.workers, cfg.inflight },

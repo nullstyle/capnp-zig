@@ -28,6 +28,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **quic pin → v0.16.0** (via v0.15.1, both cold-verified). v0.15.1
+  retired the two latent transport wedges (pacer refill freeze;
+  flow-control credit starved behind the pacing gate). v0.16.0 flips
+  the congestion default to BBRv3 — and this transport FOLLOWS the
+  flip per its recorded defaults policy: `ClientOptions
+  .congestion_control` default is now `.bbr`, and `ServerOptions`
+  gains the same knob (previously absent, which silently split
+  posture: servers followed upstream's default while clients used our
+  field default). `.cubic` remains the one-line rollback on either
+  side. The soak gained `--cc default|cubic|bbr|newreno` for A/B runs;
+  measured on identical v0.16 code (60s, 8 workers, churn + deadline
+  traffic, loopback caveats apply): BBR vs CUBIC showed no regression
+  — +3.7% calls, p50 2.28→2.99ms, p99 15.75→14.78ms, steady heap
+  unchanged (~30.3MB) — and v0.15.1→v0.16 CUBIC-to-CUBIC gained ~10%
+  call throughput (the sub-ms delivery-rate sampler fix).
 - **quic pin: v0.12.0 → v0.14.0 → v0.15.0** (each validated by building
   against a pristine cache; full suite, QUIC suite, api-snapshot, and
   docs-snippet gates green). v0.14 brings `Client.Config.initial_dcid`
