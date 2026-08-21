@@ -25,6 +25,7 @@
 //! Usage: zig build soak -- [--seconds N] [--workers N] [--calls N]
 //!                          [--inflight K] [--mem-sample-ms N]
 //!                          [--mem-growth-pct P] [--no-chaos] [--no-deadlines]
+//!                          [--transport tcp|quic]  (quic needs -Dquic=true)
 
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
@@ -34,12 +35,20 @@ const protocol = rpc.wire.protocol;
 const cap_table = rpc.caps.table;
 const Peer = rpc.peer.Peer;
 const Connection = rpc.transport.tcp.Connection;
+const quic = rpc.transport.quic;
 const WorkerPool = rpc.integration.worker_pool.WorkerPool;
 const net = std.Io.net;
+
+const Transport = enum { tcp, quic };
 
 const Config = struct {
     seconds: u64 = 2,
     workers: u32 = 4,
+    // Transport under soak. `quic` requires a -Dquic=true build; the QUIC
+    // variant exists so per-connection footprint and steady-state behavior
+    // are measurable BEFORE/AFTER a quic-zig pin bump (a rig that cannot
+    // observe a change reports "no change").
+    transport: Transport = .tcp,
     calls_per_session: u32 = 25,
     // High-in-flight mode: max outstanding questions per session. 1 keeps the
     // classic sequential behavior; larger values keep many calls in flight.
@@ -242,67 +251,133 @@ fn poolThreadMain(pool: *WorkerPool) void {
 
 const SessionMode = enum { normal, chaos, deadline };
 
-const Session = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    conn: *Connection,
-    peer: *Peer,
-    totals: *Totals,
-    latency: *LatencyBuf,
-    mode: SessionMode,
-    calls_target: u32,
-    // Max outstanding questions for this session. Deadline/chaos sessions run
-    // sequentially (inflight 1) so their timing semantics stay exact.
-    max_inflight: u32,
+fn SessionOf(comptime ConnT: type) type {
+    return struct {
+        const Self = @This();
 
-    issued: u32 = 0,
-    completed: u32 = 0,
-    bootstrap_import_id: ?u32 = null,
-    chaos_close_initiated: bool = false,
-    failed: bool = false,
-
-    // Per-outstanding-question send timestamps, keyed by (index % max_inflight).
-    // Sized to MAX_INFLIGHT_SLOTS; --inflight is clamped to it.
-    send_ts: [MAX_INFLIGHT_SLOTS]u64 = @splat(0),
-
-    const MAX_INFLIGHT_SLOTS = 256;
-
-    fn onBootstrapReturn(
-        ctx: *anyopaque,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        conn: *ConnT,
         peer: *Peer,
-        ret: protocol.Return,
-        caps: *const cap_table.InboundCapTable,
-    ) anyerror!void {
-        const self: *Session = @ptrCast(@alignCast(ctx));
-        if (ret.tag != .results) {
-            self.noteException(ret);
-            self.conn.close();
-            return;
-        }
-        const payload = ret.results orelse return error.MissingPayload;
-        const cap = try payload.content.getCapability();
-        const resolved = try caps.resolveCapability(cap);
-        switch (resolved) {
-            .imported => |imported| self.bootstrap_import_id = imported.id,
-            else => return error.UnexpectedResolvedCapability,
-        }
-        try self.pump(peer);
-    }
+        totals: *Totals,
+        latency: *LatencyBuf,
+        mode: SessionMode,
+        calls_target: u32,
+        // Max outstanding questions for this session. Deadline/chaos sessions run
+        // sequentially (inflight 1) so their timing semantics stay exact.
+        max_inflight: u32,
 
-    fn buildEmptyCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
-        _ = try call.initCapTableTyped(0);
-    }
+        issued: u32 = 0,
+        completed: u32 = 0,
+        bootstrap_import_id: ?u32 = null,
+        chaos_close_initiated: bool = false,
+        failed: bool = false,
 
-    /// Issue calls up to the inflight ceiling / remaining budget. Chaos
-    /// sessions never pump past the half-way rip point.
-    fn pump(self: *Session, peer: *Peer) !void {
-        const target = self.bootstrap_import_id orelse return error.MissingBootstrapImport;
-        // Deadline sessions call the slow server method so the 1ms call
-        // deadline expires before the (10ms-delayed) Return arrives.
-        const method_id: u16 = if (self.mode == .deadline) EchoServer.slow_method_id else 1;
-        while (self.issued < self.calls_target and (self.issued - self.completed) < self.max_inflight) {
-            const slot = self.issued % self.max_inflight;
-            self.send_ts[slot] = nowNsU(self.io);
+        // Per-outstanding-question send timestamps, keyed by (index % max_inflight).
+        // Sized to MAX_INFLIGHT_SLOTS; --inflight is clamped to it.
+        send_ts: [MAX_INFLIGHT_SLOTS]u64 = @splat(0),
+
+        const MAX_INFLIGHT_SLOTS = 256;
+
+        fn onBootstrapReturn(
+            ctx: *anyopaque,
+            peer: *Peer,
+            ret: protocol.Return,
+            caps: *const cap_table.InboundCapTable,
+        ) anyerror!void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            if (ret.tag != .results) {
+                self.noteException(ret);
+                self.conn.close();
+                return;
+            }
+            const payload = ret.results orelse return error.MissingPayload;
+            const cap = try payload.content.getCapability();
+            const resolved = try caps.resolveCapability(cap);
+            switch (resolved) {
+                .imported => |imported| self.bootstrap_import_id = imported.id,
+                else => return error.UnexpectedResolvedCapability,
+            }
+            try self.pump(peer);
+        }
+
+        fn buildEmptyCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+            _ = try call.initCapTableTyped(0);
+        }
+
+        /// Issue calls up to the inflight ceiling / remaining budget. Chaos
+        /// sessions never pump past the half-way rip point.
+        fn pump(self: *Self, peer: *Peer) !void {
+            const target = self.bootstrap_import_id orelse return error.MissingBootstrapImport;
+            // Deadline sessions call the slow server method so the 1ms call
+            // deadline expires before the (10ms-delayed) Return arrives.
+            const method_id: u16 = if (self.mode == .deadline) EchoServer.slow_method_id else 1;
+            while (self.issued < self.calls_target and (self.issued - self.completed) < self.max_inflight) {
+                const slot = self.issued % self.max_inflight;
+                self.send_ts[slot] = nowNsU(self.io);
+                _ = try peer.sendCallResolved(
+                    .{ .imported = .{ .id = target } },
+                    0x5050_5050,
+                    method_id,
+                    self,
+                    buildEmptyCall,
+                    onCallReturn,
+                );
+                self.issued += 1;
+            }
+        }
+
+        fn onCallReturn(
+            ctx: *anyopaque,
+            peer: *Peer,
+            ret: protocol.Return,
+            _: *const cap_table.InboundCapTable,
+        ) anyerror!void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            const done_index = self.completed;
+            switch (ret.tag) {
+                .results => {
+                    _ = self.totals.calls_ok.fetchAdd(1, .monotonic);
+                    // Returns are answered FIFO on a single connection, so the
+                    // completion index matches issue order for the slot key.
+                    const slot = done_index % self.max_inflight;
+                    const latency = nowNsU(self.io) -| self.send_ts[slot];
+                    self.latency.record(latency);
+                },
+                .exception => self.noteException(ret),
+                else => {},
+            }
+            self.completed += 1;
+
+            if (self.completed >= self.calls_target) {
+                self.conn.close();
+                return;
+            }
+
+            // Chaos: leave one call in flight and rip the connection down. The
+            // peer's close contract fails that in-flight question with a
+            // synthetic "disconnected" exception Return, which noteException
+            // must treat as the expected outcome for this session.
+            if (self.mode == .chaos and self.completed == self.calls_target / 2) {
+                self.chaos_close_initiated = true;
+                self.sendOne(peer) catch {};
+                _ = self.totals.chaos_closes.fetchAdd(1, .monotonic);
+                self.conn.close();
+                return;
+            }
+
+            self.pump(peer) catch |err| {
+                if (err == error.PeerShuttingDown) return;
+                self.failed = true;
+                self.conn.close();
+            };
+        }
+
+        /// Issue exactly one extra call (used by chaos to leave a question in
+        /// flight); ignores the inflight ceiling on purpose.
+        fn sendOne(self: *Self, peer: *Peer) !void {
+            const target = self.bootstrap_import_id orelse return error.MissingBootstrapImport;
+            const method_id: u16 = if (self.mode == .deadline) EchoServer.slow_method_id else 1;
             _ = try peer.sendCallResolved(
                 .{ .imported = .{ .id = target } },
                 0x5050_5050,
@@ -313,189 +388,294 @@ const Session = struct {
             );
             self.issued += 1;
         }
-    }
 
-    fn onCallReturn(
-        ctx: *anyopaque,
-        peer: *Peer,
-        ret: protocol.Return,
-        _: *const cap_table.InboundCapTable,
-    ) anyerror!void {
-        const self: *Session = @ptrCast(@alignCast(ctx));
-        const done_index = self.completed;
-        switch (ret.tag) {
-            .results => {
-                _ = self.totals.calls_ok.fetchAdd(1, .monotonic);
-                // Returns are answered FIFO on a single connection, so the
-                // completion index matches issue order for the slot key.
-                const slot = done_index % self.max_inflight;
-                const latency = nowNsU(self.io) -| self.send_ts[slot];
-                self.latency.record(latency);
-            },
-            .exception => self.noteException(ret),
-            else => {},
-        }
-        self.completed += 1;
-
-        if (self.completed >= self.calls_target) {
-            self.conn.close();
-            return;
-        }
-
-        // Chaos: leave one call in flight and rip the connection down. The
-        // peer's close contract fails that in-flight question with a
-        // synthetic "disconnected" exception Return, which noteException
-        // must treat as the expected outcome for this session.
-        if (self.mode == .chaos and self.completed == self.calls_target / 2) {
-            self.chaos_close_initiated = true;
-            self.sendOne(peer) catch {};
-            _ = self.totals.chaos_closes.fetchAdd(1, .monotonic);
-            self.conn.close();
-            return;
-        }
-
-        self.pump(peer) catch |err| {
-            if (err == error.PeerShuttingDown) return;
-            self.failed = true;
-            self.conn.close();
-        };
-    }
-
-    /// Issue exactly one extra call (used by chaos to leave a question in
-    /// flight); ignores the inflight ceiling on purpose.
-    fn sendOne(self: *Session, peer: *Peer) !void {
-        const target = self.bootstrap_import_id orelse return error.MissingBootstrapImport;
-        const method_id: u16 = if (self.mode == .deadline) EchoServer.slow_method_id else 1;
-        _ = try peer.sendCallResolved(
-            .{ .imported = .{ .id = target } },
-            0x5050_5050,
-            method_id,
-            self,
-            buildEmptyCall,
-            onCallReturn,
-        );
-        self.issued += 1;
-    }
-
-    fn noteException(self: *Session, ret: protocol.Return) void {
-        const reason = if (ret.exception) |ex| ex.reason else "";
-        if (std.mem.eql(u8, reason, "deadline exceeded")) {
-            _ = self.totals.calls_cancelled.fetchAdd(1, .monotonic);
-        } else if (std.mem.eql(u8, reason, rpc.peer.disconnected_reason)) {
-            // The peer's close contract fails every in-flight question with a
-            // synthetic "disconnected" Return. This is the expected outcome
-            // when a chaos session rips its own connection down, and also a
-            // legitimate outcome at high peer counts where a starved event
-            // loop trips its own idle timeout and drops the connection. Keep
-            // the chaos-specific tally exact; count the rest as contention.
-            if (self.chaos_close_initiated) {
-                _ = self.totals.expected_disconnects.fetchAdd(1, .monotonic);
-            } else {
-                _ = self.totals.contention_disconnects.fetchAdd(1, .monotonic);
-            }
-        } else {
-            _ = self.totals.unexpected_exceptions.fetchAdd(1, .monotonic);
-            std.debug.print("soak: unexpected exception reason: '{s}'\n", .{reason});
-        }
-    }
-
-    fn onPeerError(_: ?*anyopaque, _: *Peer, _: anyerror) void {}
-    fn onPeerClose(_: ?*anyopaque, _: *Peer) void {}
-};
-
-const Worker = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    address: net.IpAddress,
-    cfg: *const Config,
-    totals: *Totals,
-    latency: *LatencyBuf,
-    stop_at_ns: i64,
-    index: u32,
-
-    fn main(self: Worker) void {
-        var session_index: u64 = 0;
-        while (nowNs(self.io) < self.stop_at_ns) : (session_index += 1) {
-            self.runSession(session_index) catch |err| {
-                _ = self.totals.transport_errors.fetchAdd(1, .monotonic);
-                if (err != error.ConnectionRefused) {
-                    std.debug.print("soak: worker {} session error: {}\n", .{ self.index, err });
+        fn noteException(self: *Self, ret: protocol.Return) void {
+            const reason = if (ret.exception) |ex| ex.reason else "";
+            if (std.mem.eql(u8, reason, "deadline exceeded")) {
+                _ = self.totals.calls_cancelled.fetchAdd(1, .monotonic);
+            } else if (std.mem.eql(u8, reason, rpc.peer.disconnected_reason)) {
+                // The peer's close contract fails every in-flight question with a
+                // synthetic "disconnected" Return. This is the expected outcome
+                // when a chaos session rips its own connection down, and also a
+                // legitimate outcome at high peer counts where a starved event
+                // loop trips its own idle timeout and drops the connection. Keep
+                // the chaos-specific tally exact; count the rest as contention.
+                if (self.chaos_close_initiated) {
+                    _ = self.totals.expected_disconnects.fetchAdd(1, .monotonic);
+                } else {
+                    _ = self.totals.contention_disconnects.fetchAdd(1, .monotonic);
                 }
-                sleepMs(self.io, 5);
+            } else {
+                _ = self.totals.unexpected_exceptions.fetchAdd(1, .monotonic);
+                std.debug.print("soak: unexpected exception reason: '{s}'\n", .{reason});
+            }
+        }
+
+        fn onPeerError(_: ?*anyopaque, _: *Peer, _: anyerror) void {}
+        fn onPeerClose(_: ?*anyopaque, _: *Peer) void {}
+    };
+}
+
+const Session = SessionOf(Connection);
+
+fn dialTcp(allocator: std.mem.Allocator, io: std.Io, address: net.IpAddress) anyerror!Connection {
+    var addr = address;
+    const stream = try net.IpAddress.connect(&addr, io, .{ .mode = .stream });
+    return try Connection.init(allocator, io, .{ .handle = stream.socket.handle }, .{
+        .tick_interval_ms = 5,
+        // Generous idle timeout: under high peer counts a session's event
+        // loop can be starved for a while; a tight timeout would trip it
+        // and drop otherwise-healthy connections. Deadline cancellation
+        // uses the per-call timeout, not this, so keeping it loose is safe.
+        .idle_timeout_ms = 15_000,
+    });
+}
+
+fn dialQuic(allocator: std.mem.Allocator, io: std.Io, address: net.IpAddress) anyerror!quic.Connection {
+    return try quic.Connection.initClient(allocator, io, .{
+        .remote_addr = address,
+        .server_name = "localhost",
+        // Loopback soak against the checked-in self-signed fixture cert.
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+    });
+}
+
+fn WorkerOf(
+    comptime ConnT: type,
+    comptime dialFn: fn (std.mem.Allocator, std.Io, net.IpAddress) anyerror!ConnT,
+) type {
+    return struct {
+        const Self = @This();
+        const SessionT = SessionOf(ConnT);
+
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        address: net.IpAddress,
+        cfg: *const Config,
+        totals: *Totals,
+        latency: *LatencyBuf,
+        stop_at_ns: i64,
+        index: u32,
+
+        fn main(self: Self) void {
+            var session_index: u64 = 0;
+            while (nowNs(self.io) < self.stop_at_ns) : (session_index += 1) {
+                self.runSession(session_index) catch |err| {
+                    _ = self.totals.transport_errors.fetchAdd(1, .monotonic);
+                    if (err != error.ConnectionRefused) {
+                        std.debug.print("soak: worker {} session error: {}\n", .{ self.index, err });
+                    }
+                    sleepMs(self.io, 5);
+                };
+            }
+        }
+
+        fn pickMode(self: Self, session_index: u64) SessionMode {
+            if (self.cfg.chaos and session_index % 5 == 1) return .chaos;
+            // KNOWN GAP: deadline sessions are TCP-only. The QUIC transport
+            // has no `on_tick` field, so the Peer's deadline sweep is never
+            // driven over QUIC and a 1ms call deadline simply never fires
+            // (this rig found that on its first run). Until tick parity
+            // lands in src/rpc/transport/quic, running deadline sessions
+            // there would only add 10ms server-side sleeps that cancel
+            // nothing.
+            if (self.cfg.deadlines and self.cfg.transport == .tcp and session_index % 4 == 2) return .deadline;
+            return .normal;
+        }
+
+        fn runSession(self: Self, session_index: u64) !void {
+            const conn = try self.allocator.create(ConnT);
+            errdefer self.allocator.destroy(conn);
+            conn.* = try dialFn(self.allocator, self.io, self.address);
+
+            const peer = try self.allocator.create(Peer);
+            errdefer self.allocator.destroy(peer);
+            peer.* = Peer.init(self.allocator, conn);
+
+            const mode = self.pickMode(session_index);
+            peer.setClockIo(self.io);
+            if (mode == .deadline) {
+                peer.setTimeouts(.{ .default_call_timeout_ms = 1 });
+            }
+
+            // Only normal sessions run high-in-flight; chaos/deadline keep exact
+            // sequential timing so their invariants hold. Clamp to the slot cap.
+            const inflight: u32 = switch (mode) {
+                .normal => @min(@max(self.cfg.inflight, 1), SessionT.MAX_INFLIGHT_SLOTS),
+                else => 1,
+            };
+
+            var session = SessionT{
+                .allocator = self.allocator,
+                .io = self.io,
+                .conn = conn,
+                .peer = peer,
+                .totals = self.totals,
+                .latency = self.latency,
+                .mode = mode,
+                // Each deadline-session call burns a 10ms server sleep; keep
+                // those sessions short so they don't starve the pool workers.
+                .calls_target = if (mode == .deadline)
+                    @min(self.cfg.calls_per_session, 6)
+                else
+                    self.cfg.calls_per_session,
+                .max_inflight = inflight,
+            };
+
+            peer.start(null, SessionT.onPeerError, SessionT.onPeerClose);
+            _ = try peer.sendBootstrap(&session, SessionT.onBootstrapReturn);
+
+            conn.run();
+
+            _ = self.totals.sessions.fetchAdd(1, .monotonic);
+            if (session.failed) {
+                _ = self.totals.transport_errors.fetchAdd(1, .monotonic);
+            }
+
+            _ = peer.takeAttachedConnection(*ConnT);
+            peer.deinit();
+            self.allocator.destroy(peer);
+            conn.deinit();
+            self.allocator.destroy(conn);
+        }
+    };
+}
+
+const Worker = WorkerOf(Connection, dialTcp);
+const QuicWorker = if (quic.enabled) WorkerOf(quic.Connection, dialQuic) else void;
+
+// -- QUIC server harness -----------------------------------------------------
+//
+// TCP's WorkerPool equivalent for the fanout QUIC server: ONE thread owns the
+// whole server (accept, session servicing, reaping) plus the Peer lifecycle
+// for every accepted session, because the Server's session-list accessors are
+// loop-thread-only by contract. New sessions get an EchoServer bootstrap Peer
+// bound on the pass after acceptance (the engines dispatch frames that
+// buffered before binding); Peers whose session id has disappeared (the
+// server reaps sessions once closed) are torn down on the same thread.
+
+const soak_quic_cert_pem = @embedFile("soak_certs/loopback_cert.pem");
+const soak_quic_key_pem = @embedFile("soak_certs/loopback_key.pem");
+
+const QuicServerHarness = struct {
+    allocator: std.mem.Allocator = undefined,
+    server: if (quic.enabled) ?*quic.Server else ?void = null,
+    thread: ?std.Thread = null,
+    stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    bound: if (quic.enabled) std.AutoHashMap(u64, *Peer) else void = undefined,
+
+    fn start(self: *QuicServerHarness, allocator: std.mem.Allocator, io: std.Io, workers: u32) !net.IpAddress {
+        if (comptime !quic.enabled) unreachable;
+        self.allocator = allocator;
+        self.bound = std.AutoHashMap(u64, *Peer).init(allocator);
+        const server = try allocator.create(quic.Server);
+        errdefer allocator.destroy(server);
+        server.* = try quic.Server.init(allocator, io, .{
+            .listen_addr = .{ .ip4 = .loopback(0) },
+            .tls_cert_pem = soak_quic_cert_pem,
+            .tls_key_pem = soak_quic_key_pem,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+            // Each worker holds at most one live session; x2 covers
+            // close/reap overlap during churn.
+            .max_concurrent_connections = workers * 2 + 4,
+        });
+        self.server = server;
+        self.thread = try std.Thread.spawn(.{}, QuicServerHarness.threadMain, .{self});
+        return server.getAddress();
+    }
+
+    fn shutdown(self: *QuicServerHarness) void {
+        if (comptime !quic.enabled) unreachable;
+        self.stop.store(true, .release);
+        if (self.server) |server| server.wake();
+        if (self.thread) |t| t.join();
+        if (self.server) |server| {
+            server.deinit();
+            self.allocator.destroy(server);
+        }
+        self.bound.deinit();
+    }
+
+    fn threadMain(self: *QuicServerHarness) void {
+        if (comptime !quic.enabled) unreachable;
+        const server = self.server.?;
+        while (!self.stop.load(.acquire)) {
+            _ = server.stepOnce(.wait) catch |err| {
+                std.debug.print("soak: quic server step failed: {}\n", .{err});
+            };
+            self.bindNewSessions();
+            self.sweepDeadPeers();
+        }
+        // Drain: close every live session, keep stepping until the server
+        // reaps them (bounded), then tear down every remaining Peer before
+        // the server itself is deinitialized.
+        server.requestClose();
+        var budget: u32 = 400;
+        while (budget > 0 and server.sessionCount() > 0) : (budget -= 1) {
+            _ = server.stepOnce(.wait) catch {};
+            self.sweepDeadPeers();
+        }
+        var it = self.bound.valueIterator();
+        while (it.next()) |peer_ptr| {
+            const peer = peer_ptr.*;
+            _ = peer.takeAttachedConnection(*quic.ServerSession);
+            peer.deinit();
+            self.allocator.destroy(peer);
+        }
+        self.bound.clearRetainingCapacity();
+    }
+
+    fn bindNewSessions(self: *QuicServerHarness) void {
+        if (comptime !quic.enabled) unreachable;
+        const server = self.server.?;
+        var i: usize = 0;
+        while (i < server.sessionCount()) : (i += 1) {
+            const sess = server.sessionAt(i) orelse continue;
+            if (self.bound.contains(sess.id)) continue;
+            const peer = self.allocator.create(Peer) catch continue;
+            peer.* = Peer.init(self.allocator, sess);
+            _ = peer.setBootstrap(.{
+                .ctx = @ptrCast(&EchoServer.ctx_anchor),
+                .on_call = EchoServer.onCall,
+            }) catch {
+                _ = peer.takeAttachedConnection(*quic.ServerSession);
+                peer.deinit();
+                self.allocator.destroy(peer);
+                continue;
+            };
+            peer.start(null, null, null);
+            self.bound.put(sess.id, peer) catch {
+                _ = peer.takeAttachedConnection(*quic.ServerSession);
+                peer.deinit();
+                self.allocator.destroy(peer);
             };
         }
     }
 
-    fn pickMode(self: Worker, session_index: u64) SessionMode {
-        if (self.cfg.chaos and session_index % 5 == 1) return .chaos;
-        if (self.cfg.deadlines and session_index % 4 == 2) return .deadline;
-        return .normal;
-    }
-
-    fn runSession(self: Worker, session_index: u64) !void {
-        const stream = try net.IpAddress.connect(&self.address, self.io, .{ .mode = .stream });
-        const fd = stream.socket.handle;
-
-        const conn = try self.allocator.create(Connection);
-        errdefer self.allocator.destroy(conn);
-        conn.* = try Connection.init(self.allocator, self.io, .{ .handle = fd }, .{
-            .tick_interval_ms = 5,
-            // Generous idle timeout: under high peer counts a session's event
-            // loop can be starved for a while; a tight timeout would trip it
-            // and drop otherwise-healthy connections. Deadline cancellation
-            // uses the per-call timeout, not this, so keeping it loose is safe.
-            .idle_timeout_ms = 15_000,
-        });
-
-        const peer = try self.allocator.create(Peer);
-        errdefer self.allocator.destroy(peer);
-        peer.* = Peer.init(self.allocator, conn);
-
-        const mode = self.pickMode(session_index);
-        peer.setClockIo(self.io);
-        if (mode == .deadline) {
-            peer.setTimeouts(.{ .default_call_timeout_ms = 1 });
+    fn sweepDeadPeers(self: *QuicServerHarness) void {
+        if (comptime !quic.enabled) unreachable;
+        const server = self.server.?;
+        // Bounded batch per pass; stragglers get the next pass.
+        var dead: [64]u64 = undefined;
+        var n: usize = 0;
+        var it = self.bound.keyIterator();
+        while (it.next()) |id_ptr| {
+            if (server.sessionById(id_ptr.*) != null) continue;
+            if (n == dead.len) break;
+            dead[n] = id_ptr.*;
+            n += 1;
         }
-
-        // Only normal sessions run high-in-flight; chaos/deadline keep exact
-        // sequential timing so their invariants hold. Clamp to the slot cap.
-        const inflight: u32 = switch (mode) {
-            .normal => @min(@max(self.cfg.inflight, 1), Session.MAX_INFLIGHT_SLOTS),
-            else => 1,
-        };
-
-        var session = Session{
-            .allocator = self.allocator,
-            .io = self.io,
-            .conn = conn,
-            .peer = peer,
-            .totals = self.totals,
-            .latency = self.latency,
-            .mode = mode,
-            // Each deadline-session call burns a 10ms server sleep; keep
-            // those sessions short so they don't starve the pool workers.
-            .calls_target = if (mode == .deadline)
-                @min(self.cfg.calls_per_session, 6)
-            else
-                self.cfg.calls_per_session,
-            .max_inflight = inflight,
-        };
-
-        peer.start(null, Session.onPeerError, Session.onPeerClose);
-        _ = try peer.sendBootstrap(&session, Session.onBootstrapReturn);
-
-        conn.run();
-
-        _ = self.totals.sessions.fetchAdd(1, .monotonic);
-        if (session.failed) {
-            _ = self.totals.transport_errors.fetchAdd(1, .monotonic);
+        for (dead[0..n]) |id| {
+            const entry = self.bound.fetchRemove(id) orelse continue;
+            const peer = entry.value;
+            // The server already destroyed the session at reap time (the
+            // Peer's close callback fired then); detach so peer teardown
+            // never touches the dead pointer.
+            _ = peer.takeAttachedConnection(*quic.ServerSession);
+            peer.deinit();
+            self.allocator.destroy(peer);
         }
-
-        _ = peer.takeAttachedConnection(*Connection);
-        peer.deinit();
-        self.allocator.destroy(peer);
-        conn.deinit();
-        self.allocator.destroy(conn);
     }
 };
 
@@ -644,12 +824,20 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Config {
             cfg.chaos = false;
         } else if (std.mem.eql(u8, arg, "--no-deadlines")) {
             cfg.deadlines = false;
+        } else if (std.mem.eql(u8, arg, "--transport")) {
+            const value = iter.next() orelse return error.InvalidArgument;
+            cfg.transport = std.meta.stringToEnum(Transport, value) orelse
+                return error.InvalidArgument;
         } else {
             std.debug.print("soak: unknown argument: {s}\n", .{arg});
             return error.InvalidArgument;
         }
     }
     if (cfg.workers == 0 or cfg.calls_per_session == 0 or cfg.inflight == 0) return error.InvalidArgument;
+    if (cfg.transport == .quic and !quic.enabled) {
+        std.debug.print("soak: --transport quic requires a -Dquic=true build\n", .{});
+        return error.InvalidArgument;
+    }
     if (cfg.mem_sample_ms == 0) return error.InvalidArgument;
     return cfg;
 }
@@ -675,25 +863,44 @@ pub fn main(init: std.process.Init) !void {
     const latency_bufs = try telemetry_allocator.alloc(LatencyBuf, cfg.workers);
     for (latency_bufs) |*b| b.* = .{ .allocator = telemetry_allocator };
 
-    var pool = try WorkerPool.init(
-        allocator,
-        io,
-        .{ .ip4 = .loopback(0) },
-        @ptrCast(&totals),
-        EchoServer.onAccept,
-        .{ .concurrency = @max(2, cfg.workers / 2) },
-    );
-    // `listen()` publishes the kernel-selected ephemeral port in its portable
-    // address value. Reading that value avoids POSIX `getsockname` and keeps
-    // the real soak path buildable under Windows' native socket handle type.
-    const port = pool.server.socket.address.getPort();
-    const address: net.IpAddress = .{ .ip4 = .loopback(port) };
-
-    const pool_thread = try std.Thread.spawn(.{}, poolThreadMain, .{&pool});
-    std.debug.print(
-        "soak: server listening on port {} (workers {}, inflight {}, pool concurrency {})\n",
-        .{ port, cfg.workers, cfg.inflight, @max(2, cfg.workers / 2) },
-    );
+    var pool: WorkerPool = undefined;
+    var pool_thread: std.Thread = undefined;
+    var quic_srv = QuicServerHarness{};
+    var address: net.IpAddress = undefined;
+    switch (cfg.transport) {
+        .tcp => {
+            pool = try WorkerPool.init(
+                allocator,
+                io,
+                .{ .ip4 = .loopback(0) },
+                @ptrCast(&totals),
+                EchoServer.onAccept,
+                .{ .concurrency = @max(2, cfg.workers / 2) },
+            );
+            // `listen()` publishes the kernel-selected ephemeral port in its
+            // portable address value. Reading that value avoids POSIX
+            // `getsockname` and keeps the real soak path buildable under
+            // Windows' native socket handle type.
+            const port = pool.server.socket.address.getPort();
+            address = .{ .ip4 = .loopback(port) };
+            pool_thread = try std.Thread.spawn(.{}, poolThreadMain, .{&pool});
+            std.debug.print(
+                "soak: tcp server listening on port {} (workers {}, inflight {}, pool concurrency {})\n",
+                .{ port, cfg.workers, cfg.inflight, @max(2, cfg.workers / 2) },
+            );
+        },
+        .quic => {
+            // parseArgs already rejected .quic on a non-QUIC build, so this
+            // branch is only reachable when the harness compiles for real.
+            if (comptime quic.enabled) {
+                address = try quic_srv.start(allocator, io, cfg.workers);
+                std.debug.print(
+                    "soak: quic server listening on port {} (workers {}, inflight {})\n",
+                    .{ address.getPort(), cfg.workers, cfg.inflight },
+                );
+            } else unreachable;
+        },
+    }
 
     const stop_at_ns = nowNs(io) + @as(i64, @intCast(cfg.seconds)) * std.time.ns_per_s;
 
@@ -713,29 +920,51 @@ pub fn main(init: std.process.Init) !void {
 
     const worker_threads = try allocator.alloc(std.Thread, cfg.workers);
     for (worker_threads, 0..) |*t, i| {
-        t.* = try std.Thread.spawn(.{}, Worker.main, .{Worker{
-            .allocator = allocator,
-            .io = io,
-            .address = address,
-            .cfg = &cfg,
-            .totals = &totals,
-            .latency = &latency_bufs[i],
-            .stop_at_ns = stop_at_ns,
-            .index = @intCast(i),
-        }});
+        t.* = switch (cfg.transport) {
+            .tcp => try std.Thread.spawn(.{}, Worker.main, .{Worker{
+                .allocator = allocator,
+                .io = io,
+                .address = address,
+                .cfg = &cfg,
+                .totals = &totals,
+                .latency = &latency_bufs[i],
+                .stop_at_ns = stop_at_ns,
+                .index = @intCast(i),
+            }}),
+            .quic => if (comptime quic.enabled) try std.Thread.spawn(.{}, QuicWorker.main, .{QuicWorker{
+                .allocator = allocator,
+                .io = io,
+                .address = address,
+                .cfg = &cfg,
+                .totals = &totals,
+                .latency = &latency_bufs[i],
+                .stop_at_ns = stop_at_ns,
+                .index = @intCast(i),
+            }}) else unreachable,
+        };
     }
     for (worker_threads) |t| t.join();
     allocator.free(worker_threads);
-    std.debug.print("soak: workers joined, draining pool\n", .{});
+    std.debug.print("soak: workers joined, draining server\n", .{});
 
     mem_stop.store(true, .release);
     mem_thread.join();
 
-    pool.shutdownGraceful(2_000);
-    std.debug.print("soak: pool drained, joining pool thread\n", .{});
-    pool_thread.join();
-    pool.deinit();
-    std.debug.print("soak: pool deinit complete\n", .{});
+    switch (cfg.transport) {
+        .tcp => {
+            pool.shutdownGraceful(2_000);
+            std.debug.print("soak: pool drained, joining pool thread\n", .{});
+            pool_thread.join();
+            pool.deinit();
+            std.debug.print("soak: pool deinit complete\n", .{});
+        },
+        .quic => {
+            if (comptime quic.enabled) {
+                quic_srv.shutdown();
+                std.debug.print("soak: quic server drained\n", .{});
+            } else unreachable;
+        },
+    }
 
     // -- Merge latency samples & compute percentiles ----------------------
     var all_latencies: std.ArrayList(u64) = .empty;
@@ -802,9 +1031,15 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("soak: FAIL — more disconnected exceptions than chaos closes\n", .{});
         failed = true;
     }
-    if (cfg.deadlines and cancelled == 0) {
+    if (cfg.deadlines and cfg.transport == .tcp and cancelled == 0) {
         std.debug.print("soak: FAIL — deadline sessions produced no cancellations\n", .{});
         failed = true;
+    }
+    if (cfg.deadlines and cfg.transport == .quic) {
+        std.debug.print(
+            "soak: NOTE — deadline sessions skipped over quic (no on_tick plumbing in the QUIC transport; peer call-deadlines cannot fire — tracked gap)\n",
+            .{},
+        );
     }
     if (!verdict.ok) {
         std.debug.print(
