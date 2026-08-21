@@ -150,21 +150,30 @@ review of the first draft, not by the first draft):
   §5.2), so a guessable value enables off-path Initial forgery. The
   `Client.Config.initial_dcid` doc carries this contract.
 
-### Prototype #2 — warm restore over a plain QUIC bootstrap (next)
+### Prototype #2 — warm restore (client half DONE 2026-08-21)
 
-Cheaper than expected: quic-zig's `zero_rtt_wrapper.zig` already proves
-ticket capture → resumption → early data accepted → rejection recovery.
-What remains is capnp-shaped:
+Landed on main: `ClientOptions` carries the resumption surface
+(`resumption_state`, `new_session_callback`, `new_token(+cb)`), and the
+stream engines open the RPC stream pre-handshake on resumed dials
+(`early_open`), so frames enqueued before the loop starts ride 0-RTT.
+Two e2e tests prove it end to end through the RPC adapter: the resumed
+dial's first frame is ACCEPTED 0-RTT, and a stale ticket against a
+fresh server is rejected but the staged frame still arrives at 1-RTT
+(quic-zig's requeue-on-rejection contract held exactly as documented).
+Landing it also flushed out a latent adapter bug (frames buffered
+before callbacks bound were never dispatched without new bytes) and,
+via the new QUIC soak variant, a real gap: **the QUIC transport has no
+`on_tick` plumbing, so Peer call-deadlines never fire over QUIC** —
+tracked as its own fix.
 
-1. Thread `resumption_state` / `new_session_callback` (and NEW_TOKEN)
-   through capnp-zig's `ClientOptions` → `endpoint_factory`.
-2. Relax the `handshakeDone()` first-write gate for resumed connections
-   so a Restorer `restore` call can ride early data.
-3. Persist {ticket envelope + NEW_TOKEN} together as the warm half of a
+Remaining (server half, unblocked by the v0.14.0 pin):
+
+1. Idempotency gate: only `restore` (and explicitly idempotent
+   methods) may execute off streams flagged
+   `streamArrivedInEarlyData`; server early-data posture decision for
+   the hardened preset.
+2. Persist {ticket envelope + NEW_TOKEN} together as the warm half of a
    sturdy ref (quic-zig deliberately keeps them separate channels).
-4. Enforce idempotency: only `restore` (and other explicitly
-   idempotent methods) may execute off streams flagged
-   `arrived_in_early_data`.
 
 ### After both: the ladder into the RPC runtime
 

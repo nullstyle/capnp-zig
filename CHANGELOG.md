@@ -7,7 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Warm restore over QUIC 0-RTT (durable-caps prototype #2, client half).**
+  `ClientOptions` gains the resumption surface: `resumption_state`,
+  `new_session_callback`, `new_token`, `new_token_callback` (+user_data).
+  A resumed dial opens its RPC stream before the handshake completes, so
+  frames enqueued before the loop starts ride early data; on 0-RTT
+  rejection quic-zig requeues the staged bytes verbatim at 1-RTT, so a
+  stale ticket costs a round trip, never data. Proven by two e2e tests
+  (accepted-0-RTT round trip; stale-ticket 1-RTT fallback). Server-side
+  early-data stream gating (only idempotent `restore` may run off 0-RTT
+  streams) follows now that the pin carries `streamArrivedInEarlyData`.
+- **QUIC soak variant** (`zig build -Dquic=true soak -- --transport quic`):
+  the previously TCP-only soak now measures QUIC steady-state heap and
+  per-connection footprint — the instrument the last two upstream bumps
+  lacked. Its first run found that the QUIC transport cannot drive Peer
+  call-deadlines (no `on_tick` plumbing); deadline sessions are gated to
+  TCP with a loud NOTE until tick parity lands.
+
+### Changed
+
+- **quic pin: v0.12.0 → v0.14.0** (validated by building against a
+  pristine cache; full suite, QUIC suite, api-snapshot, and docs-snippet
+  gates green). Brings `Client.Config.initial_dcid` (the rendezvous
+  dial), `quic.app`/`quic.testing`, and per-stream early-data flagging.
+  Behavior note from upstream: `streamRead` on a locally-initiated uni
+  stream now returns `error.StreamNotReadable` instead of 0-forever;
+  no capnp-zig path trips it (full suites green). Our soak measured the
+  bump's steady-state live heap under churn (60s, 8 workers, ~16 live
+  connections): 61.2MB → 61.9MB — flat within run-to-run noise. The
+  upstream-measured per-connection reduction does not reproduce under
+  this workload; treat their −2.2MB/conn figure as theirs, ours as ours.
+
+### Fixed
+
+- **Nightly was red for nine consecutive nights (2026-08-12..08-20), two
+  independent causes, both fixed and CI-verified green:** the
+  extended-gates job never installed the `capnp` CLI that the schema
+  fidelity suite hard-requires (nightly.yml gained the setup step), and
+  the Windows soak lane's "leak" was the harness measuring its own
+  latency-sample buffers (~6 B/call) — Windows merely completes 2-4x the
+  calls of the Nagle-capped Linux client. Soak telemetry now allocates
+  outside the counted allocator; no actual leak existed (every red run's
+  terminal leak check passed).
+- **Baseline QUIC engine could strand parsed frames forever**: frames
+  buffered while callbacks were not yet bound (e.g. 0-RTT data arriving
+  during the handshake) were only dispatched when NEW bytes arrived;
+  service now attempts dispatch of buffered frames every pass.
 
 ## [0.11.0] - 2026-08-13
 
