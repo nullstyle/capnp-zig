@@ -256,6 +256,15 @@ jobs:
       # widened to u64 at the source, which makes the experimental files
       # platform-stable between Linux and macOS. Linux-only because Windows
       # renders genuinely differ (`win_read` bridge, socket handle types).
+      #
+      # CAVEAT (quic v0.14.0): one line is Linux-vs-macOS unstable again.
+      # The pinned package resolves an internal lowercase `client.zig`
+      # import against its `Client.zig` on case-insensitive filesystems,
+      # so `ClientEndpoint.transport` renders as `client.Client` on macOS
+      # and `Client` on Linux. THE COMMITTED FILE CARRIES THE LINUX
+      # RENDER because this strict gate is the only consumer. If you
+      # regenerate `api-snapshot-quic` on macOS, hand-restore that line
+      # (or regenerate on Linux) before committing.
       - name: QUIC-enabled API snapshot (strict, incl. experimental staleness)
         if: runner.os == 'Linux'
         run: zig build -Dquic=true check-api-experimental-quic

@@ -2252,7 +2252,7 @@ capnpc-zig.rpc.transport.quic.ClientEndpoint.receive_timeout: field Io.Duration
 capnpc-zig.rpc.transport.quic.ClientEndpoint.remote_addr: field Io.net.IpAddress
 capnpc-zig.rpc.transport.quic.ClientEndpoint.socket: field Io.net.Socket
 capnpc-zig.rpc.transport.quic.ClientEndpoint.start_timestamp: field Io.Timestamp
-capnpc-zig.rpc.transport.quic.ClientEndpoint.transport: field client.Client
+capnpc-zig.rpc.transport.quic.ClientEndpoint.transport: field Client
 capnpc-zig.rpc.transport.quic.ClientEndpoint: struct
 capnpc-zig.rpc.transport.quic.ClientOptions.alpn_protocols: field []const []const u8 = <default>
 capnpc-zig.rpc.transport.quic.ClientOptions.ca_pem: field ?[]const u8 = null
