@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-21
+
 ### Added
 
 - **QuicVatNetwork (durable-caps ladder, first out-of-process VatNetwork;
@@ -30,22 +32,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs/quic-durable-caps-plan.md: pool-only redemption, empty reset_token,
   no Retry on provision dials, VatC admission left to the embedder.
 
-- **Warm restore over QUIC 0-RTT (durable-caps prototype #2, client half).**
-  `ClientOptions` gains the resumption surface: `resumption_state`,
-  `new_session_callback`, `new_token`, `new_token_callback` (+user_data).
-  A resumed dial opens its RPC stream before the handshake completes, so
-  frames enqueued before the loop starts ride early data; on 0-RTT
-  rejection quic-zig requeues the staged bytes verbatim at 1-RTT, so a
-  stale ticket costs a round trip, never data. Proven by two e2e tests
-  (accepted-0-RTT round trip; stale-ticket 1-RTT fallback). Server-side
-  early-data stream gating (only idempotent `restore` may run off 0-RTT
-  streams) follows now that the pin carries `streamArrivedInEarlyData`.
+- **Warm restore over QUIC 0-RTT (durable-caps prototype #2, both halves).**
+  Client half: `ClientOptions` gains the resumption surface:
+  `resumption_state`, `new_session_callback`, `new_token`,
+  `new_token_callback` (+user_data). A resumed dial opens its RPC stream
+  before the handshake completes, so frames enqueued before the loop
+  starts ride early data; on 0-RTT rejection quic-zig requeues the staged
+  bytes verbatim at 1-RTT, so a stale ticket costs a round trip, never
+  data. Proven by two e2e tests (accepted-0-RTT round trip; stale-ticket
+  1-RTT fallback). Server half: with `early_data =
+  .without_replay_protection`, both stream engines now HOLD dispatch of
+  RPC frames that arrived in early data until the handshake completes — a
+  replayed first flight can never complete a handshake, so the
+  replay-execution window closes at the transport while the round trip
+  stays banked (the frames are already buffered when the handshake
+  lands). `.with_anti_replay` dispatches immediately (the TLS tracker
+  already guarantees single use). Ablation-proven e2e: gate off, a
+  replayed flight executes; gate on, red turns green. Method-aware
+  restore-inside-0-RTT (RPC-layer idempotency marks) remains future work.
 - **QUIC soak variant** (`zig build -Dquic=true soak -- --transport quic`):
   the previously TCP-only soak now measures QUIC steady-state heap and
   per-connection footprint — the instrument the last two upstream bumps
-  lacked. Its first run found that the QUIC transport cannot drive Peer
-  call-deadlines (no `on_tick` plumbing); deadline sessions are gated to
-  TCP with a loud NOTE until tick parity lands.
+  lacked. Its first run found that the QUIC transport could not drive
+  Peer call-deadlines at all (no `on_tick` plumbing); fixed by the
+  deadline-parity entry below, and the soak's deadline sessions now run
+  over QUIC too.
+- **QUIC transport drives Peer call-deadlines (`on_tick` parity with
+  TCP).** Client `Connection` and fanout `ServerSession` both carry an
+  `on_tick` hook (1ms-floored, callback-depth-accounted, invoked after
+  each service pass), which `Peer.attachConnection` binds to its deadline
+  sweep — before this, a call deadline over QUIC silently never fired.
+  Proven by a deadline-cancellation e2e over real QUIC. Sharp edge worth
+  knowing: a small `default_call_timeout_ms` armed before `sendBootstrap`
+  can expire the bootstrap question during the QUIC handshake itself —
+  arm per-call deadlines, or arm defaults after bootstrap returns.
 
 ### Changed
 
@@ -110,6 +130,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   buffered while callbacks were not yet bound (e.g. 0-RTT data arriving
   during the handshake) were only dispatched when NEW bytes arrived;
   service now attempts dispatch of buffered frames every pass.
+- **Windows: a departed or off-path peer could kill the whole QUIC
+  endpoint.** The fanout server and listener receive paths propagated
+  ICMP-class datagram faults (`PortUnreachable`,
+  `ConnectionResetByPeer` — surfaced eagerly by Windows sockets) as
+  endpoint-fatal errors. The per-datagram transient-fault classifier
+  already existed in `datagram_io`; four receive sites lacked it. Such
+  faults are now dropped per-datagram with telemetry, matching the
+  single-connection path.
+- **Linux ReleaseSafe builds with QUIC failed to link** after the quic
+  pin began compiling BoringSSL under Zig's default C sanitizers
+  (undefined `__ubsan_handle_*` symbols). Both `dependencyLazy("quic")`
+  sites now forward `sanitize-c=trap`, restoring the release-build lane
+  without linking a UBSan runtime.
 
 ## [0.11.0] - 2026-08-13
 
@@ -3282,7 +3315,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/nullstyle/capnp-zig/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/nullstyle/capnp-zig/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/nullstyle/capnp-zig/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/nullstyle/capnp-zig/compare/v0.8.0...v0.9.0

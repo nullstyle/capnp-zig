@@ -176,7 +176,10 @@ git push origin vX.Y.Z
 
 - [ ] Record the resulting hash in `docs/build-integration.md`, replacing the
       `capnpc_zig-X.Y.Z-...` placeholder with the real value. That turns the
-      install snippet into a self-verifying artifact.
+      install snippet into a self-verifying artifact. Then prove the record
+      with `just verify-release-hash X.Y.Z` — it re-fetches the published tag
+      in a clean consumer and asserts the docs carry the exact hosted hash
+      (the stale-digest bug shipped two releases while this was manual).
 
 - [ ] Create the GitHub Release from the CHANGELOG section, so the tag has a
       rendered notes page and watchers get a notification:

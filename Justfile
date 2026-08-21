@@ -324,7 +324,25 @@ release-tag VERSION THEME="":
     gh api "repos/:owner/:repo/actions/runs?head_sha=$(git rev-parse HEAD)" --jq '[.workflow_runs[] | select(.name == "CI")] | if length == 0 then "NO_RUN" elif all(.conclusion == "success") then "GREEN" else "RED" end' | grep -qx GREEN || { echo "ERROR: HEAD has no green CI run — push and wait for CI before tagging (see RELEASING.md step 2)"; exit 1; }
     git tag -a "v{{VERSION}}" -m "$(test -n "{{THEME}}" && echo "v{{VERSION}} — {{THEME}}" || echo "v{{VERSION}}")"
     git push origin "v{{VERSION}}"
-    @echo "Tagged v{{VERSION}}. Now do RELEASING.md step 6: real zig fetch, record the hash, create the GitHub Release."
+    @echo "Tagged v{{VERSION}}. Now do RELEASING.md step 6: real zig fetch, record the hash (just verify-release-hash {{VERSION}}), create the GitHub Release."
+
+# Post-tag: fetch the published tag into a clean consumer and assert the hash
+# recorded in docs/build-integration.md matches the hosted artifact. Prints
+# the real hash either way, so on first run (placeholder still in the docs)
+# the value to record is on screen. The stale-digest bug shipped two releases
+# because this comparison was a manual step. Usage: just verify-release-hash 0.12.0
+verify-release-hash VERSION:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    cd "$tmp" && zig init >/dev/null 2>&1
+    zig fetch --save "git+https://github.com/nullstyle/capnp-zig.git#v{{VERSION}}" >/dev/null
+    hash="$(sed -n 's/.*\.hash = "\(capnpc_zig-[^"]*\)".*/\1/p' build.zig.zon | head -1)"
+    test -n "$hash" || { echo "ERROR: no capnpc_zig hash found after fetch"; exit 1; }
+    echo "published v{{VERSION}} hash: $hash"
+    grep -qF "$hash" "{{justfile_directory()}}/docs/build-integration.md" || { echo "ERROR: docs/build-integration.md does not carry this hash — record it (RELEASING.md step 6)"; exit 1; }
+    echo "docs/build-integration.md matches the published artifact"
 
 # List CI workflow jobs as seen by `act`
 act-list:
