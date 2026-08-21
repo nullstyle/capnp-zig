@@ -28,17 +28,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **quic pin: v0.12.0 → v0.14.0** (validated by building against a
-  pristine cache; full suite, QUIC suite, api-snapshot, and docs-snippet
-  gates green). Brings `Client.Config.initial_dcid` (the rendezvous
-  dial), `quic.app`/`quic.testing`, and per-stream early-data flagging.
-  Behavior note from upstream: `streamRead` on a locally-initiated uni
-  stream now returns `error.StreamNotReadable` instead of 0-forever;
-  no capnp-zig path trips it (full suites green). Our soak measured the
-  bump's steady-state live heap under churn (60s, 8 workers, ~16 live
-  connections): 61.2MB → 61.9MB — flat within run-to-run noise. The
-  upstream-measured per-connection reduction does not reproduce under
-  this workload; treat their −2.2MB/conn figure as theirs, ours as ours.
+- **quic pin: v0.12.0 → v0.14.0 → v0.15.0** (each validated by building
+  against a pristine cache; full suite, QUIC suite, api-snapshot, and
+  docs-snippet gates green). v0.14 brings `Client.Config.initial_dcid`
+  (the rendezvous dial), `quic.app`/`quic.testing`, and per-stream
+  early-data flagging; behavior note: `streamRead` on a locally-
+  initiated uni stream now returns `error.StreamNotReadable` instead of
+  0-forever — no capnp-zig path trips it. v0.15 brings the stateless-
+  reset emitter (`FeedOutcome.stateless_reset_sent`,
+  `LogEvent.unroutable_dcid`, §18.2 primary-CID reset-token advertise)
+  and `earlyDataSendWindow()` — the observation surfaces the death-
+  certificate ladder rung builds on.
+
+  Soak measurements under churn (60s, 8 workers, ~16 live connections),
+  all from COLD caches after the stale-cache lesson below: v0.12.0
+  61.16MB → v0.14.0 20.94MB → v0.15.0 21.26MB steady-state live heap.
+  The upstream per-connection reduction REPRODUCES under this workload
+  (−66%, ≈−2.5MB per live connection, landing with their v0.13 tracker
+  shrink), and v0.15 is flat over v0.14 as upstream predicted. An
+  earlier measurement showing v0.14 flat at 61.9MB was an artifact: the
+  soak binary had been built from a stale local `.zig-cache` module
+  graph still resolving v0.12 sources after the pin bump. The same
+  staleness made the api-snapshot tool verify its own outdated render.
+  **After any dependency pin bump, purge `.zig-cache` (or build from a
+  fresh checkout) before trusting locally built evidence.**
 
 ### Fixed
 

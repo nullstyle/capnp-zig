@@ -2541,6 +2541,7 @@ capnpc-zig.rpc.transport.quic.ServerLogEvent.feed_rate_limited: variant Server.o
 capnpc-zig.rpc.transport.quic.ServerLogEvent.retry_minted: variant Server.observability.LogEvent__struct_*
 capnpc-zig.rpc.transport.quic.ServerLogEvent.stateless_queue_evicted: variant Server.observability.LogEvent__struct_*
 capnpc-zig.rpc.transport.quic.ServerLogEvent.table_full: variant Server.observability.LogEvent__struct_*
+capnpc-zig.rpc.transport.quic.ServerLogEvent.unroutable_dcid: variant Server.observability.LogEvent__struct_*
 capnpc-zig.rpc.transport.quic.ServerLogEvent.version_negotiated: variant Server.observability.LogEvent__struct_*
 capnpc-zig.rpc.transport.quic.ServerLogEvent: union
 capnpc-zig.rpc.transport.quic.ServerNewTokenKey: type = [32]u8
@@ -2761,8 +2762,9 @@ capnpc-zig.rpc.transport.quic.listener.AcceptedSession: struct
 capnpc-zig.rpc.transport.quic.listener.FeedOutcome.accepted: enumerant = 1
 capnpc-zig.rpc.transport.quic.listener.FeedOutcome.dropped: enumerant = 2
 capnpc-zig.rpc.transport.quic.listener.FeedOutcome.rate_limited: enumerant = 3
-capnpc-zig.rpc.transport.quic.listener.FeedOutcome.retry_sent: enumerant = 6
+capnpc-zig.rpc.transport.quic.listener.FeedOutcome.retry_sent: enumerant = 7
 capnpc-zig.rpc.transport.quic.listener.FeedOutcome.routed: enumerant = 0
+capnpc-zig.rpc.transport.quic.listener.FeedOutcome.stateless_reset_sent: enumerant = 6
 capnpc-zig.rpc.transport.quic.listener.FeedOutcome.table_full: enumerant = 4
 capnpc-zig.rpc.transport.quic.listener.FeedOutcome.version_negotiated: enumerant = 5
 capnpc-zig.rpc.transport.quic.listener.FeedOutcome: enum
