@@ -224,6 +224,18 @@ pub const ClientOptions = struct {
     /// the resumption envelope.
     new_token_callback: ?NewTokenCallback = null,
     new_token_user_data: ?*anyopaque = null,
+
+    /// Dictated initial DCID (durable-caps ladder, rendezvous dials). When
+    /// set, these exact bytes ride the very first Initial instead of
+    /// quic-zig's random mint, letting a server that handed them out
+    /// out-of-band (a provision ticket) recognize and route the dial from
+    /// its first datagram. Must be 8..20 bytes, and MUST be minted from a
+    /// CSPRNG — Initial packet-protection keys derive from this value, and
+    /// quic-zig validates only the length. The value is plaintext on the
+    /// wire: routing, never authorization. A server Retry replaces it on
+    /// the wire, so provision-routing servers must not Retry these dials.
+    /// The bytes are copied during connect and need not outlive the call.
+    initial_dcid: ?[]const u8 = null,
 };
 
 pub const ServerOptions = struct {
@@ -394,6 +406,9 @@ fn validateServerOptions(options: ServerOptions) !void {
 
 pub fn validateClientOptions(options: ClientOptions) !void {
     if (options.alpn_protocols.len == 0) return error.InvalidConfig;
+    if (options.initial_dcid) |dcid| {
+        if (dcid.len < 8 or dcid.len > 20) return error.InvalidConfig;
+    }
     if (options.udp_rx_buffer_size == 0 or
         options.udp_tx_buffer_size == 0 or
         options.stream_read_buffer_size == 0 or

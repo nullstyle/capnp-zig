@@ -727,6 +727,18 @@ pub const ServerSession = struct {
         return self.callback_lifecycle.context();
     }
 
+    /// The DCID the client dictated (or randomly minted) on its very first
+    /// Initial, as recorded by quic-zig at accept time. This is how a
+    /// rendezvous embedder matches an accepted session against a provision
+    /// ticket it handed out out-of-band. Routing only — the value was
+    /// plaintext on the wire; authorization stays with the ticket nonce.
+    /// Borrowed from the underlying slot; loop-thread only, valid while
+    /// this session lives. NOTE: if the server sent a Retry (retry_token_key
+    /// set), this is the Retry-regenerated value, not the dictated bytes.
+    pub fn initialDcid(self: *const ServerSession) []const u8 {
+        return self.slot.initial_dcid.slice();
+    }
+
     /// Invoke this session's `on_tick` (the peer deadline sweep) if the
     /// cadence floor has elapsed. Loop-thread only; runs under
     /// callback-depth accounting so a re-entrant deinit is deferred.

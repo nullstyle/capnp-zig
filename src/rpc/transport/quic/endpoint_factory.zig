@@ -56,6 +56,9 @@ pub fn initClient(
         .new_token = options.new_token,
         .new_token_callback = options.new_token_callback,
         .new_token_user_data = options.new_token_user_data,
+        // Rendezvous surface (see ClientOptions.initial_dcid): dictated
+        // bytes replace quic-zig's random mint on the first Initial.
+        .initial_dcid = options.initial_dcid,
     });
     errdefer client.deinit();
 
