@@ -126,6 +126,20 @@ pub const ServerRetryTokenKey = quic_zig.conn.RetryTokenKey;
 pub const ServerNewTokenKey = quic_zig.conn.NewTokenKey;
 pub const ServerAntiReplayTracker = quic_zig.tls.AntiReplayTracker;
 
+/// Ticket-capture callback for warm restore. Fires once quic-zig has a
+/// complete, ready-to-persist resumption envelope for the connection; the
+/// bytes are BORROWED for the duration of the call and must be copied.
+/// Matches quic-zig's `Client.Config.new_session_callback` shape.
+pub const NewSessionCallback = *const fn (user_data: ?*anyopaque, resumption_state: []const u8) void;
+/// NEW_TOKEN capture callback, forwarded verbatim to quic-zig. A warm
+/// sturdy ref should persist the NEW_TOKEN alongside the resumption
+/// envelope — they are separate channels upstream, and only together do
+/// they buy the full one-round-trip (address-validated) resume.
+pub const NewTokenCallback = quic_zig.conn.NewTokenCallback;
+/// 0-RTT outcome snapshot (`not_offered` / `accepted` / `rejected`),
+/// readable from the underlying quic connection after the handshake.
+pub const EarlyDataStatus = quic_zig.EarlyDataStatus;
+
 pub fn defaultTransportParams() quic_zig.tls.TransportParams {
     return .{
         .max_idle_timeout_ms = 30_000,
@@ -178,6 +192,29 @@ pub const ClientOptions = struct {
     congestion_control: quic_zig.CongestionAlgorithm = .cubic,
     enable_pacing: bool = true,
     enable_hystart: bool = true,
+
+    /// Warm restore (durable-caps ladder, prototype #2). A resumption
+    /// envelope previously captured via `new_session_callback`. When set,
+    /// the dial resumes the TLS session, enables 0-RTT, and this
+    /// transport opens its RPC stream BEFORE the handshake completes, so
+    /// frames enqueued before the loop starts ride early data. Safe by
+    /// quic-zig contract: on 0-RTT rejection the staged bytes are
+    /// requeued verbatim at 1-RTT, so a stale ticket costs a round trip,
+    /// never data. Restore-style calls sent this way must be idempotent
+    /// — 0-RTT is replayable by design. The bytes are read during
+    /// connect and need not outlive it.
+    resumption_state: ?[]const u8 = null,
+    /// Capture the resumption envelope for a later warm dial. Borrowed
+    /// bytes — copy them in the callback.
+    new_session_callback: ?NewSessionCallback = null,
+    new_session_user_data: ?*anyopaque = null,
+    /// Address-validation NEW_TOKEN from a prior connection to this
+    /// server, presented on the first Initial so the resume skips Retry.
+    new_token: ?[]const u8 = null,
+    /// Capture NEW_TOKENs as the server issues them; persist alongside
+    /// the resumption envelope.
+    new_token_callback: ?NewTokenCallback = null,
+    new_token_user_data: ?*anyopaque = null,
 };
 
 pub const ServerOptions = struct {

@@ -109,6 +109,9 @@ pub const ServerLogCallback = options.ServerLogCallback;
 pub const ServerRetryTokenKey = options.ServerRetryTokenKey;
 pub const ServerNewTokenKey = options.ServerNewTokenKey;
 pub const ServerAntiReplayTracker = options.ServerAntiReplayTracker;
+pub const NewSessionCallback = options.NewSessionCallback;
+pub const NewTokenCallback = options.NewTokenCallback;
+pub const EarlyDataStatus = options.EarlyDataStatus;
 
 pub const ClientOptions = options.ClientOptions;
 pub const ServerOptions = options.ServerOptions;

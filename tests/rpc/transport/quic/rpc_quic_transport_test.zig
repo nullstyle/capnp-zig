@@ -1567,3 +1567,300 @@ test "quic native options reject unusable budgets with specific errors" {
         },
     }));
 }
+
+// ---------------------------------------------------------------------------
+// Warm restore (durable-caps ladder, prototype #2): a resumed dial stages its
+// first RPC frame before the handshake and rides 0-RTT; a stale ticket falls
+// back to 1-RTT without losing the frame.
+// ---------------------------------------------------------------------------
+
+/// Captures the FIRST resumption envelope `new_session_callback` delivers.
+/// The callback runs on the connection's run thread; `len` is the
+/// release-store the test thread acquires before reading `bytes`. Later
+/// tickets are ignored so the reader can never observe a torn overwrite.
+const ResumptionSink = struct {
+    bytes: [4096]u8 = undefined,
+    len: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+
+    fn capture(user_data: ?*anyopaque, resumption_state: []const u8) void {
+        const self: *ResumptionSink = @ptrCast(@alignCast(user_data.?));
+        if (self.len.load(.acquire) != 0) return;
+        if (resumption_state.len == 0 or resumption_state.len > self.bytes.len) return;
+        @memcpy(self.bytes[0..resumption_state.len], resumption_state);
+        self.len.store(resumption_state.len, .release);
+    }
+
+    fn slice(self: *const ResumptionSink) []const u8 {
+        return self.bytes[0..self.len.load(.acquire)];
+    }
+};
+
+/// Drive the fanout server until `client_state` has a message AND the sink
+/// captured a ticket — the resumed dial needs both the echo and the envelope.
+fn driveUntilEchoAndTicket(
+    server: *quic.Server,
+    client_state: *const QuicEndpointState,
+    server_state: *const QuicEndpointState,
+    sink: *const ResumptionSink,
+) !void {
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        _ = try server.stepOnce(.wait);
+        if (client_state.messages.load(.acquire) > 0 and sink.len.load(.acquire) > 0) return;
+        if (client_state.errors.load(.acquire) > 0 or server_state.errors.load(.acquire) > 0) {
+            return error.QuicLoopbackUnexpectedError;
+        }
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+    return error.QuicLoopbackTimedOut;
+}
+
+fn driveUntilSessions(server: *quic.Server, expected: usize) !void {
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        _ = try server.stepOnce(.wait);
+        if (server.sessionCount() >= expected) return;
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+    return error.QuicLoopbackTimedOut;
+}
+
+test "quic warm restore: resumed dial sends its first RPC frame as accepted 0-RTT" {
+    const allocator = std.testing.allocator;
+    const frame_first = try buildBootstrapFrame(allocator, 0x0AAA);
+    defer allocator.free(frame_first);
+    const frame_restore = try buildBootstrapFrame(allocator, 0x0BBB);
+    defer allocator.free(frame_restore);
+
+    // One server, two sequential sessions: the resumed ticket only decrypts
+    // under the SAME server TLS context that minted it.
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = 2,
+        .early_data = .without_replay_protection,
+    });
+    defer server.deinit();
+    const server_addr = server.getAddress();
+
+    var sink = ResumptionSink{};
+
+    // ---- Dial 1: earn the ticket over an ordinary handshake. ----
+    {
+        var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+            .remote_addr = server_addr,
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .new_session_callback = ResumptionSink.capture,
+            .new_session_user_data = &sink,
+        });
+        defer client.deinit();
+
+        var client_state = QuicEndpointState{};
+        client.start(&client_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
+        var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+        var joined = false;
+        defer if (!joined) {
+            client.requestClose();
+            client_thread.join();
+        };
+
+        try driveUntilSessions(&server, 1);
+        var server_state = QuicEndpointState{};
+        server.sessionAt(0).?.start(&server_state, echoQuicServerMessage, recordQuicServerError, recordQuicServerClose);
+        try client.sendFrame(frame_first);
+        try driveUntilEchoAndTicket(&server, &client_state, &server_state, &sink);
+
+        client.requestClose();
+        client_thread.join();
+        joined = true;
+    }
+    try std.testing.expect(sink.len.load(.acquire) > 0);
+
+    // Drive the server until the closed first session is REAPED, so the
+    // resumed dial deterministically lands at session index 0. Starting a
+    // session at index 1 and letting a reap swap-remove index 0 under it
+    // is how the first version of this test silently echoed to nobody.
+    {
+        var waited_ms: u64 = 0;
+        while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+            _ = try server.stepOnce(.wait);
+            if (server.sessionCount() == 0) break;
+            loopback.sleepMs(loopback.loopback_poll_ms);
+        }
+        try std.testing.expectEqual(@as(usize, 0), server.sessionCount());
+    }
+
+    // ---- Dial 2: resume. The frame is enqueued BEFORE the run thread
+    // starts, so the relaxed early-open gate flushes it as 0-RTT. ----
+    var client2 = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .resumption_state = sink.slice(),
+    });
+    defer client2.deinit();
+
+    var client2_state = QuicEndpointState{};
+    client2.start(&client2_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
+    try client2.sendFrame(frame_restore);
+
+    var client2_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client2});
+    var joined2 = false;
+    defer if (!joined2) {
+        client2.requestClose();
+        client2_thread.join();
+    };
+
+    try driveUntilSessions(&server, 1);
+    var server2_state = QuicEndpointState{};
+    server.sessionAt(0).?.start(&server2_state, echoQuicServerMessage, recordQuicServerError, recordQuicServerClose);
+    // 0-RTT ordering contract: the restore frame arrived DURING the
+    // handshake — before these callbacks were bound — so it sits parsed in
+    // the session engine with nothing left on the wire to trigger another
+    // service pass. Step the session once to dispatch what buffered. A
+    // real embedder binding callbacks at accept time has the same window
+    // whenever early data is enabled.
+    try server.stepSession(0);
+
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        _ = try server.stepOnce(.wait);
+        if (client2_state.messages.load(.acquire) > 0) break;
+        if (client2_state.errors.load(.acquire) > 0 or server2_state.errors.load(.acquire) > 0) {
+            return error.QuicLoopbackUnexpectedError;
+        }
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+
+    client2.requestClose();
+    server.requestClose();
+    client2_thread.join();
+    joined2 = true;
+
+    try std.testing.expectEqual(@as(usize, 1), client2_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client2_state.errors.load(.acquire));
+    try std.testing.expectEqualSlices(u8, frame_restore, client2_state.receivedSlice());
+    // The decisive assertion: the resumed dial's early data was ACCEPTED —
+    // the restore frame rode 0-RTT, not a post-handshake stream.
+    const q2 = client2.endpoint.activeQuicConnection() orelse return error.QuicConnectionGone;
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, q2.earlyDataStatus());
+}
+
+test "quic warm restore: stale ticket is rejected but the staged frame still arrives at 1-RTT" {
+    const allocator = std.testing.allocator;
+    const frame_first = try buildBootstrapFrame(allocator, 0x0CCC);
+    defer allocator.free(frame_first);
+    const frame_restore = try buildBootstrapFrame(allocator, 0x0DDD);
+    defer allocator.free(frame_restore);
+
+    var sink = ResumptionSink{};
+
+    // ---- Earn a ticket from server 1 (compat single-session server). ----
+    {
+        var server1 = try quic.Connection.initServer(allocator, std.testing.io, .{
+            .listen_addr = testListenAddr(),
+            .tls_cert_pem = loopback_cert_pem,
+            .tls_key_pem = loopback_key_pem,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .early_data = .without_replay_protection,
+        });
+        defer server1.deinit();
+
+        var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+            .remote_addr = server1.getAddress(),
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .new_session_callback = ResumptionSink.capture,
+            .new_session_user_data = &sink,
+        });
+        defer client.deinit();
+
+        var server_state = QuicEndpointState{};
+        var client_state = QuicEndpointState{};
+        server1.start(&server_state, echoQuicMessage, recordQuicError, recordQuicClose);
+        client.start(&client_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
+        try client.sendFrame(frame_first);
+
+        var server_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&server1});
+        var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+        var joined = false;
+        defer if (!joined) {
+            client.requestClose();
+            server1.requestClose();
+            client_thread.join();
+            server_thread.join();
+        };
+
+        var waited_ms: u64 = 0;
+        while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+            if (client_state.messages.load(.acquire) > 0 and sink.len.load(.acquire) > 0) break;
+            if (client_state.errors.load(.acquire) > 0 or server_state.errors.load(.acquire) > 0) break;
+            loopback.sleepMs(loopback.loopback_poll_ms);
+        }
+
+        client.requestClose();
+        server1.requestClose();
+        client_thread.join();
+        server_thread.join();
+        joined = true;
+    }
+    try std.testing.expect(sink.len.load(.acquire) > 0);
+
+    // ---- Resume against a FRESH server: new TLS context, new ticket keys,
+    // so 0-RTT is rejected — the routine server-restart scenario. quic-zig
+    // requeues the staged frame verbatim at 1-RTT; nothing may be lost. ----
+    var server2 = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .early_data = .without_replay_protection,
+    });
+    defer server2.deinit();
+
+    var client2 = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server2.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .resumption_state = sink.slice(),
+    });
+    defer client2.deinit();
+
+    var server2_state = QuicEndpointState{};
+    var client2_state = QuicEndpointState{};
+    server2.start(&server2_state, echoQuicMessage, recordQuicError, recordQuicClose);
+    client2.start(&client2_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
+    try client2.sendFrame(frame_restore);
+
+    var server2_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&server2});
+    var client2_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client2});
+    var joined2 = false;
+    defer if (!joined2) {
+        client2.requestClose();
+        server2.requestClose();
+        client2_thread.join();
+        server2_thread.join();
+    };
+
+    const exchanged = waitForClientMessageOrError(&client2_state, &server2_state);
+    client2.requestClose();
+    server2.requestClose();
+    client2_thread.join();
+    server2_thread.join();
+    joined2 = true;
+
+    if (!exchanged) return error.QuicLoopbackTimedOut;
+    try std.testing.expectEqual(@as(usize, 1), client2_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client2_state.errors.load(.acquire));
+    try std.testing.expectEqualSlices(u8, frame_restore, client2_state.receivedSlice());
+    // Rejection recovery held: 0-RTT was refused, the frame arrived anyway.
+    const q2 = client2.endpoint.activeQuicConnection() orelse return error.QuicConnectionGone;
+    try std.testing.expectEqual(quic.EarlyDataStatus.rejected, q2.earlyDataStatus());
+}

@@ -60,6 +60,13 @@ pub const NativeEngine = struct {
     /// when disabled. See `NativeOptions.data_stream_completion_deadline_us`.
     data_stream_completion_deadline_us: ?u64 = null,
 
+    /// Resumed-dial (0-RTT) posture: open the control stream before the
+    /// handshake completes so queued frames ride early data. quic-zig
+    /// requeues staged bytes verbatim at 1-RTT on 0-RTT rejection, so
+    /// this can cost a round trip but never data. False for servers and
+    /// fresh dials.
+    early_open: bool = false,
+
     pub fn init(
         allocator: std.mem.Allocator,
         role: Role,
@@ -67,6 +74,7 @@ pub const NativeEngine = struct {
         max_outbound_queue_items: usize,
         max_outbound_queue_bytes: usize,
         native_options: NativeOptions,
+        early_open: bool,
     ) NativeEngine {
         return .{
             .inbound = NativeControlFramer.init(allocator, .{
@@ -80,6 +88,7 @@ pub const NativeEngine = struct {
                 native_options,
             ),
             .data_stream_completion_deadline_us = native_options.data_stream_completion_deadline_us,
+            .early_open = early_open,
         };
     }
 
@@ -116,7 +125,7 @@ pub const NativeEngine = struct {
         conn: *quic_zig.Connection,
     ) bool {
         if (self.control_ready) return true;
-        return role == .client and conn.handshakeDone();
+        return role == .client and (conn.handshakeDone() or self.early_open);
     }
 
     pub fn service(
@@ -155,7 +164,9 @@ pub const NativeEngine = struct {
             return true;
         }
         if (role == .client) {
-            if (!conn.handshakeDone()) return false;
+            // A resumed dial (`early_open`) opens the stream pre-handshake
+            // so the flush below sends the queued frames as 0-RTT.
+            if (!conn.handshakeDone() and !self.early_open) return false;
             _ = conn.openBidi(quic_options.baseline_stream_id) catch |err| switch (err) {
                 error.StreamAlreadyOpen => {},
                 else => return err,

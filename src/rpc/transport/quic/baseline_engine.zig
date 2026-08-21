@@ -32,16 +32,24 @@ pub const BaselineEngine = struct {
     ready: bool = false,
     inbound: LengthDelimitedFramer,
     outbound: OutboundQueue = .{},
+    /// Resumed-dial (0-RTT) posture: open stream 0 before the handshake
+    /// completes so queued frames ride early data. quic-zig requeues the
+    /// staged bytes verbatim at 1-RTT if the server rejects 0-RTT, so
+    /// this can cost a round trip but never data. False for servers and
+    /// fresh dials.
+    early_open: bool = false,
 
     pub fn init(
         allocator: std.mem.Allocator,
         max_message_bytes: usize,
         max_outbound_queue_items: usize,
         max_outbound_queue_bytes: usize,
+        early_open: bool,
     ) BaselineEngine {
         return .{
             .inbound = LengthDelimitedFramer.init(allocator, max_message_bytes),
             .outbound = OutboundQueue.init(max_outbound_queue_items, max_outbound_queue_bytes),
+            .early_open = early_open,
         };
     }
 
@@ -76,7 +84,7 @@ pub const BaselineEngine = struct {
         conn: *quic_zig.Connection,
     ) bool {
         if (self.ready) return true;
-        return role == .client and conn.handshakeDone();
+        return role == .client and (conn.handshakeDone() or self.early_open);
     }
 
     pub fn service(
@@ -86,6 +94,12 @@ pub const BaselineEngine = struct {
     ) !void {
         if (!try self.ensureStream(owner.role, conn)) return;
         try self.outbound.flush(owner.allocator, conn, owner.observer);
+        // Frames can buffer in the inbound framer while callbacks are not
+        // yet bound (0-RTT data read during the handshake, before `start`).
+        // `readStream` only dispatches after reading NEW bytes, so without
+        // this pass a frame that arrived early and saw no follow-up
+        // traffic would sit parsed-but-undelivered forever.
+        try self.dispatchAvailableFrames(owner);
         try self.readStream(owner, conn);
     }
 
@@ -100,7 +114,9 @@ pub const BaselineEngine = struct {
             return true;
         }
         if (role == .client) {
-            if (!conn.handshakeDone()) return false;
+            // A resumed dial (`early_open`) opens the stream pre-handshake
+            // so the flush below sends the queued frames as 0-RTT.
+            if (!conn.handshakeDone() and !self.early_open) return false;
             _ = conn.openBidi(quic_options.baseline_stream_id) catch |err| switch (err) {
                 error.StreamAlreadyOpen => {},
                 else => return err,

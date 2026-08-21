@@ -2266,9 +2266,15 @@ capnpc-zig.rpc.transport.quic.ClientOptions.max_outbound_queue_bytes: field usiz
 capnpc-zig.rpc.transport.quic.ClientOptions.max_outbound_queue_items: field usize = 1024
 capnpc-zig.rpc.transport.quic.ClientOptions.mode: field rpc.transport.quic.options.TransportMode = .baseline
 capnpc-zig.rpc.transport.quic.ClientOptions.native: field rpc.transport.quic.options.NativeOptions = <default>
+capnpc-zig.rpc.transport.quic.ClientOptions.new_session_callback: field ?*const fn (?*anyopaque, []const u8) void = null
+capnpc-zig.rpc.transport.quic.ClientOptions.new_session_user_data: field ?*anyopaque = null
+capnpc-zig.rpc.transport.quic.ClientOptions.new_token: field ?[]const u8 = null
+capnpc-zig.rpc.transport.quic.ClientOptions.new_token_callback: field ?*const fn (?*anyopaque, []const u8) void = null
+capnpc-zig.rpc.transport.quic.ClientOptions.new_token_user_data: field ?*anyopaque = null
 capnpc-zig.rpc.transport.quic.ClientOptions.observer: field ?rpc.events.Observer = null
 capnpc-zig.rpc.transport.quic.ClientOptions.receive_timeout: field Io.Duration = <default>
 capnpc-zig.rpc.transport.quic.ClientOptions.remote_addr: field Io.net.IpAddress
+capnpc-zig.rpc.transport.quic.ClientOptions.resumption_state: field ?[]const u8 = null
 capnpc-zig.rpc.transport.quic.ClientOptions.server_name: field []const u8
 capnpc-zig.rpc.transport.quic.ClientOptions.stream_read_buffer_size: field usize = 65536
 capnpc-zig.rpc.transport.quic.ClientOptions.transport_params: field tls.transport_params.Params = <default>
@@ -2339,6 +2345,10 @@ capnpc-zig.rpc.transport.quic.EarlyData.enabled: fn (server.config.EarlyData) bo
 capnpc-zig.rpc.transport.quic.EarlyData.with_anti_replay: variant *tls.anti_replay.AntiReplayTracker
 capnpc-zig.rpc.transport.quic.EarlyData.without_replay_protection: variant void
 capnpc-zig.rpc.transport.quic.EarlyData: union
+capnpc-zig.rpc.transport.quic.EarlyDataStatus.accepted: enumerant = 1
+capnpc-zig.rpc.transport.quic.EarlyDataStatus.not_offered: enumerant = 0
+capnpc-zig.rpc.transport.quic.EarlyDataStatus.rejected: enumerant = 2
+capnpc-zig.rpc.transport.quic.EarlyDataStatus: enum
 capnpc-zig.rpc.transport.quic.Endpoint.client: variant rpc.transport.quic.client_endpoint.ClientEndpoint
 capnpc-zig.rpc.transport.quic.Endpoint.server: variant rpc.transport.quic.server_endpoint.ServerEndpoint
 capnpc-zig.rpc.transport.quic.Endpoint: union
@@ -2401,6 +2411,8 @@ capnpc-zig.rpc.transport.quic.NativeOptions.max_control_frame_bytes: field usize
 capnpc-zig.rpc.transport.quic.NativeOptions.max_pending_data_bytes: field usize = 67108864
 capnpc-zig.rpc.transport.quic.NativeOptions.max_pending_data_streams: field usize = 16
 capnpc-zig.rpc.transport.quic.NativeOptions: struct
+capnpc-zig.rpc.transport.quic.NewSessionCallback: type = *const fn (?*anyopaque, []const u8) void
+capnpc-zig.rpc.transport.quic.NewTokenCallback: type = *const fn (?*anyopaque, []const u8) void
 capnpc-zig.rpc.transport.quic.RateLimit.default: variant void
 capnpc-zig.rpc.transport.quic.RateLimit.disabled: variant void
 capnpc-zig.rpc.transport.quic.RateLimit.limit: variant u64

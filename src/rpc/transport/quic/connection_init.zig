@@ -37,6 +37,10 @@ pub const Config = struct {
     native_options: NativeOptions,
     reveal_close_reason_on_wire: bool = false,
     observer: ?events.Observer = null,
+    /// Client resumed a TLS session (0-RTT enabled): the stream engines
+    /// may open the RPC stream before the handshake completes so queued
+    /// frames ride early data. Always false for servers.
+    early_open: bool = false,
 
     pub fn fromClient(options: quic_options.ClientOptions) Config {
         return .{
@@ -49,6 +53,7 @@ pub const Config = struct {
             .mode = options.mode,
             .native_options = options.native,
             .observer = options.observer,
+            .early_open = options.resumption_state != null,
         };
     }
 
@@ -144,6 +149,7 @@ pub fn init(
             config.max_message_bytes,
             config.max_outbound_queue_items,
             config.max_outbound_queue_bytes,
+            config.early_open,
         ),
         .native = NativeEngine.init(
             allocator,
@@ -152,6 +158,7 @@ pub fn init(
             config.max_outbound_queue_items,
             config.max_outbound_queue_bytes,
             config.native_options,
+            config.early_open,
         ),
         .wake_state = wake_mod.Handle.init(),
         .close_controller = CloseController.init(config.reveal_close_reason_on_wire),

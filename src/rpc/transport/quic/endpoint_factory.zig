@@ -47,6 +47,15 @@ pub fn initClient(
         .congestion_control = options.congestion_control,
         .enable_pacing = options.enable_pacing,
         .enable_hystart = options.enable_hystart,
+        // Warm-restore surface (see ClientOptions): resumption enables
+        // 0-RTT inside quic-zig; the capture callbacks hand tickets and
+        // NEW_TOKENs back to the embedder for the next dial.
+        .resumption_state = options.resumption_state,
+        .new_session_callback = options.new_session_callback,
+        .new_session_user_data = options.new_session_user_data,
+        .new_token = options.new_token,
+        .new_token_callback = options.new_token_callback,
+        .new_token_user_data = options.new_token_user_data,
     });
     errdefer client.deinit();
 
