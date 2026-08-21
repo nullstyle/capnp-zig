@@ -2639,6 +2639,33 @@ capnpc-zig.rpc.vat.provisions.ProvisionIndexLimits.max_queued_accepts: field usi
 capnpc-zig.rpc.vat.provisions.ProvisionIndexLimits.park_ttl_ms: field ?u64 = null
 capnpc-zig.rpc.vat.provisions.ProvisionIndexLimits: struct
 capnpc-zig.rpc.vat.provisions: struct
+capnpc-zig.rpc.vat.quic_network.AddrHint.bytes: field [16]u8
+capnpc-zig.rpc.vat.quic_network.AddrHint.ip4: fn ([4]u8, u16) rpc.vat.quic_network.AddrHint
+capnpc-zig.rpc.vat.quic_network.AddrHint.ip6: fn ([16]u8, u16) rpc.vat.quic_network.AddrHint
+capnpc-zig.rpc.vat.quic_network.AddrHint.len: field u8
+capnpc-zig.rpc.vat.quic_network.AddrHint.port: field u16
+capnpc-zig.rpc.vat.quic_network.AddrHint.slice: fn (*const rpc.vat.quic_network.AddrHint) []const u8
+capnpc-zig.rpc.vat.quic_network.AddrHint: struct
+capnpc-zig.rpc.vat.quic_network.QuicVatNetwork: fn (comptime type) type
+capnpc-zig.rpc.vat.quic_network.TicketView.dcid: field []const u8
+capnpc-zig.rpc.vat.quic_network.TicketView.hints_packed: field []const u8
+capnpc-zig.rpc.vat.quic_network.TicketView.nonce: field []const u8
+capnpc-zig.rpc.vat.quic_network.TicketView.parseHints: fn (rpc.vat.quic_network.TicketView, []rpc.vat.quic_network.AddrHint) error{OutOfSpace}![]rpc.vat.quic_network.AddrHint
+capnpc-zig.rpc.vat.quic_network.TicketView.reset_token: field []const u8
+capnpc-zig.rpc.vat.quic_network.TicketView.vat_key: field []const u8
+capnpc-zig.rpc.vat.quic_network.TicketView.version: field u16
+capnpc-zig.rpc.vat.quic_network.TicketView: struct
+capnpc-zig.rpc.vat.quic_network.decodeTicket: fn (serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) error{MalformedTicket,UnsupportedTicketVersion}!rpc.vat.quic_network.TicketView
+capnpc-zig.rpc.vat.quic_network.encodeAwaitToken: fn (mem.Allocator, []const u8, []const u8) error{ElementCountTooLarge,FarPointerOffsetTooLarge,InvalidMessageSize,InvalidPointer,InvalidSegmentId,ListTooLarge,OffsetOutOfRange,OutOfBounds,OutOfMemory,PointerIndexOutOfBounds,TooManySegments}![]u8
+capnpc-zig.rpc.vat.quic_network.encodeTicket: fn (mem.Allocator, []const u8, []const u8, []const u8, []const rpc.vat.quic_network.AddrHint) error{ElementCountTooLarge,FarPointerOffsetTooLarge,InvalidAddrHint,InvalidDcid,InvalidMessageSize,InvalidNonce,InvalidPointer,InvalidSegmentId,InvalidVatKey,ListTooLarge,OffsetOutOfRange,OutOfBounds,OutOfMemory,PointerIndexOutOfBounds,TooManyAddrHints,TooManySegments}![]u8
+capnpc-zig.rpc.vat.quic_network.max_addr_hints: const usize
+capnpc-zig.rpc.vat.quic_network.max_dcid_len: const usize
+capnpc-zig.rpc.vat.quic_network.max_vat_key_len: const usize
+capnpc-zig.rpc.vat.quic_network.min_dcid_len: const usize
+capnpc-zig.rpc.vat.quic_network.minted_dcid_len: const usize
+capnpc-zig.rpc.vat.quic_network.nonce_len: const usize
+capnpc-zig.rpc.vat.quic_network.ticket_version: const u16
+capnpc-zig.rpc.vat.quic_network: struct
 capnpc-zig.rpc.vat: struct
 capnpc-zig.rpc.wire.protocol.MessageBuilder.buildProvidePromisedAnswerWithOps: fn (*rpc.wire.protocol.MessageBuilder, u32, u32, []const rpc.wire.protocol.PromisedAnswerOp, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!void
 capnpc-zig.rpc.wire: struct

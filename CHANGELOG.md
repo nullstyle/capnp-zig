@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **QuicVatNetwork (durable-caps ladder, first out-of-process VatNetwork;
+  Experimental).** `rpc.vat.quic_network` mints Level-3 introductions whose
+  `ThirdPartyToContact` is a provision ticket `{version, dictated initial
+  DCID, nonce, vat key, reset token (reserved), address hints}` and redeems
+  them against a pre-established pool of live peers (`addVat` /
+  `registerPeer`; redemption inside frame dispatch never dials). One
+  deterministic encoder produces both `to_await` and the Accept completion,
+  upholding the byte-identity invariant VatC's provide table keys on.
+  Nonce and DCID come from a fail-closed CSPRNG (explicit seed or
+  `io.randomSecure`) — verified against quic-zig HEAD that upstream
+  validates only the 8..20 DCID length, so unpredictability is the
+  minter's job. Adapter plumbing landed with it: `ClientOptions
+  .initial_dcid` (validated, forwarded) and `ServerSession.initialDcid()`
+  (the rendezvous matching hook). Proven by a transport-free unit suite
+  (codec, foreign-token rejection, OOM-clean) and two QUIC e2e tests,
+  including a FULL three-vat L3 handoff over three real QUIC connections
+  (fanout VatC with a shared ProvisionIndex; ticketed auto-pickup; direct
+  call on the handed-off cap). v1 boundaries recorded in
+  docs/quic-durable-caps-plan.md: pool-only redemption, empty reset_token,
+  no Retry on provision dials, VatC admission left to the embedder.
+
 - **Warm restore over QUIC 0-RTT (durable-caps prototype #2, client half).**
   `ClientOptions` gains the resumption surface: `resumption_state`,
   `new_session_callback`, `new_token`, `new_token_callback` (+user_data).

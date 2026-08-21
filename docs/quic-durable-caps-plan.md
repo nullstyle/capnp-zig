@@ -180,6 +180,59 @@ Remaining (server half, unblocked by the v0.14.0 pin):
 - QuicVatNetwork implementing the `VatNetwork` seam; provision ticket =
   {address hints, dictated DCID, reset token, nonce} rides the opaque
   `to_contact` AnyPointer; `completion == await` nonce check unchanged.
+
+#### QuicVatNetwork v1 (LANDED 2026-08-21, Experimental)
+
+`rpc.vat.quic_network` — the first out-of-process `VatNetwork` shape.
+What shipped:
+
+- **Provision ticket codec** (`encodeTicket`/`decodeTicket`): a struct-rooted
+  standalone message `{version u16, dcid Data, nonce Data, vat_key Data,
+  reset_token Data (reserved, empty), packed addr hints Data}`. One
+  deterministic encoder; bounds-checked decode that fails cleanly on foreign
+  (Data-rooted loopback) tokens. Address hints are raw bytes+port — no text
+  grammar to drift.
+- **Await/completion token** (`encodeAwaitToken`): `{version, nonce, dcid}`,
+  produced by the SAME function on the mint side (`to_await`) and the
+  redemption side (completion), which is what upholds the seam's
+  byte-identity invariant (VatC keys its provide table on serialized bytes).
+- **`QuicVatNetwork(Peer)`**: vat directory (`addVat(key, hints)`) for
+  minting; pre-established pool (`registerPeer(key, peer)`) for redemption.
+  `mint_introduction(recipient_hint = vat key)` mints a 16-byte nonce and an
+  8-byte dictated DCID from a fail-closed CSPRNG (explicit seed or
+  `io.randomSecure`; no entropy → `error.EntropyUnavailable`). Verified
+  against quic-zig HEAD 2026-08-21: upstream `connect` validates ONLY the
+  8..20 length — unpredictability is entirely the minter's job, so the mint
+  owns it.
+- **Adapter plumbing**: `ClientOptions.initial_dcid` (validated 8..20,
+  forwarded to `quic_zig.Client.connect`) and
+  `ServerSession.initialDcid()` (reads `Slot.initial_dcid` — the hook a
+  rendezvous embedder matches accepted sessions against tickets).
+- **Proofs**: unit suite (codec round-trip/determinism, malformed/foreign
+  tickets, pool errors, OOM-clean, ablation-verified) plus two QUIC e2e:
+  dictated-DCID observability at the accepted session, and the FULL L3
+  three-party handoff over three real QUIC connections (C = fanout server,
+  two sessions sharing one ProvisionIndex; B mints a ticket naming "vat-c";
+  A auto-picks-up from its pool; direct `getNumber()` returns 42;
+  vine drains). Ablation-verified (detaching A's network goes red).
+
+Deliberate v1 boundaries (each is the next rung, not an oversight):
+
+- `connect_to_introduced` redeems ONLY from the pre-established pool — no
+  dial-on-miss. Both seam consumers run inside frame dispatch and demand a
+  same-thread live peer synchronously; an async pre-dial rung needs its own
+  design (pool warm-up driven by ticket hints).
+- `reset_token` rides empty: quic v0.16 has no client-side knob to
+  preinstall an expected stateless-reset token; the §18.2 transport param
+  covers the primary CID.
+- Provision dials must not be Retried (dictated DCID survives only as ODCID
+  in the Retry token); the fanout server does not yet enforce a
+  no-Retry-for-ticketed-DCIDs carve-out.
+- VatC-side admission (match `initialDcid()` against expected tickets at
+  adoption, claim single-use) is embedder policy for now; the accessor is
+  the hook. The upstream rendezvous front-end e2e remains the reference for
+  a pre-accept routing front end (peek-before-feed), which our fanout
+  server deliberately does not embed yet.
 - Stateless-reset death certificate needs two things quic-zig lacks: a
   reset **emitter** (packet encoder + a `Server.feed` outcome/hook for
   unroutable short-header DCIDs) and, in capnp-zig, plumbing close-cause
