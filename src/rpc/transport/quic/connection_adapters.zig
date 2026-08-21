@@ -4,6 +4,7 @@ const events = @import("../../events.zig");
 const engine_owner_mod = @import("engine_owner.zig");
 const endpoint_mod = @import("endpoint.zig");
 const mode_router = @import("mode_router.zig");
+const quic_options = @import("options.zig");
 
 /// Builds the owner views used by QUIC loop and stream engines.
 ///
@@ -52,7 +53,16 @@ pub fn State(comptime Connection: type) type {
                 .notify_closed = loopNotifyClosed,
                 .invoke_close_callback = loopInvokeCloseCallback,
                 .complete_deferred_deinit = loopCompleteDeferredDeinit,
+                .invoke_tick = loopInvokeTick,
             };
+        }
+
+        fn loopInvokeTick(ptr: *anyopaque, now_us: u64) void {
+            const conn = castConnection(ptr);
+            const cb = conn.on_tick orelse return;
+            if (now_us -| conn.last_tick_us < quic_options.min_tick_interval_us) return;
+            conn.last_tick_us = now_us;
+            conn.callback_lifecycle.invokeTick(conn, cb);
         }
 
         fn castConnection(ptr: *anyopaque) *Connection {

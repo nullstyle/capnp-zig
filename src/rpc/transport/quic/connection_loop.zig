@@ -37,6 +37,10 @@ pub const Owner = struct {
     notify_closed: *const fn (ptr: *anyopaque) void,
     invoke_close_callback: *const fn (ptr: *anyopaque) void,
     complete_deferred_deinit: *const fn (ptr: *anyopaque) void,
+    /// Periodic tick (the peer's deadline sweep), invoked once per step on
+    /// the loop thread, rate-floored by the implementation. Runs under
+    /// callback-depth accounting so a re-entrant deinit is deferred.
+    invoke_tick: *const fn (ptr: *anyopaque, now_us: u64) void,
 };
 
 pub fn run(owner: Owner) void {
@@ -105,6 +109,12 @@ pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
     try tickActive(driver, now_us);
     try serviceModeStreams(owner, driver, now_us);
     try datagram_io.drainOutgoingDatagrams(driver, owner.udp_tx_buf, now_us);
+
+    // Drive the peer's deadline sweep on the step cadence. After the
+    // service passes so a Return that just arrived wins over its deadline,
+    // and before the closed-check so a close() from inside the sweep is
+    // observed this same step.
+    owner.invoke_tick(owner.ptr, now_us);
 
     if (driver.reapClosed()) {
         owner.request_close(owner.ptr);

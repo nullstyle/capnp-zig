@@ -473,14 +473,7 @@ fn WorkerOf(
 
         fn pickMode(self: Self, session_index: u64) SessionMode {
             if (self.cfg.chaos and session_index % 5 == 1) return .chaos;
-            // KNOWN GAP: deadline sessions are TCP-only. The QUIC transport
-            // has no `on_tick` field, so the Peer's deadline sweep is never
-            // driven over QUIC and a 1ms call deadline simply never fires
-            // (this rig found that on its first run). Until tick parity
-            // lands in src/rpc/transport/quic, running deadline sessions
-            // there would only add 10ms server-side sleeps that cancel
-            // nothing.
-            if (self.cfg.deadlines and self.cfg.transport == .tcp and session_index % 4 == 2) return .deadline;
+            if (self.cfg.deadlines and session_index % 4 == 2) return .deadline;
             return .normal;
         }
 
@@ -1031,15 +1024,9 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("soak: FAIL — more disconnected exceptions than chaos closes\n", .{});
         failed = true;
     }
-    if (cfg.deadlines and cfg.transport == .tcp and cancelled == 0) {
+    if (cfg.deadlines and cancelled == 0) {
         std.debug.print("soak: FAIL — deadline sessions produced no cancellations\n", .{});
         failed = true;
-    }
-    if (cfg.deadlines and cfg.transport == .quic) {
-        std.debug.print(
-            "soak: NOTE — deadline sessions skipped over quic (no on_tick plumbing in the QUIC transport; peer call-deadlines cannot fire — tracked gap)\n",
-            .{},
-        );
     }
     if (!verdict.ok) {
         std.debug.print(

@@ -77,6 +77,11 @@ pub const EarlyData = quic_zig.Server.EarlyData;
 /// Single-session compatibility capacity used by `Connection.initServer`.
 pub const compatibility_max_concurrent_sessions: u32 = 1;
 
+/// Minimum interval between `on_tick` (peer deadline sweep) invocations on
+/// the loop/step cadence. Floors the sweep so a datagram-hot loop does not
+/// pay it per packet, while staying far below any realistic call deadline.
+pub const min_tick_interval_us: u64 = 1_000;
+
 /// The fanout server delegates the actual live-slot cap to
 /// `ServerOptions.max_concurrent_connections`, so the public static limit is the
 /// full u32 range after rejecting zero.

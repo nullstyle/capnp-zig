@@ -69,6 +69,17 @@ pub const Connection = struct {
     /// `Termination.emitClosingOnce`).
     closing_emitted: bool = false,
 
+    /// Called on the run-loop thread on the loop's step cadence (floored at
+    /// `min_tick_interval_us`). `Peer.attachConnection` wires this to the
+    /// peer's deadline sweep — without it, call deadlines silently never
+    /// fire over QUIC (the gap the QUIC soak found). Mirrors the TCP
+    /// connection's `on_tick` contract, including deferred-deinit safety.
+    on_tick: ?*const fn (conn: *Connection) void = null,
+
+    /// Wall-clock (`nowUs`) of the last `on_tick` invocation; floors the
+    /// tick cadence so a datagram-hot loop does not sweep per packet.
+    last_tick_us: u64 = 0,
+
     callback_lifecycle: CallbackLifecycle = .{},
 
     /// Thread ID captured at init. Widened to `u64` (not `std.Thread.Id`,

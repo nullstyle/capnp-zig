@@ -3,6 +3,7 @@ pub fn State(comptime Connection: type) type {
         pub const MessageCallback = *const fn (conn: *Connection, frame: []const u8) anyerror!void;
         pub const ErrorCallback = *const fn (conn: *Connection, callback_err: anyerror) void;
         pub const CloseCallback = *const fn (conn: *Connection) void;
+        pub const TickCallback = *const fn (conn: *Connection) void;
         pub const DeinitDecision = enum {
             already_deinitialized,
             defer_until_callback_exits,
@@ -126,6 +127,21 @@ pub fn State(comptime Connection: type) type {
             self: *Self,
             conn: *Connection,
             cb: CloseCallback,
+        ) void {
+            self.depth += 1;
+            defer self.depth -= 1;
+            cb(conn);
+        }
+
+        /// Invoke the periodic tick callback (the peer's deadline sweep)
+        /// under the same depth accounting as every other callback, so a
+        /// `deinit()` from inside it is deferred rather than freeing state
+        /// out from under the loop — the TCP transport's
+        /// `invokeTickWakeCallback` contract.
+        pub fn invokeTick(
+            self: *Self,
+            conn: *Connection,
+            cb: TickCallback,
         ) void {
             self.depth += 1;
             defer self.depth -= 1;

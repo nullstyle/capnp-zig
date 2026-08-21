@@ -510,6 +510,12 @@ pub const Server = struct {
         try server_session.serviceMode(conn, now_us);
         try self.listener.drainAcceptedSessionDatagrams(server_session.acceptedSession(), self.udp_tx_buf, now_us);
 
+        // Drive the session peer's deadline sweep on the step cadence,
+        // after the service passes (an arrived Return wins over its
+        // deadline) and under callback-depth accounting (a re-entrant
+        // deinit defers). Mirrors connection_loop.stepOnce.
+        server_session.invokeTickFloored(now_us);
+
         if (conn.isClosed() and server_session.outboundEmpty()) {
             server_session.closeOnLoop();
         }
@@ -636,6 +642,16 @@ pub const ServerSession = struct {
     io: std.Io,
     callback_lifecycle: CallbackLifecycle = .{},
     close_callback_invoked: bool = false,
+
+    /// Called on the server loop thread on the per-session step cadence
+    /// (floored at `quic_options.min_tick_interval_us`).
+    /// `Peer.attachConnection` wires this to the peer's deadline sweep —
+    /// without it, call deadlines silently never fire for server-side
+    /// peers over QUIC. Mirrors the client Connection's `on_tick`.
+    on_tick: ?*const fn (conn: *ServerSession) void = null,
+
+    /// Wall-clock of the last `on_tick` invocation for this session.
+    last_tick_us: u64 = 0,
     /// True once the `.closing` connection phase has been emitted for this
     /// session, so the event fires at most once. Loop-thread only (see
     /// `Termination.emitClosingOnce`).
@@ -707,6 +723,16 @@ pub const ServerSession = struct {
 
     pub fn context(self: *const ServerSession) ?*anyopaque {
         return self.callback_lifecycle.context();
+    }
+
+    /// Invoke this session's `on_tick` (the peer deadline sweep) if the
+    /// cadence floor has elapsed. Loop-thread only; runs under
+    /// callback-depth accounting so a re-entrant deinit is deferred.
+    fn invokeTickFloored(self: *ServerSession, now_us: u64) void {
+        const cb = self.on_tick orelse return;
+        if (now_us -| self.last_tick_us < quic_options.min_tick_interval_us) return;
+        self.last_tick_us = now_us;
+        self.callback_lifecycle.invokeTick(self, cb);
     }
 
     pub fn sendFrame(self: *ServerSession, frame: []const u8) !void {
