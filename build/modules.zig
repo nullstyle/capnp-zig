@@ -86,6 +86,14 @@ pub fn setup(b: *std.Build) !Graph {
         (try b.dependencyLazy("quic", .{
             .target = target,
             .optimize = optimize,
+            // BoringSSL's C/C++ objects must not reference the UBSan
+            // runtime: they are linked as static archives into test
+            // binaries whose root module is Zig code, so nothing pulls
+            // __ubsan_handle_* in and ReleaseSafe links fail on
+            // Linux/lld (found by the v0.12->v0.14 bump, whose repinned
+            // boringssl instruments C under safe modes by default).
+            // `trap` keeps the UB checks and needs no runtime.
+            .@"sanitize-c" = @as([]const u8, "trap"),
         })).module("quic")
     else
         null;

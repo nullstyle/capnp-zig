@@ -1120,6 +1120,10 @@ pub fn buildImpl(b: *std.Build) !void {
         (try b.dependencyLazy("quic", .{
             .target = target,
             .optimize = release_safe_optimize,
+            // See build/modules.zig: BoringSSL archives must not
+            // reference the UBSan runtime; `trap` keeps the checks
+            // without the link dependency.
+            .@"sanitize-c" = @as([]const u8, "trap"),
         })).module("quic")
     else
         null;
