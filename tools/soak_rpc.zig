@@ -156,16 +156,26 @@ const CountingAllocator = struct {
 // the hot path). Buffers are merged after all workers join.
 
 const LatencyBuf = struct {
+    /// Telemetry allocator — deliberately NOT the counted allocator the
+    /// memory gate watches. Every successful call appends 8 bytes here,
+    /// and the buffer is only freed after the memory verdict, so counting
+    /// it turns the steady-state gate into a calls-per-run gate. That is
+    /// exactly how the Windows soak lane failed every nightly from its
+    /// first run (2026-08-12): Windows completes 2-4x the calls of the
+    /// Nagle-capped Linux client in the same 120s, and the "growth" was
+    /// ~6 B/call of the harness's own samples on both platforms — the
+    /// terminal leak check passed on every red run.
+    allocator: std.mem.Allocator,
     list: std.ArrayList(u64) = .empty,
 
-    fn record(self: *LatencyBuf, allocator: std.mem.Allocator, ns: u64) void {
+    fn record(self: *LatencyBuf, ns: u64) void {
         // A dropped sample under memory pressure is acceptable for a soak
         // percentile estimate; never abort traffic over it.
-        self.list.append(allocator, ns) catch {};
+        self.list.append(self.allocator, ns) catch {};
     }
 
-    fn deinit(self: *LatencyBuf, allocator: std.mem.Allocator) void {
-        self.list.deinit(allocator);
+    fn deinit(self: *LatencyBuf) void {
+        self.list.deinit(self.allocator);
     }
 };
 
@@ -320,7 +330,7 @@ const Session = struct {
                 // completion index matches issue order for the slot key.
                 const slot = done_index % self.max_inflight;
                 const latency = nowNsU(self.io) -| self.send_ts[slot];
-                self.latency.record(self.allocator, latency);
+                self.latency.record(latency);
             },
             .exception => self.noteException(ret),
             else => {},
@@ -648,6 +658,12 @@ pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{ .thread_safe = true }) = .init;
     var counter = CountingAllocator.init(gpa.allocator());
     const allocator = counter.allocator();
+    // Harness telemetry (latency samples, the memory curve itself) goes
+    // straight to the DebugAllocator, BYPASSING the counter: the
+    // steady-state memory gate must measure the system under test, not
+    // the instrument. Still leak-checked by the terminal gpa.deinit.
+    // See the LatencyBuf doc for the nightly failure this caused.
+    const telemetry_allocator = gpa.allocator();
     const io = init.io;
 
     const cfg = try parseArgs(allocator, init.minimal.args);
@@ -656,8 +672,8 @@ pub fn main(init: std.process.Init) !void {
     EchoServer.server_io = io;
 
     // Per-worker latency buffers (merged after join).
-    const latency_bufs = try allocator.alloc(LatencyBuf, cfg.workers);
-    for (latency_bufs) |*b| b.* = .{};
+    const latency_bufs = try telemetry_allocator.alloc(LatencyBuf, cfg.workers);
+    for (latency_bufs) |*b| b.* = .{ .allocator = telemetry_allocator };
 
     var pool = try WorkerPool.init(
         allocator,
@@ -683,7 +699,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Memory sampler thread: watches live heap for the run duration.
     var mem_samples: std.ArrayList(u64) = .empty;
-    defer mem_samples.deinit(allocator);
+    defer mem_samples.deinit(telemetry_allocator);
     var mem_stop = std.atomic.Value(bool).init(false);
     const mem_thread = try std.Thread.spawn(.{}, MemSampler.main, .{MemSampler{
         .counter = &counter,
@@ -692,7 +708,7 @@ pub fn main(init: std.process.Init) !void {
         .stop_at_ns = stop_at_ns + std.time.ns_per_s, // sample a bit past worker stop
         .stop_flag = &mem_stop,
         .samples = &mem_samples,
-        .samples_allocator = allocator,
+        .samples_allocator = telemetry_allocator,
     }});
 
     const worker_threads = try allocator.alloc(std.Thread, cfg.workers);
@@ -723,9 +739,9 @@ pub fn main(init: std.process.Init) !void {
 
     // -- Merge latency samples & compute percentiles ----------------------
     var all_latencies: std.ArrayList(u64) = .empty;
-    defer all_latencies.deinit(allocator);
+    defer all_latencies.deinit(telemetry_allocator);
     for (latency_bufs) |b| {
-        all_latencies.appendSlice(allocator, b.list.items) catch {};
+        all_latencies.appendSlice(telemetry_allocator, b.list.items) catch {};
     }
     var lat = Percentiles{};
     if (all_latencies.items.len > 0) {
@@ -766,8 +782,8 @@ pub fn main(init: std.process.Init) !void {
     );
 
     // -- Free per-worker buffers before the leak check --------------------
-    for (latency_bufs) |*b| b.deinit(allocator);
-    allocator.free(latency_bufs);
+    for (latency_bufs) |*b| b.deinit();
+    telemetry_allocator.free(latency_bufs);
 
     var failed = false;
     if (sessions == 0 or ok == 0) {
@@ -801,9 +817,9 @@ pub fn main(init: std.process.Init) !void {
     // and all_latencies are freed by their `defer`s after this scope, so they
     // are not yet freed here — free them explicitly first so the DebugAllocator
     // sees a clean slate.
-    all_latencies.deinit(allocator);
+    all_latencies.deinit(telemetry_allocator);
     all_latencies = .empty;
-    mem_samples.deinit(allocator);
+    mem_samples.deinit(telemetry_allocator);
     mem_samples = .empty;
     if (gpa.deinit() != .ok) {
         std.debug.print("soak: FAIL — client-side allocation leaks detected\n", .{});
