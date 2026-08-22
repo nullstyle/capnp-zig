@@ -41,6 +41,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reset field data needs an abrupt-death chaos mode; the instrument is
   now in place for it.
 
+### Changed
+
+- **quic pin → v0.16.1** (drop-in; no wire behavior changes, and both API
+  snapshots are byte-identical across the bump). This release exists
+  because of a finding from this repo: without
+  `Server.Config.stateless_reset_key` there is no client-side
+  crash-restart DETECTION, not merely no emission. Upstream's audit of
+  that found the same null key also silently disables auto CID
+  replenishment, client-initiated migration, and peer CID rotation on NAT
+  rebinding — and turned up a live footgun, a hand-set
+  `transport_params.stateless_reset_token` advertised unchanged to every
+  peer, letting any peer that handshook reset any other peer's
+  connection. v0.16.1 refuses that keyless combination with
+  `error.InvalidConfig` at `Server.init`. Our `ServerOptions
+  .transport_params` guard, which was the only protection at v0.16.0, now
+  documents the enforced behavior instead of warning about it.
+
 ## [0.12.0] - 2026-08-21
 
 ### Added

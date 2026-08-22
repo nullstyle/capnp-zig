@@ -256,11 +256,11 @@ pub const ServerOptions = struct {
     /// let quic-zig derive per-CID tokens — §18.2's token belongs to the
     /// HANDSHAKE CID, which differs per connection, so a value living in
     /// per-server config cannot be correct for more than one peer by
-    /// construction. At the pinned quic v0.16.0 there is NO upstream
-    /// warning or refusal for this, so this doc is the only guard;
-    /// upstream has since made the keyless combination
-    /// `error.InvalidConfig` at `Server.init`, which starts applying here
-    /// on the next pin bump.
+    /// construction. As of the pinned quic v0.16.1 this is ENFORCED:
+    /// `Server.init` refuses the keyless combination with
+    /// `error.InvalidConfig` (a hand-set token alongside a real key stays
+    /// accepted — the accept path overwrites it per connection, so it is
+    /// merely inert). Pins at v0.16.0 and earlier caught nothing here.
     transport_params: quic_zig.tls.TransportParams = defaultTransportParams(),
     max_concurrent_connections: u32 = 1,
     local_cid_len: u8 = default_quic_local_cid_len,

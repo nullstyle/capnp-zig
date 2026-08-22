@@ -24,8 +24,8 @@
         // `enable_hystart = false`. `bench-check` was re-run across this bump;
         // see the CHANGELOG entry for the measured outcome.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.16.0.tar.gz",
-            .hash = "quic-0.16.0-DnSYvS3rLwDvQXIV3uLkotnOODEkvQ_DG84yQws2S40p",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.16.1.tar.gz",
+            .hash = "quic-0.16.1-DnSYvWILMACIzR7TNBU-Th7h_D38byl5_N8kawi1Wb0s",
             .lazy = true,
         },
     },
