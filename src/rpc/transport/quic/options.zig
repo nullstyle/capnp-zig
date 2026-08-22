@@ -253,9 +253,14 @@ pub const ServerOptions = struct {
     /// completed a handshake could then reset any other peer's
     /// connection, and the emitter (which derives tokens from the key)
     /// could never honor it anyway. Set `stateless_reset_key` instead and
-    /// let quic-zig derive per-CID tokens. quic-zig raises a
-    /// `config_warning` for this at `Server.init`; surface it by setting
-    /// `log_callback`.
+    /// let quic-zig derive per-CID tokens — §18.2's token belongs to the
+    /// HANDSHAKE CID, which differs per connection, so a value living in
+    /// per-server config cannot be correct for more than one peer by
+    /// construction. At the pinned quic v0.16.0 there is NO upstream
+    /// warning or refusal for this, so this doc is the only guard;
+    /// upstream has since made the keyless combination
+    /// `error.InvalidConfig` at `Server.init`, which starts applying here
+    /// on the next pin bump.
     transport_params: quic_zig.tls.TransportParams = defaultTransportParams(),
     max_concurrent_connections: u32 = 1,
     local_cid_len: u8 = default_quic_local_cid_len,
