@@ -202,10 +202,17 @@ pub const Server = struct {
         if (o == .stateless_reset_sent) self.stateless_resets_sent += 1;
     }
 
-    /// Stateless resets this endpoint has sent for unroutable DCIDs
-    /// (requires `ServerOptions.stateless_reset_key`). Under churn this is
-    /// the "peers still dialing dead connection state" signal — the field
-    /// data the reset surfaces' stability case wants. Loop-thread only.
+    /// Stateless resets this endpoint has sent for unroutable DCIDs.
+    ///
+    /// Under churn this is the "peers still dialing dead connection state"
+    /// signal. Read zero carefully: without
+    /// `ServerOptions.stateless_reset_key` the count is STRUCTURALLY zero
+    /// (that traffic is dropped instead of answered), so a zero from a
+    /// keyless server is a configuration artifact, not evidence that no
+    /// stale-CID traffic arrived. The honest signal in both configurations
+    /// is the `unroutable_dcid` log event, which fires whether or not a
+    /// reset ships and carries `reset_queued` to tell the cases apart.
+    /// Loop-thread only.
     pub fn statelessResetsSent(self: *const Server) u64 {
         self.assertLoopThread();
         return self.stateless_resets_sent;

@@ -590,6 +590,9 @@ const QuicServerHarness = struct {
     // Reset-emitter field data (the churn signals upstream's stability case
     // for the reset surfaces asks for). unroutable_* count LogEvent
     // .unroutable_dcid; resets_sent snapshots the server counter at drain.
+    // The harness always sets a reset key, so resets_sent==0 here means no
+    // stale-CID traffic arrived — NOT a keyless-config artifact. The
+    // unroutable_* pair is the signal that holds either way.
     unroutable_seen: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     unroutable_reset_queued: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     resets_sent: u64 = 0,

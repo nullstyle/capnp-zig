@@ -246,6 +246,16 @@ pub const ServerOptions = struct {
     tls_cert_pem: []const u8,
     tls_key_pem: []const u8,
     alpn_protocols: []const []const u8 = &.{alpn},
+    /// Forwarded verbatim to quic-zig. NEVER hand-set the
+    /// `stateless_reset_token` member: the accept path only OVERWRITES it
+    /// when `stateless_reset_key` is set, so a hand-set value advertises
+    /// one FIXED token to every peer this server accepts — any peer that
+    /// completed a handshake could then reset any other peer's
+    /// connection, and the emitter (which derives tokens from the key)
+    /// could never honor it anyway. Set `stateless_reset_key` instead and
+    /// let quic-zig derive per-CID tokens. quic-zig raises a
+    /// `config_warning` for this at `Server.init`; surface it by setting
+    /// `log_callback`.
     transport_params: quic_zig.tls.TransportParams = defaultTransportParams(),
     max_concurrent_connections: u32 = 1,
     local_cid_len: u8 = default_quic_local_cid_len,
