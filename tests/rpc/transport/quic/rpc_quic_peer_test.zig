@@ -1212,3 +1212,363 @@ test "L3 three-party handoff over QUIC: ticketed auto-pickup hands C's cap to A 
     // Teardown order is owned by the harness: transports close first (their
     // close callbacks land in live peers), then peers, then transports free.
 }
+
+// ============================================================================
+// Death certificate: typed close causes (docs/quic-durable-caps-plan.md)
+// ============================================================================
+
+const rpc_events = capnpc.rpc.events;
+
+/// Client probe that records the typed disconnect cause at BOTH places the
+/// contract promises it: inside the question callback cancelled by the
+/// disconnect, and inside on_close.
+const CauseClient = struct {
+    bootstrap_target: ?cap_table.ResolvedCap = null,
+    disconnected_reason_seen: bool = false,
+    cause_at_cancel: ?rpc_events.DisconnectCause = null,
+    closes: u32 = 0,
+    cause_at_close: ?rpc_events.DisconnectCause = null,
+    failed: bool = false,
+
+    fn onBootstrap(
+        ctx_ptr: *anyopaque,
+        _: *Peer,
+        ret: protocol.Return,
+        caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *CauseClient = @ptrCast(@alignCast(ctx_ptr));
+        if (ret.tag != .results) return error.ExpectedBootstrapResults;
+        const results = ret.results orelse return error.MissingBootstrapResults;
+        const descriptor = try results.content.getCapability();
+        self.bootstrap_target = try caps.resolveCapability(descriptor);
+    }
+
+    fn onCallReturn(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        ret: protocol.Return,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *CauseClient = @ptrCast(@alignCast(ctx_ptr));
+        if (ret.tag != .exception) return;
+        const reason = if (ret.exception) |ex| ex.reason else "";
+        // The synthetic reason text stays exactly "disconnected" for every
+        // cause; the typed cause rides the peer, readable right here.
+        self.disconnected_reason_seen = std.mem.eql(u8, reason, capnpc.rpc.peer.disconnected_reason);
+        self.cause_at_cancel = peer.lastDisconnectCause();
+    }
+
+    /// Context-free params builder. CauseClient must never be handed to
+    /// `ClientState.buildCall`: that casts the ctx to a *ClientState, whose
+    /// `payload_size` lands on CauseClient's import id and whose `payload`
+    /// array runs past the end of the object.
+    fn buildCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+        _ = try call.initCapTableTyped(0);
+    }
+
+    fn peerError(ctx: ?*anyopaque, _: *Peer, _: anyerror) void {
+        const self: *CauseClient = @ptrCast(@alignCast(ctx.?));
+        self.failed = true;
+    }
+
+    fn peerClose(ctx: ?*anyopaque, peer: *Peer) void {
+        const self: *CauseClient = @ptrCast(@alignCast(ctx.?));
+        self.closes += 1;
+        self.cause_at_close = peer.lastDisconnectCause();
+    }
+};
+
+/// Step a compat server/client pair once on this thread, finalizing each
+/// side's terminal callbacks via run() once it starts closing (the
+/// driveFanoutStep pattern for a two-Connection topology).
+fn stepCompatPairOnce(
+    server_conn: *quic.Connection,
+    client_conn: *quic.Connection,
+    finalized: *[2]bool,
+) !void {
+    const conns = [2]*quic.Connection{ server_conn, client_conn };
+    for (conns, 0..) |conn, index| {
+        if (finalized[index]) continue;
+        if (!conn.isClosing()) _ = try conn.stepOnce(.poll);
+        if (conn.isClosing()) {
+            conn.run();
+            finalized[index] = true;
+        }
+    }
+    loopback.sleepMs(1);
+}
+
+test "Peer over QUIC carries a typed peer-close cause to cancelled questions and on_close" {
+    const allocator = std.testing.allocator;
+
+    var server_conn = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+    });
+    defer server_conn.deinit();
+    var client_conn = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_conn.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+    });
+    defer client_conn.deinit();
+
+    var server_state = NeverAnswerServer{};
+    var server_peer = Peer.init(allocator, &server_conn);
+    defer server_peer.deinit();
+    _ = try server_peer.setBootstrap(.{ .ctx = &server_state, .on_call = NeverAnswerServer.onCall });
+    server_peer.start(&server_state, NeverAnswerServer.peerError, NeverAnswerServer.peerClose);
+
+    var client_state = CauseClient{};
+    var client_peer = Peer.init(allocator, &client_conn);
+    defer client_peer.deinit();
+    client_peer.start(&client_state, CauseClient.peerError, CauseClient.peerClose);
+    _ = try client_peer.sendBootstrap(&client_state, CauseClient.onBootstrap);
+
+    var finalized = [2]bool{ false, false };
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback.loopback_timeout_ms and client_state.bootstrap_target == null) : (waited_ms += 1) {
+        try stepCompatPairOnce(&server_conn, &client_conn, &finalized);
+    }
+    const target = client_state.bootstrap_target orelse return error.BootstrapTimedOut;
+
+    // A call the server will never answer: in flight when the close lands.
+    _ = try client_peer.sendCallResolved(target, 0x5155_4943, 7, &client_state, CauseClient.buildCall, CauseClient.onCallReturn);
+    waited_ms = 0;
+    while (waited_ms < 50) : (waited_ms += 1) {
+        try stepCompatPairOnce(&server_conn, &client_conn, &finalized);
+    }
+
+    // Server closes cleanly; the client experiences a REMOTE close.
+    server_conn.requestClose();
+    waited_ms = 0;
+    while (waited_ms < loopback.loopback_timeout_ms and client_state.closes == 0) : (waited_ms += 1) {
+        try stepCompatPairOnce(&server_conn, &client_conn, &finalized);
+    }
+
+    try std.testing.expect(!client_state.failed);
+    try std.testing.expectEqual(@as(u32, 1), client_state.closes);
+    // The in-flight question was cancelled with the unchanged reason text,
+    // and the typed cause was already readable inside its callback.
+    try std.testing.expect(client_state.disconnected_reason_seen);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.peer_close, client_state.cause_at_cancel orelse return error.NoCancelCause);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.peer_close, client_state.cause_at_close orelse return error.NoCloseCause);
+    // Both transports agree on who closed: the client saw the peer close,
+    // the server saw its own clean local close.
+    try std.testing.expectEqual(rpc_events.DisconnectCause.peer_close, client_conn.closeCause());
+    try std.testing.expectEqual(rpc_events.DisconnectCause.local_close, server_conn.closeCause());
+}
+
+test "Peer over QUIC proves a crash-restart via DisconnectCause.stateless_reset" {
+    const allocator = std.testing.allocator;
+
+    // One reset key shared across the "crash": server B derives the same
+    // per-CID tokens server A advertised, which is what makes A's death
+    // provable to a client that never saw a CONNECTION_CLOSE.
+    const reset_key: [32]u8 = @splat(0x42);
+
+    // `Server.deinit` fires each live session's close callback, so the
+    // server must be torn down while its bound peer is still alive. Plain
+    // defers run LIFO and would do the opposite on every error arm (the
+    // peer is created later, so its defer runs first), turning a timeout
+    // into a use-after-free panic that hides the real failure. One owner,
+    // one order, every exit path.
+    const AVat = struct {
+        server: ?quic.Server = null,
+        peer: ?Peer = null,
+
+        fn crash(self: *@This()) void {
+            if (self.server) |*srv| srv.deinit();
+            self.server = null;
+            if (self.peer) |*p| {
+                _ = p.takeAttachedConnection(*quic.ServerSession);
+                p.deinit();
+            }
+            self.peer = null;
+        }
+    };
+    var a = AVat{};
+    defer a.crash();
+
+    a.server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .max_concurrent_connections = 1,
+        .stateless_reset_key = reset_key,
+    });
+    const a_server = &a.server.?;
+    const a_port = a_server.getAddress().getPort();
+
+    var client_conn = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = a_server.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+    });
+    defer client_conn.deinit();
+
+    var client_state = CauseClient{};
+    var client_peer = Peer.init(allocator, &client_conn);
+    defer client_peer.deinit();
+    client_peer.start(&client_state, CauseClient.peerError, CauseClient.peerClose);
+    _ = try client_peer.sendBootstrap(&client_state, CauseClient.onBootstrap);
+
+    // Bind a serving peer to A's session once it exists, so the bootstrap
+    // completes and the client has the peer's reset token installed (the
+    // section 18.2 transport parameter rides the handshake).
+    var a_state = ServerState{};
+
+    var client_finalized = false;
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback.loopback_timeout_ms and client_state.bootstrap_target == null) : (waited_ms += 1) {
+        _ = try a_server.stepOnce(.poll);
+        if (a.peer == null) {
+            if (a_server.sessionAt(0)) |session| {
+                a.peer = Peer.init(allocator, session);
+                _ = try a.peer.?.setBootstrap(.{ .ctx = &a_state, .on_call = ServerState.onCall });
+                a.peer.?.start(&a_state, ServerState.peerError, ServerState.peerClose);
+            }
+        }
+        if (!client_conn.isClosing()) _ = try client_conn.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    const target = client_state.bootstrap_target orelse return error.BootstrapTimedOut;
+
+    // CRASH: destroy A without any close ceremony. Nothing reaches the
+    // wire (the server is sans-IO at teardown), so the client still
+    // believes the connection is alive.
+    a.crash();
+
+    // RESTART: same port, same reset key, empty connection table.
+    const b_options = quic.ServerOptions{
+        .listen_addr = try std.Io.net.IpAddress.parse("127.0.0.1", a_port),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .max_concurrent_connections = 1,
+        .stateless_reset_key = reset_key,
+    };
+    // A's port went back to the kernel's ephemeral pool when it died, and
+    // sibling test binaries bind port 0 continuously; a brief retry keeps a
+    // lost race from reading as a death-certificate failure.
+    var b_server = blk: {
+        var attempt: u32 = 0;
+        while (true) : (attempt += 1) {
+            break :blk quic.Server.init(allocator, std.testing.io, b_options) catch |err| {
+                if (attempt >= 20) return err;
+                loopback.sleepMs(5);
+                continue;
+            };
+        }
+    };
+    defer b_server.deinit();
+
+    // The client calls into the void: B cannot route the DCID, answers
+    // with a stateless reset, and the client's installed token turns that
+    // into a proven crash-restart certificate.
+    _ = try client_peer.sendCallResolved(target, 0x5155_4943, 7, &client_state, CauseClient.buildCall, CauseClient.onCallReturn);
+
+    waited_ms = 0;
+    while (waited_ms < loopback.loopback_timeout_ms and client_state.closes == 0) : (waited_ms += 1) {
+        _ = try b_server.stepOnce(.poll);
+        if (!client_conn.isClosing()) {
+            _ = try client_conn.stepOnce(.poll);
+        } else if (!client_finalized) {
+            client_conn.run();
+            client_finalized = true;
+        }
+        loopback.sleepMs(1);
+    }
+
+    try std.testing.expect(!client_state.failed);
+    try std.testing.expectEqual(@as(u32, 1), client_state.closes);
+    // The question cancelled by the reset carries the unchanged reason
+    // text, with the proof readable in its callback and in on_close.
+    try std.testing.expect(client_state.disconnected_reason_seen);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, client_state.cause_at_cancel orelse return error.NoCancelCause);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, client_state.cause_at_close orelse return error.NoCloseCause);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, client_peer.lastDisconnectCause());
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, client_conn.closeCause());
+    // And the restarted endpoint counted the reset it sent — the churn
+    // observability signal.
+    try std.testing.expect(b_server.statelessResetsSent() >= 1);
+}
+
+test "QUIC fanout session local close certifies .local_close to its bound peer" {
+    const allocator = std.testing.allocator;
+
+    // Same ownership rule as the crash-restart test: the server outlives no
+    // bound peer, so one owner tears both down in the only safe order.
+    const Vat = struct {
+        server: ?quic.Server = null,
+        peer: ?Peer = null,
+
+        fn teardown(self: *@This()) void {
+            if (self.server) |*srv| srv.deinit();
+            self.server = null;
+            if (self.peer) |*p| {
+                _ = p.takeAttachedConnection(*quic.ServerSession);
+                p.deinit();
+            }
+            self.peer = null;
+        }
+    };
+    var vat = Vat{};
+    defer vat.teardown();
+
+    vat.server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .max_concurrent_connections = 1,
+    });
+    const server = &vat.server.?;
+
+    var client_conn = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+    });
+    defer client_conn.deinit();
+
+    var server_state = CauseClient{};
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback.loopback_timeout_ms and vat.peer == null) : (waited_ms += 1) {
+        _ = try server.stepOnce(.poll);
+        if (server.sessionAt(0)) |session| {
+            vat.peer = Peer.init(allocator, session);
+            vat.peer.?.start(&server_state, CauseClient.peerError, CauseClient.peerClose);
+        }
+        if (!client_conn.isClosing()) _ = try client_conn.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    if (vat.peer == null) return error.SessionNeverAccepted;
+    const session = server.sessionAt(0) orelse return error.SessionDisappeared;
+
+    // The public per-session close: the QUIC-level close happens inside the
+    // loop's own flush, AFTER the capnp close controller has recorded its
+    // status. Capturing the certificate before that flush yielded `.unknown`
+    // here, then silently flipped to `.local_close` a step later — after the
+    // close callback had already read it.
+    session.requestClose();
+
+    waited_ms = 0;
+    while (waited_ms < loopback.loopback_timeout_ms and server_state.closes == 0) : (waited_ms += 1) {
+        _ = try server.stepOnce(.poll);
+        if (!client_conn.isClosing()) _ = try client_conn.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+
+    try std.testing.expectEqual(@as(u32, 1), server_state.closes);
+    try std.testing.expectEqual(
+        rpc_events.DisconnectCause.local_close,
+        server_state.cause_at_close orelse return error.NoCloseCause,
+    );
+
+    client_conn.requestClose();
+    client_conn.run();
+}

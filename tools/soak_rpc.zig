@@ -86,7 +86,13 @@ const Totals = struct {
     // counts (idle-timeout drops under contention), not a correctness failure.
     contention_disconnects: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     unexpected_exceptions: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    // Terminal transport close cause per session (the death certificate):
+    // indexed by @intFromEnum(rpc.events.DisconnectCause). TCP sessions all
+    // land in .unknown today; QUIC splits local/peer/idle/reset/error.
+    disconnects_by_cause: [cause_count]std.atomic.Value(usize) = @splat(std.atomic.Value(usize).init(0)),
 };
+
+const cause_count = std.enums.values(rpc.events.DisconnectCause).len;
 
 fn nowNs(io: std.Io) i64 {
     return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
@@ -544,6 +550,8 @@ fn WorkerOf(
             conn.run();
 
             _ = self.totals.sessions.fetchAdd(1, .monotonic);
+            const cause = peer.lastDisconnectCause();
+            _ = self.totals.disconnects_by_cause[@backingInt(cause)].fetchAdd(1, .monotonic);
             if (session.failed) {
                 _ = self.totals.transport_errors.fetchAdd(1, .monotonic);
             }
@@ -579,6 +587,12 @@ const QuicServerHarness = struct {
     thread: ?std.Thread = null,
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     bound: if (quic.enabled) std.AutoHashMap(u64, *Peer) else void = undefined,
+    // Reset-emitter field data (the churn signals upstream's stability case
+    // for the reset surfaces asks for). unroutable_* count LogEvent
+    // .unroutable_dcid; resets_sent snapshots the server counter at drain.
+    unroutable_seen: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    unroutable_reset_queued: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    resets_sent: u64 = 0,
 
     fn start(self: *QuicServerHarness, allocator: std.mem.Allocator, io: std.Io, workers: u32, cc: CcChoice) !net.IpAddress {
         if (comptime !quic.enabled) unreachable;
@@ -594,6 +608,11 @@ const QuicServerHarness = struct {
             // Each worker holds at most one live session; x2 covers
             // close/reap overlap during churn.
             .max_concurrent_connections = workers * 2 + 4,
+            // Fixed soak key: turns churned-away connection state into
+            // observable stateless resets instead of silent timeouts.
+            .stateless_reset_key = @as(quic.StatelessResetKey, @splat(0x51)),
+            .log_callback = QuicServerHarness.onServerLog,
+            .log_user_data = self,
         };
         applyCc(&server_options.congestion_control, cc);
         server.* = try quic.Server.init(allocator, io, server_options);
@@ -612,6 +631,19 @@ const QuicServerHarness = struct {
             self.allocator.destroy(server);
         }
         self.bound.deinit();
+    }
+
+    fn onServerLog(user_data: ?*anyopaque, ev: quic.ServerLogEvent) void {
+        if (comptime !quic.enabled) unreachable;
+        const self: *QuicServerHarness = @ptrCast(@alignCast(user_data.?));
+        switch (ev) {
+            .unroutable_dcid => |info| {
+                _ = self.unroutable_seen.fetchAdd(1, .monotonic);
+                if (info.reset_queued) _ = self.unroutable_reset_queued.fetchAdd(1, .monotonic);
+            },
+            // LogEvent is additive upstream; never switch exhaustively.
+            else => {},
+        }
     }
 
     fn threadMain(self: *QuicServerHarness) void {
@@ -641,6 +673,8 @@ const QuicServerHarness = struct {
             self.allocator.destroy(peer);
         }
         self.bound.clearRetainingCapacity();
+        // Loop-thread-only accessor; snapshot before the loop thread exits.
+        self.resets_sent = server.statelessResetsSent();
     }
 
     fn bindNewSessions(self: *QuicServerHarness) void {
@@ -983,6 +1017,10 @@ pub fn main(init: std.process.Init) !void {
             if (comptime quic.enabled) {
                 quic_srv.shutdown();
                 std.debug.print("soak: quic server drained\n", .{});
+                std.debug.print(
+                    "soak-quic: resets_sent={} unroutable_dcid={} (reset_queued={})\n",
+                    .{ quic_srv.resets_sent, quic_srv.unroutable_seen.load(.acquire), quic_srv.unroutable_reset_queued.load(.acquire) },
+                );
             } else unreachable;
         },
     }
@@ -1017,6 +1055,11 @@ pub fn main(init: std.process.Init) !void {
         "soak: sessions={} calls_ok={} cancelled={} chaos_closes={} transport_errors={} expected_disconnects={} contention_disconnects={} unexpected_exceptions={}\n",
         .{ sessions, ok, cancelled, chaos_closes, transport_errors, expected_disconnects, contention_disconnects, unexpected },
     );
+    std.debug.print("soak: session close causes:", .{});
+    inline for (comptime std.enums.values(rpc.events.DisconnectCause), 0..) |cause, i| {
+        std.debug.print(" {s}={}", .{ @tagName(cause), totals.disconnects_by_cause[i].load(.acquire) });
+    }
+    std.debug.print("\n", .{});
     std.debug.print(
         "soak: latency p50={}ns p99={}ns max={}ns (samples={})\n",
         .{ lat.p50, lat.p99, lat.max, lat.count },
