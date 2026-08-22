@@ -144,6 +144,13 @@ capnpc-zig.rpc.events.ConnectionPhase.initialized: enumerant = 0
 capnpc-zig.rpc.events.ConnectionPhase.rejected: enumerant = 5
 capnpc-zig.rpc.events.ConnectionPhase.started: enumerant = 2
 capnpc-zig.rpc.events.ConnectionPhase: enum
+capnpc-zig.rpc.events.DisconnectCause.idle_timeout: enumerant = 3
+capnpc-zig.rpc.events.DisconnectCause.local_close: enumerant = 1
+capnpc-zig.rpc.events.DisconnectCause.peer_close: enumerant = 2
+capnpc-zig.rpc.events.DisconnectCause.stateless_reset: enumerant = 4
+capnpc-zig.rpc.events.DisconnectCause.transport_error: enumerant = 5
+capnpc-zig.rpc.events.DisconnectCause.unknown: enumerant = 0
+capnpc-zig.rpc.events.DisconnectCause: enum
 capnpc-zig.rpc.events.Event.backpressure: variant rpc.events.BackpressureEvent
 capnpc-zig.rpc.events.Event.call_latency: variant rpc.events.CallLatencyEvent
 capnpc-zig.rpc.events.Event.close: variant rpc.events.CloseEvent
@@ -1457,6 +1464,8 @@ capnpc-zig.rpc.peer.Peer.join_network: field ?rpc.vat.join.JoinNetwork(rpc.peer.
 capnpc-zig.rpc.peer.Peer.join_network_borrows: field usize = 0
 capnpc-zig.rpc.peer.Peer.join_operation_depth: field u32 = 0
 capnpc-zig.rpc.peer.Peer.join_sweep_in_progress: field bool = false
+capnpc-zig.rpc.peer.Peer.lastDisconnectCause: fn (*const rpc.peer.mod.Peer) rpc.events.DisconnectCause
+capnpc-zig.rpc.peer.Peer.last_disconnect_cause: field rpc.events.DisconnectCause = .unknown
 capnpc-zig.rpc.peer.Peer.last_inbound_tag: field ?rpc.gen.capnp.rpc.Message.WhichTag = null
 capnpc-zig.rpc.peer.Peer.last_remote_abort_reason: field ?[]u8 = null
 capnpc-zig.rpc.peer.Peer.leaveAutomaticThirdPartyOperation: fn (*rpc.peer.mod.Peer) void
@@ -2310,7 +2319,9 @@ capnpc-zig.rpc.transport.quic.Connection.assertThreadAffinity: fn (*const rpc.tr
 capnpc-zig.rpc.transport.quic.Connection.baseline: field rpc.transport.quic.baseline_engine.BaselineEngine
 capnpc-zig.rpc.transport.quic.Connection.callback_lifecycle: field rpc.transport.quic.callback_lifecycle.State(rpc.transport.quic.connection.Connection) = <default>
 capnpc-zig.rpc.transport.quic.Connection.close: fn (*rpc.transport.quic.connection.Connection) void
+capnpc-zig.rpc.transport.quic.Connection.closeCause: fn (*const rpc.transport.quic.connection.Connection) rpc.events.DisconnectCause
 capnpc-zig.rpc.transport.quic.Connection.closeStatus: fn (*const rpc.transport.quic.connection.Connection) ?rpc.transport.quic.close.Status
+capnpc-zig.rpc.transport.quic.Connection.close_cause: field rpc.events.DisconnectCause = .unknown
 capnpc-zig.rpc.transport.quic.Connection.close_controller: field rpc.transport.quic.close_controller.Controller = <default>
 capnpc-zig.rpc.transport.quic.Connection.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.quic.Connection.context: fn (*const rpc.transport.quic.connection.Connection) ?*anyopaque
@@ -2327,6 +2338,7 @@ capnpc-zig.rpc.transport.quic.Connection.native: field rpc.transport.quic.native
 capnpc-zig.rpc.transport.quic.Connection.observer: field ?rpc.events.Observer = null
 capnpc-zig.rpc.transport.quic.Connection.on_tick: field ?*const fn (*rpc.transport.quic.connection.Connection) void = null
 capnpc-zig.rpc.transport.quic.Connection.owner_thread_id: field ?u64 = null
+capnpc-zig.rpc.transport.quic.Connection.quicCloseEvent: fn (*rpc.transport.quic.connection.Connection) ?conn.lifecycle.CloseEvent
 capnpc-zig.rpc.transport.quic.Connection.requestClose: fn (*rpc.transport.quic.connection.Connection) void
 capnpc-zig.rpc.transport.quic.Connection.role: field rpc.transport.quic.endpoint.Role
 capnpc-zig.rpc.transport.quic.Connection.run: fn (*rpc.transport.quic.connection.Connection) void
@@ -2433,8 +2445,10 @@ capnpc-zig.rpc.transport.quic.Server.Session.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.quic.Server.Session.baseline: field rpc.transport.quic.baseline_engine.BaselineEngine
 capnpc-zig.rpc.transport.quic.Server.Session.callback_lifecycle: field rpc.transport.quic.callback_lifecycle.State(rpc.transport.quic.server.ServerSession) = <default>
 capnpc-zig.rpc.transport.quic.Server.Session.close: fn (*rpc.transport.quic.server.ServerSession) void
+capnpc-zig.rpc.transport.quic.Server.Session.closeCause: fn (*const rpc.transport.quic.server.ServerSession) rpc.events.DisconnectCause
 capnpc-zig.rpc.transport.quic.Server.Session.closeStatus: fn (*const rpc.transport.quic.server.ServerSession) ?rpc.transport.quic.close.Status
 capnpc-zig.rpc.transport.quic.Server.Session.close_callback_invoked: field bool = false
+capnpc-zig.rpc.transport.quic.Server.Session.close_cause: field rpc.events.DisconnectCause = .unknown
 capnpc-zig.rpc.transport.quic.Server.Session.close_controller: field rpc.transport.quic.close_controller.Controller
 capnpc-zig.rpc.transport.quic.Server.Session.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.quic.Server.Session.context: fn (*const rpc.transport.quic.server.ServerSession) ?*anyopaque
@@ -2451,6 +2465,7 @@ capnpc-zig.rpc.transport.quic.Server.Session.on_tick: field ?*const fn (*rpc.tra
 capnpc-zig.rpc.transport.quic.Server.Session.ordinal: field usize
 capnpc-zig.rpc.transport.quic.Server.Session.peerAddress: fn (*const rpc.transport.quic.server.ServerSession) ?Io.net.IpAddress
 capnpc-zig.rpc.transport.quic.Server.Session.peer_addr: field ?Io.net.IpAddress
+capnpc-zig.rpc.transport.quic.Server.Session.quicCloseEvent: fn (*rpc.transport.quic.server.ServerSession) ?conn.lifecycle.CloseEvent
 capnpc-zig.rpc.transport.quic.Server.Session.requestClose: fn (*rpc.transport.quic.server.ServerSession) void
 capnpc-zig.rpc.transport.quic.Server.Session.role: field rpc.transport.quic.endpoint.Role
 capnpc-zig.rpc.transport.quic.Server.Session.sendFrame: fn (*rpc.transport.quic.server.ServerSession, []const u8) error{BrokenPipe,FrameTooLarge,OutOfMemory,OutboundQueueFull}!void
@@ -2493,6 +2508,8 @@ capnpc-zig.rpc.transport.quic.Server.sessionById: fn (*rpc.transport.quic.server
 capnpc-zig.rpc.transport.quic.Server.sessionCapacity: fn (*const rpc.transport.quic.server.Server) u32
 capnpc-zig.rpc.transport.quic.Server.sessionCount: fn (*const rpc.transport.quic.server.Server) usize
 capnpc-zig.rpc.transport.quic.Server.sessions: field array_list.Aligned(*rpc.transport.quic.server.ServerSession,null) = <default>
+capnpc-zig.rpc.transport.quic.Server.statelessResetsSent: fn (*const rpc.transport.quic.server.Server) u64
+capnpc-zig.rpc.transport.quic.Server.stateless_resets_sent: field u64 = 0
 capnpc-zig.rpc.transport.quic.Server.step: fn (*rpc.transport.quic.server.Server) error{AccessDenied,AckRangeCountTooLarge,AddressFamilyUnsupported,AesKeyInvalid,AllowEarlyDataCallbackInstallFailed,AlpnInvalid,AlpnSetFailed,AlpnTooLong,AlternativeAddressNotNegotiated,AlternativeAddressSequenceExhausted,Auth,BeyondFinalSize,BrokenPipe,BufferLimitExceeded,BufferTooSmall,Canceled,ClientRandomUnavailable,ConcurrencyUnavailable,ConnIdTooLong,ConnectionClosed,ConnectionIdAlreadyInUse,ConnectionIdLimitExceeded,ConnectionIdRequired,ConnectionRefused,ConnectionResetByPeer,ConsumeBeyondReadable,ContextTooLong,DatagramBufferTooSmall,DatagramIdExhausted,DatagramQueueFull,DatagramTooLarge,DatagramUnavailable,DcidTooLong,DeclaredLengthExceedsInput,DefaultVerifyPathsFailed,DuplicateParameter,EarlyDataRejected,Empty,EmptyEarlyDataContext,ExcessiveLoad,FastOpenAlreadyInProgress,FinalSizeChanged,FlowControlExceeded,HandshakeFailed,HostUnreachable,InboxOverflow,InitFailed,InsufficientBytes,InsufficientCiphertext,InvalidChunk,InvalidConfig,InvalidLength,InvalidPem,InvalidPnLength,InvalidPnOffset,InvalidStreamId,InvalidValue,InvalidVersionNegotiation,KdfFailed,KeyMismatch,KeyUpdateBlocked,KeyUpdateUnavailable,KeylogSetupFailed,LabelTooLong,LoadCADirFailed,LoadCAFileFailed,MessageOversize,MigrationNoFreshPeerCid,MigrationPreHandshake,MigrationValidationPending,NetworkDown,NetworkUnreachable,NewTokenTooLong,NotClientContext,NotHandshakePacket,NotInitialPacket,NotServerContext,NotShortHeader,NotZeroRttPacket,OutOfMemory,OutputTooLong,OutputTooSmall,OverlappingAckRanges,PathIdTooLarge,PathLimitExceeded,PathNotFound,PayloadTooShort,PeerAlerted,PeerDcidNotSet,PeerExceededLimit,PnSpaceExhausted,PollFailed,PortUnreachable,PreferredAddressNotAdvertised,ProcessFdQuotaExceeded,QuicEarlyDataContextFailed,QuicProvideDataFailed,QuicSetupFailed,QuicTransportParamsFailed,RandFailed,ReadFailed,ScidTooLong,SealFailed,SecretWrongLength,SessionParseFailed,SessionSerializeFailed,SetSessionFailed,ShuttingDown,SocketUnconnected,SslAllocFailed,SslCtxAllocFailed,SslSetFdFailed,SslSetHostnameFailed,StreamAlreadyOpen,StreamClosed,StreamLimitExceeded,StreamNotFound,StreamNotReadable,StreamNotWritable,SyscallError,SystemFdQuotaExceeded,SystemResources,Timeout,TooManyInFlight,TooManyRetransmittableFrames,TooManyStreamFrames,TransportParameterError,UnacknowledgedTooFar,Unexpected,UnknownFrameType,UnknownLength,UnknownPacket,UnsupportedCipherSuite,UnsupportedSuite,UseCertFailed,UsePrivateKeyFailed,ValueTooLarge,WantRead,WantWrite,WriteFailed,ZeroLengthNewToken}!void
 capnpc-zig.rpc.transport.quic.Server.stepOnce: fn (*rpc.transport.quic.server.Server, rpc.transport.quic.scheduler.StepMode) error{AccessDenied,AckRangeCountTooLarge,AddressFamilyUnsupported,AesKeyInvalid,AllowEarlyDataCallbackInstallFailed,AlpnInvalid,AlpnSetFailed,AlpnTooLong,AlternativeAddressNotNegotiated,AlternativeAddressSequenceExhausted,Auth,BeyondFinalSize,BrokenPipe,BufferLimitExceeded,BufferTooSmall,Canceled,ClientRandomUnavailable,ConcurrencyUnavailable,ConnIdTooLong,ConnectionClosed,ConnectionIdAlreadyInUse,ConnectionIdLimitExceeded,ConnectionIdRequired,ConnectionRefused,ConnectionResetByPeer,ConsumeBeyondReadable,ContextTooLong,DatagramBufferTooSmall,DatagramIdExhausted,DatagramQueueFull,DatagramTooLarge,DatagramUnavailable,DcidTooLong,DeclaredLengthExceedsInput,DefaultVerifyPathsFailed,DuplicateParameter,EarlyDataRejected,Empty,EmptyEarlyDataContext,ExcessiveLoad,FastOpenAlreadyInProgress,FinalSizeChanged,FlowControlExceeded,HandshakeFailed,HostUnreachable,InboxOverflow,InitFailed,InsufficientBytes,InsufficientCiphertext,InvalidChunk,InvalidConfig,InvalidLength,InvalidPem,InvalidPnLength,InvalidPnOffset,InvalidStreamId,InvalidValue,InvalidVersionNegotiation,KdfFailed,KeyMismatch,KeyUpdateBlocked,KeyUpdateUnavailable,KeylogSetupFailed,LabelTooLong,LoadCADirFailed,LoadCAFileFailed,MessageOversize,MigrationNoFreshPeerCid,MigrationPreHandshake,MigrationValidationPending,NetworkDown,NetworkUnreachable,NewTokenTooLong,NotClientContext,NotHandshakePacket,NotInitialPacket,NotServerContext,NotShortHeader,NotZeroRttPacket,OutOfMemory,OutputTooLong,OutputTooSmall,OverlappingAckRanges,PathIdTooLarge,PathLimitExceeded,PathNotFound,PayloadTooShort,PeerAlerted,PeerDcidNotSet,PeerExceededLimit,PnSpaceExhausted,PollFailed,PortUnreachable,PreferredAddressNotAdvertised,ProcessFdQuotaExceeded,QuicEarlyDataContextFailed,QuicProvideDataFailed,QuicSetupFailed,QuicTransportParamsFailed,RandFailed,ReadFailed,ScidTooLong,SealFailed,SecretWrongLength,SessionParseFailed,SessionSerializeFailed,SetSessionFailed,ShuttingDown,SocketUnconnected,SslAllocFailed,SslCtxAllocFailed,SslSetFdFailed,SslSetHostnameFailed,StreamAlreadyOpen,StreamClosed,StreamLimitExceeded,StreamNotFound,StreamNotReadable,StreamNotWritable,SyscallError,SystemFdQuotaExceeded,SystemResources,Timeout,TooManyInFlight,TooManyRetransmittableFrames,TooManyStreamFrames,TransportParameterError,UnacknowledgedTooFar,Unexpected,UnknownFrameType,UnknownLength,UnknownPacket,UnsupportedCipherSuite,UnsupportedSuite,UseCertFailed,UsePrivateKeyFailed,ValueTooLarge,WantRead,WantWrite,WriteFailed,ZeroLengthNewToken}!rpc.transport.quic.scheduler.StepResult
 capnpc-zig.rpc.transport.quic.Server.stepSession: fn (*rpc.transport.quic.server.Server, usize) anyerror!void
@@ -2583,6 +2600,7 @@ capnpc-zig.rpc.transport.quic.ServerOptions.reveal_close_reason_on_wire: field b
 capnpc-zig.rpc.transport.quic.ServerOptions.source_byte_rate_limit: field Server.Config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerOptions.source_rate_table_capacity: field u32 = 4096
 capnpc-zig.rpc.transport.quic.ServerOptions.source_rate_window_us: field u64 = 1000000
+capnpc-zig.rpc.transport.quic.ServerOptions.stateless_reset_key: field ?[32]u8 = null
 capnpc-zig.rpc.transport.quic.ServerOptions.stream_read_buffer_size: field usize = 65536
 capnpc-zig.rpc.transport.quic.ServerOptions.tls_cert_pem: field []const u8
 capnpc-zig.rpc.transport.quic.ServerOptions.tls_key_pem: field []const u8
@@ -2613,6 +2631,7 @@ capnpc-zig.rpc.transport.quic.ServerSession.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.quic.ServerSession.baseline: field rpc.transport.quic.baseline_engine.BaselineEngine
 capnpc-zig.rpc.transport.quic.ServerSession.callback_lifecycle: field rpc.transport.quic.callback_lifecycle.State(rpc.transport.quic.server.ServerSession) = <default>
 capnpc-zig.rpc.transport.quic.ServerSession.close_callback_invoked: field bool = false
+capnpc-zig.rpc.transport.quic.ServerSession.close_cause: field rpc.events.DisconnectCause = .unknown
 capnpc-zig.rpc.transport.quic.ServerSession.close_controller: field rpc.transport.quic.close_controller.Controller
 capnpc-zig.rpc.transport.quic.ServerSession.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.quic.ServerSession.id: field u64
@@ -2633,6 +2652,7 @@ capnpc-zig.rpc.transport.quic.ServerSession.wake_state: field *rpc.transport.qui
 capnpc-zig.rpc.transport.quic.ServerSession: struct
 capnpc-zig.rpc.transport.quic.Session.slot: field *Server.Slot
 capnpc-zig.rpc.transport.quic.Session: struct
+capnpc-zig.rpc.transport.quic.StatelessResetKey: type = [32]u8
 capnpc-zig.rpc.transport.quic.StepMode.poll: enumerant = 1
 capnpc-zig.rpc.transport.quic.StepMode.wait: enumerant = 0
 capnpc-zig.rpc.transport.quic.StepMode: enum
@@ -2678,6 +2698,7 @@ capnpc-zig.rpc.transport.quic.close.Status: struct
 capnpc-zig.rpc.transport.quic.close.codeForFrameError: fn (anyerror) rpc.transport.quic.close.ApplicationCloseCode
 capnpc-zig.rpc.transport.quic.close.codeForStepError: fn (anyerror) rpc.transport.quic.close.ApplicationCloseCode
 capnpc-zig.rpc.transport.quic.close.codeValue: fn (rpc.transport.quic.close.ApplicationCloseCode) u64
+capnpc-zig.rpc.transport.quic.close.disconnectCauseFor: fn (anytype) rpc.events.DisconnectCause
 capnpc-zig.rpc.transport.quic.close.max_wire_reason_bytes: const usize
 capnpc-zig.rpc.transport.quic.close.prepareWireReason: fn ([]u8, rpc.transport.quic.close.ApplicationCloseCode, ?anyerror, bool) rpc.transport.quic.close.PreparedReason
 capnpc-zig.rpc.transport.quic.close.publicReason: fn (rpc.transport.quic.close.ApplicationCloseCode) []const u8

@@ -144,6 +144,13 @@ capnpc-zig.rpc.events.ConnectionPhase.initialized: enumerant = 0
 capnpc-zig.rpc.events.ConnectionPhase.rejected: enumerant = 5
 capnpc-zig.rpc.events.ConnectionPhase.started: enumerant = 2
 capnpc-zig.rpc.events.ConnectionPhase: enum
+capnpc-zig.rpc.events.DisconnectCause.idle_timeout: enumerant = 3
+capnpc-zig.rpc.events.DisconnectCause.local_close: enumerant = 1
+capnpc-zig.rpc.events.DisconnectCause.peer_close: enumerant = 2
+capnpc-zig.rpc.events.DisconnectCause.stateless_reset: enumerant = 4
+capnpc-zig.rpc.events.DisconnectCause.transport_error: enumerant = 5
+capnpc-zig.rpc.events.DisconnectCause.unknown: enumerant = 0
+capnpc-zig.rpc.events.DisconnectCause: enum
 capnpc-zig.rpc.events.Event.backpressure: variant rpc.events.BackpressureEvent
 capnpc-zig.rpc.events.Event.call_latency: variant rpc.events.CallLatencyEvent
 capnpc-zig.rpc.events.Event.close: variant rpc.events.CloseEvent
@@ -1457,6 +1464,8 @@ capnpc-zig.rpc.peer.Peer.join_network: field ?rpc.vat.join.JoinNetwork(rpc.peer.
 capnpc-zig.rpc.peer.Peer.join_network_borrows: field usize = 0
 capnpc-zig.rpc.peer.Peer.join_operation_depth: field u32 = 0
 capnpc-zig.rpc.peer.Peer.join_sweep_in_progress: field bool = false
+capnpc-zig.rpc.peer.Peer.lastDisconnectCause: fn (*const rpc.peer.mod.Peer) rpc.events.DisconnectCause
+capnpc-zig.rpc.peer.Peer.last_disconnect_cause: field rpc.events.DisconnectCause = .unknown
 capnpc-zig.rpc.peer.Peer.last_inbound_tag: field ?rpc.gen.capnp.rpc.Message.WhichTag = null
 capnpc-zig.rpc.peer.Peer.last_remote_abort_reason: field ?[]u8 = null
 capnpc-zig.rpc.peer.Peer.leaveAutomaticThirdPartyOperation: fn (*rpc.peer.mod.Peer) void

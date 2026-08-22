@@ -238,6 +238,24 @@ Deliberate v1 boundaries (each is the next rung, not an oversight):
   unroutable short-header DCIDs) and, in capnp-zig, plumbing close-cause
   (CloseEvent/CloseSource) through the adapter to break questions with
   proof instead of one collapsed exception string.
+
+  **LANDED 2026-08-21 (Experimental).** quic-zig shipped the emitter in
+  v0.15; the capnp-zig half now reads the sticky `closeEvent()` on both
+  terminal paths and carries `rpc.events.DisconnectCause` to
+  `Peer.lastDisconnectCause()` (set before cancelled-question callbacks
+  fire). The exception reason text deliberately stays "disconnected" for
+  every cause — the certificate rides the peer, not the string — so TCP
+  and existing matchers are untouched. `ServerOptions.stateless_reset_key`
+  is forwarded (enabling both the emitter and the §18.2 handshake-CID
+  token that makes client-side proof possible), and
+  `Server.statelessResetsSent()` + the soak's `unroutable_dcid` counters
+  are the instrument for the churn field data upstream wants. Measured so
+  far: graceful churn produces all-`local_close` sessions and zero resets,
+  which is correct but not the interesting case — an abrupt-death chaos
+  mode is what will actually exercise the reset path. Proven by a crash-restart e2e (no close ceremony, same
+  port + key, next call → `.stateless_reset` at every observation point).
+  Not yet wired: the restore layer that ACTS on the proof (auto warm
+  redial on `.stateless_reset`) — that is the ladder's integration rung.
 - Migration walk: `rotateLiveSlotCids` exists; the capnp adapter must
   stop dropping datagrams from unexpected sources first.
 

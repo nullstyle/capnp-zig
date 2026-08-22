@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Typed disconnect causes over QUIC (the "death certificate";
+  Experimental).** quic-zig has carried a full typed close certificate
+  since v0.15 (sticky `closeEvent()`, `CloseSource` incl.
+  `stateless_reset`); this transport never read it — every remote death
+  reached the peer layer as one indistinguishable disconnect, and the
+  fanout server even recorded `.normal` for remote-caused session deaths.
+  Now: `rpc.events.DisconnectCause` (unknown / local_close / peer_close /
+  idle_timeout / stateless_reset / transport_error); QUIC `Connection`
+  and `ServerSession` capture the cause on their terminal paths and
+  expose `closeCause()` (+ raw `quicCloseEvent()`); `Peer` picks it up
+  through the same capability-detection seam as `on_tick` and exposes
+  `lastDisconnectCause()` — already set inside the question callbacks the
+  disconnect cancels and inside `on_close`. The synthetic exception's
+  reason text stays exactly "disconnected" for every cause, so existing
+  matchers (and the TCP transport, which stays `.unknown`) see zero
+  change. `.stateless_reset` is the crash-restart proof the durable-caps
+  restore ladder keys on. New server surfaces: `ServerOptions
+  .stateless_reset_key` (forwarded; enables the §10.3 emitter and the
+  §18.2 handshake-CID token clients need for that proof) and
+  `Server.statelessResetsSent()`. Proven by three e2e tests, including a
+  full crash-restart: server destroyed with no close ceremony, restarted
+  on the same port with the same key, and the client's next call converts
+  the stateless reset into `DisconnectCause.stateless_reset` at every
+  promised observation point (ablation-verified). The QUIC soak now runs
+  with a reset key and reports per-cause session close distributions plus
+  `unroutable_dcid`/reset counts. First measurement (60s churn, 8
+  workers): every session closes `local_close`, resets and unroutable
+  DCIDs both zero — the soak's churn is GRACEFUL, so it exercises the
+  counters' plumbing but not yet the reset path itself. Producing real
+  reset field data needs an abrupt-death chaos mode; the instrument is
+  now in place for it.
+
 ## [0.12.0] - 2026-08-21
 
 ### Added
