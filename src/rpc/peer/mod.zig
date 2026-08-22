@@ -732,6 +732,14 @@ pub const Peer = struct {
     /// `detachTransport` deliberately does not set this bit: detaching a live
     /// transport is non-terminal and permits rebinding.
     transport_close_notified: bool = false,
+    /// Typed close cause captured from the transport the instant its close
+    /// callback fired, BEFORE pending questions are cancelled — so a
+    /// question callback receiving the synthetic "disconnected" exception
+    /// can already read it (`lastDisconnectCause`). Transports that expose
+    /// no `closeCause()` capability leave it `.unknown`; the synthetic
+    /// exception's reason text never varies with it. Reset on transport
+    /// attach so a rebound peer does not carry a stale certificate.
+    last_disconnect_cause: events.DisconnectCause = .unknown,
     /// Reentrant `deinit()` from a synchronous automatic third-party send or
     /// automatic Call dispatch is deferred until the outer operation unwinds.
     /// Both the source and result peers take this guard while their maps are
@@ -1260,6 +1268,17 @@ pub const Peer = struct {
             @panic("attachTransportBinding called while a transport is already attached; call detachTransport first");
         }
         self.transport = binding;
+        self.last_disconnect_cause = .unknown;
+    }
+
+    /// Typed close cause of the most recent transport death ("death
+    /// certificate"). `.unknown` until a transport that can distinguish
+    /// causes (QUIC) closes; valid inside question callbacks cancelled by
+    /// the disconnect and inside `on_close`. `.stateless_reset` proves
+    /// the remote endpoint lost its connection state (crash-restart) —
+    /// the signal a warm-restore layer keys on.
+    pub fn lastDisconnectCause(self: *const Peer) events.DisconnectCause {
+        return self.last_disconnect_cause;
     }
 
     /// Detach the transport without closing it, clearing all transport callbacks.

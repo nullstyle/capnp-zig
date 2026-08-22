@@ -4,6 +4,7 @@ const events = @import("../../events.zig");
 const engine_owner_mod = @import("engine_owner.zig");
 const endpoint_mod = @import("endpoint.zig");
 const mode_router = @import("mode_router.zig");
+const quic_close_mod = @import("close.zig");
 const quic_options = @import("options.zig");
 
 /// Builds the owner views used by QUIC loop and stream engines.
@@ -54,6 +55,7 @@ pub fn State(comptime Connection: type) type {
                 .invoke_close_callback = loopInvokeCloseCallback,
                 .complete_deferred_deinit = loopCompleteDeferredDeinit,
                 .invoke_tick = loopInvokeTick,
+                .capture_close_cause = loopCaptureCloseCause,
             };
         }
 
@@ -153,8 +155,23 @@ pub fn State(comptime Connection: type) type {
             conn.udp_receive.cancel(conn.endpoint.io);
         }
 
+        fn loopCaptureCloseCause(ptr: *anyopaque) void {
+            captureCloseCause(castConnection(ptr));
+        }
+
+        fn captureCloseCause(conn: *Connection) void {
+            if (conn.close_cause != .unknown) return;
+            const active = conn.endpoint.activeQuicConnection() orelse return;
+            const ev = active.closeEvent() orelse return;
+            conn.close_cause = quic_close_mod.disconnectCauseFor(ev);
+        }
+
         fn loopNotifyClosed(ptr: *anyopaque) void {
             const conn = castConnection(ptr);
+            // Read the sticky quic-zig close certificate while the
+            // underlying connection is still live, before observers and
+            // the peer's close callback run.
+            captureCloseCause(conn);
             // A cross-thread requestClose() defers its `.closing` observer
             // event to this (the loop) thread. The compat connection never
             // calls drainPendingClose, so the pending request is still set
@@ -169,6 +186,7 @@ pub fn State(comptime Connection: type) type {
 
         fn loopInvokeCloseCallback(ptr: *anyopaque) void {
             const conn = castConnection(ptr);
+            captureCloseCause(conn);
             if (conn.callback_lifecycle.closeCallback()) |cb| {
                 conn.callback_lifecycle.invokeClose(conn, cb);
             }

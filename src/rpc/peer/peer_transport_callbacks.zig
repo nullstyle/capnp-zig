@@ -105,6 +105,14 @@ pub fn onConnectionCloseFor(
     return struct {
         fn call(conn: ConnPtr) void {
             const peer = peerFromConnection(PeerType, ConnPtr, conn);
+            // Capture the transport's typed close cause while `conn` is
+            // still valid — question callbacks cancelled during
+            // notify_close read it via `lastDisconnectCause()`. Same
+            // capability-detection pattern as `on_tick`.
+            const Conn = @typeInfo(ConnPtr).pointer.child;
+            if (comptime @hasDecl(Conn, "closeCause")) {
+                peer.last_disconnect_cause = conn.closeCause();
+            }
             // The connection owns this callback and may free itself as soon as
             // the terminal notification returns. Clear the peer's borrowed
             // transport context while `conn` is still valid, before user close

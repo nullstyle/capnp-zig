@@ -116,6 +116,32 @@ pub const Resource = enum {
     udp_datagram_bytes,
 };
 
+/// Transport-agnostic typed close cause — the "death certificate" a
+/// transport hands the peer layer when a connection dies. Today every
+/// cause collapses into one untyped disconnect; this enum is how a
+/// transport that KNOWS more (QUIC's CloseEvent) says so. `.unknown` is
+/// the compatible default for transports that cannot distinguish causes
+/// (TCP today), so absence of plumbing never misreports a cause.
+pub const DisconnectCause = enum {
+    /// No typed cause was available.
+    unknown,
+    /// We closed the connection locally and cleanly.
+    local_close,
+    /// The remote endpoint closed the connection (its CONNECTION_CLOSE
+    /// or equivalent reached us).
+    peer_close,
+    /// The transport's idle timer expired — nothing heard from the
+    /// remote; says nothing about whether it is alive.
+    idle_timeout,
+    /// A QUIC stateless reset matched an installed token: PROOF the
+    /// remote endpoint lost its connection state (crash-restart class)
+    /// while its host is still reachable. The strongest restore signal
+    /// the durable-caps ladder has.
+    stateless_reset,
+    /// A local transport-layer error terminated the connection.
+    transport_error,
+};
+
 pub const Event = union(enum) {
     connection: ConnectionEvent,
     frame: FrameEvent,

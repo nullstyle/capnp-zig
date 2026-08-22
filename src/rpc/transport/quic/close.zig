@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const events = @import("../../events.zig");
+
 /// QUIC application close codes reserved for Cap'n Proto RPC over QUIC.
 ///
 /// QUIC application error codes live in the application namespace, distinct
@@ -14,6 +16,27 @@ pub const ApplicationCloseCode = enum(u64) {
 };
 
 pub const max_wire_reason_bytes: usize = 96;
+
+/// Map quic-zig's sticky close certificate onto the transport-agnostic
+/// `events.DisconnectCause`. `ev` is anytype (a `quic.CloseEvent`) so this
+/// file stays free of a quic-zig import; the source variants are matched
+/// exhaustively, so a pin bump that adds one fails loudly here.
+///
+/// The `.local` split reads the certificate's own code, NOT our close
+/// controller's status: quic-zig reports `.local` for both our clean close
+/// AND every close it performs internally on a peer protocol violation,
+/// and only the latter class never touches our controller. A clean close
+/// carries code 0 (`ApplicationCloseCode.normal`); every error
+/// termination — ours or quic-zig's — carries a non-zero one.
+pub fn disconnectCauseFor(ev: anytype) events.DisconnectCause {
+    return switch (ev.source) {
+        .local => if (ev.error_code != 0) .transport_error else .local_close,
+        .peer => .peer_close,
+        .idle_timeout => .idle_timeout,
+        .stateless_reset => .stateless_reset,
+        .version_negotiation => .transport_error,
+    };
+}
 
 pub const Status = struct {
     code: ApplicationCloseCode,

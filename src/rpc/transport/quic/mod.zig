@@ -106,6 +106,7 @@ pub const supported_max_concurrent_sessions = options.supported_max_concurrent_s
 pub const ServerQlogCallback = options.ServerQlogCallback;
 pub const ServerLogEvent = options.ServerLogEvent;
 pub const ServerLogCallback = options.ServerLogCallback;
+pub const StatelessResetKey = options.StatelessResetKey;
 pub const ServerRetryTokenKey = options.ServerRetryTokenKey;
 pub const ServerNewTokenKey = options.ServerNewTokenKey;
 pub const ServerAntiReplayTracker = options.ServerAntiReplayTracker;

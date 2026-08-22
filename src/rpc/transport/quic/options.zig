@@ -125,8 +125,11 @@ pub const NativeConfigError = error{
 };
 
 pub const ServerQlogCallback = quic_zig.QlogCallback;
+/// Event payload for `ServerLogCallback`. Documented additive upstream —
+/// always keep an `else` arm when switching on it.
 pub const ServerLogEvent = quic_zig.Server.LogEvent;
 pub const ServerLogCallback = quic_zig.Server.LogCallback;
+pub const StatelessResetKey = quic_zig.conn.stateless_reset.Key;
 pub const ServerRetryTokenKey = quic_zig.conn.RetryTokenKey;
 pub const ServerNewTokenKey = quic_zig.conn.NewTokenKey;
 pub const ServerAntiReplayTracker = quic_zig.tls.AntiReplayTracker;
@@ -250,6 +253,16 @@ pub const ServerOptions = struct {
     qlog_user_data: ?*anyopaque = null,
     log_callback: ?ServerLogCallback = null,
     log_user_data: ?*anyopaque = null,
+    /// Stateless-reset emitter key (RFC 9000 §10.3). When set, quic-zig
+    /// derives a reset token per issued CID, advertises the §18.2
+    /// transport-param token for the handshake CID (which is what lets
+    /// CLIENTS prove a crash-restart via `DisconnectCause
+    /// .stateless_reset`), and answers unroutable short-header datagrams
+    /// with resets (counted by `Server.statelessResetsSent`). PERSIST
+    /// this key across restarts — a fresh key invalidates every
+    /// previously issued token, and connections that survived the
+    /// restart lose their death certificate.
+    stateless_reset_key: ?quic_zig.conn.stateless_reset.Key = null,
     /// Per-source Initial-flood limiter. `.default` applies quic-zig's
     /// recommended cap (32/window) — note this is a BEHAVIOUR CHANGE from the
     /// pre-v0.9.0 `?u32 = null` default, which disabled the limiter outright.
@@ -345,6 +358,7 @@ pub fn serverConfigFromOptions(
         .source_rate_table_capacity = options.source_rate_table_capacity,
         .vn_source_rate_limit = options.vn_source_rate_limit,
         .retry_token_key = options.retry_token_key,
+        .stateless_reset_key = options.stateless_reset_key,
         .retry_token_lifetime_us = options.retry_token_lifetime_us,
         .retry_state_table_capacity = options.retry_state_table_capacity,
         .new_token_key = options.new_token_key,

@@ -60,6 +60,9 @@ pub const Server = struct {
     sessions: std.ArrayList(*ServerSession) = .empty,
     wake_state: wake_mod.Handle = .{},
     udp_receive: udp_receive_bridge.Bridge = .{},
+    /// Cumulative stateless resets sent for unroutable DCIDs; see
+    /// `statelessResetsSent`. Loop-thread only.
+    stateless_resets_sent: u64 = 0,
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// Identifies the thread that drives the step/run loop. `sessions` is only
     /// ever appended to or swap-removed on this thread, so cross-thread
@@ -122,6 +125,10 @@ pub const Server = struct {
             // dropping it, so tearing down the server with active sessions
             // notifies their owners (matching connection_loop.run).
             const session = self.sessions.items[i];
+            // The quic connection is still alive here, so a certificate it
+            // already recorded (peer close, idle timeout, stateless reset)
+            // reaches the owner instead of being lost as `.unknown`.
+            session.captureCloseCause();
             session.invokeCloseCallbackOnce();
             session.deinit(self.allocator);
             self.allocator.destroy(session);
@@ -186,6 +193,22 @@ pub const Server = struct {
     pub fn droppedDatagramCount(self: *const Server) u64 {
         self.assertLoopThread();
         return self.listener.droppedDatagramCount();
+    }
+
+    fn noteFeedOutcome(self: *Server, outcome: ?listener_mod.FeedOutcome) void {
+        const o = outcome orelse return;
+        // FeedOutcome is documented additive upstream — never switch
+        // exhaustively here.
+        if (o == .stateless_reset_sent) self.stateless_resets_sent += 1;
+    }
+
+    /// Stateless resets this endpoint has sent for unroutable DCIDs
+    /// (requires `ServerOptions.stateless_reset_key`). Under churn this is
+    /// the "peers still dialing dead connection state" signal — the field
+    /// data the reset surfaces' stability case wants. Loop-thread only.
+    pub fn statelessResetsSent(self: *const Server) u64 {
+        self.assertLoopThread();
+        return self.stateless_resets_sent;
     }
 
     pub fn step(self: *Server) !void {
@@ -405,6 +428,7 @@ pub const Server = struct {
                         msg.from,
                         self.listener.nowUs(),
                     );
+                    self.noteFeedOutcome(result.outcome);
                     try self.listener.drainStatelessResponses();
                     result.accepted_sessions = try self.adoptAcceptedSessions();
                     return result;
@@ -441,6 +465,7 @@ pub const Server = struct {
 
         result.received_datagram = true;
         result.outcome = try self.listener.feedDatagram(msg.data, msg.from, self.listener.nowUs());
+        self.noteFeedOutcome(result.outcome);
         try self.listener.drainStatelessResponses();
         result.accepted_sessions = try self.adoptAcceptedSessions();
         return result;
@@ -525,11 +550,20 @@ pub const Server = struct {
     }
 
     fn flushClosingSession(self: *Server, server_session: *ServerSession, now_us: u64) !void {
+        // Order matters: `closeActive` is what performs the QUIC-level
+        // close for a LOCALLY requested shutdown, and quic-zig records its
+        // sticky `.local` certificate inside that call. Capturing first
+        // would read a null event and hand the peer `.unknown`, then
+        // silently flip the value on a later step — after the close
+        // callback already read it. quic-zig's record is first-wins and
+        // `close()` no-ops on an already-closed connection, so a
+        // remote-caused death still keeps its own certificate here.
         server_session.close_controller.closeActive(
             server_session.activeQuicConnection(),
             .normal,
             null,
         );
+        server_session.captureCloseCause();
         try self.listener.drainAcceptedSessionDatagrams(server_session.acceptedSession(), self.udp_tx_buf, now_us);
         server_session.invokeCloseCallbackOnce();
     }
@@ -558,6 +592,10 @@ pub const Server = struct {
         // flushed through flushClosingSession will not double-fire) and a
         // no-op when no close callback is registered.
         const session = self.sessions.swapRemove(index);
+        // Reap path: a session whose outbound queue never drained skips
+        // `flushClosingSession` entirely, so this is the only chance to read
+        // its certificate — quic-zig destroys the slot right after.
+        session.captureCloseCause();
         session.invokeCloseCallbackOnce();
         session.deinit(self.allocator);
         self.allocator.destroy(session);
@@ -652,6 +690,12 @@ pub const ServerSession = struct {
 
     /// Wall-clock of the last `on_tick` invocation for this session.
     last_tick_us: u64 = 0,
+
+    /// Typed close cause ("death certificate"), captured from quic-zig's
+    /// sticky `closeEvent()` when the session enters its closing flush —
+    /// before the close callback fires. `.unknown` while alive.
+    /// Loop-thread written.
+    close_cause: events.DisconnectCause = .unknown,
     /// True once the `.closing` connection phase has been emitted for this
     /// session, so the event fires at most once. Loop-thread only (see
     /// `Termination.emitClosingOnce`).
@@ -725,6 +769,30 @@ pub const ServerSession = struct {
 
     pub fn context(self: *const ServerSession) ?*anyopaque {
         return self.callback_lifecycle.context();
+    }
+
+    fn captureCloseCause(self: *ServerSession) void {
+        if (self.close_cause != .unknown) return;
+        const conn = self.activeQuicConnection() orelse return;
+        const ev = conn.closeEvent() orelse return;
+        self.close_cause = quic_close.disconnectCauseFor(ev);
+    }
+
+    /// Typed close cause. `.unknown` while the session is alive (or when
+    /// quic-zig recorded no close event). `.stateless_reset` is the
+    /// crash-restart proof. Stable once the close callback has fired;
+    /// loop-thread only.
+    pub fn closeCause(self: *const ServerSession) events.DisconnectCause {
+        return self.close_cause;
+    }
+
+    /// Raw quic-zig close certificate for this session. Borrowed —
+    /// `reason` points into the underlying quic connection, which the
+    /// server destroys at reap; read it in the close callback and keep
+    /// the mapped `closeCause()` instead.
+    pub fn quicCloseEvent(self: *ServerSession) ?quic_zig.CloseEvent {
+        const conn = self.activeQuicConnection() orelse return null;
+        return conn.closeEvent();
     }
 
     /// The DCID the client dictated (or randomly minted) on its very first

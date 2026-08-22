@@ -41,6 +41,12 @@ pub const Owner = struct {
     /// the loop thread, rate-floored by the implementation. Runs under
     /// callback-depth accounting so a re-entrant deinit is deferred.
     invoke_tick: *const fn (ptr: *anyopaque, now_us: u64) void,
+    /// Latch the transport's typed close cause if one has been recorded.
+    /// Idempotent and cheap once latched. Called on every step BEFORE the
+    /// driver can reap the connection: a server-role compat session whose
+    /// outbound queue never drains is destroyed by that reap, and its
+    /// certificate would otherwise be gone by the terminal sequence.
+    capture_close_cause: *const fn (ptr: *anyopaque) void,
 };
 
 pub fn run(owner: Owner) void {
@@ -115,6 +121,8 @@ pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
     // and before the closed-check so a close() from inside the sweep is
     // observed this same step.
     owner.invoke_tick(owner.ptr, now_us);
+
+    owner.capture_close_cause(owner.ptr);
 
     if (driver.reapClosed()) {
         owner.request_close(owner.ptr);

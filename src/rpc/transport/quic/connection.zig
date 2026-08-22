@@ -80,6 +80,12 @@ pub const Connection = struct {
     /// tick cadence so a datagram-hot loop does not sweep per packet.
     last_tick_us: u64 = 0,
 
+    /// Typed close cause ("death certificate"), captured from quic-zig's
+    /// sticky `closeEvent()` on the terminal path — set before the close
+    /// callback fires, so `Peer` question callbacks can already read it.
+    /// `.unknown` until the connection dies. Loop-thread written.
+    close_cause: events.DisconnectCause = .unknown,
+
     callback_lifecycle: CallbackLifecycle = .{},
 
     /// Thread ID captured at init. Widened to `u64` (not `std.Thread.Id`,
@@ -209,6 +215,23 @@ pub const Connection = struct {
 
     pub fn closeStatus(self: *const Connection) ?quic_close.Status {
         return Termination.status(self);
+    }
+
+    /// Typed close cause. `.unknown` while the connection is alive (or
+    /// when quic-zig recorded no close event). `.stateless_reset` is the
+    /// crash-restart proof — the remote endpoint lost its connection
+    /// state. Stable once the close callback has fired.
+    pub fn closeCause(self: *const Connection) events.DisconnectCause {
+        return self.close_cause;
+    }
+
+    /// Raw quic-zig close certificate (error space/code, reason bytes,
+    /// timestamps). Borrowed — `reason` points into the underlying quic
+    /// connection, so read it before this transport is deinitialized.
+    /// The mapped `closeCause()` is the value to keep.
+    pub fn quicCloseEvent(self: *Connection) ?quic_zig.CloseEvent {
+        const active = self.endpoint.activeQuicConnection() orelse return null;
+        return active.closeEvent();
     }
 
     pub fn getAddress(self: *const Connection) Net.IpAddress {
