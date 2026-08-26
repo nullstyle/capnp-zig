@@ -23,7 +23,7 @@ Fetch a tagged release into your `build.zig.zon` (`zig fetch --save` computes
 and records the `.hash` for you):
 
 ```sh
-zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.12.0
+zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.13.0
 ```
 
 That adds an entry like this to your `build.zig.zon` (the hash is filled in by
@@ -32,8 +32,8 @@ the command above — do not hand-write it):
 ```zig
 .dependencies = .{
     .capnpc_zig = .{
-        .url = "git+https://github.com/nullstyle/capnp-zig.git#v0.12.0",
-        .hash = "capnpc_zig-0.12.0-nUduFcf1NQDSx_ebU3XvN1g4_hiSw9vYbluLVz_0J7Yp",
+        .url = "git+https://github.com/nullstyle/capnp-zig.git#v0.13.0",
+        .hash = "capnpc_zig-0.13.0-REPLACE-WITH-VALIDATED-HASH",
     },
 },
 ```

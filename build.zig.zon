@@ -1,13 +1,13 @@
 .{
     .name = .capnpc_zig,
-    .version = "0.12.0",
+    .version = "0.13.0",
     .minimum_zig_version = "0.17.0-dev.1683",
     .dependencies = .{
         // Pinned to a TAG, not a raw commit: tags are immutable release
         // points, so the pin is auditable and reproducible. v0.10.1 is the
         // Pinned by ANNOTATED tag, verified independently before pinning:
-        // refs/tags/v0.12.0 -> tag object 716fcb45be660b8c1b7f38e7f7108c0049a67f42
-        // -> commit 0a0dbed878020b3232ad9b791bb6af35cc24213b. Upstream states it
+        // refs/tags/v0.16.1 -> tag object bfec00283cfc6a8cdf99fb8f11b0f1e3be0a50b6
+        // -> commit 335cdc63807203eb8dac1d4e60d5534cbaf97435. Upstream states it
         // will not be force-moved; v0.10.1 was re-checked as unmoved at the same
         // time. The repository is still `quic-zig`; only the PACKAGE was renamed
         // to `quic`, so the URL keeps the old repo name while the dependency key

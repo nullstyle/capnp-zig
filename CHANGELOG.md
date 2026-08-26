@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-26
+
+### Breaking
+
+- **QUIC `Server.init` now refuses a hand-set
+  `transport_params.stateless_reset_token` without a
+  `stateless_reset_key` (`error.InvalidConfig`, via the quic v0.16.1
+  pin).** Only opt-in QUIC consumers are affected. At v0.12.0 that
+  configuration initialized and ran — and was a live security footgun:
+  the one fixed token was advertised unchanged to every peer, letting
+  any peer that completed a handshake reset any other peer's
+  connection, and RFC 9000 §18.2 means a static token in transport
+  params could never be honored per-CID anyway. No first-party code
+  ever set the field. **Migration:** delete the hand-set
+  `transport_params.stateless_reset_token` and set
+  `ServerOptions.stateless_reset_key` instead; quic-zig then derives a
+  correct per-connection-ID token for every CID it issues.
+
 ### Added
 
 - **Typed disconnect causes over QUIC (the "death certificate";
@@ -43,8 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **quic pin → v0.16.1** (drop-in; no wire behavior changes, and both API
-  snapshots are byte-identical across the bump). This release exists
+- **quic pin → v0.16.1** (no wire behavior changes, and both API
+  snapshots are byte-identical across the bump; the one behavioral
+  tightening is the init-time refusal filed under **Breaking**
+  above). This release exists
   because of a finding from this repo: without
   `Server.Config.stateless_reset_key` there is no client-side
   crash-restart DETECTION, not merely no emission. Upstream's audit of
@@ -3366,7 +3386,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/nullstyle/capnp-zig/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/nullstyle/capnp-zig/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/nullstyle/capnp-zig/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/nullstyle/capnp-zig/compare/v0.9.0...v0.10.0
