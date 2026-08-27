@@ -60,6 +60,32 @@ Note the analysis is lazy: merely naming `std.Io.Dispatch` compiles fine.
 The error needs the batch path instantiated, which any real Evented use
 does.
 
+## Independently confirmed
+
+Reproduced on a SECOND machine (slcp-zig M5, 2026-08-27) — different
+host, stock zvm master toolchain, same zig build, no capnp-zig anywhere
+in the picture. `Darwin arm64` (Apple Silicon), zig
+`0.17.0-dev.1786+75044cb04`:
+
+```
+$ zig build-exe dispatch_probe.zig
+/Users/…/lib/std/Io/Dispatch.zig:2067:38: error: switch must handle all possibilities
+            if (maybe_queue) |queue| switch (storage.submission.operation) {
+                                     ^~~~~~
+/Users/…/lib/std/Io.zig:253:5: note: unhandled enumeration value: 'net_send'
+    net_send: NetSend,
+referenced by:
+    batchAwaitConcurrent: /Users/…/lib/std/Io/Dispatch.zig:1954:45
+    io:                   /Users/…/lib/std/Io/Dispatch.zig:370:14
+```
+
+Identical line and column, identical reference chain, and the lazy-analysis
+behavior holds there too. The compiler names **`net_send`** as the first
+unhandled variant — so start there, but fix `net_write` in the same pass:
+both arrived with the same net-I/O move and the switch is exhaustive, so
+handling only the one the compiler happens to report first just surfaces
+the other.
+
 ## The fix
 
 Handle the new variants in the `batchAwaitConcurrent` switch (and audit
