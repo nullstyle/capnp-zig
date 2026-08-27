@@ -1950,10 +1950,15 @@ test "server sweeps a half-open session at the handshake deadline" {
     defer abandoned.deinit();
 
     // The half-open exists; now the client goes silent and only the server
-    // steps. The guard must certify and free the slot.
+    // steps. The guard must certify and free the slot. Own generous budget:
+    // the swept session still walks the full close ceremony, and the
+    // PRE-handshake PTO estimate makes its drain period seconds long on a
+    // slow runner (sweep 250ms + ~3xPTO put the default 3s budget right at
+    // the edge — it flaked on CI Linux while passing locally).
+    const sweep_budget_ms: u64 = 10_000;
     var waited_ms: u64 = 0;
     var saw_session = server.sessionCount() > 0;
-    while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += 1) {
+    while (waited_ms < sweep_budget_ms) : (waited_ms += 1) {
         _ = try server.stepOnce(.poll);
         saw_session = saw_session or server.sessionCount() > 0;
         if (saw_session and server.sessionCount() == 0 and server.quicConnectionCount() == 0) break;
