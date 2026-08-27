@@ -595,6 +595,44 @@ pub const Message = struct {
         return msg;
     }
 
+    /// Deserialize and validate a message from a bare single segment with no
+    /// segment table — the form `canonical.canonicalizeFlat` and
+    /// `capnp convert binary:canonical` produce. `flat.len` must be a
+    /// non-zero multiple of 8. Runs the same validation walk and
+    /// `ValidationOptions` limits as `init`.
+    ///
+    /// The caller retains ownership of `flat`; this message borrows into it
+    /// (zero-copy: the single segment aliases `flat`).
+    pub fn initFlat(allocator: std.mem.Allocator, flat: []const u8, options: ValidationOptions) !Message {
+        var msg = try initFlatUnvalidated(allocator, flat);
+        errdefer msg.deinit();
+        try msg.validateTotalSegmentWords(options.total_segment_words_limit);
+        msg.traversal_words_used = try msg.validateCounted(options);
+        return msg;
+    }
+
+    /// Like `initFlat`, but shape checks only — no validation walk (parity
+    /// with `initUnvalidated`). The caller retains ownership of `flat`.
+    pub fn initFlatUnvalidated(allocator: std.mem.Allocator, flat: []const u8) !Message {
+        if (flat.len == 0) {
+            parseDiagnostic("TruncatedMessage: flat input is empty", .{});
+            return error.TruncatedMessage;
+        }
+        if (flat.len % 8 != 0) {
+            parseDiagnostic("InvalidMessageSize: flat input length {} is not a multiple of 8", .{flat.len});
+            return error.InvalidMessageSize;
+        }
+        const segments = try allocator.alloc([]const u8, 1);
+        errdefer allocator.free(segments);
+        segments[0] = flat;
+        return .{
+            .allocator = allocator,
+            .segments = segments,
+            .segments_owned = true,
+            .backing_data = null,
+        };
+    }
+
     /// Deserialize a Cap'n Proto message from its framed wire representation
     /// without performing validation.
     ///

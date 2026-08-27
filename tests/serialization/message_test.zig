@@ -3370,3 +3370,80 @@ test "MessageBuilder.writeTo emits a well-formed frame for a builder with no seg
     // word: the count is odd.
     try testing.expectEqualSlices(u8, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 }, sink.written());
 }
+
+// ---------------------------------------------------------------------------
+// initFlat: validating decode of bare (table-less) single-segment bytes —
+// the shape `canonical.canonicalizeFlat` emits and
+// `capnp convert binary:canonical` writes.
+// ---------------------------------------------------------------------------
+
+test "initFlat decodes the bare segment of a framed message identically" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+    var root = try builder.allocateStruct(1, 0);
+    root.writeBool(0, 0, true);
+    root.writeBool(0, 3, true);
+    const framed = try builder.toBytes();
+    defer testing.allocator.free(framed);
+
+    var framed_msg = try message.Message.init(testing.allocator, framed, .{});
+    defer framed_msg.deinit();
+    var flat_msg = try message.Message.initFlat(testing.allocator, framed[8..], .{});
+    defer flat_msg.deinit();
+
+    const framed_root = try framed_msg.getRootStruct();
+    const flat_root = try flat_msg.getRootStruct();
+    try testing.expect(try flat_root.readBoolStrict(0, 0));
+    try testing.expect(!(try flat_root.readBoolStrict(0, 1)));
+    try testing.expectEqual(try framed_root.readBoolStrict(0, 3), try flat_root.readBoolStrict(0, 3));
+}
+
+test "initFlat is zero-copy: the single segment aliases the caller's bytes" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+    var root = try builder.allocateStruct(1, 0);
+    root.writeBool(0, 0, true);
+    const framed = try builder.toBytes();
+    defer testing.allocator.free(framed);
+
+    var flat_msg = try message.Message.initFlat(testing.allocator, framed[8..], .{});
+    defer flat_msg.deinit();
+    try testing.expectEqual(@intFromPtr(framed.ptr + 8), @intFromPtr(flat_msg.segments[0].ptr));
+    try testing.expectEqual(framed.len - 8, flat_msg.segments[0].len);
+}
+
+test "initFlat rejects empty and non-multiple-of-8 input" {
+    try testing.expectError(error.TruncatedMessage, message.Message.initFlat(testing.allocator, &[_]u8{}, .{}));
+    const seven: [7]u8 = @splat(0);
+    try testing.expectError(error.InvalidMessageSize, message.Message.initFlat(testing.allocator, &seven, .{}));
+    const nine: [9]u8 = @splat(0);
+    try testing.expectError(error.InvalidMessageSize, message.Message.initFlat(testing.allocator, &nine, .{}));
+}
+
+test "initFlat rejects an out-of-bounds root pointer; initFlatUnvalidated defers" {
+    // Struct pointer with a huge word offset: B (30-bit signed offset) = 4096,
+    // C (data words) = 1 — points far past the one-word segment.
+    var flat: [8]u8 = @splat(0);
+    const ptr_word: u64 = (@as(u64, 4096) << 2) | (@as(u64, 1) << 32);
+    std.mem.writeInt(u64, flat[0..8], ptr_word, .little);
+
+    try testing.expectError(error.OutOfBounds, message.Message.initFlat(testing.allocator, &flat, .{}));
+
+    // The unvalidated variant only checks shape; the walk is the caller's risk.
+    var msg = try message.Message.initFlatUnvalidated(testing.allocator, &flat);
+    msg.deinit();
+}
+
+test "initFlat enforces ValidationOptions limits" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+    var root = try builder.allocateStruct(1, 0);
+    root.writeBool(0, 0, true);
+    const framed = try builder.toBytes();
+    defer testing.allocator.free(framed);
+
+    try testing.expectError(
+        error.TraversalLimitExceeded,
+        message.Message.initFlat(testing.allocator, framed[8..], .{ .traversal_limit_words = 0 }),
+    );
+}

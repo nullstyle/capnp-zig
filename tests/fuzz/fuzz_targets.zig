@@ -39,6 +39,21 @@ fn fuzzMessageInit(_: void, smith: *std.testing.Smith) anyerror!void {
     _ = root.readText(0) catch {};
 }
 
+/// Flat (table-less single-segment) validated decode plus reader probes —
+/// `Message.initFlat` is an untrusted-input surface: downstream consensus
+/// consumers decode peer-supplied canonical bytes with it directly.
+fn fuzzFlatDecode(_: void, smith: *std.testing.Smith) anyerror!void {
+    var buf: [max_fuzz_input]u8 = undefined;
+    const len = smith.slice(&buf);
+    const bytes = buf[0..len];
+
+    var msg = message.Message.initFlat(std.testing.allocator, bytes, .{}) catch return;
+    defer msg.deinit();
+    const root = msg.getRootStruct() catch return;
+    _ = root.readU64(0);
+    _ = root.readText(0) catch {};
+}
+
 /// Packed decode: unpack budget enforcement plus validated parse of the
 /// unpacked bytes.
 fn fuzzPackedDecode(_: void, smith: *std.testing.Smith) anyerror!void {
@@ -561,6 +576,10 @@ test "fuzz: CodeGeneratorRequest parse + generate" {
 
 test "fuzz: packed decode" {
     try std.testing.fuzz({}, fuzzPackedDecode, .{});
+}
+
+test "fuzz: flat (table-less) validated decode" {
+    try std.testing.fuzz({}, fuzzFlatDecode, .{});
 }
 
 test "fuzz: stream framer chunking" {
