@@ -250,7 +250,9 @@ pub const WarmRedialClient = struct {
     }
 
     fn onNewSession(user_data: ?*anyopaque, ticket: []const u8) void {
-        const self: *WarmRedialClient = @ptrCast(@alignCast(user_data.?));
+        // The layer always installs itself as user_data; a null here would
+        // be a transport bug — drop the ticket rather than trap on it.
+        const self: *WarmRedialClient = @ptrCast(@alignCast(user_data orelse return));
         // Latest-wins, tear-free: the bytes are borrowed, so copy under the
         // lock before the transport reuses them.
         const copy = self.allocator.dupe(u8, ticket) catch return;
