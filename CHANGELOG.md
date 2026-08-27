@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Docs/process hygiene: the RELEASING.md semver table gains an explicit
+  "new functionality: additive declarations on any tier → minor" row
+  (previously argued from precedent each cut); stale point-in-time QUIC
+  evidence counts in quic-transport.md/stability.md replaced with
+  gate-anchored wording (`tools/quic_test_evidence.zig` floors);
+  stability rows refreshed (DisconnectCause named in the Events row;
+  Windows QUIC acceptance no longer described as pending); lib_quic's
+  `canonical` doc comment now says Stable.
+
 ## [0.14.0] - 2026-08-26
 
 ### Added

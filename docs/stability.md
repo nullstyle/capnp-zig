@@ -36,7 +36,8 @@ scanner rejects `SkipZigTest`, enforces per-root floors 26 + 1 + 17 + 8 = 52,
 and makes the four runnable artifacts direct build dependencies; it does not
 parse output or rely on a CI-only shell. Linux alone also runs the full
 build/check/test/API/docs surface against the QUIC root. At this sprint's local
-handoff, macOS has run all 64 tests in both modes. Windows full-tree test
+handoff, macOS runs all four evidence roots in both modes (per-root minimum
+test counts enforced by `tools/quic_test_evidence.zig`). Windows full-tree test
 cross-compilation passes 113/113, and native Windows runtime acceptance is no
 longer pending: the `QUIC targeted transport (windows-latest)` job runs both
 evidence roots natively, in Debug and ReleaseSafe with skips rejected, and
@@ -244,9 +245,9 @@ interop contract.
 | RPC Vat Network | `src/rpc/vat/network.zig` | `VatNetwork` addressing seam + `LoopbackVatNetwork` for L3 origination. Experimental; the production addressing policy is application-defined. Duplicate-token, unknown-token, allocator-failure paths, and Zig↔C++ TCP token success/failure rendezvous cases are covered. |
 | RPC `ServerSession` (as a type) | `src/rpc/transport/tcp/*` | The `ServerSession` struct/API *beyond* its `.accept` consumer entry point. `.accept` + its lifecycle are Stable (see above); the type itself is not frozen. |
 | RPC Transport | `src/rpc/transport/tcp/stream_transport.zig` | Concurrent read/write I/O. |
-| RPC Events | `src/rpc/events.zig` | Redacted transport-general observer events. Event names may grow while payloads stay redacted. |
+| RPC Events | `src/rpc/events.zig` | Redacted transport-general observer events, plus the typed disconnect-cause enum (`DisconnectCause`, the QUIC death certificate). Event names may grow while payloads stay redacted. |
 | Switchable Io Backend | `src/io_backend.zig` | Backend selection (`process_init`/`threaded`/`evented`). Selector shape may change. |
-| RPC QUIC Transport | `src/rpc/transport/quic` | Optional QUIC baseline/native transport, gated by `-Dquic=true`. Windows uses a single-in-flight cancellable UDP receive bridge; fanout sessions are heap-stable before `Peer` attachment. Native hosted-Windows acceptance is still pending. |
+| RPC QUIC Transport | `src/rpc/transport/quic` | Optional QUIC baseline/native transport, gated by `-Dquic=true`. Windows uses a single-in-flight cancellable UDP receive bridge; fanout sessions are heap-stable before `Peer` attachment. Native Windows acceptance runs both evidence roots in CI (Debug + ReleaseSafe, skips rejected). |
 | RPC Host Peer | `src/rpc/integration/host_peer.zig` | Host-neutral detached frame-pump for wasm environments. |
 | RPC Payload Remap | `src/rpc/caps/payload_remap.zig` | Capability descriptor remapping for outbound messages. |
 | RPC Persistence | `src/rpc/peer/persistence.zig` | Sturdy-ref save/restore (level 2): persistent-export hooks, restorer hook, and `Peer.sendSave`/`sendRestore`. Realm conventions and consumer flow are documented in `rpc_runtime_design.md` and `rpc-persistence.md`; reconnect, malformed-frame, send-failure, callback-failure, hook lifecycle, and OOM rollback paths are regression covered. Not frozen. |

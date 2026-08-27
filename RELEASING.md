@@ -27,7 +27,8 @@ bump **before** editing anything.
 | Any change to a declaration in `docs/api-snapshot.txt` (the frozen Stable surface) | **minor** |
 | Any change to the *shape of generated code* — accessor signatures, fallibility, emitted type names | **minor** |
 | Breaking change to an Experimental surface (`docs/api-snapshot-experimental.txt`) | **minor** |
-| Bug fixes, additive Stable declarations, docs, internal refactors | **patch** |
+| New functionality: additive declarations on ANY tier (Stable or Experimental) | **minor** |
+| Bug fixes, docs, internal refactors | **patch** |
 
 The generated-code row is the one that is easy to get wrong: `zig build
 check-api` snapshots *library* declarations only, so a change to what the

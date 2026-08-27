@@ -24,7 +24,7 @@ pub const request = @import("serialization/request_reader.zig");
 /// Validates and canonicalizes Cap'n Proto schema graphs.
 pub const schema_validation = @import("serialization/schema_validation.zig");
 
-/// Spec-faithful, schema-FREE canonicalization (Experimental). See `lib.zig`.
+/// Spec-faithful, schema-FREE canonicalization (Stable, frozen). See `lib.zig`.
 pub const canonical = @import("serialization/canonical.zig");
 
 /// Cap'n Proto RPC runtime with TCP plus optional native QUIC transport.

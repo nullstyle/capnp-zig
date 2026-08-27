@@ -29,8 +29,10 @@ system's native shell on Linux, macOS, and Windows. Linux also runs the full
 repository build/check/test/API/docs surface against the QUIC-enabled root;
 that broader root-wide gate is not duplicated on macOS or Windows.
 
-Current evidence is intentionally stated narrowly: macOS passes all 61 tests
-from the four roots in both Debug and ReleaseSafe. The Windows QUIC tree passes
+Current evidence is intentionally stated narrowly: macOS passes the four
+evidence roots in both Debug and ReleaseSafe (per-root minimum test counts are
+enforced by `tools/quic_test_evidence.zig`, so a silently shrunken root fails
+the gate; exact totals grow with the suites and are not restated here). The Windows QUIC tree passes
 full-tree test cross-compilation (113/113), but that is not runtime evidence.
 The native Windows no-skip lane remains a hosted acceptance gate after
 capnp-zig itself is pushed; do not infer Windows runtime parity from the
