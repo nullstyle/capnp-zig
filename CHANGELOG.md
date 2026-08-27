@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Auto warm redial (`rpc.transport.quic.WarmRedialClient`;
+  Experimental) — the durable-caps ladder's integration rung.** When a
+  QUIC client's transport dies with the crash-restart proof
+  (`Peer.lastDisconnectCause() == .stateless_reset`), the client dials a
+  fresh Connection+Peer generation resumed via the latest captured
+  session ticket and re-restores its saved sturdy ref, delivering the
+  healed capability through an `on_rebind` callback (import ids die
+  with their peer, so healing happens at the sturdy-ref layer — by
+  design, not limitation). New `Peer.sendRestorePipelined` aims the
+  restore call at the promised bootstrap answer so bootstrap + restore
+  enqueue before the loop starts and both ride 0-RTT on the resumed
+  dial — restore's idempotence is what makes the replay window
+  acceptable, and the layer sends nothing else in early data. Redial
+  policy: bounded attempts + fixed backoff; only `.stateless_reset`
+  redials by default (`.idle_timeout` opt-in — it proves nothing about
+  liveness). Proven by a crash-restart heal e2e (two generations, one
+  redial, the healed capability answers, the restarted server's reset
+  counter advances) and a zero-budget ablation (the reset is detected
+  but NOT healed; give-up carries the certified cause).
 - **Soak: abrupt-death chaos mode (`--abrupt-death-every-ms N`, QUIC
   only).** Every N ms the harness kills the echo server with NO close
   ceremony and restarts it on the same port with the same

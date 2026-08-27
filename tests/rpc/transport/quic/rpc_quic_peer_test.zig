@@ -1572,3 +1572,267 @@ test "QUIC fanout session local close certifies .local_close to its bound peer" 
     client_conn.requestClose();
     client_conn.run();
 }
+
+// ---------------------------------------------------------------------------
+// Auto warm redial (WarmRedialClient): the ladder's integration rung — a
+// crash-restart proven by .stateless_reset triggers an automatic resumed
+// redial plus sturdy-ref re-restore, healing the app's capability.
+// ---------------------------------------------------------------------------
+
+const RedialEcho = struct {
+    const interface_id: u64 = 0xec40_5155_4943_0001;
+    const sturdy_ref = "sturdy:redial-echo/1";
+    var ctx_anchor: u8 = 0;
+
+    fn onCall(ctx: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
+        _ = ctx;
+        _ = caps;
+        if (call.interface_id != interface_id or call.method_id != 0) {
+            return peer.sendReturnException(call.question_id, "unknown method");
+        }
+        try peer.sendReturnEmptyStruct(call.question_id);
+    }
+
+    fn onRestore(ctx: *anyopaque, peer: *Peer, ref: []const u8) anyerror!capnpc.rpc.peer.RestoreOutcome {
+        _ = ctx;
+        if (!std.mem.eql(u8, ref, sturdy_ref)) return .unknown;
+        return .{ .existing = try peer.addExport(.{ .ctx = @ptrCast(&ctx_anchor), .on_call = onCall }) };
+    }
+};
+
+/// One server incarnation: crash-restart-safe holder in the AVat shape (one
+/// owner, one teardown order, every exit path).
+const RedialVat = struct {
+    server: ?quic.Server = null,
+    peer: ?Peer = null,
+
+    fn bindIfNeeded(self: *RedialVat, allocator: std.mem.Allocator) !void {
+        if (self.peer != null) return;
+        const server = &(self.server orelse return);
+        if (server.sessionAt(0)) |session| {
+            self.peer = Peer.init(allocator, session);
+            _ = try self.peer.?.setBootstrap(.{ .ctx = @ptrCast(&RedialEcho.ctx_anchor), .on_call = RedialEcho.onCall });
+            try self.peer.?.setRestorer(@ptrCast(&RedialEcho.ctx_anchor), RedialEcho.onRestore);
+            self.peer.?.start(null, null, null);
+        }
+    }
+
+    fn crash(self: *RedialVat) void {
+        if (self.server) |*srv| srv.deinit();
+        self.server = null;
+        if (self.peer) |*p| {
+            _ = p.takeAttachedConnection(*quic.ServerSession);
+            p.deinit();
+        }
+        self.peer = null;
+    }
+};
+
+const RedialAppState = struct {
+    rebinds: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    echo_ok: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    gave_up: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    // Run-thread-only within a generation; rewritten by each rebind.
+    last_peer: ?*Peer = null,
+    last_cap: ?cap_table.ResolvedCap = null,
+    outcome: ?quic.WarmRedialClient.Outcome = null,
+
+    fn onRebind(ctx: ?*anyopaque, peer: *Peer, cap: cap_table.ResolvedCap) void {
+        const self: *RedialAppState = @ptrCast(@alignCast(ctx.?));
+        _ = self.rebinds.fetchAdd(1, .monotonic);
+        self.last_peer = peer;
+        self.last_cap = cap;
+        self.sendEcho(peer, cap);
+    }
+
+    fn sendEcho(self: *RedialAppState, peer: *Peer, cap: cap_table.ResolvedCap) void {
+        _ = peer.sendCallResolved(cap, RedialEcho.interface_id, 0, self, null, onEchoReturn) catch {};
+    }
+
+    fn onEchoReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+        _ = caps;
+        const self: *RedialAppState = @ptrCast(@alignCast(ctx));
+        if (ret.tag != .results) return; // the crash's synthetic disconnected Return ends this chain
+        _ = self.echo_ok.fetchAdd(1, .monotonic);
+        // Perpetual traffic: real apps detect a stateless reset by SENDING;
+        // an idle connection would sit until idle timeout.
+        self.sendEcho(peer, self.last_cap orelse return);
+    }
+
+    fn onGiveUp(ctx: ?*anyopaque, cause: rpc_events.DisconnectCause) void {
+        const self: *RedialAppState = @ptrCast(@alignCast(ctx.?));
+        _ = cause;
+        self.gave_up.store(true, .release);
+    }
+
+    fn runClient(self: *RedialAppState, client: *quic.WarmRedialClient) void {
+        self.outcome = client.run() catch null;
+    }
+};
+
+fn restartVatOnPort(vat: *RedialVat, allocator: std.mem.Allocator, port: u16, reset_key: [32]u8) !void {
+    const options = quic.ServerOptions{
+        .listen_addr = try std.Io.net.IpAddress.parse("127.0.0.1", port),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .max_concurrent_connections = 2,
+        .stateless_reset_key = reset_key,
+    };
+    var attempt: u32 = 0;
+    vat.server = blk: {
+        while (true) : (attempt += 1) {
+            break :blk quic.Server.init(allocator, std.testing.io, options) catch |err| {
+                if (attempt >= 20) return err;
+                loopback.sleepMs(5);
+                continue;
+            };
+        }
+    };
+}
+
+test "WarmRedialClient auto-heals a restored capability across a crash-restart" {
+    const allocator = std.testing.allocator;
+    const reset_key: [32]u8 = @splat(0x4e);
+
+    var vat = RedialVat{};
+    defer vat.crash();
+    vat.server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .max_concurrent_connections = 2,
+        .stateless_reset_key = reset_key,
+    });
+    const port = vat.server.?.getAddress().getPort();
+
+    var app = RedialAppState{};
+    var client = try quic.WarmRedialClient.init(
+        allocator,
+        std.testing.io,
+        .{
+            .remote_addr = vat.server.?.getAddress(),
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+        },
+        RedialEcho.sturdy_ref,
+        .{ .max_redials = 3, .backoff_ms = 10 },
+        &app,
+        RedialAppState.onRebind,
+        RedialAppState.onGiveUp,
+    );
+    defer client.deinit();
+    var thread = try std.Thread.spawn(.{}, RedialAppState.runClient, .{ &app, &client });
+    var joined = false;
+    defer if (!joined) {
+        client.requestStop();
+        thread.join();
+    };
+
+    // Phase 1: cold dial, pipelined restore, first echo round trip.
+    var waited: u64 = 0;
+    while (waited < loopback.loopback_timeout_ms and app.echo_ok.load(.acquire) == 0) : (waited += 1) {
+        _ = try vat.server.?.stepOnce(.poll);
+        try vat.bindIfNeeded(allocator);
+        loopback.sleepMs(1);
+    }
+    try std.testing.expect(app.echo_ok.load(.acquire) > 0);
+    try std.testing.expectEqual(@as(u32, 1), app.rebinds.load(.acquire));
+    const echo_before_crash = app.echo_ok.load(.acquire);
+
+    // CRASH + RESTART: no close ceremony, same port, same reset key.
+    vat.crash();
+    try restartVatOnPort(&vat, allocator, port, reset_key);
+
+    // Phase 2: the in-flight echo chain draws a stateless reset from the
+    // restarted server; the client must redial resumed, re-restore, and the
+    // HEALED capability must answer.
+    waited = 0;
+    while (waited < loopback.loopback_timeout_ms and
+        (app.rebinds.load(.acquire) < 2 or app.echo_ok.load(.acquire) <= echo_before_crash)) : (waited += 1)
+    {
+        _ = try vat.server.?.stepOnce(.poll);
+        try vat.bindIfNeeded(allocator);
+        loopback.sleepMs(1);
+    }
+    try std.testing.expectEqual(@as(u32, 2), app.rebinds.load(.acquire));
+    try std.testing.expect(app.echo_ok.load(.acquire) > echo_before_crash);
+    try std.testing.expect(vat.server.?.statelessResetsSent() >= 1);
+    try std.testing.expect(!app.gave_up.load(.acquire));
+
+    client.requestStop();
+    thread.join();
+    joined = true;
+
+    const outcome = app.outcome orelse return error.NoOutcome;
+    try std.testing.expectEqual(@as(u32, 2), outcome.generations);
+    try std.testing.expectEqual(@as(u32, 1), outcome.redials);
+    try std.testing.expectEqual(@as(u32, 2), outcome.rebinds);
+}
+
+test "WarmRedialClient with a zero redial budget does NOT heal (ablation)" {
+    const allocator = std.testing.allocator;
+    const reset_key: [32]u8 = @splat(0x4f);
+
+    var vat = RedialVat{};
+    defer vat.crash();
+    vat.server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .max_concurrent_connections = 2,
+        .stateless_reset_key = reset_key,
+    });
+    const port = vat.server.?.getAddress().getPort();
+
+    var app = RedialAppState{};
+    var client = try quic.WarmRedialClient.init(
+        allocator,
+        std.testing.io,
+        .{
+            .remote_addr = vat.server.?.getAddress(),
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+        },
+        RedialEcho.sturdy_ref,
+        .{ .max_redials = 0, .backoff_ms = 10 },
+        &app,
+        RedialAppState.onRebind,
+        RedialAppState.onGiveUp,
+    );
+    defer client.deinit();
+    var thread = try std.Thread.spawn(.{}, RedialAppState.runClient, .{ &app, &client });
+    var joined = false;
+    defer if (!joined) {
+        client.requestStop();
+        thread.join();
+    };
+
+    var waited: u64 = 0;
+    while (waited < loopback.loopback_timeout_ms and app.echo_ok.load(.acquire) == 0) : (waited += 1) {
+        _ = try vat.server.?.stepOnce(.poll);
+        try vat.bindIfNeeded(allocator);
+        loopback.sleepMs(1);
+    }
+    try std.testing.expect(app.echo_ok.load(.acquire) > 0);
+
+    vat.crash();
+    try restartVatOnPort(&vat, allocator, port, reset_key);
+
+    // Budget zero: the reset is detected but never acted on.
+    waited = 0;
+    while (waited < loopback.loopback_timeout_ms and !app.gave_up.load(.acquire)) : (waited += 1) {
+        _ = try vat.server.?.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    try std.testing.expect(app.gave_up.load(.acquire));
+    thread.join();
+    joined = true;
+
+    const outcome = app.outcome orelse return error.NoOutcome;
+    try std.testing.expectEqual(@as(u32, 1), outcome.generations);
+    try std.testing.expectEqual(@as(u32, 0), outcome.redials);
+    try std.testing.expectEqual(@as(u32, 1), outcome.rebinds);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, outcome.last_cause);
+}

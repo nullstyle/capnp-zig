@@ -28,6 +28,7 @@ const udp_receive_bridge = @import("udp_receive_bridge.zig");
 const server_mod = @import("server.zig");
 pub const session = @import("session.zig");
 pub const wake = @import("wake.zig");
+pub const warm_redial = @import("warm_redial.zig");
 
 pub const enabled = true;
 /// Compatibility transport for a single vat-to-vat QUIC RPC session.
@@ -49,6 +50,7 @@ pub const Role = endpoint.Role;
 pub const ServerEndpoint = endpoint.ServerEndpoint;
 /// Borrowed handle for one accepted server-side QUIC session.
 pub const Session = session.Session;
+pub const WarmRedialClient = warm_redial.WarmRedialClient;
 pub const LengthDelimitedFramer = framer.LengthDelimitedFramer;
 pub const NativeControlFramer = native_framer.ControlFramer;
 pub const NativeControlFrame = native_framer.ControlFrame;

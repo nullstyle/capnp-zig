@@ -141,6 +141,43 @@ pub fn PersistenceHooks(comptime Peer: type) type {
             return question_id;
         }
 
+        /// Pipelined restore: aim the Restorer call at the PROMISED answer of
+        /// an in-flight bootstrap question, so bootstrap + restore can both
+        /// be enqueued before the connection loop starts — on a resumed QUIC
+        /// dial both frames then ride 0-RTT early data. Restore is idempotent
+        /// by convention, which is what makes the 0-RTT replay window
+        /// acceptable; do not copy this pattern for non-idempotent calls.
+        pub fn sendRestorePipelined(
+            self: *Peer,
+            bootstrap_question_id: u32,
+            sturdy_ref: []const u8,
+            ctx: *anyopaque,
+            on_response: RestoreResponseCallback,
+        ) !u32 {
+            self.assertThreadAffinity();
+            const heap = try self.allocator.create(RestoreQuestionContext);
+            heap.* = .{ .user_ctx = ctx, .callback = on_response, .sturdy_ref = sturdy_ref };
+            var heap_owned = true;
+            errdefer if (heap_owned) self.allocator.destroy(heap);
+            const question_id = try self.sendCallResolved(
+                .{ .promised = .{
+                    .question_id = bootstrap_question_id,
+                    .transform = .{ .list = null },
+                } },
+                persistence.restorer_interface_id,
+                persistence.restore_method_id,
+                heap,
+                buildRestoreCallParams,
+                onRestoreReturn,
+            );
+            heap_owned = false;
+            if (self.questions.getPtr(question_id)) |q| {
+                q.deinit_ctx = RestoreQuestionContext.deinitCtx;
+                q.restore_on_return_error = false;
+            }
+            return question_id;
+        }
+
         /// Look up or create the persistence state for an export, swapping the
         /// export's stored handler for the persistence trampoline. The original
         /// handler keeps serving every non-persistence interface.

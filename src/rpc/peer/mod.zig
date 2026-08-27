@@ -2429,6 +2429,20 @@ pub const Peer = struct {
         return PersistenceHooksImpl.sendRestore(self, target_id, sturdy_ref, ctx, on_response);
     }
 
+    /// Pipelined restore aimed at an in-flight bootstrap question's promised
+    /// answer, so bootstrap + restore enqueue back-to-back before the
+    /// connection loop starts (and ride 0-RTT on a resumed QUIC dial).
+    /// Body in `peer_persistence_hooks.zig`.
+    pub fn sendRestorePipelined(
+        self: *Peer,
+        bootstrap_question_id: u32,
+        sturdy_ref: []const u8,
+        ctx: *anyopaque,
+        on_response: RestoreResponseCallback,
+    ) !u32 {
+        return PersistenceHooksImpl.sendRestorePipelined(self, bootstrap_question_id, sturdy_ref, ctx, on_response);
+    }
+
     /// Body in `peer_persistence_hooks.zig`.
     pub fn dropPersistenceStateForRemovedExport(self: *Peer, export_id: u32) void {
         return PersistenceHooksImpl.dropPersistenceStateForRemovedExport(self, export_id);

@@ -254,8 +254,22 @@ Deliberate v1 boundaries (each is the next rung, not an oversight):
   which is correct but not the interesting case — an abrupt-death chaos
   mode is what will actually exercise the reset path. Proven by a crash-restart e2e (no close ceremony, same
   port + key, next call → `.stateless_reset` at every observation point).
-  Not yet wired: the restore layer that ACTS on the proof (auto warm
-  redial on `.stateless_reset`) — that is the ladder's integration rung.
+  **The integration rung LANDED 2026-08-26 (Experimental):**
+  `rpc.transport.quic.WarmRedialClient` ACTS on the proof — on
+  `.stateless_reset` it dials a fresh Connection+Peer generation resumed
+  via the latest captured session ticket and re-restores the saved
+  sturdy ref, with bootstrap+restore pipelined
+  (`Peer.sendRestorePipelined` aims restore at the promised bootstrap
+  answer) so both frames ride 0-RTT on the resumed dial; the app
+  receives the healed capability through an `on_rebind` callback (import
+  ids die with their peer — healing is at the sturdy-ref layer, by
+  design). Only `.stateless_reset` redials by default; `.idle_timeout`
+  is opt-in. Proven by a crash-restart heal e2e (2 generations, 1
+  redial, healed cap answers, server reset counter advances) plus a
+  zero-budget ablation (detects but does not heal, give-up carries the
+  certified cause). The abrupt-death soak mode (`--abrupt-death-every-ms`)
+  is the churn-scale instrument for it; wiring the redial path into the
+  soak's workers is the next rung.
 - Migration walk: `rotateLiveSlotCids` exists; the capnp adapter must
   stop dropping datagrams from unexpected sources first.
 
