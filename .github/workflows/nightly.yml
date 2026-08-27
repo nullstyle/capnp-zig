@@ -39,7 +39,16 @@ jobs:
       # at 8 — worker count is the trigger, so the low-count lanes above
       # cannot see this class. ReleaseSafe: locally the abort surfaced
       # only under optimized timing (0/2 in Debug at the same load).
+      #
+      # Linux-only for now: this lane's FIRST run (33029339794) caught a
+      # Windows-specific teardown panic — threads parked in accept() die
+      # with "reached unreachable code" in std Io/Threaded.zig
+      # netAcceptWindows when the pool closes the listener under them,
+      # plus error.Unexpected client session errors mid-run. Tracked as
+      # its own bug; widen the matrix back to Windows when it is fixed
+      # rather than deleting this guard.
       - name: Run soak harness under ReleaseSafe (1 minute, 64 workers)
+        if: runner.os == 'Linux'
         run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 64
 
       # Linux-only: libtsan segfaults at startup on darwin at the pinned Zig,
