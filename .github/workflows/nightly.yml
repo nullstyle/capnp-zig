@@ -32,6 +32,16 @@ jobs:
       - name: Run soak harness under ReleaseSafe (1 minute)
         run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 8
 
+      # 64 workers, not 8: the accept-churn abort class (setTcpNoDelay
+      # dying through std.posix.setsockopt's `unreachable` errno arms when
+      # a peer resets the socket between accept() and the option call,
+      # fixed in 8386468) reproduced 6/6 locally at >=32 workers and never
+      # at 8 — worker count is the trigger, so the low-count lanes above
+      # cannot see this class. ReleaseSafe: locally the abort surfaced
+      # only under optimized timing (0/2 in Debug at the same load).
+      - name: Run soak harness under ReleaseSafe (1 minute, 64 workers)
+        run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 64
+
       # Linux-only: libtsan segfaults at startup on darwin at the pinned Zig,
       # and Windows has no zig TSan runtime; build.zig hard-fails the step on
       # unsupported hosts rather than passing vacuously. 30 seconds is enough
