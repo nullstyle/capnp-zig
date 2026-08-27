@@ -29,6 +29,8 @@ const server_mod = @import("server.zig");
 pub const session = @import("session.zig");
 pub const wake = @import("wake.zig");
 pub const warm_redial = @import("warm_redial.zig");
+pub const warm_state = @import("warm_state.zig");
+pub const early_dispatch = @import("early_dispatch.zig");
 
 pub const enabled = true;
 /// Compatibility transport for a single vat-to-vat QUIC RPC session.
@@ -67,6 +69,10 @@ pub const length_prefix_bytes = framer.length_prefix_bytes;
 pub const native = native_framer;
 pub const testing = if (builtin.is_test) struct {
     pub const ConnectionAccess = connection_testing.Access(conn.Connection);
+    /// Direct engine access for the early-dispatch prefix mechanics: the
+    /// dispatch path touches only the framer and the Owner vtable, so the
+    /// internal suite drives it with no network at all.
+    pub const baseline_engine = @import("baseline_engine.zig");
     pub const ListenerAccess = listener.Listener.TestingHooks;
     pub const nonWindowsReceive = non_windows_receive.receive;
     pub const UdpReceiveBridge = udp_receive_bridge.Bridge;

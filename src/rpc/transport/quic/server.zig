@@ -737,6 +737,7 @@ pub const ServerSession = struct {
                 config.max_outbound_queue_bytes,
                 false,
                 config.defer_early_dispatch,
+                config.early_dispatch_mode,
             ),
             .native = NativeEngine.init(
                 allocator,

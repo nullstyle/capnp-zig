@@ -4,6 +4,7 @@ const quic_zig = @import("quic");
 const events = @import("../../events.zig");
 const framing = @import("../../wire/framing.zig");
 const length_framer = @import("length_framer.zig");
+const early_dispatch_mod = @import("early_dispatch.zig");
 const native_framer = @import("native_framer.zig");
 
 const Net = std.Io.net;
@@ -291,6 +292,16 @@ pub const ServerOptions = struct {
     new_token_key: ?ServerNewTokenKey = null,
     new_token_lifetime_us: u64 = default_quic_new_token_lifetime_us,
     early_data: EarlyData = .disabled,
+    /// What may EXECUTE off frames that arrived in 0-RTT early data before
+    /// the handshake completes (meaningful only with
+    /// `early_data = .without_replay_protection`; `.with_anti_replay`
+    /// dispatches immediately — the tracker guarantees single use).
+    /// `.hold_until_handshake` (default, and the hardened posture) buffers
+    /// everything; `.restore_only` executes the idempotent prefix
+    /// (Bootstrap + Restorer calls) early so a warm restore answers
+    /// without waiting for the handshake. Baseline mode only; native mode
+    /// always holds.
+    early_dispatch: early_dispatch_mod.Mode = .hold_until_handshake,
     /// Congestion-control selection for accepted connections, forwarded
     /// verbatim to quic-zig. Mirrors `ClientOptions.congestion_control`
     /// (same follow-upstream default policy — BBRv3 since quic-zig

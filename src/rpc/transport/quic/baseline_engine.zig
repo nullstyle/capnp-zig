@@ -3,6 +3,7 @@ const quic_zig = @import("quic");
 
 const events = @import("../../events.zig");
 const endpoint_mod = @import("endpoint.zig");
+const early_dispatch_mod = @import("early_dispatch.zig");
 const length_framer = @import("length_framer.zig");
 const outbound_queue = @import("outbound_queue.zig");
 const quic_options = @import("options.zig");
@@ -45,6 +46,13 @@ pub const BaselineEngine = struct {
     /// `hold_dispatch` each service pass.
     defer_early_dispatch: bool = false,
     hold_dispatch: bool = false,
+    /// What may execute inside the replay hold window. `.restore_only`
+    /// dispatches the idempotent Bootstrap+Restore PREFIX early; the first
+    /// non-qualifying frame parks in `held_frame` (with everything behind
+    /// it still in the framer) until the handshake lifts the hold —
+    /// prefix-only is what preserves frame order.
+    early_dispatch_mode: early_dispatch_mod.Mode = .hold_until_handshake,
+    held_frame: ?[]const u8 = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -53,16 +61,22 @@ pub const BaselineEngine = struct {
         max_outbound_queue_bytes: usize,
         early_open: bool,
         defer_early_dispatch: bool,
+        early_dispatch_mode: early_dispatch_mod.Mode,
     ) BaselineEngine {
         return .{
             .inbound = LengthDelimitedFramer.init(allocator, max_message_bytes),
             .outbound = OutboundQueue.init(max_outbound_queue_items, max_outbound_queue_bytes),
             .early_open = early_open,
             .defer_early_dispatch = defer_early_dispatch,
+            .early_dispatch_mode = early_dispatch_mode,
         };
     }
 
     pub fn deinit(self: *BaselineEngine, allocator: std.mem.Allocator) void {
+        if (self.held_frame) |bytes| {
+            allocator.free(bytes);
+            self.held_frame = null;
+        }
         self.outbound.drain(allocator);
         self.inbound.deinit();
     }
@@ -166,7 +180,17 @@ pub const BaselineEngine = struct {
         self: *BaselineEngine,
         owner: Owner,
     ) !void {
-        if (self.hold_dispatch) return;
+        if (self.hold_dispatch and self.early_dispatch_mode != .restore_only) return;
+        // A frame parked at the end of the early prefix goes first once the
+        // hold lifts (it is older than anything still in the framer).
+        if (self.held_frame) |bytes| {
+            if (self.hold_dispatch) return;
+            if (!owner.callbacks_ready(owner.ptr)) return;
+            self.held_frame = null;
+            defer owner.allocator.free(bytes);
+            try owner.dispatch_rpc_frame(owner.ptr, bytes);
+            if (owner.deinit_requested(owner.ptr)) return;
+        }
         while (true) {
             if (!owner.callbacks_ready(owner.ptr)) return;
             const frame = self.inbound.popFrame() catch |err| {
@@ -174,6 +198,12 @@ pub const BaselineEngine = struct {
                 return;
             };
             const bytes = frame orelse return;
+            if (self.hold_dispatch and !early_dispatch_mod.frameQualifies(owner.allocator, bytes)) {
+                // End of the idempotent prefix: park this frame (owned) and
+                // stop until the handshake completes.
+                self.held_frame = bytes;
+                return;
+            }
             defer owner.allocator.free(bytes);
             try owner.dispatch_rpc_frame(owner.ptr, bytes);
             if (owner.deinit_requested(owner.ptr)) return;

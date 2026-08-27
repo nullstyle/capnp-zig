@@ -16,6 +16,9 @@ pub const default_native_max_pending_data_streams: usize = 16;
 pub const default_native_max_pending_data_bytes: usize = 8 * 1024 * 1024 * 8;
 
 pub const LengthDelimitedFramer = framer.LengthDelimitedFramer;
+// Dependency-free codec, exported in the stub too so the default fuzz
+// build exercises its decode as an untrusted-input surface.
+pub const warm_state = @import("quic/warm_state.zig");
 pub const NativeControlFramer = native_framer.ControlFramer;
 pub const NativeControlFrame = native_framer.ControlFrame;
 pub const length_prefix_bytes = framer.length_prefix_bytes;

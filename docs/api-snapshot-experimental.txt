@@ -2376,6 +2376,14 @@ capnpc-zig.rpc.transport.quic.wake.PollResult.socket_ready: field bool = false
 capnpc-zig.rpc.transport.quic.wake.PollResult.wake_drained: field bool = false
 capnpc-zig.rpc.transport.quic.wake.PollResult: struct
 capnpc-zig.rpc.transport.quic.wake: struct
+capnpc-zig.rpc.transport.quic.warm_state.DecodeError: type = error{InvalidWarmState}
+capnpc-zig.rpc.transport.quic.warm_state.WarmState.ticket: field []const u8
+capnpc-zig.rpc.transport.quic.warm_state.WarmState.token: field []const u8
+capnpc-zig.rpc.transport.quic.warm_state.WarmState: struct
+capnpc-zig.rpc.transport.quic.warm_state.decode: fn ([]const u8) error{InvalidWarmState}!rpc.transport.quic.warm_state.WarmState
+capnpc-zig.rpc.transport.quic.warm_state.encode: fn (mem.Allocator, []const u8, []const u8) error{OutOfMemory}![]u8
+capnpc-zig.rpc.transport.quic.warm_state.version: const u16
+capnpc-zig.rpc.transport.quic.warm_state: struct
 capnpc-zig.rpc.transport.quic: struct
 capnpc-zig.rpc.transport.stream_state.StreamState.DrainCallback: type = *const fn (*anyopaque, ?anyerror) void
 capnpc-zig.rpc.transport.stream_state.StreamState.handleReturn: fn (*rpc.transport.stream_state.StreamState, bool) void

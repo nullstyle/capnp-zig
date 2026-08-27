@@ -28,6 +28,7 @@ const std = @import("std");
 
 const connection_mod = @import("./connection.zig");
 const options_mod = @import("./options.zig");
+const warm_state = @import("./warm_state.zig");
 const peer_mod = @import("../../peer/mod.zig");
 const rpc_events = @import("../../events.zig");
 const cap_table = @import("../../caps/table.zig");
@@ -80,6 +81,7 @@ pub const WarmRedialClient = struct {
     // Cross-thread state (mu guards all of it).
     mu: std.Io.Mutex = .init,
     ticket: ?[]u8 = null,
+    token: ?[]u8 = null,
     current_conn: ?*Connection = null,
     stop_requested: bool = false,
 
@@ -116,7 +118,40 @@ pub const WarmRedialClient = struct {
     pub fn deinit(self: *WarmRedialClient) void {
         self.allocator.free(self.sturdy_ref);
         if (self.ticket) |t| self.allocator.free(t);
+        if (self.token) |t| self.allocator.free(t);
         self.* = undefined;
+    }
+
+    /// Encode the captured `{ticket, NEW_TOKEN}` pair — the warm half of a
+    /// sturdy ref — for the application to persist beside its ref bytes.
+    /// Null until a session ticket has been captured. The caller owns the
+    /// returned buffer.
+    pub fn exportWarmState(self: *WarmRedialClient, allocator: std.mem.Allocator) !?[]u8 {
+        self.mu.lockUncancelable(self.io);
+        defer self.mu.unlock(self.io);
+        const ticket = self.ticket orelse return null;
+        return try warm_state.encode(allocator, ticket, self.token orelse &.{});
+    }
+
+    /// Seed the client from a previously exported envelope, BEFORE `run`:
+    /// the first dial then resumes warm (0-RTT + address-validated) across
+    /// a process restart instead of paying a cold handshake.
+    pub fn seedWarmState(self: *WarmRedialClient, bytes: []const u8) !void {
+        const decoded = try warm_state.decode(bytes);
+        const ticket_copy = try self.allocator.dupe(u8, decoded.ticket);
+        errdefer self.allocator.free(ticket_copy);
+        const token_copy: ?[]u8 = if (decoded.token.len > 0)
+            try self.allocator.dupe(u8, decoded.token)
+        else
+            null;
+        self.mu.lockUncancelable(self.io);
+        const old_ticket = self.ticket;
+        const old_token = self.token;
+        self.ticket = ticket_copy;
+        self.token = token_copy;
+        self.mu.unlock(self.io);
+        if (old_ticket) |t| self.allocator.free(t);
+        if (old_token) |t| self.allocator.free(t);
     }
 
     /// Cross-thread stop: ends the current generation and makes `run`
@@ -174,20 +209,29 @@ pub const WarmRedialClient = struct {
     /// enqueue bootstrap + pipelined restore pre-loop, run to completion.
     /// Returns true when a stop was requested.
     fn runGeneration(self: *WarmRedialClient, last_cause: *rpc_events.DisconnectCause) !bool {
-        // Snapshot the ticket into generation-local storage: the connection
-        // borrows `resumption_state` while it lives, and the sink may
-        // replace `self.ticket` from the run thread mid-generation.
+        // Snapshot ticket + NEW_TOKEN into generation-local storage: the
+        // connection borrows them while it lives, and the sinks may replace
+        // the shared copies from the run thread mid-generation.
         const ticket_snapshot: ?[]u8 = blk: {
             self.mu.lockUncancelable(self.io);
             defer self.mu.unlock(self.io);
             break :blk if (self.ticket) |t| try self.allocator.dupe(u8, t) else null;
         };
         defer if (ticket_snapshot) |t| self.allocator.free(t);
+        const token_snapshot: ?[]u8 = blk: {
+            self.mu.lockUncancelable(self.io);
+            defer self.mu.unlock(self.io);
+            break :blk if (self.token) |t| try self.allocator.dupe(u8, t) else null;
+        };
+        defer if (token_snapshot) |t| self.allocator.free(t);
 
         var options = self.base;
         options.resumption_state = ticket_snapshot;
         options.new_session_callback = onNewSession;
         options.new_session_user_data = self;
+        options.new_token = token_snapshot;
+        options.new_token_callback = onNewToken;
+        options.new_token_user_data = self;
 
         var conn = try Connection.initClient(self.allocator, self.io, options);
         var conn_alive = true;
@@ -247,6 +291,16 @@ pub const WarmRedialClient = struct {
             .idle_timeout => self.policy.redial_on_idle_timeout,
             else => false,
         };
+    }
+
+    fn onNewToken(user_data: ?*anyopaque, token: []const u8) void {
+        const self: *WarmRedialClient = @ptrCast(@alignCast(user_data orelse return));
+        const copy = self.allocator.dupe(u8, token) catch return;
+        self.mu.lockUncancelable(self.io);
+        const old = self.token;
+        self.token = copy;
+        self.mu.unlock(self.io);
+        if (old) |t| self.allocator.free(t);
     }
 
     fn onNewSession(user_data: ?*anyopaque, ticket: []const u8) void {

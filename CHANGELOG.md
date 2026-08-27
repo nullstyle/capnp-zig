@@ -28,6 +28,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   redial, the healed capability answers, the restarted server's reset
   counter advances) and a zero-budget ablation (the reset is detected
   but NOT healed; give-up carries the certified cause).
+- **Warm restore's server half, part 1: the 0-RTT idempotency gate
+  (`ServerOptions.early_dispatch`; Experimental).** With
+  `early_data = .without_replay_protection` the server previously held
+  EVERY early-data frame until the handshake (replay-safe, nothing
+  executes early). `.restore_only` now executes the idempotent PREFIX of
+  the early flight — Bootstrap frames and Calls on the pinned Restorer
+  interface — before the handshake, so a warm restore answers without
+  waiting; the first non-qualifying frame parks (order preserved) until
+  the handshake lands, keeping the replay window closed for everything
+  non-idempotent. `.hold_until_handshake` stays the default and the
+  hardened posture; baseline mode only (native always holds). Proven by
+  network-free engine tests: prefix dispatch, in-order drain of the
+  parked frame, hold-mode inertness, no-leak parking, and the
+  classifier's exact vocabulary (with the mirrored Restorer id asserted
+  equal to the pinned persistence constant).
+- **Warm restore's server half, part 2: the warm sturdy-ref envelope
+  (`quic.warm_state`; Experimental).** `{session ticket, NEW_TOKEN}`
+  encode/decode as ONE persistable blob — upstream delivers them through
+  separate channels, and only together do they buy the full
+  one-round-trip, address-validated resume. `WarmRedialClient` now
+  captures NEW_TOKEN alongside tickets (latest-wins, tear-free), sends
+  both on every redial, and gains `exportWarmState`/`seedWarmState` so
+  an application can persist the warm half beside its sturdy-ref bytes
+  and resume warm across a PROCESS RESTART. The codec is
+  dependency-free, exported in the non-QUIC build too, and registered
+  as a coverage-guided fuzz target (decode must reject or round-trip
+  canonically).
 - **Soak: healing workers (`--heal-workers K`, QUIC only) — the
   churn-scale self-healing proof.** K workers each run one persistent
   `WarmRedialClient` (restore-backed, echo-chaining) for the whole run

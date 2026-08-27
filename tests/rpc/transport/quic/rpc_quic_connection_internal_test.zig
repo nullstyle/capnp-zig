@@ -851,3 +851,226 @@ test "transient peer faults are per-datagram; local faults stay fatal" {
     // Truncation has its own outcome and must not be routed through here.
     try std.testing.expect(!isTransientPeerFault(error.MessageOversize));
 }
+
+// ---------------------------------------------------------------------------
+// Early-dispatch posture: the 0-RTT replay window's idempotent prefix.
+// ---------------------------------------------------------------------------
+
+const early_dispatch = quic.early_dispatch;
+const protocol = capnp.rpc.wire.protocol;
+const engine_mod = quic.testing.baseline_engine;
+
+test "early_dispatch restorer id matches the pinned persistence constant" {
+    try std.testing.expectEqual(
+        capnp.rpc.peer.persistence.restorer_interface_id,
+        early_dispatch.restorer_interface_id,
+    );
+}
+
+fn buildBootstrapFrame(allocator: std.mem.Allocator) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildBootstrap(1);
+    // finish() == toBytes(): the caller owns the returned bytes.
+    return try builder.finish();
+}
+
+fn buildCallFrame(allocator: std.mem.Allocator, interface_id: u64) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var call = try builder.beginCall(2, interface_id, 0);
+    try call.setTargetImportedCap(0);
+    _ = try call.initCapTableTyped(0);
+    return try builder.finish();
+}
+
+test "frameQualifies admits exactly the idempotent prefix vocabulary" {
+    const allocator = std.testing.allocator;
+
+    const bootstrap = try buildBootstrapFrame(allocator);
+    defer allocator.free(bootstrap);
+    try std.testing.expect(early_dispatch.frameQualifies(allocator, bootstrap));
+
+    const restore = try buildCallFrame(allocator, early_dispatch.restorer_interface_id);
+    defer allocator.free(restore);
+    try std.testing.expect(early_dispatch.frameQualifies(allocator, restore));
+
+    const echo = try buildCallFrame(allocator, 0x5155_4943);
+    defer allocator.free(echo);
+    try std.testing.expect(!early_dispatch.frameQualifies(allocator, echo));
+
+    // Garbage never qualifies — it holds for the post-handshake decode
+    // path, which owns the error handling.
+    const garbage = [_]u8{ 0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88 };
+    try std.testing.expect(!early_dispatch.frameQualifies(allocator, &garbage));
+}
+
+const DispatchRecorder = struct {
+    frames: std.ArrayList([]u8) = .empty,
+    allocator: std.mem.Allocator,
+
+    fn deinitRecorder(self: *DispatchRecorder) void {
+        for (self.frames.items) |f| self.allocator.free(f);
+        self.frames.deinit(self.allocator);
+    }
+
+    fn isClosing(_: *anyopaque) bool {
+        return false;
+    }
+    fn callbacksReady(_: *anyopaque) bool {
+        return true;
+    }
+    fn dispatch(ptr: *anyopaque, frame: []const u8) anyerror!void {
+        const self: *DispatchRecorder = @ptrCast(@alignCast(ptr));
+        try self.frames.append(self.allocator, try self.allocator.dupe(u8, frame));
+    }
+    fn terminate(_: *anyopaque, _: anyerror) void {}
+    fn deinitRequested(_: *anyopaque) bool {
+        return false;
+    }
+
+    fn owner(self: *DispatchRecorder, buf: []u8) engine_mod.Owner {
+        return .{
+            .ptr = self,
+            .allocator = self.allocator,
+            .role = .server,
+            .observer = null,
+            .stream_read_buf = buf,
+            .is_closing = isClosing,
+            .callbacks_ready = callbacksReady,
+            .dispatch_rpc_frame = dispatch,
+            .terminate_frame_error = terminate,
+            .deinit_requested = deinitRequested,
+        };
+    }
+};
+
+fn pushFramed(engine: *engine_mod.BaselineEngine, frame: []const u8) !void {
+    var prefix: [4]u8 = undefined;
+    std.mem.writeInt(u32, &prefix, @intCast(frame.len), .little);
+    try engine.inbound.push(&prefix);
+    try engine.inbound.push(frame);
+}
+
+test "restore_only dispatches the idempotent prefix early and parks the rest in order" {
+    const allocator = std.testing.allocator;
+    var engine = engine_mod.BaselineEngine.init(allocator, 1 << 20, 64, 1 << 20, false, true, .restore_only);
+    defer engine.deinit(allocator);
+
+    var recorder = DispatchRecorder{ .allocator = allocator };
+    defer recorder.deinitRecorder();
+    var scratch: [64]u8 = undefined;
+    const owner = recorder.owner(&scratch);
+
+    const bootstrap = try buildBootstrapFrame(allocator);
+    defer allocator.free(bootstrap);
+    const restore = try buildCallFrame(allocator, early_dispatch.restorer_interface_id);
+    defer allocator.free(restore);
+    const echo_a = try buildCallFrame(allocator, 0xaaaa);
+    defer allocator.free(echo_a);
+    const echo_b = try buildCallFrame(allocator, 0xbbbb);
+    defer allocator.free(echo_b);
+
+    try pushFramed(&engine, bootstrap);
+    try pushFramed(&engine, restore);
+    try pushFramed(&engine, echo_a);
+    try pushFramed(&engine, echo_b);
+
+    // Inside the replay window: only the idempotent prefix executes.
+    engine.hold_dispatch = true;
+    try engine.dispatchAvailableFrames(owner);
+    try std.testing.expectEqual(@as(usize, 2), recorder.frames.items.len);
+    try std.testing.expectEqualSlices(u8, bootstrap, recorder.frames.items[0]);
+    try std.testing.expectEqualSlices(u8, restore, recorder.frames.items[1]);
+    try std.testing.expect(engine.held_frame != null);
+
+    // Re-servicing inside the window must not leak past the parked frame.
+    try engine.dispatchAvailableFrames(owner);
+    try std.testing.expectEqual(@as(usize, 2), recorder.frames.items.len);
+
+    // Handshake lands: the parked frame drains FIRST, then the framer, so
+    // wire order is preserved end to end.
+    engine.hold_dispatch = false;
+    try engine.dispatchAvailableFrames(owner);
+    try std.testing.expectEqual(@as(usize, 4), recorder.frames.items.len);
+    try std.testing.expectEqualSlices(u8, echo_a, recorder.frames.items[2]);
+    try std.testing.expectEqualSlices(u8, echo_b, recorder.frames.items[3]);
+    try std.testing.expect(engine.held_frame == null);
+}
+
+test "hold_until_handshake dispatches nothing inside the window" {
+    const allocator = std.testing.allocator;
+    var engine = engine_mod.BaselineEngine.init(allocator, 1 << 20, 64, 1 << 20, false, true, .hold_until_handshake);
+    defer engine.deinit(allocator);
+
+    var recorder = DispatchRecorder{ .allocator = allocator };
+    defer recorder.deinitRecorder();
+    var scratch: [64]u8 = undefined;
+    const owner = recorder.owner(&scratch);
+
+    const restore = try buildCallFrame(allocator, early_dispatch.restorer_interface_id);
+    defer allocator.free(restore);
+    try pushFramed(&engine, restore);
+
+    engine.hold_dispatch = true;
+    try engine.dispatchAvailableFrames(owner);
+    try std.testing.expectEqual(@as(usize, 0), recorder.frames.items.len);
+
+    engine.hold_dispatch = false;
+    try engine.dispatchAvailableFrames(owner);
+    try std.testing.expectEqual(@as(usize, 1), recorder.frames.items.len);
+}
+
+test "warm-state envelope round-trips and rejects every malformed shape" {
+    const allocator = std.testing.allocator;
+    const ws = quic.warm_state;
+
+    const encoded = try ws.encode(allocator, "ticket-bytes", "token-bytes");
+    defer allocator.free(encoded);
+    const decoded = try ws.decode(encoded);
+    try std.testing.expectEqualSlices(u8, "ticket-bytes", decoded.ticket);
+    try std.testing.expectEqualSlices(u8, "token-bytes", decoded.token);
+
+    // Empty token is legal (quic-zig delivers it separately and later).
+    const no_token = try ws.encode(allocator, "t", "");
+    defer allocator.free(no_token);
+    try std.testing.expectEqual(@as(usize, 0), (try ws.decode(no_token)).token.len);
+
+    // Truncations, bad version, and trailing garbage all fail closed.
+    try std.testing.expectError(error.InvalidWarmState, ws.decode(""));
+    try std.testing.expectError(error.InvalidWarmState, ws.decode(encoded[0..4]));
+    try std.testing.expectError(error.InvalidWarmState, ws.decode(encoded[0 .. encoded.len - 1]));
+    var bad_version = try allocator.dupe(u8, encoded);
+    defer allocator.free(bad_version);
+    bad_version[0] = 0xff;
+    try std.testing.expectError(error.InvalidWarmState, ws.decode(bad_version));
+    const trailing = try std.mem.concat(allocator, u8, &.{ encoded, "x" });
+    defer allocator.free(trailing);
+    try std.testing.expectError(error.InvalidWarmState, ws.decode(trailing));
+    // A ticket length that overruns the buffer must not be believed.
+    var huge_len = try allocator.dupe(u8, encoded);
+    defer allocator.free(huge_len);
+    std.mem.writeInt(u32, huge_len[2..6], 0xffff_ffff, .little);
+    try std.testing.expectError(error.InvalidWarmState, ws.decode(huge_len));
+}
+
+test "a frame parked at engine deinit does not leak" {
+    const allocator = std.testing.allocator;
+    var engine = engine_mod.BaselineEngine.init(allocator, 1 << 20, 64, 1 << 20, false, true, .restore_only);
+
+    var recorder = DispatchRecorder{ .allocator = allocator };
+    defer recorder.deinitRecorder();
+    var scratch: [64]u8 = undefined;
+    const owner = recorder.owner(&scratch);
+
+    const echo = try buildCallFrame(allocator, 0xcccc);
+    defer allocator.free(echo);
+    try pushFramed(&engine, echo);
+
+    engine.hold_dispatch = true;
+    try engine.dispatchAvailableFrames(owner);
+    try std.testing.expectEqual(@as(usize, 0), recorder.frames.items.len);
+    try std.testing.expect(engine.held_frame != null);
+    // std.testing.allocator fails the test on leak if deinit forgets it.
+    engine.deinit(allocator);
+}

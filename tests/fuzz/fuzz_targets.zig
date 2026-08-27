@@ -54,6 +54,21 @@ fn fuzzFlatDecode(_: void, smith: *std.testing.Smith) anyerror!void {
     _ = root.readText(0) catch {};
 }
 
+/// Warm sturdy-ref envelope decode ({ticket, NEW_TOKEN}): applications
+/// persist these bytes and feed them back after restarts, so the decoder
+/// is an untrusted-input surface. Any error is a correct rejection; a
+/// successful decode must round-trip byte-identically.
+fn fuzzWarmStateDecode(_: void, smith: *std.testing.Smith) anyerror!void {
+    var buf: [max_fuzz_input]u8 = undefined;
+    const len = smith.slice(&buf);
+    const bytes = buf[0..len];
+
+    const decoded = quic_wire.warm_state.decode(bytes) catch return;
+    const re = try quic_wire.warm_state.encode(std.testing.allocator, decoded.ticket, decoded.token);
+    defer std.testing.allocator.free(re);
+    if (!std.mem.eql(u8, re, bytes)) return error.WarmStateNotCanonical;
+}
+
 /// Packed decode: unpack budget enforcement plus validated parse of the
 /// unpacked bytes.
 fn fuzzPackedDecode(_: void, smith: *std.testing.Smith) anyerror!void {
@@ -580,6 +595,10 @@ test "fuzz: packed decode" {
 
 test "fuzz: flat (table-less) validated decode" {
     try std.testing.fuzz({}, fuzzFlatDecode, .{});
+}
+
+test "fuzz: warm sturdy-ref envelope decode" {
+    try std.testing.fuzz({}, fuzzWarmStateDecode, .{});
 }
 
 test "fuzz: stream framer chunking" {

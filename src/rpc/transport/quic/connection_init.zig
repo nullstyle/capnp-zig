@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const events = @import("../../events.zig");
 const baseline_engine = @import("baseline_engine.zig");
 const close_controller = @import("close_controller.zig");
+const early_dispatch_mod = @import("early_dispatch.zig");
 const endpoint_factory = @import("endpoint_factory.zig");
 const endpoint_mod = @import("endpoint.zig");
 const native_engine = @import("native_engine.zig");
@@ -52,6 +53,11 @@ pub const Config = struct {
     /// immediately — the tracker already guarantees single use.
     defer_early_dispatch: bool = false,
 
+    /// What may execute inside the deferred window (baseline mode only):
+    /// `.restore_only` lets the idempotent Bootstrap+Restore prefix
+    /// dispatch before the handshake. See `early_dispatch.Mode`.
+    early_dispatch_mode: early_dispatch_mod.Mode = .hold_until_handshake,
+
     pub fn fromClient(options: quic_options.ClientOptions) Config {
         return .{
             .udp_rx_buffer_size = options.udp_rx_buffer_size,
@@ -80,6 +86,7 @@ pub const Config = struct {
             .reveal_close_reason_on_wire = options.reveal_close_reason_on_wire,
             .observer = options.observer,
             .defer_early_dispatch = std.meta.activeTag(options.early_data) == .without_replay_protection,
+            .early_dispatch_mode = options.early_dispatch,
         };
     }
 };
@@ -162,6 +169,7 @@ pub fn init(
             config.max_outbound_queue_bytes,
             config.early_open,
             config.defer_early_dispatch,
+            config.early_dispatch_mode,
         ),
         .native = NativeEngine.init(
             allocator,
