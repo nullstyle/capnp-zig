@@ -40,16 +40,23 @@ jobs:
       # cannot see this class. ReleaseSafe: locally the abort surfaced
       # only under optimized timing (0/2 in Debug at the same load).
       #
-      # Linux-only for now: this lane's FIRST run (33029339794) caught a
-      # Windows-specific teardown panic — threads parked in accept() die
-      # with "reached unreachable code" in std Io/Threaded.zig
-      # netAcceptWindows when the pool closes the listener under them,
-      # plus error.Unexpected client session errors mid-run. Tracked as
-      # its own bug; widen the matrix back to Windows when it is fixed
-      # rather than deleting this guard.
-      - name: Run soak harness under ReleaseSafe (1 minute, 64 workers)
-        if: runner.os == 'Linux'
-        run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 64
+      # Windows runs 20s, not 60s. This lane's FIRST run (33029339794)
+      # caught the parked-accept teardown panic, fixed in WorkerPool
+      # (stopAccepting orders nudge-unpark before close). The residual:
+      # a 60s run at 64 workers burns ~20k client ports while Windows
+      # holds each in TIME_WAIT for 120s against a ~16k dynamic range
+      # (measured: 16,224 TIME_WAIT after one 60s run) — once the host
+      # is port-exhausted, no self-connect nudge can land, the close
+      # valve fires under parked accepts, and std's netAcceptWindows
+      # treats the resulting STATUS_CANCELLED as unreachable (a std
+      # defect worth an upstream report). 20s keeps teardown well under
+      # the ceiling; the lane's purpose — the >=32-worker regime — is
+      # unchanged. Repro evidence: branch lane ci/win-accept-teardown,
+      # runs 33031327060 (red, pre-fix) / 33032117486 (20s green x2 +
+      # 60s diagnostic red with the port census).
+      - name: Run soak harness under ReleaseSafe (64 workers)
+        shell: bash
+        run: zig build -Doptimize=ReleaseSafe soak -- --seconds ${{ runner.os == 'Windows' && '20' || '60' }} --workers 64
 
       # Linux-only: libtsan segfaults at startup on darwin at the pinned Zig,
       # and Windows has no zig TSan runtime; build.zig hard-fails the step on
