@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   redial, the healed capability answers, the restarted server's reset
   counter advances) and a zero-budget ablation (the reset is detected
   but NOT healed; give-up carries the certified cause).
+- **Soak: healing workers (`--heal-workers K`, QUIC only) — the
+  churn-scale self-healing proof.** K workers each run one persistent
+  `WarmRedialClient` (restore-backed, echo-chaining) for the whole run
+  while the rest churn; the soak server peers now serve the vat restore
+  convention. New gates: zero give-ups, echo traffic flowed, and — when
+  paired with abrupt-death mode — EVERY healing client healed across
+  EVERY death. First run (8 healers + 8 churn workers, kill every 2s,
+  14s): 7 deaths × 8 clients = exactly 56 redials and 64 rebinds — a
+  perfect heal lattice — 19,750 healed-path echo round trips, zero
+  give-ups, zero unexpected exceptions.
 - **Soak: abrupt-death chaos mode (`--abrupt-death-every-ms N`, QUIC
   only).** Every N ms the harness kills the echo server with NO close
   ceremony and restarts it on the same port with the same

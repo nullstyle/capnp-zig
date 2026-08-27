@@ -29,6 +29,9 @@
 //!                          [--cc default|cubic|bbr|newreno]  (quic only)
 //!                          [--abrupt-death-every-ms N]  (quic only: kill+restart
 //!                           the server with no close ceremony every N ms)
+//!                          [--heal-workers K]  (quic only: K workers run
+//!                           persistent WarmRedialClients that auto-heal
+//!                           across abrupt deaths instead of churn sessions)
 
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
@@ -72,6 +75,12 @@ const Config = struct {
     // certificate exists for. Clients' next datagrams draw stateless
     // resets, so sessions close `.stateless_reset` instead of timing out.
     abrupt_death_every_ms: ?u64 = null,
+    // Healing workers (QUIC only): the first K workers each run ONE
+    // persistent WarmRedialClient for the whole run — restore-backed echo
+    // traffic that auto-heals across abrupt server deaths — instead of the
+    // churn session loop. Pair with --abrupt-death-every-ms for the
+    // churn-scale self-healing proof.
+    heal_workers: u32 = 0,
     // Memory-curve sampling interval and the steady-state growth ceiling.
     mem_sample_ms: u64 = 100,
     mem_growth_pct: f64 = 25.0,
@@ -261,6 +270,17 @@ const EchoServer = struct {
         _ = try peer.setBootstrap(.{ .ctx = @ptrCast(&ctx_anchor), .on_call = EchoServer.onCall });
         peer.start(null, null, null);
         return .accept;
+    }
+
+    /// The vat-level restore convention the healing workers ride: any peer
+    /// presenting the fixed soak sturdy ref gets a fresh echo export. The
+    /// re-export-per-restore shape is idempotent at the app layer, which is
+    /// what a 0-RTT-riding restore requires.
+    const sturdy_ref = "sturdy:soak-echo/1";
+
+    fn onRestore(_: *anyopaque, peer: *Peer, ref: []const u8) anyerror!rpc.peer.RestoreOutcome {
+        if (!std.mem.eql(u8, ref, sturdy_ref)) return .unknown;
+        return .{ .existing = try peer.addExport(.{ .ctx = @ptrCast(&ctx_anchor), .on_call = onCall }) };
     }
 };
 
@@ -576,6 +596,49 @@ fn WorkerOf(
 const Worker = WorkerOf(Connection, dialTcp);
 const QuicWorker = if (quic.enabled) WorkerOf(quic.Connection, dialQuic) else void;
 
+// -- Healing worker (QUIC only) ----------------------------------------------
+//
+// One persistent WarmRedialClient per healing worker: restore-backed echo
+// traffic that chains a new call on every Return (a reset only reaches a
+// client that SENDS) and auto-heals across abrupt server deaths. The app
+// state mirrors the heal e2e's shape.
+
+const HealApp = if (quic.enabled) struct {
+    echo_ok: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    gave_up: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    // Run-thread-only within a generation.
+    last_cap: ?cap_table.ResolvedCap = null,
+    outcome: ?quic.WarmRedialClient.Outcome = null,
+
+    fn onRebind(ctx: ?*anyopaque, peer: *Peer, cap: cap_table.ResolvedCap) void {
+        const self: *HealApp = @ptrCast(@alignCast(ctx.?));
+        self.last_cap = cap;
+        self.sendEcho(peer, cap);
+    }
+
+    fn sendEcho(self: *HealApp, peer: *Peer, cap: cap_table.ResolvedCap) void {
+        _ = peer.sendCallResolved(cap, 0, 1, self, null, onEchoReturn) catch {};
+    }
+
+    fn onEchoReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+        _ = caps;
+        const self: *HealApp = @ptrCast(@alignCast(ctx));
+        if (ret.tag != .results) return; // the death's synthetic Return ends this chain
+        _ = self.echo_ok.fetchAdd(1, .monotonic);
+        self.sendEcho(peer, self.last_cap orelse return);
+    }
+
+    fn onGiveUp(ctx: ?*anyopaque, cause: rpc.events.DisconnectCause) void {
+        const self: *HealApp = @ptrCast(@alignCast(ctx.?));
+        _ = cause;
+        self.gave_up.store(true, .release);
+    }
+
+    fn threadMain(self: *HealApp, client: *quic.WarmRedialClient) void {
+        self.outcome = client.run() catch null;
+    }
+} else void;
+
 // -- QUIC server harness -----------------------------------------------------
 //
 // TCP's WorkerPool equivalent for the fanout QUIC server: ONE thread owns the
@@ -791,6 +854,12 @@ const QuicServerHarness = struct {
                 self.allocator.destroy(peer);
                 continue;
             };
+            peer.setRestorer(@ptrCast(&EchoServer.ctx_anchor), EchoServer.onRestore) catch {
+                _ = peer.takeAttachedConnection(*quic.ServerSession);
+                peer.deinit();
+                self.allocator.destroy(peer);
+                continue;
+            };
             peer.start(null, null, null);
             self.bound.put(sess.id, peer) catch {
                 _ = peer.takeAttachedConnection(*quic.ServerSession);
@@ -969,6 +1038,8 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Config {
             cfg.mem_growth_pct = try std.fmt.parseFloat(f64, iter.next() orelse return error.InvalidArgument);
         } else if (std.mem.eql(u8, arg, "--abrupt-death-every-ms")) {
             cfg.abrupt_death_every_ms = try std.fmt.parseUnsigned(u64, iter.next() orelse return error.InvalidArgument, 10);
+        } else if (std.mem.eql(u8, arg, "--heal-workers")) {
+            cfg.heal_workers = try std.fmt.parseUnsigned(u32, iter.next() orelse return error.InvalidArgument, 10);
         } else if (std.mem.eql(u8, arg, "--no-chaos")) {
             cfg.chaos = false;
         } else if (std.mem.eql(u8, arg, "--no-deadlines")) {
@@ -1000,6 +1071,16 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Config {
             return error.InvalidArgument;
         }
         if (ms == 0) return error.InvalidArgument;
+    }
+    if (cfg.heal_workers > 0) {
+        if (cfg.transport != .quic) {
+            std.debug.print("soak: --heal-workers requires --transport quic\n", .{});
+            return error.InvalidArgument;
+        }
+        if (cfg.heal_workers > cfg.workers) {
+            std.debug.print("soak: --heal-workers must not exceed --workers\n", .{});
+            return error.InvalidArgument;
+        }
     }
     return cfg;
 }
@@ -1080,8 +1161,47 @@ pub fn main(init: std.process.Init) !void {
         .samples_allocator = telemetry_allocator,
     }});
 
+    // Healing clients (QUIC only; parseArgs enforced the pairing): stable
+    // storage created before their threads spawn, stopped by this thread
+    // once the run window ends.
+    const heal_count: u32 = cfg.heal_workers;
+    var heal_apps: if (quic.enabled) []HealApp else void =
+        if (comptime quic.enabled) try allocator.alloc(HealApp, heal_count) else {};
+    var heal_clients: if (quic.enabled) []quic.WarmRedialClient else void =
+        if (comptime quic.enabled) try allocator.alloc(quic.WarmRedialClient, heal_count) else {};
+    if (comptime quic.enabled) {
+        for (heal_apps) |*app| app.* = .{};
+        for (heal_clients, 0..) |*client, i| {
+            var base = quic.ClientOptions{
+                .remote_addr = address,
+                .server_name = "localhost",
+                .insecure_skip_verify = true,
+                .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+            };
+            applyCc(&base.congestion_control, cfg.cc);
+            client.* = try quic.WarmRedialClient.init(
+                allocator,
+                io,
+                base,
+                EchoServer.sturdy_ref,
+                // Effectively unbounded within the run; the run window is
+                // the real budget.
+                .{ .max_redials = std.math.maxInt(u32), .backoff_ms = 25 },
+                &heal_apps[i],
+                HealApp.onRebind,
+                HealApp.onGiveUp,
+            );
+        }
+    }
+
     const worker_threads = try allocator.alloc(std.Thread, cfg.workers);
     for (worker_threads, 0..) |*t, i| {
+        if (comptime quic.enabled) {
+            if (cfg.transport == .quic and i < heal_count) {
+                t.* = try std.Thread.spawn(.{}, HealApp.threadMain, .{ &heal_apps[i], &heal_clients[i] });
+                continue;
+            }
+        }
         t.* = switch (cfg.transport) {
             .tcp => try std.Thread.spawn(.{}, Worker.main, .{Worker{
                 .allocator = allocator,
@@ -1105,7 +1225,36 @@ pub fn main(init: std.process.Init) !void {
             }}) else unreachable,
         };
     }
-    for (worker_threads) |t| t.join();
+    // Churn workers self-terminate at the window's end; healing clients run
+    // until told to stop. Join churn first, then stop and join the healers
+    // (when every worker heals, wait out the window explicitly).
+    for (worker_threads[heal_count..]) |t| t.join();
+    if (heal_count == cfg.workers) {
+        while (nowNs(io) < stop_at_ns) sleepMs(io, 50);
+    }
+    var heal_rebinds: usize = 0;
+    var heal_redials: usize = 0;
+    var heal_give_ups: usize = 0;
+    var heal_echo: usize = 0;
+    var heal_min_rebinds: usize = std.math.maxInt(usize);
+    if (comptime quic.enabled) {
+        for (heal_clients) |*client| client.requestStop();
+        for (worker_threads[0..heal_count]) |t| t.join();
+        for (heal_apps, heal_clients) |*app, *client| {
+            if (app.outcome) |o| {
+                heal_rebinds += o.rebinds;
+                heal_redials += o.redials;
+                heal_min_rebinds = @min(heal_min_rebinds, o.rebinds);
+            } else {
+                heal_min_rebinds = 0;
+            }
+            if (app.gave_up.load(.acquire)) heal_give_ups += 1;
+            heal_echo += app.echo_ok.load(.acquire);
+            client.deinit();
+        }
+        allocator.free(heal_clients);
+        allocator.free(heal_apps);
+    }
     allocator.free(worker_threads);
     std.debug.print("soak: workers joined, draining server\n", .{});
 
@@ -1128,6 +1277,12 @@ pub fn main(init: std.process.Init) !void {
                     "soak-quic: resets_sent={} unroutable_dcid={} (reset_queued={}) abrupt_deaths={}\n",
                     .{ quic_srv.resets_sent, quic_srv.unroutable_seen.load(.acquire), quic_srv.unroutable_reset_queued.load(.acquire), quic_srv.deaths },
                 );
+                if (cfg.heal_workers > 0) {
+                    std.debug.print(
+                        "soak-heal: clients={} rebinds={} redials={} give_ups={} echo_ok={} min_rebinds={}\n",
+                        .{ cfg.heal_workers, heal_rebinds, heal_redials, heal_give_ups, heal_echo, heal_min_rebinds },
+                    );
+                }
             } else unreachable;
         },
     }
@@ -1223,6 +1378,22 @@ pub fn main(init: std.process.Init) !void {
             }
             if (quic_srv.deaths > 0 and quic_srv.resets_sent == 0 and quic_srv.unroutable_reset_queued.load(.acquire) == 0) {
                 std.debug.print("soak: FAIL — abrupt deaths produced no reset traffic at the server\n", .{});
+                failed = true;
+            }
+        } else unreachable;
+    }
+    if (cfg.heal_workers > 0) {
+        if (comptime quic.enabled) {
+            if (heal_give_ups != 0) {
+                std.debug.print("soak: FAIL — {} healing client(s) gave up\n", .{heal_give_ups});
+                failed = true;
+            }
+            if (heal_echo == 0) {
+                std.debug.print("soak: FAIL — healing clients completed no echo round trips\n", .{});
+                failed = true;
+            }
+            if (cfg.abrupt_death_every_ms != null and quic_srv.deaths > 0 and heal_min_rebinds < 2) {
+                std.debug.print("soak: FAIL — a healing client never healed across an abrupt death (min_rebinds={})\n", .{heal_min_rebinds});
                 failed = true;
             }
         } else unreachable;
