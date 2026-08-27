@@ -27,6 +27,8 @@
 //!                          [--mem-growth-pct P] [--no-chaos] [--no-deadlines]
 //!                          [--transport tcp|quic]  (quic needs -Dquic=true)
 //!                          [--cc default|cubic|bbr|newreno]  (quic only)
+//!                          [--abrupt-death-every-ms N]  (quic only: kill+restart
+//!                           the server with no close ceremony every N ms)
 
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
@@ -64,6 +66,12 @@ const Config = struct {
     inflight: u32 = 1,
     chaos: bool = true,
     deadlines: bool = true,
+    // Abrupt-death chaos (QUIC only): every N ms the harness KILLS the
+    // server with no close ceremony and restarts it on the same port with
+    // the same stateless_reset_key — the crash-restart shape the death
+    // certificate exists for. Clients' next datagrams draw stateless
+    // resets, so sessions close `.stateless_reset` instead of timing out.
+    abrupt_death_every_ms: ?u64 = null,
     // Memory-curve sampling interval and the steady-state growth ceiling.
     mem_sample_ms: u64 = 100,
     mem_growth_pct: f64 = 25.0,
@@ -596,41 +604,73 @@ const QuicServerHarness = struct {
     unroutable_seen: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     unroutable_reset_queued: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     resets_sent: u64 = 0,
+    // Abrupt-death mode state (loop-thread except where noted).
+    io: std.Io = undefined,
+    workers_hint: u32 = 0,
+    cc: CcChoice = .default,
+    death_every_ms: ?u64 = null,
+    // Concrete bound address captured after the first bind; every restart
+    // re-binds this exact port so surviving clients keep sending into it.
+    listen_addr: if (quic.enabled) net.IpAddress else void = undefined,
+    deaths: u64 = 0,
+    // True while the Server value at `server` is deinitialized (a rebind
+    // race exhausted its retries): shutdown must not deinit it again.
+    server_destroyed: bool = false,
+    rebind_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
-    fn start(self: *QuicServerHarness, allocator: std.mem.Allocator, io: std.Io, workers: u32, cc: CcChoice) !net.IpAddress {
+    fn makeOptions(self: *QuicServerHarness, listen_addr: net.IpAddress) quic.ServerOptions {
         if (comptime !quic.enabled) unreachable;
-        self.allocator = allocator;
-        self.bound = std.AutoHashMap(u64, *Peer).init(allocator);
-        const server = try allocator.create(quic.Server);
-        errdefer allocator.destroy(server);
         var server_options = quic.ServerOptions{
-            .listen_addr = .{ .ip4 = .loopback(0) },
+            .listen_addr = listen_addr,
             .tls_cert_pem = soak_quic_cert_pem,
             .tls_key_pem = soak_quic_key_pem,
             .receive_timeout = std.Io.Duration.fromMilliseconds(5),
             // Each worker holds at most one live session; x2 covers
             // close/reap overlap during churn.
-            .max_concurrent_connections = workers * 2 + 4,
+            .max_concurrent_connections = self.workers_hint * 2 + 4,
             // Fixed soak key: turns churned-away connection state into
             // observable stateless resets instead of silent timeouts.
+            // MUST be byte-identical across abrupt-death incarnations, or
+            // surviving clients lose the certificate and stall to idle
+            // timeout instead.
             .stateless_reset_key = @as(quic.StatelessResetKey, @splat(0x51)),
             .log_callback = QuicServerHarness.onServerLog,
             .log_user_data = self,
         };
-        applyCc(&server_options.congestion_control, cc);
-        server.* = try quic.Server.init(allocator, io, server_options);
+        applyCc(&server_options.congestion_control, self.cc);
+        return server_options;
+    }
+
+    fn start(self: *QuicServerHarness, allocator: std.mem.Allocator, io: std.Io, workers: u32, cc: CcChoice, death_every_ms: ?u64) !net.IpAddress {
+        if (comptime !quic.enabled) unreachable;
+        self.allocator = allocator;
+        self.io = io;
+        self.workers_hint = workers;
+        self.cc = cc;
+        self.death_every_ms = death_every_ms;
+        self.bound = std.AutoHashMap(u64, *Peer).init(allocator);
+        const server = try allocator.create(quic.Server);
+        errdefer allocator.destroy(server);
+        server.* = try quic.Server.init(allocator, io, self.makeOptions(.{ .ip4 = .loopback(0) }));
         self.server = server;
+        self.listen_addr = server.getAddress();
         self.thread = try std.Thread.spawn(.{}, QuicServerHarness.threadMain, .{self});
-        return server.getAddress();
+        return self.listen_addr;
     }
 
     fn shutdown(self: *QuicServerHarness) void {
         if (comptime !quic.enabled) unreachable;
         self.stop.store(true, .release);
-        if (self.server) |server| server.wake();
+        // In abrupt-death mode the loop thread may be mid-kill (the Server
+        // value transiently deinitialized), so a cross-thread wake() would
+        // race a use-after-free. stepOnce's 5ms receive timeout bounds the
+        // un-woken shutdown latency instead.
+        if (self.death_every_ms == null) {
+            if (self.server) |server| server.wake();
+        }
         if (self.thread) |t| t.join();
         if (self.server) |server| {
-            server.deinit();
+            if (!self.server_destroyed) server.deinit();
             self.allocator.destroy(server);
         }
         self.bound.deinit();
@@ -649,15 +689,67 @@ const QuicServerHarness = struct {
         }
     }
 
+    /// Crash the server the way a real crash does: snapshot counters, deinit
+    /// with NO close ceremony (sans-IO teardown guarantees nothing reaches
+    /// the wire), destroy the bound peers, then restart on the SAME port
+    /// with the SAME reset key. Loop-thread only.
+    fn executeAbruptDeath(self: *QuicServerHarness) void {
+        if (comptime !quic.enabled) unreachable;
+        const server = self.server.?;
+        // The counter lives on the Server value; accumulate before the kill
+        // or the incarnation's resets vanish from the report.
+        self.resets_sent += server.statelessResetsSent();
+        // Order is load-bearing: deinit fires each live session's close
+        // callback into its still-alive bound Peer; only then is it safe to
+        // detach and destroy the peers (the ServerSessions are gone).
+        server.deinit();
+        var it = self.bound.valueIterator();
+        while (it.next()) |peer_ptr| {
+            const peer = peer_ptr.*;
+            _ = peer.takeAttachedConnection(*quic.ServerSession);
+            peer.deinit();
+            self.allocator.destroy(peer);
+        }
+        // Clear the whole map: a fresh server can reissue overlapping
+        // session ids, and stale entries would alias them.
+        self.bound.clearRetainingCapacity();
+        // Bounded rebind retry: the freed port transiently returns to the
+        // kernel pool (same shape as the crash-restart e2e's 20x5ms loop).
+        var attempt: u32 = 0;
+        while (true) : (attempt += 1) {
+            server.* = quic.Server.init(self.allocator, self.io, self.makeOptions(self.listen_addr)) catch |err| {
+                if (attempt >= 20) {
+                    std.debug.print("soak: abrupt-death rebind failed after {} attempts: {}\n", .{ attempt + 1, err });
+                    self.server_destroyed = true;
+                    self.rebind_failed.store(true, .release);
+                    self.stop.store(true, .release);
+                    return;
+                }
+                sleepMs(self.io, 5);
+                continue;
+            };
+            break;
+        }
+        self.deaths += 1;
+    }
+
     fn threadMain(self: *QuicServerHarness) void {
         if (comptime !quic.enabled) unreachable;
         const server = self.server.?;
+        var next_death_ns: u64 = if (self.death_every_ms) |ms| nowNsU(self.io) + ms * std.time.ns_per_ms else 0;
         while (!self.stop.load(.acquire)) {
             _ = server.stepOnce(.wait) catch |err| {
                 std.debug.print("soak: quic server step failed: {}\n", .{err});
             };
             self.bindNewSessions();
             self.sweepDeadPeers();
+            if (self.death_every_ms) |ms| {
+                if (nowNsU(self.io) >= next_death_ns) {
+                    self.executeAbruptDeath();
+                    if (self.server_destroyed) return;
+                    next_death_ns = nowNsU(self.io) + ms * std.time.ns_per_ms;
+                }
+            }
         }
         // Drain: close every live session, keep stepping until the server
         // reaps them (bounded), then tear down every remaining Peer before
@@ -677,7 +769,8 @@ const QuicServerHarness = struct {
         }
         self.bound.clearRetainingCapacity();
         // Loop-thread-only accessor; snapshot before the loop thread exits.
-        self.resets_sent = server.statelessResetsSent();
+        // ACCUMULATE: abrupt-death incarnations already banked their counts.
+        self.resets_sent += server.statelessResetsSent();
     }
 
     fn bindNewSessions(self: *QuicServerHarness) void {
@@ -874,6 +967,8 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Config {
             cfg.mem_sample_ms = try std.fmt.parseUnsigned(u64, iter.next() orelse return error.InvalidArgument, 10);
         } else if (std.mem.eql(u8, arg, "--mem-growth-pct")) {
             cfg.mem_growth_pct = try std.fmt.parseFloat(f64, iter.next() orelse return error.InvalidArgument);
+        } else if (std.mem.eql(u8, arg, "--abrupt-death-every-ms")) {
+            cfg.abrupt_death_every_ms = try std.fmt.parseUnsigned(u64, iter.next() orelse return error.InvalidArgument, 10);
         } else if (std.mem.eql(u8, arg, "--no-chaos")) {
             cfg.chaos = false;
         } else if (std.mem.eql(u8, arg, "--no-deadlines")) {
@@ -897,6 +992,15 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Config {
         return error.InvalidArgument;
     }
     if (cfg.mem_sample_ms == 0) return error.InvalidArgument;
+    if (cfg.abrupt_death_every_ms) |ms| {
+        // TCP sessions all close `.unknown` and carry no reset-token proof,
+        // so the mode would measure nothing there.
+        if (cfg.transport != .quic) {
+            std.debug.print("soak: --abrupt-death-every-ms requires --transport quic\n", .{});
+            return error.InvalidArgument;
+        }
+        if (ms == 0) return error.InvalidArgument;
+    }
     return cfg;
 }
 
@@ -951,7 +1055,7 @@ pub fn main(init: std.process.Init) !void {
             // parseArgs already rejected .quic on a non-QUIC build, so this
             // branch is only reachable when the harness compiles for real.
             if (comptime quic.enabled) {
-                address = try quic_srv.start(allocator, io, cfg.workers, cfg.cc);
+                address = try quic_srv.start(allocator, io, cfg.workers, cfg.cc, cfg.abrupt_death_every_ms);
                 std.debug.print(
                     "soak: quic server listening on port {} (workers {}, inflight {})\n",
                     .{ address.getPort(), cfg.workers, cfg.inflight },
@@ -1021,8 +1125,8 @@ pub fn main(init: std.process.Init) !void {
                 quic_srv.shutdown();
                 std.debug.print("soak: quic server drained\n", .{});
                 std.debug.print(
-                    "soak-quic: resets_sent={} unroutable_dcid={} (reset_queued={})\n",
-                    .{ quic_srv.resets_sent, quic_srv.unroutable_seen.load(.acquire), quic_srv.unroutable_reset_queued.load(.acquire) },
+                    "soak-quic: resets_sent={} unroutable_dcid={} (reset_queued={}) abrupt_deaths={}\n",
+                    .{ quic_srv.resets_sent, quic_srv.unroutable_seen.load(.acquire), quic_srv.unroutable_reset_queued.load(.acquire), quic_srv.deaths },
                 );
             } else unreachable;
         },
@@ -1101,6 +1205,27 @@ pub fn main(init: std.process.Init) !void {
     if (cfg.deadlines and cancelled == 0) {
         std.debug.print("soak: FAIL — deadline sessions produced no cancellations\n", .{});
         failed = true;
+    }
+    if (cfg.abrupt_death_every_ms != null) {
+        if (comptime quic.enabled) {
+            const reset_closes = totals.disconnects_by_cause[@backingInt(rpc.events.DisconnectCause.stateless_reset)].load(.acquire);
+            if (quic_srv.rebind_failed.load(.acquire)) {
+                std.debug.print("soak: FAIL — abrupt-death rebind race exhausted its retries\n", .{});
+                failed = true;
+            }
+            if (quic_srv.deaths == 0) {
+                std.debug.print("soak: FAIL — abrupt-death mode executed no deaths\n", .{});
+                failed = true;
+            }
+            if (quic_srv.deaths > 0 and reset_closes == 0) {
+                std.debug.print("soak: FAIL — abrupt deaths produced no stateless_reset-certified session closes\n", .{});
+                failed = true;
+            }
+            if (quic_srv.deaths > 0 and quic_srv.resets_sent == 0 and quic_srv.unroutable_reset_queued.load(.acquire) == 0) {
+                std.debug.print("soak: FAIL — abrupt deaths produced no reset traffic at the server\n", .{});
+                failed = true;
+            }
+        } else unreachable;
     }
     if (!verdict.ok) {
         std.debug.print(

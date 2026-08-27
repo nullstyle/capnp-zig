@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Soak: abrupt-death chaos mode (`--abrupt-death-every-ms N`, QUIC
+  only).** Every N ms the harness kills the echo server with NO close
+  ceremony and restarts it on the same port with the same
+  `stateless_reset_key` — the crash-restart shape the death certificate
+  exists for. Surviving clients' next datagrams draw stateless resets
+  and their sessions close `.stateless_reset` instead of stalling to
+  idle timeout. New pass gates: deaths executed, at least one
+  reset-certified client close, and reset traffic observed at the
+  server; reset counters now accumulate across server incarnations.
+  First field data (12s, kill every 2s, 8 workers): 6 deaths, 8 resets
+  sent, 8 `.stateless_reset` session closes, zero unexpected
+  exceptions. This is the instrument the auto-warm-redial rung's soak
+  proof will run against.
+
 ### Changed
 
 - Docs/process hygiene: the RELEASING.md semver table gains an explicit
