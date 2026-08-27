@@ -205,6 +205,14 @@ jobs:
       - name: Full test suite
         run: zig build test --summary all
 
+      # The self-healing arc, gated nightly end to end: abrupt server
+      # deaths every 2s, half the workers running persistent
+      # WarmRedialClients. The soak's own gates enforce: every death
+      # produced reset-certified closes AND every healing client healed
+      # across every death (min_rebinds), zero give-ups.
+      - name: QUIC self-healing soak (abrupt deaths + healing workers)
+        run: zig build -Dquic=true -Doptimize=ReleaseSafe soak -- --transport quic --abrupt-death-every-ms 2000 --seconds 20 --workers 16 --heal-workers 8
+
       - name: ReleaseSafe hardening tests
         run: zig build test-release-safe --summary all
 
