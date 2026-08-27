@@ -463,6 +463,67 @@ pub fn canonicalize(allocator: std.mem.Allocator, msg: *const message.Message) C
     return out;
 }
 
+/// How many builder segments the FromBuilder entry points can view without
+/// touching the allocator. Beyond this, one transient index allocation is
+/// made and freed before returning.
+const builder_view_stack_segments = 16;
+
+/// The FromBuilder entry points promise byte-parity with the
+/// serialize -> `Message.init` -> canonicalize round trip, so their error
+/// surface is the composed one: `TruncatedMessage` is the round trip's
+/// verdict on a builder whose root segment holds no root word.
+pub const CanonicalizeFromBuilderError = CanonicalizeError || error{TruncatedMessage};
+
+/// Canonicalize the builder's current contents into the bare canonical
+/// segment — byte-identical to
+/// `canonicalizeFlat(&Message.init(gpa, try b.toBytes(), .{}))`, without the
+/// framed copy, the re-parse, or the redundant validation walk of bytes the
+/// local builder itself just wrote. The canonicalization walk still
+/// bounds-checks every access and returns errors (never traps) on anything
+/// malformed. The caller owns the returned buffer.
+pub fn canonicalizeFlatFromBuilder(allocator: std.mem.Allocator, builder: *const message.MessageBuilder) CanonicalizeFromBuilderError![]u8 {
+    return canonicalizeBuilderInner(allocator, builder, canonicalizeFlat);
+}
+
+/// Framed variant of `canonicalizeFlatFromBuilder` (8-byte single-segment
+/// table + canonical segment), byte-identical to `canonicalize` over the
+/// builder's serialized round trip. The caller owns the returned buffer.
+pub fn canonicalizeFromBuilder(allocator: std.mem.Allocator, builder: *const message.MessageBuilder) CanonicalizeFromBuilderError![]u8 {
+    return canonicalizeBuilderInner(allocator, builder, canonicalize);
+}
+
+fn canonicalizeBuilderInner(
+    allocator: std.mem.Allocator,
+    builder: *const message.MessageBuilder,
+    comptime canonicalizeFn: fn (std.mem.Allocator, *const message.Message) CanonicalizeError![]u8,
+) CanonicalizeFromBuilderError![]u8 {
+    // Round-trip parity for the degenerate shapes: a segmentless builder
+    // serializes as one zero-word segment, and `Message.init` rejects any
+    // root segment without a root word as TruncatedMessage before the
+    // canonicalizer would run.
+    const n = builder.segments.items.len;
+    if (n == 0 or builder.segments.items[0].items.len < 8) return error.TruncatedMessage;
+
+    // A borrowed, never-deinit'd view of the builder's live segments: the
+    // canonicalizer only reads `segments` through the resolver helpers, so
+    // no parse, copy, or ownership transfer is needed.
+    var stack_views: [builder_view_stack_segments][]const u8 = undefined;
+    const views: [][]const u8 = if (n <= builder_view_stack_segments)
+        stack_views[0..n]
+    else
+        try allocator.alloc([]const u8, n);
+    defer if (n > builder_view_stack_segments) allocator.free(views);
+    for (builder.segments.items, 0..) |segment, i| views[i] = segment.items;
+
+    const view: message.Message = .{
+        .allocator = allocator,
+        .segments = views,
+        .segments_owned = false,
+        .backing_data = null,
+    };
+    return canonicalizeFn(allocator, &view);
+}
+
 /// Canonicalize `msg` into the bare canonical segment, byte-identical to the
 /// reference `canonicalize()` word array (layout.c++:3008-3020) and to
 /// `capnp convert binary:canonical` output (compiler/capnp.c++:1134-1137).

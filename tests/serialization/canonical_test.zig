@@ -669,3 +669,169 @@ test "canonicalize survives allocation failure at every alloc point" {
     defer allocator.free(framed);
     try checkAllAllocationFailuresIsolated(canonicalizeOomProbe, .{@as([]const u8, framed)});
 }
+
+// ---------------------------------------------------------------------------
+// Builder-direct canonicalization (canonicalize[Flat]FromBuilder): must be
+// byte-identical to the serialize -> re-parse -> canonicalize round trip it
+// replaces, for every builder shape.
+// ---------------------------------------------------------------------------
+
+/// Assert both FromBuilder paths equal their framed-round-trip references.
+fn expectBuilderCanonicalizationMatchesRoundTrip(builder: *message.MessageBuilder) !void {
+    const allocator = std.testing.allocator;
+
+    const framed = try builder.toBytes();
+    defer allocator.free(framed);
+    var msg = try message.Message.init(allocator, framed, .{});
+    defer msg.deinit();
+
+    const want_flat = try canonical.canonicalizeFlat(allocator, &msg);
+    defer allocator.free(want_flat);
+    const got_flat = try canonical.canonicalizeFlatFromBuilder(allocator, builder);
+    defer allocator.free(got_flat);
+    try std.testing.expectEqualSlices(u8, want_flat, got_flat);
+
+    const want_framed = try canonical.canonicalize(allocator, &msg);
+    defer allocator.free(want_framed);
+    const got_framed = try canonical.canonicalizeFromBuilder(allocator, builder);
+    defer allocator.free(got_framed);
+    try std.testing.expectEqualSlices(u8, want_framed, got_framed);
+}
+
+test "FromBuilder matches the round trip: simple single-segment struct" {
+    var builder = message.MessageBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    var root = try builder.allocateStruct(2, 1);
+    root.writeBool(0, 0, true);
+    try root.writeText(0, "canonical from a builder");
+    try expectBuilderCanonicalizationMatchesRoundTrip(&builder);
+}
+
+test "FromBuilder matches the round trip: zero-size root struct" {
+    var builder = message.MessageBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    _ = try builder.allocateStruct(0, 0);
+    try expectBuilderCanonicalizationMatchesRoundTrip(&builder);
+}
+
+test "FromBuilder error parity: empty builder fails like its round trip" {
+    // `toBytes` serializes a segmentless builder as one zero-word segment,
+    // and canonicalizing THAT fails (no root word). The builder path must
+    // fail identically, not invent a different answer.
+    var builder = message.MessageBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try std.testing.expectError(
+        error.TruncatedMessage,
+        canonical.canonicalizeFlatFromBuilder(std.testing.allocator, &builder),
+    );
+    try std.testing.expectError(
+        error.TruncatedMessage,
+        canonical.canonicalizeFromBuilder(std.testing.allocator, &builder),
+    );
+}
+
+test "FromBuilder matches the round trip: multi-segment builder with far pointers" {
+    var builder = message.MessageBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    var root = try builder.allocateStruct(0, 4);
+    // Place texts in explicit later segments so the root's pointer fields
+    // are real far pointers the canonicalizer must chase cross-segment.
+    const seg_one = try builder.createSegment();
+    const seg_two = try builder.createSegment();
+    try root.writeTextInSegment(0, "far one", seg_one);
+    try root.writeTextInSegment(1, "far two", seg_two);
+    try root.writeTextInSegment(2, "far three", seg_one);
+    try root.writeText(3, "near tail");
+    try std.testing.expect(builder.segments.items.len > 2);
+    try expectBuilderCanonicalizationMatchesRoundTrip(&builder);
+}
+
+test "FromBuilder error parity: capability pointers refuse to canonicalize" {
+    var builder = message.MessageBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    var root = try builder.allocateStruct(0, 1);
+    const any = try root.getAnyPointer(0);
+    try any.setCapability(.{ .id = 17 });
+    try std.testing.expectError(
+        error.CannotCanonicalizeCapability,
+        canonical.canonicalizeFlatFromBuilder(std.testing.allocator, &builder),
+    );
+    try std.testing.expectError(
+        error.CannotCanonicalizeCapability,
+        canonical.canonicalizeFromBuilder(std.testing.allocator, &builder),
+    );
+}
+
+/// Counts raw allocations; frees/resizes pass through.
+const AllocCounter = struct {
+    inner: std.mem.Allocator,
+    allocs: usize = 0,
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *AllocCounter = @ptrCast(@alignCast(ctx));
+        self.allocs += 1;
+        return self.inner.vtable.alloc(self.inner.ptr, len, alignment, ret_addr);
+    }
+    fn resize(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *AllocCounter = @ptrCast(@alignCast(ctx));
+        return self.inner.vtable.resize(self.inner.ptr, buf, alignment, new_len, ret_addr);
+    }
+    fn remap(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *AllocCounter = @ptrCast(@alignCast(ctx));
+        return self.inner.vtable.remap(self.inner.ptr, buf, alignment, new_len, ret_addr);
+    }
+    fn free(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *AllocCounter = @ptrCast(@alignCast(ctx));
+        self.inner.vtable.free(self.inner.ptr, buf, alignment, ret_addr);
+    }
+    fn allocator(self: *AllocCounter) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+};
+
+test "canonical flat bytes round-trip: initFlat accepts them and isCanonical holds" {
+    // The full flat-canonical loop the frozen surface promises:
+    // build -> canonicalizeFlatFromBuilder -> initFlat -> isCanonical,
+    // and re-canonicalizing the decoded message is byte-idempotent.
+    const allocator = std.testing.allocator;
+    var builder = message.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var root = try builder.allocateStruct(2, 2);
+    root.writeBool(0, 5, true);
+    try root.writeText(0, "flat canonical round trip");
+    try root.writeText(1, "second pointer");
+
+    const flat = try canonical.canonicalizeFlatFromBuilder(allocator, &builder);
+    defer allocator.free(flat);
+
+    var msg = try message.Message.initFlat(allocator, flat, .{});
+    defer msg.deinit();
+    try std.testing.expect(canonical.isCanonical(&msg));
+
+    const again = try canonical.canonicalizeFlat(allocator, &msg);
+    defer allocator.free(again);
+    try std.testing.expectEqualSlices(u8, flat, again);
+}
+
+test "canonicalizeFlatFromBuilder adds zero allocations over canonicalizeFlat" {
+    var builder = message.MessageBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    var root = try builder.allocateStruct(1, 0);
+    root.writeBool(0, 0, true);
+
+    const framed = try builder.toBytes();
+    defer std.testing.allocator.free(framed);
+    var msg = try message.Message.init(std.testing.allocator, framed, .{});
+    defer msg.deinit();
+
+    var base: AllocCounter = .{ .inner = std.testing.allocator };
+    const want = try canonical.canonicalizeFlat(base.allocator(), &msg);
+    defer std.testing.allocator.free(want);
+
+    var direct: AllocCounter = .{ .inner = std.testing.allocator };
+    const got = try canonical.canonicalizeFlatFromBuilder(direct.allocator(), &builder);
+    defer std.testing.allocator.free(got);
+
+    try std.testing.expectEqualSlices(u8, want, got);
+    try std.testing.expectEqual(base.allocs, direct.allocs);
+}
