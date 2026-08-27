@@ -854,3 +854,16 @@ test "listener concurrent close calls socket close once" {
     try std.testing.expectEqual(expected_shutdowns, state.shutdown_count.load(.acquire));
     try std.testing.expectEqual(@as(usize, 1), state.close_count.load(.acquire));
 }
+
+test "setTcpNoDelay survives a dead socket (regression: soak abort under accept churn)" {
+    // Under accept churn a peer can reset the connection between accept()
+    // and setTcpNoDelay(); macOS then fails setsockopt(TCP_NODELAY) with
+    // EINVAL, and a closed fd fails with EBADF. std.posix.setsockopt makes
+    // both errnos `unreachable`, so routing through it aborted the whole
+    // process (SIGABRT in the TCP soak at >=32 workers). The contract this
+    // test pins: TCP_NODELAY is best-effort and must never panic, whatever
+    // state the socket is in.
+    if (builtin.target.os.tag == .windows) return; // setTcpNoDelay is a no-op there
+    const runtime = capnpc.rpc.transport.tcp.runtime;
+    runtime.setTcpNoDelay(.{ .handle = -1 });
+}

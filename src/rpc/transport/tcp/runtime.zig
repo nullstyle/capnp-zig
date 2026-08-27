@@ -179,14 +179,26 @@ pub fn setTcpNoDelay(socket: SocketFd) void {
         // phase 4).
         return;
     }
-    std.posix.setsockopt(
+    // Best-effort, via the raw syscall: the socket came off accept() on a
+    // live network, so the peer can reset it between accept and here —
+    // macOS then fails setsockopt with EINVAL (observed steadily in the
+    // TCP soak at >=32 workers), and a torn-down fd fails with EBADF.
+    // std.posix.setsockopt makes those arms `unreachable` ("always a race
+    // condition"), which aborts the whole process, so it cannot be used on
+    // an fd whose peer races us. Any failure here just means Nagle stays
+    // on for a connection that is usually already dead.
+    const opt = std.mem.toBytes(@as(c_int, 1));
+    const rc = std.posix.system.setsockopt(
         socket.handle,
         std.posix.IPPROTO.TCP,
         std.posix.TCP.NODELAY,
-        &std.mem.toBytes(@as(c_int, 1)),
-    ) catch |err| {
-        log.debug("failed to set TCP_NODELAY: {}", .{err});
-    };
+        &opt,
+        opt.len,
+    );
+    switch (std.posix.errno(rc)) {
+        .SUCCESS => {},
+        else => |err| log.debug("failed to set TCP_NODELAY: {t}", .{err}),
+    }
 }
 
 // ---------------------------------------------------------------------------
