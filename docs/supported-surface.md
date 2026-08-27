@@ -1,7 +1,7 @@
-# Supported Surface (v0.15.0)
+# Supported Surface (v0.16.0)
 
 This is the authoritative statement of what `capnpc-zig` promises a consumer at
-v0.15.0 — which modules are stable, what the RPC implementation conforms to, the
+v0.16.0 — which modules are stable, what the RPC implementation conforms to, the
 error contract, and the known limitations you are opting into. It is the single
 source of truth; where other docs disagree, this file wins.
 
@@ -12,7 +12,7 @@ and [`CHANGELOG.md`](../CHANGELOG.md) (what changed).
 
 The project is pre-1.0. Per semver, **0.x minor bumps may break the API** — and
 they will, deliberately, for anything marked Experimental below. Pin an exact
-version (`zig fetch --save …#v0.15.0`) and read the CHANGELOG before bumping.
+version (`zig fetch --save …#v0.16.0`) and read the CHANGELOG before bumping.
 
 - **Stable** (serialization + codegen + the two-party RPC core): the Stable
   surface is **frozen and CI-gated**. It is pinned by
@@ -528,7 +528,7 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   `just e2e-l3-go` confirms Go has generated Join/twoparty shapes but no
   runtime dispatch for `Message.join`. Experimental; exact-pin only.
 
-## Known limitations (v0.15.0)
+## Known limitations (v0.16.0)
 
 Each of these is a defined, non-corrupting behavior — safe to tag with, listed so
 you know exactly what you are relying on. None is a leak/UAF/hang against a
