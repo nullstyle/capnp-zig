@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Message.initFlat` / `initFlatUnvalidated` (Stable).** Validating
+  (and shape-only) decode of bare, table-less single-segment bytes — the
+  exact form `canonical.canonicalizeFlat` and `capnp convert
+  binary:canonical` emit — without fabricating a synthetic segment
+  table. Zero-copy: the single segment aliases the caller's bytes; same
+  validation walk and `ValidationOptions` limits as `init`. Registered
+  as a coverage-guided fuzz target, since flat bytes arrive from
+  untrusted peers in downstream consensus protocols.
+- **`canonical.canonicalizeFlatFromBuilder` / `canonicalizeFromBuilder`
+  (Stable).** Canonicalize a `MessageBuilder`'s current contents
+  directly — byte-identical to the serialize → re-parse → canonicalize
+  round trip it replaces (differentially tested, including
+  multi-segment builders with far pointers), with zero allocation
+  overhead beyond `canonicalizeFlat` itself and no redundant validation
+  walk over bytes the local builder just wrote.
+  `CanonicalizeFromBuilderError` adds the round trip's
+  `TruncatedMessage` verdict for a builder whose root segment holds no
+  root word.
+
+### Changed
+
+- **The schema-free `canonical` module is Stable and FROZEN** (was
+  Experimental): `canonicalize`, `canonicalizeFlat`, `isCanonical`,
+  both error sets, and the new FromBuilder pair now live in the
+  CI-gated `docs/api-snapshot.txt` contract, and `Message.initFlat` /
+  `initFlatUnvalidated` freeze under the existing `message` prefix.
+  Deliberate promotion: downstream consensus consumers pin their
+  signing preimages to `canonicalizeFlat`'s bytes, where drift is a
+  permanent network fork rather than an API break. Byte behavior stays
+  pinned by the C++ acceptance-suite ports and the
+  `capnp convert binary:canonical` differential suite.
+
+### Fixed
+
+- **TCP soak abort at >=32 workers (macOS/Linux).** `setTcpNoDelay`
+  routed through `std.posix.setsockopt`, whose EINVAL/EBADF errno arms
+  are `unreachable` — so a peer resetting its connection between
+  `accept()` and the option call aborted the whole process. Now issued
+  as the raw syscall with every failure treated as a skipped
+  optimization. Regression test drives the same std arm via a dead fd.
+- **Windows teardown abort under parked accepts.** `WorkerPool` closed
+  the listen socket while workers were parked in `accept()`; Windows
+  completes the parked AFD wait with STATUS_CANCELLED, which std's
+  `netAcceptWindows` treats as unreachable (process abort). Teardown
+  now counts parked acceptors, retries the self-connect wake-ups
+  (previously one failed dial abandoned ALL remaining wake-ups), and
+  closes only once nobody is parked (bounded by a 2s valve). The
+  Nightly 64-worker ReleaseSafe soak lane now runs on BOTH matrix OSes
+  — 20s on Windows: a 60s run measurably exhausts the ~16k ephemeral
+  ports (TIME_WAIT=16,224 observed), and under port exhaustion no
+  user-space teardown can dodge the std defect (upstream report
+  candidate: `.CANCELLED => unreachable` in netAcceptWindows).
+
 ## [0.13.0] - 2026-08-26
 
 ### Breaking

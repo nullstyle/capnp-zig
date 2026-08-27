@@ -145,6 +145,17 @@ const stable_rules = [_]Rule{
     p("capnpc-zig.schema_validation"),
     p("capnpc-zig.reader"),
     p("capnpc-zig.request"),
+    // CANONICAL: promoted to Stable 2026-08-26, deliberately, whole subtree.
+    // Downstream consensus consumers pin their signing preimages to
+    // `canonicalizeFlat`'s bytes — for them a byte change is not an API
+    // break but a permanent network fork, so the module carries the same
+    // freeze discipline as the wire format it walks. Frozen together with
+    // the FromBuilder entry points and `Message.initFlat` (already under
+    // the `message` prefix) so the whole flat-canonical surface pins in
+    // one pass. Byte behavior itself is pinned by the acceptance-suite
+    // ports and the `capnp convert binary:canonical` differential tests in
+    // tests/serialization/canonical_test.zig.
+    p("capnpc-zig.canonical"),
     // CODEGEN: entry points are frozen, INTERNALS are not. Decided
     // deliberately (2026-08-13) rather than inherited.
     //
