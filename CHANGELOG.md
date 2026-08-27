@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-27
+
 ### Added
 
 - **Auto warm redial (`rpc.transport.quic.WarmRedialClient`;
@@ -90,6 +92,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   14s): 7 deaths × 8 clients = exactly 56 redials and 64 rebinds — a
   perfect heal lattice — 19,750 healed-path echo round trips, zero
   give-ups, zero unexpected exceptions.
+- **Nightly: the self-healing arc gated end to end** — the extended
+  gates run a 20s QUIC soak with abrupt deaths every 2s and half the
+  workers healing, failing unless every death is reset-certified and
+  every healing client heals.
 - **Soak: abrupt-death chaos mode (`--abrupt-death-every-ms N`, QUIC
   only).** Every N ms the harness kills the echo server with NO close
   ceremony and restarts it on the same port with the same
@@ -3551,7 +3557,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/nullstyle/capnp-zig/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/nullstyle/capnp-zig/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/nullstyle/capnp-zig/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/nullstyle/capnp-zig/compare/v0.11.0...v0.12.0
