@@ -67,6 +67,45 @@ jobs:
         if: runner.os == 'Linux'
         run: zig build soak-tsan -- --seconds 30 --workers 8
 
+  # Forward-compat: build and test against a NEWER zig dev snapshot than
+  # mise.toml pins, so std API drift is caught at our gate instead of in a
+  # downstream that tracks master more closely (SLCP hit exactly that: the
+  # `netWrite`/`netRead` vtable entries moved to `Operation.net_write` /
+  # `.net_read`, and every consumer of our TCP transport stopped compiling).
+  #
+  # The probe version is PINNED, not "latest": a moving target turns this
+  # lane into a random-failure generator. Bump it deliberately, and treat a
+  # red run as "port the shim, then bump" — the transport selects on the
+  # OPERATION's presence, so both sides of a move keep building.
+  #
+  # Linux only: std's macOS libdispatch backend does not compile at
+  # dev.1786 (`Io/Dispatch.zig` switches non-exhaustively over the widened
+  # Operation union), which is a std bug, not ours, and would make this
+  # lane red for a reason we cannot fix here.
+  forward-compat:
+    name: Forward-compat (zig dev.1786)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.17
+
+      - name: Install the probe toolchain
+        run: mise install zig@0.17.0-dev.1786+75044cb04
+
+      - name: Build against the probe toolchain
+        run: mise exec zig@0.17.0-dev.1786+75044cb04 -- zig build check --summary all
+
+      - name: Transport + wire suites against the probe toolchain
+        run: |
+          mise exec zig@0.17.0-dev.1786+75044cb04 -- zig build test-rpc-transport --summary all
+          mise exec zig@0.17.0-dev.1786+75044cb04 -- zig build test-rpc-wire --summary all
+
   fuzz:
     name: Coverage-guided fuzzing (10 minutes)
     # arm64, not ubuntu-latest: on x86_64 the zig fuzzer's maker dies with

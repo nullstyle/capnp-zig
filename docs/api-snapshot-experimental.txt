@@ -2586,6 +2586,7 @@ capnpc-zig.rpc.transport.tcp.stream.Transport.QueueStats.max_bytes: field usize
 capnpc-zig.rpc.transport.tcp.stream.Transport.QueueStats.max_items: field usize
 capnpc-zig.rpc.transport.tcp.stream.Transport.QueueStats: struct
 capnpc-zig.rpc.transport.tcp.stream.Transport.ReadError: type = error{AccessDenied,Canceled,ConnectionResetByPeer,NetworkDown,SocketUnconnected,SystemResources,Unexpected}
+capnpc-zig.rpc.transport.tcp.stream.Transport.ReadTimeoutError: type = error{AccessDenied,Canceled,ConcurrencyUnavailable,ConnectionResetByPeer,NetworkDown,SocketUnconnected,SystemResources,Timeout,Unexpected}
 capnpc-zig.rpc.transport.tcp.stream.Transport.WriteError: type = error{AddressFamilyUnsupported,Canceled,ConnectionRefused,ConnectionResetByPeer,FastOpenAlreadyInProgress,HostUnreachable,NetworkDown,NetworkUnreachable,SocketNotBound,SocketUnconnected,SystemResources,Unexpected}
 capnpc-zig.rpc.transport.tcp.stream.Transport.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.stream.Transport.close: fn (*rpc.transport.tcp.stream_transport.Transport) void
@@ -2604,6 +2605,7 @@ capnpc-zig.rpc.transport.tcp.stream.Transport.isClosing: fn (*const rpc.transpor
 capnpc-zig.rpc.transport.tcp.stream.Transport.observer: field ?rpc.events.Observer = null
 capnpc-zig.rpc.transport.tcp.stream.Transport.queueStats: fn (*rpc.transport.tcp.stream_transport.Transport) rpc.transport.tcp.stream_transport.Transport.QueueStats
 capnpc-zig.rpc.transport.tcp.stream.Transport.read: fn (*rpc.transport.tcp.stream_transport.Transport) error{AccessDenied,Canceled,ConnectionResetByPeer,NetworkDown,SocketUnconnected,SystemResources,Unexpected}!usize
+capnpc-zig.rpc.transport.tcp.stream.Transport.readTimeout: fn (*rpc.transport.tcp.stream_transport.Transport, Io.Timeout) error{AccessDenied,Canceled,ConcurrencyUnavailable,ConnectionResetByPeer,NetworkDown,SocketUnconnected,SystemResources,Timeout,Unexpected}!usize
 capnpc-zig.rpc.transport.tcp.stream.Transport.read_buf: field []u8
 capnpc-zig.rpc.transport.tcp.stream.Transport.shutdown: fn (*rpc.transport.tcp.stream_transport.Transport) void
 capnpc-zig.rpc.transport.tcp.stream.Transport.startWriter: fn (*rpc.transport.tcp.stream_transport.Transport) error{LockedMemoryLimitExceeded,OutOfMemory,SystemResources,ThreadQuotaExceeded,Unexpected}!void

@@ -262,6 +262,25 @@ pub const Transport = struct {
         return ioReadVec(self.io, self.fd, &bufs);
     }
 
+    /// Error set for `readTimeout`: a read plus the deadline's own outcome.
+    pub const ReadTimeoutError = ReadError || std.Io.Timeout.Error || std.Io.ConcurrentError;
+
+    /// Blocking read with a DEADLINE, into the internal buffer. Returns
+    /// bytes read, 0 on EOF/closed, or `error.Timeout` when the deadline
+    /// expires first.
+    ///
+    /// Use this instead of arming `SO_RCVTIMEO` on the raw fd: a timed-out
+    /// `recv` returns EAGAIN, and `Io.Threaded`'s read path classifies
+    /// EAGAIN as a programmer bug (`errnoBug`), so a sockopt deadline turns
+    /// a normal timeout into a debug-build panic. The deadline belongs to
+    /// the Io operation, not to the socket — `operateTimeout` cancels the
+    /// operation itself, so no EAGAIN ever reaches the read path.
+    pub fn readTimeout(self: *Transport, timeout: std.Io.Timeout) ReadTimeoutError!usize {
+        if (self.close_requested.load(.acquire)) return 0;
+        var bufs: [1][]u8 = .{self.read_buf};
+        return ioReadVecTimeout(self.io, self.fd, &bufs, timeout);
+    }
+
     /// Blocking write of all bytes. Retries partial writes until the
     /// entire buffer is sent. Used internally by the writer thread.
     pub fn write(self: *Transport, bytes: []const u8) WriteError!void {
@@ -451,10 +470,29 @@ fn ignoreSigpipe() void {
 }
 
 /// Write bytes to a socket handle via Io. Returns bytes written.
+///
+/// Version-adaptive: zig moved socket writes off the `Io.VTable` and onto
+/// the `Operation` union (`netWrite` vtable entry deleted; `net_write`
+/// operation added) around 0.17.0-dev.1786. Selecting on the OPERATION's
+/// presence — not a version number — keeps one source tree building on
+/// both sides of that move, which is what a downstream pinned to a
+/// different dev snapshot actually needs. Same shape as `ioReadVec`'s
+/// existing `net.Stream.read` preference. Both arms land in
+/// `WriteError` exactly: `Stream.Writer.Error = NetWrite.Error ||
+/// Cancelable`, and `operate` contributes the `Cancelable` half.
 fn ioWrite(io: std.Io, fd: net.Socket.Handle, bytes: []const u8) Transport.WriteError!usize {
     if (bytes.len == 0) return 0;
     const pattern: []const u8 = &.{};
     const data: [1][]const u8 = .{pattern};
+    if (comptime @hasField(std.Io.Operation, "net_write")) {
+        const result = try io.operate(.{ .net_write = .{
+            .socket_handle = fd,
+            .header = bytes,
+            .data = &data,
+            .splat = 0,
+        } });
+        return result.net_write;
+    }
     return io.vtable.netWrite(io.userdata, fd, bytes, &data, 0);
 }
 
@@ -498,6 +536,25 @@ fn createSocketPair() ![2]net.Socket.Handle {
 
     const accepted = try server.accept(io);
     return .{ client.socket.handle, accepted.socket.handle };
+}
+
+/// Vectored read with a deadline, via the Io operation's own timeout.
+///
+/// `net_read` is an `Io.Operation` on every std this tree supports, and
+/// `operateTimeout` cancels the operation when the deadline expires — the
+/// portable alternative to per-fd `SO_RCVTIMEO` games (see
+/// `Transport.readTimeout` for why those are a trap).
+fn ioReadVecTimeout(
+    io: std.Io,
+    fd: net.Socket.Handle,
+    bufs: [][]u8,
+    timeout: std.Io.Timeout,
+) Transport.ReadTimeoutError!usize {
+    const result = try io.operateTimeout(.{ .net_read = .{
+        .socket_handle = fd,
+        .data = bufs,
+    } }, timeout);
+    return result.net_read;
 }
 
 /// Read from a socket handle via Io into a buffer.

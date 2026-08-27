@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Transport.readTimeout` — deadline reads without sockopt games
+  (Stable-adjacent TCP transport; Experimental method).** A read with an
+  `Io.Timeout`, built on `io.operateTimeout(.net_read)`: the deadline
+  belongs to the OPERATION, so expiry cancels the read and returns
+  `error.Timeout`. The alternative a downstream reached for — arming
+  `SO_RCVTIMEO` on the raw fd — makes a timed-out `recv` return EAGAIN,
+  which `Io.Threaded` classifies as a programmer bug (`errnoBug`) and
+  turns a routine deadline into a debug-build panic; that workaround is
+  now unnecessary. Proven both ways: a silent peer yields `error.Timeout`
+  after the deadline (never a panic), and data arriving inside the
+  deadline is delivered normally.
+- **Published framing conformance fixtures**
+  (`tests/fixtures/framing/framing_fixtures.json` + README). Byte
+  streams to expected frames/errors for `rpc.wire.framing.Framer`,
+  including reassembly across arbitrary chunk boundaries, truncation,
+  the segment-count limit and its breach, count overflow, the
+  `max_frame_words` breach, and a `max_buffered_bytes` breach at push
+  time. Meant to be VENDORED by downstreams; capnp-zig executes the same
+  file (`test-rpc-wire`) so the published bytes cannot drift from the
+  implementation, and the runner asserts the fixtures' recorded limits
+  against the live constants so a limit change invalidates stale
+  vendored copies loudly.
+- **Nightly forward-compat lane (zig dev.1786, Linux).** Builds and runs
+  the transport + wire suites against a newer zig dev snapshot than
+  `mise.toml` pins, so std drift lands on our gate instead of in a
+  downstream tracking master more closely.
+
+### Fixed
+
+- **The TCP transport compiles across the std.Io net move.** Zig deleted
+  the `netWrite`/`netRead` `Io.VTable` entries in favor of
+  `Operation.net_write` / `.net_read` (around 0.17.0-dev.1786), which
+  broke every downstream referencing `rpc.transport.tcp` on a current
+  toolchain. The transport (and the test fakes that intercept socket
+  writes) now select on the OPERATION's presence rather than a version
+  number, so one source tree builds on both sides of the move; the read
+  path already preferred `net.Stream.read`. Verified green on the pinned
+  dev.1683 AND on dev.1786.
+
 ## [0.15.0] - 2026-08-27
 
 ### Added

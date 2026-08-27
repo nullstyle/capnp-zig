@@ -4,6 +4,7 @@ const modules = @import("./modules.zig");
 
 const registered_test_compile_steps = &helpers.registered_test_compile_steps;
 const addLibTest = helpers.addLibTest;
+const addLibTestWithFile = helpers.addLibTestWithFile;
 const addPersistenceLibTest = helpers.addPersistenceLibTest;
 const addQuicLibTest = helpers.addQuicLibTest;
 const addMainTest = helpers.addMainTest;
@@ -652,6 +653,18 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_rpc_cap_table_tests = addLibTest(b, "tests/rpc/caps/rpc_cap_table_encode_test.zig", target, optimize, lib_module);
     const run_rpc_caps_release_and_failure_tests = addLibTest(b, "tests/rpc/caps/rpc_release_and_failure_test.zig", target, optimize, lib_module);
     const run_rpc_protocol_tests = addLibTest(b, "tests/rpc/wire/rpc_protocol_test.zig", target, optimize, lib_module);
+    // The published framing conformance fixtures are meant to be vendored
+    // by downstreams; running them here keeps the published bytes and the
+    // implementation from drifting apart.
+    const run_rpc_framing_fixture_tests = addLibTestWithFile(
+        b,
+        "tests/rpc/wire/framing_fixtures_test.zig",
+        target,
+        optimize,
+        lib_module,
+        "framing-fixtures",
+        "tests/fixtures/framing/framing_fixtures.json",
+    );
     const run_rpc_promised_answer_tests = addLibTest(b, "tests/rpc/promises/rpc_promised_answer_transform_test.zig", target, optimize, lib_module);
     const run_rpc_peer_return_send_helpers_tests = addLibTest(b, "tests/rpc/promises/rpc_peer_return_send_helpers_test.zig", target, optimize, lib_module);
     const run_rpc_host_peer_tests = addLibTest(b, "tests/rpc/integration/rpc_host_peer_test.zig", target, optimize, lib_module);
@@ -973,6 +986,7 @@ pub fn buildImpl(b: *std.Build) !void {
     const test_rpc_wire_step = b.step("test-rpc-wire", "Run RPC wire framing/protocol tests");
     test_rpc_wire_step.dependOn(run_rpc_framing_tests);
     test_rpc_wire_step.dependOn(run_rpc_protocol_tests);
+    test_rpc_wire_step.dependOn(run_rpc_framing_fixture_tests);
 
     const test_rpc_caps_step = b.step("test-rpc-caps", "Run RPC capability table tests");
     test_rpc_caps_step.dependOn(run_rpc_cap_table_tests);

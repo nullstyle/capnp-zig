@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
+const io_write_compat = @import("io-write-compat");
 
 const message = capnpc.message;
 const rpc = capnpc.rpc;
@@ -36,16 +37,7 @@ fn closeFd(socket: tcp.SocketFd) void {
 }
 
 fn writeAll(socket: tcp.SocketFd, bytes: []const u8) !void {
-    const io = std.testing.io;
-    const pattern: []const u8 = &.{};
-    const data: [1][]const u8 = .{pattern};
-    var offset: usize = 0;
-    while (offset < bytes.len) {
-        const n = io.vtable.netWrite(io.userdata, socket.handle, bytes[offset..], &data, 0) catch
-            return error.WriteFailed;
-        if (n == 0) return error.BrokenPipe;
-        offset += n;
-    }
+    return io_write_compat.writeAll(std.testing.io, socket.handle, bytes);
 }
 
 fn oversizedSegmentHeader() [8]u8 {

@@ -29,9 +29,58 @@ pub fn addLibTest(
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "capnpc-zig", .module = lib_module },
+                // Every test file is its own module root, so a sibling
+                // `@import("../support/...")` escapes the module path.
+                // Socket-write compat (the std net vtable -> Operation
+                // move) is needed by suites in several directories, so it
+                // rides as a named module for all of them; unused imports
+                // cost nothing.
+                .{ .name = "io-write-compat", .module = ioWriteCompatModule(b, target, optimize, lib_module) },
             },
         }),
     });
+    registered_test_compile_steps.append(b.allocator, &t.step) catch @panic("OOM");
+    return &b.addRunArtifact(t).step;
+}
+
+fn ioWriteCompatModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    lib_module: *std.Build.Module,
+) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("tests/rpc/support/io_write_compat.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "capnpc-zig", .module = lib_module },
+        },
+    });
+}
+
+/// Like `addLibTest`, plus one `@embedFile`-able anonymous import — used
+/// by suites that execute checked-in fixture data.
+pub fn addLibTestWithFile(
+    b: *std.Build,
+    path: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    lib_module: *std.Build.Module,
+    import_name: []const u8,
+    file_path: []const u8,
+) *std.Build.Step {
+    const t = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(path),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+    t.root_module.addAnonymousImport(import_name, .{ .root_source_file = b.path(file_path) });
     registered_test_compile_steps.append(b.allocator, &t.step) catch @panic("OOM");
     return &b.addRunArtifact(t).step;
 }

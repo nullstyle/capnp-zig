@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
+const io_write_compat = @import("io-write-compat");
 
 const rpc_events = capnpc.rpc.events;
 const HostPeer = capnpc.rpc.integration.host_peer.HostPeer;
@@ -146,38 +147,23 @@ test "tcp owner-thread close() emits .closing synchronously and the loop does no
 }
 
 test "tcp observer reports frame send metadata without frame bytes" {
-    const net = std.Io.net;
-
     const FakeIo = struct {
         const State = struct {
             bytes_written: usize = 0,
         };
 
-        fn netWrite(
-            userdata: ?*anyopaque,
-            _: net.Socket.Handle,
-            header: []const u8,
-            data: []const []const u8,
-            _: usize,
-        ) net.Stream.Writer.Error!usize {
+        fn onWrite(userdata: ?*anyopaque, header: []const u8, data: []const []const u8) io_write_compat.HookError!usize {
             const state: *State = @ptrCast(@alignCast(userdata.?));
-            var len: usize = header.len;
-            for (data) |chunk| len += chunk.len;
+            const len = io_write_compat.writtenLen(header, data);
             state.bytes_written += len;
             return len;
         }
-
-        fn netShutdown(_: ?*anyopaque, _: net.Socket.Handle, _: net.ShutdownHow) net.ShutdownError!void {}
-
-        fn netClose(_: ?*anyopaque, _: []const net.Socket) void {}
     };
 
     var recorder = Recorder{};
     var io_state = FakeIo.State{};
     var vtable = std.testing.io.vtable.*;
-    vtable.netWrite = FakeIo.netWrite;
-    vtable.netShutdown = FakeIo.netShutdown;
-    vtable.netClose = FakeIo.netClose;
+    io_write_compat.installWriteHook(&vtable, FakeIo.onWrite);
     const io = std.Io{
         .userdata = &io_state,
         .vtable = &vtable,

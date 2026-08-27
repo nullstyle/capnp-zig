@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
+const io_write_compat = @import("io-write-compat");
 
 const protocol = capnpc.rpc.wire.protocol;
 const peer_impl = capnpc.rpc.peer;
@@ -22,9 +23,7 @@ fn closeFd(io: std.Io, socket: tcp.SocketFd) void {
 }
 
 fn writeBytes(io: std.Io, socket: tcp.SocketFd, bytes: []const u8) void {
-    const pattern: []const u8 = &.{};
-    const data: [1][]const u8 = .{pattern};
-    _ = io.vtable.netWrite(io.userdata, socket.handle, bytes, &data, 0) catch {};
+    _ = io_write_compat.write(io, socket.handle, bytes) catch {};
 }
 
 const EventRecorder = struct {
@@ -215,4 +214,45 @@ test "traffic resets the idle clock" {
     // once. The margin (assert at 350ms vs the 250ms bound) absorbs the
     // scheduling jitter of loaded CI runners.
     try std.testing.expect(elapsed_ns >= 350 * std.time.ns_per_ms);
+}
+
+// ---------------------------------------------------------------------------
+// Deadline reads (Transport.readTimeout)
+// ---------------------------------------------------------------------------
+
+test "readTimeout expires cleanly on a silent peer instead of panicking" {
+    // The trap this exists to replace: arming SO_RCVTIMEO on the raw fd
+    // makes a timed-out recv return EAGAIN, and Io.Threaded classifies
+    // EAGAIN as a programmer bug (errnoBug) — a debug-build panic on a
+    // perfectly normal deadline. Owning the deadline at the OPERATION
+    // level cancels the read instead, so the timeout is just a value.
+    const pair = try tcp.createLoopbackSocketPair(std.testing.io);
+    defer tcp.closeFd(std.testing.io, pair[1]);
+
+    var transport = try tcp.Transport.init(std.testing.allocator, std.testing.io, pair[0], 64);
+    defer transport.deinit();
+
+    // Peer never writes: the deadline is the only thing that can end this.
+    const started = std.Io.Clock.awake.now(std.testing.io).nanoseconds;
+    try std.testing.expectError(error.Timeout, transport.readTimeout(.{
+        .duration = .{ .raw = std.Io.Duration.fromMilliseconds(50), .clock = .awake },
+    }));
+    const elapsed_ms = @divFloor(std.Io.Clock.awake.now(std.testing.io).nanoseconds - started, std.time.ns_per_ms);
+
+    // It actually waited (not an instant spurious error) and returned.
+    try std.testing.expect(elapsed_ms >= 40);
+}
+
+test "readTimeout delivers data that arrives before the deadline" {
+    const pair = try tcp.createLoopbackSocketPair(std.testing.io);
+    defer tcp.closeFd(std.testing.io, pair[1]);
+
+    var transport = try tcp.Transport.init(std.testing.allocator, std.testing.io, pair[0], 64);
+    defer transport.deinit();
+
+    const payload = "deadline-read";
+    try io_write_compat.writeAll(std.testing.io, pair[1].handle, payload);
+
+    const n = try transport.readTimeout(.{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(2_000), .clock = .awake } });
+    try std.testing.expectEqual(payload.len, n);
 }

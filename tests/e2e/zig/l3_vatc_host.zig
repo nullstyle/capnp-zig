@@ -603,8 +603,22 @@ fn writeAll(io: std.Io, socket: rpc.transport.tcp.SocketFd, bytes: []const u8) !
     const data: [1][]const u8 = .{pattern};
     var offset: usize = 0;
     while (offset < bytes.len) {
-        const n = io.vtable.netWrite(io.userdata, socket.handle, bytes[offset..], &data, 0) catch
-            return error.WriteFailed;
+        const n = blk: {
+            // See rpc.transport.tcp.stream's ioWrite: zig moved socket
+            // writes from the vtable onto Operation.net_write around
+            // 0.17.0-dev.1786.
+            if (comptime @hasField(std.Io.Operation, "net_write")) {
+                const result = io.operate(.{ .net_write = .{
+                    .socket_handle = socket.handle,
+                    .header = bytes[offset..],
+                    .data = &data,
+                    .splat = 0,
+                } }) catch return error.WriteFailed;
+                break :blk result.net_write catch return error.WriteFailed;
+            }
+            break :blk io.vtable.netWrite(io.userdata, socket.handle, bytes[offset..], &data, 0) catch
+                return error.WriteFailed;
+        };
         if (n == 0) return error.BrokenPipe;
         offset += n;
     }

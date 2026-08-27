@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
+const io_write_compat = @import("io-write-compat");
 
 const message = capnpc.message;
 const protocol = capnpc.rpc.wire.protocol;
@@ -89,16 +90,7 @@ fn closeFd(socket: tcp.SocketFd) void {
 }
 
 fn writeAll(socket: tcp.SocketFd, bytes: []const u8) !void {
-    const io = std.testing.io;
-    const pattern: []const u8 = &.{};
-    const data: [1][]const u8 = .{pattern};
-    var offset: usize = 0;
-    while (offset < bytes.len) {
-        const n = io.vtable.netWrite(io.userdata, socket.handle, bytes[offset..], &data, 0) catch
-            return error.WriteFailed;
-        if (n == 0) return error.BrokenPipe;
-        offset += n;
-    }
+    return io_write_compat.writeAll(std.testing.io, socket.handle, bytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -502,7 +494,6 @@ test "transport enqueueWrite rejects queued byte overflow" {
 
 test "transport enqueueWrite counts writer-owned bytes against byte budget" {
     const allocator = std.testing.allocator;
-    const net = std.Io.net;
 
     const BlockingIo = struct {
         const State = struct {
@@ -512,29 +503,14 @@ test "transport enqueueWrite counts writer-owned bytes against byte budget" {
 
         var active_state: ?*State = null;
 
-        fn netWrite(
-            _: ?*anyopaque,
-            _: net.Socket.Handle,
-            _: []const u8,
-            data: []const []const u8,
-            _: usize,
-        ) net.Stream.Writer.Error!usize {
+        fn onWrite(_: ?*anyopaque, header: []const u8, data: []const []const u8) io_write_compat.HookError!usize {
             const state = active_state.?;
             state.entered.store(true, .release);
             while (!state.release.load(.acquire)) {
                 std.Thread.yield() catch {};
             }
-
-            var len: usize = 0;
-            for (data) |chunk| {
-                len += chunk.len;
-            }
-            return len;
+            return io_write_compat.writtenLen(header, data);
         }
-
-        fn netShutdown(_: ?*anyopaque, _: net.Socket.Handle, _: net.ShutdownHow) net.ShutdownError!void {}
-
-        fn netClose(_: ?*anyopaque, _: []const net.Socket) void {}
     };
 
     var state = BlockingIo.State{};
@@ -542,9 +518,7 @@ test "transport enqueueWrite counts writer-owned bytes against byte budget" {
     defer BlockingIo.active_state = null;
 
     var vtable = std.testing.io.vtable.*;
-    vtable.netWrite = BlockingIo.netWrite;
-    vtable.netShutdown = BlockingIo.netShutdown;
-    vtable.netClose = BlockingIo.netClose;
+    io_write_compat.installWriteHook(&vtable, BlockingIo.onWrite);
     const io = std.Io{
         .userdata = std.testing.io.userdata,
         .vtable = &vtable,
