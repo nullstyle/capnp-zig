@@ -41,6 +41,11 @@ pub const Owner = struct {
     /// the loop thread, rate-floored by the implementation. Runs under
     /// callback-depth accounting so a re-entrant deinit is deferred.
     invoke_tick: *const fn (ptr: *anyopaque, now_us: u64) void,
+    /// Half-open liveness guard: abort a connection whose handshake has
+    /// not completed within the configured window (certified
+    /// `.handshake_timeout`). Invoked once per step, before the closed
+    /// check, so the expiry is observed the same step it fires.
+    enforce_handshake_deadline: *const fn (ptr: *anyopaque, now_us: u64) void,
     /// Latch the transport's typed close cause if one has been recorded.
     /// Idempotent and cheap once latched. Called on every step BEFORE the
     /// driver can reap the connection: a server-role compat session whose
@@ -121,6 +126,8 @@ pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
     // and before the closed-check so a close() from inside the sweep is
     // observed this same step.
     owner.invoke_tick(owner.ptr, now_us);
+
+    owner.enforce_handshake_deadline(owner.ptr, now_us);
 
     owner.capture_close_cause(owner.ptr);
 

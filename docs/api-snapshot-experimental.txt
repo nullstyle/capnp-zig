@@ -138,6 +138,7 @@ capnpc-zig.rpc.events.ConnectionPhase.initialized: enumerant = 0
 capnpc-zig.rpc.events.ConnectionPhase.rejected: enumerant = 5
 capnpc-zig.rpc.events.ConnectionPhase.started: enumerant = 2
 capnpc-zig.rpc.events.ConnectionPhase: enum
+capnpc-zig.rpc.events.DisconnectCause.handshake_timeout: enumerant = 6
 capnpc-zig.rpc.events.DisconnectCause.idle_timeout: enumerant = 3
 capnpc-zig.rpc.events.DisconnectCause.local_close: enumerant = 1
 capnpc-zig.rpc.events.DisconnectCause.peer_close: enumerant = 2

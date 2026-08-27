@@ -1903,3 +1903,113 @@ test "quic warm restore: stale ticket is rejected but the staged frame still arr
     const q2 = client2.endpoint.activeQuicConnection() orelse return error.QuicConnectionGone;
     try std.testing.expectEqual(quic.EarlyDataStatus.rejected, q2.earlyDataStatus());
 }
+
+// ---------------------------------------------------------------------------
+// Half-open handshake guard: a session whose handshake never completes must
+// die by deadline — otherwise half-opens are immortal, accumulate under
+// churn/loss/attack, pin max_concurrent_connections, and the server silently
+// refuses every new dial (the QUIC analog of a SYN flood; observed in the
+// soak with the whole table `.open` and hundreds of silent table_full drops).
+// ---------------------------------------------------------------------------
+
+/// Dial the server and step the client just long enough to land its Initial
+/// (creating the server-side half-open), then ABANDON it mid-handshake.
+fn abandonHalfOpenDial(allocator: std.mem.Allocator, server: *quic.Server) !quic.Connection {
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        // The abandoning client must not close itself first.
+        .handshake_timeout_ms = null,
+    });
+    errdefer client.deinit();
+    var sent: usize = 0;
+    while (sent < 3) : (sent += 1) {
+        _ = try client.stepOnce(.poll);
+        _ = try server.stepOnce(.poll);
+        if (server.sessionCount() > 0) break;
+        loopback.sleepMs(1);
+    }
+    return client;
+}
+
+test "server sweeps a half-open session at the handshake deadline" {
+    const allocator = std.testing.allocator;
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = 2,
+        .handshake_timeout_ms = 250,
+    });
+    defer server.deinit();
+
+    var abandoned = try abandonHalfOpenDial(allocator, &server);
+    defer abandoned.deinit();
+
+    // The half-open exists; now the client goes silent and only the server
+    // steps. The guard must certify and free the slot.
+    var waited_ms: u64 = 0;
+    var saw_session = server.sessionCount() > 0;
+    while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += 1) {
+        _ = try server.stepOnce(.poll);
+        saw_session = saw_session or server.sessionCount() > 0;
+        if (saw_session and server.sessionCount() == 0 and server.quicConnectionCount() == 0) break;
+        loopback.sleepMs(1);
+    }
+    try std.testing.expect(saw_session);
+    try std.testing.expectEqual(@as(usize, 0), server.sessionCount());
+    try std.testing.expectEqual(@as(u64, 1), server.handshakeTimeouts());
+}
+
+test "without the guard a half-open session is immortal (ablation)" {
+    const allocator = std.testing.allocator;
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = 2,
+        .handshake_timeout_ms = null,
+    });
+    defer server.deinit();
+
+    var abandoned = try abandonHalfOpenDial(allocator, &server);
+    defer abandoned.deinit();
+
+    // Step for well past the guarded test's deadline: the half-open stays.
+    var waited_ms: u64 = 0;
+    while (waited_ms < 700) : (waited_ms += 1) {
+        _ = try server.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    try std.testing.expect(server.sessionCount() > 0);
+    try std.testing.expectEqual(@as(u64, 0), server.handshakeTimeouts());
+}
+
+test "client abandons a black-hole dial at the handshake deadline" {
+    const allocator = std.testing.allocator;
+    // A bound-but-never-serviced UDP socket: every Initial vanishes into it.
+    const hole_addr_want = testListenAddr();
+    const hole = try std.Io.net.IpAddress.bind(&hole_addr_want, std.testing.io, .{
+        .mode = .dgram,
+        .protocol = .udp,
+    });
+    defer hole.close(std.testing.io);
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = hole.address,
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .handshake_timeout_ms = 250,
+    });
+    defer client.deinit();
+
+    // run() must RETURN (the old behavior waited forever) with the
+    // certified cause on the connection.
+    client.run();
+    try std.testing.expectEqual(events.DisconnectCause.handshake_timeout, client.closeCause());
+}

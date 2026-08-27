@@ -28,6 +28,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   redial, the healed capability answers, the restarted server's reset
   counter advances) and a zero-budget ablation (the reset is detected
   but NOT healed; give-up carries the certified cause).
+- **QUIC half-open handshake guard (`handshake_timeout_ms` on both
+  Client- and ServerOptions; new certified cause
+  `DisconnectCause.handshake_timeout`; Experimental).** Half-open
+  connections were IMMORTAL in the whole stack: no QUIC timer fires on
+  a connection that never completes its handshake and goes quiet. On a
+  server they accumulate under churn, loss, or attack until
+  `max_concurrent_connections` pins and every new dial is silently
+  refused — the QUIC analog of a SYN flood, observed in-house (the
+  whole table `.open`, hundreds of silent `table_full` drops, dial
+  workers hung forever). Servers now sweep half-opens at the deadline
+  (default 10s; counter via `Server.handshakeTimeouts()`), clients
+  abandon dead dials (default 30s) — both with the certified cause,
+  both null-disable-able. Proven by an e2e pair plus an immortality
+  ablation (guard off → the half-open provably never dies).
+- **QUIC fanout server: batched datagram receive (up to 32 per pass) +
+  per-`FeedOutcome` counters (`Server.feedOutcomeCounts()`).** The loop
+  received ONE datagram per pass and then swept EVERY session twice, so
+  per-packet cost grew linearly with session count — the measured
+  saturation mechanism. Batching amortizes the sweeps; with the guard
+  clearing zombie slots the old plateau is gone: 60s steady soak
+  throughput went from 13.9k to 119k calls at 32 workers (8.6x) and
+  from 13.8k to 128k at 128 workers (9.3x, p50 111ms -> 22.6ms). The
+  outcome counters make silent refusals (`table_full`, drops, rate
+  limits) a one-line report instead of an unexplainable stall; the
+  soak prints them and sizes its table for post-batching churn.
 - **Warm restore's server half, part 1: the 0-RTT idempotency gate
   (`ServerOptions.early_dispatch`; Experimental).** With
   `early_data = .without_replay_protection` the server previously held

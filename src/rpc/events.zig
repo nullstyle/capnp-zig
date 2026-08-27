@@ -140,6 +140,11 @@ pub const DisconnectCause = enum {
     stateless_reset,
     /// A local transport-layer error terminated the connection.
     transport_error,
+    /// The handshake deadline expired before the handshake completed —
+    /// the endpoint gave up on a half-open connection. On a server this
+    /// is the half-open-exhaustion (QUIC SYN-flood analog) guard firing;
+    /// on a client it is a dial that never got answered.
+    handshake_timeout,
 };
 
 pub const Event = union(enum) {

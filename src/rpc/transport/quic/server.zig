@@ -63,6 +63,10 @@ pub const Server = struct {
     /// Cumulative stateless resets sent for unroutable DCIDs; see
     /// `statelessResetsSent`. Loop-thread only.
     stateless_resets_sent: u64 = 0,
+    feed_outcomes: [feed_outcome_count]u64 = @splat(0),
+    /// Sessions swept for never completing their handshake (the half-open
+    /// guard); see `ServerOptions.handshake_timeout_ms`. Loop-thread only.
+    handshake_timeouts: u64 = 0,
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// Identifies the thread that drives the step/run loop. `sessions` is only
     /// ever appended to or swap-removed on this thread, so cross-thread
@@ -200,6 +204,28 @@ pub const Server = struct {
         // FeedOutcome is documented additive upstream — never switch
         // exhaustively here.
         if (o == .stateless_reset_sent) self.stateless_resets_sent += 1;
+        const idx = @backingInt(o);
+        if (idx < self.feed_outcomes.len) self.feed_outcomes[idx] += 1;
+    }
+
+    /// Per-`FeedOutcome` datagram counts since init, indexed by
+    /// `@intFromEnum`. Loop-thread only. This is the drop-visibility
+    /// surface: `.dropped`, `.rate_limited`, and `.table_full` are all
+    /// SILENT on the wire by design (RFC 9000 §10.3), so without these
+    /// counters a server refusing new connections is indistinguishable
+    /// from a healthy idle one — a stalled dial then debugs as a client
+    /// mystery instead of a one-line server answer.
+    pub fn feedOutcomeCounts(self: *const Server) [feed_outcome_count]u64 {
+        self.assertLoopThread();
+        return self.feed_outcomes;
+    }
+
+    pub const feed_outcome_count = std.enums.values(listener_mod.FeedOutcome).len;
+
+    /// Sessions swept by the half-open handshake guard. Loop-thread only.
+    pub fn handshakeTimeouts(self: *const Server) u64 {
+        self.assertLoopThread();
+        return self.handshake_timeouts;
     }
 
     /// Stateless resets this endpoint has sent for unroutable DCIDs.
@@ -221,6 +247,11 @@ pub const Server = struct {
     pub fn step(self: *Server) !void {
         _ = try self.stepOnce(.wait);
     }
+
+    /// Ceiling on datagrams drained per `stepOnce` pass (the first blocking
+    /// receive plus zero-wait drains). Amortizes the per-pass session sweeps
+    /// across the batch while bounding how long a flood can defer timers.
+    const max_datagrams_per_step: u32 = 32;
 
     pub fn stepOnce(self: *Server, mode: StepMode) !StepResult {
         self.claimLoopThread();
@@ -252,10 +283,24 @@ pub const Server = struct {
             // and do not require another receive to be launched.
             self.udp_receive.cancel(self.io);
         } else {
-            const receive_result = try self.receiveOneFor(waited_for);
+            var receive_result = try self.receiveOneFor(waited_for);
             result.received_datagram = receive_result.received_datagram;
             result.dropped_datagram = receive_result.dropped_datagram;
             result.wake_drained = receive_result.wake_drained;
+            // Batch drain: pull every already-queued datagram (bounded) with
+            // zero-wait receives so ONE service sweep below covers the whole
+            // batch. One-datagram-per-pass made per-packet cost O(sessions)
+            // — two full sweeps per datagram — which is the measured
+            // saturation mechanism past ~32 busy sessions (throughput
+            // plateaus while latency climbs). The bound keeps a datagram
+            // flood from starving timers and close processing.
+            var drained: u32 = 1;
+            while (receive_result.received_datagram and drained < max_datagrams_per_step) : (drained += 1) {
+                receive_result = try self.receiveOneFor(std.Io.Duration.zero);
+                result.received_datagram = result.received_datagram or receive_result.received_datagram;
+                result.dropped_datagram = result.dropped_datagram or receive_result.dropped_datagram;
+                result.wake_drained = result.wake_drained or receive_result.wake_drained;
+            }
         }
 
         now_us = self.listener.nowUs();
@@ -494,6 +539,7 @@ pub const Server = struct {
                 self.io,
             );
             errdefer new_session.deinit(self.allocator);
+            new_session.accepted_at_us = self.listener.nowUs();
             try self.sessions.append(self.allocator, new_session);
             adopted += 1;
         }
@@ -532,6 +578,26 @@ pub const Server = struct {
             try conn.tick(now_us);
             try self.listener.drainAcceptedSessionDatagrams(server_session.acceptedSession(), self.udp_tx_buf, now_us);
             return;
+        }
+
+        // Half-open liveness guard: a session whose handshake never
+        // completes is otherwise IMMORTAL (no QUIC timer fires on a quiet,
+        // never-completed handshake), and immortal half-opens accumulate
+        // until the connection table pins and every new dial is silently
+        // refused — the QUIC analog of a SYN flood. Certified cause:
+        // `.handshake_timeout`.
+        if (self.config.handshake_timeout_ms) |timeout_ms| {
+            if (!conn.handshakeDone() and
+                now_us -| server_session.accepted_at_us >= timeout_ms * std.time.us_per_ms)
+            {
+                if (server_session.close_cause == .unknown) {
+                    server_session.close_cause = .handshake_timeout;
+                }
+                self.handshake_timeouts += 1;
+                server_session.closeOnLoop();
+                try self.flushClosingSession(server_session, now_us);
+                return;
+            }
         }
 
         try conn.advance();
@@ -703,6 +769,8 @@ pub const ServerSession = struct {
     /// before the close callback fires. `.unknown` while alive.
     /// Loop-thread written.
     close_cause: events.DisconnectCause = .unknown,
+    /// Adoption timestamp for the half-open handshake guard.
+    accepted_at_us: u64 = 0,
     /// True once the `.closing` connection phase has been emitted for this
     /// session, so the event fires at most once. Loop-thread only (see
     /// `Termination.emitClosingOnce`).

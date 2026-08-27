@@ -171,6 +171,14 @@ pub const ClientOptions = struct {
     alpn_protocols: []const []const u8 = &.{alpn},
     transport_params: quic_zig.tls.TransportParams = defaultTransportParams(),
     receive_timeout: std.Io.Duration = std.Io.Duration.fromMilliseconds(5),
+    /// Give up on a dial whose handshake has not completed within this
+    /// window: the connection aborts locally with the certified cause
+    /// `DisconnectCause.handshake_timeout`. Without it, a dial whose
+    /// every Initial is silently dropped (server table full, path black
+    /// hole) waits FOREVER — no QUIC timer fires on a connection that
+    /// never completes its handshake and stops sending. Null disables
+    /// the guard (deliberate opt-out, not an unset default).
+    handshake_timeout_ms: ?u64 = 30_000,
     udp_rx_buffer_size: usize = default_udp_rx_buffer_size,
     udp_tx_buffer_size: usize = default_udp_tx_buffer_size,
     stream_read_buffer_size: usize = default_stream_read_buffer_size,
@@ -302,6 +310,16 @@ pub const ServerOptions = struct {
     /// without waiting for the handshake. Baseline mode only; native mode
     /// always holds.
     early_dispatch: early_dispatch_mod.Mode = .hold_until_handshake,
+    /// Sweep out sessions whose handshake has not completed within this
+    /// window (certified cause `DisconnectCause.handshake_timeout`).
+    /// Half-open connections are otherwise IMMORTAL — no QUIC timer
+    /// fires on a connection that never finishes its handshake and goes
+    /// quiet — so under churn, loss, or attack they accumulate until
+    /// `max_concurrent_connections` pins and the server silently refuses
+    /// every new dial (the QUIC analog of a SYN flood; measured in the
+    /// soak: the whole table `.open`, hundreds of silent `table_full`
+    /// drops). Null disables the guard (deliberate opt-out).
+    handshake_timeout_ms: ?u64 = 10_000,
     /// Congestion-control selection for accepted connections, forwarded
     /// verbatim to quic-zig. Mirrors `ClientOptions.congestion_control`
     /// (same follow-upstream default policy — BBRv3 since quic-zig

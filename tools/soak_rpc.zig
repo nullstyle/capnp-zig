@@ -481,6 +481,9 @@ fn dialQuic(allocator: std.mem.Allocator, io: std.Io, address: net.IpAddress, cf
         // Loopback soak against the checked-in self-signed fixture cert.
         .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+        // Loopback handshakes complete in milliseconds; a dial that gets
+        // silently dropped should fail fast and retry, not park a worker.
+        .handshake_timeout_ms = 2_000,
     };
     applyCc(&options.congestion_control, cfg.cc);
     return try quic.Connection.initClient(allocator, io, options);
@@ -679,6 +682,10 @@ const QuicServerHarness = struct {
     // True while the Server value at `server` is deinitialized (a rebind
     // race exhausted its retries): shutdown must not deinit it again.
     server_destroyed: bool = false,
+    // Accumulated per-FeedOutcome datagram counts across incarnations
+    // (loop-thread; snapshotted like resets_sent).
+    feed_counts: if (quic.enabled) [quic.Server.feed_outcome_count]u64 else void =
+        if (quic.enabled) @splat(0) else {},
     rebind_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     fn makeOptions(self: *QuicServerHarness, listen_addr: net.IpAddress) quic.ServerOptions {
@@ -688,15 +695,25 @@ const QuicServerHarness = struct {
             .tls_cert_pem = soak_quic_cert_pem,
             .tls_key_pem = soak_quic_key_pem,
             .receive_timeout = std.Io.Duration.fromMilliseconds(5),
-            // Each worker holds at most one live session; x2 covers
-            // close/reap overlap during churn.
-            .max_concurrent_connections = self.workers_hint * 2 + 4,
+            // Each worker holds one LIVE session, but closing sessions
+            // linger in the table through their drain period before reap —
+            // and the batched receive path raised churn enough that x2
+            // pinned the table at its cap (measured: sessions gauge parked
+            // at the cap with hundreds of silent table_full drops, and an
+            // unlucky dial whose every Initial hit a full window hung its
+            // worker forever). x4+16 absorbs the measured draining backlog
+            // with headroom; the feed-outcome report keeps table_full
+            // visible if churn ever outruns it again.
+            .max_concurrent_connections = self.workers_hint * 4 + 16,
             // Fixed soak key: turns churned-away connection state into
             // observable stateless resets instead of silent timeouts.
             // MUST be byte-identical across abrupt-death incarnations, or
             // surviving clients lose the certificate and stall to idle
             // timeout instead.
             .stateless_reset_key = @as(quic.StatelessResetKey, @splat(0x51)),
+            // Sweep half-opens fast: abandoned dials must release their
+            // slots well inside the run window.
+            .handshake_timeout_ms = 2_000,
             .log_callback = QuicServerHarness.onServerLog,
             .log_user_data = self,
         };
@@ -759,9 +776,10 @@ const QuicServerHarness = struct {
     fn executeAbruptDeath(self: *QuicServerHarness) void {
         if (comptime !quic.enabled) unreachable;
         const server = self.server.?;
-        // The counter lives on the Server value; accumulate before the kill
-        // or the incarnation's resets vanish from the report.
+        // The counters live on the Server value; accumulate before the kill
+        // or the incarnation's numbers vanish from the report.
         self.resets_sent += server.statelessResetsSent();
+        for (server.feedOutcomeCounts(), 0..) |c, i| self.feed_counts[i] += c;
         // Order is load-bearing: deinit fires each live session's close
         // callback into its still-alive bound Peer; only then is it safe to
         // detach and destroy the peers (the ServerSessions are gone).
@@ -831,9 +849,10 @@ const QuicServerHarness = struct {
             self.allocator.destroy(peer);
         }
         self.bound.clearRetainingCapacity();
-        // Loop-thread-only accessor; snapshot before the loop thread exits.
+        // Loop-thread-only accessors; snapshot before the loop thread exits.
         // ACCUMULATE: abrupt-death incarnations already banked their counts.
         self.resets_sent += server.statelessResetsSent();
+        for (server.feedOutcomeCounts(), 0..) |c, i| self.feed_counts[i] += c;
     }
 
     fn bindNewSessions(self: *QuicServerHarness) void {
@@ -1277,6 +1296,11 @@ pub fn main(init: std.process.Init) !void {
                     "soak-quic: resets_sent={} unroutable_dcid={} (reset_queued={}) abrupt_deaths={}\n",
                     .{ quic_srv.resets_sent, quic_srv.unroutable_seen.load(.acquire), quic_srv.unroutable_reset_queued.load(.acquire), quic_srv.deaths },
                 );
+                std.debug.print("soak-quic: feed outcomes:", .{});
+                inline for (comptime std.enums.values(quic.listener.FeedOutcome), 0..) |tag, i| {
+                    std.debug.print(" {s}={}", .{ @tagName(tag), quic_srv.feed_counts[i] });
+                }
+                std.debug.print("\n", .{});
                 if (cfg.heal_workers > 0) {
                     std.debug.print(
                         "soak-heal: clients={} rebinds={} redials={} give_ups={} echo_ok={} min_rebinds={}\n",

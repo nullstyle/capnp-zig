@@ -56,7 +56,31 @@ pub fn State(comptime Connection: type) type {
                 .complete_deferred_deinit = loopCompleteDeferredDeinit,
                 .invoke_tick = loopInvokeTick,
                 .capture_close_cause = loopCaptureCloseCause,
+                .enforce_handshake_deadline = loopEnforceHandshakeDeadline,
             };
+        }
+
+        /// Half-open liveness guard: arm on the first step that observes a
+        /// live-but-incomplete handshake, disarm on completion, and abort
+        /// with the certified `.handshake_timeout` cause on expiry. Without
+        /// it a dial whose packets die silently waits forever — no QUIC
+        /// timer fires on a never-completed handshake that goes quiet.
+        fn loopEnforceHandshakeDeadline(ptr: *anyopaque, now_us: u64) void {
+            const conn = castConnection(ptr);
+            const timeout_ms = conn.handshake_timeout_ms orelse return;
+            if (conn.close_controller.isRequested()) return;
+            const active = conn.endpoint.activeQuicConnection() orelse return;
+            if (active.handshakeDone()) {
+                conn.handshake_armed_at_us = null;
+                return;
+            }
+            const armed_at = conn.handshake_armed_at_us orelse {
+                conn.handshake_armed_at_us = now_us;
+                return;
+            };
+            if (now_us -| armed_at < timeout_ms * 1000) return;
+            if (conn.close_cause == .unknown) conn.close_cause = .handshake_timeout;
+            conn.requestClose();
         }
 
         fn loopInvokeTick(ptr: *anyopaque, now_us: u64) void {

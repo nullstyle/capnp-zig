@@ -86,6 +86,13 @@ pub const Connection = struct {
     /// `.unknown` until the connection dies. Loop-thread written.
     close_cause: events.DisconnectCause = .unknown,
 
+    /// Handshake-deadline guard (see the option docs). Armed on the first
+    /// loop step that observes a live-but-incomplete handshake; when it
+    /// expires the connection aborts with `close_cause =
+    /// .handshake_timeout`. Loop-thread only.
+    handshake_timeout_ms: ?u64 = null,
+    handshake_armed_at_us: ?u64 = null,
+
     callback_lifecycle: CallbackLifecycle = .{},
 
     /// Thread ID captured at init. Widened to `u64` (not `std.Thread.Id`,

@@ -58,6 +58,10 @@ pub const Config = struct {
     /// dispatch before the handshake. See `early_dispatch.Mode`.
     early_dispatch_mode: early_dispatch_mod.Mode = .hold_until_handshake,
 
+    /// Abort a connection whose handshake has not completed within this
+    /// window (see the option docs on Client/ServerOptions). Null = off.
+    handshake_timeout_ms: ?u64 = null,
+
     pub fn fromClient(options: quic_options.ClientOptions) Config {
         return .{
             .udp_rx_buffer_size = options.udp_rx_buffer_size,
@@ -70,6 +74,7 @@ pub const Config = struct {
             .native_options = options.native,
             .observer = options.observer,
             .early_open = options.resumption_state != null,
+            .handshake_timeout_ms = options.handshake_timeout_ms,
         };
     }
 
@@ -87,6 +92,7 @@ pub const Config = struct {
             .observer = options.observer,
             .defer_early_dispatch = std.meta.activeTag(options.early_data) == .without_replay_protection,
             .early_dispatch_mode = options.early_dispatch,
+            .handshake_timeout_ms = options.handshake_timeout_ms,
         };
     }
 };
@@ -183,6 +189,7 @@ pub fn init(
         ),
         .wake_state = wake_mod.Handle.init(),
         .close_controller = CloseController.init(config.reveal_close_reason_on_wire),
+        .handshake_timeout_ms = config.handshake_timeout_ms,
         .owner_thread_id = ownerThreadId(),
     };
     events.emitConnection(conn.observer, eventSource(conn.mode), eventRole(conn.role), .initialized);

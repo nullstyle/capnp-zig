@@ -138,6 +138,7 @@ capnpc-zig.rpc.events.ConnectionPhase.initialized: enumerant = 0
 capnpc-zig.rpc.events.ConnectionPhase.rejected: enumerant = 5
 capnpc-zig.rpc.events.ConnectionPhase.started: enumerant = 2
 capnpc-zig.rpc.events.ConnectionPhase: enum
+capnpc-zig.rpc.events.DisconnectCause.handshake_timeout: enumerant = 6
 capnpc-zig.rpc.events.DisconnectCause.idle_timeout: enumerant = 3
 capnpc-zig.rpc.events.DisconnectCause.local_close: enumerant = 1
 capnpc-zig.rpc.events.DisconnectCause.peer_close: enumerant = 2
@@ -2265,6 +2266,7 @@ capnpc-zig.rpc.transport.quic.ClientOptions.ca_pem: field ?[]const u8 = null
 capnpc-zig.rpc.transport.quic.ClientOptions.congestion_control: field conn.congestion.Algorithm = .bbr
 capnpc-zig.rpc.transport.quic.ClientOptions.enable_hystart: field bool = true
 capnpc-zig.rpc.transport.quic.ClientOptions.enable_pacing: field bool = true
+capnpc-zig.rpc.transport.quic.ClientOptions.handshake_timeout_ms: field ?u64 = 30000
 capnpc-zig.rpc.transport.quic.ClientOptions.initial_dcid: field ?[]const u8 = null
 capnpc-zig.rpc.transport.quic.ClientOptions.insecure_skip_verify: field bool = false
 capnpc-zig.rpc.transport.quic.ClientOptions.local_addr: field ?Io.net.IpAddress = null
@@ -2325,6 +2327,8 @@ capnpc-zig.rpc.transport.quic.Connection.context: fn (*const rpc.transport.quic.
 capnpc-zig.rpc.transport.quic.Connection.deinit: fn (*rpc.transport.quic.connection.Connection) void
 capnpc-zig.rpc.transport.quic.Connection.endpoint: field rpc.transport.quic.endpoint.Runtime
 capnpc-zig.rpc.transport.quic.Connection.getAddress: fn (*const rpc.transport.quic.connection.Connection) Io.net.IpAddress
+capnpc-zig.rpc.transport.quic.Connection.handshake_armed_at_us: field ?u64 = null
+capnpc-zig.rpc.transport.quic.Connection.handshake_timeout_ms: field ?u64 = null
 capnpc-zig.rpc.transport.quic.Connection.initClient: fn (mem.Allocator, Io, rpc.transport.quic.options.ClientOptions) error{AccessDenied,AckRangeCountTooLarge,AddressFamilyUnsupported,AddressInUse,AddressUnavailable,AesKeyInvalid,AllowEarlyDataCallbackInstallFailed,AlpnInvalid,AlpnSetFailed,AlpnTooLong,AlternativeAddressNotNegotiated,AlternativeAddressSequenceExhausted,Auth,BeyondFinalSize,BufferLimitExceeded,BufferTooSmall,Canceled,ClientRandomUnavailable,ConnIdTooLong,ConnectionClosed,ConnectionIdAlreadyInUse,ConnectionIdLimitExceeded,ConnectionIdRequired,ConsumeBeyondReadable,ContextTooLong,DatagramBufferTooSmall,DatagramIdExhausted,DatagramQueueFull,DatagramTooLarge,DatagramUnavailable,DcidTooLong,DeclaredLengthExceedsInput,DefaultVerifyPathsFailed,DuplicateParameter,EarlyDataRejected,Empty,EmptyEarlyDataContext,ExcessiveLoad,FinalSizeChanged,FlowControlExceeded,HandshakeFailed,InboxOverflow,InitFailed,InsufficientBytes,InsufficientCiphertext,InvalidChunk,InvalidConfig,InvalidLength,InvalidPem,InvalidPnLength,InvalidPnOffset,InvalidStreamId,InvalidValue,InvalidVersionNegotiation,KdfFailed,KeyMismatch,KeyUpdateBlocked,KeyUpdateUnavailable,KeylogSetupFailed,LabelTooLong,LoadCADirFailed,LoadCAFileFailed,MigrationNoFreshPeerCid,MigrationPreHandshake,MigrationValidationPending,NativeControlFrameLimitExceedsWireLimit,NativeControlFrameLimitTooSmall,NativeDataStreamDeadlineRequired,NativeInlineFrameExceedsControlFrameLimit,NativePendingDataByteLimitRequired,NativePendingDataStreamLimitRequired,NetworkDown,NewTokenTooLong,NotClientContext,NotHandshakePacket,NotInitialPacket,NotServerContext,NotShortHeader,NotZeroRttPacket,OptionUnsupported,OutOfMemory,OutputTooLong,OutputTooSmall,OverlappingAckRanges,PathIdTooLarge,PathLimitExceeded,PathNotFound,PayloadTooShort,PeerAlerted,PeerDcidNotSet,PeerExceededLimit,PnSpaceExhausted,PreferredAddressNotAdvertised,ProcessFdQuotaExceeded,ProtocolUnsupportedByAddressFamily,ProtocolUnsupportedBySystem,QuicEarlyDataContextFailed,QuicProvideDataFailed,QuicSetupFailed,QuicTransportParamsFailed,RandFailed,ReadFailed,ScidTooLong,SealFailed,SecretWrongLength,SessionParseFailed,SessionSerializeFailed,SetSessionFailed,ShuttingDown,SocketModeUnsupported,SslAllocFailed,SslCtxAllocFailed,SslSetFdFailed,SslSetHostnameFailed,StreamAlreadyOpen,StreamClosed,StreamLimitExceeded,StreamNotFound,StreamNotReadable,StreamNotWritable,SyscallError,SystemFdQuotaExceeded,SystemResources,TooManyInFlight,TooManyRetransmittableFrames,TooManyStreamFrames,TransportParameterError,UnacknowledgedTooFar,Unexpected,UnknownFrameType,UnknownLength,UnknownPacket,UnsupportedCipherSuite,UnsupportedSuite,UseCertFailed,UsePrivateKeyFailed,ValueTooLarge,WantRead,WantWrite,WriteFailed,ZeroLengthNewToken}!rpc.transport.quic.connection.Connection
 capnpc-zig.rpc.transport.quic.Connection.initServer: fn (mem.Allocator, Io, rpc.transport.quic.options.ServerOptions) error{AccessDenied,AddressFamilyUnsupported,AddressInUse,AddressUnavailable,AllowEarlyDataCallbackInstallFailed,AlpnInvalid,AlpnSetFailed,AlpnTooLong,Canceled,ClientRandomUnavailable,ConnectionClosed,DefaultVerifyPathsFailed,EarlyDataRejected,HandshakeFailed,InvalidConfig,InvalidPem,KeyMismatch,KeylogSetupFailed,LoadCADirFailed,LoadCAFileFailed,NativeControlFrameLimitExceedsWireLimit,NativeControlFrameLimitTooSmall,NativeDataStreamDeadlineRequired,NativeInlineFrameExceedsControlFrameLimit,NativePendingDataByteLimitRequired,NativePendingDataStreamLimitRequired,NetworkDown,NotClientContext,NotServerContext,OptionUnsupported,OutOfMemory,ProcessFdQuotaExceeded,ProtocolUnsupportedByAddressFamily,ProtocolUnsupportedBySystem,QuicEarlyDataContextFailed,QuicProvideDataFailed,QuicSetupFailed,QuicTransportParamsFailed,RandFailed,ReadFailed,SessionParseFailed,SessionSerializeFailed,SetSessionFailed,SocketModeUnsupported,SslAllocFailed,SslCtxAllocFailed,SslSetFdFailed,SslSetHostnameFailed,SyscallError,SystemFdQuotaExceeded,SystemResources,Unexpected,UseCertFailed,UsePrivateKeyFailed,WantRead,WantWrite,WriteFailed}!rpc.transport.quic.connection.Connection
 capnpc-zig.rpc.transport.quic.Connection.isClosing: fn (*const rpc.transport.quic.connection.Connection) bool
@@ -2437,6 +2441,7 @@ capnpc-zig.rpc.transport.quic.Server.Session.CloseCallback: type = *const fn (*r
 capnpc-zig.rpc.transport.quic.Server.Session.ErrorCallback: type = *const fn (*rpc.transport.quic.server.ServerSession, anyerror) void
 capnpc-zig.rpc.transport.quic.Server.Session.MessageCallback: type = *const fn (*rpc.transport.quic.server.ServerSession, []const u8) anyerror!void
 capnpc-zig.rpc.transport.quic.Server.Session.acceptedSession: fn (*rpc.transport.quic.server.ServerSession) rpc.transport.quic.session.AcceptedSession
+capnpc-zig.rpc.transport.quic.Server.Session.accepted_at_us: field u64 = 0
 capnpc-zig.rpc.transport.quic.Server.Session.activeQuicConnection: fn (*rpc.transport.quic.server.ServerSession) ?*Connection
 capnpc-zig.rpc.transport.quic.Server.Session.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.quic.Server.Session.baseline: field rpc.transport.quic.baseline_engine.BaselineEngine
@@ -2489,7 +2494,12 @@ capnpc-zig.rpc.transport.quic.Server.close_requested: field atomic.Value(bool) =
 capnpc-zig.rpc.transport.quic.Server.config: field rpc.transport.quic.connection_init.Config
 capnpc-zig.rpc.transport.quic.Server.deinit: fn (*rpc.transport.quic.server.Server) void
 capnpc-zig.rpc.transport.quic.Server.droppedDatagramCount: fn (*const rpc.transport.quic.server.Server) u64
+capnpc-zig.rpc.transport.quic.Server.feedOutcomeCounts: fn (*const rpc.transport.quic.server.Server) [8]u64
+capnpc-zig.rpc.transport.quic.Server.feed_outcome_count: const usize
+capnpc-zig.rpc.transport.quic.Server.feed_outcomes: field [8]u64 = <default>
 capnpc-zig.rpc.transport.quic.Server.getAddress: fn (*const rpc.transport.quic.server.Server) Io.net.IpAddress
+capnpc-zig.rpc.transport.quic.Server.handshakeTimeouts: fn (*const rpc.transport.quic.server.Server) u64
+capnpc-zig.rpc.transport.quic.Server.handshake_timeouts: field u64 = 0
 capnpc-zig.rpc.transport.quic.Server.init: fn (mem.Allocator, Io, rpc.transport.quic.options.ServerOptions) error{AccessDenied,AddressFamilyUnsupported,AddressInUse,AddressUnavailable,AllowEarlyDataCallbackInstallFailed,AlpnInvalid,AlpnSetFailed,AlpnTooLong,Canceled,ClientRandomUnavailable,ConnectionClosed,DefaultVerifyPathsFailed,EarlyDataRejected,HandshakeFailed,InvalidConfig,InvalidPem,KeyMismatch,KeylogSetupFailed,LoadCADirFailed,LoadCAFileFailed,NativeControlFrameLimitExceedsWireLimit,NativeControlFrameLimitTooSmall,NativeDataStreamDeadlineRequired,NativeInlineFrameExceedsControlFrameLimit,NativePendingDataByteLimitRequired,NativePendingDataStreamLimitRequired,NetworkDown,NotClientContext,NotServerContext,OptionUnsupported,OutOfMemory,ProcessFdQuotaExceeded,ProtocolUnsupportedByAddressFamily,ProtocolUnsupportedBySystem,QuicEarlyDataContextFailed,QuicProvideDataFailed,QuicSetupFailed,QuicTransportParamsFailed,RandFailed,ReadFailed,SessionParseFailed,SessionSerializeFailed,SetSessionFailed,SocketModeUnsupported,SslAllocFailed,SslCtxAllocFailed,SslSetFdFailed,SslSetHostnameFailed,SyscallError,SystemFdQuotaExceeded,SystemResources,Unexpected,UseCertFailed,UsePrivateKeyFailed,WantRead,WantWrite,WriteFailed}!rpc.transport.quic.server.Server
 capnpc-zig.rpc.transport.quic.Server.io: field Io
 capnpc-zig.rpc.transport.quic.Server.isClosing: fn (*const rpc.transport.quic.server.Server) bool
@@ -2569,6 +2579,7 @@ capnpc-zig.rpc.transport.quic.ServerOptions.alpn_protocols: field []const []cons
 capnpc-zig.rpc.transport.quic.ServerOptions.congestion_control: field conn.congestion.Algorithm = .bbr
 capnpc-zig.rpc.transport.quic.ServerOptions.early_data: field Server.Config.EarlyData = <default>
 capnpc-zig.rpc.transport.quic.ServerOptions.early_dispatch: field rpc.transport.quic.early_dispatch.Mode = .hold_until_handshake
+capnpc-zig.rpc.transport.quic.ServerOptions.handshake_timeout_ms: field ?u64 = 10000
 capnpc-zig.rpc.transport.quic.ServerOptions.initial_source_rate_limit: field Server.Config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerOptions.listen_addr: field Io.net.IpAddress
 capnpc-zig.rpc.transport.quic.ServerOptions.listener_byte_rate_limit: field Server.Config.RateLimit = <default>
@@ -2625,6 +2636,7 @@ capnpc-zig.rpc.transport.quic.ServerReceiveResult.received_datagram: field bool 
 capnpc-zig.rpc.transport.quic.ServerReceiveResult.wake_drained: field bool = false
 capnpc-zig.rpc.transport.quic.ServerReceiveResult: struct
 capnpc-zig.rpc.transport.quic.ServerRetryTokenKey: type = [32]u8
+capnpc-zig.rpc.transport.quic.ServerSession.accepted_at_us: field u64 = 0
 capnpc-zig.rpc.transport.quic.ServerSession.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.quic.ServerSession.baseline: field rpc.transport.quic.baseline_engine.BaselineEngine
 capnpc-zig.rpc.transport.quic.ServerSession.callback_lifecycle: field rpc.transport.quic.callback_lifecycle.State(rpc.transport.quic.server.ServerSession) = <default>
