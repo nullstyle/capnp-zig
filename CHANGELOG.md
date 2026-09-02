@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The `wasm-host` / `wasm-deno` build uses ReleaseSmall when the top-level
+  optimization is Debug, reducing default distribution size. Explicit release
+  modes remain inherited; `-Dwasm-optimize=Debug|ReleaseSafe|ReleaseFast|ReleaseSmall`
+  overrides only the wasm module graph. Native builds and tests retain their
+  selected optimization.
+- The WASM host ABI guide now distinguishes capnp-specific exports from reusable
+  conventions and documents ownership, strict pointer validation, exact-length
+  frees/error code 12, allocation budgets, error snapshot lifetimes, and build
+  settings. Separate guidance covers synchronous imports, re-entrancy, and
+  preserving driver faults. Existing v1 export names and runtime semantics are
+  unchanged; the guide also includes the existing raw Return-frame export and
+  feature bits 8/9.
+
 ## [0.16.0] - 2026-08-27
 
 ### Added

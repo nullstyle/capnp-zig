@@ -103,6 +103,13 @@ pub fn setup(b: *std.Build) !Graph {
         .cpu_arch = .wasm32,
         .os_tag = .freestanding,
     });
+    // Keep the distributable wasm small by default without changing native
+    // debug builds. An explicit wasm mode also allows Debug for host debugging.
+    const wasm_optimize = b.option(
+        std.builtin.OptimizeMode,
+        "wasm-optimize",
+        "WebAssembly optimization mode (default: ReleaseSmall for Debug builds, otherwise optimize)",
+    ) orelse if (optimize == std.builtin.OptimizeMode.Debug) std.builtin.OptimizeMode.ReleaseSmall else optimize;
 
     // The wasm host needs a wasm-targeted core module: mixing the host
     // `target` into the wasm exe's module graph breaks cross builds
@@ -110,14 +117,14 @@ pub fn setup(b: *std.Build) !Graph {
     const core_module_wasm = b.createModule(.{
         .root_source_file = b.path("src/lib_core.zig"),
         .target = wasm_target,
-        .optimize = optimize,
+        .optimize = wasm_optimize,
     });
     core_module_wasm.addImport("capnpc-zig", core_module_wasm);
 
     const wasm_example_schema_module = b.addModule("capnp-wasm-example-schema", .{
         .root_source_file = b.path("src/wasm/generated/example.zig"),
         .target = wasm_target,
-        .optimize = optimize,
+        .optimize = wasm_optimize,
         .imports = &.{
             .{ .name = "capnpc-zig", .module = core_module_wasm },
         },
@@ -128,7 +135,7 @@ pub fn setup(b: *std.Build) !Graph {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/wasm/capnp_host_abi.zig"),
             .target = wasm_target,
-            .optimize = optimize,
+            .optimize = wasm_optimize,
             .imports = &.{
                 .{ .name = "capnpc-zig-core", .module = core_module_wasm },
                 .{ .name = "capnpc-zig", .module = core_module_wasm },

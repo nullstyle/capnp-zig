@@ -28,10 +28,10 @@ pub const AbiPtr = if (builtin.target.cpu.arch == .wasm32) u32 else usize;
 
 // Thread-safety contract
 //
-// WASM linear memory is single-threaded: each WASM module instance executes on
-// a single thread and has its own isolated linear memory, so concurrent host
-// calls within a single instance cannot occur. On wasm32 targets, no
-// synchronization is needed and none is provided.
+// The shipped wasm32 module has no imports. Hosts must serialize calls into
+// each instance; nested entry is not supported. No wasm32 synchronization is
+// provided. An import-bearing variant needs an explicit re-entrant-safe subset
+// and error policy; see docs/wasm_host_abi.md.
 //
 // When compiled for native targets (used by the test harness and by hosts that
 // embed this module as a native library), a mutex guards all mutable global
@@ -42,9 +42,8 @@ pub const AbiPtr = if (builtin.target.cpu.arch == .wasm32) u32 else usize;
 // function from any thread. The mutex is coarse-grained: every exported
 // function acquires it on entry and releases it on return.
 const GlobalMutex = if (builtin.target.cpu.arch == .wasm32)
-    // SAFETY: WASM linear memory is single-threaded; concurrent host calls
-    // within a single module instance are undefined behavior per the WASM
-    // spec. No synchronization is required.
+    // SAFETY: the host contract serializes calls, and this module has no
+    // imports through which host code could re-enter an active export.
     struct {
         pub fn lock(_: *@This()) void {}
         pub fn unlock(_: *@This()) void {}
@@ -454,8 +453,10 @@ pub fn testingSetErrorForDisclosure(code: u32, msg: []const u8) void {
 }
 
 /// Allocate `len` bytes from the module allocator.
+/// OWNED result: release with capnp_free(ptr, len), using the requested length.
+/// Clears the prior error on entry; allocate error scratch before a fallible call.
 /// Thread-safe on native targets (mutex-protected).
-/// On wasm32, single-threaded by WASM spec.
+/// On wasm32, calls must be serialized by the host.
 pub export fn capnp_alloc(len: u32) AbiPtr {
     global_mutex.lock();
     defer global_mutex.unlock();
@@ -485,6 +486,8 @@ pub export fn capnp_alloc(len: u32) AbiPtr {
 }
 
 /// Free a previously allocated buffer.
+/// Requires a tracked allocation base and exact requested/returned length.
+/// Clears the prior error; check the error code after this void-returning call.
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_free(ptr: AbiPtr, len: u32) void {
     global_mutex.lock();
@@ -507,7 +510,9 @@ pub export fn capnp_free(ptr: AbiPtr, len: u32) void {
     allocator.free(mem[0..tracked.alloc_size]);
 }
 
-/// Free a buffer returned by an ABI function (alias for capnp_free).
+/// Free an OWNED general output buffer (alias for capnp_free).
+/// Excludes BORROWED outputs and peer-owned host-call frames, which have their
+/// own release operations. Pass the exact returned length.
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_buf_free(ptr: AbiPtr, len: u32) void {
     // Both capnp_buf_free and capnp_free go through the same validated path.
@@ -524,6 +529,8 @@ pub export fn capnp_last_error_code() u32 {
 }
 
 /// Return a pointer to the error message buffer.
+/// BORROWED static storage: copy immediately, before the next error overwrites
+/// it. Use capnp_last_error_len for the current length; never free the pointer.
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_last_error_ptr() AbiPtr {
     global_mutex.lock();
@@ -568,6 +575,9 @@ pub export fn capnp_wasm_feature_flags_hi() u32 {
 
 /// Atomically drain and clear the current error state, writing the error
 /// code, message pointer, and message length to the provided output locations.
+/// The message is BORROWED static storage, not a copied allocation. Copy it
+/// immediately before another error overwrites it; never free it. Output cells
+/// must already exist before the failing call (capnp_alloc clears errors).
 /// Returns 1 if an error was present, 0 otherwise.
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_error_take(out_code_ptr: AbiPtr, out_msg_ptr_ptr: AbiPtr, out_msg_len_ptr: AbiPtr) u32 {
@@ -702,8 +712,10 @@ pub export fn capnp_peer_push_frame(peer: u32, frame_ptr: AbiPtr, frame_len: u32
 }
 
 /// Pop the next outbound frame from the peer. Returns 1 if a frame was
-/// available, 0 otherwise. The frame must be committed or freed before
-/// popping again.
+/// available, 0 otherwise. The frame is BORROWED until capnp_peer_pop_commit,
+/// peer destruction, or shutdown; never pass it to capnp_buf_free. Copy and
+/// commit before popping again. A second pop without commit fails and leaves
+/// the existing borrow intact.
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_pop_out_frame(peer: u32, out_ptr_ptr: AbiPtr, out_len_ptr: AbiPtr) u32 {
     global_mutex.lock();
@@ -984,6 +996,9 @@ pub export fn capnp_peer_get_limits(
 
 /// Pop the next inbound host call from the peer. Returns 1 if a call was
 /// available, 0 otherwise.
+/// OWNED frame: release with capnp_peer_free_host_call_frame(peer, ptr, len),
+/// using the originating peer and exact returned pair, not capnp_buf_free.
+/// Peer destruction or shutdown also reclaims and invalidates this frame.
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_pop_host_call(
     peer: u32,
@@ -1326,7 +1341,7 @@ pub export fn capnp_peer_send_release(peer: u32, cap_id: u32, reference_count: u
 }
 
 /// Return the schema manifest as a JSON-encoded, heap-allocated buffer.
-/// The caller must free the buffer via capnp_buf_free.
+/// OWNED output: free via capnp_buf_free with the exact returned length.
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_schema_manifest_json(out_ptr_ptr: AbiPtr, out_len_ptr: AbiPtr) u32 {
     global_mutex.lock();
@@ -1362,6 +1377,7 @@ pub export fn capnp_schema_manifest_json(out_ptr_ptr: AbiPtr, out_len_ptr: AbiPt
 }
 
 /// Decode a Person Cap'n Proto frame and return its JSON representation.
+/// OWNED output: free via capnp_buf_free with the exact returned length.
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_example_person_to_json(
     frame_ptr: AbiPtr,
@@ -1451,6 +1467,7 @@ pub export fn capnp_example_person_to_json(
 }
 
 /// Encode a Person from JSON into a Cap'n Proto frame.
+/// OWNED output: free via capnp_buf_free with the exact returned length.
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_example_person_from_json(
     json_ptr: AbiPtr,
