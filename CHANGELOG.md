@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-03
+
+### Added
+
+- **Embedded QUIC sessions for foreign `quic.app.Driver` hosts** (Experimental;
+  `rpc.transport.quic.EmbeddedSession`). The inbound-attach seat for
+  connections that negotiated `capnp-rpc/1` on a listener the embedder owns:
+  the embedder drives the UDP socket, the `quic_zig.Server`, and the ONE
+  `quic.app.Driver` (quic-zig allows a single will-close hook slot per
+  Server), routes by negotiated ALPN via `rpc.transport.quic.isCapnpSessionAlpn`,
+  and calls `session.service(now_us)` once per loop pass after
+  `driver.service` and before `Server.tick`. The seat reuses the baseline and
+  native engines, dispatch, termination, callback lifecycle, and close
+  controller unchanged, and satisfies the same connection shape as
+  `rpc.transport.quic.Connection`, so `Peer.attachConnection` works without
+  modification. The engines' connection parameters widened to `anytype`,
+  keeping one implementation of the E-order, replay-hold, and pending-data
+  invariants under both the owned loop and the embedded adapter (reads served
+  from per-stream seat buffers, writes and control queries delegated to the
+  real connection). A control-stream reset is session loss per the E-order
+  contract. `rpc.transport.quic.quic_app` re-exports quic-zig's `quic.app`
+  helpers for embedders. This is the seam qmsg-style multi-protocol hosts
+  (ALPN routing beside `qmsg/1`) attach through; see the workspace
+  `capnp-qmsg-integration.md` decision record and `capnp-qmsg-demo`.
+
 ### Changed
 
 - The optional QUIC transport's `quic` dependency is pinned at `v0.19.0`
@@ -23,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   boringssl is unchanged (`b47af8ce`), preserving the Windows `ws2_32`
   linking property; the Windows QUIC cross-compile gate and both QUIC
   evidence modes (Debug, ReleaseSafe) pass on the new pin.
+
+### Docs
+
+- Published pinned framing-conformance fixture download instructions and the
+  Io/Dispatch fork handoff confirmation notes (post-0.16.0 documentation
+  commits; the 0.16.0 package-hash record in `docs/build-integration.md`
+  was also validated by a real hosted fetch).
 
 - The `wasm-host` / `wasm-deno` build uses ReleaseSmall when the top-level
   optimization is Debug, reducing default distribution size. Explicit release
@@ -3630,7 +3662,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/nullstyle/capnp-zig/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/nullstyle/capnp-zig/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/nullstyle/capnp-zig/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/nullstyle/capnp-zig/compare/v0.13.0...v0.14.0

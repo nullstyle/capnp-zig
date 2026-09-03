@@ -2,7 +2,7 @@
 
 A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serialization framework and RPC system. Includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime built on `std.Io` with a concurrent read/write transport. Targets Zig 0.17-dev.
 
-> **Status (v0.16.0):** serialization, codegen, the `capnpc-zig` plugin, and the
+> **Status (v0.17.0):** serialization, codegen, the `capnpc-zig` plugin, and the
 > **two-party RPC core** are **Stable** on a **frozen, CI-gated** public surface
 > (`docs/api-snapshot.txt`). The L3/L4 three-party arc, the reflected-cap resolver,
 > QUIC, persistence vat-restore, events, and the demoted transport/ctor variants
@@ -21,7 +21,7 @@ A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serializ
 - **Executable Type Fidelity**: Brand-aware schema validation/canonicalization
   and finite typed generic views without removing erased APIs
 - **RPC Runtime**: Cap'n Proto RPC over TCP with capability-based messaging
-- **Optional QUIC RPC**: Baseline and native modes, including real `Peer` fanout and close-isolation coverage
+- **Optional QUIC RPC**: Baseline and native modes, including real `Peer` fanout, close-isolation coverage, and an embedded (foreign `quic.app.Driver` host) session seat for ALPN-routed multi-protocol listeners
 - **Comprehensive Tests**: Extensive message/codegen/RPC/interop coverage
 - **Type Safe**: Leverages Zig's compile-time type system
 
@@ -33,7 +33,7 @@ Fetch a tagged release into your `build.zig.zon` (`zig fetch --save` records the
 `.hash`):
 
 ```bash
-zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.16.0
+zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.17.0
 ```
 
 Then import `capnpc-zig` (full: serialization + codegen + RPC) or
