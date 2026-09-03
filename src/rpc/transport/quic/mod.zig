@@ -12,11 +12,17 @@
 //!   tests and bespoke embedding.
 
 const builtin = @import("builtin");
+const quic_zig = @import("quic");
+/// The quic-zig application-layer helpers (`quic.app`), re-exported so
+/// embedders and tests can host `quic.app.Driver` sessions without importing
+/// the `quic` module directly.
+pub const quic_app = quic_zig.app;
 const adapter = @import("quic_zig_adapter.zig");
 pub const close = @import("close.zig");
 const conn = @import("connection.zig");
 const connection_testing = @import("connection_testing.zig");
 const datagram_io = @import("datagram_io.zig");
+pub const embedded = @import("embedded.zig");
 pub const endpoint = @import("endpoint.zig");
 const framer = @import("length_framer.zig");
 const native_framer = @import("native_framer.zig");
@@ -35,6 +41,11 @@ pub const early_dispatch = @import("early_dispatch.zig");
 pub const enabled = true;
 /// Compatibility transport for a single vat-to-vat QUIC RPC session.
 pub const Connection = conn.Connection;
+/// Cap'n Proto RPC session riding a foreign embedder's `quic.app.Driver`
+/// (the inbound-attach seam; see `embedded.zig`).
+pub const EmbeddedSession = embedded.EmbeddedSession;
+pub const EmbeddedSessionOptions = embedded.EmbeddedSessionOptions;
+pub const isCapnpSessionAlpn = embedded.isCapnpSessionAlpn;
 pub const ApplicationCloseCode = close.ApplicationCloseCode;
 pub const CloseStatus = close.Status;
 /// Borrowed server-side session selected by a listener.
