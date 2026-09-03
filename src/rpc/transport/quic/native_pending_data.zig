@@ -57,7 +57,7 @@ pub fn start(
 
 pub fn readComplete(
     pending_data: *?PendingData,
-    conn: *quic_zig.Connection,
+    conn: anytype,
     now_us: u64,
     completion_deadline_us: ?u64,
 ) !?[]u8 {

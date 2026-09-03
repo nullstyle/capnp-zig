@@ -104,7 +104,7 @@ pub const BaselineEngine = struct {
     pub fn hasImmediateWork(
         self: *BaselineEngine,
         role: Role,
-        conn: *quic_zig.Connection,
+        conn: anytype,
     ) bool {
         if (self.ready) return true;
         return role == .client and (conn.handshakeDone() or self.early_open);
@@ -113,7 +113,7 @@ pub const BaselineEngine = struct {
     pub fn service(
         self: *BaselineEngine,
         owner: Owner,
-        conn: *quic_zig.Connection,
+        conn: anytype,
     ) !void {
         if (!try self.ensureStream(owner.role, conn)) return;
         // Replay-window hold: with 0-RTT accepted and no TLS-level
@@ -139,7 +139,7 @@ pub const BaselineEngine = struct {
     fn ensureStream(
         self: *BaselineEngine,
         role: Role,
-        conn: *quic_zig.Connection,
+        conn: anytype,
     ) !bool {
         if (self.ready) return true;
         if (conn.stream(quic_options.baseline_stream_id) != null) {
@@ -163,7 +163,7 @@ pub const BaselineEngine = struct {
     fn readStream(
         self: *BaselineEngine,
         owner: Owner,
-        conn: *quic_zig.Connection,
+        conn: anytype,
     ) !void {
         while (!owner.is_closing(owner.ptr)) {
             const n = conn.streamRead(quic_options.baseline_stream_id, owner.stream_read_buf) catch |err| switch (err) {

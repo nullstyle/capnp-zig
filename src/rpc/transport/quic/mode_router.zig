@@ -39,7 +39,7 @@ pub const Router = struct {
     pub fn hasImmediateWork(
         self: Router,
         role: Role,
-        conn: *quic_zig.Connection,
+        conn: anytype,
     ) bool {
         return switch (self.mode) {
             .baseline => self.baseline.hasImmediateWork(role, conn),
@@ -50,7 +50,7 @@ pub const Router = struct {
     pub fn service(
         self: Router,
         owner: EngineOwner,
-        conn: *quic_zig.Connection,
+        conn: anytype,
         now_us: u64,
     ) !void {
         switch (self.mode) {

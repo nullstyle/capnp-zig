@@ -89,7 +89,7 @@ pub const OutboundQueue = struct {
     pub fn flush(
         self: *OutboundQueue,
         allocator: std.mem.Allocator,
-        conn: *quic_zig.Connection,
+        conn: anytype,
         observer: ?events.Observer,
     ) !void {
         if (!self.beginFlush()) return;

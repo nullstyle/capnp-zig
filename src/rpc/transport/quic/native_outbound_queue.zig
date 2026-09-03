@@ -141,7 +141,7 @@ pub const OutboundQueue = struct {
     pub fn flush(
         self: *OutboundQueue,
         allocator: std.mem.Allocator,
-        conn: *quic_zig.Connection,
+        conn: anytype,
         observer: ?events.Observer,
     ) !void {
         if (!self.beginFlush()) return;
@@ -178,7 +178,7 @@ pub const OutboundQueue = struct {
     fn flushItem(
         self: *OutboundQueue,
         allocator: std.mem.Allocator,
-        conn: *quic_zig.Connection,
+        conn: anytype,
         item: *QueuedFrame,
     ) !bool {
         if (item.kind == .data_rpc) {
@@ -206,7 +206,7 @@ pub const OutboundQueue = struct {
 
     fn flushDataStream(
         self: *OutboundQueue,
-        conn: *quic_zig.Connection,
+        conn: anytype,
         item: *QueuedFrame,
     ) !bool {
         if (item.stream_id == null) {
@@ -235,7 +235,7 @@ pub const OutboundQueue = struct {
         return true;
     }
 
-    fn writeQueuedControl(conn: *quic_zig.Connection, item: *QueuedFrame) !bool {
+    fn writeQueuedControl(conn: anytype, item: *QueuedFrame) !bool {
         const control = item.control orelse return error.InvalidFrame;
         while (item.control_offset < control.len) {
             const written = conn.streamWrite(options.baseline_stream_id, control[item.control_offset..]) catch |err| switch (err) {

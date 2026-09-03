@@ -130,7 +130,7 @@ pub const NativeEngine = struct {
     pub fn hasImmediateWork(
         self: *NativeEngine,
         role: Role,
-        conn: *quic_zig.Connection,
+        conn: anytype,
     ) bool {
         if (self.control_ready) return true;
         return role == .client and (conn.handshakeDone() or self.early_open);
@@ -139,7 +139,7 @@ pub const NativeEngine = struct {
     pub fn service(
         self: *NativeEngine,
         owner: Owner,
-        conn: *quic_zig.Connection,
+        conn: anytype,
         now_us: u64,
     ) !void {
         if (!try self.ensureControlStream(owner.role, conn)) return;
@@ -181,7 +181,7 @@ pub const NativeEngine = struct {
     fn ensureControlStream(
         self: *NativeEngine,
         role: Role,
-        conn: *quic_zig.Connection,
+        conn: anytype,
     ) !bool {
         if (self.control_ready) return true;
         if (conn.stream(quic_options.baseline_stream_id) != null) {
@@ -204,7 +204,7 @@ pub const NativeEngine = struct {
 
     fn flushPreamble(
         self: *NativeEngine,
-        conn: *quic_zig.Connection,
+        conn: anytype,
     ) !bool {
         if (self.preamble_offset == self.preamble_len and self.preamble_len != 0) return true;
         if (self.preamble_len == 0) {
@@ -228,7 +228,7 @@ pub const NativeEngine = struct {
     fn readControlStream(
         self: *NativeEngine,
         owner: Owner,
-        conn: *quic_zig.Connection,
+        conn: anytype,
     ) !void {
         while (!owner.is_closing(owner.ptr)) {
             const n = conn.streamRead(quic_options.baseline_stream_id, owner.stream_read_buf) catch |err| switch (err) {
@@ -261,7 +261,7 @@ pub const NativeEngine = struct {
     pub fn processControlFrames(
         self: *NativeEngine,
         owner: Owner,
-        conn: *quic_zig.Connection,
+        conn: anytype,
         now_us: u64,
     ) !void {
         while (!owner.is_closing(owner.ptr)) {
@@ -319,7 +319,7 @@ pub const NativeEngine = struct {
     fn readPendingData(
         self: *NativeEngine,
         owner: Owner,
-        conn: *quic_zig.Connection,
+        conn: anytype,
         now_us: u64,
     ) !bool {
         const bytes = (try native_pending_data.readComplete(
