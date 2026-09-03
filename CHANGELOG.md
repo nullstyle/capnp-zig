@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The optional QUIC transport's `quic` dependency is pinned at `v0.19.0`
+  (was `v0.16.1`), sharing qmsg's pin of the same tarball so one process
+  can link both packages against one `quic`. The jump crosses three
+  additive releases; the one API-facing change is the new
+  `CloseSource.handshake_timeout` close certificate, now mapped in
+  `disconnectCauseFor` to the existing `DisconnectCause.handshake_timeout`.
+  Behaviorally, quic-zig 0.19.0's handshake-liveness backstop is on by
+  default (30 s client / 10 s server), so abandoned dials and half-open
+  server slots now terminate instead of parking forever — the hazard the
+  2026-08-27 fanout soak measured; `ServerOptions.handshake_timeout_ms`
+  remains as defense in depth and `0` restores unbounded behavior.
+  boringssl is unchanged (`b47af8ce`), preserving the Windows `ws2_32`
+  linking property; the Windows QUIC cross-compile gate and both QUIC
+  evidence modes (Debug, ReleaseSafe) pass on the new pin.
+
 - The `wasm-host` / `wasm-deno` build uses ReleaseSmall when the top-level
   optimization is Debug, reducing default distribution size. Explicit release
   modes remain inherited; `-Dwasm-optimize=Debug|ReleaseSafe|ReleaseFast|ReleaseSmall`

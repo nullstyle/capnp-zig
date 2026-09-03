@@ -35,6 +35,11 @@ pub fn disconnectCauseFor(ev: anytype) events.DisconnectCause {
         .idle_timeout => .idle_timeout,
         .stateless_reset => .stateless_reset,
         .version_negotiation => .transport_error,
+        // quic-zig 0.19.0's backstop: the handshake deadline expired before
+        // the handshake completed (half-open slot guard on servers, an
+        // unanswered dial on clients). Distinct from idle_timeout, which
+        // fires only after viability.
+        .handshake_timeout => .handshake_timeout,
     };
 }
 

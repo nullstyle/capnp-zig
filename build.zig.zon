@@ -4,28 +4,22 @@
     .minimum_zig_version = "0.17.0-dev.1683",
     .dependencies = .{
         // Pinned to a TAG, not a raw commit: tags are immutable release
-        // points, so the pin is auditable and reproducible. v0.10.1 is the
-        // Pinned by ANNOTATED tag, verified independently before pinning:
-        // refs/tags/v0.16.1 -> tag object bfec00283cfc6a8cdf99fb8f11b0f1e3be0a50b6
-        // -> commit 335cdc63807203eb8dac1d4e60d5534cbaf97435. Upstream states it
-        // will not be force-moved; v0.10.1 was re-checked as unmoved at the same
-        // time. The repository is still `quic-zig`; only the PACKAGE was renamed
-        // to `quic`, so the URL keeps the old repo name while the dependency key
-        // and `dep.module(...)` name are both "quic". The manifest fingerprint
-        // changed with the rename, so this is a new package identity — there is
-        // no hash continuity with the old quic_zig pin.
+        // points, so the pin is auditable and reproducible.
         //
-        // WIRE DEFAULTS: this jump crosses v0.11.0, which flipped CUBIC
-        // congestion control, packet pacing, and HyStart++ to default-on.
-        // 0.12.0 keeps those defaults unchanged and adds BBRv3 strictly
-        // opt-in (`congestion_control = .bbr`). Each flip has a one-line
-        // isolation lever if a benchmark move needs attributing:
-        // `congestion_control = .new_reno`, `enable_pacing = false`,
-        // `enable_hystart = false`. `bench-check` was re-run across this bump;
-        // see the CHANGELOG entry for the measured outcome.
+        // v0.19.0 (hash shared with qmsg's pin of the same tarball, so one
+        // process can link both packages against one quic). The jump from
+        // v0.16.1 crosses three additive releases: 0.17.0 (inbound DATAGRAM
+        // overflow sheds instead of closing), 0.18.0 (reuse_port bind
+        // options; unused here), and 0.19.0 (handshake-liveness backstop:
+        // `handshake_timeout_ms` defaults 30s client / 10s server, new
+        // `CloseSource.handshake_timeout` — mapped in
+        // quic/close.zig `disconnectCauseFor`; the backstop closes the
+        // half-open-slot exhaustion the fanout soak measured on 2026-08-27).
+        // boringssl stays b47af8ce under both pins, so the Windows ws2_32
+        // linking property carries over unchanged.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.16.1.tar.gz",
-            .hash = "quic-0.16.1-DnSYvWILMACIzR7TNBU-Th7h_D38byl5_N8kawi1Wb0s",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.19.0.tar.gz",
+            .hash = "quic-0.19.0-DnSYvfDZMADCQvF3_9ZQ75Kwdz3nJ4CBLSwxWizuCsLI",
             .lazy = true,
         },
     },
