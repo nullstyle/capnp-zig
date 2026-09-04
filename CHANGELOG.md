@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Embedded 0-RTT parity and the prehandshake buffer** (Experimental;
+  `rpc.transport.quic`). `EmbeddedSessionOptions` gains `early_data` and
+  `early_dispatch`, and the seat derives the engines' replay hold from them
+  exactly like the owned loop's `fromServer` — closing a parity gap where
+  the seat hardcoded the hold off, which would have let a replayed 0-RTT
+  first flight execute RPC frames on a host listener accepting early data
+  without anti-replay. `rpc.transport.quic.prehandshake` is the host-side
+  companion: a bounded, arrival-ordered buffer for stream events that
+  arrive before the handshake names the protocol (resumed dials), replayed
+  into the winning seat at handshake time. The embedded test suite gained
+  the resumed-0-RTT e2e over a foreign host — early frame delivered exactly
+  once, never dispatched before the handshake completes, hold armed from
+  the listener posture.
+
 ## [0.17.0] - 2026-09-03
 
 ### Added
