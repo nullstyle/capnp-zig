@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-03
+
 ### Added
 
 - **Embedded 0-RTT parity and the prehandshake buffer** (Experimental;
@@ -3678,7 +3680,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/nullstyle/capnp-zig/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/nullstyle/capnp-zig/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/nullstyle/capnp-zig/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/nullstyle/capnp-zig/compare/v0.14.0...v0.15.0

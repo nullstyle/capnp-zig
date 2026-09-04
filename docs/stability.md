@@ -315,7 +315,7 @@ facade for narrow white-box coverage.
 
 capnpc-zig follows [Semantic Versioning 2.0.0](https://semver.org/).
 
-- The current version is **0.17.0**. The two-party RPC core and serialization
+- The current version is **0.18.0**. The two-party RPC core and serialization
   have been **Stable** on a frozen, CI-gated public surface
   (`docs/api-snapshot.txt`) since 0.3.0; the project is still early (0.x)
   development. See [`supported-surface.md`](supported-surface.md) for the
