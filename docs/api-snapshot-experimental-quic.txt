@@ -2386,6 +2386,8 @@ capnpc-zig.rpc.transport.quic.EmbeddedSession.stream_read_buf: field []u8
 capnpc-zig.rpc.transport.quic.EmbeddedSession.streams: field hash_map.Custom(u64,rpc.transport.quic.embedded.EmbeddedSession.StreamBuffer,hash_map.AutoContext(u64),80) = <default>
 capnpc-zig.rpc.transport.quic.EmbeddedSession.wake_requested: field atomic.Value(bool) = <default>
 capnpc-zig.rpc.transport.quic.EmbeddedSession: struct
+capnpc-zig.rpc.transport.quic.EmbeddedSessionOptions.early_data: field Server.Config.EarlyData = <default>
+capnpc-zig.rpc.transport.quic.EmbeddedSessionOptions.early_dispatch: field rpc.transport.quic.early_dispatch.Mode = .hold_until_handshake
 capnpc-zig.rpc.transport.quic.EmbeddedSessionOptions.max_buffered_stream_bytes: field usize = 524288
 capnpc-zig.rpc.transport.quic.EmbeddedSessionOptions.max_message_bytes: field usize = 67108864
 capnpc-zig.rpc.transport.quic.EmbeddedSessionOptions.max_outbound_queue_bytes: field usize = 67108868
@@ -2840,6 +2842,8 @@ capnpc-zig.rpc.transport.quic.embedded.EmbeddedSession.streams: field hash_map.C
 capnpc-zig.rpc.transport.quic.embedded.EmbeddedSession.wake: fn (*rpc.transport.quic.embedded.EmbeddedSession) void
 capnpc-zig.rpc.transport.quic.embedded.EmbeddedSession.wake_requested: field atomic.Value(bool) = <default>
 capnpc-zig.rpc.transport.quic.embedded.EmbeddedSession: struct
+capnpc-zig.rpc.transport.quic.embedded.EmbeddedSessionOptions.early_data: field Server.Config.EarlyData = <default>
+capnpc-zig.rpc.transport.quic.embedded.EmbeddedSessionOptions.early_dispatch: field rpc.transport.quic.early_dispatch.Mode = .hold_until_handshake
 capnpc-zig.rpc.transport.quic.embedded.EmbeddedSessionOptions.max_buffered_stream_bytes: field usize = 524288
 capnpc-zig.rpc.transport.quic.embedded.EmbeddedSessionOptions.max_message_bytes: field usize = 67108864
 capnpc-zig.rpc.transport.quic.embedded.EmbeddedSessionOptions.max_outbound_queue_bytes: field usize = 67108868
@@ -3007,6 +3011,25 @@ capnpc-zig.rpc.transport.quic.native.rpc_header_bytes: const usize
 capnpc-zig.rpc.transport.quic.native.version: const u16
 capnpc-zig.rpc.transport.quic.native: struct
 capnpc-zig.rpc.transport.quic.pathAddressToIpAddress: fn (conn.path.Address) ?Io.net.IpAddress
+capnpc-zig.rpc.transport.quic.prehandshake.Buffer.allocator: field mem.Allocator
+capnpc-zig.rpc.transport.quic.prehandshake.Buffer.deinit: fn (*rpc.transport.quic.prehandshake.Buffer) void
+capnpc-zig.rpc.transport.quic.prehandshake.Buffer.events: field array_list.Aligned(rpc.transport.quic.prehandshake.Event,null) = <default>
+capnpc-zig.rpc.transport.quic.prehandshake.Buffer.init: fn (mem.Allocator) rpc.transport.quic.prehandshake.Buffer
+capnpc-zig.rpc.transport.quic.prehandshake.Buffer.isEmpty: fn (*const rpc.transport.quic.prehandshake.Buffer) bool
+capnpc-zig.rpc.transport.quic.prehandshake.Buffer.max_total_bytes: field usize = 524288
+capnpc-zig.rpc.transport.quic.prehandshake.Buffer.recordData: fn (*rpc.transport.quic.prehandshake.Buffer, u64, []const u8) error{OutOfMemory,PrehandshakeBufferFull}!void
+capnpc-zig.rpc.transport.quic.prehandshake.Buffer.recordEnd: fn (*rpc.transport.quic.prehandshake.Buffer, u64, rpc.transport.quic.prehandshake.EndKind) error{OutOfMemory,PrehandshakeBufferFull}!void
+capnpc-zig.rpc.transport.quic.prehandshake.Buffer.recordOpen: fn (*rpc.transport.quic.prehandshake.Buffer, u64, bool) error{OutOfMemory,PrehandshakeBufferFull}!void
+capnpc-zig.rpc.transport.quic.prehandshake.Buffer.replayInto: fn (*rpc.transport.quic.prehandshake.Buffer, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.transport.quic.prehandshake.Buffer.replayInto)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.transport.quic.prehandshake.Buffer.total_bytes: field usize = 0
+capnpc-zig.rpc.transport.quic.prehandshake.Buffer: struct
+capnpc-zig.rpc.transport.quic.prehandshake.EndKind.fin: enumerant = 0
+capnpc-zig.rpc.transport.quic.prehandshake.EndKind.reaped: enumerant = 2
+capnpc-zig.rpc.transport.quic.prehandshake.EndKind.reset: enumerant = 1
+capnpc-zig.rpc.transport.quic.prehandshake.EndKind: enum
+capnpc-zig.rpc.transport.quic.prehandshake.Error: type = error{OutOfMemory,PrehandshakeBufferFull}
+capnpc-zig.rpc.transport.quic.prehandshake.max_total_bytes_default: const usize
+capnpc-zig.rpc.transport.quic.prehandshake: struct
 capnpc-zig.rpc.transport.quic.quic_app.Driver: fn (comptime type) type
 capnpc-zig.rpc.transport.quic.quic_app.Outbox.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.quic.quic_app.Outbox.deinit: fn (*app.root.Outbox) void
