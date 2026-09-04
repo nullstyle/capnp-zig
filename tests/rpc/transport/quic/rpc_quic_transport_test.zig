@@ -5,6 +5,7 @@ const raw_faults = @import("raw_fault_client.zig");
 
 test {
     _ = @import("rpc_quic_embedded_test.zig");
+    _ = quic.prehandshake;
 }
 
 const events = capnpc.rpc.events;

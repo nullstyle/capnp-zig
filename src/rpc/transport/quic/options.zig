@@ -74,6 +74,9 @@ pub const RateLimit = quic_zig.Server.RateLimit;
 /// `true` with a forgotten tracker was a valid config that shipped
 /// replay-exposed 0-RTT.
 pub const EarlyData = quic_zig.Server.EarlyData;
+/// What may execute inside the 0-RTT replay-hold window; see
+/// `early_dispatch.zig`.
+pub const EarlyDispatchMode = @import("early_dispatch.zig").Mode;
 
 /// Single-session compatibility capacity used by `Connection.initServer`.
 pub const compatibility_max_concurrent_sessions: u32 = 1;

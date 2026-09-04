@@ -29,6 +29,17 @@ pub const EmbeddedSessionOptions = struct {
     /// peers must be configured for the same mode; a mismatch is malformed
     /// transport input and closes the session.
     mode: quic_options.TransportMode = .baseline,
+    /// 0-RTT posture of the HOST listener this session rides, exactly like
+    /// `ServerOptions.early_data`: the seat derives the same server-side
+    /// replay hold the owned loop does. If the host's listener accepts
+    /// early data without TLS-level anti-replay, this MUST say so —
+    /// `.without_replay_protection` arms the hold that keeps a replayed
+    /// first flight from executing RPC frames before the handshake (which
+    /// a replay can never complete).
+    early_data: quic_options.EarlyData = .disabled,
+    /// What may execute inside the hold window, exactly like
+    /// `ServerOptions.early_dispatch`.
+    early_dispatch: quic_options.EarlyDispatchMode = .hold_until_handshake,
     max_message_bytes: usize = quic_options.default_max_message_bytes,
     max_outbound_queue_items: usize = quic_options.default_max_outbound_queue_items,
     max_outbound_queue_bytes: usize = quic_options.default_max_outbound_queue_bytes,
@@ -151,12 +162,13 @@ pub const EmbeddedSession = struct {
                 options.max_message_bytes,
                 options.max_outbound_queue_items,
                 options.max_outbound_queue_bytes,
-                // `early_open` and `defer_early_dispatch` are dialer/server
-                // posture knobs of the owned loop; an embedded session is
-                // always a fresh server session.
+                // `early_open` is a dialer knob; an embedded session is
+                // always a server session. The replay hold derives from the
+                // host listener's 0-RTT posture, exactly like the owned
+                // loop's `fromServer`.
                 false,
-                false,
-                .hold_until_handshake,
+                std.meta.activeTag(options.early_data) == .without_replay_protection,
+                options.early_dispatch,
             ),
             .native = NativeEngine.init(
                 allocator,
@@ -166,7 +178,7 @@ pub const EmbeddedSession = struct {
                 options.max_outbound_queue_bytes,
                 options.native,
                 false,
-                false,
+                std.meta.activeTag(options.early_data) == .without_replay_protection,
             ),
             .close_controller = close_controller_mod.Controller.init(
                 options.reveal_close_reason_on_wire,

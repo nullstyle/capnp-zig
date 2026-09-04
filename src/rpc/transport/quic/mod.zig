@@ -23,6 +23,7 @@ const conn = @import("connection.zig");
 const connection_testing = @import("connection_testing.zig");
 const datagram_io = @import("datagram_io.zig");
 pub const embedded = @import("embedded.zig");
+pub const prehandshake = @import("prehandshake.zig");
 pub const endpoint = @import("endpoint.zig");
 const framer = @import("length_framer.zig");
 const native_framer = @import("native_framer.zig");
