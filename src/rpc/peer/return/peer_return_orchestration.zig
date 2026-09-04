@@ -1049,7 +1049,7 @@ test "peer_return_orchestration staged question helpers get remove and complete"
             self.questions.deinit();
         }
 
-        fn completeShutdown(self: *@This()) void {
+        pub fn completeShutdown(self: *@This()) void {
             self.shutdown_complete_calls += 1;
         }
     };
