@@ -22,7 +22,7 @@ version (`zig fetch --save …#v0.18.0`) and read the CHANGELOG before bumping.
   unavoidable.
 - **Experimental** (retained outbound-answer lifetimes, L3/L4 three-party
   origination, reflected-cap resolve, QUIC, persistence vat-restore, events,
-  `io_backend`, the demoted transport/ctor variants): may break at any 0.x
+  `io_backend`, binary schema reflection, the demoted transport/ctor variants): may break at any 0.x
   minor bump. Functional and tested, but the API
   is not frozen; its surface evolves in
   [`docs/api-snapshot-experimental.txt`](api-snapshot-experimental.txt) (ungated).
@@ -59,6 +59,7 @@ earlier docs that mention only one name are being reconciled to point here.
 | Schema types + parsing (`schema`, `request`) | **Stable** |
 | Code generation (`codegen`, the `capnpc-zig` plugin) | **Stable** |
 | Reader convenience (`reader`) | **Stable** |
+| Binary schema reflection and dynamic data access (`reflection`), generated `capnpSchema`, `Generator.setSchemaRequest` / `setEmitReflection` | **Experimental** (unreleased) |
 | RPC two-party core — frozen entry points (`rpc.wire.protocol` / `.framing`, `rpc.caps.table`, narrowed `Connection`, `ClientSession`, `ServerSession.accept`, the canonical two-party `Peer` surface + `CallError` / callback typedefs / `PeerLimits`, generated interface code) | **Stable** (frozen, CI-gated) |
 | RPC retained outbound-answer lifetimes (`CallOptions` / generated `*WithOptions` / explicit Finish), L3 three-party origination, L4 Join runtime pilot/readiness, reflected-cap resolve (`resolvePromiseExportToImport`), `ServerSession`-as-a-type, `VatNetwork`, `JoinNetwork`, QUIC, persistence vat-restore, events, `io_backend`, demoted ctor/transport variants | **Experimental** |
 | WASM host ABI (`src/wasm`) | **Experimental** |
@@ -83,8 +84,9 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
 | Nested lists `List(List(T))` (including deeper nesting) | supported (additive typed view) | Existing raw `getXxx()` / `initXxx()` accessors remain `message.PointerListReader` / `PointerListBuilder`. In parallel, Readers and Builders expose `nestedLists()`: typed recursive `getXxx()` and `initXxx()` / `initXxxInSegment()` views cover scalars, Text, Data, enum, struct, interface/capability, and deeper lists in full and compact profiles; AnyPointer keeps the same raw pointer-list terminal as flat lists. Null inner pointers read as empty lists while `isNull()` preserves the absent/present distinction; every wrapper retains `raw()`. Unknown struct layouts fall back to raw struct-list access, and unresolved enum IDs use ordinal (`u16`) elements. |
 | `AnyPointer`, `AnyStruct`, `AnyList`, bare `Capability` | supported (additive shape view) | Existing fields still expose their erased `AnyPointerReader` / `AnyPointerBuilder` API. The request model retains the schema sub-kind in parallel metadata, and structs/groups with constrained `AnyStruct`, `AnyList`, or bare `Capability` slots also expose union-guarded `pointerKinds()` in full and compact profiles. Reader getters return `StructReader`, `AnyListReader`, or `Capability`; Builder getters reopen existing near/single-far/double-far values without replacing them, while init/set methods deliberately replace them. Null lists cast as empty with `isNull()` preserved, malformed inline-composite tags and wire-distinguishable wrong-kind pointers fail, and a nonempty list cannot masquerade as AnyStruct. A layout-A double-far zero-offset struct tag remains indistinguishable from an empty inline-composite list. `AnyListReader` and all Builder shape wrappers retain `raw()`. Unconstrained `AnyPointer` intentionally stays erased. |
 | Generics / parameterized types / brands | partial (executable metadata + finite concrete views) | The frozen `schema.Type` union is unchanged. Additive metadata retains parameters, nested named applications, annotation-use brands, interface superclass/method brands, AnyPointer sub-kinds, and `.bind`/`.inherit` scopes. An allocation-free 64-level resolver is shared by validation and generation, checks lexical scope, exact arity, indexes, depth, and cycles, and leaves valid unbound values erased. Scalar generic bindings and malformed graphs are `InvalidSchema`. For finite concrete branded data-struct fields, full and compact Reader/Builder `brands()` views support arbitrary-depth lists, generic struct applications as list terminals, enum/Text/Data/struct/interface terminals, nested branded structs, inherited lexical bindings, and cross-file imported applications/terminals. Existing erased accessors remain; generic RPC clients and implicit generic methods stay erased. |
-| Annotations | supported (see caveat) | Parsed and emitted as `<Name>_annotations` / `_field_annotations` / … arrays plus `pub const` definition descriptors. File-level annotation *uses* are dropped. Parsed annotation-use brands are retained in `CodeGeneratorRequest`; generated annotation constants remain the legacy id/value projection. |
+| Annotations | supported (see caveat) | Parsed and emitted as `<Name>_annotations` / `_field_annotations` / … arrays plus `pub const` definition descriptors. The legacy arrays omit file-level annotation uses and retain the id/value projection. Binary reflection metadata preserves all original annotation uses and brands. |
 | Constants (incl. struct/list/enum consts) | supported | Emitted as `pub const`; pointer-typed consts expose a `get()` reader. |
+| Binary schema reflection | Experimental | Generated `CAPNP_SCHEMA_REQUEST` retains the original compiler Nodes, including unknown fields and compiler-provided dependencies. `capnpSchema` identifies each generated type. Owned registries expose parsed/raw descriptors, brand-aware lookup, and dynamic struct/list readers and builders; see [reflection.md](reflection.md) for lifetime and evolution rules. |
 | JSON / serde | descriptor only | `CAPNP_SCHEMA_MANIFEST_JSON` names the `capnp_<module>_<type>_to_json` / `_from_json` C-ABI symbols an *external* serde tool must supply; no `to_json` / `from_json` bodies are generated. |
 | Canonicalization | supported (spec form + schema-aware form) | Two implementations for two jobs. **`canonical.canonicalize` / `canonicalizeFlat` / `isCanonical` + the builder-direct `canonicalizeFlatFromBuilder` / `canonicalizeFromBuilder` (Stable, frozen)** is the spec's actual canonical form: a **schema-free** walk of the raw pointer graph mirroring the reference implementation's `canonicalize()`/`isCanonical()` (rules cited to `layout.c++` in-source, differentially tested byte-for-byte against `capnp convert binary:canonical`). It preserves data for fields no local schema knows about and keeps upgraded lists as written, so it is the one **appropriate as a signing input**. Capabilities cannot be canonicalized (same as the C++ reference). **`schema_validation.canonicalizeMessage` / `canonicalizeMessageFlat` / `validateMessage` (Stable)** stays for **schema-aware equality**; additive `*WithBrand` forms apply a concrete root brand. Legacy forms use an empty root brand but honor concrete nested metadata. Schema-aware re-encoding drops unknown fields and re-encodes upgraded lists — fine for peers on the same schema, but not a signing input. The schema-free `canonical.*` API is unchanged. |
 | Cross-file `import` / `using` | supported | Correct relative `@import` for referenced types; only referenced imports are emitted. A `using` alias produces no declaration (frontend-resolved). |
@@ -131,6 +133,28 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
   `max-codegen-brand-specializations=` on the plugin command line or
   `CAPNPC_ZIG_MAX_CODEGEN_BRAND_SPECIALIZATIONS`; exhaustion fails with
   `CodegenBudgetExceeded` before partial output is accepted.
+
+## Reflection contract (unreleased, Experimental)
+
+The new `reflection` module and generated `capnpSchema` references are
+Experimental. They do not freeze the generator's internal fields or the new
+`setSchemaRequest` / `setEmitReflection` entry points. Existing Stable
+`Generator` signatures remain unchanged. The default plugin output includes
+binary metadata; `--no-reflection` disables it independently of the JSON
+manifest and permits the previous generated API and shape-sharing behavior.
+
+The embedded bundle contains every Node supplied in the compilation request,
+sorted by ID, with requested-file records, source comments, and compiler version
+omitted. Imported types need not have generated Zig files to be inspected.
+Compiler requests may omit some referenced declarations; resolving an absent ID
+returns `SchemaNotFound`. `Schema.raw()` preserves fields absent from the parsed
+`schema.Node` model. Full and core library modules both expose this surface.
+
+Dynamic access supports data reflection, including generic bindings, defaults,
+unions, enum ordinals, and compatible struct/list evolution. It does not provide
+a JSON codec or dynamic RPC dispatch. Registry ownership, explicit brand
+lifetimes, mutable default copies, thread synchronization, and child-builder
+invalidation are documented in [reflection.md](reflection.md).
 
 ## Error contract
 

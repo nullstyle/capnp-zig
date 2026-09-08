@@ -21,6 +21,7 @@
 const std = @import("std");
 const schema = @import("../serialization/schema.zig");
 const types = @import("types.zig");
+const reflection_metadata = @import("reflection_metadata.zig");
 
 pub fn Interface(comptime G: type) type {
     return struct {
@@ -50,6 +51,7 @@ pub fn Interface(comptime G: type) type {
             defer self.allocator.free(qual);
 
             try writer.print("pub const {s} = struct {{\n", .{decl_name});
+            if (self.hasReflection()) try reflection_metadata.writeSchemaRef(writer, node.id, "    ");
             try writer.print("    pub const interface_id: u64 = 0x{x};\n", .{node.id});
             // Zero-method interfaces produce an empty enum; this is valid Zig but uninhabitable.
             try writer.writeAll("    pub const Method = enum(u16) {\n");

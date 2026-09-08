@@ -1350,15 +1350,18 @@ test "Message: double-far inline composite overflow is rejected" {
     const segment0_words = std.mem.readInt(u32, mutated[4..8], .little);
     const landing_offset = header_bytes + @as(usize, segment0_words) * 8;
 
-    // Mutate landing-pad tag to trigger words-per-element multiplication overflow.
+    // The standard writer puts the element tag in the content segment.
+    // Mutate that tag while preserving the LIST-kind landing-pad descriptor.
+    const landing_words = std.mem.readInt(u32, mutated[8..12], .little);
+    const content_offset = landing_offset + @as(usize, landing_words) * 8;
     const tag_word: u64 = (@as(u64, 65_536) << 2) | (@as(u64, 1) << 32) | (@as(u64, 65_535) << 48);
-    std.mem.writeInt(u64, mutated[landing_offset + 8 ..][0..8], tag_word, .little);
+    std.mem.writeInt(u64, mutated[content_offset..][0..8], tag_word, .little);
 
     var msg = try message.Message.initUnvalidated(testing.allocator, mutated);
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
-    try testing.expectError(error.OutOfBounds, root.readStructList(0));
+    try testing.expectError(error.InvalidInlineCompositePointer, root.readStructList(0));
 }
 
 test "Message: fuzz malformed buffers do not crash decode" {
@@ -1937,18 +1940,16 @@ test "AnyList documents the unavoidable layout-A double-far empty-list ambiguity
     const as_list = try message.AnyListReader.wrap(any);
     try testing.expectEqual(@as(u32, 0), try as_list.len());
 
+    // Feed the same hand-encoded legacy segments to the builder view. New
+    // writers emit the unambiguous standard LIST-kind landing descriptor.
     var builder = message.MessageBuilder.init(allocator);
     defer builder.deinit();
-    const root = try builder.allocateStruct(0, 1);
-    const landing = try builder.createSegment();
-    const content = try builder.createSegment();
-    const allocated = try root.writeStructListInSegments(0, 1, 1, 0, landing, content);
-    (try allocated.get(0)).writeU32(0, 0xfeed_beef);
-    // Reinterpret the layout-A tag exactly as a double-far struct tag. The
-    // content word remains allocated and nonzero, but no wire bit says whether
-    // it is one struct or unused storage following an empty list.
-    std.mem.writeInt(u64, builder.segments.items[landing].items[8..16], makeStructPointer(0, 1, 0), .little);
-    const builder_list = try message.AnyListBuilder.wrap(try root.getAnyPointer(0));
+    for ([_][]const u8{ &segment0, &segment1, &segment2 }) |segment| {
+        const id = try builder.createSegment();
+        try builder.segments.items[id].appendSlice(allocator, segment);
+    }
+    const legacy_pointer = message.AnyPointerBuilder{ .builder = &builder, .segment_id = 0, .pointer_pos = 8 };
+    const builder_list = try message.AnyListBuilder.wrap(legacy_pointer);
     try testing.expectEqual(@as(u32, 0), (try builder_list.getStructList()).len());
 }
 
@@ -2543,13 +2544,9 @@ test "struct-list upgrade: inline-composite lists still decode unchanged" {
 }
 
 test "struct-list upgrade: a double-far inline-composite list still decodes" {
-    // The layout-A regression. For a double-far struct list this builder stores
-    // the struct *tag* as the landing pad's second word, and a tag word has
-    // pointer type 0. An element-size probe built on `resolvePointer` sees that
-    // type-0 word, concludes "not a list", and sends a perfectly valid struct
-    // list down the upgrade path. This is the fixture that goes red for it —
-    // an upgraded (non-composite) far list would not, since its pad's second
-    // word is an ordinary list pointer.
+    // The standard double-far writer uses a LIST-kind landing descriptor
+    // and retains the element tag in the content segment. The raw Layout A
+    // fixture above independently preserves legacy-reader coverage.
     var builder = message.MessageBuilder.init(testing.allocator);
     defer builder.deinit();
 
@@ -2703,11 +2700,8 @@ test "struct-list downgrade: multi-word elements stride by the whole struct" {
 }
 
 test "struct-list downgrade: a double-far struct list reads back as List(UInt32)" {
-    // The reason the element-size test is a dedicated probe and not the plain
-    // list resolution: for a double-far struct list this builder stores the
-    // struct *tag* as the landing pad's second word, and a tag word has pointer
-    // type 0 — so `resolveListPointer` reports "not a list" for a message that
-    // is entirely well formed.
+    // Standard double-far struct lists retain the in-content element tag
+    // when projected through a primitive list view.
     var builder = message.MessageBuilder.init(testing.allocator);
     defer builder.deinit();
 

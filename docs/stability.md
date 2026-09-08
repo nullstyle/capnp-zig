@@ -225,6 +225,12 @@ integer, so the snapshots used to differ by the platform that generated them.
 
 ### Experimental
 
+Binary schema reflection is an unreleased addition. The `reflection` module,
+generated `capnpSchema` references, and `Generator.setSchemaRequest` /
+`setEmitReflection` are Experimental and remain outside the Stable snapshot.
+Existing Stable generator signatures are unchanged. See
+[reflection.md](reflection.md) for the data-access and ownership contract.
+
 Everything below is outside the frozen contract and may break at any 0.x minor
 bump. The L3 three-party arc in particular is **lightly soaked and
 Experimental**: main has a Zig↔C++ TCP success/failure matrix plus Go

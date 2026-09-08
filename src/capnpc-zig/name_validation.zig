@@ -31,6 +31,7 @@ pub fn Validation(comptime G: type) type {
             try file_scope.addCopy("message");
             try file_scope.addCopy("schema");
             try file_scope.addCopy("_capnp_file");
+            if (self.hasReflection()) try file_scope.addCopy("CAPNP_SCHEMA_REQUEST");
             if (needs_rpc) try file_scope.addCopy("rpc");
             if (self.emit_schema_manifest) {
                 try file_scope.addCopy("CAPNP_SCHEMA_MANIFEST_JSON");
@@ -70,6 +71,9 @@ pub fn Validation(comptime G: type) type {
 
             var child_scope = G.GeneratedNameScope.init(self.allocator);
             defer child_scope.deinit();
+            if (self.hasReflection() and (node.kind == .@"struct" or node.kind == .@"enum" or node.kind == .interface)) {
+                try child_scope.addCopy("capnpSchema");
+            }
 
             for (node.nested_nodes) |nested| {
                 // Every nested named type — structs, enums, AND interfaces — now emits
@@ -137,6 +141,7 @@ pub fn Validation(comptime G: type) type {
             defer struct_scope.deinit();
             try struct_scope.addCopy("Reader");
             try struct_scope.addCopy("Builder");
+            if (self.hasReflection()) try struct_scope.addCopy("capnpSchema");
 
             const usage = try Self.collectStructListHelperUsage(self, struct_info.fields);
             if (usage.enum_list) {
@@ -216,6 +221,7 @@ pub fn Validation(comptime G: type) type {
             defer scope.deinit();
 
             try scope.addCopy("_reader");
+            if (self.hasReflection()) try scope.addCopy("capnpSchema");
             try scope.addCopy("wrap");
             if (self.api_profile == .full) try scope.addCopy("init");
             if (struct_info.discriminant_count > 0) {
@@ -274,6 +280,7 @@ pub fn Validation(comptime G: type) type {
             defer scope.deinit();
 
             try scope.addCopy("_builder");
+            if (self.hasReflection()) try scope.addCopy("capnpSchema");
             try scope.addCopy("wrap");
             if (self.api_profile == .full) try scope.addCopy("init");
             if (structHasDirectEnumSlot(struct_info)) {
@@ -443,6 +450,7 @@ pub fn Validation(comptime G: type) type {
             var scope = G.GeneratedNameScope.init(self.allocator);
             defer scope.deinit();
 
+            if (self.hasReflection()) try scope.addCopy("capnpSchema");
             for (enum_info.enumerants) |enumerant| {
                 const name = try self.allocEscapedTypeIdentifier(enumerant.name);
                 try scope.addOwned(name);
@@ -465,6 +473,7 @@ pub fn Validation(comptime G: type) type {
             defer interface_scope.deinit();
 
             try interface_scope.addCopy("interface_id");
+            if (self.hasReflection()) try interface_scope.addCopy("capnpSchema");
             try interface_scope.addCopy("Method");
             try interface_scope.addCopy("Client");
             if (has_streaming) {

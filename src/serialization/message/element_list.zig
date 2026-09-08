@@ -155,7 +155,7 @@ pub fn resolve(
     // `resolveInlineCompositeList` is the *classifier* here, not merely the
     // decoder. It succeeds on exactly the pointers that really are C = 7 —
     // including the double-far shapes where `resolveListPointer` would report
-    // "not a list", because for a double-far in the layout this builder writes
+    // "not a list", because for a double-far in the legacy Layout A encoding
     // the landing pad's second word is the struct *tag*, which has pointer type
     // 0.
     //

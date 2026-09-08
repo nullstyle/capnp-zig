@@ -992,7 +992,7 @@ pub const Message = struct {
         const second_type = @as(u2, @truncate(second_word & 0x3));
 
         if (second_type == 0) {
-            // Layout A (used by our builder): landing pad stores tag word directly.
+            // Legacy Layout A: landing pad stores the element tag directly.
             const tag_word = second_word;
             const element_count_signed = decodeOffsetWords(tag_word);
             if (element_count_signed < 0) return error.InvalidInlineCompositePointer;
@@ -1059,9 +1059,9 @@ pub const Message = struct {
     /// inline-composite (C = 7) encoding, without decoding the list.
     ///
     /// This deliberately does not go through `resolvePointer`: for a double-far
-    /// in the layout this builder writes, `resolvePointer` yields the struct
+    /// in legacy Layout A, `resolvePointer` yields the struct
     /// *tag* word, which has pointer type 0. A probe built on it would classify
-    /// a perfectly valid double-far struct list as "not a list" and send it
+    /// a legacy double-far struct list as "not a list" and send it
     /// down the upgrade path.
     fn structListIsInlineComposite(self: *const Message, pointer_word: u64, depth: u8) !bool {
         if (depth == 0) return error.PointerDepthLimit;
@@ -1080,9 +1080,9 @@ pub const Message = struct {
             return try self.structListIsInlineComposite(landing_word, depth - 1);
         }
 
-        // Double-far: the pad's second word is either the struct tag (layout A,
-        // what this builder writes) or a list pointer (layout B, the reference
-        // implementation's shape). Both mean inline-composite when well formed.
+        // Double-far: the pad's second word is either the struct tag (legacy
+        // Layout A) or a list pointer (standard Layout B). Both are supported
+        // as inline-composite encodings when well formed.
         const second_word = try self.readWord(far.segment_id, pad.landing_pos + 8);
         return switch (@as(u2, @truncate(second_word & 0x3))) {
             0 => true,
@@ -3435,14 +3435,23 @@ pub const MessageBuilder = struct {
         try landing_segment.appendNTimes(self.allocator, 0, 16);
 
         const content_segment = &self.segments.items[content_segment_id];
+        // The far pointer targets an inline-composite tag followed by elements,
+        // just as in the same-segment and single-far encodings above.
+        const tag_offset = content_segment.items.len;
+        try content_segment.appendNTimes(self.allocator, 0, 8);
         const elements_offset = content_segment.items.len;
         try content_segment.appendNTimes(self.allocator, 0, total_bytes);
 
-        const landing_far = try makeFarPointer(false, @as(u32, @intCast(elements_offset / 8)), content_segment_id);
+        const landing_far = try makeFarPointer(false, @as(u32, @intCast(tag_offset / 8)), content_segment_id);
         std.mem.writeInt(u64, landing_segment.items[landing_pad_pos..][0..8], landing_far, .little);
 
         const tag_word = try makeStructPointer(@as(i32, @intCast(element_count)), data_words, pointer_words);
-        std.mem.writeInt(u64, landing_segment.items[landing_pad_pos + 8 ..][0..8], tag_word, .little);
+        std.mem.writeInt(u64, content_segment.items[tag_offset..][0..8], tag_word, .little);
+
+        // A double-far landing tag retains the LIST kind and word count, with
+        // zero offset. Its count excludes the in-content element tag word.
+        const list_ptr = try makeListPointer(0, 7, total_words);
+        std.mem.writeInt(u64, landing_segment.items[landing_pad_pos + 8 ..][0..8], list_ptr, .little);
 
         const far_ptr = try makeFarPointer(true, @as(u32, @intCast(landing_pad_pos / 8)), landing_segment_id);
         std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);

@@ -8,6 +8,7 @@ const max_code_generator_request_bytes: usize = 64 * 1024 * 1024;
 const RunOptions = struct {
     verbose: bool = false,
     emit_schema_manifest: bool = true,
+    emit_reflection: bool = true,
     api_profile: Generator.ApiProfile = .full,
     shape_sharing: bool = false,
     codegen_budget: Generator.CodegenBudget = .{},
@@ -43,6 +44,8 @@ pub fn main(init: std.process.Init) !void {
     defer generator.deinit();
     generator.setVerbose(options.verbose);
     generator.setEmitSchemaManifest(options.emit_schema_manifest);
+    if (options.emit_reflection) try generator.setSchemaRequest(input_data);
+    generator.setEmitReflection(options.emit_reflection);
     generator.setApiProfile(options.api_profile);
     generator.setShapeSharing(options.shape_sharing);
     generator.setCodegenBudget(options.codegen_budget);
@@ -168,6 +171,11 @@ fn applyOptionToken(token: []const u8, options: *RunOptions) void {
         options.emit_schema_manifest = false;
     } else if (isManifestOption(token)) {
         options.emit_schema_manifest = true;
+    }
+    if (std.mem.eql(u8, token, "--no-reflection") or std.mem.eql(u8, token, "no-reflection")) {
+        options.emit_reflection = false;
+    } else if (std.mem.eql(u8, token, "--reflection") or std.mem.eql(u8, token, "reflection")) {
+        options.emit_reflection = true;
     }
     applyBudgetOptionToken(token, &options.codegen_budget);
 }
@@ -425,6 +433,24 @@ test "parseRunOptions defaults to quiet" {
     try std.testing.expect(options.emit_schema_manifest);
     try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
     try std.testing.expect(!options.shape_sharing);
+}
+
+test "reflection metadata encoding" {
+    _ = @import("capnpc-zig/reflection_metadata.zig");
+    _ = @import("capnpc-zig/generator.zig");
+}
+
+test "parseRunOptions controls reflection independently of the JSON manifest" {
+    const defaults = parseRunOptions(@as([]const []const u8, &.{"capnpc-zig"}));
+    try std.testing.expect(defaults.emit_reflection);
+    const no_manifest = parseRunOptions(@as([]const []const u8, &.{ "capnpc-zig", "--no-manifest" }));
+    try std.testing.expect(no_manifest.emit_reflection);
+    try std.testing.expect(!no_manifest.emit_schema_manifest);
+    const no_reflection = parseRunOptions(@as([]const []const u8, &.{ "capnpc-zig", "--no-reflection" }));
+    try std.testing.expect(!no_reflection.emit_reflection);
+    try std.testing.expect(no_reflection.emit_schema_manifest);
+    const reenabled = parseRunOptions(@as([]const []const u8, &.{ "capnpc-zig", "no-reflection,reflection" }));
+    try std.testing.expect(reenabled.emit_reflection);
 }
 
 test "parseRunOptions enables verbose for --verbose" {

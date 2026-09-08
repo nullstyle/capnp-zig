@@ -104,6 +104,35 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
+## Reflection metadata and runtime versions
+
+The unreleased plugin emits `CAPNP_SCHEMA_REQUEST` and per-type `capnpSchema`
+references by default. Use a generator and runtime from the same revision;
+released runtimes without `capnpc.reflection` cannot compile that output. Both
+`capnpc-zig` and `capnpc-zig-core` expose the reflection API under the generated
+module's existing `@import("capnpc-zig")` binding.
+
+When invoking the plugin directly, pass `--no-reflection` to keep the previous
+metadata-free output. To pass options explicitly, use the standard binary
+request boundary:
+
+```sh
+mkdir -p gen
+capnp compile -o- schema/addressbook.capnp | (cd gen && capnpc-zig --no-reflection)
+```
+
+The colon in `capnp compile -ozig:gen` selects an output directory, not plugin
+options. `--no-manifest` controls only the legacy JSON export-name manifest;
+the two options are independent. Full and compact API profiles both retain
+reflection when enabled. Shape sharing does not alias distinct schema IDs in
+reflection-enabled output.
+
+For in-process generation, call `try generator.setSchemaRequest(bytes)` with
+the original unpacked compiler request corresponding to `Generator.init`'s
+Nodes. The setter owns its encoded metadata; the input bytes may be released
+after it returns. Programmatic generators that omit the setter retain their
+existing output. See [reflection.md](reflection.md) for runtime use.
+
 ## Package integrity preflight (maintainers)
 
 `zig build package-preflight --summary all` (or `just package-preflight`)
@@ -111,8 +140,8 @@ tests what the manifest actually exposes, without publishing anything. It:
 
 - snapshots tracked and non-ignored untracked source into an isolated workspace;
 - lets Zig apply `build.zig.zon`'s `.paths` filter, rejects material content
-  outside the five allowed roots (`build.zig`, `build.zig.zon`, `src`,
-  `README.md`, and `LICENSE`), removes only the empty excluded parent
+  outside the six allowed roots (`build.zig`, `build.zig.zon`, `build`,
+  `src`, `README.md`, and `LICENSE`), removes only the empty excluded parent
   directories Zig's local fetch leaves behind, then archives and re-fetches
   that exact surface instead of using a path dependency;
 - builds and runs clean-room default, core, and opt-in QUIC consumers in Debug

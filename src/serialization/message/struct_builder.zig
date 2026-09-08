@@ -1045,8 +1045,8 @@ pub fn define(
             }
 
             /// Allocate a struct list with explicit landing pad and content segments.
-            /// Used when the pointer, tag word, and element data must reside in
-            /// different segments (e.g. for far pointers).
+            /// The composite element tag precedes the elements in the content
+            /// segment; a separate landing segment holds the double-far pad.
             pub fn writeStructListInSegments(
                 self: @This(),
                 pointer_index: usize,

@@ -235,7 +235,7 @@ fn assertFilteredSurface(ctx: *const Context, stage_abs: []const u8) !void {
             // `zig fetch <local-directory>` currently leaves parent directory
             // entries after `.paths` removes all of their files. They carry no
             // package content; normalize them away before creating the archive
-            // so the consumer sees the same five-root surface we assert.
+            // so the consumer sees the same allowed package surface we assert.
             try empty_development_roots.append(ctx.allocator, try ctx.allocator.dupe(u8, entry.name));
             continue;
         }

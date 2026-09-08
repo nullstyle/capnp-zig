@@ -3,6 +3,9 @@
 // See lib.zig for the full export surface including RPC transport.
 pub const message = @import("serialization/message.zig");
 pub const schema = @import("serialization/schema.zig");
+
+/// Binary descriptors and dynamic schema-driven wire access.
+pub const reflection = @import("reflection/root.zig");
 pub const reader = @import("serialization/reader.zig");
 pub const codegen = @import("capnpc-zig/generator.zig");
 pub const request = @import("serialization/request_reader.zig");

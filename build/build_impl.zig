@@ -591,6 +591,7 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_core_tests = b.addRunArtifact(core_tests);
 
     // Serialization tests
+    const test_reflection_step = @import("reflection.zig").add(b, target, optimize, core_module);
     const run_message_tests = addLibTest(b, "tests/serialization/message_test.zig", target, optimize, lib_module);
     const run_serialization_fuzz_tests = addLibTest(b, "tests/serialization/serialization_fuzz_test.zig", target, optimize, lib_module);
     const run_fuzz_smoke_tests = addLibTest(b, "tests/hardening/fuzz_smoke_test.zig", target, optimize, lib_module);
@@ -954,6 +955,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_schema_evolution_step.dependOn(run_schema_evolution_api_tests);
 
     const test_serialization_step = b.step("test-serialization", "Run serialization-oriented tests");
+    test_serialization_step.dependOn(test_reflection_step);
     test_serialization_step.dependOn(&run_main_tests.step);
     test_serialization_step.dependOn(&run_lib_tests.step);
     test_serialization_step.dependOn(&run_core_tests.step);

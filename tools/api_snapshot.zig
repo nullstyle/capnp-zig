@@ -95,6 +95,9 @@ fn e(path: []const u8) Rule {
 // "thirdPartyHosted emission") as L3, so its whole get/set/clear trio is held
 // out of the frozen contract.
 const experimental_overrides = [_]Rule{
+    // Generated reflection handles remain Experimental through this Stable
+    // wire builder alias, matching the reflection runtime they expose.
+    e("capnpc-zig.rpc.wire.protocol.PayloadBuilder.capnpSchema"),
     // Retained-answer handoff is Experimental even where its implementation
     // necessarily adds a convenience entry under otherwise-Stable containers.
     // Keep these exact additions out of the frozen two-party/wire contract.

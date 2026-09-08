@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Binary schema reflection (Experimental).** Generated modules embed a
+  canonical, ID-sorted `CAPNP_SCHEMA_REQUEST` containing the original compiler
+  Nodes, and generated structs, groups, enums, interfaces, and struct
+  Reader/Builder types expose `capnpSchema`. The `reflection` module is available
+  through full, core, and WASI library roots. It provides owned registries, raw
+  and parsed descriptors, field/enum/interface lookup, brand-aware type views,
+  and dynamic struct/list readers and builders. Dynamic mutation applies
+  defaults, guards unions, checks value types, and preserves unknown fields
+  through struct/list evolution. Native and WASI conformance tests exercise
+  the same runtime; a C++ oracle checks descriptors and native messages.
+- **Independent reflection controls.** `--no-reflection` omits binary metadata;
+  existing JSON manifest options retain their meaning. Programmatic generators
+  enable reflection with the fallible `try generator.setSchemaRequest(bytes)`
+  and can disable emission with `setEmitReflection(false)`. These new setters
+  and the reflection API are Experimental; existing Stable signatures remain
+  unchanged. See [the reflection guide](docs/reflection.md) for ownership and
+  builder invalidation rules.
+
+### Changed
+
+- Plugin output includes reflection metadata by default and requires the matching
+  runtime revision. Shape sharing keeps distinct schema identities when
+  reflection is enabled. `--no-reflection` preserves the previous metadata-free
+  output and shape-sharing behavior.
+
+### Fixed
+
+- Nested-workspace imports now resolve parent-relative and root-relative schema
+  paths correctly while rejecting traversal outside the workspace. Output paths
+  retain traversal and symlink checks.
+- Generated helper views qualify references when schema types or groups are
+  named `Brands`, `WhichTag`, `EnumOrdinals`, `NestedLists`, or `PointerKinds`.
+- Double-far struct-list writers now place the element tag in the content
+  segment and emit the reference-compatible list landing pad, including empty
+  lists and segment-aliasing cases. Existing readers retain legacy Layout A
+  compatibility; near and single-far list encodings are unchanged.
+
 ## [0.18.0] - 2026-09-03
 
 ### Added

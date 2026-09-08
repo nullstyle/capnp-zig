@@ -895,9 +895,8 @@ fn writeFile(dir: std.Io.Dir, name: []const u8, bytes: []const u8) !void {
 }
 
 fn generatedFilename(allocator: std.mem.Allocator, schema_filename: []const u8) ![]u8 {
-    const basename = std.fs.path.basename(schema_filename);
-    if (!std.mem.endsWith(u8, basename, ".capnp")) return error.InvalidSchemaFilename;
-    return std.fmt.allocPrint(allocator, "{s}.zig", .{basename[0 .. basename.len - ".capnp".len]});
+    if (!std.mem.endsWith(u8, schema_filename, ".capnp")) return error.InvalidSchemaFilename;
+    return std.fmt.allocPrint(allocator, "{s}.zig", .{schema_filename[0 .. schema_filename.len - ".capnp".len]});
 }
 
 fn compileUpstreamSchemaProfile(
@@ -912,21 +911,20 @@ fn compileUpstreamSchemaProfile(
     var generator = try codegen.Generator.init(allocator, request.nodes);
     defer generator.deinit();
     generator.setApiProfile(profile);
-    try tmp.dir.createDir(io, "capnp", .default_dir);
+    // Keep each file at its compiler-requested workspace path. Generated
+    // imports are relative to that path, including root-relative /capnp imports.
     for (request.requested_files) |file| {
         const generated = try generator.generateFile(file);
         defer allocator.free(generated);
         const filename = try generatedFilename(allocator, file.filename);
         defer allocator.free(filename);
+        if (std.fs.path.dirname(filename)) |parent| try tmp.dir.createDirPath(io, parent);
         try writeFile(tmp.dir, filename, generated);
-        const standard_filename = try std.fmt.allocPrint(allocator, "capnp/{s}", .{filename});
-        defer allocator.free(standard_filename);
-        try writeFile(tmp.dir, standard_filename, generated);
     }
 
     const harness =
         \\const std = @import("std");
-        \\const upstream = @import("test.zig");
+        \\const upstream = @import("capnp/test.zig");
         \\
         \\fn refAllRecursive(comptime T: type, comptime depth: u8) void {
         \\    if (depth == 0) return;
@@ -977,14 +975,15 @@ fn compileUpstreamSchemaProfile(
 
 test "vendored upstream capnp/test schema analyzes in full and compact profiles" {
     const allocator = std.testing.allocator;
-    const root = "vendor/ext/capnproto/c++/src/capnp";
-    const test_schema = root ++ "/test.capnp";
-    const cxx_schema = root ++ "/c++.capnp";
-    const stream_schema = root ++ "/stream.capnp";
+    const root = "vendor/ext/capnproto/c++/src";
+    const test_schema = root ++ "/capnp/test.capnp";
+    const cxx_schema = root ++ "/capnp/c++.capnp";
+    const stream_schema = root ++ "/capnp/stream.capnp";
     const result = try capnp_cli.run(allocator, std.testing.io, &.{
         "compile",
         "--no-standard-import",
         "-I" ++ root,
+        "--src-prefix=" ++ root,
         "-o-",
         test_schema,
         cxx_schema,

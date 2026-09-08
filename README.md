@@ -5,7 +5,7 @@ A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serializ
 > **Status (v0.18.0):** serialization, codegen, the `capnpc-zig` plugin, and the
 > **two-party RPC core** are **Stable** on a **frozen, CI-gated** public surface
 > (`docs/api-snapshot.txt`). The L3/L4 three-party arc, the reflected-cap resolver,
-> QUIC, persistence vat-restore, events, and the demoted transport/ctor variants
+> QUIC, persistence vat-restore, events, binary schema reflection, and the demoted transport/ctor variants
 > remain **Experimental** and may change at any 0.x minor bump. Pre-1.0 — pin an
 > exact version. See [`docs/supported-surface.md`](docs/supported-surface.md) for
 > the full contract and [`docs/stability.md`](docs/stability.md) for the
@@ -20,6 +20,7 @@ A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serializ
 - **Schema-Driven Code Generation**: Generates idiomatic Zig Reader/Builder types from `.capnp` schemas
 - **Executable Type Fidelity**: Brand-aware schema validation/canonicalization
   and finite typed generic views without removing erased APIs
+- **Binary Schema Reflection (Experimental)**: Embedded schema nodes, type and field lookup, and dynamic readers/builders with generic bindings and schema evolution
 - **RPC Runtime**: Cap'n Proto RPC over TCP with capability-based messaging
 - **Optional QUIC RPC**: Baseline and native modes, including real `Peer` fanout, close-isolation coverage, and an embedded (foreign `quic.app.Driver` host) session seat for ALPN-routed multi-protocol listeners
 - **Comprehensive Tests**: Extensive message/codegen/RPC/interop coverage
@@ -185,6 +186,21 @@ pub fn main() !void {
 
 For a canonical `build.zig` codegen + generated-module wiring example, see `docs/build-integration.md`.
 
+### Reflection (unreleased, Experimental)
+
+Generated structs, groups, enums, and interfaces expose `capnpSchema`. The
+module's `CAPNP_SCHEMA_REQUEST` contains the original binary schema nodes,
+including the compiler-provided dependencies, defaults, annotations, and brands.
+Load a registry once, resolve a type, and inspect or modify messages by field
+name through `capnpc.reflection.DynamicStruct`. Full and core library modules
+both export `reflection`.
+
+See [the reflection guide](docs/reflection.md) for an executable example,
+ownership rules, schema evolution, and the limits of this initial API.
+`--no-reflection` omits this metadata; `--no-manifest` independently controls the
+legacy JSON export-name manifest. Use matching generator and runtime revisions
+when reflection is enabled.
+
 ## Architecture
 
 The implementation follows a four-layer design, each building on the previous:
@@ -233,7 +249,7 @@ read/write transport. Organized by domain:
 
 ### Public API (`src/lib.zig`)
 
-Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation`, `rpc`, `io_backend`
+Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation`, `canonical`, `reflection`, `rpc`, `io_backend`
 
 ## Project Structure
 

@@ -6,6 +6,7 @@ const StructGenerator = @import("struct_gen.zig").StructGenerator;
 const interface_gen = @import("interface_gen.zig");
 const validation_ns = @import("name_validation.zig");
 const types = @import("types.zig");
+const reflection_metadata = @import("reflection_metadata.zig");
 pub const TypeGenerator = types.TypeGenerator;
 
 /// Minimal writer wrapping an unmanaged `ArrayList(u8)` with an explicit
@@ -77,6 +78,9 @@ pub const Generator = struct {
     verbose: bool = false,
     /// Emit CAPNP_SCHEMA_MANIFEST_JSON and capnpSchemaManifestJson() when true.
     emit_schema_manifest: bool = true,
+    /// Owned canonical metadata, prepared outside the frozen generateFile API.
+    encoded_schema_request: ?[]const u8 = null,
+    emit_reflection: bool = true,
     /// Controls generated Reader/Builder convenience API surface.
     api_profile: ApiProfile = .full,
     /// When enabled, reuse the first emitted struct declaration for later
@@ -140,6 +144,7 @@ pub const Generator = struct {
     }
 
     pub fn deinit(self: *Generator) void {
+        if (self.encoded_schema_request) |bytes| self.allocator.free(bytes);
         self.clearShapeShareMap();
         self.shape_share_map.deinit();
         self.clearImportModules();
@@ -156,6 +161,27 @@ pub const Generator = struct {
     /// Enable/disable schema manifest emission in generated files.
     pub fn setEmitSchemaManifest(self: *Generator, emit: bool) void {
         self.emit_schema_manifest = emit;
+    }
+
+    /// Supply the original request corresponding to `nodes`. Its raw wire
+    /// representation retains schema details absent from the parsed model.
+    /// Encoding happens here to preserve generateFile's frozen error set. The
+    /// resulting bytes are owned; callers may release the original request as
+    /// soon as this returns. Failure leaves any previous metadata unchanged.
+    pub fn setSchemaRequest(self: *Generator, bytes: []const u8) !void {
+        const encoded = try reflection_metadata.encodeRequest(self.allocator, bytes);
+        if (self.encoded_schema_request) |previous| self.allocator.free(previous);
+        self.encoded_schema_request = encoded;
+    }
+
+    /// Reflection is independent of the legacy JSON manifest. Programmatic
+    /// generators without an original request retain their existing output.
+    pub fn setEmitReflection(self: *Generator, emit: bool) void {
+        self.emit_reflection = emit;
+    }
+
+    pub fn hasReflection(self: *const Generator) bool {
+        return self.emit_reflection and self.encoded_schema_request != null;
     }
 
     /// Set generation profile for struct Reader/Builder convenience APIs.
@@ -241,6 +267,8 @@ pub const Generator = struct {
             .max_bytes = self.codegen_budget.max_output_bytes,
         };
 
+        if (self.hasReflection()) try self.writeReflectionMetadata(body_writer);
+
         if (self.emit_schema_manifest) {
             try self.writeSchemaManifest(requested_file, file_node, body_writer);
         }
@@ -272,7 +300,7 @@ pub const Generator = struct {
         // references at the generated file namespace so those wrappers cannot
         // shadow their target declarations. Omit the alias from files that do
         // not emit such views to avoid unrelated generated-artifact churn.
-        if (std.mem.indexOf(u8, body.items, "_capnp_file.") != null) {
+        if (self.hasReflection() or std.mem.indexOf(u8, body.items, "_capnp_file.") != null) {
             try writer.writeAll("const _capnp_file = @This();\n");
         }
         if (needs_rpc) {
@@ -286,7 +314,7 @@ pub const Generator = struct {
         for (requested_file.imports) |imp| {
             if (!self.used_import_file_ids.contains(imp.id)) continue;
             const mod_name = self.import_modules.get(imp.id) orelse continue;
-            const import_path = try self.importPathFromCapnpName(imp.name);
+            const import_path = try self.importPathRelativeToFile(imp.name, requested_file.filename);
             defer self.allocator.free(import_path);
             try writer.print("pub const {s} = @import(\"{f}\");\n", .{ mod_name, std.zig.fmtString(import_path) });
         }
@@ -295,6 +323,17 @@ pub const Generator = struct {
         try writer.writeAll(body.items);
 
         return output.toOwnedSlice(self.allocator);
+    }
+
+    fn writeReflectionMetadata(self: *Generator, writer: anytype) !void {
+        try writer.writeAll("/// Canonical, ID-sorted schema Nodes, including compiler-provided dependencies.\n");
+        try writer.writeAll("pub const CAPNP_SCHEMA_REQUEST: []const u8 = &.{\n");
+        for (self.encoded_schema_request.?, 0..) |byte, index| {
+            if (index % 16 == 0) try writer.writeAll("    ");
+            try writer.print("0x{x:0>2},", .{byte});
+            try writer.writeByte(if (index % 16 == 15 or index + 1 == self.encoded_schema_request.?.len) '\n' else ' ');
+        }
+        try writer.writeAll("};\n\n");
     }
 
     fn validateCodegenBudget(self: *const Generator, requested_file: schema.RequestedFile) !void {
@@ -984,6 +1023,7 @@ pub const Generator = struct {
         struct_gen.parent_path_fn = lookupParentPath;
         struct_gen.max_brand_specializations = self.codegen_budget.max_brand_specializations;
         struct_gen.setApiProfile(self.api_profile);
+        struct_gen.emit_reflection = self.hasReflection();
         try struct_gen.generate(node, writer, children, self_qualify);
     }
 
@@ -1044,6 +1084,7 @@ pub const Generator = struct {
             try writer.print("    {s} = {},\n", .{ escaped_name, ordinal });
         }
 
+        if (self.hasReflection()) try reflection_metadata.writeSchemaRef(writer, node.id, "    ");
         try writer.writeAll("};\n\n");
     }
 
@@ -1416,6 +1457,39 @@ pub const Generator = struct {
 
             self.allocator.free(candidate);
         }
+    }
+
+    /// Resolve schema imports within the output workspace, then express them
+    /// relative to the generated file. Parent components are valid in imports
+    /// as long as they do not escape the workspace; output paths stay strict.
+    fn importPathRelativeToFile(self: *Generator, capnp_name: []const u8, filename: []const u8) ![]const u8 {
+        try validateRelativeSchemaPath(filename);
+        if (capnp_name.len == 0 or std.mem.indexOfAny(u8, capnp_name, "\\\\\x00") != null or hasWindowsDriveRoot(capnp_name)) {
+            return error.InvalidSchemaPath;
+        }
+        const from_dir = std.fs.path.dirnamePosix(filename) orelse "";
+        const absolute = capnp_name[0] == '/';
+        var components: std.ArrayList([]const u8) = .empty;
+        defer components.deinit(self.allocator);
+        if (!absolute and from_dir.len != 0) {
+            var parents = std.mem.splitScalar(u8, from_dir, '/');
+            while (parents.next()) |part| try components.append(self.allocator, part);
+        }
+        var parts = std.mem.splitScalar(u8, if (absolute) capnp_name[1..] else capnp_name, '/');
+        while (parts.next()) |part| {
+            if (part.len == 0) return error.InvalidSchemaPath;
+            if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) {
+                if (parts.rest().len == 0) return error.InvalidSchemaPath;
+                if (part.len == 2 and components.pop() == null) return error.InvalidSchemaPath;
+            } else {
+                try components.append(self.allocator, part);
+            }
+        }
+        const root_path = try std.mem.join(self.allocator, "/", components.items);
+        defer self.allocator.free(root_path);
+        const zig_path = try self.importPathFromCapnpName(root_path);
+        defer self.allocator.free(zig_path);
+        return std.fs.path.relativePosix(self.allocator, "/", from_dir, zig_path);
     }
 
     /// Derive the .zig import path from a .capnp import name.
@@ -2181,6 +2255,44 @@ test "Generator.toSnakeCaseLower trims trailing separator" {
     try std.testing.expectEqualStrings("foo", r);
 }
 
+test "Generator.importPathRelativeToFile resolves imports inside workspace" {
+    var gen = try Generator.init(std.testing.allocator, &.{});
+    defer gen.deinit();
+    const cases = [_][3][]const u8{
+        .{ "types/common.capnp", "person.capnp", "types/common.zig" },
+        .{ "../shared/common.capnp", "nested/brands.capnp", "../shared/common.zig" },
+        .{ "/shared/common.capnp", "nested/brands.capnp", "../shared/common.zig" },
+        .{ "./common.capnp", "nested/brands.capnp", "common.zig" },
+        .{ "sub/../common.capnp", "nested/brands.capnp", "common.zig" },
+        .{ "../../shared/common.capnp", "nested/deep/brands.capnp", "../../shared/common.zig" },
+    };
+    for (cases) |case| {
+        const path = try gen.importPathRelativeToFile(case[0], case[1]);
+        defer std.testing.allocator.free(path);
+        try std.testing.expectEqualStrings(case[2], path);
+    }
+}
+
+test "Generator.importPathRelativeToFile rejects workspace escapes" {
+    var gen = try Generator.init(std.testing.allocator, &.{});
+    defer gen.deinit();
+    const cases = [_][2][]const u8{
+        .{ "../escape.capnp", "person.capnp" },
+        .{ "../../escape.capnp", "nested/person.capnp" },
+        .{ "/../escape.capnp", "nested/person.capnp" },
+        .{ "C:/escape.capnp", "nested/person.capnp" },
+        .{ "sub\\\\file.capnp", "nested/person.capnp" },
+        .{ "sub//file.capnp", "nested/person.capnp" },
+        .{ "file.capnp", "../person.capnp" },
+        .{ "..", "nested/person.capnp" },
+        .{ ".", "nested/person.capnp" },
+        .{ "", "nested/person.capnp" },
+    };
+    for (cases) |case| {
+        try std.testing.expectError(error.InvalidSchemaPath, gen.importPathRelativeToFile(case[0], case[1]));
+    }
+}
+
 test "Generator.importPathFromCapnpName replaces .capnp with .zig" {
     const alloc = std.testing.allocator;
     var gen = Generator.init(alloc, &.{}) catch unreachable;
@@ -2918,6 +3030,108 @@ test "Generator.generateFile compact api profile omits root init helpers" {
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 2, "pub fn enumOrdinals(self: @This()) EnumOrdinals"));
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn hasLabel(self: Reader) bool"));
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn hasLabel(self: Builder) bool"));
+}
+
+test "reflection setup owns encoded nodes and preserves prior metadata on failure" {
+    const message = @import("../serialization/message.zig");
+    const allocator = std.testing.allocator;
+    var gen = try Generator.init(allocator, &.{});
+    defer gen.deinit();
+    {
+        var builder = message.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        const pointer = try builder.initRootAnyPointer();
+        var root = try pointer.initStruct(0, 1);
+        const nodes = try root.writeStructList(0, 1, 1, 0);
+        (try nodes.get(0)).writeU64(0, 123);
+        const bytes = @constCast(try builder.toBytes());
+        defer allocator.free(bytes);
+        try gen.setSchemaRequest(bytes);
+        @memset(bytes, 0xdd);
+    }
+    try std.testing.expect(gen.hasReflection());
+    const previous = gen.encoded_schema_request.?;
+    try std.testing.expectError(error.TruncatedMessage, gen.setSchemaRequest(&.{}));
+    try std.testing.expectEqual(previous.ptr, gen.encoded_schema_request.?.ptr);
+    var decoded = try message.Message.init(allocator, gen.encoded_schema_request.?, .{});
+    defer decoded.deinit();
+    const nodes = try (try decoded.getRootStruct()).readStructList(0);
+    try std.testing.expectEqual(@as(u64, 123), (try nodes.get(0)).readU64(0));
+}
+
+test "reflection retains schema identity under shape sharing in both API profiles" {
+    const alloc = std.testing.allocator;
+    var nested = [_]schema.Node.NestedNode{ .{ .name = "A", .id = 2 }, .{ .name = "B", .id = 3 } };
+    const nodes = [_]schema.Node{
+        testFileNode(1, "root.capnp", &nested),
+        testStructNode(2, 1, "A", &.{}, &.{}),
+        testStructNode(3, 1, "B", &.{}, &.{}),
+    };
+    var gen = try Generator.init(alloc, &nodes);
+    defer gen.deinit();
+    gen.current_file_id = 1;
+    // This test exercises declaration emission, without encoding a request.
+    gen.encoded_schema_request = try alloc.dupe(u8, "");
+    gen.setShapeSharing(true);
+    for ([_]Generator.ApiProfile{ .full, .compact }) |profile| {
+        gen.setApiProfile(profile);
+        gen.clearShapeShareMap();
+        var output = std.ArrayList(u8).empty;
+        defer output.deinit(alloc);
+        const writer = ArrayListWriter{ .list = &output, .allocator = alloc };
+        try gen.generateStructWithShapeSharing(&nodes[1], writer, null, false);
+        try gen.generateStructWithShapeSharing(&nodes[2], writer, null, false);
+        try std.testing.expect(std.mem.containsAtLeast(u8, output.items, 1, "pub const A = struct {"));
+        try std.testing.expect(std.mem.containsAtLeast(u8, output.items, 1, "pub const B = struct {"));
+        try std.testing.expect(!std.mem.containsAtLeast(u8, output.items, 1, "pub const B = A;"));
+        try std.testing.expectEqual(@as(usize, 6), std.mem.count(u8, output.items, "pub const capnpSchema"));
+        try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, output.items, ".id = 0x2,"));
+        try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, output.items, ".id = 0x3,"));
+    }
+}
+
+test "reflection disambiguates enum spelling and rejects nested capnpSchema constants" {
+    const alloc = std.testing.allocator;
+    var nested = [_]schema.Node.NestedNode{.{ .name = "Root", .id = 2 }};
+    var enumerants = [_]schema.Enumerant{.{ .name = "capnpSchema", .code_order = 0, .annotations = &.{} }};
+    var enum_node = testFileNode(2, "Root", &.{});
+    enum_node.scope_id = 1;
+    enum_node.kind = .@"enum";
+    enum_node.enum_node = .{ .enumerants = &enumerants };
+    const enum_nodes = [_]schema.Node{ testFileNode(1, "root.capnp", &nested), enum_node };
+    var enum_gen = try Generator.init(alloc, &enum_nodes);
+    defer enum_gen.deinit();
+    enum_gen.encoded_schema_request = try alloc.dupe(u8, "");
+    // Enum values use PascalCase, so this valid schema member remains distinct.
+    try enum_gen.validateGeneratedNames(&enum_nodes[0], false);
+    var enum_output = std.ArrayList(u8).empty;
+    defer enum_output.deinit(alloc);
+    try enum_gen.generateEnum(&enum_nodes[1], ArrayListWriter{ .list = &enum_output, .allocator = alloc });
+    try std.testing.expect(std.mem.containsAtLeast(u8, enum_output.items, 1, "CapnpSchema = 0,"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, enum_output.items, 1, "pub const capnpSchema ="));
+    enum_gen.setEmitReflection(false);
+    try enum_gen.validateGeneratedNames(&enum_nodes[0], false);
+
+    var children = [_]schema.Node.NestedNode{.{ .name = "capnpSchema", .id = 3 }};
+    var constant = testFileNode(3, "capnpSchema", &.{});
+    constant.scope_id = 2;
+    constant.kind = .@"const";
+    constant.const_node = .{ .type = .uint32, .value = .{ .uint32 = 0 } };
+    for ([_]schema.NodeKind{ .@"struct", .interface }) |kind| {
+        var parent = testStructNode(2, 1, "Root", &.{}, &children);
+        if (kind == .interface) {
+            parent.kind = .interface;
+            parent.struct_node = null;
+            parent.interface_node = .{ .methods = &.{}, .superclasses = &.{} };
+        }
+        const nodes = [_]schema.Node{ testFileNode(1, "root.capnp", &nested), parent, constant };
+        var gen = try Generator.init(alloc, &nodes);
+        defer gen.deinit();
+        gen.encoded_schema_request = try alloc.dupe(u8, "");
+        try std.testing.expectError(error.DuplicateGeneratedName, gen.validateGeneratedNames(&nodes[0], kind == .interface));
+        gen.setEmitReflection(false);
+        try gen.validateGeneratedNames(&nodes[0], kind == .interface);
+    }
 }
 
 test "Generator.generateFile shape sharing aliases identical structs" {

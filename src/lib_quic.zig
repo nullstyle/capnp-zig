@@ -10,6 +10,9 @@ pub const message = @import("serialization/message.zig");
 /// the code generator and request reader.
 pub const schema = @import("serialization/schema.zig");
 
+/// Binary descriptors and dynamic schema-driven wire access.
+pub const reflection = @import("reflection/root.zig");
+
 /// Convenience re-exports for generated reader types.
 pub const reader = @import("serialization/reader.zig");
 

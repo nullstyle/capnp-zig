@@ -3,6 +3,7 @@ const schema = @import("../serialization/schema.zig");
 const type_resolver = @import("../serialization/type_resolver.zig");
 const brand_fidelity = @import("brand_fidelity.zig");
 const types = @import("types.zig");
+const reflection_metadata = @import("reflection_metadata.zig");
 const TypeGenerator = types.TypeGenerator;
 const ArrayListWriter = @import("generator.zig").ArrayListWriter;
 
@@ -44,6 +45,7 @@ pub const StructGenerator = struct {
     api_profile: ApiProfile = .full,
     max_brand_specializations: usize = 4096,
     in_brand_emission: bool = false,
+    emit_reflection: bool = false,
 
     const ListHelperUsage = struct {
         enum_list: bool = false,
@@ -92,6 +94,70 @@ pub const StructGenerator = struct {
         return lookup(self.node_lookup_ctx, id);
     }
 
+    /// A helper can shadow schema declarations in any enclosing lexical scope,
+    /// including sibling types and groups. Keep the old spelling when there is
+    /// no collision so ordinary schemas retain byte-identical generated output.
+    fn schemaNameInScope(self: *StructGenerator, name: []const u8) !bool {
+        var scope = self.brand_owner;
+        var depth: usize = 0;
+        while (scope) |node| {
+            if (depth >= type_resolver.max_resolution_depth) return true;
+            depth += 1;
+            if (node.kind != .file) {
+                const own_name = try self.allocTypeName(node);
+                defer self.allocator.free(own_name);
+                if (std.mem.eql(u8, own_name, name)) return true;
+            }
+            for (node.nested_nodes) |nested| {
+                const child = self.getNode(nested.id) orelse continue;
+                // Constants and annotations use lower-case value names.
+                if (child.kind != .@"struct" and child.kind != .@"enum" and child.kind != .interface) continue;
+                const child_name = try self.allocTypeName(child);
+                defer self.allocator.free(child_name);
+                if (std.mem.eql(u8, child_name, name)) return true;
+            }
+            if (node.struct_node) |info| {
+                for (info.fields) |field| {
+                    const group = field.group orelse continue;
+                    const child = self.getNode(group.type_id) orelse continue;
+                    const child_name = try self.allocTypeName(child);
+                    defer self.allocator.free(child_name);
+                    if (std.mem.eql(u8, child_name, name)) return true;
+                }
+            }
+            if (node.scope_id == 0) break;
+            scope = self.getNode(node.scope_id);
+        }
+        return false;
+    }
+
+    fn helperViewRef(self: *StructGenerator, comptime name: []const u8) ![]const u8 {
+        return if (try self.schemaNameInScope(name)) "@This()." ++ name else name;
+    }
+
+    fn helperShadowsTypeName(self: *StructGenerator, name: []const u8) bool {
+        const owner = self.brand_owner orelse return false;
+        if (owner.struct_node) |info| {
+            if (std.mem.eql(u8, name, "EnumOrdinals")) return hasDirectEnumSlot(info);
+            if (std.mem.eql(u8, name, "NestedLists")) return hasDirectNestedListSlot(info);
+            if (std.mem.eql(u8, name, "PointerKinds")) return hasDirectPointerKindSlot(info);
+        }
+        if (!std.mem.eql(u8, name, "WhichTag")) return false;
+        // Union tags live on the schema type, so ancestor tags are also visible.
+        var scope: ?*const schema.Node = owner;
+        var depth: usize = 0;
+        while (scope) |node| {
+            if (depth >= type_resolver.max_resolution_depth) return true;
+            depth += 1;
+            if (node.struct_node) |info| {
+                if (info.discriminant_count > 0) return true;
+            }
+            if (node.scope_id == 0) break;
+            scope = self.getNode(node.scope_id);
+        }
+        return false;
+    }
+
     fn brandOwnerHasGenericScope(self: *const StructGenerator) bool {
         var node = self.brand_owner;
         var depth: usize = 0;
@@ -109,7 +175,10 @@ pub const StructGenerator = struct {
         if (self.brandOwnerHasGenericScope()) {
             return (try self.brandStructTypeName(group_node.id)) orelse error.InvalidStructNode;
         }
-        return self.allocTypeName(group_node);
+        const name = try self.allocTypeName(group_node);
+        if (!self.helperShadowsTypeName(name)) return name;
+        defer self.allocator.free(name);
+        return self.qualifiedTypeName(group_node, group_node.id);
     }
 
     /// Convert a discriminant_offset (u32, in units of u16) to a byte offset.
@@ -141,6 +210,13 @@ pub const StructGenerator = struct {
         if (self_qualify) {
             self.reader_ref = "@This()";
             self.builder_ref = "@This()";
+        }
+        if (struct_info.discriminant_count > 0 and try self.schemaNameInScope("WhichTag")) {
+            const type_name = try self.qualifiedTypeName(node, node.id);
+            defer self.allocator.free(type_name);
+            self.whichtag_ref = try std.fmt.allocPrint(self.allocator, "{s}.WhichTag", .{type_name});
+            self.whichtag_ref_owned = true;
+        } else if (self_qualify) {
             self.whichtag_ref = try std.fmt.allocPrint(self.allocator, "{s}.WhichTag", .{name});
             self.whichtag_ref_owned = true;
         }
@@ -156,6 +232,7 @@ pub const StructGenerator = struct {
         const pointer_count = struct_info.pointer_count;
 
         try writer.print("pub const {s} = struct {{\n", .{name});
+        if (self.emit_reflection) try reflection_metadata.writeSchemaRef(writer, node.id, "    ");
         try self.generateListHelpers(list_helper_usage, writer);
 
         // Generate union tag enum if this struct has a union
@@ -218,6 +295,7 @@ pub const StructGenerator = struct {
         defer self.allocator.free(group_type_name);
 
         try writer.print("    pub const {s} = struct {{\n", .{group_name});
+        if (self.emit_reflection) try reflection_metadata.writeSchemaRef(writer, group_node.id, "        ");
 
         if (group_struct_info.discriminant_count > 0) {
             try writer.writeAll("        pub const WhichTag = enum(u16) {\n");
@@ -244,6 +322,7 @@ pub const StructGenerator = struct {
 
         // Generate group Reader
         try self.writeGroupWrapStruct(writer, "Reader", "_reader", "message.StructReader", "reader");
+        if (self.emit_reflection) try reflection_metadata.writeSchemaRef(writer, group_node.id, "            ");
         try self.generatePointerDefaults(group_struct_info, "            ", "                ", writer);
         try self.generateEnumOrdinalsReaderView(
             group_struct_info,
@@ -293,6 +372,7 @@ pub const StructGenerator = struct {
 
         // Generate group Builder
         try self.writeGroupWrapStruct(writer, "Builder", "_builder", "message.StructBuilder", "builder");
+        if (self.emit_reflection) try reflection_metadata.writeSchemaRef(writer, group_node.id, "            ");
         try self.generateEnumOrdinalsBuilderView(
             group_struct_info,
             "            ",
@@ -1565,7 +1645,7 @@ pub const StructGenerator = struct {
             try writer.print("{s}}}\n\n", .{member_indent});
         }
         try writer.print("{s}}};\n\n", .{decl_indent});
-        try writer.print("{s}pub fn brands(self: @This()) Brands {{\n", .{decl_indent});
+        try writer.print("{s}pub fn brands(self: @This()) @This().Brands {{\n", .{decl_indent});
         try writer.print("{s}return .{{ ._reader = self._reader }};\n", .{member_indent});
         try writer.print("{s}}}\n\n", .{decl_indent});
     }
@@ -1658,7 +1738,7 @@ pub const StructGenerator = struct {
             try writer.print("{s}}}\n\n", .{member_indent});
         }
         try writer.print("{s}}};\n\n", .{decl_indent});
-        try writer.print("{s}pub fn brands(self: @This()) Brands {{\n", .{decl_indent});
+        try writer.print("{s}pub fn brands(self: @This()) @This().Brands {{\n", .{decl_indent});
         try writer.print("{s}return .{{ ._builder = self._builder }};\n", .{member_indent});
         try writer.print("{s}}}\n\n", .{decl_indent});
     }
@@ -1745,7 +1825,7 @@ pub const StructGenerator = struct {
             try writer.print("{s}}}\n\n", .{member_indent});
         }
         try writer.print("{s}}};\n\n", .{decl_indent});
-        try writer.print("{s}pub fn pointerKinds(self: @This()) PointerKinds {{\n", .{decl_indent});
+        try writer.print("{s}pub fn pointerKinds(self: @This()) {s} {{\n", .{ decl_indent, try self.helperViewRef("PointerKinds") });
         try writer.print("{s}return .{{ ._reader = self._reader }};\n", .{member_indent});
         try writer.print("{s}}}\n\n", .{decl_indent});
     }
@@ -1802,7 +1882,7 @@ pub const StructGenerator = struct {
             try writer.print("{s}}}\n\n", .{member_indent});
         }
         try writer.print("{s}}};\n\n", .{decl_indent});
-        try writer.print("{s}pub fn pointerKinds(self: @This()) PointerKinds {{\n", .{decl_indent});
+        try writer.print("{s}pub fn pointerKinds(self: @This()) {s} {{\n", .{ decl_indent, try self.helperViewRef("PointerKinds") });
         try writer.print("{s}return .{{ ._builder = self._builder }};\n", .{member_indent});
         try writer.print("{s}}}\n\n", .{decl_indent});
     }
@@ -1979,7 +2059,7 @@ pub const StructGenerator = struct {
             try writer.print("{s}}}\n\n", .{member_indent});
         }
         try writer.print("{s}}};\n\n", .{decl_indent});
-        try writer.print("{s}pub fn nestedLists(self: @This()) NestedLists {{\n", .{decl_indent});
+        try writer.print("{s}pub fn nestedLists(self: @This()) {s} {{\n", .{ decl_indent, try self.helperViewRef("NestedLists") });
         try writer.print("{s}return .{{ ._reader = self._reader }};\n", .{member_indent});
         try writer.print("{s}}}\n\n", .{decl_indent});
     }
@@ -2060,7 +2140,7 @@ pub const StructGenerator = struct {
             try writer.print("{s}}}\n\n", .{member_indent});
         }
         try writer.print("{s}}};\n\n", .{decl_indent});
-        try writer.print("{s}pub fn nestedLists(self: @This()) NestedLists {{\n", .{decl_indent});
+        try writer.print("{s}pub fn nestedLists(self: @This()) {s} {{\n", .{ decl_indent, try self.helperViewRef("NestedLists") });
         try writer.print("{s}return .{{ ._builder = self._builder }};\n", .{member_indent});
         try writer.print("{s}}}\n\n", .{decl_indent});
     }
@@ -2103,7 +2183,7 @@ pub const StructGenerator = struct {
             try writer.print("{s}}}\n\n", .{member_indent});
         }
         try writer.print("{s}}};\n\n", .{decl_indent});
-        try writer.print("{s}pub fn enumOrdinals(self: @This()) EnumOrdinals {{\n", .{decl_indent});
+        try writer.print("{s}pub fn enumOrdinals(self: @This()) {s} {{\n", .{ decl_indent, try self.helperViewRef("EnumOrdinals") });
         try writer.print("{s}return .{{ ._reader = self._reader }};\n", .{member_indent});
         try writer.print("{s}}}\n\n", .{decl_indent});
     }
@@ -2136,7 +2216,7 @@ pub const StructGenerator = struct {
             try writer.print("{s}}}\n\n", .{member_indent});
         }
         try writer.print("{s}}};\n\n", .{decl_indent});
-        try writer.print("{s}pub fn enumOrdinals(self: @This()) EnumOrdinals {{\n", .{decl_indent});
+        try writer.print("{s}pub fn enumOrdinals(self: @This()) {s} {{\n", .{ decl_indent, try self.helperViewRef("EnumOrdinals") });
         try writer.print("{s}return .{{ ._builder = self._builder }};\n", .{member_indent});
         try writer.print("{s}}}\n\n", .{decl_indent});
     }
@@ -2267,6 +2347,7 @@ pub const StructGenerator = struct {
         _ = data_word_count;
         _ = pointer_count;
         try writer.writeAll("    pub const Reader = struct {\n");
+        if (self.emit_reflection) try reflection_metadata.writeSchemaRef(writer, self.brand_owner.?.id, "        ");
         try writer.writeAll("        _reader: message.StructReader,\n\n");
 
         try self.generatePointerDefaults(struct_info, "        ", "            ", writer);
@@ -3323,6 +3404,7 @@ pub const StructGenerator = struct {
         writer: anytype,
     ) !void {
         try writer.writeAll("    pub const Builder = struct {\n");
+        if (self.emit_reflection) try reflection_metadata.writeSchemaRef(writer, self.brand_owner.?.id, "        ");
         try writer.writeAll("        _builder: message.StructBuilder,\n\n");
 
         if (self.api_profile == .full) {
@@ -3757,7 +3839,13 @@ pub const StructGenerator = struct {
         // Reader/Builder becomes ambiguous. Anchor that same-file reference at
         // the generated file namespace; imported module paths are already
         // unambiguous and must be preserved as-is.
-        const qualify_at_file_root = self.in_brand_emission and module == null and try self.currentFieldShadowsTypeName(bare_name);
+        // A helper-named schema also shadows references to its nested types,
+        // e.g. EnumOrdinals.E inside Reader.EnumOrdinals's enclosing scope.
+        // Anchor the leading schema name; imported module paths stay intact.
+        const path = parent orelse bare_name;
+        const first_name = path[0 .. std.mem.indexOfScalar(u8, path, '.') orelse path.len];
+        const qualify_at_file_root = module == null and (self.helperShadowsTypeName(first_name) or
+            (self.in_brand_emission and try self.currentFieldShadowsTypeName(bare_name)));
 
         if (parent == null and module == null and !qualify_at_file_root) return self.allocator.dupe(u8, bare_name);
 
