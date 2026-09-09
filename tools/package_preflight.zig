@@ -477,6 +477,22 @@ pub fn main(init: std.process.Init) !void {
     };
     defer if (!ctx.keep_temp) std.Io.Dir.cwd().deleteTree(init.io, work_rel) catch {};
 
+    // Lossless schema metadata makes the compiler part of the golden input.
+    // Fail before expensive clean-room builds if PATH selects another version.
+    const pin_bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, "tools/capnp-toolchain.json", init.gpa, .limited(4096));
+    defer init.gpa.free(pin_bytes);
+    const pin = try std.json.parseFromSlice(struct { version: []const u8 }, init.gpa, pin_bytes, .{ .ignore_unknown_fields = true });
+    defer pin.deinit();
+    const expected_version = try std.fmt.allocPrint(init.gpa, "Cap'n Proto version {s}", .{pin.value.version});
+    defer init.gpa.free(expected_version);
+    const compiler_version = try run(&ctx, &.{ "capnp", "--version" }, .inherit, null);
+    defer init.gpa.free(compiler_version.stdout);
+    defer init.gpa.free(compiler_version.stderr);
+    if (!std.mem.eql(u8, expected_version, std.mem.trim(u8, compiler_version.stdout, " \r\n"))) {
+        std.debug.print("package preflight requires {s}; run mise run bootstrap:capnp and use mise exec -- <command>\n", .{expected_version});
+        return error.SchemaCompilerVersionMismatch;
+    }
+
     const before = try status(&ctx);
     defer init.gpa.free(before);
 

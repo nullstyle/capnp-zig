@@ -75,7 +75,7 @@ pub fn Validation(comptime G: type) type {
             if (self.hasReflection() and (node.kind == .@"struct" or node.kind == .@"enum" or node.kind == .interface)) {
                 try child_scope.addCopy("capnpSchema");
             }
-            if (node.kind == .interface or (node.kind == .@"struct" and !node.struct_node.?.is_group and generic_rpc_gen.Emitter(G).needsData(self, node))) {
+            if (node.kind == .interface or (node.kind == .@"struct" and !(node.struct_node orelse return error.InvalidStructNode).is_group and generic_rpc_gen.Emitter(G).needsData(self, node))) {
                 try child_scope.addCopy("Apply");
                 try child_scope.addCopy("_Apply");
             }
@@ -654,7 +654,7 @@ pub fn Validation(comptime G: type) type {
                 try scope.addCopy("question_id");
                 try scope.addCopy("pointer_indexes");
                 try scope.addCopy("pointer_count");
-                for (node.struct_node.?.fields) |field| {
+                for ((node.struct_node orelse return error.InvalidStructNode).fields) |field| {
                     if (field.discriminant_value != 0xffff) continue;
                     if (field.group == null) {
                         const slot = field.slot orelse continue;

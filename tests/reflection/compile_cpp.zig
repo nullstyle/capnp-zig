@@ -23,6 +23,7 @@ pub fn main(init: std.process.Init) !void {
     defer init.gpa.free(includes);
     const libraries = try command(init, &.{ "pkg-config", "--variable=libdir", "capnp" });
     defer init.gpa.free(libraries);
-    const result = try command(init, &.{ "c++", "-std=c++20", "-I", std.mem.trim(u8, includes, " \r\n"), source, "-L", std.mem.trim(u8, libraries, " \r\n"), "-lcapnp", "-lkj", "-pthread", "-o", output });
+    const compiler = init.environ_map.get("CXX") orelse "c++";
+    const result = try command(init, &.{ compiler, "-std=c++23", "-I", std.mem.trim(u8, includes, " \r\n"), source, "-L", std.mem.trim(u8, libraries, " \r\n"), "-lcapnp", "-lkj", "-pthread", "-o", output });
     defer init.gpa.free(result);
 }

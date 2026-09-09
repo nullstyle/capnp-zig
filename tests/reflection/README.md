@@ -11,7 +11,7 @@ mise exec -- zig build test-reflection-cpp --summary all
 The native gate is part of `zig build test` and `test-serialization`. It needs
 only Zig. The WASI gate requires Wasmtime and executes the same reflection
 consumer, plus the six registry tests, without granting filesystem access. The
-explicit C++ gate requires `c++`, `pkg-config`, and Cap'n Proto development
+explicit C++ gate requires a C++23 compiler (`CXX`, default `c++`), `pkg-config`, and Cap'n Proto development
 headers/libraries; requesting it fails if these tools are missing. Its native
 compiler uses the same C++ exception runtime as the installed Cap'n Proto
 library. The oracle supports both KJ 1.x and KJ 2.x.

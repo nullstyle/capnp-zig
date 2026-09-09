@@ -5321,7 +5321,10 @@ const L17OomFixture = struct {
 };
 
 test "L17 OOM: a failed receiverHosted Provide registration rolls the import pin back to zero residue" {
-    const base = std.testing.allocator;
+    // Keep growth injectable and replayable: system resize/remap success depends
+    // on surrounding address space, so it must not move this failure window.
+    var backing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .resize_fail_index = 0 });
+    const base = backing.allocator();
 
     var window_start: usize = 0;
     var window_end: usize = 0;
@@ -5346,17 +5349,20 @@ test "L17 OOM: a failed receiverHosted Provide registration rolls the import pin
     try std.testing.expect(window_end > window_start);
 
     // Pass 2: inject one failure at every index inside the window.
-    var fail_index = window_start;
-    while (fail_index < window_end) : (fail_index += 1) {
-        var failing = std.testing.FailingAllocator.init(base, .{ .fail_index = fail_index });
+    var failure_offset: usize = 0;
+    while (failure_offset < window_end - window_start) : (failure_offset += 1) {
+        var failing = std.testing.FailingAllocator.init(base, .{});
         const alloc = failing.allocator();
         var fx: L17OomFixture = undefined;
         try fx.init(alloc, "l17-oom-provide", 97);
         defer fx.deinitAll();
 
+        // Arm only after fixture setup; all injected failures belong to Provide.
+        failing.fail_index = failing.alloc_index + failure_offset;
         if (fx.vat.owner.handleFrame(fx.provide_frame)) |_| {
-            // Allocation pattern shifted; this index no longer fails inside
-            // the provide path. The success state drains at deinit.
+            // A recovered allocation failure still has to reach a valid state.
+            const entry = fx.vat.owner.caps.imports.get(fx.vat.carol_import) orelse return error.ImportGone;
+            try std.testing.expectEqual(@as(u32, 1), entry.handoff_pin_count);
         } else |_| {
             // THE PROBES: no half-registered residue anywhere, and the pin
             // ladder rolled ITS arm back — the import survives with its wire
@@ -5371,11 +5377,15 @@ test "L17 OOM: a failed receiverHosted Provide registration rolls the import pin
             try std.testing.expectEqual(@as(u32, 0), entry.handoff_pin_count);
             try std.testing.expectEqual(@as(u32, 0), entry.deferred_release);
         }
+        try std.testing.expect(failing.has_induced_failure);
     }
 }
 
 test "L17 OOM: a failed receiverHosted serve rolls the serve-time pin back (Provide-time pin intact)" {
-    const base = std.testing.allocator;
+    // Keep growth injectable and replayable: system resize/remap success depends
+    // on surrounding address space, so it must not move this failure window.
+    var backing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .resize_fail_index = 0 });
+    const base = backing.allocator();
 
     var window_start: usize = 0;
     var window_end: usize = 0;
@@ -5419,9 +5429,9 @@ test "L17 OOM: a failed receiverHosted serve rolls the serve-time pin back (Prov
     try std.testing.expect(window_end > window_start);
 
     // Pass 2: inject one failure at every index inside the serve window.
-    var fail_index = window_start;
-    while (fail_index < window_end) : (fail_index += 1) {
-        var failing = std.testing.FailingAllocator.init(base, .{ .fail_index = fail_index });
+    var failure_offset: usize = 0;
+    while (failure_offset < window_end - window_start) : (failure_offset += 1) {
+        var failing = std.testing.FailingAllocator.init(base, .{});
         const alloc = failing.allocator();
         var fx: L17OomFixture = undefined;
         try fx.init(alloc, "l17-oom-serve", 98);
@@ -5445,6 +5455,8 @@ test "L17 OOM: a failed receiverHosted serve rolls the serve-time pin back (Prov
         const accept_frame = try builder.finish();
         defer alloc.free(accept_frame);
 
+        // Arm only after fixture setup; all injected failures belong to Accept.
+        failing.fail_index = failing.alloc_index + failure_offset;
         const serve_result = accept_peer.handleFrame(accept_frame);
         const served = if (serve_result) |_|
             (capture.returnFor(980) orelse protocol.ReturnTag.exception) == .results
@@ -5459,7 +5471,11 @@ test "L17 OOM: a failed receiverHosted serve rolls the serve-time pin back (Prov
             try std.testing.expectEqual(@as(usize, 0), fx.vat.owner.cross_peer_proxy_links.items.len);
             try std.testing.expectEqual(@as(usize, 0), accept_peer.exports.count());
             try std.testing.expectEqual(@as(usize, 0), fx.index.queued_accept_count);
+        } else {
+            const entry = fx.vat.owner.caps.imports.get(fx.vat.carol_import) orelse return error.ImportGone;
+            try std.testing.expectEqual(@as(u32, 2), entry.handoff_pin_count);
         }
+        try std.testing.expect(failing.has_induced_failure);
     }
 }
 

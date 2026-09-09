@@ -244,6 +244,7 @@ ci:
 # generator/API but forgot to regenerate the checked-in files" class that has
 # turned CI red more than once. Needs the `capnp` CLI.
 check-generated:
+    uv run --no-project --python 3.13 tools/bootstrap_capnp.py --verify
     zig build
     cd src/rpc && just gen-rpc
     cd tests/e2e/schemas && capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/tests/e2e/zig/generated game_types.capnp bootstrap.capnp game_world.capnp inventory.capnp chat.capnp matchmaking.capnp resolve_disembargo.capnp l3_l4_interop.capnp

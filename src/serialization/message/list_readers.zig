@@ -432,7 +432,7 @@ pub fn define(
                     .elements_offset = view.elements_offset,
                     .element_count = view.element_count,
                     .stride_bytes = view.stride_bytes,
-                    .source_list = .{ .message = self.message, .pointer = view.source_pointer.? },
+                    .source_list = if (view.source_pointer) |pointer| .{ .message = self.message, .pointer = pointer } else null,
                 };
             }
 

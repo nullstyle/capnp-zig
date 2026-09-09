@@ -192,7 +192,12 @@ pub fn Registry(comptime Peer: type) type {
                     break;
                 };
                 defer decoded.deinit();
-                const call = decoded.asCall() catch unreachable;
+                const call = decoded.asCall() catch {
+                    self.release(item.frame.len);
+                    peer.sendReturnException(item.id, "queued message is not a call") catch {};
+                    self.fail(peer, q);
+                    break;
+                };
                 q.active = .{ .id = item.id, .bytes = item.frame.len };
                 q.dispatching = true;
                 q.dispatch(q.ctx, peer, call, &item.caps) catch |err| {

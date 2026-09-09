@@ -29,6 +29,9 @@ jobs:
     name: Reflection and generated RPC conformance
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    env:
+      CC: clang-18
+      CXX: clang++-18
     steps:
       - uses: actions/checkout@v6
         with:
@@ -41,7 +44,12 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build pkg-config
+          sudo apt-get install -y clang-18 g++-14 ninja-build pkg-config
+          # GCC 13 lacks <print>; GCC 14.2 hits the reference's known optimizer
+          # bug. Use Clang with GCC 14's C++23 library and probe that exact pair.
+          printf '#include <print>\nint main() { std::println("C++23 ready"); }\n' > "$RUNNER_TEMP/capnp-cxx23.cpp"
+          "$CXX" -std=c++23 "$RUNNER_TEMP/capnp-cxx23.cpp" -o "$RUNNER_TEMP/capnp-cxx23"
+          "$RUNNER_TEMP/capnp-cxx23"
           cmake -S vendor/ext/capnproto -B .zig-cache/reference-cpp -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DWITH_OPENSSL=OFF \
             -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/capnp-reference"
@@ -325,6 +333,11 @@ jobs:
 
       - name: Run documentation/examples smoke gate
         run: zig build docs-smoke --summary all
+
+      - name: Build and test the KVStore service with current generated readers
+        run: |
+          zig build --build-file examples/kvstore/build.zig -Doptimize=ReleaseSafe --summary all
+          zig build --build-file examples/kvstore/build.zig test -Doptimize=ReleaseSafe --summary all
 
       # Strict mode also fails when the committed experimental snapshot is
       # stale (possible since stored thread ids were widened to u64, making

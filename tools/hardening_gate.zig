@@ -27,6 +27,9 @@ const Allow = struct {
 /// Existing reviewed exceptions. Matching is one-for-one: if the same risky
 /// line is copied elsewhere, the copy fails until it gets its own review note.
 const allowlist = [_]Allow{
+    .{ .path = "src/reflection/registry.zig", .kind = .optional_unwrap, .needle = "return &self.schema.node.struct_node.?;", .reason = "Registry validates and owns immutable node payloads; StructSchema is produced only after checked struct resolution (manual construction with another node kind is programmer misuse)" },
+    .{ .path = "src/reflection/registry.zig", .kind = .optional_unwrap, .needle = "return &self.schema.node.enum_node.?;", .reason = "Registry validates and owns immutable node payloads; Schema.asEnum checks the node kind before producing EnumSchema" },
+    .{ .path = "src/reflection/registry.zig", .kind = .optional_unwrap, .needle = "return &self.schema.node.interface_node.?;", .reason = "Registry validates and owns immutable node payloads; interface resolution checks the node kind before producing InterfaceSchema" },
     .{ .path = "src/serialization/message/struct_builder.zig", .kind = .optional_unwrap, .needle = "const landing_pos = landing_pad_pos.?;", .reason = "guarded by earlier landing-pad presence check" },
     .{ .path = "src/serialization/message.zig", .kind = .catch_unreachable, .needle = "framedHeaderBytes(segment_count_limit) catch unreachable", .reason = "compile-time default limit arithmetic is bounded by construction" },
     .{ .path = "src/serialization/message.zig", .kind = .catch_unreachable, .needle = "std.math.mul(usize, total_words_limit, 8) catch unreachable", .reason = "compile-time default limit arithmetic is bounded by construction" },
@@ -59,7 +62,10 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/transport/wake_lock.zig", .kind = .panic_call, .needle = "stuck-wake-lock diagnostic", .reason = "debug-only stuck-lock diagnostic: converts an unbounded spin (which reaches CI as an anonymous job timeout) into a named crash. Bound is ~2 orders of magnitude past any legitimate contention on these few-syscall critical sections, and is not reachable from network input" },
     .{ .path = "src/rpc/transport/tcp/connection.zig", .kind = .optional_unwrap, .needle = "const bytes = frame.?;", .reason = "guarded by preceding null frame branch" },
     .{ .path = "src/rpc/transport/tcp/connection.zig", .kind = .optional_unwrap, .needle = "self.on_message.?", .reason = "checked before callback invocation" },
-    .{ .path = "src/rpc/transport/stream_state.zig", .kind = .optional_unwrap, .needle = "cb(ctx.?, self.stream_error)", .reason = "callback context is paired with callback registration" },
+    .{ .path = "src/rpc/transport/stream_state.zig", .kind = .optional_unwrap, .needle = "if (ready) |callback| callback(ready_ctx.?, err);", .reason = "whenReady accepts a nonoptional context and registers it with the callback; notify snapshots both before clearing registration or invoking reentrant callbacks" },
+    .{ .path = "src/rpc/transport/stream_state.zig", .kind = .optional_unwrap, .needle = "if (drained) |callback| callback(drain_ctx.?, err);", .reason = "waitStreaming accepts a nonoptional context and registers it with the callback; notify snapshots both before clearing registration or invoking reentrant callbacks" },
+    .{ .path = "src/rpc/caps/payload_remap.zig", .kind = .catch_unreachable, .needle = "errdefer writePointerWord(builder, any_builder.segment_id, any_builder.pointer_pos, old_word) catch unreachable;", .reason = "initContent and the old-word read validate the destination slot before mutation; copying only appends builder storage, so reacquiring that original slot for rollback cannot fail (mapper must not destroy its destination builder)" },
+    .{ .path = "src/rpc/peer/streaming.zig", .kind = .optional_unwrap, .needle = "if (!entry.embargoed and entry.cap != null) entry.cap.?", .reason = "same-expression nonnull guard on the thread-affine import entry with no intervening callback or mutation" },
     .{ .path = "src/rpc/transport/quic/connection.zig", .kind = .panic_call, .needle = "QUIC Connection method called from wrong thread", .reason = "debug misuse guard, not input-driven protocol handling" },
     .{ .path = "src/rpc/transport/quic/server.zig", .kind = .panic_call, .needle = "QUIC Server stepped from a thread other than the loop thread", .reason = "debug loop-affinity misuse guard; deferred-close architecture requires all list/close mutation on the loop thread" },
     .{ .path = "src/rpc/transport/quic/server.zig", .kind = .panic_call, .needle = "QUIC Server session accessor called from a thread other than the loop thread", .reason = "debug loop-affinity misuse guard for the read-side session-list accessors; same invariant as the step guard, not input-driven protocol handling" },
@@ -117,6 +123,7 @@ const allowlist = [_]Allow{
 
 const unsafe_dirs = [_][]const u8{
     "src/serialization",
+    "src/reflection",
     "src/rpc",
     "src/wasm",
     // The compiler plugin was scanned for DISCLOSURE patterns

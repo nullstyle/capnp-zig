@@ -203,7 +203,7 @@ const KvService = struct {
         return null;
     }
 
-    fn setSubscriberWatchedKeys(self: *KvService, peer: *rpc.peer.Peer, watched_keys: message.TextListReader) !u32 {
+    fn setSubscriberWatchedKeys(self: *KvService, peer: *rpc.peer.Peer, watched_keys: message.StrictTextListReader) !u32 {
         const subscriber = self.findSubscriber(peer) orelse return error.NotSubscribed;
 
         if (watched_keys.len() > Limits.max_watch_keys) return error.TooManyWatchedKeys;

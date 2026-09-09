@@ -25,7 +25,7 @@ capnpc-zig.codegen.Generator.GeneratedNameScope: struct
 capnpc-zig.codegen.Generator.allocDefaultConstName: fn (*capnpc-zig.generator.Generator, []const u8) error{OutOfMemory}![]const u8
 capnpc-zig.codegen.Generator.allocEscapedTypeIdentifier: fn (*capnpc-zig.generator.Generator, []const u8) error{OutOfMemory}![]const u8
 capnpc-zig.codegen.Generator.allocFieldCapName: fn (*capnpc-zig.generator.Generator, []const u8) error{OutOfMemory}![]const u8
-capnpc-zig.codegen.Generator.allocInterfaceMemberName: fn (*capnpc-zig.generator.Generator, []const u8, ?[]const u8) error{OutOfMemory}![]const u8
+capnpc-zig.codegen.Generator.allocInterfaceMemberName: fn (*capnpc-zig.generator.Generator, []const u8, ?[]const u8) error{InvalidInterfaceNode,OutOfMemory}![]const u8
 capnpc-zig.codegen.Generator.allocMethodCallName: fn (*capnpc-zig.generator.Generator, []const u8) error{OutOfMemory}![]const u8
 capnpc-zig.codegen.Generator.allocMethodPipelineName: fn (*capnpc-zig.generator.Generator, []const u8) error{OutOfMemory}![]const u8
 capnpc-zig.codegen.Generator.allocMethodVTableFieldName: fn (*capnpc-zig.generator.Generator, []const u8) error{OutOfMemory}![]const u8
@@ -35,7 +35,7 @@ capnpc-zig.codegen.Generator.allocator: field mem.Allocator
 capnpc-zig.codegen.Generator.api_profile: field capnpc-zig.struct_gen.StructGenerator.ApiProfile = .full
 capnpc-zig.codegen.Generator.codegen_budget: field capnpc-zig.generator.Generator.CodegenBudget = <default>
 capnpc-zig.codegen.Generator.collectAncestors: fn (*capnpc-zig.generator.Generator, *const serialization.schema.Node) error{OutOfMemory}![]capnpc-zig.generator.Generator.AncestorInfo
-capnpc-zig.codegen.Generator.collectPipelineStructs: fn (*capnpc-zig.generator.Generator, u64) error{CodegenBudgetExceeded,OutOfMemory}![]*const serialization.schema.Node
+capnpc-zig.codegen.Generator.collectPipelineStructs: fn (*capnpc-zig.generator.Generator, u64) error{CodegenBudgetExceeded,InvalidStructNode,OutOfMemory}![]*const serialization.schema.Node
 capnpc-zig.codegen.Generator.concreteBrandInspection: fn (*const capnpc-zig.generator.Generator, *const serialization.schema.Node, serialization.schema.FieldSlot, usize) error{CodegenBudgetExceeded,InvalidStructNode}!?capnpc-zig.brand_fidelity.Inspection
 capnpc-zig.codegen.Generator.current_file_id: field ?u64 = null
 capnpc-zig.codegen.Generator.defaultPointerBytes: fn (*capnpc-zig.generator.Generator, ?serialization.schema.Value) ?[]const u8
@@ -47,7 +47,7 @@ capnpc-zig.codegen.Generator.freeInterfaceFields: fn (*capnpc-zig.generator.Gene
 capnpc-zig.codegen.Generator.generic_method_context: field ?serialization.schema.Method = null
 capnpc-zig.codegen.Generator.getInterfaceFields: fn (*capnpc-zig.generator.Generator, u64) error{OutOfMemory}![]capnpc-zig.generator.Generator.InterfaceFieldInfo
 capnpc-zig.codegen.Generator.getNode: fn (*const capnpc-zig.generator.Generator, u64) ?*const serialization.schema.Node
-capnpc-zig.codegen.Generator.hasPipelineFields: fn (*capnpc-zig.generator.Generator, u64) error{CodegenBudgetExceeded,OutOfMemory}!bool
+capnpc-zig.codegen.Generator.hasPipelineFields: fn (*capnpc-zig.generator.Generator, u64) error{CodegenBudgetExceeded,InvalidStructNode,OutOfMemory}!bool
 capnpc-zig.codegen.Generator.hasReflection: fn (*const capnpc-zig.generator.Generator) bool
 capnpc-zig.codegen.Generator.hasStreamingMethods: fn (*capnpc-zig.generator.Generator, *const serialization.schema.Node, []const capnpc-zig.generator.Generator.AncestorInfo) bool
 capnpc-zig.codegen.Generator.import_modules: field hash_map.HashMap(u64,[]const u8,hash_map.AutoContext(u64),80)

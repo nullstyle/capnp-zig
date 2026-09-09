@@ -312,7 +312,8 @@ pub const DynamicStruct = struct {
             try self.requireActive(field);
             if (field.proto().group != null) return .{ .schema = try field.groupSchema(), .builder = self.builder, .copy_options = self.copy_options };
             const struct_schema = try (try field.type()).asStruct();
-            const field_pointer = try self.builder.getAnyPointer(field.proto().slot.?.offset);
+            const slot = field.proto().slot orelse return error.TypeMismatch;
+            const field_pointer = try self.builder.getAnyPointer(slot.offset);
             const original = try pointerWord(field_pointer);
             errdefer restorePointer(field_pointer, original);
             const pointer = try self.mutablePointer(field);
@@ -336,8 +337,9 @@ pub const DynamicStruct = struct {
             try self.requireActive(field);
             const typ = try field.type();
             _ = try typ.listElement();
+            const slot = field.proto().slot orelse return error.TypeMismatch;
             const pointer = try self.mutablePointer(field);
-            if (self.builder.isPointerNull(field.proto().slot.?.offset)) {
+            if (self.builder.isPointerNull(slot.offset)) {
                 var result = try DynamicList.Builder.init(typ, pointer, 0);
                 result.copy_options = self.copy_options;
                 return result;
@@ -966,7 +968,10 @@ fn checkStructListCopy(pointer: message.AnyPointerBuilder, data_words: u16, poin
     const new_width = @as(usize, @max(data_words, old_data)) + @max(pointer_words, source.pointer_words);
     if (new_width == 0) return;
     for (0..count) |index| {
-        const element = if (replacement != null and replacement.?.index == index) replacement.?.reader else try source.get(@intCast(index));
+        const element = if (replacement) |value|
+            (if (value.index == index) value.reader else try source.get(@intCast(index)))
+        else
+            try source.get(@intCast(index));
         const width = @as(usize, structDataWords(element)) + element.pointer_count;
         const extra = new_width - width;
         if (extra > budget.words) return error.CopyOutputLimitExceeded;
@@ -1014,8 +1019,8 @@ fn ensureStructListSnapshot(pointer: message.AnyPointerBuilder, data_words: u16,
         if (replacement) |value| try copyStruct(value.reader, try result.get(value.index));
     } else {
         for (0..source.len()) |index| {
-            const element = if (replacement != null and replacement.?.index == index)
-                replacement.?.reader
+            const element = if (replacement) |value|
+                (if (value.index == index) value.reader else try source.get(@intCast(index)))
             else
                 try source.get(@intCast(index));
             try copyStruct(element, try result.get(@intCast(index)));

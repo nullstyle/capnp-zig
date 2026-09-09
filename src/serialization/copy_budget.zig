@@ -57,7 +57,7 @@ pub const Budget = struct {
                         3 => 16,
                         4 => 32,
                         5, 6 => 64,
-                        7 => unreachable,
+                        7 => return error.InvalidPointer,
                     };
                     const bit_count = std.math.mul(usize, list.element_count, bits) catch return error.CopyOutputLimitExceeded;
                     const words = bit_count / 64 + @intFromBool(bit_count % 64 != 0);

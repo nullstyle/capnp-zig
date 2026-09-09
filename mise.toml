@@ -1,4 +1,5 @@
 [tools]
+cmake = "3.31.8"
 act = "latest"
 go = "1.26.0"
 just = "latest"
@@ -17,3 +18,14 @@ wasmtime = "48.0.1"
 # NOTE for local dev: if you manage Zig with zvm, its PATH entry wins over mise's
 # shims. Either drop zvm from PATH or run `mise exec -- zig ...` to match CI.
 zig = "0.17.0-dev.1683+5ceec001b"
+
+[env]
+_.path = [".zig-cache/capnp-toolchain/install/bin"]
+
+[tasks."bootstrap:capnp"]
+description = "Build the checksum-pinned Cap'n Proto schema compiler"
+run = "uv run --no-project --python 3.13 tools/bootstrap_capnp.py"
+
+[tasks."check:capnp"]
+description = "Require the Cap'n Proto compiler used for committed generated artifacts"
+run = "uv run --no-project --python 3.13 tools/bootstrap_capnp.py --verify"

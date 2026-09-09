@@ -115,7 +115,7 @@ pub fn interfaceAncestors(allocator: std.mem.Allocator, nodes: []const schema.No
     return result.toOwnedSlice(allocator);
 }
 fn nodeFromSlice(context: ?*anyopaque, id: schema.Id) ?*const schema.Node {
-    const nodes: *[]const schema.Node = @ptrCast(@alignCast(context.?));
+    const nodes: *[]const schema.Node = @ptrCast(@alignCast(context orelse return null));
     for (nodes.*) |*node| if (node.id == id) return node;
     return null;
 }

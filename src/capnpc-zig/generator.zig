@@ -332,12 +332,13 @@ pub const Generator = struct {
     }
 
     fn writeReflectionMetadata(self: *Generator, writer: anytype) !void {
+        const encoded = self.encoded_schema_request orelse return error.InvalidStructNode;
         try writer.writeAll("/// Canonical, ID-sorted schema Nodes, including compiler-provided dependencies.\n");
         try writer.writeAll("pub const CAPNP_SCHEMA_REQUEST: []const u8 = &.{\n");
-        for (self.encoded_schema_request.?, 0..) |byte, index| {
+        for (encoded, 0..) |byte, index| {
             if (index % 16 == 0) try writer.writeAll("    ");
             try writer.print("0x{x:0>2},", .{byte});
-            try writer.writeByte(if (index % 16 == 15 or index + 1 == self.encoded_schema_request.?.len) '\n' else ' ');
+            try writer.writeByte(if (index % 16 == 15 or index + 1 == encoded.len) '\n' else ' ');
         }
         try writer.writeAll("};\n\n");
     }
@@ -930,7 +931,8 @@ pub const Generator = struct {
         const owner = self.interface_context orelse return plain;
         var declaring: ?AncestorInfo = null;
         var collision = false;
-        for (owner.interface_node.?.methods) |method| {
+        const owner_interface = owner.interface_node orelse return error.InvalidInterfaceNode;
+        for (owner_interface.methods) |method| {
             const other = try self.toZigIdentifier(method.name);
             defer self.allocator.free(other);
             if (interfaceMemberFamiliesOverlap(plain, other)) collision = true;
@@ -959,7 +961,8 @@ pub const Generator = struct {
         var candidate = try std.fmt.allocPrint(self.allocator, "{s}From{s}", .{ plain, qualifier });
         errdefer self.allocator.free(candidate);
         if (needs_id or try self.interfaceMemberFamilyExists(candidate) or try self.inheritedAliasFamilyExists(candidate, ancestor)) {
-            const replacement = try std.fmt.allocPrint(self.allocator, "{s}_{x}", .{ candidate, declaring.?.interface_id });
+            const declaration = declaring orelse return error.InvalidInterfaceNode;
+            const replacement = try std.fmt.allocPrint(self.allocator, "{s}_{x}", .{ candidate, declaration.interface_id });
             self.allocator.free(candidate);
             candidate = replacement;
         }
@@ -973,7 +976,7 @@ pub const Generator = struct {
     }
 
     fn interfaceMemberFamilyExists(self: *Generator, name: []const u8) !bool {
-        if (self.interface_context) |owner| for (owner.interface_node.?.methods) |method| {
+        if (self.interface_context) |owner| for ((owner.interface_node orelse return error.InvalidInterfaceNode).methods) |method| {
             const other = try self.toZigIdentifier(method.name);
             defer self.allocator.free(other);
             if (interfaceMemberFamiliesOverlap(name, other)) return true;
@@ -1506,7 +1509,7 @@ pub const Generator = struct {
         try seen.put(root_id, {});
         var index: usize = 0;
         while (index < result.items.len) : (index += 1) {
-            for (result.items[index].struct_node.?.fields) |field| {
+            for ((result.items[index].struct_node orelse return error.InvalidStructNode).fields) |field| {
                 if (field.discriminant_value != 0xffff) continue;
                 const child_id = if (field.group) |group| group.type_id else if (field.slot) |slot| switch (slot.type) {
                     .@"struct" => |info| info.type_id,
@@ -1526,7 +1529,7 @@ pub const Generator = struct {
     pub fn hasPipelineFields(self: *Generator, root_id: schema.Id) !bool {
         const nodes = try self.collectPipelineStructs(root_id);
         defer self.allocator.free(nodes);
-        for (nodes) |node| for (node.struct_node.?.fields) |field| {
+        for (nodes) |node| for ((node.struct_node orelse return error.InvalidStructNode).fields) |field| {
             if (field.discriminant_value != 0xffff) continue;
             if (field.slot) |slot| if (slot.type == .interface) return true;
         };

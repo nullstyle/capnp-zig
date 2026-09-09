@@ -70,7 +70,10 @@ fn runProfile(profile: capnp.codegen.Generator.ApiProfile) !void {
     defer allocator.free(includes);
     const libraries = try run(&.{ "pkg-config", "--variable=libdir", "capnp" });
     defer allocator.free(libraries);
-    allocator.free(try run(&.{ "c++", "-std=c++20", "-I", std.mem.trim(u8, includes, " \r\n"), cpp_source, cpp_schema, cpp_import, "-L", std.mem.trim(u8, libraries, " \r\n"), "-lcapnp-rpc", "-lcapnp", "-lkj-async", "-lkj", "-pthread", "-o", driver }));
+    var environment = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer environment.deinit();
+    const compiler = environment.get("CXX") orelse "c++";
+    allocator.free(try run(&.{ compiler, "-std=c++23", "-I", std.mem.trim(u8, includes, " \r\n"), cpp_source, cpp_schema, cpp_import, "-L", std.mem.trim(u8, libraries, " \r\n"), "-lcapnp-rpc", "-lcapnp", "-lkj-async", "-lkj", "-pthread", "-o", driver }));
     const output = try run(&.{ driver, endpoint });
     defer allocator.free(output);
     try std.testing.expect(std.mem.indexOf(u8, output, "C++ <-> Zig generic interfaces") != null);

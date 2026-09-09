@@ -305,7 +305,8 @@ pub const Field = struct {
     pub fn groupSchema(self: Field) !StructSchema {
         const group = self.proto().group orelse return error.TypeMismatch;
         const child = try self.parent.schema.registry.get(group.type_id);
-        if (child.kind() != .@"struct" or !child.node.struct_node.?.is_group) return error.InvalidSchema;
+        const child_info = child.node.struct_node orelse return error.InvalidSchema;
+        if (child.kind() != .@"struct" or !child_info.is_group) return error.InvalidSchema;
         return .{ .schema = child, .resolver = self.parent.resolver };
     }
 };

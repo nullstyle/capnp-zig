@@ -186,7 +186,10 @@ test "registry bounded loading cleans up every allocation failure" {
     const allocator = std.testing.allocator;
     const bytes = try makeRequest(allocator, .{ .default_uint64 = 99 });
     defer allocator.free(bytes);
-    try std.testing.checkAllAllocationFailures(allocator, loadWithFailures, .{bytes});
+    // Arena growth must follow the same allocation path on every replay. The
+    // system allocator may resize in place only when adjacent pages are free.
+    var backing = std.testing.FailingAllocator.init(allocator, .{ .resize_fail_index = 0 });
+    try std.testing.checkAllAllocationFailures(backing.allocator(), loadWithFailures, .{bytes});
 }
 
 fn loadLazyWithFailures(allocator: std.mem.Allocator, bytes: []const u8) !void {
@@ -204,20 +207,29 @@ fn loadLazyWithFailures(allocator: std.mem.Allocator, bytes: []const u8) !void {
 test "registry lazy pointer defaults retain cache identity and clean every failed allocation" {
     const bytes = try makeRequest(std.testing.allocator, .{ .type_discriminant = 16, .pointer_words = 1, .default_struct = true });
     defer std.testing.allocator.free(bytes);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, loadLazyWithFailures, .{bytes});
+    // Refuse resize/remap so each arena growth remains an injectable allocation,
+    // independent of the system allocator's address-dependent growth decisions.
+    var backing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .resize_fail_index = 0 });
+    try std.testing.checkAllAllocationFailures(backing.allocator(), loadLazyWithFailures, .{bytes});
+    try std.testing.expectEqual(backing.allocated_bytes, backing.freed_bytes);
 }
 
 test "registry memory limit accepts its measured boundary and rejects one byte below" {
     const bytes = try makeRequest(std.testing.allocator, .{});
     defer std.testing.allocator.free(bytes);
-    var accounting = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    // Measure and replay one backing-allocation policy. An in-place arena resize
+    // can fit the same schema into fewer bytes than a later replacement block.
+    var backing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .resize_fail_index = 0 });
+    const allocator = backing.allocator();
+    var accounting = std.testing.FailingAllocator.init(allocator, .{});
     const measured = try reflection.Registry.init(accounting.allocator(), bytes);
     const live = accounting.allocated_bytes - accounting.freed_bytes;
     measured.deinit();
-    try std.testing.expectError(error.SchemaMemoryLimitExceeded, reflection.Registry.initWithOptions(std.testing.allocator, bytes, .{ .max_memory_bytes = live - 1 }));
+    try std.testing.expectError(error.SchemaMemoryLimitExceeded, reflection.Registry.initWithOptions(allocator, bytes, .{ .max_memory_bytes = live - 1 }));
     for ([_]usize{ live, live + 1 }) |limit| {
-        const registry = try reflection.Registry.initWithOptions(std.testing.allocator, bytes, .{ .max_memory_bytes = limit });
+        const registry = try reflection.Registry.initWithOptions(allocator, bytes, .{ .max_memory_bytes = limit });
         defer registry.deinit();
         try std.testing.expectEqual(node_id, (try registry.get(node_id)).id());
     }
+    try std.testing.expectEqual(backing.allocated_bytes, backing.freed_bytes);
 }

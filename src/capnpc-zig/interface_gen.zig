@@ -885,7 +885,8 @@ pub fn Interface(comptime G: type) type {
             try writer.print("    pub const {s} = struct {{\n", .{name});
             try writer.writeAll("        peer: *rpc.peer.Peer,\n        question_id: u32,\n\n");
             const has_children = blk: {
-                for (nodes[0].struct_node.?.fields) |field| {
+                if (nodes.len == 0) return error.InvalidStructNode;
+                for ((nodes[0].struct_node orelse return error.InvalidStructNode).fields) |field| {
                     if (field.discriminant_value != 0xffff) continue;
                     if (field.group != null) break :blk true;
                     if (field.slot) |slot| if (slot.type == .@"struct") break :blk true;
@@ -904,14 +905,16 @@ pub fn Interface(comptime G: type) type {
         }
 
         fn generatePipelineGetters(self: *G, node: *const schema.Node, root: bool, indent: []const u8, writer: anytype) !void {
-            for (node.struct_node.?.fields) |field| {
+            for ((node.struct_node orelse return error.InvalidStructNode).fields) |field| {
                 if (field.discriminant_value != 0xffff) continue;
                 const child_id: ?schema.Id = if (field.group) |group| group.type_id else if (field.slot) |slot| switch (slot.type) {
                     .@"struct" => |info| info.type_id,
                     else => null,
                 } else null;
                 const slot = field.slot;
-                const capability = slot != null and slot.?.type == .interface;
+                const capability_slot = if (slot) |value| (if (value.type == .interface) value else null) else null;
+                const capability = capability_slot != null;
+                const pointer_offset = if (slot) |value| value.offset else 0;
                 if (!capability and child_id == null) continue;
                 if (child_id) |id| {
                     const child = self.getNode(id) orelse continue;
@@ -919,29 +922,29 @@ pub fn Interface(comptime G: type) type {
                 }
                 const name = try types.identToZigTypeName(self.allocator, field.name);
                 defer self.allocator.free(name);
-                const iface_name = if (capability) try self.qualifiedTypeName(slot.?.type.interface.type_id) else null;
+                const iface_name = if (capability_slot) |value| try self.qualifiedTypeName(value.type.interface.type_id) else null;
                 defer if (iface_name) |value| self.allocator.free(value);
                 const target = if (iface_name) |value|
                     try std.fmt.allocPrint(self.allocator, "{s}.PipelinedClient", .{value})
                 else
-                    try std.fmt.allocPrint(self.allocator, "_PipelineRoot._Pipeline_{x}", .{child_id.?});
+                    try std.fmt.allocPrint(self.allocator, "_PipelineRoot._Pipeline_{x}", .{child_id orelse return error.InvalidStructNode});
                 defer self.allocator.free(target);
                 const appends_pointer = field.group == null;
                 const fallible = appends_pointer and (!root or !capability);
                 try writer.print("{s}pub fn get{s}(self: @This()) {s}{s} {{\n", .{ indent, name, if (fallible) "!" else "", target });
                 if (root and capability) {
-                    try writer.print("{s}    return .{{ .peer = self.peer, .question_id = self.question_id, .pointer_index = {} }};\n", .{ indent, slot.?.offset });
+                    try writer.print("{s}    return .{{ .peer = self.peer, .question_id = self.question_id, .pointer_index = {} }};\n", .{ indent, pointer_offset });
                 } else {
                     if (!root and appends_pointer) try writer.print("{s}    if (self.pointer_count >= 64) return error.PipelineDepthLimit;\n", .{indent});
                     try writer.print("{s}    {s} result: {s} = .{{ .peer = self.peer, .question_id = self.question_id", .{ indent, if (root and !appends_pointer) "const" else "var", target });
-                    if (capability) try writer.print(", .pointer_index = {}", .{slot.?.offset});
+                    if (capability) try writer.print(", .pointer_index = {}", .{pointer_offset});
                     try writer.writeAll(" };\n");
                     if (!root) {
                         try writer.print("{s}    result.pointer_count = self.pointer_count;\n", .{indent});
                         try writer.print("{s}    @memcpy(result.pointer_indexes[0..self.pointer_count], self.pointer_indexes[0..self.pointer_count]);\n", .{indent});
                     }
                     if (appends_pointer and !capability) {
-                        try writer.print("{s}    result.pointer_indexes[result.pointer_count] = {};\n", .{ indent, slot.?.offset });
+                        try writer.print("{s}    result.pointer_indexes[result.pointer_count] = {};\n", .{ indent, pointer_offset });
                         try writer.print("{s}    result.pointer_count += 1;\n", .{indent});
                     }
                     try writer.print("{s}    return result;\n", .{indent});

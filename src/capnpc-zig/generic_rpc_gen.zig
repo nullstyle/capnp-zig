@@ -323,7 +323,7 @@ pub fn Emitter(comptime G: type) type {
                 const qualified = try self.qualifiedTypeName(ancestor.target.id);
                 defer self.allocator.free(qualified);
                 try writer.print("    const _Ancestor{} = {s};\n", .{ index, name });
-                for (ancestor.target.interface_node.?.methods) |method| {
+                for ((ancestor.target.interface_node orelse return error.InvalidInterfaceNode).methods) |method| {
                     const member = try self.allocInterfaceMemberName(method.name, qualified);
                     errdefer self.allocator.free(member);
                     const method_name = try self.toZigIdentifier(method.name);

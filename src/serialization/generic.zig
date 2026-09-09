@@ -117,8 +117,8 @@ pub const AnyPointer = struct {
 /// the sole context and controls all Return/disconnect/cancellation cleanup.
 pub fn Method(comptime Raw: type, comptime ParamType: type, comptime ResultType: type) type {
     const callback_info = @typeInfo(@typeInfo(Raw.Callback).pointer.child).@"fn";
-    const PeerPtr = callback_info.param_types[1].?;
-    const CapsPtr = callback_info.param_types[3].?;
+    const PeerPtr = callback_info.param_types[1] orelse @compileError("RPC callback peer parameter must have a concrete type");
+    const CapsPtr = callback_info.param_types[3] orelse @compileError("RPC callback capability parameter must have a concrete type");
     return struct {
         pub const Params = ParamType;
         pub const Results = ResultType;

@@ -679,7 +679,7 @@ pub const StructGenerator = struct {
         const application = (generic_application.fromSlot(owner, slot, lookup, self.node_lookup_ctx) catch return error.InvalidStructNode) orelse return null;
         const inspection = brand_fidelity.inspectApplication(application.target, &application.resolver, lookup, self.node_lookup_ctx, self.max_brand_specializations) catch return error.InvalidStructNode;
         if (inspection == null) return null;
-        return .{ .target = application.target, .target_info = application.target.struct_node.?, .brand = .{}, .resolver = application.resolver };
+        return .{ .target = application.target, .target_info = application.target.struct_node orelse return error.InvalidStructNode, .brand = .{}, .resolver = application.resolver };
     }
 
     fn brandBindingForField(self: *StructGenerator, brand: *const ConcreteBrand, field: schema.Field) !?BoundExpression {
@@ -2441,7 +2441,7 @@ pub const StructGenerator = struct {
         _ = data_word_count;
         _ = pointer_count;
         try writer.writeAll("    pub const Reader = struct {\n");
-        if (self.emit_reflection) try reflection_metadata.writeSchemaRef(writer, self.brand_owner.?.id, "        ");
+        if (self.emit_reflection) try reflection_metadata.writeSchemaRef(writer, (self.brand_owner orelse return error.InvalidStructNode).id, "        ");
         try writer.writeAll("        _reader: message.StructReader,\n\n");
 
         try self.generatePointerDefaults(struct_info, "        ", "            ", writer);
@@ -3498,7 +3498,7 @@ pub const StructGenerator = struct {
         writer: anytype,
     ) !void {
         try writer.writeAll("    pub const Builder = struct {\n");
-        if (self.emit_reflection) try reflection_metadata.writeSchemaRef(writer, self.brand_owner.?.id, "        ");
+        if (self.emit_reflection) try reflection_metadata.writeSchemaRef(writer, (self.brand_owner orelse return error.InvalidStructNode).id, "        ");
         try writer.writeAll("        _builder: message.StructBuilder,\n\n");
 
         if (self.api_profile == .full) {
@@ -3590,7 +3590,8 @@ pub const StructGenerator = struct {
         for (info.fields) |field| {
             // Interface fields already have a legacy clear method on ordinary
             // structs; group interfaces receive the common method here.
-            if (field.slot == null or field.slot.?.type != .interface or info.is_group) try self.generateBuilderClear(field, info, writer);
+            const needs_clear = if (field.slot) |slot| slot.type != .interface else true;
+            if (needs_clear or info.is_group) try self.generateBuilderClear(field, info, writer);
             if (field.group) |group| {
                 if (field.discriminant_value != 0xffff and info.discriminant_count != 0) {
                     const node = self.getNode(group.type_id) orelse return error.InvalidStructNode;
@@ -3624,10 +3625,10 @@ pub const StructGenerator = struct {
             defer output.deinit(self.allocator);
             const scratch = ArrayListWriter{ .list = &output, .allocator = self.allocator };
             try self.generateFieldGetter(field, info, scratch);
-            const start = std.mem.indexOf(u8, output.items, "        pub fn get") orelse unreachable;
+            const start = std.mem.indexOf(u8, output.items, "        pub fn get") orelse return error.InvalidStructNode;
             const code = output.items[start..];
             const uses_raw = std.mem.indexOf(u8, code, "self._reader") != null;
-            const brace = std.mem.indexOf(u8, code, " {\n").? + 3;
+            const brace = (std.mem.indexOf(u8, code, " {\n") orelse return error.InvalidStructNode) + 3;
             try writer.writeAll(code[0..brace]);
             if (uses_raw) {
                 if (slot.type == .text or slot.type == .data) {
@@ -3723,7 +3724,7 @@ pub const StructGenerator = struct {
         const cap_name = try self.capitalizeFirst(name);
         defer self.allocator.free(cap_name);
         try writer.print("        pub fn clear{s}(self: *@This()) !void {{\n", .{cap_name});
-        if (field.slot != null and field.slot.?.type == .void and field.discriminant_value == 0xffff) try writer.writeAll("            _ = self;\n");
+        if (field.slot) |slot| if (slot.type == .void and field.discriminant_value == 0xffff) try writer.writeAll("            _ = self;\n");
         try self.writeFieldZero(field, writer);
         try self.writeUnionDiscriminant(field, info, writer);
         try writer.writeAll("        }\n\n");
