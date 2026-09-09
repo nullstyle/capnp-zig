@@ -97,6 +97,9 @@ For a finite service run, pass `opts="--run-for-ms 30000 --drain-ms 1000"` to
 and runs normal service/store cleanup; it does not install a signal handler.
 Clients should use call deadlines because calls still pending when their
 connection closes may fail instead of receiving a result.
+The drain interval starts after pending accepts return. A permanently failed
+backend wake operation or blocked synchronous handler can prevent shutdown from
+finishing; these flags do not impose a hard process-exit deadline.
 
 ### Start client
 

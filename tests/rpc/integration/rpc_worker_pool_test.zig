@@ -394,6 +394,180 @@ test "WorkerPool: graceful shutdown returns promptly with no active connections"
     try std.testing.expect(elapsed < 4000 * std.time.ns_per_ms);
 }
 
+test "WorkerPool: maximum drain duration is valid when no connections are active" {
+    var dummy_ctx: u8 = 0;
+    var pool = try WorkerPool.init(std.testing.allocator, std.testing.io, .{ .ip4 = .loopback(0) }, &dummy_ctx, onAcceptNoop, .{ .concurrency = 1 });
+    defer pool.deinit();
+    pool.shutdownGraceful(std.math.maxInt(u64));
+}
+
+test "WorkerPool: failed wake attempts never close a listener under a pending accept" {
+    const DelayedIo = struct {
+        const State = struct {
+            pending: std.atomic.Value(bool) = .init(false),
+            release: std.atomic.Value(bool) = .init(false),
+            closed_while_pending: std.atomic.Value(bool) = .init(false),
+            wake_attempts: std.atomic.Value(u32) = .init(0),
+            clock_reads: std.atomic.Value(u32) = .init(0),
+        };
+        var state: *State = undefined;
+
+        fn accept(_: ?*anyopaque, _: net.Socket.Handle, _: net.Server.AcceptOptions) net.Server.AcceptError!net.Socket {
+            state.pending.store(true, .release);
+            while (!state.release.load(.acquire)) std.Thread.yield() catch {};
+            state.pending.store(false, .release);
+            return error.Canceled;
+        }
+        fn connect(_: ?*anyopaque, _: *const net.IpAddress, _: net.IpAddress.ConnectOptions) net.IpAddress.ConnectError!net.Socket {
+            // Two transient wake failures outlast the old close-anyway deadline.
+            // A later retry lets the pending accept return without closing it.
+            if (state.wake_attempts.fetchAdd(1, .acq_rel) >= 2) state.release.store(true, .release);
+            return error.ConnectionRefused;
+        }
+        fn shutdown(_: ?*anyopaque, _: net.Socket.Handle, _: net.ShutdownHow) net.ShutdownError!void {}
+        fn now(_: ?*anyopaque, _: std.Io.Clock) std.Io.Timestamp {
+            return .{ .nanoseconds = @as(i96, state.clock_reads.fetchAdd(1, .monotonic)) * std.time.ns_per_s };
+        }
+        fn close(userdata: ?*anyopaque, sockets: []const net.Socket) void {
+            if (state.pending.load(.acquire)) state.closed_while_pending.store(true, .release);
+            // Also release the red case, so the regression fails instead of hanging.
+            state.release.store(true, .release);
+            std.testing.io.vtable.netClose(userdata, sockets);
+        }
+    };
+    var state = DelayedIo.State{};
+    DelayedIo.state = &state;
+    var vtable = std.testing.io.vtable.*;
+    vtable.netAccept = DelayedIo.accept;
+    vtable.netConnectIp = DelayedIo.connect;
+    vtable.netShutdown = DelayedIo.shutdown;
+    vtable.netClose = DelayedIo.close;
+    vtable.now = DelayedIo.now;
+    const io = std.Io{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    var dummy_ctx: u8 = 0;
+    var pool = try WorkerPool.init(std.testing.allocator, io, .{ .ip4 = .loopback(0) }, &dummy_ctx, onAcceptNoop, .{ .concurrency = 1 });
+    defer pool.deinit();
+    const pool_thread = try spawnPoolThread(&pool);
+    defer {
+        state.release.store(true, .release);
+        pool.shutdown();
+        pool_thread.join();
+    }
+    const deadline = nowNs(std.testing.io) + 2 * std.time.ns_per_s;
+    while (!state.pending.load(.acquire) and nowNs(std.testing.io) < deadline) std.Thread.yield() catch {};
+    try std.testing.expect(state.pending.load(.acquire));
+    pool.shutdown();
+    try std.testing.expect(!state.closed_while_pending.load(.acquire));
+    try std.testing.expect(state.wake_attempts.load(.acquire) >= 3);
+}
+
+test "WorkerPool: retains a wake connection until its pending accept returns" {
+    const DelayedIo = struct {
+        const State = struct {
+            pending: std.atomic.Value(bool) = .init(false),
+            release: std.atomic.Value(bool) = .init(false),
+            closed_wake_early: std.atomic.Value(bool) = .init(false),
+            listen_handle: ?net.Socket.Handle = null,
+        };
+        var state: *State = undefined;
+
+        fn accept(_: ?*anyopaque, _: net.Socket.Handle, _: net.Server.AcceptOptions) net.Server.AcceptError!net.Socket {
+            state.pending.store(true, .release);
+            while (!state.release.load(.acquire)) std.Thread.yield() catch {};
+            state.pending.store(false, .release);
+            return error.Canceled;
+        }
+        fn shutdown(_: ?*anyopaque, _: net.Socket.Handle, _: net.ShutdownHow) net.ShutdownError!void {}
+        fn sleep(userdata: ?*anyopaque, timeout: std.Io.Timeout) std.Io.Cancelable!void {
+            // Model an accept which needs a scheduling turn after connect succeeds.
+            state.release.store(true, .release);
+            return std.testing.io.vtable.sleep(userdata, timeout);
+        }
+        fn close(userdata: ?*anyopaque, sockets: []const net.Socket) void {
+            for (sockets) |socket| {
+                if (state.listen_handle) |listener| {
+                    if (socket.handle != listener and state.pending.load(.acquire)) state.closed_wake_early.store(true, .release);
+                }
+            }
+            std.testing.io.vtable.netClose(userdata, sockets);
+        }
+    };
+    var state = DelayedIo.State{};
+    DelayedIo.state = &state;
+    var vtable = std.testing.io.vtable.*;
+    vtable.netAccept = DelayedIo.accept;
+    vtable.netShutdown = DelayedIo.shutdown;
+    vtable.netClose = DelayedIo.close;
+    vtable.sleep = DelayedIo.sleep;
+    const io = std.Io{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    var dummy_ctx: u8 = 0;
+    var pool = try WorkerPool.init(std.testing.allocator, io, .{ .ip4 = .loopback(0) }, &dummy_ctx, onAcceptNoop, .{ .concurrency = 1 });
+    defer pool.deinit();
+    state.listen_handle = pool.server.socket.handle;
+    const pool_thread = try spawnPoolThread(&pool);
+    defer {
+        state.release.store(true, .release);
+        pool.shutdown();
+        pool_thread.join();
+    }
+    const deadline = nowNs(std.testing.io) + 2 * std.time.ns_per_s;
+    while (!state.pending.load(.acquire) and nowNs(std.testing.io) < deadline) std.Thread.yield() catch {};
+    try std.testing.expect(state.pending.load(.acquire));
+    pool.shutdown();
+    try std.testing.expect(!state.closed_wake_early.load(.acquire));
+}
+
+test "WorkerPool: graceful shutdown joins 32 pending real TCP accepts before listener close" {
+    const ObservedIo = struct {
+        const State = struct {
+            entered: std.atomic.Value(u32) = .init(0),
+            returned: std.atomic.Value(u32) = .init(0),
+            closed_while_pending: std.atomic.Value(bool) = .init(false),
+            listen_handle: ?net.Socket.Handle = null,
+        };
+        var state: *State = undefined;
+
+        fn accept(userdata: ?*anyopaque, listener: net.Socket.Handle, options: net.Server.AcceptOptions) net.Server.AcceptError!net.Socket {
+            _ = state.entered.fetchAdd(1, .acq_rel);
+            defer _ = state.returned.fetchAdd(1, .release);
+            return std.testing.io.vtable.netAccept(userdata, listener, options);
+        }
+        fn close(userdata: ?*anyopaque, sockets: []const net.Socket) void {
+            for (sockets) |socket| {
+                if (state.listen_handle) |listener| {
+                    if (socket.handle == listener and state.returned.load(.acquire) != state.entered.load(.acquire)) {
+                        state.closed_while_pending.store(true, .release);
+                    }
+                }
+            }
+            std.testing.io.vtable.netClose(userdata, sockets);
+        }
+    };
+    var state = ObservedIo.State{};
+    ObservedIo.state = &state;
+    var vtable = std.testing.io.vtable.*;
+    vtable.netAccept = ObservedIo.accept;
+    vtable.netClose = ObservedIo.close;
+    const io = std.Io{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    var counter = AcceptCounter{};
+    var pool = try WorkerPool.init(std.testing.allocator, io, .{ .ip4 = .loopback(0) }, &counter, AcceptCounter.onAccept, .{ .concurrency = 32 });
+    defer pool.deinit();
+    state.listen_handle = pool.server.socket.handle;
+    const pool_thread = try spawnPoolThread(&pool);
+    errdefer {
+        pool.shutdown();
+        pool_thread.join();
+    }
+    const deadline = nowNs(std.testing.io) + 5 * std.time.ns_per_s;
+    while (state.entered.load(.acquire) != 32 and nowNs(std.testing.io) < deadline) sleepMs(std.testing.io, 1);
+    try std.testing.expectEqual(@as(u32, 32), state.entered.load(.acquire));
+    pool.shutdownGraceful(100);
+    pool_thread.join();
+    try std.testing.expectEqual(@as(u32, 32), state.returned.load(.acquire));
+    try std.testing.expect(!state.closed_while_pending.load(.acquire));
+    try std.testing.expectEqual(@as(u32, 0), counter.count.load(.acquire));
+}
+
 test "WorkerPool: graceful shutdown drains an active connection that finishes on its own" {
     const allocator = std.testing.allocator;
 

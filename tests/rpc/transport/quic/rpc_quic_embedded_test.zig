@@ -351,7 +351,7 @@ const PeerHostApp = struct {
             const peer = try app.allocator.create(Peer);
             errdefer app.allocator.destroy(peer);
             peer.* = Peer.init(app.allocator, seat);
-            peer.disableThreadAffinity();
+            peer.enableRuntimeThreadChecks(true);
             _ = try peer.setBootstrap(.{ .ctx = app.server_state, .on_call = PeerServerState.onCall });
             peer.start(app.server_state, PeerServerState.peerError, PeerServerState.peerClose);
             try app.peers.append(app.allocator, peer);
@@ -400,6 +400,17 @@ const PeerHostApp = struct {
 const PeerD = quic.quic_app.Driver(PeerHostApp);
 
 fn runPeerHost(app: *PeerHostApp, listener: *quic.Listener, driver: *PeerD) void {
+    defer {
+        // The listener's will-close hooks still borrow each seat's Peer.
+        // Deliver those callbacks on their owner thread before freeing peers,
+        // including seats that the loop stopped before it could reap.
+        listener.deinit();
+        for (app.peers.items) |peer| {
+            peer.deinit();
+            app.allocator.destroy(peer);
+        }
+        app.peers.clearRetainingCapacity();
+    }
     var rx_buf: [4096]u8 = undefined;
     var tx_buf: [4096]u8 = undefined;
     while (!app.stop.load(.acquire)) {
@@ -459,16 +470,19 @@ test "Peer over an embedded quic session completes Bootstrap Call Return Finish"
     };
     driver.attach(&listener.server);
     defer driver.deinit();
-    defer listener.deinit();
 
-    var host_thread = try std.Thread.spawn(.{}, runPeerHost, .{ &app, &listener, &driver });
-    var started = false;
-    defer if (!started) {
+    const server_addr = listener.getAddress();
+    // A successfully started host owns listener and Peer teardown. On spawn
+    // failure there are no peers or callbacks, so clean up here instead.
+    var host_thread = std.Thread.spawn(.{}, runPeerHost, .{ &app, &listener, &driver }) catch |err| {
+        listener.deinit();
+        return err;
+    };
+    var host_joined = false;
+    defer if (!host_joined) {
         app.stop.store(true, .release);
         host_thread.join();
     };
-
-    const server_addr = listener.getAddress();
 
     var client_state = PeerClientState{};
     var client = try quic.Connection.initClient(allocator, std.testing.io, .{
@@ -504,25 +518,24 @@ test "Peer over an embedded quic session completes Bootstrap Call Return Finish"
     }
     if (completed) loopback.sleepMs(10);
 
-    client.requestClose();
-    for (app.seats.items) |seat| seat.requestClose();
-    client_thread.join();
-    joined = true;
+    // Stop the host with a live client: shutdown must deliver the remaining
+    // seat's close callback before destroying its Peer, even without a reap.
     app.stop.store(true, .release);
     host_thread.join();
-    started = true;
+    host_joined = true;
+    client.requestClose();
+    client_thread.join();
+    joined = true;
+
+    try std.testing.expectEqual(@as(usize, 1), server_state.closes.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), app.seats.items.len);
+    try std.testing.expectEqual(@as(usize, 0), app.peers.items.len);
 
     if (!completed) return error.EmbeddedPeerRoundTripTimedOut;
     try std.testing.expect(client_state.bootstrap_returned.load(.acquire));
     try std.testing.expect(!client_state.failed.load(.acquire));
     try std.testing.expect(!server_state.failed.load(.acquire));
     try std.testing.expectEqual(@as(usize, 1), server_state.calls.load(.acquire));
-
-    for (app.peers.items) |peer| {
-        peer.deinit();
-        allocator.destroy(peer);
-    }
-    app.peers.clearRetainingCapacity();
 }
 
 // ---------------------------------------------------------------------------

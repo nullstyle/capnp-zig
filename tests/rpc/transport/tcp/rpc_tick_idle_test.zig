@@ -256,3 +256,182 @@ test "readTimeout delivers data that arrives before the deadline" {
     const n = try transport.readTimeout(.{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(2_000), .clock = .awake } });
     try std.testing.expectEqual(payload.len, n);
 }
+
+fn withoutNetReadBatchConcurrency(userdata: ?*anyopaque, batch: *std.Io.Batch, timeout: std.Io.Timeout) std.Io.Batch.AwaitConcurrentError!void {
+    var index = batch.submitted.head;
+    while (index != .none) {
+        const submission = batch.storage[index.toIndex()].submission;
+        if (submission.operation == .net_read) return error.ConcurrencyUnavailable;
+        index = submission.node.next;
+    }
+    return std.testing.io.vtable.batchAwaitConcurrent(userdata, batch, timeout);
+}
+
+test "readTimeout works without batch concurrency and leaves the socket reusable" {
+    // The pinned Windows backend supports cancellable reads but not concurrent
+    // net_read batches. Model that public Io capability on every test host.
+    var vtable = std.testing.io.vtable.*;
+    vtable.batchAwaitConcurrent = withoutNetReadBatchConcurrency;
+    const io: std.Io = .{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    const pair = try tcp.createLoopbackSocketPair(io);
+    var peer_closed = false;
+    defer if (!peer_closed) tcp.closeFd(io, pair[1]);
+    var transport = try tcp.Transport.init(std.testing.allocator, io, pair[0], 64);
+    defer transport.deinit();
+
+    for (0..2) |_| {
+        const timeout: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(20), .clock = .awake } };
+        try std.testing.expectError(error.Timeout, transport.readTimeout(timeout.toDeadline(io)));
+        // The canceled read must have finished: it cannot remain in the
+        // background and consume bytes belonging to the next read.
+        const payload = "after-timeout";
+        try io_write_compat.writeAll(io, pair[1].handle, payload);
+        const n = try transport.readTimeout(.{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(2_000), .clock = .awake } });
+        try std.testing.expectEqualStrings(payload, transport.read_buf[0..n]);
+    }
+    tcp.closeFd(io, pair[1]);
+    peer_closed = true;
+    try std.testing.expectEqual(@as(usize, 0), try transport.readTimeout(.{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(2_000), .clock = .awake } }));
+}
+
+test "readTimeout preserves stream bytes across repeated deadline races" {
+    var vtable = std.testing.io.vtable.*;
+    vtable.batchAwaitConcurrent = withoutNetReadBatchConcurrency;
+    const io: std.Io = .{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    const pair = try tcp.createLoopbackSocketPair(io);
+    var transport = try tcp.Transport.init(std.testing.allocator, io, pair[0], 64);
+    defer transport.deinit();
+
+    var payload: [128]u8 = undefined;
+    for (&payload, 0..) |*byte, index| byte.* = @intCast(index);
+    var write_failed: std.atomic.Value(bool) = .init(false);
+    const Feeder = struct {
+        fn run(write_io: std.Io, fd: tcp.SocketFd, bytes: []const u8, failed: *std.atomic.Value(bool)) void {
+            defer tcp.closeFd(write_io, fd);
+            std.Io.sleep(write_io, .fromMilliseconds(10), .awake) catch {
+                failed.store(true, .release);
+                return;
+            };
+            for (bytes) |byte| {
+                io_write_compat.writeAll(write_io, fd.handle, &.{byte}) catch {
+                    failed.store(true, .release);
+                    return;
+                };
+                std.Io.sleep(write_io, .fromMilliseconds(1), .awake) catch {
+                    failed.store(true, .release);
+                    return;
+                };
+            }
+        }
+    };
+    const feeder = std.Thread.spawn(.{}, Feeder.run, .{ io, pair[1], &payload, &write_failed }) catch |err| {
+        tcp.closeFd(io, pair[1]);
+        return err;
+    };
+    defer feeder.join();
+
+    const end = std.Io.Clock.awake.now(io).nanoseconds + 10 * std.time.ns_per_s;
+    var received: usize = 0;
+    while (true) {
+        try std.testing.expect(std.Io.Clock.awake.now(io).nanoseconds < end);
+        const n = transport.readTimeout(.{ .duration = .{ .raw = .fromMilliseconds(1), .clock = .awake } }) catch |err| switch (err) {
+            error.Timeout => continue,
+            else => return err,
+        };
+        if (n == 0) break;
+        try std.testing.expect(n <= payload.len - received);
+        try std.testing.expectEqualSlices(u8, payload[received..][0..n], transport.read_buf[0..n]);
+        received += n;
+    }
+    try std.testing.expectEqual(payload.len, received);
+    try std.testing.expect(!write_failed.load(.acquire));
+}
+
+test "readTimeout retains a completed read when the batch reports a concurrency error" {
+    const CompletedBeforeError = struct {
+        fn awaitConcurrent(_: ?*anyopaque, batch: *std.Io.Batch, _: std.Io.Timeout) std.Io.Batch.AwaitConcurrentError!void {
+            // Io permits completions to remain available after an await
+            // error. Perform an actual socket read before reporting one.
+            try batch.awaitAsync(std.testing.io);
+            return error.ConcurrencyUnavailable;
+        }
+    };
+    var vtable = std.testing.io.vtable.*;
+    vtable.batchAwaitConcurrent = CompletedBeforeError.awaitConcurrent;
+    const io: std.Io = .{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    const pair = try tcp.createLoopbackSocketPair(io);
+    defer tcp.closeFd(io, pair[1]);
+    var transport = try tcp.Transport.init(std.testing.allocator, io, pair[0], 64);
+    defer transport.deinit();
+    const payload = "already-read";
+    try io_write_compat.writeAll(io, pair[1].handle, payload);
+    const n = try transport.readTimeout(.{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(50), .clock = .awake } });
+    try std.testing.expectEqualStrings(payload, transport.read_buf[0..n]);
+}
+
+test "readTimeout preserves a successful read while joining caller cancellation" {
+    const CompletionAtCancel = struct {
+        var consumed: std.atomic.Value(bool) = .init(false);
+        var finished: std.atomic.Value(bool) = .init(false);
+
+        fn awaitConcurrent(_: ?*anyopaque, batch: *std.Io.Batch, _: std.Io.Timeout) std.Io.Batch.AwaitConcurrentError!void {
+            if (comptime builtin.os.tag == .windows) {
+                const submission = batch.storage[batch.submitted.head.toIndex()].submission;
+                if (submission.operation == .device_io_control) {
+                    try batch.awaitAsync(std.testing.io);
+                    consumed.store(true, .release);
+                    defer finished.store(true, .release);
+                    // Model cancellation arriving after AFD completed the
+                    // receive but before the batch await reports completion.
+                    try std.Io.sleep(std.testing.io, .fromSeconds(60), .awake);
+                    return;
+                }
+            }
+            return error.ConcurrencyUnavailable;
+        }
+
+        fn operate(userdata: ?*anyopaque, operation: std.Io.Operation) std.Io.Cancelable!std.Io.Operation.Result {
+            const result = try std.testing.io.vtable.operate(userdata, operation);
+            if (operation == .net_read) {
+                _ = result.net_read catch return result;
+                consumed.store(true, .release);
+                // The socket read succeeded. Hold its publication until task
+                // cancellation joins it, then report those consumed bytes.
+                std.Io.sleep(std.testing.io, .fromSeconds(60), .awake) catch {};
+                finished.store(true, .release);
+                // The pinned Windows ordinary read loses a successful IOSB
+                // when cancellation races its APC. The timed path must use
+                // an owned receive batch, preserving that completion instead.
+                if (comptime builtin.os.tag == .windows) return error.Canceled;
+            }
+            return result;
+        }
+    };
+    CompletionAtCancel.consumed.store(false, .release);
+    CompletionAtCancel.finished.store(false, .release);
+    var vtable = std.testing.io.vtable.*;
+    vtable.batchAwaitConcurrent = CompletionAtCancel.awaitConcurrent;
+    vtable.operate = CompletionAtCancel.operate;
+    const io: std.Io = .{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    const pair = try tcp.createLoopbackSocketPair(io);
+    defer tcp.closeFd(io, pair[1]);
+    var transport = try tcp.Transport.init(std.testing.allocator, io, pair[0], 64);
+    defer transport.deinit();
+    const payload = "already-consumed";
+    try io_write_compat.writeAll(io, pair[1].handle, payload);
+
+    var read = try std.Io.concurrent(std.testing.io, tcp.Transport.readTimeout, .{
+        &transport,
+        std.Io.Timeout{ .duration = .{ .raw = .fromSeconds(60), .clock = .awake } },
+    });
+    defer _ = read.cancel(std.testing.io) catch 0;
+    const wait_until = std.Io.Clock.awake.now(std.testing.io).nanoseconds + std.time.ns_per_s * 2;
+    while (!CompletionAtCancel.consumed.load(.acquire)) {
+        try std.testing.expect(std.Io.Clock.awake.now(std.testing.io).nanoseconds < wait_until);
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
+    }
+    const result = read.cancel(std.testing.io);
+    try std.testing.expect(CompletionAtCancel.finished.load(.acquire));
+    try std.testing.expectEqualStrings(payload, transport.read_buf[0..payload.len]);
+    try std.testing.expectEqual(payload.len, try result);
+}

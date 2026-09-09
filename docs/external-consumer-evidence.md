@@ -53,10 +53,15 @@ normal pool and store cleanup. Omitting `--run-for-ms` preserves indefinite
 operation. An early run/start error cancels and joins the timer before the pool
 is destroyed.
 
-This bounds the connection drain period; it cannot forcibly interrupt an
-arbitrarily blocked synchronous handler. Calls still pending at transport close
-can fail, and an interrupted write may have been applied without its result
-reaching the caller. The persistence check therefore uses an acknowledged write.
+This bounds the connection drain period after pending accepts return; it cannot
+forcibly interrupt an arbitrarily blocked synchronous handler or guarantee a
+deadline if the backend permanently fails to wake a pending accept. On Windows,
+the listener must remain open until those accepts return: closing it underneath
+them aborts the process in the pinned Zig backend. Transient loopback wake
+failures are retried, and wake connections stay open until consumed. Calls still
+pending at transport close can fail, and an interrupted write may have been
+applied without its result reaching the caller. The persistence check therefore
+uses an acknowledged write.
 
 The external Deno `RpcWireClient` did not immediately reject pending calls on
 EOF: all 16 rejected about 1,003 ms after TCP closed through the explicit

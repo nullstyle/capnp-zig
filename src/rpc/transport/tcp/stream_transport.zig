@@ -273,8 +273,10 @@ pub const Transport = struct {
     /// `recv` returns EAGAIN, and `Io.Threaded`'s read path classifies
     /// EAGAIN as a programmer bug (`errnoBug`), so a sockopt deadline turns
     /// a normal timeout into a debug-build panic. The deadline belongs to
-    /// the Io operation, not to the socket — `operateTimeout` cancels the
-    /// operation itself, so no EAGAIN ever reaches the read path.
+    /// the Io operation, not to the socket. Windows uses an owned AFD receive
+    /// batch when concurrent network reads are unavailable; other backends
+    /// race a cancellable read task against the deadline. Every timed path joins
+    /// the read and preserves successful completions before returning.
     pub fn readTimeout(self: *Transport, timeout: std.Io.Timeout) ReadTimeoutError!usize {
         if (self.close_requested.load(.acquire)) return 0;
         var bufs: [1][]u8 = .{self.read_buf};
@@ -540,21 +542,129 @@ fn createSocketPair() ![2]net.Socket.Handle {
 
 /// Vectored read with a deadline, via the Io operation's own timeout.
 ///
-/// `net_read` is an `Io.Operation` on every std this tree supports, and
-/// `operateTimeout` cancels the operation when the deadline expires — the
-/// portable alternative to per-fd `SO_RCVTIMEO` games (see
-/// `Transport.readTimeout` for why those are a trap).
+/// Prefer the backend's batched operation support. The pinned Windows
+/// Threaded backend cannot submit concurrent net_read batches, so use an
+/// owned AFD receive batch there to preserve completions racing cancellation.
 fn ioReadVecTimeout(
     io: std.Io,
     fd: net.Socket.Handle,
     bufs: [][]u8,
     timeout: std.Io.Timeout,
 ) Transport.ReadTimeoutError!usize {
-    const result = try io.operateTimeout(.{ .net_read = .{
+    if (timeout == .none) return ioReadVec(io, fd, bufs);
+    const deadline = timeout.toDeadline(io);
+    var storage: [1]std.Io.Operation.Storage = undefined;
+    var batch: std.Io.Batch = .init(&storage);
+    defer batch.cancel(io);
+    batch.addAt(0, .{ .net_read = .{
         .socket_handle = fd,
         .data = bufs,
-    } }, timeout);
-    return result.net_read;
+    } });
+    batch.awaitConcurrent(io, deadline) catch |err| {
+        // An await error may leave pending work or completed reads. Join it
+        // before reusing the buffer and preserve bytes already consumed.
+        batch.cancel(io);
+        if (batch.next()) |completion| return completion.result.net_read;
+        return switch (err) {
+            error.ConcurrencyUnavailable => if (comptime builtin.os.tag == .windows)
+                ioReadVecWindowsTimeout(io, fd, bufs, deadline)
+            else
+                ioReadVecTaskTimeout(io, fd, bufs, deadline),
+            else => err,
+        };
+    };
+    const completion = batch.next() orelse return error.Unexpected;
+    return completion.result.net_read;
+}
+
+fn ioReadVecWindowsTimeout(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, deadline: std.Io.Timeout) Transport.ReadTimeoutError!usize {
+    const windows = std.os.windows;
+    var vectors: [std.Io.Threaded.max_iovecs_len]windows.AFD.WSABUF(.@"var") = undefined;
+    var vector_count: u32 = 0;
+    buffers: for (bufs) |buf| {
+        var remaining = buf;
+        while (remaining.len != 0) {
+            if (vector_count == vectors.len) break :buffers;
+            const len: u32 = @intCast(@min(remaining.len, std.math.maxInt(u32)));
+            vectors[vector_count] = .{ .buf = remaining.ptr, .len = len };
+            vector_count += 1;
+            remaining = remaining[len..];
+        }
+    }
+    if (vector_count == 0) return 0;
+    const receive: windows.AFD.RECV_INFO = .{
+        .BufferArray = &vectors,
+        .BufferCount = vector_count,
+        .AfdFlags = .{ .NO_FAST_IO = true, .OVERLAPPED = true },
+        .TdiFlags = .{ .NORMAL = true },
+    };
+    var storage: [1]std.Io.Operation.Storage = undefined;
+    var batch: std.Io.Batch = .init(&storage);
+    defer batch.cancel(io);
+    batch.addAt(0, .{ .device_io_control = .{
+        .file = .{ .handle = fd, .flags = .{ .nonblocking = true } },
+        .code = windows.IOCTL.AFD.RECEIVE,
+        .in = std.mem.asBytes(&receive),
+    } });
+    batch.awaitConcurrent(io, deadline) catch |err| {
+        // Ordinary Windows netRead can return Canceled after AFD consumed
+        // bytes. Batch cancellation instead retains the final successful
+        // IOSB, and keeps receive/vectors alive until the APC has completed.
+        batch.cancel(io);
+        if (batch.next()) |completion| return windowsReadResult(completion.result.device_io_control);
+        return err;
+    };
+    const completion = batch.next() orelse return error.Unexpected;
+    return windowsReadResult(completion.result.device_io_control);
+}
+
+fn windowsReadResult(iosb: std.os.windows.IO_STATUS_BLOCK) Transport.ReadError!usize {
+    return switch (iosb.u.Status) {
+        .SUCCESS => iosb.Information,
+        .CANCELLED => error.Canceled,
+        .INSUFFICIENT_RESOURCES => error.SystemResources,
+        .CONNECTION_RESET => error.ConnectionResetByPeer,
+        else => |status| std.os.windows.unexpectedStatus(status),
+    };
+}
+
+fn ioReadVecTaskTimeout(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, deadline: std.Io.Timeout) Transport.ReadTimeoutError!usize {
+    const Result = union(enum) {
+        read: Transport.ReadError!usize,
+        deadline: std.Io.Cancelable!void,
+    };
+    var completed: [2]Result = undefined;
+    var tasks = std.Io.Select(Result).init(io, &completed);
+    defer tasks.cancelDiscard();
+    // Start the timer first: failure to assign either task must not leave a
+    // read consuming bytes without a deadline or a caller to receive them.
+    try tasks.concurrent(.deadline, std.Io.Timeout.sleep, .{ deadline, io });
+    try tasks.concurrent(.read, ioReadVec, .{ io, fd, bufs });
+    const selected = tasks.await() catch |err| {
+        // Caller cancellation can race a successful read too. Join while the
+        // result queue remains open so consumed bytes still reach the caller.
+        while (tasks.cancel()) |pending| switch (pending) {
+            .read => |read| return read,
+            .deadline => {},
+        };
+        return err;
+    };
+    switch (selected) {
+        .read => |result| return result,
+        .deadline => |result| {
+            try result;
+            // Cancellation races completion. Preserve bytes (or EOF) if the
+            // read finished before its cancellation was observed.
+            while (tasks.cancel()) |pending| switch (pending) {
+                .read => |read| return read catch |err| switch (err) {
+                    error.Canceled => return error.Timeout,
+                    else => return err,
+                },
+                .deadline => {},
+            };
+            return error.Timeout;
+        },
+    }
 }
 
 /// Read from a socket handle via Io into a buffer.
