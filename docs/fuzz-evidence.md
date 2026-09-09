@@ -101,3 +101,21 @@ after the transport-teardown ownership fix passed with 10,269 executions in
 `run-1788918488819996000`, with the corrected corpus metadata.
 These finite local runs provide bounded regression
 evidence; they do not establish long-running production exposure.
+
+
+## Final committed campaign
+
+All **16/16 targets passed** at clean revision
+`86106c226f197d26f280442598155898e7fb1fb1` (`dirty: false`), with
+**163,818 measured executions** in total and 10,002–11,609 new executions
+per target. The sum of per-target command durations was **271.426 seconds**;
+this includes compilation and execution, and excludes runner setup. The final
+generated streaming lifecycle target completed 10,078 executions.
+
+This campaign used Zig `0.17.0-dev.1683+5ceec001b` on
+macos/aarch64, seed `0x6ca9b3d1`, and a floor of
+10,000 executions per target. The complete manifest, exact per-target receipts,
+and summary are preserved in [`parity-sprint-fuzz.json`](parity-sprint-fuzz.json).
+Raw logs and the original receipts are under
+`.zig-cache/fuzz-evidence/run-1788919344839469000/`. These are local results;
+remote CI completion is not implied.

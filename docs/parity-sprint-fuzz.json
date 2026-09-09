@@ -1,0 +1,1306 @@
+{
+  "campaign_directory": ".zig-cache/fuzz-evidence/run-1788919344839469000",
+  "manifest": {
+    "revision": "86106c226f197d26f280442598155898e7fb1fb1",
+    "dirty": false,
+    "git_status": "",
+    "zig_version": "0.17.0-dev.1683+5ceec001b",
+    "os": "macos",
+    "arch": "aarch64",
+    "requested_iterations_per_target": 10000,
+    "seed": 1823060945,
+    "targets": [
+      {
+        "suite": {
+          "source": "tests/fuzz/fuzz_targets.zig",
+          "step": "test-fuzz-target",
+          "filter": "fuzz-filter"
+        },
+        "name": "fuzz: Message.init validated parse",
+        "report_name": "fuzz_targets.test.fuzz: Message.init validated parse",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e"
+      },
+      {
+        "suite": {
+          "source": "tests/fuzz/fuzz_targets.zig",
+          "step": "test-fuzz-target",
+          "filter": "fuzz-filter"
+        },
+        "name": "fuzz: equivalent far list encodings preserve evolved fields",
+        "report_name": "fuzz_targets.test.fuzz: equivalent far list encodings preserve evolved fields",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e"
+      },
+      {
+        "suite": {
+          "source": "tests/fuzz/fuzz_targets.zig",
+          "step": "test-fuzz-target",
+          "filter": "fuzz-filter"
+        },
+        "name": "fuzz: CodeGeneratorRequest parse + generate",
+        "report_name": "fuzz_targets.test.fuzz: CodeGeneratorRequest parse + generate",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e"
+      },
+      {
+        "suite": {
+          "source": "tests/fuzz/fuzz_targets.zig",
+          "step": "test-fuzz-target",
+          "filter": "fuzz-filter"
+        },
+        "name": "fuzz: packed decode",
+        "report_name": "fuzz_targets.test.fuzz: packed decode",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e"
+      },
+      {
+        "suite": {
+          "source": "tests/fuzz/fuzz_targets.zig",
+          "step": "test-fuzz-target",
+          "filter": "fuzz-filter"
+        },
+        "name": "fuzz: flat (table-less) validated decode",
+        "report_name": "fuzz_targets.test.fuzz: flat (table-less) validated decode",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e"
+      },
+      {
+        "suite": {
+          "source": "tests/fuzz/fuzz_targets.zig",
+          "step": "test-fuzz-target",
+          "filter": "fuzz-filter"
+        },
+        "name": "fuzz: warm sturdy-ref envelope decode",
+        "report_name": "fuzz_targets.test.fuzz: warm sturdy-ref envelope decode",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e"
+      },
+      {
+        "suite": {
+          "source": "tests/fuzz/fuzz_targets.zig",
+          "step": "test-fuzz-target",
+          "filter": "fuzz-filter"
+        },
+        "name": "fuzz: stream framer chunking",
+        "report_name": "fuzz_targets.test.fuzz: stream framer chunking",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e"
+      },
+      {
+        "suite": {
+          "source": "tests/fuzz/fuzz_targets.zig",
+          "step": "test-fuzz-target",
+          "filter": "fuzz-filter"
+        },
+        "name": "fuzz: peer frame dispatch",
+        "report_name": "fuzz_targets.test.fuzz: peer frame dispatch",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e"
+      },
+      {
+        "suite": {
+          "source": "tests/fuzz/fuzz_targets.zig",
+          "step": "test-fuzz-target",
+          "filter": "fuzz-filter"
+        },
+        "name": "fuzz: peer structured frame dispatch",
+        "report_name": "fuzz_targets.test.fuzz: peer structured frame dispatch",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e"
+      },
+      {
+        "suite": {
+          "source": "tests/fuzz/fuzz_targets.zig",
+          "step": "test-fuzz-target",
+          "filter": "fuzz-filter"
+        },
+        "name": "fuzz: peer L3/L4 frame dispatch",
+        "report_name": "fuzz_targets.test.fuzz: peer L3/L4 frame dispatch",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e"
+      },
+      {
+        "suite": {
+          "source": "tests/fuzz/fuzz_targets.zig",
+          "step": "test-fuzz-target",
+          "filter": "fuzz-filter"
+        },
+        "name": "fuzz: quic length-delimited framer chunking",
+        "report_name": "fuzz_targets.test.fuzz: quic length-delimited framer chunking",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e"
+      },
+      {
+        "suite": {
+          "source": "tests/fuzz/fuzz_targets.zig",
+          "step": "test-fuzz-target",
+          "filter": "fuzz-filter"
+        },
+        "name": "fuzz: quic native control framer chunking",
+        "report_name": "fuzz_targets.test.fuzz: quic native control framer chunking",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e"
+      },
+      {
+        "suite": {
+          "source": "tests/fuzz/fuzz_targets.zig",
+          "step": "test-fuzz-target",
+          "filter": "fuzz-filter"
+        },
+        "name": "fuzz: persistence restore / sturdy-ref decode",
+        "report_name": "fuzz_targets.test.fuzz: persistence restore / sturdy-ref decode",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e"
+      },
+      {
+        "suite": {
+          "source": "tests/reflection/fuzz_test.zig",
+          "step": "test-fuzz-reflection",
+          "filter": "reflection-fuzz-filter"
+        },
+        "name": "fuzz: bounded reflection registry loading",
+        "report_name": "fuzz_test.test.fuzz: bounded reflection registry loading",
+        "source_sha256": "718007ca880198c1af05a7c620cd4525aa953557ec24527fc57d66c56fc39982"
+      },
+      {
+        "suite": {
+          "source": "tests/reflection/fuzz_test.zig",
+          "step": "test-fuzz-reflection",
+          "filter": "reflection-fuzz-filter"
+        },
+        "name": "fuzz: dynamic mutation agrees with generated readers",
+        "report_name": "fuzz_test.test.fuzz: dynamic mutation agrees with generated readers",
+        "source_sha256": "718007ca880198c1af05a7c620cd4525aa953557ec24527fc57d66c56fc39982"
+      },
+      {
+        "suite": {
+          "source": "tests/fuzz/generated_rpc_test.zig",
+          "step": "test-fuzz-generated-rpc",
+          "filter": "generated-rpc-fuzz-filter"
+        },
+        "name": "fuzz: generated streaming lifecycle and ordered barriers",
+        "report_name": "generated_rpc_test.test.fuzz: generated streaming lifecycle and ordered barriers",
+        "source_sha256": "6bd8fbec54854e6b3bfe9407edef31399da0809662554a866dd453189c95717c"
+      }
+    ],
+    "corpus_path": ".zig-cache/f",
+    "coverage_path": ".zig-cache/v",
+    "working_directory": "/Users/nullstyle/prj/zig/capnp-zig"
+  },
+  "receipts": [
+    {
+      "source": "tests/fuzz/fuzz_targets.zig",
+      "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+      "target": "fuzz: Message.init validated parse",
+      "report_name": "fuzz_targets.test.fuzz: Message.init validated parse",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-target",
+        "-Dfuzz-filter=fuzz: Message.init validated parse",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 2834,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 10002,
+        "after": 20004,
+        "iterations": 10002
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/00.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/00.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/fuzz/fuzz_targets.zig",
+      "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+      "target": "fuzz: equivalent far list encodings preserve evolved fields",
+      "report_name": "fuzz_targets.test.fuzz: equivalent far list encodings preserve evolved fields",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-target",
+        "-Dfuzz-filter=fuzz: equivalent far list encodings preserve evolved fields",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 20883,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 20026,
+        "after": 30039,
+        "iterations": 10013
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/01.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/01.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/fuzz/fuzz_targets.zig",
+      "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+      "target": "fuzz: CodeGeneratorRequest parse + generate",
+      "report_name": "fuzz_targets.test.fuzz: CodeGeneratorRequest parse + generate",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-target",
+        "-Dfuzz-filter=fuzz: CodeGeneratorRequest parse + generate",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 6381,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 0,
+        "after": 10002,
+        "iterations": 10002
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/02.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/02.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/fuzz/fuzz_targets.zig",
+      "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+      "target": "fuzz: packed decode",
+      "report_name": "fuzz_targets.test.fuzz: packed decode",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-target",
+        "-Dfuzz-filter=fuzz: packed decode",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 3407,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 10384,
+        "after": 20688,
+        "iterations": 10304
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/03.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/03.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/fuzz/fuzz_targets.zig",
+      "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+      "target": "fuzz: flat (table-less) validated decode",
+      "report_name": "fuzz_targets.test.fuzz: flat (table-less) validated decode",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-target",
+        "-Dfuzz-filter=fuzz: flat (table-less) validated decode",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 2918,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 10755,
+        "after": 20785,
+        "iterations": 10030
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/04.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/04.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/fuzz/fuzz_targets.zig",
+      "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+      "target": "fuzz: warm sturdy-ref envelope decode",
+      "report_name": "fuzz_targets.test.fuzz: warm sturdy-ref envelope decode",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-target",
+        "-Dfuzz-filter=fuzz: warm sturdy-ref envelope decode",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 2707,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 10003,
+        "after": 20006,
+        "iterations": 10003
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/05.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/05.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/fuzz/fuzz_targets.zig",
+      "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+      "target": "fuzz: stream framer chunking",
+      "report_name": "fuzz_targets.test.fuzz: stream framer chunking",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-target",
+        "-Dfuzz-filter=fuzz: stream framer chunking",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 3241,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 12210,
+        "after": 22240,
+        "iterations": 10030
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/06.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/06.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/fuzz/fuzz_targets.zig",
+      "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+      "target": "fuzz: peer frame dispatch",
+      "report_name": "fuzz_targets.test.fuzz: peer frame dispatch",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-target",
+        "-Dfuzz-filter=fuzz: peer frame dispatch",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 27968,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 0,
+        "after": 10028,
+        "iterations": 10028
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/07.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/07.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/fuzz/fuzz_targets.zig",
+      "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+      "target": "fuzz: peer structured frame dispatch",
+      "report_name": "fuzz_targets.test.fuzz: peer structured frame dispatch",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-target",
+        "-Dfuzz-filter=fuzz: peer structured frame dispatch",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 38072,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 0,
+        "after": 10524,
+        "iterations": 10524
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/08.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/08.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/fuzz/fuzz_targets.zig",
+      "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+      "target": "fuzz: peer L3/L4 frame dispatch",
+      "report_name": "fuzz_targets.test.fuzz: peer L3/L4 frame dispatch",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-target",
+        "-Dfuzz-filter=fuzz: peer L3/L4 frame dispatch",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 53939,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 0,
+        "after": 10581,
+        "iterations": 10581
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/09.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/09.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/fuzz/fuzz_targets.zig",
+      "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+      "target": "fuzz: quic length-delimited framer chunking",
+      "report_name": "fuzz_targets.test.fuzz: quic length-delimited framer chunking",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-target",
+        "-Dfuzz-filter=fuzz: quic length-delimited framer chunking",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 3315,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 11108,
+        "after": 21138,
+        "iterations": 10030
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/10.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/10.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/fuzz/fuzz_targets.zig",
+      "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+      "target": "fuzz: quic native control framer chunking",
+      "report_name": "fuzz_targets.test.fuzz: quic native control framer chunking",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-target",
+        "-Dfuzz-filter=fuzz: quic native control framer chunking",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 3400,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 10251,
+        "after": 20492,
+        "iterations": 10241
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/11.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/11.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/fuzz/fuzz_targets.zig",
+      "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+      "target": "fuzz: persistence restore / sturdy-ref decode",
+      "report_name": "fuzz_targets.test.fuzz: persistence restore / sturdy-ref decode",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-target",
+        "-Dfuzz-filter=fuzz: persistence restore / sturdy-ref decode",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 35066,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 0,
+        "after": 10316,
+        "iterations": 10316
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/12.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/12.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/reflection/fuzz_test.zig",
+      "source_sha256": "718007ca880198c1af05a7c620cd4525aa953557ec24527fc57d66c56fc39982",
+      "target": "fuzz: bounded reflection registry loading",
+      "report_name": "fuzz_test.test.fuzz: bounded reflection registry loading",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-reflection",
+        "-Dreflection-fuzz-filter=fuzz: bounded reflection registry loading",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 6851,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 16245,
+        "after": 27854,
+        "iterations": 11609
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/13.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/13.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/reflection/fuzz_test.zig",
+      "source_sha256": "718007ca880198c1af05a7c620cd4525aa953557ec24527fc57d66c56fc39982",
+      "target": "fuzz: dynamic mutation agrees with generated readers",
+      "report_name": "fuzz_test.test.fuzz: dynamic mutation agrees with generated readers",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-reflection",
+        "-Dreflection-fuzz-filter=fuzz: dynamic mutation agrees with generated readers",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 11219,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 0,
+        "after": 10027,
+        "iterations": 10027
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/14.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/14.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    },
+    {
+      "source": "tests/fuzz/generated_rpc_test.zig",
+      "source_sha256": "6bd8fbec54854e6b3bfe9407edef31399da0809662554a866dd453189c95717c",
+      "target": "fuzz: generated streaming lifecycle and ordered barriers",
+      "report_name": "generated_rpc_test.test.fuzz: generated streaming lifecycle and ordered barriers",
+      "argv": [
+        "zig",
+        "build",
+        "test-fuzz-generated-rpc",
+        "-Dgenerated-rpc-fuzz-filter=fuzz: generated streaming lifecycle and ordered barriers",
+        "--fuzz=10000",
+        "--seed=0x6ca9b3d1",
+        "-j1",
+        "--summary",
+        "all"
+      ],
+      "requested_iterations": 10000,
+      "seed": 1823060945,
+      "elapsed_ms": 49225,
+      "status": "passed",
+      "failure": null,
+      "report": {
+        "before": 0,
+        "after": 10078,
+        "iterations": 10078
+      },
+      "process_term": {
+        "exited": 0
+      },
+      "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/15.stdout.log",
+      "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/15.stderr.log",
+      "crash_input_path": null,
+      "corpus_path": ".zig-cache/f",
+      "coverage_path": ".zig-cache/v"
+    }
+  ],
+  "summary": {
+    "targets": 16,
+    "failed": 0,
+    "receipts": [
+      {
+        "source": "tests/fuzz/fuzz_targets.zig",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+        "target": "fuzz: Message.init validated parse",
+        "report_name": "fuzz_targets.test.fuzz: Message.init validated parse",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-target",
+          "-Dfuzz-filter=fuzz: Message.init validated parse",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 2834,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 10002,
+          "after": 20004,
+          "iterations": 10002
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/00.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/00.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/fuzz/fuzz_targets.zig",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+        "target": "fuzz: equivalent far list encodings preserve evolved fields",
+        "report_name": "fuzz_targets.test.fuzz: equivalent far list encodings preserve evolved fields",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-target",
+          "-Dfuzz-filter=fuzz: equivalent far list encodings preserve evolved fields",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 20883,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 20026,
+          "after": 30039,
+          "iterations": 10013
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/01.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/01.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/fuzz/fuzz_targets.zig",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+        "target": "fuzz: CodeGeneratorRequest parse + generate",
+        "report_name": "fuzz_targets.test.fuzz: CodeGeneratorRequest parse + generate",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-target",
+          "-Dfuzz-filter=fuzz: CodeGeneratorRequest parse + generate",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 6381,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 0,
+          "after": 10002,
+          "iterations": 10002
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/02.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/02.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/fuzz/fuzz_targets.zig",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+        "target": "fuzz: packed decode",
+        "report_name": "fuzz_targets.test.fuzz: packed decode",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-target",
+          "-Dfuzz-filter=fuzz: packed decode",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 3407,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 10384,
+          "after": 20688,
+          "iterations": 10304
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/03.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/03.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/fuzz/fuzz_targets.zig",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+        "target": "fuzz: flat (table-less) validated decode",
+        "report_name": "fuzz_targets.test.fuzz: flat (table-less) validated decode",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-target",
+          "-Dfuzz-filter=fuzz: flat (table-less) validated decode",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 2918,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 10755,
+          "after": 20785,
+          "iterations": 10030
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/04.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/04.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/fuzz/fuzz_targets.zig",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+        "target": "fuzz: warm sturdy-ref envelope decode",
+        "report_name": "fuzz_targets.test.fuzz: warm sturdy-ref envelope decode",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-target",
+          "-Dfuzz-filter=fuzz: warm sturdy-ref envelope decode",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 2707,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 10003,
+          "after": 20006,
+          "iterations": 10003
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/05.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/05.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/fuzz/fuzz_targets.zig",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+        "target": "fuzz: stream framer chunking",
+        "report_name": "fuzz_targets.test.fuzz: stream framer chunking",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-target",
+          "-Dfuzz-filter=fuzz: stream framer chunking",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 3241,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 12210,
+          "after": 22240,
+          "iterations": 10030
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/06.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/06.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/fuzz/fuzz_targets.zig",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+        "target": "fuzz: peer frame dispatch",
+        "report_name": "fuzz_targets.test.fuzz: peer frame dispatch",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-target",
+          "-Dfuzz-filter=fuzz: peer frame dispatch",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 27968,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 0,
+          "after": 10028,
+          "iterations": 10028
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/07.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/07.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/fuzz/fuzz_targets.zig",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+        "target": "fuzz: peer structured frame dispatch",
+        "report_name": "fuzz_targets.test.fuzz: peer structured frame dispatch",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-target",
+          "-Dfuzz-filter=fuzz: peer structured frame dispatch",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 38072,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 0,
+          "after": 10524,
+          "iterations": 10524
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/08.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/08.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/fuzz/fuzz_targets.zig",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+        "target": "fuzz: peer L3/L4 frame dispatch",
+        "report_name": "fuzz_targets.test.fuzz: peer L3/L4 frame dispatch",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-target",
+          "-Dfuzz-filter=fuzz: peer L3/L4 frame dispatch",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 53939,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 0,
+          "after": 10581,
+          "iterations": 10581
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/09.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/09.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/fuzz/fuzz_targets.zig",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+        "target": "fuzz: quic length-delimited framer chunking",
+        "report_name": "fuzz_targets.test.fuzz: quic length-delimited framer chunking",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-target",
+          "-Dfuzz-filter=fuzz: quic length-delimited framer chunking",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 3315,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 11108,
+          "after": 21138,
+          "iterations": 10030
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/10.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/10.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/fuzz/fuzz_targets.zig",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+        "target": "fuzz: quic native control framer chunking",
+        "report_name": "fuzz_targets.test.fuzz: quic native control framer chunking",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-target",
+          "-Dfuzz-filter=fuzz: quic native control framer chunking",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 3400,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 10251,
+          "after": 20492,
+          "iterations": 10241
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/11.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/11.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/fuzz/fuzz_targets.zig",
+        "source_sha256": "2b43d50ae5b64b432b3d4e981a503170c247cd09dcd2225a12ca4cf7249a735e",
+        "target": "fuzz: persistence restore / sturdy-ref decode",
+        "report_name": "fuzz_targets.test.fuzz: persistence restore / sturdy-ref decode",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-target",
+          "-Dfuzz-filter=fuzz: persistence restore / sturdy-ref decode",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 35066,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 0,
+          "after": 10316,
+          "iterations": 10316
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/12.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/12.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/reflection/fuzz_test.zig",
+        "source_sha256": "718007ca880198c1af05a7c620cd4525aa953557ec24527fc57d66c56fc39982",
+        "target": "fuzz: bounded reflection registry loading",
+        "report_name": "fuzz_test.test.fuzz: bounded reflection registry loading",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-reflection",
+          "-Dreflection-fuzz-filter=fuzz: bounded reflection registry loading",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 6851,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 16245,
+          "after": 27854,
+          "iterations": 11609
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/13.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/13.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/reflection/fuzz_test.zig",
+        "source_sha256": "718007ca880198c1af05a7c620cd4525aa953557ec24527fc57d66c56fc39982",
+        "target": "fuzz: dynamic mutation agrees with generated readers",
+        "report_name": "fuzz_test.test.fuzz: dynamic mutation agrees with generated readers",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-reflection",
+          "-Dreflection-fuzz-filter=fuzz: dynamic mutation agrees with generated readers",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 11219,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 0,
+          "after": 10027,
+          "iterations": 10027
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/14.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/14.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      },
+      {
+        "source": "tests/fuzz/generated_rpc_test.zig",
+        "source_sha256": "6bd8fbec54854e6b3bfe9407edef31399da0809662554a866dd453189c95717c",
+        "target": "fuzz: generated streaming lifecycle and ordered barriers",
+        "report_name": "generated_rpc_test.test.fuzz: generated streaming lifecycle and ordered barriers",
+        "argv": [
+          "zig",
+          "build",
+          "test-fuzz-generated-rpc",
+          "-Dgenerated-rpc-fuzz-filter=fuzz: generated streaming lifecycle and ordered barriers",
+          "--fuzz=10000",
+          "--seed=0x6ca9b3d1",
+          "-j1",
+          "--summary",
+          "all"
+        ],
+        "requested_iterations": 10000,
+        "seed": 1823060945,
+        "elapsed_ms": 49225,
+        "status": "passed",
+        "failure": null,
+        "report": {
+          "before": 0,
+          "after": 10078,
+          "iterations": 10078
+        },
+        "process_term": {
+          "exited": 0
+        },
+        "stdout_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/15.stdout.log",
+        "stderr_path": ".zig-cache/fuzz-evidence/run-1788919344839469000/15.stderr.log",
+        "crash_input_path": null,
+        "corpus_path": ".zig-cache/f",
+        "coverage_path": ".zig-cache/v"
+      }
+    ]
+  }
+}
