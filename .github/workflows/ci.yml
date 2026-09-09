@@ -96,12 +96,19 @@ jobs:
       # cannot read the environment to check the tool.
       - uses: ./.github/actions/setup-capnp
 
+      - name: Verify test command execution and failure propagation
+        shell: bash
+        run: bash tools/check-stall-watchdog.sh
+
       - name: Run tests
         # See the job timeout above. Wrapped in the stall watchdog so a hang
         # dumps every live test binary's threads and stacks into this log
         # before the cap kills the step, instead of dying anonymously.
         timeout-minutes: 35
-        run: tools/stall_watchdog.sh zig build test --summary all
+        # PowerShell can open .sh via a Windows file association and report
+        # success before the child has run. Execute and wait in Bash explicitly.
+        shell: bash
+        run: bash tools/stall_watchdog.sh zig build test --summary all
 
       - name: Check compilation
         run: zig build check
@@ -277,7 +284,8 @@ jobs:
       # root a QUIC consumer actually gets.
       - name: Run the full suite against the QUIC library root
         if: runner.os == 'Linux'
-        run: tools/stall_watchdog.sh zig build -Dquic=true test --summary all
+        shell: bash
+        run: bash tools/stall_watchdog.sh zig build -Dquic=true test --summary all
 
       # The default `check-api` job runs WITHOUT -Dquic=true, so it sees
       # `rpc.transport.quic` as the disabled stub and the real ServerOptions
@@ -456,7 +464,8 @@ jobs:
       - name: Run threaded suites under ThreadSanitizer
         # This lane hung for its entire existence before the wake-drain fix and
         # reported nothing. Watchdogged so a recurrence names itself.
-        run: tools/stall_watchdog.sh zig build test-tsan --summary all
+        shell: bash
+        run: bash tools/stall_watchdog.sh zig build test-tsan --summary all
 
   e2e-zig:
     name: Zig e2e interop
@@ -580,8 +589,13 @@ jobs:
       # optimized build. This includes the L3 VatC hardening regressions on all
       # three native CI platforms; the smaller `test-release-safe` step remains
       # only a fast local/preflight subset.
+      - name: Verify test command execution and failure propagation
+        shell: bash
+        run: bash tools/check-stall-watchdog.sh
+
       - name: Run the full suite under ReleaseSafe
-        run: tools/stall_watchdog.sh zig build test -Doptimize=ReleaseSafe --summary all
+        shell: bash
+        run: bash tools/stall_watchdog.sh zig build test -Doptimize=ReleaseSafe --summary all
 
       # ReleaseFast, not for speed but because it is the only mode that does NOT
       # poison a freed pointer. A use-after-free reached from a destructor is

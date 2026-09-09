@@ -89,6 +89,14 @@ Server flags:
 - `--db-path` (default `kvstore-data`)
 - `--backup-dir` (default `kvstore-backups`)
 - `--quiet` (suppresses debug/info logs)
+- `--run-for-ms N` (optional; stop accepting after N milliseconds, otherwise run indefinitely)
+- `--drain-ms N` (default `1000`; allow existing connections to finish before closing them during finite-run shutdown)
+
+For a finite service run, pass `opts="--run-for-ms 30000 --drain-ms 1000"` to
+`just server`. The timer starts after initialization. Shutdown joins the workers
+and runs normal service/store cleanup; it does not install a signal handler.
+Clients should use call deadlines because calls still pending when their
+connection closes may fail instead of receiving a result.
 
 ### Start client
 

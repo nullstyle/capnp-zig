@@ -389,7 +389,9 @@ pub const Store = struct {
     fn openBackupDir(self: *Store) !Io.Dir {
         var cwd = Io.Dir.cwd();
         try cwd.createDirPath(self.io, self.backup_dir_path);
-        return cwd.openDir(self.io, self.backup_dir_path, .{});
+        // Backup discovery iterates this handle; Linux requires that access
+        // explicitly instead of the default path-only directory handle.
+        return cwd.openDir(self.io, self.backup_dir_path, .{ .iterate = true });
     }
 
     /// Collect the ids of every `backup-<id>.wal` in `backup_dir`, ascending.
@@ -518,4 +520,23 @@ test "store: put/get/list/persist/backup/restore" {
         try std.testing.expectEqual(@as(usize, 1), backups.len);
         try std.testing.expectEqual(@as(u32, 1), backups[0].backup_id);
     }
+}
+
+test "store: empty backup inventory is queryable before the first backup" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var data_buf: [128]u8 = undefined;
+    const data_path = try std.fmt.bufPrint(&data_buf, ".zig-cache/tmp/{s}/data", .{tmp.sub_path});
+    var backup_buf: [128]u8 = undefined;
+    const backup_path = try std.fmt.bufPrint(&backup_buf, ".zig-cache/tmp/{s}/backups", .{tmp.sub_path});
+    var store = try Store.open(gpa, io, data_path, backup_path);
+    defer store.deinit();
+
+    const backups = try store.listBackups(gpa);
+    defer gpa.free(backups);
+    try std.testing.expectEqual(@as(usize, 0), backups.len);
+    try std.testing.expectError(error.NoBackupsAvailable, store.restoreFromBackup(0, false));
 }

@@ -35,6 +35,9 @@ reader changes cannot silently leave this service uncompilable.
 Local validation before the first CI push:
 
 - Full Debug suite: 199 build steps and 1,828 tests passed.
+- Full ReleaseSafe suite: 199 build steps and 1,986 tests passed. The one
+  existing skipped test observes Debug-only thread-affinity state and passes
+  in the Debug suite.
 - Code generation, reflection, hardening, and Stable API checks passed.
 - Every committed generated artifact reproduced without changes.
 - Package preflight passed for clean default, core, and QUIC consumers in Debug

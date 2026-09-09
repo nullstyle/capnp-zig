@@ -823,17 +823,24 @@ const CliArgs = struct {
     db_path: []const u8 = "kvstore-data",
     backup_dir: []const u8 = "kvstore-backups",
     quiet: bool = false,
+    run_for_ms: ?u32 = null,
+    drain_ms: u32 = 1000,
 };
 
 fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
+    var iterator = try std.process.Args.Iterator.initAllocator(args, allocator);
+    defer iterator.deinit();
+    return parseArguments(allocator, &iterator);
+}
+
+fn parseArguments(allocator: Allocator, args_iter: anytype) !CliArgs {
     var out = CliArgs{};
     var host_text: []const u8 = out.host;
     var db_path_text: []const u8 = out.db_path;
     var backup_dir_text: []const u8 = out.backup_dir;
 
-    var args_iter = std.process.Args.Iterator.init(args);
-    _ = args_iter.skip(); // skip program name
-    var need_value: enum { none, host, port, db_path, backup_dir } = .none;
+    _ = args_iter.next(); // skip program name
+    var need_value: enum { none, host, port, db_path, backup_dir, run_for_ms, drain_ms } = .none;
     while (args_iter.next()) |arg| {
         switch (need_value) {
             .host => {
@@ -853,6 +860,16 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
             },
             .backup_dir => {
                 backup_dir_text = arg;
+                need_value = .none;
+                continue;
+            },
+            .run_for_ms => {
+                out.run_for_ms = try std.fmt.parseInt(u32, arg, 10);
+                need_value = .none;
+                continue;
+            },
+            .drain_ms => {
+                out.drain_ms = try std.fmt.parseInt(u32, arg, 10);
                 need_value = .none;
                 continue;
             },
@@ -877,6 +894,14 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
             need_value = .backup_dir;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--run-for-ms")) {
+            need_value = .run_for_ms;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--drain-ms")) {
+            need_value = .drain_ms;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--quiet")) {
             out.quiet = true;
             continue;
@@ -897,10 +922,29 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
 
 fn usage() void {
     std.debug.print(
-        \\Usage: kvstore-server [--host 127.0.0.1] [--port 9000] [--db-path kvstore-data] [--backup-dir kvstore-backups] [--quiet]
+        \\Usage: kvstore-server [--host 127.0.0.1] [--port 9000] [--db-path kvstore-data] [--backup-dir kvstore-backups] [--quiet] [--run-for-ms N] [--drain-ms N]
         \\  --quiet             suppress debug/info logs
+        \\  --run-for-ms N      stop accepting after N milliseconds (omitted: run forever)
+        \\  --drain-ms N        wait up to N milliseconds for clients to close (default:1000)
         \\
     , .{});
+}
+
+fn shutdownAfter(pool: *rpc.integration.worker_pool.WorkerPool, run_for_ms: u32, drain_ms: u32) std.Io.Cancelable!void {
+    const duration: std.Io.Clock.Duration = .{
+        .raw = std.Io.Duration.fromMilliseconds(run_for_ms),
+        .clock = .awake,
+    };
+    try duration.sleep(pool.io);
+    pool.shutdownGraceful(drain_ms);
+}
+
+fn runPool(pool: *rpc.integration.worker_pool.WorkerPool, run_for_ms: ?u32, drain_ms: u32) !void {
+    var shutdown_tasks: std.Io.Group = .init;
+    // A run/start failure cancels the timer before the pool can be destroyed.
+    defer shutdown_tasks.cancel(pool.io);
+    if (run_for_ms) |milliseconds| try shutdown_tasks.concurrent(pool.io, shutdownAfter, .{ pool, milliseconds, drain_ms });
+    try pool.run();
 }
 
 // ---------------------------------------------------------------------------
@@ -957,12 +1001,14 @@ pub fn main(init: std.process.Init) !void {
         });
     }
 
-    try pool.run();
+    try runPool(&pool, args.run_for_ms, args.drain_ms);
 }
 
 test "kvstore server defaults bind localhost" {
     const args = CliArgs{};
     try std.testing.expectEqualStrings("127.0.0.1", args.host);
+    try std.testing.expectEqual(@as(?u32, null), args.run_for_ms);
+    try std.testing.expectEqual(@as(u32, 1000), args.drain_ms);
 
     const address = try std.Io.net.IpAddress.parse(args.host, args.port);
     try std.testing.expectEqual(@as(u16, 9000), address.ip4.port);
@@ -982,4 +1028,35 @@ test "kvstore server rejects over-limit keys and values" {
 test "kvstore server rejects over-limit list requests" {
     try std.testing.expectError(error.ListLimitTooLarge, validateListLimit(Limits.max_list_limit + 1));
     try validateListLimit(Limits.max_list_limit);
+}
+
+test "kvstore server parses finite lifetime and drain bounds" {
+    const allocator = std.testing.allocator;
+    var tokens = std.mem.tokenizeScalar(u8, "kvstore-server --run-for-ms 25 --drain-ms 50", ' ');
+    const args = try parseArguments(allocator, &tokens);
+    defer allocator.free(args.host);
+    defer allocator.free(args.db_path);
+    defer allocator.free(args.backup_dir);
+    try std.testing.expectEqual(@as(?u32, 25), args.run_for_ms);
+    try std.testing.expectEqual(@as(u32, 50), args.drain_ms);
+
+    var missing = std.mem.tokenizeScalar(u8, "kvstore-server --run-for-ms", ' ');
+    try std.testing.expectError(error.MissingArgValue, parseArguments(allocator, &missing));
+    var overflow = std.mem.tokenizeScalar(u8, "kvstore-server --drain-ms 4294967296", ' ');
+    try std.testing.expectError(error.Overflow, parseArguments(allocator, &overflow));
+}
+
+test "kvstore finite lifetime joins an idle pool through normal cleanup" {
+    const Reject = struct {
+        fn accept(_: *anyopaque, _: *rpc.peer.Peer, _: *rpc.transport.tcp.Connection, _: u32) anyerror!rpc.integration.worker_pool.WorkerPool.AcceptDecision {
+            return .reject;
+        }
+    };
+    var context: u8 = 0;
+    var pool = try rpc.integration.worker_pool.WorkerPool.init(std.testing.allocator, std.testing.io, .{ .ip4 = .loopback(0) }, &context, Reject.accept, .{ .concurrency = 2 });
+    defer pool.deinit();
+    try runPool(&pool, 10, 20);
+    try std.testing.expect(pool.should_stop.load(.acquire));
+    try std.testing.expect(!pool.run_active.load(.acquire));
+    for (pool.workers) |worker| try std.testing.expect(worker.thread == null);
 }
