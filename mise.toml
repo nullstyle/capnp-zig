@@ -1,5 +1,5 @@
 [tools]
-cmake = "3.31.8"
+cmake = "4.4.3"
 act = "latest"
 go = "1.26.0"
 just = "latest"
