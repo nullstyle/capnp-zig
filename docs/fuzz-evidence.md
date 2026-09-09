@@ -9,12 +9,18 @@ mise exec -- zig run tools/fuzz_evidence.zig -- --runs=10000
 
 The runner discovers every `test "fuzz: ..."` declaration in
 `tests/fuzz/fuzz_targets.zig`, `tests/reflection/fuzz_test.zig`, and
-`tests/fuzz/generated_rpc_test.zig`. There are currently 16 targets. Each runs
+`tests/fuzz/generated_rpc_test.zig`. There are currently 17 targets. Each runs
 separately with an exact build filter, a fixed seed, and a five-minute deadline.
 Success requires an exited-zero child and exactly one report naming that
 target, with a positive `Runs: before -> after` delta of at least the requested
 count. Compilation time, a timeout, an empty report, a different target's
 report, and a failing oracle never count as fuzz activity.
+
+The structured double-far copy target always constructs valid landing pads,
+varies target offsets and scalar contents, and checks generated and dynamic
+copies of both populated and empty structs. Its empty case checks presence as
+well as field contents, so a zero landing-pad tag cannot silently become null.
+This target was added after the 16-target campaign recorded below.
 
 Each invocation creates `.zig-cache/fuzz-evidence/run-<timestamp>/` containing a
 manifest, per-target JSON receipts, raw stdout/stderr logs, and a summary.

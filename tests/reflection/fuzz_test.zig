@@ -5,6 +5,7 @@ const generated = @import("generated");
 const message = capnp.message;
 const reflection = capnp.reflection;
 const descriptor = @embedFile("request.bin");
+const double_far = @import("double_far_fixture.zig");
 
 fn fuzzRegistry(_: void, smith: *std.testing.Smith) !void {
     var bytes: [descriptor.len]u8 = descriptor.*;
@@ -70,6 +71,46 @@ fn fuzzMutation(registry: reflection.Registry, smith: *std.testing.Smith) !void 
     try std.testing.expectEqualStrings("unknown newer field", try unknown.readTextStrict(schema.proto().pointer_count));
 }
 
+fn fuzzDoubleFarCopy(registry: reflection.Registry, smith: *std.testing.Smith) !void {
+    const schema = try (try generated.brands.Pointers.capnpSchema.resolve(registry)).asStruct();
+    const prefix = smith.valueRangeAtMost(u32, 0, 3);
+    const values = [3]u64{ smith.value(u64), smith.value(u64), smith.value(u64) };
+    // Both encodings are valid for every input; empty structs have a zero tag
+    // in the landing pad but must retain non-null presence after copying.
+    for ([_]bool{ false, true }) |empty| {
+        const frame = double_far.make(.{ .prefix_words = prefix, .values = values, .empty = empty });
+        var source = try message.Message.init(std.testing.allocator, frame.bytes[0..frame.len], .{});
+        defer source.deinit();
+        const pointer = try source.getRootAnyPointer();
+        try std.testing.expect(!pointer.isNull());
+        for ([_]bool{ false, true }) |dynamic| {
+            var destination = message.MessageBuilder.init(std.testing.allocator);
+            defer destination.deinit();
+            if (dynamic) {
+                const root = try reflection.DynamicStruct.Builder.init(schema, &destination);
+                try root.set("any", .{ .any_pointer = pointer });
+            } else {
+                var root = try generated.brands.Pointers.Builder.init(&destination);
+                try root.setAny(pointer);
+            }
+            var storage = capnp.generated_helpers.ReaderStorage.init(std.testing.allocator);
+            defer storage.deinit();
+            try storage.bind(&destination);
+            const typed = try generated.brands.Pointers.Reader.init(&storage.message_view);
+            try std.testing.expect(typed.hasAny());
+            const copied = try (try typed.getAny()).getStruct();
+            try std.testing.expectEqual(@as(u16, if (empty) 0 else 2), copied.data_size);
+            try std.testing.expectEqual(@as(u16, if (empty) 0 else 2), copied.pointer_count);
+            if (!empty) {
+                try std.testing.expectEqual(values[0], copied.readU64(0));
+                try std.testing.expectEqual(values[1], copied.readU64(8));
+                try std.testing.expectEqualStrings("hello", try copied.readTextStrict(0));
+                try std.testing.expectEqual(values[2], (try copied.readStruct(1)).readU64(0));
+            }
+        }
+    }
+}
+
 test "fuzz: bounded reflection registry loading" {
     try std.testing.fuzz({}, fuzzRegistry, .{});
 }
@@ -78,4 +119,10 @@ test "fuzz: dynamic mutation agrees with generated readers" {
     const registry = try reflection.Registry.init(std.testing.allocator, descriptor);
     defer registry.deinit();
     try std.testing.fuzz(registry, fuzzMutation, .{});
+}
+
+test "fuzz: double-far struct copies preserve content and presence" {
+    const registry = try reflection.Registry.init(std.testing.allocator, descriptor);
+    defer registry.deinit();
+    try std.testing.fuzz(registry, fuzzDoubleFarCopy, .{});
 }

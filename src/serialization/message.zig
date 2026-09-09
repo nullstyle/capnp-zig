@@ -838,7 +838,8 @@ pub const Message = struct {
     pub fn resolveStructPointer(self: *const Message, segment_id: u32, pointer_pos: usize, pointer_word: u64) !StructReader {
         const resolved = try self.resolvePointer(segment_id, pointer_pos, pointer_word, 3);
         if (resolved.segment_id >= self.segments.len) return error.InvalidSegmentId;
-        if (resolved.pointer_word == 0) {
+        // A zero double-far tag describes a present empty struct.
+        if (resolved.pointer_word == 0 and resolved.content_override == null) {
             parseDiagnostic("InvalidRootPointer: null pointer at segment={} pos={}", .{ segment_id, pointer_pos });
             return error.InvalidRootPointer;
         }
@@ -2893,7 +2894,7 @@ pub const MessageBuilder = struct {
 
     fn resolveStructBuilderPointer(self: *MessageBuilder, segment_id: u32, pointer_pos: usize, pointer_word: u64) !StructBuilder {
         const resolved = try self.resolvePointer(segment_id, pointer_pos, pointer_word, 3);
-        if (resolved.pointer_word == 0) return error.InvalidPointer;
+        if (resolved.pointer_word == 0 and resolved.content_override == null) return error.InvalidPointer;
         if (@as(u2, @truncate(resolved.pointer_word & 0x3)) != 0) return error.InvalidPointer;
 
         const data_size = @as(u16, @truncate((resolved.pointer_word >> 32) & 0xFFFF));

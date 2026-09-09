@@ -37,7 +37,7 @@ pub fn define(
         fn cloneAnyPointerDepth(src: AnyPointerReaderType, dest: AnyPointerBuilderType, depth: u32) anyerror!void {
             if (depth == 0) return error.RecursionLimitExceeded;
             const resolved = try src.message.resolvePointer(src.segment_id, src.pointer_pos, src.pointer_word, 8);
-            if (resolved.pointer_word == 0) {
+            if (resolved.pointer_word == 0 and resolved.content_override == null) {
                 try dest.setNull();
                 return;
             }
@@ -45,7 +45,9 @@ pub fn define(
             const pointer_type = @as(u2, @truncate(resolved.pointer_word & 0x3));
             switch (pointer_type) {
                 0 => {
-                    const src_struct = try src.message.resolveStructPointer(resolved.segment_id, resolved.pointer_pos, resolved.pointer_word);
+                    // Re-resolve the original pointer so double-far landing pads
+                    // retain their explicit content offset in the target segment.
+                    const src_struct = try src.message.resolveStructPointer(src.segment_id, src.pointer_pos, src.pointer_word);
                     const dest_struct = try dest.initStruct(src_struct.data_size, src_struct.pointer_count);
                     try cloneStructDepth(src_struct, dest_struct, depth - 1);
                 },

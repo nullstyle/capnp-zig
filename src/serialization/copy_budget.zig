@@ -36,7 +36,7 @@ pub const Budget = struct {
         if (depth == 0) return error.RecursionLimitExceeded;
         try self.chargeWork(1);
         const resolved = try source.message.resolvePointer(source.segment_id, source.pointer_pos, source.pointer_word, 8);
-        if (resolved.pointer_word == 0) return;
+        if (resolved.pointer_word == 0 and resolved.content_override == null) return;
         switch (@as(u2, @truncate(resolved.pointer_word))) {
             0 => try self.record(try source.getStruct(), depth - 1),
             1 => {
