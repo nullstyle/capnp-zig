@@ -62,6 +62,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Windows CI and local test recipes compile the selected suite before running
+  it with one build-runner job. Actual Windows probes reproduced completed test
+  processes being reported as unresponsive when sibling processes inherited
+  their output pipes. Test coverage, runtime concurrency, and time limits are
+  unchanged; see [the runner evidence](docs/windows-test-runner.md).
+
 - Generated Text and Text-list getters validate UTF-8 and wire terminators;
   `StrictTextListReader` is additive to the existing low-level list API.
   See [generated-api.md](docs/generated-api.md) for the new API and lifetime

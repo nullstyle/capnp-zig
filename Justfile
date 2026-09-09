@@ -3,6 +3,11 @@
 # instead of silently falling back to cmd/powershell semantics.
 set windows-shell := ["sh", "-cu"]
 
+# Pinned Windows Maker can inherit a sibling runner's output pipes. Full-suite
+# recipes warm their compile graph first; every test recipe serializes Maker
+# jobs on Windows. This does not change concurrency inside a test executable.
+test_jobs := if os() == "windows" { "-j1" } else { "" }
+
 # Build the plugin
 build:
     zig build
@@ -21,7 +26,8 @@ wasm-build:
 
 # Run tests
 test:
-    zig build test --summary all
+    @if [ "{{ os() }}" = windows ]; then zig build test-compile --summary all; fi
+    zig build {{ test_jobs }} test --summary all
 
 # Run the RPC ping-pong example
 example:
@@ -38,27 +44,27 @@ package-preflight:
 
 # Run serialization-focused tests (message/codegen/schema/interop)
 test-serialization:
-    zig build test-serialization --summary all
+    zig build {{ test_jobs }} test-serialization --summary all
 
 # Run all RPC tests
 test-rpc:
-    zig build test-rpc --summary all
+    zig build {{ test_jobs }} test-rpc --summary all
 
 # Run the seven focused Level-3 handoff suites
 test-rpc-l3:
-    zig build test-rpc-l3 --summary all
+    zig build {{ test_jobs }} test-rpc-l3 --summary all
 
 # Run resource-budget regression tests
 test-resource-budgets:
-    zig build test-resource-budgets --summary all
+    zig build {{ test_jobs }} test-resource-budgets --summary all
 
 # Run OOM/failing-allocator regression tests
 test-oom:
-    zig build test-oom --summary all
+    zig build {{ test_jobs }} test-oom --summary all
 
 # Run deterministic hardening fuzz/smoke coverage
 test-fuzz-smoke:
-    zig build test-fuzz-smoke --summary all
+    zig build {{ test_jobs }} test-fuzz-smoke --summary all
 
 # Run documentation/example smoke coverage
 docs-smoke:
@@ -66,15 +72,15 @@ docs-smoke:
 
 # Compile documentation snippet fixtures
 test-docs-snippets:
-    zig build test-docs-snippets --summary all
+    zig build {{ test_jobs }} test-docs-snippets --summary all
 
 # Compile optional QUIC documentation snippet fixtures
 test-docs-snippets-quic:
-    zig build -Dquic=true test-docs-snippets-quic --summary all
+    zig build {{ test_jobs }} -Dquic=true test-docs-snippets-quic --summary all
 
 # Run key hardening gates under ReleaseSafe
 test-release-safe:
-    zig build test-release-safe --summary all
+    zig build {{ test_jobs }} test-release-safe --summary all
 
 # Run the FULL suite under ReleaseSafe — the mode CI's per-OS job uses.
 #
@@ -86,60 +92,63 @@ test-release-safe:
 # It is in `release-preflight` for that reason: locally green in every other
 # mode is not evidence.
 test-release-safe-full:
-    zig build test -Doptimize=ReleaseSafe --summary all
+    @if [ "{{ os() }}" = windows ]; then zig build test-compile -Doptimize=ReleaseSafe --summary all; fi
+    zig build {{ test_jobs }} test -Doptimize=ReleaseSafe --summary all
 
 # Run teardown-heavy RPC plus schema-fidelity suites under ReleaseFast. This is a MEMORY-SAFETY lane,
 # not a performance one: ReleaseFast is the only mode that leaves a freed
 # pointer intact, so a use-after-free reached from a destructor shows up here
 # and nowhere else.
 test-release-fast:
-    zig build test-release-fast --summary all
+    @if [ "{{ os() }}" = windows ]; then zig build test-release-fast-compile --summary all; fi
+    zig build {{ test_jobs }} test-release-fast --summary all
 
 # Run executable brand fidelity and vendored upstream schema closure tests
 test-schema-fidelity:
-    zig build test-schema-fidelity --summary all
+    zig build {{ test_jobs }} test-schema-fidelity --summary all
 
 # Run raw-frame RPC security e2e tests
 test-e2e-security:
-    zig build test-e2e-security --summary all
+    zig build {{ test_jobs }} test-e2e-security --summary all
 
 # Run RPC wire framing/protocol tests
 test-rpc-wire:
-    zig build test-rpc-wire --summary all
+    zig build {{ test_jobs }} test-rpc-wire --summary all
 
 # Run RPC capability table tests
 test-rpc-caps:
-    zig build test-rpc-caps --summary all
+    zig build {{ test_jobs }} test-rpc-caps --summary all
 
 # Run RPC promise/pipelining tests
 test-rpc-promises:
-    zig build test-rpc-promises --summary all
+    zig build {{ test_jobs }} test-rpc-promises --summary all
 
 # Run RPC TCP/raw-frame transport tests
 test-rpc-transport:
-    zig build test-rpc-transport --summary all
+    zig build {{ test_jobs }} test-rpc-transport --summary all
 
 # Run RPC peer semantics tests
 test-rpc-peer:
-    zig build test-rpc-peer --summary all
+    zig build {{ test_jobs }} test-rpc-peer --summary all
 
 # Run focused Experimental L4 Join lease/lifecycle tests
 test-rpc-l4:
-    zig build test-rpc-l4 --summary all
+    zig build {{ test_jobs }} test-rpc-l4 --summary all
 
 # Run RPC integration tests
 test-rpc-integration:
-    zig build test-rpc-integration --summary all
+    zig build {{ test_jobs }} test-rpc-integration --summary all
 
 # Run optional QUIC RPC transport tests
 test-rpc-quic:
-    zig build -Dquic=true test-rpc-quic --summary all
+    zig build {{ test_jobs }} -Dquic=true test-rpc-quic --summary all
 
 # Run the native QUIC suites through the build graph's executable evidence
 # contract. The host scanner enforces four registered roots, per-root source
 # floors, and a repository-wide ban on QUIC SkipZigTest paths.
 test-rpc-quic-evidence optimize="Debug":
-    zig build -Dquic=true -Doptimize={{ optimize }} test-rpc-quic-evidence --summary all
+    @if [ "{{ os() }}" = windows ]; then zig build -Dquic=true -Doptimize={{ optimize }} test-rpc-quic-evidence-compile --summary all; fi
+    zig build {{ test_jobs }} -Dquic=true -Doptimize={{ optimize }} test-rpc-quic-evidence --summary all
 
 # Run benchmark regression checks
 bench-check:
@@ -205,7 +214,8 @@ ci-quic:
 # suites against it -- that gap hid a missing `canonical` export on the QUIC
 # root through an entire release. Mirrors the CI job of the same shape.
 test-quic-full:
-    zig build -Dquic=true test --summary all
+    @if [ "{{ os() }}" = windows ]; then zig build -Dquic=true test-compile --summary all; fi
+    zig build {{ test_jobs }} -Dquic=true test --summary all
 
 # Compatibility alias for the older non-vacuity recipe name. The evidence gate
 # now also asserts the four-root inventory and bans skipped tests.
@@ -221,19 +231,19 @@ ci:
     zig build hardening
     zig build check-api
     zig build api-closure
-    zig build test-fuzz-smoke --summary all
-    zig build test-resource-budgets --summary all
-    zig build test-oom --summary all
-    zig build test-e2e-security --summary all
-    zig build test-docs-snippets --summary all
+    zig build {{ test_jobs }} test-fuzz-smoke --summary all
+    zig build {{ test_jobs }} test-resource-budgets --summary all
+    zig build {{ test_jobs }} test-oom --summary all
+    zig build {{ test_jobs }} test-e2e-security --summary all
+    zig build {{ test_jobs }} test-docs-snippets --summary all
     zig build docs-smoke --summary all
-    zig build test-release-safe --summary all
-    zig build test-release-fast --summary all
+    zig build {{ test_jobs }} test-release-safe --summary all
+    just test-release-fast
     just ci-quic
     just src/rpc/check-rpc
     just check-generated
     just package-preflight
-    zig build test --summary all
+    just test
     just e2e-self
     just e2e-zig
     just e2e-l3-vatc
@@ -265,7 +275,7 @@ check-generated:
     capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/zig-out/check-generated tests/test_schemas/nested_lists_runtime.capnp
     zig fmt zig-out/check-generated/tests/test_schemas/nested_lists_runtime.zig
     cp zig-out/check-generated/tests/test_schemas/nested_lists_runtime.zig tests/serialization/generated/nested_lists_runtime.zig
-    CAPNPC_ZIG_UPDATE_GOLDENS=1 zig build test-codegen
+    CAPNPC_ZIG_UPDATE_GOLDENS=1 zig build {{ test_jobs }} test-codegen
     zig build api-snapshot
     just fmt
     # docs/api-snapshot-experimental.txt is deliberately NOT diffed here. It is

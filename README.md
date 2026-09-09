@@ -65,6 +65,21 @@ just test
 zig build test --summary all
 ```
 
+On Windows, the `just` test recipes serialize build-runner jobs to avoid the
+pinned Zig process-inheritance defect. Full-suite recipes compile binaries in
+parallel first. The equivalent direct commands are:
+
+```sh
+mise exec -- zig build test-compile --summary all
+mise exec -- zig build test -j1 --summary all
+# Use -Doptimize=ReleaseSafe on both commands for the full safety-enabled suite.
+```
+
+Keep these as separate invocations so all compiler processes exit before tests
+start. Tests retain their own threads, RPC concurrency, and deadlines. See
+[Windows runner evidence](docs/windows-test-runner.md) for the failure mechanism
+and the condition for removing this workaround.
+
 ## Toolchain Support
 
 The exact Zig toolchain is pinned in `mise.toml` — the single specifier for

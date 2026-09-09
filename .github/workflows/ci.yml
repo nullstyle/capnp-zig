@@ -114,6 +114,15 @@ jobs:
             .zig-cache/ci/windows-timed-read/Debug/*.log
             .zig-cache/ci/windows-timed-read/Debug/receipt.json
 
+      # The pinned Windows spawn backend can leak a runner's output pipe into
+      # a concurrent compiler or test process. Warm the exact compile graph in
+      # parallel, let that invocation exit, then serialize test execution.
+      # See docs/windows-test-runner.md for the actual Maker A/B evidence.
+      - name: Compile Windows test binaries
+        if: runner.os == 'Windows'
+        shell: bash
+        run: bash tools/stall_watchdog.sh zig build test-compile --summary all
+
       - name: Run tests
         # See the job timeout above. Wrapped in the stall watchdog so a hang
         # captures native process evidence (including Linux stacks) in this log
@@ -122,7 +131,7 @@ jobs:
         # PowerShell can open .sh via a Windows file association and report
         # success before the child has run. Execute and wait in Bash explicitly.
         shell: bash
-        run: bash tools/stall_watchdog.sh zig build test --summary all
+        run: bash tools/stall_watchdog.sh zig build test --summary all ${{ runner.os == 'Windows' && '-j1' || '' }}
 
       - name: Check compilation
         run: zig build check
@@ -271,11 +280,19 @@ jobs:
       # execute natively, in both Debug and ReleaseSafe, with a source inventory
       # floor and an explicit ban on SkipZigTest. A compile-only package
       # consumer is not transport evidence.
+      - name: Compile Windows QUIC evidence binaries (Debug)
+        if: runner.os == 'Windows'
+        run: zig build -Dquic=true -Doptimize=Debug test-rpc-quic-evidence-compile --summary all
+
       - name: Run native QUIC transport evidence (Debug, no skips)
-        run: zig build -Dquic=true -Doptimize=Debug test-rpc-quic-evidence --summary all
+        run: zig build -Dquic=true -Doptimize=Debug test-rpc-quic-evidence --summary all ${{ runner.os == 'Windows' && '-j1' || '' }}
+
+      - name: Compile Windows QUIC evidence binaries (ReleaseSafe)
+        if: runner.os == 'Windows'
+        run: zig build -Dquic=true -Doptimize=ReleaseSafe test-rpc-quic-evidence-compile --summary all
 
       - name: Run native QUIC transport evidence (ReleaseSafe, no skips)
-        run: zig build -Dquic=true -Doptimize=ReleaseSafe test-rpc-quic-evidence --summary all
+        run: zig build -Dquic=true -Doptimize=ReleaseSafe test-rpc-quic-evidence --summary all ${{ runner.os == 'Windows' && '-j1' || '' }}
 
       # The remaining steps validate the complete QUIC package root, rather
       # than the focused transport. Keep them on Linux to avoid tripling the
@@ -621,14 +638,23 @@ jobs:
             .zig-cache/ci/windows-timed-read/ReleaseSafe/*.log
             .zig-cache/ci/windows-timed-read/ReleaseSafe/receipt.json
 
+      - name: Compile Windows test binaries (ReleaseSafe)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: bash tools/stall_watchdog.sh zig build test-compile -Doptimize=ReleaseSafe --summary all
+
       - name: Run the full suite under ReleaseSafe
         shell: bash
-        run: bash tools/stall_watchdog.sh zig build test -Doptimize=ReleaseSafe --summary all
+        run: bash tools/stall_watchdog.sh zig build test -Doptimize=ReleaseSafe --summary all ${{ runner.os == 'Windows' && '-j1' || '' }}
 
       # ReleaseFast, not for speed but because it is the only mode that does NOT
       # poison a freed pointer. A use-after-free reached from a destructor is
       # invisible in Debug and ReleaseSafe -- `HostPeer.deinit` freed the queue
       # that `Peer.deinit`'s own Finish/Release sends appended to, and all 981
       # tests passed anyway until this lane existed.
+      - name: Compile Windows teardown-heavy RPC binaries (ReleaseFast)
+        if: runner.os == 'Windows'
+        run: zig build test-release-fast-compile --summary all
+
       - name: Run teardown-heavy RPC suites under ReleaseFast
-        run: zig build test-release-fast --summary all
+        run: zig build test-release-fast --summary all ${{ runner.os == 'Windows' && '-j1' || '' }}

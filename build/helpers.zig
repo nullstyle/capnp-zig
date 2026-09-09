@@ -14,6 +14,34 @@ const std = @import("std");
 /// host catches Windows test rot without a Windows runner).
 pub var registered_test_compile_steps: std.ArrayList(*std.Build.Step) = .empty;
 
+/// Add a compile warmup for a fully wired suite without changing its run graph.
+/// Keep the original compile nodes, including prerequisites such as generators,
+/// and explicit failure gates. Only suite and run wrappers are removed. Reject
+/// unfamiliar wrapper kinds so a future validation gate cannot vanish silently.
+pub fn addSuiteCompileStep(
+    b: *std.Build,
+    name: []const u8,
+    description: []const u8,
+    suite: *std.Build.Step,
+) *std.Build.Step {
+    const warmup = b.step(name, description);
+    var visited: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty;
+    defer visited.deinit(b.allocator);
+    var pending: std.ArrayList(*std.Build.Step) = .empty;
+    defer pending.deinit(b.allocator);
+    pending.append(b.allocator, suite) catch @panic("OOM");
+    while (pending.pop()) |step| {
+        const entry = visited.getOrPut(b.allocator, step) catch @panic("OOM");
+        if (entry.found_existing) continue;
+        switch (step.tag) {
+            .compile, .fail => warmup.dependOn(step),
+            .top_level, .run => pending.appendSlice(b.allocator, step.dependencies.items) catch @panic("OOM"),
+            else => std.debug.panic("compile warmup '{s}' cannot omit step '{s}' ({t})", .{ name, step.name, step.tag }),
+        }
+    }
+    return warmup;
+}
+
 /// Create a test step that imports capnpc-zig and return its run step.
 pub fn addLibTest(
     b: *std.Build,

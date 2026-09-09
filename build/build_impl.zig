@@ -1411,6 +1411,13 @@ pub fn buildImpl(b: *std.Build) !void {
     test_step.dependOn(test_resource_budgets_step);
     test_step.dependOn(test_oom_step);
 
+    // Configure these after the suites are complete. Windows can warm their
+    // exact compile prerequisites in parallel, then run the unchanged suites
+    // in a separate `-j1` invocation to avoid concurrent child pipe inheritance.
+    _ = helpers.addSuiteCompileStep(b, "test-compile", "Compile prerequisites for test without running its test binaries", test_step);
+    _ = helpers.addSuiteCompileStep(b, "test-release-fast-compile", "Compile prerequisites for test-release-fast without running its test binaries", test_release_fast_step);
+    _ = helpers.addSuiteCompileStep(b, "test-rpc-quic-evidence-compile", "Compile prerequisites for test-rpc-quic-evidence without running its test binaries", test_rpc_quic_evidence_step);
+
     // Compile-only check: no run steps, so it works for cross targets
     // (`zig build check-compile -Dtarget=powerpc64-linux-gnu`).
     const check_compile_step = b.step("check-compile", "Compile user-facing targets without running anything (cross-target safe)");
