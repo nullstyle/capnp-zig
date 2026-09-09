@@ -652,7 +652,7 @@ jobs:
       # invisible in Debug and ReleaseSafe -- `HostPeer.deinit` freed the queue
       # that `Peer.deinit`'s own Finish/Release sends appended to, and all 981
       # tests passed anyway until this lane existed.
-      - name: Compile Windows teardown-heavy RPC binaries (ReleaseFast)
+      - name: Compile Windows teardown-heavy RPC binaries
         if: runner.os == 'Windows'
         run: zig build test-release-fast-compile --summary all
 
