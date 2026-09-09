@@ -5,6 +5,7 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const message = capnpc.message;
 const schema = capnpc.schema;
+const _capnp_file = @This();
 
 pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"person.capnp\",\"module\":\"person\",\"serde\":[{\"id\":11651590505119481857,\"type_name\":\"Person\",\"to_json_export\":\"capnp_person_person_to_json\",\"from_json_export\":\"capnp_person_person_from_json\"}]}";
 pub fn capnpSchemaManifestJson() []const u8 {
@@ -29,7 +30,7 @@ pub const Person = struct {
         }
 
         pub fn getName(self: Reader) ![]const u8 {
-            return try self._reader.readText(0);
+            return try self._reader.readTextStrict(0);
         }
 
         pub fn getAge(self: Reader) !u32 {
@@ -41,7 +42,7 @@ pub const Person = struct {
         }
 
         pub fn getEmail(self: Reader) ![]const u8 {
-            return try self._reader.readText(1);
+            return try self._reader.readTextStrict(1);
         }
 
     };
@@ -56,6 +57,46 @@ pub const Person = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Person.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearName(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getName(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            return try field_reader.readTextStrict(0);
+        }
+
+        pub fn clearAge(self: *@This()) !void {
+            self._builder.writeU32(0, 0);
+        }
+
+        pub fn getAge(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU32(0);
+        }
+
+        pub fn clearEmail(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getEmail(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            return try field_reader.readTextStrict(1);
         }
 
         pub fn hasName(self: Builder) bool {

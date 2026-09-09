@@ -2833,6 +2833,22 @@ pub const EntityId = struct {
             return .{ ._builder = builder };
         }
 
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.EntityId.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearId(self: *@This()) !void {
+            self._builder.writeU64(0, 0);
+        }
+
+        pub fn getId(self: @This()) !u64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU64(0);
+        }
+
         pub fn setId(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
@@ -2901,7 +2917,7 @@ pub const Entity = struct {
 
         pub fn getName(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(1)) return "";
-            return try self._reader.readText(1);
+            return try self._reader.readTextStrict(1);
         }
 
         pub fn hasPosition(self: Reader) bool {
@@ -2949,8 +2965,18 @@ pub const Entity = struct {
         pub const EnumOrdinals = struct {
             _builder: message.StructBuilder,
 
+            pub fn getKind(self: @This()) !u16 {
+                const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                return raw.readU16(0);
+            }
+
             pub fn setKind(self: @This(), value: u16) !void {
                 self._builder.writeU16(0, value);
+            }
+
+            pub fn getFaction(self: @This()) !u16 {
+                const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                return raw.readU16(2);
             }
 
             pub fn setFaction(self: @This(), value: u16) !void {
@@ -2961,6 +2987,101 @@ pub const Entity = struct {
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
             return .{ ._builder = self._builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Entity.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearId(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getId(self: *@This()) !EntityId.Builder {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+            return EntityId.Builder.wrap(raw);
+        }
+
+        pub fn setId(self: *@This(), value: EntityId.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearKind(self: *@This()) !void {
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getKind(self: @This()) !EntityKind {
+            const ordinal = try self.enumOrdinals().getKind();
+            return std.enums.fromInt(EntityKind, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearName(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getName(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(1)) return "";
+            return try field_reader.readTextStrict(1);
+        }
+
+        pub fn clearPosition(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(2)).setNull();
+        }
+
+        pub fn getPosition(self: *@This()) !game_types.Position.Builder {
+            const pointer = try self._builder.getAnyPointer(2);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 2, 0);
+            return game_types.Position.Builder.wrap(raw);
+        }
+
+        pub fn setPosition(self: *@This(), value: game_types.Position.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(2);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearHealth(self: *@This()) !void {
+            self._builder.writeU32(4, 0);
+        }
+
+        pub fn getHealth(self: @This()) !i32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(4));
+        }
+
+        pub fn clearMaxHealth(self: *@This()) !void {
+            self._builder.writeU32(8, 0);
+        }
+
+        pub fn getMaxHealth(self: @This()) !i32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(8));
+        }
+
+        pub fn clearFaction(self: *@This()) !void {
+            self._builder.writeU16(2, 0);
+        }
+
+        pub fn getFaction(self: @This()) !game_types.Faction {
+            const ordinal = try self.enumOrdinals().getFaction();
+            return std.enums.fromInt(game_types.Faction, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearAlive(self: *@This()) !void {
+            self._builder.writeBool(12, 0, false);
+        }
+
+        pub fn getAlive(self: @This()) !bool {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readBool(12, 0) != true;
         }
 
         pub fn hasId(self: Builder) bool {
@@ -3055,7 +3176,7 @@ pub const SpawnRequest = struct {
 
         pub fn getName(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
-            return try self._reader.readText(0);
+            return try self._reader.readTextStrict(0);
         }
 
         pub fn hasPosition(self: Reader) bool {
@@ -3097,8 +3218,18 @@ pub const SpawnRequest = struct {
         pub const EnumOrdinals = struct {
             _builder: message.StructBuilder,
 
+            pub fn getKind(self: @This()) !u16 {
+                const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                return raw.readU16(0);
+            }
+
             pub fn setKind(self: @This(), value: u16) !void {
                 self._builder.writeU16(0, value);
+            }
+
+            pub fn getFaction(self: @This()) !u16 {
+                const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                return raw.readU16(2);
             }
 
             pub fn setFaction(self: @This(), value: u16) !void {
@@ -3109,6 +3240,70 @@ pub const SpawnRequest = struct {
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
             return .{ ._builder = self._builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.SpawnRequest.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearKind(self: *@This()) !void {
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getKind(self: @This()) !EntityKind {
+            const ordinal = try self.enumOrdinals().getKind();
+            return std.enums.fromInt(EntityKind, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearName(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getName(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(0)) return "";
+            return try field_reader.readTextStrict(0);
+        }
+
+        pub fn clearPosition(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getPosition(self: *@This()) !game_types.Position.Builder {
+            const pointer = try self._builder.getAnyPointer(1);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 2, 0);
+            return game_types.Position.Builder.wrap(raw);
+        }
+
+        pub fn setPosition(self: *@This(), value: game_types.Position.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(1);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearFaction(self: *@This()) !void {
+            self._builder.writeU16(2, 0);
+        }
+
+        pub fn getFaction(self: @This()) !game_types.Faction {
+            const ordinal = try self.enumOrdinals().getFaction();
+            return std.enums.fromInt(game_types.Faction, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearMaxHealth(self: *@This()) !void {
+            self._builder.writeU32(4, 0);
+        }
+
+        pub fn getMaxHealth(self: @This()) !i32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            const raw = field_reader.readU32(4);
+            const value = raw ^ @as(u32, 100);
+            return @bitCast(value);
         }
 
         pub fn setKind(self: *Builder, value: EntityKind) !void {
@@ -3219,9 +3414,21 @@ pub const AreaQuery = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getByKind(self: @This()) !u16 {
+                    if (self._builder.readUnionDiscriminant(4) != 1) return error.WrongUnionMember;
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(6);
+                }
+
                 pub fn setByKind(self: @This(), value: u16) !void {
                     self._builder.writeU16(4, 1);
                     self._builder.writeU16(6, value);
+                }
+
+                pub fn getByFaction(self: @This()) !u16 {
+                    if (self._builder.readUnionDiscriminant(4) != 2) return error.WrongUnionMember;
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(6);
                 }
 
                 pub fn setByFaction(self: @This(), value: u16) !void {
@@ -3234,6 +3441,52 @@ pub const AreaQuery = struct {
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
             }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.AreaQuery.Filter.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn whichOrdinal(self: @This()) u16 {
+            return self._builder.readUnionDiscriminant(4);
+        }
+
+        pub fn which(self: @This()) error{InvalidEnumValue}!_capnp_file.AreaQuery.Filter.WhichTag {
+            return std.enums.fromInt(_capnp_file.AreaQuery.Filter.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearAll(self: *@This()) !void {
+            self._builder.writeU16(4, 0);
+        }
+
+        pub fn getAll(self: @This()) !void {
+            if ((try self.which()) != .all) return error.WrongUnionMember;
+            return {};
+        }
+
+        pub fn clearByKind(self: *@This()) !void {
+            self._builder.writeU16(6, 0);
+            self._builder.writeU16(4, 1);
+        }
+
+        pub fn getByKind(self: @This()) !EntityKind {
+            if ((try self.which()) != .byKind) return error.WrongUnionMember;
+            const ordinal = try self.enumOrdinals().getByKind();
+            return std.enums.fromInt(EntityKind, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearByFaction(self: *@This()) !void {
+            self._builder.writeU16(6, 0);
+            self._builder.writeU16(4, 2);
+        }
+
+        pub fn getByFaction(self: @This()) !game_types.Faction {
+            if ((try self.which()) != .byFaction) return error.WrongUnionMember;
+            const ordinal = try self.enumOrdinals().getByFaction();
+            return std.enums.fromInt(game_types.Faction, ordinal) orelse return error.InvalidEnumValue;
+        }
 
             pub fn setAll(self: *@This(), value: void) !void {
             self._builder.writeU16(4, 0);
@@ -3295,6 +3548,43 @@ pub const AreaQuery = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.AreaQuery.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearCenter(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getCenter(self: *@This()) !game_types.Position.Builder {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 2, 0);
+            return game_types.Position.Builder.wrap(raw);
+        }
+
+        pub fn setCenter(self: *@This(), value: game_types.Position.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearRadius(self: *@This()) !void {
+            self._builder.writeU32(0, 0);
+        }
+
+        pub fn getRadius(self: @This()) !f32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(0));
+        }
+
+        pub fn clearFilter(self: *@This()) !void {
+            self._builder.writeU16(6, 0);
+            self._builder.writeU16(6, 0);
+            self._builder.writeU16(4, 0);
         }
 
         pub fn hasCenter(self: Builder) bool {
@@ -3375,7 +3665,8 @@ pub const GameWorld = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3388,7 +3679,7 @@ pub const GameWorld = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3415,7 +3706,7 @@ pub const GameWorld = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3427,7 +3718,7 @@ pub const GameWorld = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3532,7 +3823,8 @@ pub const GameWorld = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3545,7 +3837,7 @@ pub const GameWorld = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3572,7 +3864,7 @@ pub const GameWorld = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3584,7 +3876,7 @@ pub const GameWorld = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3689,7 +3981,8 @@ pub const GameWorld = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3702,7 +3995,7 @@ pub const GameWorld = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3729,7 +4022,7 @@ pub const GameWorld = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3741,7 +4034,7 @@ pub const GameWorld = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3846,7 +4139,8 @@ pub const GameWorld = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3859,7 +4153,7 @@ pub const GameWorld = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3886,7 +4180,7 @@ pub const GameWorld = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3898,7 +4192,7 @@ pub const GameWorld = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -4003,7 +4297,8 @@ pub const GameWorld = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -4016,7 +4311,7 @@ pub const GameWorld = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -4043,7 +4338,7 @@ pub const GameWorld = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -4055,7 +4350,7 @@ pub const GameWorld = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -4160,7 +4455,8 @@ pub const GameWorld = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -4173,7 +4469,7 @@ pub const GameWorld = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -4200,7 +4496,7 @@ pub const GameWorld = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -4212,7 +4508,7 @@ pub const GameWorld = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -4404,16 +4700,22 @@ pub const GameWorld = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
         pointer_index: u16,
+        pointer_indexes: [64]u16 = undefined,
+        pointer_count: u8 = 0,
 
         pub fn callSpawnEntity(self: PipelinedClient, user_ctx: *anyopaque, build: ?SpawnEntity.BuildFn, on_return: SpawnEntity.Callback) !u32 {
             return self.callSpawnEntityWithOptions(user_ctx, build, on_return, .{});
         }
 
         pub fn callSpawnEntityWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?SpawnEntity.BuildFn, on_return: SpawnEntity.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(SpawnEntity.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, SpawnEntity.ordinal, ctx, SpawnEntity.callBuild, SpawnEntity.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, SpawnEntity.ordinal, ctx, SpawnEntity.callBuild, SpawnEntity.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4428,10 +4730,14 @@ pub const GameWorld = struct {
         }
 
         pub fn callDespawnEntityWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?DespawnEntity.BuildFn, on_return: DespawnEntity.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(DespawnEntity.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, DespawnEntity.ordinal, ctx, DespawnEntity.callBuild, DespawnEntity.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, DespawnEntity.ordinal, ctx, DespawnEntity.callBuild, DespawnEntity.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4446,10 +4752,14 @@ pub const GameWorld = struct {
         }
 
         pub fn callGetEntityWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetEntity.BuildFn, on_return: GetEntity.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(GetEntity.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetEntity.ordinal, ctx, GetEntity.callBuild, GetEntity.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, GetEntity.ordinal, ctx, GetEntity.callBuild, GetEntity.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4464,10 +4774,14 @@ pub const GameWorld = struct {
         }
 
         pub fn callMoveEntityWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?MoveEntity.BuildFn, on_return: MoveEntity.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(MoveEntity.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, MoveEntity.ordinal, ctx, MoveEntity.callBuild, MoveEntity.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, MoveEntity.ordinal, ctx, MoveEntity.callBuild, MoveEntity.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4482,10 +4796,14 @@ pub const GameWorld = struct {
         }
 
         pub fn callDamageEntityWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?DamageEntity.BuildFn, on_return: DamageEntity.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(DamageEntity.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, DamageEntity.ordinal, ctx, DamageEntity.callBuild, DamageEntity.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, DamageEntity.ordinal, ctx, DamageEntity.callBuild, DamageEntity.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4500,10 +4818,14 @@ pub const GameWorld = struct {
         }
 
         pub fn callQueryAreaWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?QueryArea.BuildFn, on_return: QueryArea.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(QueryArea.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, QueryArea.ordinal, ctx, QueryArea.callBuild, QueryArea.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, QueryArea.ordinal, ctx, QueryArea.callBuild, QueryArea.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4683,6 +5005,28 @@ pub const GameWorld = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.GameWorld.SpawnEntityParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearRequest(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getRequest(self: *@This()) !SpawnRequest.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 2);
+                return SpawnRequest.Builder.wrap(raw);
+            }
+
+            pub fn setRequest(self: *@This(), value: SpawnRequest.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
             pub fn hasRequest(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -4756,6 +5100,11 @@ pub const GameWorld = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -4764,6 +5113,37 @@ pub const GameWorld = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.GameWorld.SpawnEntityResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearEntity(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getEntity(self: *@This()) !Entity.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 2, 3);
+                return Entity.Builder.wrap(raw);
+            }
+
+            pub fn setEntity(self: *@This(), value: Entity.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasEntity(self: Builder) bool {
@@ -4820,6 +5200,28 @@ pub const GameWorld = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.GameWorld.DespawnEntityParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearId(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getId(self: *@This()) !EntityId.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return EntityId.Builder.wrap(raw);
+            }
+
+            pub fn setId(self: *@This(), value: EntityId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
             pub fn hasId(self: Builder) bool {
@@ -4885,6 +5287,11 @@ pub const GameWorld = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -4893,6 +5300,22 @@ pub const GameWorld = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.GameWorld.DespawnEntityResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
@@ -4940,6 +5363,28 @@ pub const GameWorld = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.GameWorld.GetEntityParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearId(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getId(self: *@This()) !EntityId.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return EntityId.Builder.wrap(raw);
+            }
+
+            pub fn setId(self: *@This(), value: EntityId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
             pub fn hasId(self: Builder) bool {
@@ -5015,6 +5460,11 @@ pub const GameWorld = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -5023,6 +5473,37 @@ pub const GameWorld = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.GameWorld.GetEntityResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearEntity(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getEntity(self: *@This()) !Entity.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 2, 3);
+                return Entity.Builder.wrap(raw);
+            }
+
+            pub fn setEntity(self: *@This(), value: Entity.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasEntity(self: Builder) bool {
@@ -5089,6 +5570,43 @@ pub const GameWorld = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.GameWorld.MoveEntityParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearId(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getId(self: *@This()) !EntityId.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return EntityId.Builder.wrap(raw);
+            }
+
+            pub fn setId(self: *@This(), value: EntityId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearNewPosition(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(1)).setNull();
+            }
+
+            pub fn getNewPosition(self: *@This()) !game_types.Position.Builder {
+                const pointer = try self._builder.getAnyPointer(1);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 2, 0);
+                return game_types.Position.Builder.wrap(raw);
+            }
+
+            pub fn setNewPosition(self: *@This(), value: game_types.Position.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(1);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
             pub fn hasId(self: Builder) bool {
@@ -5173,6 +5691,11 @@ pub const GameWorld = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -5181,6 +5704,37 @@ pub const GameWorld = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.GameWorld.MoveEntityResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearEntity(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getEntity(self: *@This()) !Entity.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 2, 3);
+                return Entity.Builder.wrap(raw);
+            }
+
+            pub fn setEntity(self: *@This(), value: Entity.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasEntity(self: Builder) bool {
@@ -5241,6 +5795,37 @@ pub const GameWorld = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.GameWorld.DamageEntityParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearId(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getId(self: *@This()) !EntityId.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return EntityId.Builder.wrap(raw);
+            }
+
+            pub fn setId(self: *@This(), value: EntityId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearAmount(self: *@This()) !void {
+                self._builder.writeU32(0, 0);
+            }
+
+            pub fn getAmount(self: @This()) !i32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return @bitCast(field_reader.readU32(0));
             }
 
             pub fn hasId(self: Builder) bool {
@@ -5324,6 +5909,11 @@ pub const GameWorld = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(2);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(2, value);
                 }
@@ -5332,6 +5922,46 @@ pub const GameWorld = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.GameWorld.DamageEntityResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearEntity(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getEntity(self: *@This()) !Entity.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 2, 3);
+                return Entity.Builder.wrap(raw);
+            }
+
+            pub fn setEntity(self: *@This(), value: Entity.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearKilled(self: *@This()) !void {
+                self._builder.writeBool(0, 0, false);
+            }
+
+            pub fn getKilled(self: @This()) !bool {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readBool(0, 0) != false;
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(2, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasEntity(self: Builder) bool {
@@ -5394,6 +6024,28 @@ pub const GameWorld = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.GameWorld.QueryAreaParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearQuery(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getQuery(self: *@This()) !AreaQuery.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 1);
+                return AreaQuery.Builder.wrap(raw);
+            }
+
+            pub fn setQuery(self: *@This(), value: AreaQuery.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
             pub fn hasQuery(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -5451,6 +6103,37 @@ pub const GameWorld = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.GameWorld.QueryAreaResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearEntities(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getEntities(self: *@This()) !StructListBuilder(Entity) {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStructList(pointer, 2, 3);
+                return .{ ._list = raw };
+            }
+
+            pub fn setEntities(self: *@This(), value: StructListReader(Entity)) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setList(pointer, value);
+            }
+
+            pub fn clearCount(self: *@This()) !void {
+                self._builder.writeU32(0, 0);
+            }
+
+            pub fn getCount(self: @This()) !u32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU32(0);
             }
 
             pub fn hasEntities(self: Builder) bool {

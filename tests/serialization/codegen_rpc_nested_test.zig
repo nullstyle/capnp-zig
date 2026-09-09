@@ -205,13 +205,9 @@ test "Codegen enum values and method ordinals use ordinal, not declaration order
 }
 
 // BUG 2: an interface may inherit a method whose generated Zig name collides
-// with one of its own (or another ancestor's) methods. The generator emits
-// callXxx/VTable members for own AND inherited methods into the same Client /
-// PipelinedClient / VTable namespaces, so a name clash would previously emit
-// duplicate declarations = uncompilable Zig. The name validator must instead
-// reject the collision with a clean error.DuplicateGeneratedName before any
-// code is emitted.
-test "Codegen rejects inherited method-name collisions with a clean error" {
+// with its own or another ancestor's method. Ambiguous inherited members use
+// a declaring-interface suffix while keeping the original wire identity.
+test "Codegen qualifies inherited method-name collisions" {
     const allocator = std.testing.allocator;
 
     const argv = &[_][]const u8{
@@ -235,7 +231,9 @@ test "Codegen rejects inherited method-name collisions with a clean error" {
     var generator = try capnpc.codegen.Generator.init(allocator, request.nodes);
     defer generator.deinit();
 
-    // Derived.ping collides with the inherited Base.ping -> clean plugin error,
-    // not uncompilable duplicate-declaration output.
-    try std.testing.expectError(error.DuplicateGeneratedName, generator.generateFile(file));
+    const output = try generator.generateFile(file);
+    defer allocator.free(output);
+    try expectContains(output, "pub fn callPingFromBase");
+    try expectContains(output, "pingFromBase: Base.Ping.Handler");
+    try expectContains(output, "pub fn callPing(self:");
 }

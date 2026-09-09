@@ -2850,6 +2850,22 @@ pub const MatchId = struct {
             return .{ ._builder = builder };
         }
 
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchId.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearId(self: *@This()) !void {
+            self._builder.writeU64(0, 0);
+        }
+
+        pub fn getId(self: @This()) !u64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU64(0);
+        }
+
         pub fn setId(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
@@ -2936,6 +2952,11 @@ pub const QueueTicket = struct {
         pub const EnumOrdinals = struct {
             _builder: message.StructBuilder,
 
+            pub fn getMode(self: @This()) !u16 {
+                const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                return raw.readU16(8);
+            }
+
             pub fn setMode(self: @This(), value: u16) !void {
                 self._builder.writeU16(8, value);
             }
@@ -2944,6 +2965,70 @@ pub const QueueTicket = struct {
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
             return .{ ._builder = self._builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.QueueTicket.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearTicketId(self: *@This()) !void {
+            self._builder.writeU64(0, 0);
+        }
+
+        pub fn getTicketId(self: @This()) !u64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU64(0);
+        }
+
+        pub fn clearPlayer(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getPlayer(self: *@This()) !game_types.PlayerInfo.Builder {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 2);
+            return game_types.PlayerInfo.Builder.wrap(raw);
+        }
+
+        pub fn setPlayer(self: *@This(), value: game_types.PlayerInfo.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearMode(self: *@This()) !void {
+            self._builder.writeU16(8, 0);
+        }
+
+        pub fn getMode(self: @This()) !GameMode {
+            const ordinal = try self.enumOrdinals().getMode();
+            return std.enums.fromInt(GameMode, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearEnqueuedAt(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getEnqueuedAt(self: *@This()) !game_types.Timestamp.Builder {
+            const pointer = try self._builder.getAnyPointer(1);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+            return game_types.Timestamp.Builder.wrap(raw);
+        }
+
+        pub fn setEnqueuedAt(self: *@This(), value: game_types.Timestamp.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(1);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearEstimatedWaitSecs(self: *@This()) !void {
+            self._builder.writeU32(12, 0);
+        }
+
+        pub fn getEstimatedWaitSecs(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU32(12);
         }
 
         pub fn setTicketId(self: *Builder, value: u64) !void {
@@ -3082,8 +3167,18 @@ pub const MatchInfo = struct {
         pub const EnumOrdinals = struct {
             _builder: message.StructBuilder,
 
+            pub fn getMode(self: @This()) !u16 {
+                const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                return raw.readU16(0);
+            }
+
             pub fn setMode(self: @This(), value: u16) !void {
                 self._builder.writeU16(0, value);
+            }
+
+            pub fn getState(self: @This()) !u16 {
+                const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                return raw.readU16(2);
             }
 
             pub fn setState(self: @This(), value: u16) !void {
@@ -3094,6 +3189,91 @@ pub const MatchInfo = struct {
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
             return .{ ._builder = self._builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchInfo.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearId(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getId(self: *@This()) !MatchId.Builder {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+            return MatchId.Builder.wrap(raw);
+        }
+
+        pub fn setId(self: *@This(), value: MatchId.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearMode(self: *@This()) !void {
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getMode(self: @This()) !GameMode {
+            const ordinal = try self.enumOrdinals().getMode();
+            return std.enums.fromInt(GameMode, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearState(self: *@This()) !void {
+            self._builder.writeU16(2, 0);
+        }
+
+        pub fn getState(self: @This()) !MatchState {
+            const ordinal = try self.enumOrdinals().getState();
+            return std.enums.fromInt(MatchState, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearTeamA(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getTeamA(self: *@This()) !StructListBuilder(game_types.PlayerInfo) {
+            const pointer = try self._builder.getAnyPointer(1);
+            const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 2);
+            return .{ ._list = raw };
+        }
+
+        pub fn setTeamA(self: *@This(), value: StructListReader(game_types.PlayerInfo)) !void {
+            const pointer = try self._builder.getAnyPointer(1);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearTeamB(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(2)).setNull();
+        }
+
+        pub fn getTeamB(self: *@This()) !StructListBuilder(game_types.PlayerInfo) {
+            const pointer = try self._builder.getAnyPointer(2);
+            const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 2);
+            return .{ ._list = raw };
+        }
+
+        pub fn setTeamB(self: *@This(), value: StructListReader(game_types.PlayerInfo)) !void {
+            const pointer = try self._builder.getAnyPointer(2);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearCreatedAt(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(3)).setNull();
+        }
+
+        pub fn getCreatedAt(self: *@This()) !game_types.Timestamp.Builder {
+            const pointer = try self._builder.getAnyPointer(3);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+            return game_types.Timestamp.Builder.wrap(raw);
+        }
+
+        pub fn setCreatedAt(self: *@This(), value: game_types.Timestamp.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(3);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
         pub fn hasId(self: Builder) bool {
@@ -3204,6 +3384,61 @@ pub const MatchResult = struct {
             return .{ ._builder = builder };
         }
 
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchResult.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearMatchId(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getMatchId(self: *@This()) !MatchId.Builder {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+            return MatchId.Builder.wrap(raw);
+        }
+
+        pub fn setMatchId(self: *@This(), value: MatchId.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearWinningTeam(self: *@This()) !void {
+            self._builder.writeU8(0, 0);
+        }
+
+        pub fn getWinningTeam(self: @This()) !u8 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU8(0);
+        }
+
+        pub fn clearDuration(self: *@This()) !void {
+            self._builder.writeU32(4, 0);
+        }
+
+        pub fn getDuration(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU32(4);
+        }
+
+        pub fn clearPlayerStats(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getPlayerStats(self: *@This()) !StructListBuilder(PlayerMatchStats) {
+            const pointer = try self._builder.getAnyPointer(1);
+            const raw = try capnpc.generated_helpers.getStructList(pointer, 2, 1);
+            return .{ ._list = raw };
+        }
+
+        pub fn setPlayerStats(self: *@This(), value: StructListReader(PlayerMatchStats)) !void {
+            const pointer = try self._builder.getAnyPointer(1);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
         pub fn hasMatchId(self: Builder) bool {
             return !self._builder.isPointerNull(0);
         }
@@ -3287,6 +3522,64 @@ pub const PlayerMatchStats = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.PlayerMatchStats.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearPlayer(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getPlayer(self: *@This()) !game_types.PlayerInfo.Builder {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 2);
+            return game_types.PlayerInfo.Builder.wrap(raw);
+        }
+
+        pub fn setPlayer(self: *@This(), value: game_types.PlayerInfo.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearKills(self: *@This()) !void {
+            self._builder.writeU32(0, 0);
+        }
+
+        pub fn getKills(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU32(0);
+        }
+
+        pub fn clearDeaths(self: *@This()) !void {
+            self._builder.writeU32(4, 0);
+        }
+
+        pub fn getDeaths(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU32(4);
+        }
+
+        pub fn clearAssists(self: *@This()) !void {
+            self._builder.writeU32(8, 0);
+        }
+
+        pub fn getAssists(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU32(8);
+        }
+
+        pub fn clearScore(self: *@This()) !void {
+            self._builder.writeU32(12, 0);
+        }
+
+        pub fn getScore(self: @This()) !i32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(12));
         }
 
         pub fn hasPlayer(self: Builder) bool {
@@ -3373,7 +3666,8 @@ pub const MatchController = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3386,7 +3680,7 @@ pub const MatchController = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3413,7 +3707,7 @@ pub const MatchController = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3425,7 +3719,7 @@ pub const MatchController = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3530,7 +3824,8 @@ pub const MatchController = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3543,7 +3838,7 @@ pub const MatchController = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3570,7 +3865,7 @@ pub const MatchController = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3582,7 +3877,7 @@ pub const MatchController = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3687,7 +3982,8 @@ pub const MatchController = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3700,7 +3996,7 @@ pub const MatchController = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3727,7 +4023,7 @@ pub const MatchController = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3739,7 +4035,7 @@ pub const MatchController = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3844,7 +4140,8 @@ pub const MatchController = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3857,7 +4154,7 @@ pub const MatchController = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3884,7 +4181,7 @@ pub const MatchController = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3896,7 +4193,7 @@ pub const MatchController = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -4052,16 +4349,22 @@ pub const MatchController = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
         pointer_index: u16,
+        pointer_indexes: [64]u16 = undefined,
+        pointer_count: u8 = 0,
 
         pub fn callGetInfo(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetInfo.BuildFn, on_return: GetInfo.Callback) !u32 {
             return self.callGetInfoWithOptions(user_ctx, build, on_return, .{});
         }
 
         pub fn callGetInfoWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetInfo.BuildFn, on_return: GetInfo.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(GetInfo.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4076,10 +4379,14 @@ pub const MatchController = struct {
         }
 
         pub fn callSignalReadyWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?SignalReady.BuildFn, on_return: SignalReady.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(SignalReady.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, SignalReady.ordinal, ctx, SignalReady.callBuild, SignalReady.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, SignalReady.ordinal, ctx, SignalReady.callBuild, SignalReady.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4094,10 +4401,14 @@ pub const MatchController = struct {
         }
 
         pub fn callReportResultWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?ReportResult.BuildFn, on_return: ReportResult.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(ReportResult.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ReportResult.ordinal, ctx, ReportResult.callBuild, ReportResult.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, ReportResult.ordinal, ctx, ReportResult.callBuild, ReportResult.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4112,10 +4423,14 @@ pub const MatchController = struct {
         }
 
         pub fn callCancelMatchWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?CancelMatch.BuildFn, on_return: CancelMatch.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(CancelMatch.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, CancelMatch.ordinal, ctx, CancelMatch.callBuild, CancelMatch.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, CancelMatch.ordinal, ctx, CancelMatch.callBuild, CancelMatch.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4279,6 +4594,13 @@ pub const MatchController = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchController.GetInfoParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
         };
     };
 
@@ -4320,6 +4642,28 @@ pub const MatchController = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchController.GetInfoResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearInfo(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getInfo(self: *@This()) !MatchInfo.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 4);
+                return MatchInfo.Builder.wrap(raw);
+            }
+
+            pub fn setInfo(self: *@This(), value: MatchInfo.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
             pub fn hasInfo(self: Builder) bool {
@@ -4372,6 +4716,28 @@ pub const MatchController = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchController.SignalReadyParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearPlayer(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getPlayer(self: *@This()) !game_types.PlayerId.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return game_types.PlayerId.Builder.wrap(raw);
+            }
+
+            pub fn setPlayer(self: *@This(), value: game_types.PlayerId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
             pub fn hasPlayer(self: Builder) bool {
@@ -4441,6 +4807,11 @@ pub const MatchController = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(2);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(2, value);
                 }
@@ -4449,6 +4820,31 @@ pub const MatchController = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchController.SignalReadyResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearAllReady(self: *@This()) !void {
+                self._builder.writeBool(0, 0, false);
+            }
+
+            pub fn getAllReady(self: @This()) !bool {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readBool(0, 0) != false;
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(2, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn setAllReady(self: *Builder, value: bool) !void {
@@ -4500,6 +4896,28 @@ pub const MatchController = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchController.ReportResultParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearResult(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getResult(self: *@This()) !MatchResult.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 2);
+                return MatchResult.Builder.wrap(raw);
+            }
+
+            pub fn setResult(self: *@This(), value: MatchResult.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
             pub fn hasResult(self: Builder) bool {
@@ -4565,6 +4983,11 @@ pub const MatchController = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -4573,6 +4996,22 @@ pub const MatchController = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchController.ReportResultResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
@@ -4610,6 +5049,13 @@ pub const MatchController = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchController.CancelMatchParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
 
         };
@@ -4666,6 +5112,11 @@ pub const MatchController = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -4674,6 +5125,22 @@ pub const MatchController = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchController.CancelMatchResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
@@ -4742,7 +5209,8 @@ pub const MatchmakingService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -4755,7 +5223,7 @@ pub const MatchmakingService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -4782,7 +5250,7 @@ pub const MatchmakingService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -4794,7 +5262,7 @@ pub const MatchmakingService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -4899,7 +5367,8 @@ pub const MatchmakingService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -4912,7 +5381,7 @@ pub const MatchmakingService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -4939,7 +5408,7 @@ pub const MatchmakingService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -4951,7 +5420,7 @@ pub const MatchmakingService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -5056,7 +5525,8 @@ pub const MatchmakingService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -5069,7 +5539,7 @@ pub const MatchmakingService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -5096,7 +5566,7 @@ pub const MatchmakingService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -5108,7 +5578,7 @@ pub const MatchmakingService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -5213,7 +5683,8 @@ pub const MatchmakingService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -5226,7 +5697,7 @@ pub const MatchmakingService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -5253,7 +5724,7 @@ pub const MatchmakingService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -5265,7 +5736,7 @@ pub const MatchmakingService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -5370,7 +5841,8 @@ pub const MatchmakingService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -5383,7 +5855,7 @@ pub const MatchmakingService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -5410,7 +5882,7 @@ pub const MatchmakingService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -5422,7 +5894,7 @@ pub const MatchmakingService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -5605,9 +6077,52 @@ pub const MatchmakingService = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
 
+        const _PipelineRoot = @This();
+
         pub fn getController(self: @This()) MatchController.PipelinedClient {
             return .{ .peer = self.peer, .question_id = self.question_id, .pointer_index = 0 };
         }
+
+        pub fn getMatchId(self: @This()) !_PipelineRoot._Pipeline_b8db7b909b1141eb {
+            var result: _PipelineRoot._Pipeline_b8db7b909b1141eb = .{ .peer = self.peer, .question_id = self.question_id };
+            result.pointer_indexes[result.pointer_count] = 1;
+            result.pointer_count += 1;
+            return result;
+        }
+
+        pub const _Pipeline_bcd2a9f3dec56337 = struct {
+            peer: *rpc.peer.Peer,
+            question_id: u32,
+            pointer_indexes: [64]u16 = undefined,
+            pointer_count: u8 = 0,
+
+            pub fn getController(self: @This()) !MatchController.PipelinedClient {
+                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                var result: MatchController.PipelinedClient = .{ .peer = self.peer, .question_id = self.question_id, .pointer_index = 0 };
+                result.pointer_count = self.pointer_count;
+                @memcpy(result.pointer_indexes[0..self.pointer_count], self.pointer_indexes[0..self.pointer_count]);
+                return result;
+            }
+
+            pub fn getMatchId(self: @This()) !_PipelineRoot._Pipeline_b8db7b909b1141eb {
+                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                var result: _PipelineRoot._Pipeline_b8db7b909b1141eb = .{ .peer = self.peer, .question_id = self.question_id };
+                result.pointer_count = self.pointer_count;
+                @memcpy(result.pointer_indexes[0..self.pointer_count], self.pointer_indexes[0..self.pointer_count]);
+                result.pointer_indexes[result.pointer_count] = 1;
+                result.pointer_count += 1;
+                return result;
+            }
+
+        };
+
+        pub const _Pipeline_b8db7b909b1141eb = struct {
+            peer: *rpc.peer.Peer,
+            question_id: u32,
+            pointer_indexes: [64]u16 = undefined,
+            pointer_count: u8 = 0,
+
+        };
 
     };
 
@@ -5615,16 +6130,22 @@ pub const MatchmakingService = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
         pointer_index: u16,
+        pointer_indexes: [64]u16 = undefined,
+        pointer_count: u8 = 0,
 
         pub fn callEnqueue(self: PipelinedClient, user_ctx: *anyopaque, build: ?Enqueue.BuildFn, on_return: Enqueue.Callback) !u32 {
             return self.callEnqueueWithOptions(user_ctx, build, on_return, .{});
         }
 
         pub fn callEnqueueWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Enqueue.BuildFn, on_return: Enqueue.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(Enqueue.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Enqueue.ordinal, ctx, Enqueue.callBuild, Enqueue.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, Enqueue.ordinal, ctx, Enqueue.callBuild, Enqueue.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -5639,10 +6160,14 @@ pub const MatchmakingService = struct {
         }
 
         pub fn callDequeueWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Dequeue.BuildFn, on_return: Dequeue.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(Dequeue.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Dequeue.ordinal, ctx, Dequeue.callBuild, Dequeue.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, Dequeue.ordinal, ctx, Dequeue.callBuild, Dequeue.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -5657,10 +6182,14 @@ pub const MatchmakingService = struct {
         }
 
         pub fn callFindMatchWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?FindMatch.BuildFn, on_return: FindMatch.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(FindMatch.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, FindMatch.ordinal, ctx, FindMatch.callBuild, FindMatch.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, FindMatch.ordinal, ctx, FindMatch.callBuild, FindMatch.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -5675,10 +6204,14 @@ pub const MatchmakingService = struct {
         }
 
         pub fn callGetQueueStatsWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetQueueStats.BuildFn, on_return: GetQueueStats.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(GetQueueStats.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetQueueStats.ordinal, ctx, GetQueueStats.callBuild, GetQueueStats.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, GetQueueStats.ordinal, ctx, GetQueueStats.callBuild, GetQueueStats.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -5693,10 +6226,14 @@ pub const MatchmakingService = struct {
         }
 
         pub fn callGetMatchResultWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetMatchResult.BuildFn, on_return: GetMatchResult.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(GetMatchResult.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetMatchResult.ordinal, ctx, GetMatchResult.callBuild, GetMatchResult.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, GetMatchResult.ordinal, ctx, GetMatchResult.callBuild, GetMatchResult.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -5894,6 +6431,11 @@ pub const MatchmakingService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getMode(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setMode(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -5902,6 +6444,37 @@ pub const MatchmakingService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchmakingService.EnqueueParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearPlayer(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getPlayer(self: *@This()) !game_types.PlayerInfo.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 2);
+                return game_types.PlayerInfo.Builder.wrap(raw);
+            }
+
+            pub fn setPlayer(self: *@This(), value: game_types.PlayerInfo.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearMode(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getMode(self: @This()) !GameMode {
+                const ordinal = try self.enumOrdinals().getMode();
+                return std.enums.fromInt(GameMode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasPlayer(self: Builder) bool {
@@ -5981,6 +6554,11 @@ pub const MatchmakingService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -5989,6 +6567,37 @@ pub const MatchmakingService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchmakingService.EnqueueResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearTicket(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getTicket(self: *@This()) !QueueTicket.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 2, 2);
+                return QueueTicket.Builder.wrap(raw);
+            }
+
+            pub fn setTicket(self: *@This(), value: QueueTicket.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasTicket(self: Builder) bool {
@@ -6039,6 +6648,22 @@ pub const MatchmakingService = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchmakingService.DequeueParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearTicketId(self: *@This()) !void {
+                self._builder.writeU64(0, 0);
+            }
+
+            pub fn getTicketId(self: @This()) !u64 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU64(0);
             }
 
             pub fn setTicketId(self: *Builder, value: u64) !void {
@@ -6099,6 +6724,11 @@ pub const MatchmakingService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -6107,6 +6737,22 @@ pub const MatchmakingService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchmakingService.DequeueResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
@@ -6177,6 +6823,11 @@ pub const MatchmakingService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getMode(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setMode(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -6185,6 +6836,37 @@ pub const MatchmakingService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchmakingService.FindMatchParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearPlayer(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getPlayer(self: *@This()) !game_types.PlayerInfo.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 2);
+                return game_types.PlayerInfo.Builder.wrap(raw);
+            }
+
+            pub fn setPlayer(self: *@This(), value: game_types.PlayerInfo.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearMode(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getMode(self: @This()) !GameMode {
+                const ordinal = try self.enumOrdinals().getMode();
+                return std.enums.fromInt(GameMode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasPlayer(self: Builder) bool {
@@ -6262,6 +6944,33 @@ pub const MatchmakingService = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchmakingService.FindMatchResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn getController(self: *@This()) !message.Capability {
+                const pointer = try self._builder.getAnyPointer(0);
+                return try pointer.getCapability();
+            }
+
+            pub fn clearMatchId(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(1)).setNull();
+            }
+
+            pub fn getMatchId(self: *@This()) !MatchId.Builder {
+                const pointer = try self._builder.getAnyPointer(1);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return MatchId.Builder.wrap(raw);
+            }
+
+            pub fn setMatchId(self: *@This(), value: MatchId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(1);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
             pub fn hasController(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -6271,13 +6980,11 @@ pub const MatchmakingService = struct {
             }
 
             pub fn clearController(self: *Builder) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setNull();
+                try (try self._builder.getAnyPointer(0)).setNull();
             }
 
             pub fn setControllerCapability(self: *Builder, cap: message.Capability) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(cap);
+                try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
             pub fn setControllerServer(self: *Builder, peer: *rpc.peer.Peer, server: *MatchController.Server) !void {
@@ -6354,6 +7061,11 @@ pub const MatchmakingService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getMode(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setMode(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -6362,6 +7074,22 @@ pub const MatchmakingService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchmakingService.GetQueueStatsParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearMode(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getMode(self: @This()) !GameMode {
+                const ordinal = try self.enumOrdinals().getMode();
+                return std.enums.fromInt(GameMode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn setMode(self: *Builder, value: GameMode) !void {
@@ -6407,6 +7135,31 @@ pub const MatchmakingService = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchmakingService.GetQueueStatsResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearPlayersInQueue(self: *@This()) !void {
+                self._builder.writeU32(0, 0);
+            }
+
+            pub fn getPlayersInQueue(self: @This()) !u32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU32(0);
+            }
+
+            pub fn clearAvgWaitSecs(self: *@This()) !void {
+                self._builder.writeU32(4, 0);
+            }
+
+            pub fn getAvgWaitSecs(self: @This()) !u32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU32(4);
             }
 
             pub fn setPlayersInQueue(self: *Builder, value: u32) !void {
@@ -6458,6 +7211,28 @@ pub const MatchmakingService = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchmakingService.GetMatchResultParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearId(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getId(self: *@This()) !MatchId.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return MatchId.Builder.wrap(raw);
+            }
+
+            pub fn setId(self: *@This(), value: MatchId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
             pub fn hasId(self: Builder) bool {
@@ -6533,6 +7308,11 @@ pub const MatchmakingService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -6541,6 +7321,37 @@ pub const MatchmakingService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.MatchmakingService.GetMatchResultResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearResult(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getResult(self: *@This()) !MatchResult.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 2);
+                return MatchResult.Builder.wrap(raw);
+            }
+
+            pub fn setResult(self: *@This(), value: MatchResult.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasResult(self: Builder) bool {

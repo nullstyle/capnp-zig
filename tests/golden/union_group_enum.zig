@@ -5,6 +5,7 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const message = capnpc.message;
 const schema = capnpc.schema;
+const _capnp_file = @This();
 
 pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"shape.capnp\",\"module\":\"shape\",\"serde\":[{\"id\":13527612320720337666,\"type_name\":\"Shape\",\"to_json_export\":\"capnp_shape_shape_to_json\",\"from_json_export\":\"capnp_shape_shape_from_json\"}]}";
 pub fn capnpSchemaManifestJson() []const u8 {
@@ -47,6 +48,31 @@ pub const Shape = struct {
             pub fn wrap(builder: message.StructBuilder) @This() {
                 return .{ ._builder = builder };
             }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Shape.Rectangle.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearWidth(self: *@This()) !void {
+            self._builder.writeU32(4, 0);
+        }
+
+        pub fn getWidth(self: @This()) !f32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(4));
+        }
+
+        pub fn clearHeight(self: *@This()) !void {
+            self._builder.writeU32(8, 0);
+        }
+
+        pub fn getHeight(self: @This()) !f32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(8));
+        }
 
             pub fn setWidth(self: *@This(), value: f32) !void {
                 self._builder.writeU32(4, @bitCast(value));
@@ -124,6 +150,11 @@ pub const Shape = struct {
         pub const EnumOrdinals = struct {
             _builder: message.StructBuilder,
 
+            pub fn getColor(self: @This()) !u16 {
+                const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                return raw.readU16(0);
+            }
+
             pub fn setColor(self: @This(), value: u16) !void {
                 self._builder.writeU16(0, value);
             }
@@ -132,6 +163,52 @@ pub const Shape = struct {
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
             return .{ ._builder = self._builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Shape.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn whichOrdinal(self: @This()) u16 {
+            return self._builder.readUnionDiscriminant(2);
+        }
+
+        pub fn which(self: @This()) error{InvalidEnumValue}!_capnp_file.Shape.WhichTag {
+            return std.enums.fromInt(_capnp_file.Shape.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearColor(self: *@This()) !void {
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getColor(self: @This()) !Color {
+            const ordinal = try self.enumOrdinals().getColor();
+            return std.enums.fromInt(Color, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearCircle(self: *@This()) !void {
+            self._builder.writeU64(8, 0);
+            self._builder.writeU16(2, 0);
+        }
+
+        pub fn getCircle(self: @This()) !f64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            if ((try self.which()) != .circle) return error.WrongUnionMember;
+            return @bitCast(field_reader.readU64(8));
+        }
+
+        pub fn clearRectangle(self: *@This()) !void {
+            self._builder.writeU32(4, 0);
+            self._builder.writeU32(8, 0);
+            self._builder.writeU16(2, 1);
+        }
+
+        pub fn getRectangle(self: *@This()) !Rectangle.Builder {
+            if ((try self.which()) != .rectangle) return error.WrongUnionMember;
+            return Rectangle.Builder.wrap(self._builder);
         }
 
         pub fn setColor(self: *Builder, value: Color) !void {

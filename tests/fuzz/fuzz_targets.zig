@@ -24,6 +24,49 @@ const Generator = capnpc.codegen.Generator;
 
 const max_fuzz_input = 8 * 1024;
 
+/// Structured encodings reach far-pointer traversal and schema evolution on
+/// every input. Equivalent near/single-far/double-far messages must canonicalize
+/// identically, and mutable old-schema views must retain unknown fields.
+fn fuzzFarListEvolution(_: void, smith: *std.testing.Smith) anyerror!void {
+    const count = smith.valueRangeAtMost(u32, 0, 12);
+    const value = smith.value(u32);
+    const unknown = smith.value(u64);
+    const selected = if (count == 0) 0 else smith.valueRangeAtMost(u32, 0, count - 1);
+    var expected: ?[]u8 = null;
+    defer if (expected) |bytes| std.testing.allocator.free(bytes);
+    for (0..3) |encoding| {
+        var builder = message.MessageBuilder.init(std.testing.allocator);
+        defer builder.deinit();
+        const root = try builder.allocateStruct(0, 1);
+        const landing = if (encoding == 0) 0 else try builder.createSegment();
+        const content = if (encoding < 2) landing else try builder.createSegment();
+        const list = try root.writeStructListInSegments(0, count, 2, 1, landing, content);
+        for (0..count) |index| {
+            const elem = try list.get(@intCast(index));
+            try elem.writeU64Strict(8, unknown);
+            try elem.writeText(0, "far-list");
+        }
+        if (count != 0) try (try (try root.getAnyPointer(0)).getU32List()).set(selected, value);
+        const bytes = try builder.toBytes();
+        defer std.testing.allocator.free(bytes);
+        var decoded = try message.Message.init(std.testing.allocator, bytes, .{ .nesting_limit = 4, .traversal_limit_words = 128 });
+        defer decoded.deinit();
+        const read_list = try (try decoded.getRootStruct()).readStructList(0);
+        try std.testing.expectEqual(count, read_list.len());
+        for (0..count) |index| {
+            const elem = try read_list.get(@intCast(index));
+            try std.testing.expectEqual(unknown, elem.readU64(8));
+            try std.testing.expectEqual(if (index == selected) value else @as(u32, 0), elem.readU32(0));
+            try std.testing.expectEqualStrings("far-list", try elem.readTextStrict(0));
+        }
+        const canonical = try capnpc.canonical.canonicalize(std.testing.allocator, &decoded);
+        if (expected) |first| {
+            defer std.testing.allocator.free(canonical);
+            try std.testing.expectEqualSlices(u8, first, canonical);
+        } else expected = canonical;
+    }
+}
+
 /// Validated wire-message parse plus reader probes on accepted inputs.
 fn fuzzMessageInit(_: void, smith: *std.testing.Smith) anyerror!void {
     var buf: [max_fuzz_input]u8 = undefined;
@@ -583,6 +626,10 @@ fn fuzzCodeGeneratorRequest(_: void, smith: *std.testing.Smith) anyerror!void {
 
 test "fuzz: Message.init validated parse" {
     try std.testing.fuzz({}, fuzzMessageInit, .{});
+}
+
+test "fuzz: equivalent far list encodings preserve evolved fields" {
+    try std.testing.fuzz({}, fuzzFarListEvolution, .{});
 }
 
 test "fuzz: CodeGeneratorRequest parse + generate" {

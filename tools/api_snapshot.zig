@@ -98,6 +98,9 @@ const experimental_overrides = [_]Rule{
     // Generated reflection handles remain Experimental through this Stable
     // wire builder alias, matching the reflection runtime they expose.
     e("capnpc-zig.rpc.wire.protocol.PayloadBuilder.capnpSchema"),
+    // Borrowed generated readers and their storage are an additive
+    // Experimental API, including through this otherwise Stable alias.
+    e("capnpc-zig.rpc.wire.protocol.PayloadBuilder.asReader"),
     // Retained-answer handoff is Experimental even where its implementation
     // necessarily adds a convenience entry under otherwise-Stable containers.
     // Keep these exact additions out of the frozen two-party/wire contract.

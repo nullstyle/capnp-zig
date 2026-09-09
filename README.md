@@ -186,6 +186,12 @@ pub fn main() !void {
 
 For a canonical `build.zig` codegen + generated-module wiring example, see `docs/build-integration.md`.
 
+Generated Builders also support field getters, typed copy setters, clearing,
+and `asReader()` with explicit borrowed-reader storage. Concrete generic list
+and finite recursive applications have typed `brands()` views in full and
+compact profiles. See [the generated API guide](docs/generated-api.md) for an
+executable example, strict Text reads, lifetime rules, and remaining RPC limits.
+
 ### Reflection (unreleased, Experimental)
 
 Generated structs, groups, enums, and interfaces expose `capnpSchema`. The

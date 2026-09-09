@@ -193,6 +193,7 @@ pub fn define(
             if (@hasField(ReaderType, "segment_id")) reader.segment_id = anchor.segment_id;
             if (@hasField(ReaderType, "elements_offset")) reader.elements_offset = 0;
             if (@hasField(ReaderType, "stride_bytes")) reader.stride_bytes = 0;
+            if (@hasField(ReaderType, "source_list")) reader.source_list = null;
             return reader;
         }
 
@@ -212,7 +213,7 @@ pub fn define(
                 .int64 => MessageModule.I64ListReader,
                 .uint64 => MessageModule.U64ListReader,
                 .float64 => MessageModule.F64ListReader,
-                .text => MessageModule.TextListReader,
+                .text => MessageModule.StrictTextListReader,
             };
             const BuilderType = switch (kind) {
                 .void => MessageModule.VoidListBuilder,
@@ -248,7 +249,7 @@ pub fn define(
                         .int64 => list.getI64List(index),
                         .uint64 => list.getU64List(index),
                         .float64 => list.getF64List(index),
-                        .text => list.getTextList(index),
+                        .text => list.getTextListStrict(index),
                     };
                 }
 

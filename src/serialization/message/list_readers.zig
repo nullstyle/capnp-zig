@@ -41,6 +41,8 @@ pub fn PrimitiveListReader(comptime T: type, comptime MessageType: type) type {
         /// including the ones in checked-in generated code — keep compiling
         /// and keep meaning "natural stride".
         stride_bytes: u32 = 0,
+        /// Null for manually constructed value-only readers.
+        source_list: ?element_list.ListSource(MessageType) = null,
 
         pub fn len(self: @This()) u32 {
             return self.element_count;
@@ -69,6 +71,8 @@ pub fn PrimitiveListBuilder(comptime T: type, comptime MessageBuilderType: type)
         segment_id: u32,
         elements_offset: usize,
         element_count: u32,
+        /// Whole struct stride for schema-evolved lists; zero is natural width.
+        stride_bytes: u32 = 0,
 
         /// Return the number of elements in this list.
         pub fn len(self: @This()) u32 {
@@ -78,7 +82,7 @@ pub fn PrimitiveListBuilder(comptime T: type, comptime MessageBuilderType: type)
         /// Set the value at the given index.
         pub fn set(self: @This(), index: u32, value: T) !void {
             if (index >= self.element_count) return error.IndexOutOfBounds;
-            const offset = self.elements_offset + @as(usize, index) * byte_size;
+            const offset = self.elements_offset + @as(usize, index) * elementStride(self.stride_bytes, byte_size);
             const segment = &self.builder.segments.items[self.segment_id];
             try bounds.checkBoundsMut(segment.items, offset, byte_size);
             std.mem.writeInt(WireType(T), segment.items[offset..][0..byte_size], @bitCast(value), .little);
@@ -96,6 +100,7 @@ pub fn define(
 ) type {
     return struct {
         pub const StructListReader = struct {
+            source_list: ?element_list.ListSource(MessageType) = null,
             message: *const MessageType,
             segment_id: u32,
             elements_offset: usize,
@@ -148,6 +153,7 @@ pub fn define(
         };
 
         pub const TextListReader = struct {
+            source_list: ?element_list.ListSource(MessageType) = null,
             message: *const MessageType,
             segment_id: u32,
             /// Byte offset of the first text pointer. For a downgraded struct
@@ -180,18 +186,34 @@ pub fn define(
                 return bounds.stripNullTerminator(text_data);
             }
 
-            /// Like `get`, but returns `error.InvalidUtf8` when the text
-            /// contains ill-formed UTF-8 byte sequences.
+            /// Non-null entries require a trailing NUL and well-formed UTF-8.
             pub fn getStrict(self: TextListReader, index: u32) ![]const u8 {
-                const text = try self.get(index);
-                if (text.len > 0 and !std.unicode.utf8ValidateSlice(text)) {
-                    return error.InvalidUtf8;
-                }
-                return text;
+                const pointers = PointerListReader{ .message = self.message, .segment_id = self.segment_id, .elements_offset = self.elements_offset, .element_count = self.element_count, .stride_bytes = self.stride_bytes, .source_list = self.source_list };
+                return pointers.getTextStrict(index);
+            }
+        };
+
+        /// Generated Text lists enforce the schema's NUL and UTF-8 contract.
+        /// The low-level TextListReader keeps its explicit lenient get API.
+        pub const StrictTextListReader = struct {
+            source_list: ?element_list.ListSource(MessageType) = null,
+            message: *const MessageType,
+            segment_id: u32,
+            elements_offset: usize,
+            element_count: u32,
+            stride_bytes: u32 = 0,
+
+            pub fn len(self: StrictTextListReader) u32 {
+                return self.element_count;
+            }
+            pub fn get(self: StrictTextListReader, index: u32) ![]const u8 {
+                const raw = TextListReader{ .message = self.message, .segment_id = self.segment_id, .elements_offset = self.elements_offset, .element_count = self.element_count, .stride_bytes = self.stride_bytes, .source_list = self.source_list };
+                return raw.getStrict(index);
             }
         };
 
         pub const U8ListReader = struct {
+            source_list: ?element_list.ListSource(MessageType) = null,
             message: *const MessageType,
             segment_id: u32,
             elements_offset: usize,
@@ -226,6 +248,7 @@ pub fn define(
         };
 
         pub const I8ListReader = struct {
+            source_list: ?element_list.ListSource(MessageType) = null,
             message: *const MessageType,
             segment_id: u32,
             elements_offset: usize,
@@ -257,6 +280,7 @@ pub fn define(
         pub const F64ListReader = PrimitiveListReader(f64, MessageType);
 
         pub const BoolListReader = struct {
+            source_list: ?element_list.ListSource(MessageType) = null,
             message: *const MessageType,
             segment_id: u32,
             elements_offset: usize,
@@ -278,6 +302,7 @@ pub fn define(
         };
 
         pub const VoidListReader = struct {
+            source_list: ?element_list.ListSource(MessageType) = null,
             element_count: u32,
 
             pub fn len(self: VoidListReader) u32 {
@@ -290,6 +315,7 @@ pub fn define(
         };
 
         pub const PointerListReader = struct {
+            source_list: ?element_list.ListSource(MessageType) = null,
             message: *const MessageType,
             segment_id: u32,
             /// Byte offset of the first pointer. For a downgraded struct list
@@ -339,13 +365,17 @@ pub fn define(
                 return bounds.stripNullTerminator(text_data);
             }
 
-            /// Like `getText`, but returns `error.InvalidUtf8` when the text
-            /// contains ill-formed UTF-8 byte sequences.
+            /// Non-null entries require a trailing NUL and well-formed UTF-8.
             pub fn getTextStrict(self: PointerListReader, index: u32) ![]const u8 {
-                const text = try self.getText(index);
-                if (text.len > 0 and !std.unicode.utf8ValidateSlice(text)) {
-                    return error.InvalidUtf8;
-                }
+                const ptr = try self.readPointer(index);
+                if (ptr.word == 0) return "";
+                const list = try self.message.resolveListPointer(self.segment_id, ptr.pos, ptr.word);
+                if (list.element_size != 2) return error.InvalidTextPointer;
+                try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, list.element_count);
+                const text_data = self.message.segments[list.segment_id][list.content_offset .. list.content_offset + list.element_count];
+                if (text_data.len == 0 or text_data[text_data.len - 1] != 0) return error.InvalidTextPointer;
+                const text = text_data[0 .. text_data.len - 1];
+                if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
                 return text;
             }
 
@@ -379,10 +409,8 @@ pub fn define(
             /// `StructReader.resolveElementListAt` does for a struct's own
             /// fields, sharing the very same resolver.
             ///
-            /// The five-field literal is deliberate: every reader built here
-            /// carries a stride, and `stride_bytes` defaults to 0 ("natural
-            /// width"), so a four-field literal would compile and read a
-            /// downgraded struct list at the wrong stride from element 1 on.
+            /// Preserve both stride and original pointer provenance. Omitting
+            /// either silently misreads or truncates an evolved struct list.
             fn readElementList(
                 self: PointerListReader,
                 comptime ReaderType: type,
@@ -404,6 +432,7 @@ pub fn define(
                     .elements_offset = view.elements_offset,
                     .element_count = view.element_count,
                     .stride_bytes = view.stride_bytes,
+                    .source_list = .{ .message = self.message, .pointer = view.source_pointer.? },
                 };
             }
 
@@ -457,7 +486,9 @@ pub fn define(
                 if (list.element_size != 1) return error.InvalidPointer;
                 const total_bytes = try list_content_bytes(list.element_size, list.element_count);
                 try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
+                const ptr = try self.readPointer(index);
                 return .{
+                    .source_list = .{ .message = self.message, .pointer = .{ .segment_id = self.segment_id, .pointer_pos = ptr.pos, .pointer_word = ptr.word } },
                     .message = self.message,
                     .segment_id = list.segment_id,
                     .elements_offset = list.content_offset,
@@ -470,7 +501,7 @@ pub fn define(
             /// `StructReader.readVoidList`.
             pub fn getVoidList(self: PointerListReader, index: u32) !VoidListReader {
                 const ptr = try self.readPointer(index);
-                return .{ .element_count = try element_list.resolveVoidElementCount(
+                return .{ .source_list = .{ .message = self.message, .pointer = .{ .segment_id = self.segment_id, .pointer_pos = ptr.pos, .pointer_word = ptr.word } }, .element_count = try element_list.resolveVoidElementCount(
                     self.message,
                     self.segment_id,
                     ptr.pos,
@@ -483,11 +514,16 @@ pub fn define(
                 return self.readElementList(TextListReader, index, 6);
             }
 
+            pub fn getTextListStrict(self: PointerListReader, index: u32) !StrictTextListReader {
+                return self.readElementList(StrictTextListReader, index, 6);
+            }
+
             pub fn getStructList(self: PointerListReader, index: u32) !StructListReader {
                 const ptr = try self.readPointer(index);
                 if (ptr.word == 0) return error.InvalidPointer;
                 const layout = try self.message.resolveStructListPointer(self.segment_id, ptr.pos, ptr.word);
                 return .{
+                    .source_list = .{ .message = self.message, .pointer = .{ .segment_id = self.segment_id, .pointer_pos = ptr.pos, .pointer_word = ptr.word } },
                     .message = self.message,
                     .segment_id = layout.segment_id,
                     .elements_offset = layout.elements_offset,

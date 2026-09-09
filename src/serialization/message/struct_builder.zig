@@ -30,6 +30,7 @@ pub fn define(
             segment_id: u32,
             elements_offset: usize,
             element_count: u32,
+            stride_bytes: u32 = 0,
 
             /// Return the number of elements in this pointer list.
             pub fn len(self: PointerListBuilder) u32 {
@@ -39,7 +40,7 @@ pub fn define(
             /// Set the pointer at `index` to null.
             pub fn setNull(self: PointerListBuilder, index: u32) !void {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
-                const pointer_pos = self.elements_offset + @as(usize, index) * 8;
+                const pointer_pos = self.elements_offset + @as(usize, index) * (if (self.stride_bytes == 0) @as(usize, 8) else self.stride_bytes);
                 const segment = &self.builder.segments.items[self.segment_id];
                 try bounds.checkBoundsMut(segment.items, pointer_pos, 8);
                 std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], 0, .little);
@@ -48,7 +49,7 @@ pub fn define(
             /// Write a capability pointer at the given element index.
             pub fn setCapability(self: PointerListBuilder, index: u32, cap: CapabilityType) !void {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
-                const pointer_pos = self.elements_offset + @as(usize, index) * 8;
+                const pointer_pos = self.elements_offset + @as(usize, index) * (if (self.stride_bytes == 0) @as(usize, 8) else self.stride_bytes);
                 const segment = &self.builder.segments.items[self.segment_id];
                 try bounds.checkBoundsMut(segment.items, pointer_pos, 8);
                 const pointer_word = try make_capability_pointer(cap.id);
@@ -63,7 +64,7 @@ pub fn define(
             /// Write a text value at the given element index, allocating in the target segment.
             pub fn setTextInSegment(self: PointerListBuilder, index: u32, value: []const u8, target_segment_id: u32) !void {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
-                const pointer_pos = self.elements_offset + @as(usize, index) * 8;
+                const pointer_pos = self.elements_offset + @as(usize, index) * (if (self.stride_bytes == 0) @as(usize, 8) else self.stride_bytes);
                 try self.builder.writeTextPointer(self.segment_id, pointer_pos, value, target_segment_id);
             }
 
@@ -81,7 +82,7 @@ pub fn define(
                     _ = try self.builder.createSegment();
                 }
 
-                const pointer_pos = self.elements_offset + @as(usize, index) * 8;
+                const pointer_pos = self.elements_offset + @as(usize, index) * (if (self.stride_bytes == 0) @as(usize, 8) else self.stride_bytes);
                 const offset = try self.builder.writeListPointer(
                     self.segment_id,
                     pointer_pos,
@@ -109,7 +110,7 @@ pub fn define(
                 target_segment_id: u32,
             ) !StructBuilder {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
-                const pointer_pos = self.elements_offset + @as(usize, index) * 8;
+                const pointer_pos = self.elements_offset + @as(usize, index) * (if (self.stride_bytes == 0) @as(usize, 8) else self.stride_bytes);
                 return self.builder.writeStructPointer(self.segment_id, pointer_pos, data_words, pointer_words, target_segment_id);
             }
 
@@ -125,7 +126,7 @@ pub fn define(
                     _ = try self.builder.createSegment();
                 }
 
-                const pointer_pos = self.elements_offset + @as(usize, index) * 8;
+                const pointer_pos = self.elements_offset + @as(usize, index) * (if (self.stride_bytes == 0) @as(usize, 8) else self.stride_bytes);
                 const offset = try self.builder.writeListPointer(self.segment_id, pointer_pos, element_size, element_count, target_segment_id);
                 return .{ .segment_id = target_segment_id, .offset = offset };
             }
@@ -216,7 +217,7 @@ pub fn define(
                 target_segment_id: u32,
             ) !StructListBuilderType {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
-                const pointer_pos = self.elements_offset + @as(usize, index) * 8;
+                const pointer_pos = self.elements_offset + @as(usize, index) * (if (self.stride_bytes == 0) @as(usize, 8) else self.stride_bytes);
                 return self.builder.writeStructListPointer(
                     self.segment_id,
                     pointer_pos,

@@ -600,6 +600,8 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_codegen_defaults_tests = addLibTest(b, "tests/serialization/codegen_defaults_test.zig", target, optimize, lib_module);
     const run_codegen_annotations_tests = addLibTest(b, "tests/serialization/codegen_annotations_test.zig", target, optimize, lib_module);
     const run_codegen_rpc_nested_tests = addLibTest(b, "tests/serialization/codegen_rpc_nested_test.zig", target, optimize, lib_module);
+    const run_codegen_rpc_paths_tests = addLibTest(b, "tests/serialization/codegen_rpc_paths_test.zig", target, optimize, lib_module);
+    const run_generic_generated_api_tests = addLibTest(b, "tests/serialization/generic_generated_api_test.zig", target, optimize, lib_module);
     const run_codegen_streaming_tests = addLibTest(b, "tests/serialization/codegen_streaming_test.zig", target, optimize, lib_module);
     const run_codegen_generated_runtime_tests = addLibTest(b, "tests/serialization/codegen_generated_runtime_test.zig", target, optimize, lib_module);
     const run_nested_lists_runtime_tests = addLibTest(b, "tests/serialization/nested_lists_runtime_test.zig", target, optimize, lib_module);
@@ -796,6 +798,12 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_fuzz_target_tests = addLibTest(b, "tests/fuzz/fuzz_targets.zig", target, optimize, lib_module);
     const test_fuzz_step = b.step("test-fuzz", "Run coverage-guided fuzz targets (add --fuzz to actually fuzz)");
     test_fuzz_step.dependOn(run_fuzz_target_tests);
+    const wire_fuzz = b.addTest(.{
+        .root_module = b.createModule(.{ .root_source_file = b.path("tests/fuzz/fuzz_targets.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "capnpc-zig", .module = lib_module }} }),
+        .filters = &.{"equivalent far list encodings"},
+    });
+    helpers.registered_test_compile_steps.append(b.allocator, &wire_fuzz.step) catch @panic("OOM");
+    b.step("test-fuzz-wire-evolution", "Fuzz equivalent near/far encodings and mutation (add --fuzz=10K)").dependOn(&b.addRunArtifact(wire_fuzz).step);
 
     // Public API snapshot gate. `check-api` diffs the live pub-decl surface
     // against docs/api-snapshot.txt; `api-snapshot` regenerates the file.
@@ -915,6 +923,10 @@ pub fn buildImpl(b: *std.Build) !void {
     test_codegen_step.dependOn(run_codegen_defaults_tests);
     test_codegen_step.dependOn(run_codegen_annotations_tests);
     test_codegen_step.dependOn(run_codegen_rpc_nested_tests);
+    test_codegen_step.dependOn(run_codegen_rpc_paths_tests);
+    test_codegen_step.dependOn(run_generic_generated_api_tests);
+    b.step("test-codegen-rpc-paths", "Run nested pipelines and inherited method generation regressions").dependOn(run_codegen_rpc_paths_tests);
+    b.step("test-codegen-generics", "Run concrete generic list and recursive generated views").dependOn(run_generic_generated_api_tests);
     test_codegen_step.dependOn(run_codegen_streaming_tests);
     test_codegen_step.dependOn(run_codegen_generated_runtime_tests);
     test_codegen_step.dependOn(run_nested_lists_runtime_tests);
@@ -965,6 +977,8 @@ pub fn buildImpl(b: *std.Build) !void {
     test_serialization_step.dependOn(run_codegen_defaults_tests);
     test_serialization_step.dependOn(run_codegen_annotations_tests);
     test_serialization_step.dependOn(run_codegen_rpc_nested_tests);
+    test_serialization_step.dependOn(run_codegen_rpc_paths_tests);
+    test_serialization_step.dependOn(run_generic_generated_api_tests);
     test_serialization_step.dependOn(run_codegen_streaming_tests);
     test_serialization_step.dependOn(run_codegen_generated_runtime_tests);
     test_serialization_step.dependOn(run_nested_lists_runtime_tests);

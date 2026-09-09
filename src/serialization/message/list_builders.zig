@@ -15,6 +15,7 @@ pub fn define(
             segment_id: u32,
             elements_offset: usize,
             element_count: u32,
+            stride_bytes: u32 = 0,
 
             /// Return the number of elements in this text list.
             pub fn len(self: TextListBuilder) u32 {
@@ -29,7 +30,7 @@ pub fn define(
             /// Set the text value at the given index, allocating in the target segment.
             pub fn setInSegment(self: TextListBuilder, index: u32, value: []const u8, target_segment_id: u32) !void {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
-                const pointer_pos = self.elements_offset + @as(usize, index) * 8;
+                const pointer_pos = self.elements_offset + @as(usize, index) * (if (self.stride_bytes == 0) @as(usize, 8) else self.stride_bytes);
                 try self.builder.writeTextPointer(self.segment_id, pointer_pos, value, target_segment_id);
             }
         };
@@ -50,6 +51,7 @@ pub fn define(
             segment_id: u32,
             elements_offset: usize,
             element_count: u32,
+            stride_bytes: u32 = 0,
 
             /// Return the number of elements in this list.
             pub fn len(self: U8ListBuilder) u32 {
@@ -59,7 +61,7 @@ pub fn define(
             /// Set the value at the given index.
             pub fn set(self: U8ListBuilder, index: u32, value: u8) !void {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
-                const offset = self.elements_offset + @as(usize, index);
+                const offset = self.elements_offset + @as(usize, index) * (if (self.stride_bytes == 0) @as(usize, 1) else self.stride_bytes);
                 const segment = &self.builder.segments.items[self.segment_id];
                 try bounds.checkOffsetMut(segment.items, offset);
                 segment.items[offset] = value;
@@ -69,6 +71,10 @@ pub fn define(
             /// match the element count exactly.
             pub fn setAll(self: U8ListBuilder, data: []const u8) !void {
                 if (data.len != self.element_count) return error.InvalidLength;
+                if (self.stride_bytes != 0) {
+                    for (data, 0..) |value, index| self.set(@intCast(index), value) catch return error.OutOfBounds;
+                    return;
+                }
                 const segment = &self.builder.segments.items[self.segment_id];
                 try bounds.checkBoundsMut(segment.items, self.elements_offset, data.len);
                 const slice = segment.items[self.elements_offset .. self.elements_offset + data.len];
@@ -82,6 +88,7 @@ pub fn define(
             segment_id: u32,
             elements_offset: usize,
             element_count: u32,
+            stride_bytes: u32 = 0,
 
             /// Return the number of elements in this list.
             pub fn len(self: I8ListBuilder) u32 {
@@ -91,7 +98,7 @@ pub fn define(
             /// Set the value at the given index.
             pub fn set(self: I8ListBuilder, index: u32, value: i8) !void {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
-                const offset = self.elements_offset + @as(usize, index);
+                const offset = self.elements_offset + @as(usize, index) * (if (self.stride_bytes == 0) @as(usize, 1) else self.stride_bytes);
                 const segment = &self.builder.segments.items[self.segment_id];
                 try bounds.checkOffsetMut(segment.items, offset);
                 segment.items[offset] = @bitCast(value);

@@ -2831,6 +2831,22 @@ pub const PlayerId = struct {
             return .{ ._builder = builder };
         }
 
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.PlayerId.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearId(self: *@This()) !void {
+            self._builder.writeU64(0, 0);
+        }
+
+        pub fn getId(self: @This()) !u64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU64(0);
+        }
+
         pub fn setId(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
@@ -2878,6 +2894,40 @@ pub const Position = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Position.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearX(self: *@This()) !void {
+            self._builder.writeU32(0, 0);
+        }
+
+        pub fn getX(self: @This()) !f32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(0));
+        }
+
+        pub fn clearY(self: *@This()) !void {
+            self._builder.writeU32(4, 0);
+        }
+
+        pub fn getY(self: @This()) !f32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(4));
+        }
+
+        pub fn clearZ(self: *@This()) !void {
+            self._builder.writeU32(8, 0);
+        }
+
+        pub fn getZ(self: @This()) !f32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(8));
         }
 
         pub fn setX(self: *Builder, value: f32) !void {
@@ -2935,6 +2985,40 @@ pub const Vector3 = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Vector3.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearX(self: *@This()) !void {
+            self._builder.writeU32(0, 0);
+        }
+
+        pub fn getX(self: @This()) !f32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(0));
+        }
+
+        pub fn clearY(self: *@This()) !void {
+            self._builder.writeU32(4, 0);
+        }
+
+        pub fn getY(self: @This()) !f32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(4));
+        }
+
+        pub fn clearZ(self: *@This()) !void {
+            self._builder.writeU32(8, 0);
+        }
+
+        pub fn getZ(self: @This()) !f32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(8));
         }
 
         pub fn setX(self: *Builder, value: f32) !void {
@@ -3003,6 +3087,22 @@ pub const ItemId = struct {
             return .{ ._builder = builder };
         }
 
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ItemId.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearId(self: *@This()) !void {
+            self._builder.writeU64(0, 0);
+        }
+
+        pub fn getId(self: @This()) !u64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU64(0);
+        }
+
         pub fn setId(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
@@ -3057,7 +3157,7 @@ pub const Item = struct {
 
         pub fn getName(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(1)) return "";
-            return try self._reader.readText(1);
+            return try self._reader.readTextStrict(1);
         }
 
         pub fn getRarity(self: Reader) !Rarity {
@@ -3103,6 +3203,11 @@ pub const Item = struct {
         pub const EnumOrdinals = struct {
             _builder: message.StructBuilder,
 
+            pub fn getRarity(self: @This()) !u16 {
+                const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                return raw.readU16(0);
+            }
+
             pub fn setRarity(self: @This(), value: u16) !void {
                 self._builder.writeU16(0, value);
             }
@@ -3111,6 +3216,85 @@ pub const Item = struct {
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
             return .{ ._builder = self._builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Item.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearId(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getId(self: *@This()) !ItemId.Builder {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+            return ItemId.Builder.wrap(raw);
+        }
+
+        pub fn setId(self: *@This(), value: ItemId.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearName(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getName(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(1)) return "";
+            return try field_reader.readTextStrict(1);
+        }
+
+        pub fn clearRarity(self: *@This()) !void {
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getRarity(self: @This()) !Rarity {
+            const ordinal = try self.enumOrdinals().getRarity();
+            return std.enums.fromInt(Rarity, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearLevel(self: *@This()) !void {
+            self._builder.writeU16(2, 0);
+        }
+
+        pub fn getLevel(self: @This()) !u16 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU16(2);
+        }
+
+        pub fn clearStackSize(self: *@This()) !void {
+            self._builder.writeU32(4, 0);
+        }
+
+        pub fn getStackSize(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            const raw = field_reader.readU32(4);
+            const value = raw ^ @as(u32, 1);
+            return value;
+        }
+
+        pub fn clearAttributes(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(2)).setNull();
+        }
+
+        pub fn getAttributes(self: *@This()) !StructListBuilder(Attribute) {
+            const pointer = try self._builder.getAnyPointer(2);
+            const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 1);
+            return .{ ._list = raw };
+        }
+
+        pub fn setAttributes(self: *@This(), value: StructListReader(Attribute)) !void {
+            const pointer = try self._builder.getAnyPointer(2);
+            try capnpc.generated_helpers.setList(pointer, value);
         }
 
         pub fn hasId(self: Builder) bool {
@@ -3176,7 +3360,7 @@ pub const Attribute = struct {
 
         pub fn getName(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
-            return try self._reader.readText(0);
+            return try self._reader.readTextStrict(0);
         }
 
         pub fn getValue(self: Reader) !i32 {
@@ -3196,6 +3380,35 @@ pub const Attribute = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Attribute.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearName(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getName(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(0)) return "";
+            return try field_reader.readTextStrict(0);
+        }
+
+        pub fn clearValue(self: *@This()) !void {
+            self._builder.writeU32(0, 0);
+        }
+
+        pub fn getValue(self: @This()) !i32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(0));
         }
 
         pub fn hasName(self: Builder) bool {
@@ -3245,6 +3458,22 @@ pub const Timestamp = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Timestamp.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearUnixMillis(self: *@This()) !void {
+            self._builder.writeU64(0, 0);
+        }
+
+        pub fn getUnixMillis(self: @This()) !i64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU64(0));
         }
 
         pub fn setUnixMillis(self: *Builder, value: i64) !void {
@@ -3298,7 +3527,7 @@ pub const PlayerInfo = struct {
 
         pub fn getName(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(1)) return "";
-            return try self._reader.readText(1);
+            return try self._reader.readTextStrict(1);
         }
 
         pub fn getFaction(self: Reader) !Faction {
@@ -3328,6 +3557,11 @@ pub const PlayerInfo = struct {
         pub const EnumOrdinals = struct {
             _builder: message.StructBuilder,
 
+            pub fn getFaction(self: @This()) !u16 {
+                const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                return raw.readU16(0);
+            }
+
             pub fn setFaction(self: @This(), value: u16) !void {
                 self._builder.writeU16(0, value);
             }
@@ -3336,6 +3570,59 @@ pub const PlayerInfo = struct {
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
             return .{ ._builder = self._builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.PlayerInfo.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearId(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getId(self: *@This()) !PlayerId.Builder {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+            return PlayerId.Builder.wrap(raw);
+        }
+
+        pub fn setId(self: *@This(), value: PlayerId.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearName(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getName(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(1)) return "";
+            return try field_reader.readTextStrict(1);
+        }
+
+        pub fn clearFaction(self: *@This()) !void {
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getFaction(self: @This()) !Faction {
+            const ordinal = try self.enumOrdinals().getFaction();
+            return std.enums.fromInt(Faction, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearLevel(self: *@This()) !void {
+            self._builder.writeU16(2, 0);
+        }
+
+        pub fn getLevel(self: @This()) !u16 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU16(2);
         }
 
         pub fn hasId(self: Builder) bool {

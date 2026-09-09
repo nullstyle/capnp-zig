@@ -2847,6 +2847,46 @@ pub const InventorySlot = struct {
             return .{ ._builder = builder };
         }
 
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.InventorySlot.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearSlotIndex(self: *@This()) !void {
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getSlotIndex(self: @This()) !u16 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU16(0);
+        }
+
+        pub fn clearItem(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getItem(self: *@This()) !game_types.Item.Builder {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 3);
+            return game_types.Item.Builder.wrap(raw);
+        }
+
+        pub fn setItem(self: *@This(), value: game_types.Item.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearQuantity(self: *@This()) !void {
+            self._builder.writeU32(4, 0);
+        }
+
+        pub fn getQuantity(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU32(4);
+        }
+
         pub fn setSlotIndex(self: *Builder, value: u16) !void {
             self._builder.writeU16(0, @bitCast(value));
         }
@@ -2926,6 +2966,61 @@ pub const InventoryView = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.InventoryView.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearOwner(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getOwner(self: *@This()) !game_types.PlayerId.Builder {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+            return game_types.PlayerId.Builder.wrap(raw);
+        }
+
+        pub fn setOwner(self: *@This(), value: game_types.PlayerId.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearSlots(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getSlots(self: *@This()) !StructListBuilder(InventorySlot) {
+            const pointer = try self._builder.getAnyPointer(1);
+            const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 1);
+            return .{ ._list = raw };
+        }
+
+        pub fn setSlots(self: *@This(), value: StructListReader(InventorySlot)) !void {
+            const pointer = try self._builder.getAnyPointer(1);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearCapacity(self: *@This()) !void {
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getCapacity(self: @This()) !u16 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU16(0);
+        }
+
+        pub fn clearUsedSlots(self: *@This()) !void {
+            self._builder.writeU16(2, 0);
+        }
+
+        pub fn getUsedSlots(self: @This()) !u16 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU16(2);
         }
 
         pub fn hasOwner(self: Builder) bool {
@@ -3012,6 +3107,37 @@ pub const TradeOffer = struct {
             return .{ ._builder = builder };
         }
 
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeOffer.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearOfferedItems(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getOfferedItems(self: *@This()) !StructListBuilder(InventorySlot) {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 1);
+            return .{ ._list = raw };
+        }
+
+        pub fn setOfferedItems(self: *@This(), value: StructListReader(InventorySlot)) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearAccepted(self: *@This()) !void {
+            self._builder.writeBool(0, 0, false);
+        }
+
+        pub fn getAccepted(self: @This()) !bool {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readBool(0, 0) != false;
+        }
+
         pub fn hasOfferedItems(self: Builder) bool {
             return !self._builder.isPointerNull(0);
         }
@@ -3087,7 +3213,8 @@ pub const TradeSession = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3100,7 +3227,7 @@ pub const TradeSession = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3127,7 +3254,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3139,7 +3266,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3244,7 +3371,8 @@ pub const TradeSession = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3257,7 +3385,7 @@ pub const TradeSession = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3284,7 +3412,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3296,7 +3424,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3401,7 +3529,8 @@ pub const TradeSession = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3414,7 +3543,7 @@ pub const TradeSession = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3441,7 +3570,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3453,7 +3582,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3558,7 +3687,8 @@ pub const TradeSession = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3571,7 +3701,7 @@ pub const TradeSession = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3598,7 +3728,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3610,7 +3740,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3715,7 +3845,8 @@ pub const TradeSession = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3728,7 +3859,7 @@ pub const TradeSession = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3755,7 +3886,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3767,7 +3898,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3872,7 +4003,8 @@ pub const TradeSession = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3885,7 +4017,7 @@ pub const TradeSession = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3912,7 +4044,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3924,7 +4056,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -4029,7 +4161,8 @@ pub const TradeSession = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -4042,7 +4175,7 @@ pub const TradeSession = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -4069,7 +4202,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -4081,7 +4214,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -4291,16 +4424,22 @@ pub const TradeSession = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
         pointer_index: u16,
+        pointer_indexes: [64]u16 = undefined,
+        pointer_count: u8 = 0,
 
         pub fn callOfferItems(self: PipelinedClient, user_ctx: *anyopaque, build: ?OfferItems.BuildFn, on_return: OfferItems.Callback) !u32 {
             return self.callOfferItemsWithOptions(user_ctx, build, on_return, .{});
         }
 
         pub fn callOfferItemsWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?OfferItems.BuildFn, on_return: OfferItems.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(OfferItems.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4315,10 +4454,14 @@ pub const TradeSession = struct {
         }
 
         pub fn callRemoveItemsWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?RemoveItems.BuildFn, on_return: RemoveItems.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(RemoveItems.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4333,10 +4476,14 @@ pub const TradeSession = struct {
         }
 
         pub fn callAcceptWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Accept.BuildFn, on_return: Accept.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(Accept.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4351,10 +4498,14 @@ pub const TradeSession = struct {
         }
 
         pub fn callConfirmWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Confirm.BuildFn, on_return: Confirm.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(Confirm.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4369,10 +4520,14 @@ pub const TradeSession = struct {
         }
 
         pub fn callCancelWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Cancel.BuildFn, on_return: Cancel.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(Cancel.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4387,10 +4542,14 @@ pub const TradeSession = struct {
         }
 
         pub fn callViewOtherOfferWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?ViewOtherOffer.BuildFn, on_return: ViewOtherOffer.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(ViewOtherOffer.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4405,10 +4564,14 @@ pub const TradeSession = struct {
         }
 
         pub fn callGetStateWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetState.BuildFn, on_return: GetState.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(GetState.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4590,6 +4753,27 @@ pub const TradeSession = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.OfferItemsParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearSlots(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getSlots(self: *@This()) !message.U16ListBuilder {
+                const pointer = try self._builder.getAnyPointer(0);
+                return try pointer.getU16List();
+            }
+
+            pub fn setSlots(self: *@This(), value: message.U16ListReader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setList(pointer, value);
+            }
+
             pub fn hasSlots(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -4662,6 +4846,11 @@ pub const TradeSession = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -4670,6 +4859,37 @@ pub const TradeSession = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.OfferItemsResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearOffer(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getOffer(self: *@This()) !TradeOffer.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 1);
+                return TradeOffer.Builder.wrap(raw);
+            }
+
+            pub fn setOffer(self: *@This(), value: TradeOffer.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasOffer(self: Builder) bool {
@@ -4725,6 +4945,27 @@ pub const TradeSession = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.RemoveItemsParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearSlots(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getSlots(self: *@This()) !message.U16ListBuilder {
+                const pointer = try self._builder.getAnyPointer(0);
+                return try pointer.getU16List();
+            }
+
+            pub fn setSlots(self: *@This(), value: message.U16ListReader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setList(pointer, value);
             }
 
             pub fn hasSlots(self: Builder) bool {
@@ -4799,6 +5040,11 @@ pub const TradeSession = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -4807,6 +5053,37 @@ pub const TradeSession = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.RemoveItemsResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearOffer(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getOffer(self: *@This()) !TradeOffer.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 1);
+                return TradeOffer.Builder.wrap(raw);
+            }
+
+            pub fn setOffer(self: *@This(), value: TradeOffer.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasOffer(self: Builder) bool {
@@ -4853,6 +5130,13 @@ pub const TradeSession = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.AcceptParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
 
         };
@@ -4918,8 +5202,18 @@ pub const TradeSession = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getState(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setState(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
+                }
+
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(2);
                 }
 
                 pub fn setStatus(self: @This(), value: u16) !void {
@@ -4930,6 +5224,31 @@ pub const TradeSession = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.AcceptResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearState(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getState(self: @This()) !TradeState {
+                const ordinal = try self.enumOrdinals().getState();
+                return std.enums.fromInt(TradeState, ordinal) orelse return error.InvalidEnumValue;
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(2, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn setState(self: *Builder, value: TradeState) !void {
@@ -4971,6 +5290,13 @@ pub const TradeSession = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.ConfirmParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
 
         };
@@ -5036,8 +5362,18 @@ pub const TradeSession = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getState(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setState(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
+                }
+
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(2);
                 }
 
                 pub fn setStatus(self: @This(), value: u16) !void {
@@ -5048,6 +5384,31 @@ pub const TradeSession = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.ConfirmResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearState(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getState(self: @This()) !TradeState {
+                const ordinal = try self.enumOrdinals().getState();
+                return std.enums.fromInt(TradeState, ordinal) orelse return error.InvalidEnumValue;
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(2, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn setState(self: *Builder, value: TradeState) !void {
@@ -5089,6 +5450,13 @@ pub const TradeSession = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.CancelParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
 
         };
@@ -5145,6 +5513,11 @@ pub const TradeSession = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getState(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setState(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -5153,6 +5526,22 @@ pub const TradeSession = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.CancelResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearState(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getState(self: @This()) !TradeState {
+                const ordinal = try self.enumOrdinals().getState();
+                return std.enums.fromInt(TradeState, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn setState(self: *Builder, value: TradeState) !void {
@@ -5190,6 +5579,13 @@ pub const TradeSession = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.ViewOtherOfferParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
 
         };
@@ -5235,6 +5631,28 @@ pub const TradeSession = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.ViewOtherOfferResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearOffer(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getOffer(self: *@This()) !TradeOffer.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 1);
+                return TradeOffer.Builder.wrap(raw);
+            }
+
+            pub fn setOffer(self: *@This(), value: TradeOffer.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
             pub fn hasOffer(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -5275,6 +5693,13 @@ pub const TradeSession = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.GetStateParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
 
         };
@@ -5331,6 +5756,11 @@ pub const TradeSession = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getState(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setState(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -5339,6 +5769,22 @@ pub const TradeSession = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.TradeSession.GetStateResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearState(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getState(self: @This()) !TradeState {
+                const ordinal = try self.enumOrdinals().getState();
+                return std.enums.fromInt(TradeState, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn setState(self: *Builder, value: TradeState) !void {
@@ -5407,7 +5853,8 @@ pub const InventoryService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -5420,7 +5867,7 @@ pub const InventoryService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -5447,7 +5894,7 @@ pub const InventoryService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -5459,7 +5906,7 @@ pub const InventoryService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -5564,7 +6011,8 @@ pub const InventoryService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -5577,7 +6025,7 @@ pub const InventoryService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -5604,7 +6052,7 @@ pub const InventoryService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -5616,7 +6064,7 @@ pub const InventoryService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -5721,7 +6169,8 @@ pub const InventoryService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -5734,7 +6183,7 @@ pub const InventoryService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -5761,7 +6210,7 @@ pub const InventoryService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -5773,7 +6222,7 @@ pub const InventoryService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -5878,7 +6327,8 @@ pub const InventoryService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -5891,7 +6341,7 @@ pub const InventoryService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -5918,7 +6368,7 @@ pub const InventoryService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -5930,7 +6380,7 @@ pub const InventoryService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -6035,7 +6485,8 @@ pub const InventoryService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -6048,7 +6499,7 @@ pub const InventoryService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -6075,7 +6526,7 @@ pub const InventoryService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -6087,7 +6538,7 @@ pub const InventoryService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -6280,16 +6731,22 @@ pub const InventoryService = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
         pointer_index: u16,
+        pointer_indexes: [64]u16 = undefined,
+        pointer_count: u8 = 0,
 
         pub fn callGetInventory(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetInventory.BuildFn, on_return: GetInventory.Callback) !u32 {
             return self.callGetInventoryWithOptions(user_ctx, build, on_return, .{});
         }
 
         pub fn callGetInventoryWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetInventory.BuildFn, on_return: GetInventory.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(GetInventory.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6304,10 +6761,14 @@ pub const InventoryService = struct {
         }
 
         pub fn callAddItemWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?AddItem.BuildFn, on_return: AddItem.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(AddItem.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6322,10 +6783,14 @@ pub const InventoryService = struct {
         }
 
         pub fn callRemoveItemWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?RemoveItem.BuildFn, on_return: RemoveItem.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(RemoveItem.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6340,10 +6805,14 @@ pub const InventoryService = struct {
         }
 
         pub fn callStartTradeWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?StartTrade.BuildFn, on_return: StartTrade.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(StartTrade.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6358,10 +6827,14 @@ pub const InventoryService = struct {
         }
 
         pub fn callFilterByRarityWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?FilterByRarity.BuildFn, on_return: FilterByRarity.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(FilterByRarity.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6538,6 +7011,28 @@ pub const InventoryService = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.InventoryService.GetInventoryParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearPlayer(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getPlayer(self: *@This()) !game_types.PlayerId.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return game_types.PlayerId.Builder.wrap(raw);
+            }
+
+            pub fn setPlayer(self: *@This(), value: game_types.PlayerId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
             pub fn hasPlayer(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -6611,6 +7106,11 @@ pub const InventoryService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -6619,6 +7119,37 @@ pub const InventoryService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.InventoryService.GetInventoryResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearInventory(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getInventory(self: *@This()) !InventoryView.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 2);
+                return InventoryView.Builder.wrap(raw);
+            }
+
+            pub fn setInventory(self: *@This(), value: InventoryView.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasInventory(self: Builder) bool {
@@ -6689,6 +7220,52 @@ pub const InventoryService = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.InventoryService.AddItemParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearPlayer(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getPlayer(self: *@This()) !game_types.PlayerId.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return game_types.PlayerId.Builder.wrap(raw);
+            }
+
+            pub fn setPlayer(self: *@This(), value: game_types.PlayerId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearItem(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(1)).setNull();
+            }
+
+            pub fn getItem(self: *@This()) !game_types.Item.Builder {
+                const pointer = try self._builder.getAnyPointer(1);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 3);
+                return game_types.Item.Builder.wrap(raw);
+            }
+
+            pub fn setItem(self: *@This(), value: game_types.Item.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(1);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearQuantity(self: *@This()) !void {
+                self._builder.writeU32(0, 0);
+            }
+
+            pub fn getQuantity(self: @This()) !u32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU32(0);
             }
 
             pub fn hasPlayer(self: Builder) bool {
@@ -6777,6 +7354,11 @@ pub const InventoryService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -6785,6 +7367,37 @@ pub const InventoryService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.InventoryService.AddItemResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearSlot(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getSlot(self: *@This()) !InventorySlot.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 1);
+                return InventorySlot.Builder.wrap(raw);
+            }
+
+            pub fn setSlot(self: *@This(), value: InventorySlot.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasSlot(self: Builder) bool {
@@ -6849,6 +7462,46 @@ pub const InventoryService = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.InventoryService.RemoveItemParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearPlayer(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getPlayer(self: *@This()) !game_types.PlayerId.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return game_types.PlayerId.Builder.wrap(raw);
+            }
+
+            pub fn setPlayer(self: *@This(), value: game_types.PlayerId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearSlotIndex(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getSlotIndex(self: @This()) !u16 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU16(0);
+            }
+
+            pub fn clearQuantity(self: *@This()) !void {
+                self._builder.writeU32(4, 0);
+            }
+
+            pub fn getQuantity(self: @This()) !u32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU32(4);
             }
 
             pub fn hasPlayer(self: Builder) bool {
@@ -6922,6 +7575,11 @@ pub const InventoryService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -6930,6 +7588,22 @@ pub const InventoryService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.InventoryService.RemoveItemResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
@@ -6987,6 +7661,43 @@ pub const InventoryService = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.InventoryService.StartTradeParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearInitiator(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getInitiator(self: *@This()) !game_types.PlayerId.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return game_types.PlayerId.Builder.wrap(raw);
+            }
+
+            pub fn setInitiator(self: *@This(), value: game_types.PlayerId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearTarget(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(1)).setNull();
+            }
+
+            pub fn getTarget(self: *@This()) !game_types.PlayerId.Builder {
+                const pointer = try self._builder.getAnyPointer(1);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return game_types.PlayerId.Builder.wrap(raw);
+            }
+
+            pub fn setTarget(self: *@This(), value: game_types.PlayerId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(1);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
             pub fn hasInitiator(self: Builder) bool {
@@ -7080,6 +7791,11 @@ pub const InventoryService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -7088,6 +7804,27 @@ pub const InventoryService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.InventoryService.StartTradeResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn getSession(self: *@This()) !message.Capability {
+                const pointer = try self._builder.getAnyPointer(0);
+                return try pointer.getCapability();
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasSession(self: Builder) bool {
@@ -7099,13 +7836,11 @@ pub const InventoryService = struct {
             }
 
             pub fn clearSession(self: *Builder) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setNull();
+                try (try self._builder.getAnyPointer(0)).setNull();
             }
 
             pub fn setSessionCapability(self: *Builder, cap: message.Capability) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(cap);
+                try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
             pub fn setSessionServer(self: *Builder, peer: *rpc.peer.Peer, server: *TradeSession.Server) !void {
@@ -7187,6 +7922,11 @@ pub const InventoryService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getMinRarity(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setMinRarity(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -7195,6 +7935,37 @@ pub const InventoryService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.InventoryService.FilterByRarityParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearPlayer(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getPlayer(self: *@This()) !game_types.PlayerId.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return game_types.PlayerId.Builder.wrap(raw);
+            }
+
+            pub fn setPlayer(self: *@This(), value: game_types.PlayerId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearMinRarity(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getMinRarity(self: @This()) !game_types.Rarity {
+                const ordinal = try self.enumOrdinals().getMinRarity();
+                return std.enums.fromInt(game_types.Rarity, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasPlayer(self: Builder) bool {
@@ -7254,6 +8025,28 @@ pub const InventoryService = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.InventoryService.FilterByRarityResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearItems(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getItems(self: *@This()) !StructListBuilder(InventorySlot) {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 1);
+                return .{ ._list = raw };
+            }
+
+            pub fn setItems(self: *@This(), value: StructListReader(InventorySlot)) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setList(pointer, value);
             }
 
             pub fn hasItems(self: Builder) bool {

@@ -2858,7 +2858,8 @@ pub const Bootstrap = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -2871,7 +2872,7 @@ pub const Bootstrap = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -2898,7 +2899,7 @@ pub const Bootstrap = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -2910,7 +2911,7 @@ pub const Bootstrap = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3015,7 +3016,8 @@ pub const Bootstrap = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3028,7 +3030,7 @@ pub const Bootstrap = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3055,7 +3057,7 @@ pub const Bootstrap = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3067,7 +3069,7 @@ pub const Bootstrap = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3172,7 +3174,8 @@ pub const Bootstrap = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3185,7 +3188,7 @@ pub const Bootstrap = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3212,7 +3215,7 @@ pub const Bootstrap = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3224,7 +3227,7 @@ pub const Bootstrap = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3329,7 +3332,8 @@ pub const Bootstrap = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3342,7 +3346,7 @@ pub const Bootstrap = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3369,7 +3373,7 @@ pub const Bootstrap = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3381,7 +3385,7 @@ pub const Bootstrap = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3613,16 +3617,22 @@ pub const Bootstrap = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
         pointer_index: u16,
+        pointer_indexes: [64]u16 = undefined,
+        pointer_count: u8 = 0,
 
         pub fn callGameWorld(self: PipelinedClient, user_ctx: *anyopaque, build: ?GameWorld.BuildFn, on_return: GameWorld.Callback) !u32 {
             return self.callGameWorldWithOptions(user_ctx, build, on_return, .{});
         }
 
         pub fn callGameWorldWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?GameWorld.BuildFn, on_return: GameWorld.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(GameWorld.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GameWorld.ordinal, ctx, GameWorld.callBuild, GameWorld.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, GameWorld.ordinal, ctx, GameWorld.callBuild, GameWorld.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3637,10 +3647,14 @@ pub const Bootstrap = struct {
         }
 
         pub fn callChatServiceWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?ChatService.BuildFn, on_return: ChatService.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(ChatService.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ChatService.ordinal, ctx, ChatService.callBuild, ChatService.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, ChatService.ordinal, ctx, ChatService.callBuild, ChatService.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3655,10 +3669,14 @@ pub const Bootstrap = struct {
         }
 
         pub fn callInventoryServiceWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?InventoryService.BuildFn, on_return: InventoryService.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(InventoryService.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, InventoryService.ordinal, ctx, InventoryService.callBuild, InventoryService.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, InventoryService.ordinal, ctx, InventoryService.callBuild, InventoryService.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3673,10 +3691,14 @@ pub const Bootstrap = struct {
         }
 
         pub fn callMatchmakingServiceWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?MatchmakingService.BuildFn, on_return: MatchmakingService.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(MatchmakingService.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, MatchmakingService.ordinal, ctx, MatchmakingService.callBuild, MatchmakingService.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, MatchmakingService.ordinal, ctx, MatchmakingService.callBuild, MatchmakingService.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3840,6 +3862,13 @@ pub const Bootstrap = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Bootstrap.GameWorldParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
         };
     };
 
@@ -3892,6 +3921,18 @@ pub const Bootstrap = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Bootstrap.GameWorldResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn getService(self: *@This()) !message.Capability {
+                const pointer = try self._builder.getAnyPointer(0);
+                return try pointer.getCapability();
+            }
+
             pub fn hasService(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -3901,13 +3942,11 @@ pub const Bootstrap = struct {
             }
 
             pub fn clearService(self: *Builder) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setNull();
+                try (try self._builder.getAnyPointer(0)).setNull();
             }
 
             pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(cap);
+                try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
             pub fn setServiceServer(self: *Builder, peer: *rpc.peer.Peer, server: *game_world.GameWorld.Server) !void {
@@ -3952,6 +3991,13 @@ pub const Bootstrap = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Bootstrap.ChatServiceParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
 
         };
@@ -4006,6 +4052,18 @@ pub const Bootstrap = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Bootstrap.ChatServiceResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn getService(self: *@This()) !message.Capability {
+                const pointer = try self._builder.getAnyPointer(0);
+                return try pointer.getCapability();
+            }
+
             pub fn hasService(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -4015,13 +4073,11 @@ pub const Bootstrap = struct {
             }
 
             pub fn clearService(self: *Builder) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setNull();
+                try (try self._builder.getAnyPointer(0)).setNull();
             }
 
             pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(cap);
+                try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
             pub fn setServiceServer(self: *Builder, peer: *rpc.peer.Peer, server: *chat.ChatService.Server) !void {
@@ -4066,6 +4122,13 @@ pub const Bootstrap = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Bootstrap.InventoryServiceParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
 
         };
@@ -4120,6 +4183,18 @@ pub const Bootstrap = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Bootstrap.InventoryServiceResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn getService(self: *@This()) !message.Capability {
+                const pointer = try self._builder.getAnyPointer(0);
+                return try pointer.getCapability();
+            }
+
             pub fn hasService(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -4129,13 +4204,11 @@ pub const Bootstrap = struct {
             }
 
             pub fn clearService(self: *Builder) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setNull();
+                try (try self._builder.getAnyPointer(0)).setNull();
             }
 
             pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(cap);
+                try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
             pub fn setServiceServer(self: *Builder, peer: *rpc.peer.Peer, server: *inventory.InventoryService.Server) !void {
@@ -4180,6 +4253,13 @@ pub const Bootstrap = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Bootstrap.MatchmakingServiceParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
 
         };
@@ -4234,6 +4314,18 @@ pub const Bootstrap = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Bootstrap.MatchmakingServiceResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn getService(self: *@This()) !message.Capability {
+                const pointer = try self._builder.getAnyPointer(0);
+                return try pointer.getCapability();
+            }
+
             pub fn hasService(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -4243,13 +4335,11 @@ pub const Bootstrap = struct {
             }
 
             pub fn clearService(self: *Builder) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setNull();
+                try (try self._builder.getAnyPointer(0)).setNull();
             }
 
             pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(cap);
+                try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
             pub fn setServiceServer(self: *Builder, peer: *rpc.peer.Peer, server: *matchmaking.MatchmakingService.Server) !void {

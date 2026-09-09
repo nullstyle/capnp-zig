@@ -11,8 +11,9 @@
 //! `list_readers.zig` and `any_pointer_reader.zig` rather than threaded through
 //! their `define()` helpers. `define()`'s argument list renders inside every
 //! generated reader type name, so a new parameter there would rewrite ~80 lines
-//! of the frozen `docs/api-snapshot.txt` for an internal refactor. Nothing here
-//! is reachable from a `pub` signature, so the snapshot does not move.
+//! of the frozen `docs/api-snapshot.txt` for an internal refactor. The optional
+//! ListSource field is deliberately exposed by typed list readers so copies can
+//! preserve a newer physical list layout through an older schema view.
 
 const std = @import("std");
 const bounds = @import("bounds.zig");
@@ -49,9 +50,24 @@ pub fn listContentBytes(element_size: u3, element_count: u32) !usize {
 
 /// Per-element view of a list being read as a list of primitives or pointers.
 ///
-/// Deliberately carries no defaults: every construction site is an exact
-/// four-field literal, so adding a field here is a compile error at each of
-/// them rather than a silently dropped value.
+/// Resolved dimensions are explicit at every construction site. Provenance is
+/// attached by resolve(); direct shape-only downgrade calls do not have an
+/// original pointer to record.
+/// Original encoded pointer behind a typed list view. Copying an older view
+/// must retain fields that only the newer physical struct layout knows about.
+pub const PointerLocation = struct {
+    segment_id: u32,
+    pointer_pos: usize,
+    pointer_word: u64,
+};
+
+pub fn ListSource(comptime MessageType: type) type {
+    return struct {
+        message: *const MessageType,
+        pointer: PointerLocation,
+    };
+}
+
 pub const ElementListView = struct {
     segment_id: u32,
     /// Byte offset of element 0's *first read unit* — the element itself for a
@@ -61,6 +77,7 @@ pub const ElementListView = struct {
     /// Distance between consecutive elements in BYTES, or 0 for the natural,
     /// tightly packed stride of the element type.
     stride_bytes: u32,
+    source_pointer: ?PointerLocation = null,
 };
 
 /// The inverse of the list-upgrade rule: decode a correctly encoded struct list
@@ -174,7 +191,9 @@ pub fn resolve(
     // precondition rejection from `downgradeInlineCompositeList` is final and
     // never falls back.
     if (message.resolveInlineCompositeList(segment_id, pointer_pos, pointer_word)) |list| {
-        return downgradeInlineCompositeList(list, expected_element_size);
+        var view = try downgradeInlineCompositeList(list, expected_element_size);
+        view.source_pointer = .{ .segment_id = segment_id, .pointer_pos = pointer_pos, .pointer_word = pointer_word };
+        return view;
     } else |_| {}
 
     const list = try message.resolveListPointer(segment_id, pointer_pos, pointer_word);
@@ -188,6 +207,7 @@ pub fn resolve(
         .elements_offset = list.content_offset,
         .element_count = list.element_count,
         .stride_bytes = 0,
+        .source_pointer = .{ .segment_id = segment_id, .pointer_pos = pointer_pos, .pointer_word = pointer_word },
     };
 }
 

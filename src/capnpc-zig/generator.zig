@@ -70,6 +70,8 @@ pub const Generator = struct {
     node_map: std.AutoHashMap(schema.Id, usize),
     /// Set during generateFile to the current file's node ID.
     current_file_id: ?schema.Id = null,
+    interface_context: ?*const schema.Node = null,
+    interface_ancestors: []const AncestorInfo = &.{},
     /// Maps imported file node IDs to their Zig module const names.
     import_modules: std.AutoHashMap(schema.Id, []const u8),
     /// Tracks imported files actually referenced by generated type resolution.
@@ -245,8 +247,6 @@ pub const Generator = struct {
 
         const file_node = self.getNode(requested_file.id) orelse return error.FileNodeNotFound;
         const needs_rpc = try self.fileNeedsRpc(file_node);
-        try self.validateGeneratedNames(file_node, needs_rpc);
-
         // Register import module aliases up-front so cross-file type resolution
         // works while generating declarations.
         var import_aliases = std.StringHashMap(void).init(self.allocator);
@@ -256,6 +256,10 @@ pub const Generator = struct {
             errdefer self.allocator.free(mod_name);
             try self.import_modules.put(imp.id, mod_name);
         }
+
+        // Name validation must see the same qualified ancestor names as emission.
+        try self.validateGeneratedNames(file_node, needs_rpc);
+        self.used_import_file_ids.clearRetainingCapacity();
 
         // Generate declarations into a body buffer first, then emit only imports
         // that are actually referenced by generated declarations.
@@ -424,17 +428,9 @@ pub const Generator = struct {
         slot: schema.FieldSlot,
         remaining: usize,
     ) !?brand_fidelity.Inspection {
-        if (slot.type != .@"struct") return null;
-        const brand = switch (slot.type_metadata) {
-            .named => |value| value,
-            else => return null,
-        };
-        const target = self.getNode(slot.type.@"struct".type_id) orelse return error.InvalidStructNode;
-        const caller = type_resolver.Resolver.init(self.nodes, owner, .{}) catch return error.InvalidStructNode;
-        const resolver = caller.enterNamed(target.id, brand, caller.contextDepth()) catch return error.InvalidStructNode;
-        return brand_fidelity.inspectApplication(
-            target,
-            &resolver,
+        return brand_fidelity.inspectSlot(
+            owner,
+            slot,
             generatorBrandLookup,
             @ptrCast(@constCast(self)),
             remaining,
@@ -663,9 +659,11 @@ pub const Generator = struct {
                 try self.collectManifestSerdeEntries(method.param_struct_type, module_name, seen, entries, iface_name);
                 try self.collectManifestSerdeEntries(method.result_struct_type, module_name, seen, entries, iface_name);
             }
-            // Also include superclass method param/result types; those structs
-            // are emitted under the superclass interface, so qualify there.
+            // Local superclass method declarations belong to this module.
+            // Imported declarations and their serde symbols belong to the
+            // imported module, just like the generated Reader/Builder types.
             for (iface.superclasses) |parent_id| {
+                if (self.findOwningFileId(parent_id) != self.current_file_id) continue;
                 const parent_node = self.getNode(parent_id) orelse continue;
                 const parent_iface = parent_node.interface_node orelse continue;
                 const parent_name = try self.toZigIdentifier(self.getSimpleName(parent_node));
@@ -921,6 +919,109 @@ pub const Generator = struct {
         return std.fmt.allocPrint(self.allocator, "_default_{s}", .{zig_name});
     }
 
+    /// Only ambiguous inherited members need a suffix. The method's original
+    /// declaration still supplies parameter types, interface ID and ordinal.
+    pub fn allocInterfaceMemberName(self: *Generator, method_name: []const u8, ancestor_name: ?[]const u8) ![]const u8 {
+        const plain = try self.toZigIdentifier(method_name);
+        errdefer self.allocator.free(plain);
+        const ancestor = ancestor_name orelse return plain;
+        const owner = self.interface_context orelse return plain;
+        var declaring: ?AncestorInfo = null;
+        var collision = false;
+        for (owner.interface_node.?.methods) |method| {
+            const other = try self.toZigIdentifier(method.name);
+            defer self.allocator.free(other);
+            if (interfaceMemberFamiliesOverlap(plain, other)) collision = true;
+        }
+        for (self.interface_ancestors) |info| {
+            if (std.mem.eql(u8, info.name, ancestor)) {
+                declaring = info;
+                continue;
+            }
+            for (info.methods) |method| {
+                const other = try self.toZigIdentifier(method.name);
+                defer self.allocator.free(other);
+                if (interfaceMemberFamiliesOverlap(plain, other)) collision = true;
+            }
+        }
+        if (!collision) return plain;
+        const qualifier = try self.toZigIdentifier(ancestor);
+        defer self.allocator.free(qualifier);
+        var needs_id = false;
+        for (self.interface_ancestors) |info| {
+            if (std.mem.eql(u8, info.name, ancestor)) continue;
+            const other = try self.toZigIdentifier(info.name);
+            defer self.allocator.free(other);
+            if (std.mem.eql(u8, qualifier, other)) needs_id = true;
+        }
+        var candidate = try std.fmt.allocPrint(self.allocator, "{s}From{s}", .{ plain, qualifier });
+        errdefer self.allocator.free(candidate);
+        if (needs_id or try self.interfaceMemberFamilyExists(candidate) or try self.inheritedAliasFamilyExists(candidate, ancestor)) {
+            const replacement = try std.fmt.allocPrint(self.allocator, "{s}_{x}", .{ candidate, declaring.?.interface_id });
+            self.allocator.free(candidate);
+            candidate = replacement;
+        }
+        while (try self.interfaceMemberFamilyExists(candidate) or try self.inheritedAliasFamilyExists(candidate, ancestor)) {
+            const replacement = try std.fmt.allocPrint(self.allocator, "{s}_", .{candidate});
+            self.allocator.free(candidate);
+            candidate = replacement;
+        }
+        self.allocator.free(plain);
+        return candidate;
+    }
+
+    fn interfaceMemberFamilyExists(self: *Generator, name: []const u8) !bool {
+        if (self.interface_context) |owner| for (owner.interface_node.?.methods) |method| {
+            const other = try self.toZigIdentifier(method.name);
+            defer self.allocator.free(other);
+            if (interfaceMemberFamiliesOverlap(name, other)) return true;
+        };
+        for (self.interface_ancestors) |info| for (info.methods) |method| {
+            const other = try self.toZigIdentifier(method.name);
+            defer self.allocator.free(other);
+            if (interfaceMemberFamiliesOverlap(name, other)) return true;
+        };
+        return false;
+    }
+
+    fn inheritedAliasFamilyExists(self: *Generator, name: []const u8, ancestor: []const u8) !bool {
+        for (self.interface_ancestors) |info| {
+            if (std.mem.eql(u8, info.name, ancestor)) continue;
+            const qualifier = try self.toZigIdentifier(info.name);
+            defer self.allocator.free(qualifier);
+            for (info.methods) |method| {
+                const plain = try self.toZigIdentifier(method.name);
+                defer self.allocator.free(plain);
+                const candidate = try std.fmt.allocPrint(self.allocator, "{s}From{s}", .{ plain, qualifier });
+                defer self.allocator.free(candidate);
+                if (interfaceMemberFamiliesOverlap(name, candidate)) return true;
+            }
+        }
+        return false;
+    }
+
+    // An inherited alias reserves the whole generated call family. A user
+    // method named pingFromBaseWithOptions must not collide with the options
+    // companion of the otherwise-safe alias pingFromBase. This leaves the
+    // existing validation policy for collisions among own methods unchanged.
+    fn interfaceMemberFamiliesOverlap(a: []const u8, b: []const u8) bool {
+        const suffixes = [_][]const u8{ "", "WithOptions", "Pipelined", "PipelinedWithOptions", "_deferred" };
+        for (suffixes) |a_suffix| {
+            for (suffixes) |b_suffix| {
+                const len = a.len + a_suffix.len;
+                if (len != b.len + b_suffix.len) continue;
+                var index: usize = 0;
+                while (index < len) : (index += 1) {
+                    const ac = if (index < a.len) a[index] else a_suffix[index - a.len];
+                    const bc = if (index < b.len) b[index] else b_suffix[index - b.len];
+                    if (ac != bc) break;
+                }
+                if (index == len) return true;
+            }
+        }
+        return false;
+    }
+
     pub fn allocMethodCallName(self: *Generator, method_name: []const u8) ![]const u8 {
         const zig_name = try self.toZigIdentifier(method_name);
         defer self.allocator.free(zig_name);
@@ -1046,7 +1147,8 @@ pub const Generator = struct {
 
         if (struct_buf.items.len == 0) return;
         const first_newline = std.mem.indexOfScalar(u8, struct_buf.items, '\n') orelse return;
-        const shape_key_slice = struct_buf.items[first_newline + 1 ..];
+        const shape_key_slice = try self.normalizeShapeSelf(node, struct_buf.items[first_newline + 1 ..]);
+        defer self.allocator.free(shape_key_slice);
         const decl_name = try self.allocTypeDeclName(node);
         defer self.allocator.free(decl_name);
 
@@ -1064,6 +1166,35 @@ pub const Generator = struct {
 
         try self.shape_share_map.put(owned_key, owned_decl_name);
         try writer.writeAll(struct_buf.items);
+    }
+
+    // Ignore only references to this declaration's own generated namespace.
+    // Tokenization keeps schema default strings and other literal bytes exact.
+    fn normalizeShapeSelf(self: *Generator, node: *const schema.Node, source: []const u8) ![]const u8 {
+        const owner = try self.qualifiedTypeName(node.id);
+        defer self.allocator.free(owner);
+        const prefix = try std.fmt.allocPrint(self.allocator, "_capnp_file.{s}", .{owner});
+        defer self.allocator.free(prefix);
+        const terminated = try self.allocator.dupeSentinel(u8, source, 0);
+        defer self.allocator.free(terminated);
+        var tokenizer = std.zig.Tokenizer.init(terminated);
+        var output = std.ArrayList(u8).empty;
+        errdefer output.deinit(self.allocator);
+        var copied: usize = 0;
+        while (true) {
+            const token = tokenizer.next();
+            if (token.tag == .eof) break;
+            if (token.loc.start < copied or token.tag != .identifier) continue;
+            const start = token.loc.start;
+            if (!std.mem.startsWith(u8, source[start..], prefix)) continue;
+            const end = start + prefix.len;
+            if (end == source.len or source[end] != '.') continue;
+            try output.appendSlice(self.allocator, source[copied..start]);
+            try output.appendSlice(self.allocator, "_capnp_shape_self");
+            copied = end;
+        }
+        try output.appendSlice(self.allocator, source[copied..]);
+        return output.toOwnedSlice(self.allocator);
     }
 
     /// Generate an enum definition
@@ -1352,6 +1483,46 @@ pub const Generator = struct {
         return member.scope_id == 0;
     }
 
+    /// Reachable non-union struct/group nodes for typed promised-answer paths.
+    /// Deduplication permits recursive schemas without recursive code expansion.
+    pub fn collectPipelineStructs(self: *Generator, root_id: schema.Id) ![]*const schema.Node {
+        var result = std.ArrayList(*const schema.Node).empty;
+        errdefer result.deinit(self.allocator);
+        var seen = std.AutoHashMap(schema.Id, void).init(self.allocator);
+        defer seen.deinit();
+        const root = self.getNode(root_id) orelse return result.toOwnedSlice(self.allocator);
+        if (root.struct_node == null) return result.toOwnedSlice(self.allocator);
+        try result.append(self.allocator, root);
+        try seen.put(root_id, {});
+        var index: usize = 0;
+        while (index < result.items.len) : (index += 1) {
+            for (result.items[index].struct_node.?.fields) |field| {
+                if (field.discriminant_value != 0xffff) continue;
+                const child_id = if (field.group) |group| group.type_id else if (field.slot) |slot| switch (slot.type) {
+                    .@"struct" => |info| info.type_id,
+                    else => continue,
+                } else continue;
+                if (seen.contains(child_id)) continue;
+                const child = self.getNode(child_id) orelse continue;
+                if (child.struct_node == null) continue;
+                if (result.items.len >= self.codegen_budget.max_nodes) return error.CodegenBudgetExceeded;
+                try seen.put(child_id, {});
+                try result.append(self.allocator, child);
+            }
+        }
+        return result.toOwnedSlice(self.allocator);
+    }
+
+    pub fn hasPipelineFields(self: *Generator, root_id: schema.Id) !bool {
+        const nodes = try self.collectPipelineStructs(root_id);
+        defer self.allocator.free(nodes);
+        for (nodes) |node| for (node.struct_node.?.fields) |field| {
+            if (field.discriminant_value != 0xffff) continue;
+            if (field.slot) |slot| if (slot.type == .interface) return true;
+        };
+        return false;
+    }
+
     /// Describes an interface-typed pointer field in a struct.
     const InterfaceFieldInfo = struct {
         name: []const u8,
@@ -1376,7 +1547,7 @@ pub const Generator = struct {
 
         for (struct_info.fields) |field| {
             const slot = field.slot orelse continue;
-            if (slot.type != .interface) continue;
+            if (slot.type != .interface or field.discriminant_value != 0xffff) continue;
             const iface_id = slot.type.interface.type_id;
             const iface_name = try self.qualifiedTypeName(iface_id);
             errdefer self.allocator.free(iface_name);
@@ -1529,6 +1700,19 @@ pub const Generator = struct {
         if (std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return error.InvalidSchemaPath;
     }
 
+    /// Anonymous method structs have scope_id zero on the wire, but emission
+    /// nests them under their declaring interface. Groups below them inherit
+    /// that same generated scope.
+    fn generatedScopeId(self: *const Generator, node: *const schema.Node) schema.Id {
+        if (node.scope_id != 0 or node.kind != .@"struct") return node.scope_id;
+        for (self.nodes) |owner| if (owner.interface_node) |info| {
+            for (info.methods) |method| {
+                if (method.param_struct_type == node.id or method.result_struct_type == node.id) return owner.id;
+            }
+        };
+        return 0;
+    }
+
     /// Walk the scope chain from a node to find its owning file node ID.
     fn findOwningFileId(self: *const Generator, id: schema.Id) ?schema.Id {
         var current_id = id;
@@ -1537,7 +1721,7 @@ pub const Generator = struct {
             const node = self.getNode(current_id) orelse return null;
             if (node.kind == .file) return node.id;
             if (node.scope_id == current_id) return null; // self-referential, stop
-            current_id = node.scope_id;
+            current_id = self.generatedScopeId(node);
         }
         return null;
     }
@@ -1546,9 +1730,8 @@ pub const Generator = struct {
     /// from the file root down to (but not including) the node itself — e.g.
     /// `"Outer1"` for `Outer1.Inner`, `"Wrapper.Svc"` for a nested interface's
     /// child, and `""` for a file-scoped type. Walks `scope_id` up to the file
-    /// node, mirroring `findOwningFileId`. Returns `""` for interface method
-    /// param/result structs (their `scope_id` is 0, so they have no walkable
-    /// parent) — those are qualified via `resolveMethodStructName` instead.
+    /// node, mirroring `findOwningFileId`. Anonymous method structs use their
+    /// declaring interface as the generated parent despite wire scope_id zero.
     /// Caller owns the returned slice.
     fn parentScopePath(self: *Generator, id: schema.Id) ![]const u8 {
         var segments = std.ArrayList([]const u8).empty;
@@ -1562,7 +1745,7 @@ pub const Generator = struct {
         // like nested structs), so their scope path walks parents too. A file-scoped
         // interface's `scope_id` is the file node, so the walk yields "" — same as
         // any file-scoped type — keeping file-scope output byte-identical.
-        var current_id = start.scope_id;
+        var current_id = self.generatedScopeId(start);
         var depth: u32 = 0;
         while (depth < 64) : (depth += 1) {
             const node = self.getNode(current_id) orelse break;
@@ -1571,7 +1754,7 @@ pub const Generator = struct {
             const zig_name = try types.normalizeAndEscapeTypeIdentifier(self.allocator, simple);
             try segments.append(self.allocator, zig_name);
             if (node.scope_id == current_id) break; // self-referential guard
-            current_id = node.scope_id;
+            current_id = self.generatedScopeId(node);
         }
 
         if (segments.items.len == 0) return self.allocator.dupe(u8, "");
@@ -1591,6 +1774,7 @@ pub const Generator = struct {
     /// Return the import module name for a type if it belongs to a different file,
     /// or null if it belongs to the current file.
     fn typeModulePrefix(self: *Generator, type_id: schema.Id) !?[]const u8 {
+        if (type_id == schema.stream_result_type_id and self.findOwningFileId(type_id) != self.current_file_id) return "capnpc.rpc.generated.stream";
         const current = self.current_file_id orelse return null;
         const owning_file = self.findOwningFileId(type_id) orelse return null;
         if (owning_file == current) return null;
@@ -1603,7 +1787,8 @@ pub const Generator = struct {
     /// A same-file, file-scoped type yields just `Simple` (byte-identical to the
     /// pre-nesting behavior); a nested type yields the dotted scope path from the
     /// file root (`Outer1.Inner`), cross-file prefixed with the import module.
-    fn qualifiedTypeName(self: *Generator, id: schema.Id) ![]const u8 {
+    pub fn qualifiedTypeName(self: *Generator, id: schema.Id) ![]const u8 {
+        if (id == schema.stream_result_type_id and self.findOwningFileId(id) != self.current_file_id) return self.allocator.dupe(u8, "capnpc.rpc.generated.stream.StreamResult");
         const node = self.getNode(id) orelse return try self.allocator.dupe(u8, "void");
         const simple_name = self.getSimpleName(node);
         const zig_name = try types.normalizeAndEscapeTypeIdentifier(self.allocator, simple_name);
@@ -1984,7 +2169,7 @@ pub const Generator = struct {
             .int64 => try self.allocator.dupe(u8, "message.I64ListReader"),
             .uint64 => try self.allocator.dupe(u8, "message.U64ListReader"),
             .float64 => try self.allocator.dupe(u8, "message.F64ListReader"),
-            .text => try self.allocator.dupe(u8, "message.TextListReader"),
+            .text => try self.allocator.dupe(u8, "message.StrictTextListReader"),
             .@"struct" => try self.allocator.dupe(u8, "message.StructListReader"),
             .@"enum" => try self.allocator.dupe(u8, "message.U16ListReader"),
             else => try self.allocator.dupe(u8, "message.PointerListReader"),

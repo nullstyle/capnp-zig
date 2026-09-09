@@ -2,6 +2,8 @@ gen-rpc:
     @test -x ../../zig-out/bin/capnpc-zig || (echo "missing ../../zig-out/bin/capnpc-zig; run 'just build' first"; exit 1)
     capnpc -o../../zig-out/bin/capnpc-zig:gen ./capnp/rpc.capnp
     capnpc -o../../zig-out/bin/capnpc-zig:gen ./capnp/persistent.capnp
+    capnpc -o../../zig-out/bin/capnpc-zig:gen ./capnp/stream.capnp
+    zig fmt gen/capnp/rpc.zig gen/capnp/persistent.zig gen/capnp/stream.zig
 
 gen: gen-rpc
 
@@ -11,6 +13,7 @@ sync-rpc:
     cp ../../vendor/ext/capnproto/c++/src/capnp/rpc.capnp ./capnp/
     cp ../../vendor/ext/capnproto/c++/src/capnp/c++.capnp ./capnp/
     cp ../../vendor/ext/capnproto/c++/src/capnp/persistent.capnp ./capnp/
+    cp ../../vendor/ext/capnproto/c++/src/capnp/stream.capnp ./capnp/
 
 sync: sync-rpc
 
@@ -19,6 +22,7 @@ check-rpc:
     cmp -s ../../vendor/ext/capnproto/c++/src/capnp/rpc.capnp ./capnp/rpc.capnp || (echo "rpc.capnp is out of sync with vendor source; run 'just sync-rpc'"; exit 1)
     cmp -s ../../vendor/ext/capnproto/c++/src/capnp/c++.capnp ./capnp/c++.capnp || (echo "c++.capnp is out of sync with vendor source; run 'just sync-rpc'"; exit 1)
     cmp -s ../../vendor/ext/capnproto/c++/src/capnp/persistent.capnp ./capnp/persistent.capnp || (echo "persistent.capnp is out of sync with vendor source; run 'just sync-rpc'"; exit 1)
+    cmp -s ../../vendor/ext/capnproto/c++/src/capnp/stream.capnp ./capnp/stream.capnp || (echo "stream.capnp is out of sync with vendor source; run 'just sync-rpc'"; exit 1)
 
 check: check-rpc
 

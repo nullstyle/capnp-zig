@@ -80,6 +80,7 @@ pub fn Integration(comptime include_worker_pool: bool) type {
 pub const integration = Integration(true);
 
 pub const generated = struct {
+    pub const stream = @import("./gen/capnp/stream.zig");
     pub const rpc = @import("./gen/capnp/rpc.zig");
     pub const persistent = @import("./gen/capnp/persistent.zig");
 };

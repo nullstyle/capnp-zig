@@ -133,15 +133,15 @@ pub fn define(
                     6,
                     element_list.listContentBytes,
                 );
-                // Five fields, not four: `stride_bytes` defaults to 0 ("natural
-                // width"), so dropping it here would silently read a downgraded
-                // struct list eight bytes apart instead of one struct apart.
+                // Carry both stride and original pointer provenance: dropping
+                // either would misread or truncate a newer struct-list layout.
                 return .{
                     .message = self.message,
                     .segment_id = view.segment_id,
                     .elements_offset = view.elements_offset,
                     .element_count = view.element_count,
                     .stride_bytes = view.stride_bytes,
+                    .source_list = .{ .message = self.message, .pointer = .{ .segment_id = self.segment_id, .pointer_pos = self.pointer_pos, .pointer_word = self.pointer_word } },
                 };
             }
 

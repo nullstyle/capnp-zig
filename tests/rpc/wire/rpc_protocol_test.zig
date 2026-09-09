@@ -1441,3 +1441,14 @@ test "the legacy untyped builders still write failed" {
     const r = try decoded.asReturn();
     try std.testing.expectEqual(protocol.ExceptionType.failed, r.exception.?.kind());
 }
+
+test "RPC exception Text validation retains the public InvalidTextPointer error" {
+    var builder = protocol.MessageBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.buildAbort("\xff");
+    const bytes = try builder.finish();
+    defer std.testing.allocator.free(bytes);
+    var decoded = try protocol.DecodedMessage.init(std.testing.allocator, bytes);
+    defer decoded.deinit();
+    try std.testing.expectError(error.InvalidTextPointer, decoded.asAbort());
+}

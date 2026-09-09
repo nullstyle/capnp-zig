@@ -34,6 +34,15 @@ pub fn Interface(comptime G: type) type {
 
             const ancestors = try self.collectAncestors(node);
             defer self.freeAncestors(ancestors);
+            const old_interface = self.interface_context;
+            const old_ancestors = self.interface_ancestors;
+            self.interface_context = node;
+            self.interface_ancestors = ancestors;
+            defer {
+                self.interface_context = old_interface;
+                self.interface_ancestors = old_ancestors;
+            }
+
             const has_ancestors = ancestors.len > 0;
 
             // When this interface is nested inside another interface, its own
@@ -135,7 +144,7 @@ pub fn Interface(comptime G: type) type {
             try writer.writeAll("    pub const PipelinedClient = struct {\n");
             try writer.writeAll("        peer: *rpc.peer.Peer,\n");
             try writer.writeAll("        question_id: u32,\n");
-            try writer.writeAll("        pointer_index: u16,\n\n");
+            try writer.writeAll("        pointer_index: u16,\n        pointer_indexes: [64]u16 = undefined,\n        pointer_count: u8 = 0,\n\n");
 
             // Own pipelined call methods
             for (interface_info.methods) |method| {
@@ -295,7 +304,9 @@ pub fn Interface(comptime G: type) type {
                     for (ancestor.methods) |method| {
                         const zig_name = try self.toZigIdentifier(method.name);
                         defer self.allocator.free(zig_name);
-                        const method_field = try self.lowerFirst(zig_name);
+                        const member_name = try self.allocInterfaceMemberName(method.name, ancestor.name);
+                        defer self.allocator.free(member_name);
+                        const method_field = try self.lowerFirst(member_name);
                         defer self.allocator.free(method_field);
                         const escaped_field = try types.escapeZigKeyword(self.allocator, method_field);
                         defer self.allocator.free(escaped_field);
@@ -414,7 +425,8 @@ pub fn Interface(comptime G: type) type {
             try writer.writeAll("        };\n");
             try writer.writeAll("        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;\n\n");
 
-            try writer.writeAll("        const CallContext = struct {\n");
+            try writer.writeAll("        // Public so generated descendants in other modules can reuse the call machinery.\n");
+            try writer.writeAll("        pub const CallContext = struct {\n");
             try writer.writeAll("            user_ctx: *anyopaque,\n");
             try writer.writeAll("            build: ?BuildFn,\n");
             try writer.writeAll("            callback: Callback,\n\n");
@@ -425,7 +437,7 @@ pub fn Interface(comptime G: type) type {
             try writer.writeAll("            settled_flag: ?*bool = null,\n\n");
             try writer.writeAll("            // Frees the heap ctx if the question is still outstanding at\n");
             try writer.writeAll("            // Peer.deinit (the normal return path frees it in callReturn).\n");
-            try writer.writeAll("            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {\n");
+            try writer.writeAll("            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {\n");
             try writer.writeAll("                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));\n");
             try writer.writeAll("                ctx_allocator.destroy(dead);\n");
             try writer.writeAll("            }\n");
@@ -452,7 +464,7 @@ pub fn Interface(comptime G: type) type {
                 try writer.writeAll("        };\n\n");
             }
 
-            try writer.writeAll("        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {\n");
+            try writer.writeAll("        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {\n");
             try writer.writeAll("            const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));\n");
             try writer.writeAll("            var payload = try call.payloadTyped();\n");
             try writer.writeAll("            var params_any = try payload.initContent();\n");
@@ -467,7 +479,7 @@ pub fn Interface(comptime G: type) type {
             try writer.writeAll("            _ = try call.initCapTableTyped(0);\n");
             try writer.writeAll("        }\n\n");
 
-            try writer.writeAll("        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
+            try writer.writeAll("        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
             try writer.writeAll("            const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));\n");
             try writer.writeAll("            if (ctx.settled_flag) |flag| flag.* = true;\n");
             try writer.writeAll("            defer peer.allocator.destroy(ctx);\n");
@@ -589,7 +601,9 @@ pub fn Interface(comptime G: type) type {
         pub fn generateVTableField(self: *G, method: schema.Method, ancestor_name: ?[]const u8, qual: []const u8, writer: anytype) !void {
             const zig_name = try self.toZigIdentifier(method.name);
             defer self.allocator.free(zig_name);
-            const method_field = try self.lowerFirst(zig_name);
+            const member_name = try self.allocInterfaceMemberName(method.name, ancestor_name);
+            defer self.allocator.free(member_name);
+            const method_field = try self.lowerFirst(member_name);
             defer self.allocator.free(method_field);
             const escaped_field = try types.escapeZigKeyword(self.allocator, method_field);
             defer self.allocator.free(escaped_field);
@@ -632,7 +646,9 @@ pub fn Interface(comptime G: type) type {
         pub fn resolveMethodCallParams(self: *G, method: schema.Method, interface_id_expr: ?[]const u8, ancestor_name: ?[]const u8, qual: []const u8) !MethodCallParams {
             const zig_name = try self.toZigIdentifier(method.name);
             errdefer self.allocator.free(zig_name);
-            const call_name = try std.fmt.allocPrint(self.allocator, "call{s}", .{zig_name});
+            const member_name = try self.allocInterfaceMemberName(method.name, ancestor_name);
+            defer self.allocator.free(member_name);
+            const call_name = try std.fmt.allocPrint(self.allocator, "call{s}", .{member_name});
             errdefer self.allocator.free(call_name);
 
             // Own methods: qualify `interface_id` with the interface's own prefix so a
@@ -781,10 +797,12 @@ pub fn Interface(comptime G: type) type {
         pub fn generateClientPipelinedMethod(self: *G, method: schema.Method, ancestor_name: ?[]const u8, qual: []const u8, writer: anytype) !void {
             const iface_fields = try self.getInterfaceFields(method.result_struct_type);
             defer self.freeInterfaceFields(iface_fields);
-            if (iface_fields.len == 0) return;
+            if (!try self.hasPipelineFields(method.result_struct_type)) return;
 
             const zig_name = try self.toZigIdentifier(method.name);
             defer self.allocator.free(zig_name);
+            const member_name = try self.allocInterfaceMemberName(method.name, ancestor_name);
+            defer self.allocator.free(member_name);
 
             // The Pipeline type is declared as a sibling of Client named `{Method}Pipeline`
             // (see generatePipelineType / allocMethodPipelineName), NOT `{Method}.Pipeline`.
@@ -797,44 +815,92 @@ pub fn Interface(comptime G: type) type {
             const dot = if (ancestor_name != null) "." else "";
 
             try writer.print("        pub fn call{s}Pipelined(self: {s}Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !{s}{s}{s} {{\n", .{
-                zig_name, qual, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, pipeline_name,
+                member_name, qual, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, pipeline_name,
             });
-            try writer.print("            return self.call{s}PipelinedWithOptions(user_ctx, build, on_return, .{{}});\n", .{zig_name});
+            try writer.print("            return self.call{s}PipelinedWithOptions(user_ctx, build, on_return, .{{}});\n", .{member_name});
             try writer.writeAll("        }\n\n");
             try writer.print("        pub fn call{s}PipelinedWithOptions(self: {s}Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback, options: rpc.peer.CallOptions) !{s}{s}{s} {{\n", .{
-                zig_name, qual, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, pipeline_name,
+                member_name, qual, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, pipeline_name,
             });
-            try writer.print("            const qid = try self.call{s}WithOptions(user_ctx, build, on_return, options);\n", .{zig_name});
+            try writer.print("            const qid = try self.call{s}WithOptions(user_ctx, build, on_return, options);\n", .{member_name});
             try writer.writeAll("            return .{ .peer = self.peer, .question_id = qid };\n");
             try writer.writeAll("        }\n\n");
         }
 
-        /// Generate a Pipeline type for a method with interface-typed results.
+        /// Generate typed paths through structs and groups. Union members have
+        /// no pipeline getter because promised answers cannot test discriminants.
         pub fn generatePipelineType(self: *G, method: schema.Method, ancestor_name: ?[]const u8, writer: anytype) !void {
-            const iface_fields = try self.getInterfaceFields(method.result_struct_type);
-            defer self.freeInterfaceFields(iface_fields);
-            if (iface_fields.len == 0) return;
-
-            const zig_name = try self.toZigIdentifier(method.name);
-            defer self.allocator.free(zig_name);
-            const escaped_zig_name = try types.escapeZigKeyword(self.allocator, zig_name);
-            defer self.allocator.free(escaped_zig_name);
-
-            // For inherited methods, the Pipeline type is defined on the parent interface,
-            // so we don't re-generate it here. The client method references the parent's Pipeline type.
-            if (ancestor_name != null) return;
-
-            try writer.print("    pub const {s}Pipeline = struct {{\n", .{escaped_zig_name});
-            try writer.writeAll("        peer: *rpc.peer.Peer,\n");
-            try writer.writeAll("        question_id: u32,\n\n");
-
-            for (iface_fields) |ifield| {
-                try writer.print("        pub fn get{s}(self: @This()) {s}.PipelinedClient {{\n", .{ ifield.name, ifield.type_name });
-                try writer.print("            return .{{ .peer = self.peer, .question_id = self.question_id, .pointer_index = {} }};\n", .{ifield.pointer_offset});
-                try writer.writeAll("        }\n\n");
+            if (ancestor_name != null or !try self.hasPipelineFields(method.result_struct_type)) return;
+            const name = try self.allocMethodPipelineName(method.name);
+            defer self.allocator.free(name);
+            const nodes = try self.collectPipelineStructs(method.result_struct_type);
+            defer self.allocator.free(nodes);
+            try writer.print("    pub const {s} = struct {{\n", .{name});
+            try writer.writeAll("        peer: *rpc.peer.Peer,\n        question_id: u32,\n\n");
+            const has_children = blk: {
+                for (nodes[0].struct_node.?.fields) |field| {
+                    if (field.discriminant_value != 0xffff) continue;
+                    if (field.group != null) break :blk true;
+                    if (field.slot) |slot| if (slot.type == .@"struct") break :blk true;
+                }
+                break :blk false;
+            };
+            if (has_children) try writer.writeAll("        const _PipelineRoot = @This();\n\n");
+            try Self.generatePipelineGetters(self, nodes[0], true, "        ", writer);
+            for (if (has_children) nodes else nodes[0..0]) |node| {
+                try writer.print("        pub const _Pipeline_{x} = struct {{\n", .{node.id});
+                try writer.writeAll("            peer: *rpc.peer.Peer,\n            question_id: u32,\n            pointer_indexes: [64]u16 = undefined,\n            pointer_count: u8 = 0,\n\n");
+                try Self.generatePipelineGetters(self, node, false, "            ", writer);
+                try writer.writeAll("        };\n\n");
             }
-
             try writer.writeAll("    };\n\n");
+        }
+
+        fn generatePipelineGetters(self: *G, node: *const schema.Node, root: bool, indent: []const u8, writer: anytype) !void {
+            for (node.struct_node.?.fields) |field| {
+                if (field.discriminant_value != 0xffff) continue;
+                const child_id: ?schema.Id = if (field.group) |group| group.type_id else if (field.slot) |slot| switch (slot.type) {
+                    .@"struct" => |info| info.type_id,
+                    else => null,
+                } else null;
+                const slot = field.slot;
+                const capability = slot != null and slot.?.type == .interface;
+                if (!capability and child_id == null) continue;
+                if (child_id) |id| {
+                    const child = self.getNode(id) orelse continue;
+                    if (child.struct_node == null) continue;
+                }
+                const name = try types.identToZigTypeName(self.allocator, field.name);
+                defer self.allocator.free(name);
+                const iface_name = if (capability) try self.qualifiedTypeName(slot.?.type.interface.type_id) else null;
+                defer if (iface_name) |value| self.allocator.free(value);
+                const target = if (iface_name) |value|
+                    try std.fmt.allocPrint(self.allocator, "{s}.PipelinedClient", .{value})
+                else
+                    try std.fmt.allocPrint(self.allocator, "_PipelineRoot._Pipeline_{x}", .{child_id.?});
+                defer self.allocator.free(target);
+                const appends_pointer = field.group == null;
+                const fallible = appends_pointer and (!root or !capability);
+                try writer.print("{s}pub fn get{s}(self: @This()) {s}{s} {{\n", .{ indent, name, if (fallible) "!" else "", target });
+                if (root and capability) {
+                    try writer.print("{s}    return .{{ .peer = self.peer, .question_id = self.question_id, .pointer_index = {} }};\n", .{ indent, slot.?.offset });
+                } else {
+                    if (!root and appends_pointer) try writer.print("{s}    if (self.pointer_count >= 64) return error.PipelineDepthLimit;\n", .{indent});
+                    try writer.print("{s}    {s} result: {s} = .{{ .peer = self.peer, .question_id = self.question_id", .{ indent, if (root and !appends_pointer) "const" else "var", target });
+                    if (capability) try writer.print(", .pointer_index = {}", .{slot.?.offset});
+                    try writer.writeAll(" };\n");
+                    if (!root) {
+                        try writer.print("{s}    result.pointer_count = self.pointer_count;\n", .{indent});
+                        try writer.print("{s}    @memcpy(result.pointer_indexes[0..self.pointer_count], self.pointer_indexes[0..self.pointer_count]);\n", .{indent});
+                    }
+                    if (appends_pointer and !capability) {
+                        try writer.print("{s}    result.pointer_indexes[result.pointer_count] = {};\n", .{ indent, slot.?.offset });
+                        try writer.print("{s}    result.pointer_count += 1;\n", .{indent});
+                    }
+                    try writer.print("{s}    return result;\n", .{indent});
+                }
+                try writer.print("{s}}}\n\n", .{indent});
+            }
         }
 
         /// Generate a PipelinedClient call method. `qual` disambiguates the
@@ -851,10 +917,14 @@ pub fn Interface(comptime G: type) type {
             try writer.print("        pub fn {s}WithOptions(self: {s}PipelinedClient, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback, options: rpc.peer.CallOptions) !u32 {{\n", .{
                 p.call_name, qual, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
             });
+            try writer.writeAll("            if (self.pointer_count >= 64) return error.PipelineDepthLimit;\n");
+            try writer.writeAll("            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;\n");
+            try writer.writeAll("            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };\n");
+            try writer.writeAll("            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };\n");
             try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
             try writer.writeAll("            var settled = false;\n");
             try writer.writeAll("            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };\n");
-            try writer.print("            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{{.{{ .tag = .getPointerField, .pointer_index = self.pointer_index }}}}, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn, options) catch |err| {{\n", .{
+            try writer.print("            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn, options) catch |err| {{\n", .{
                 p.iface_id, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
             });
             try writer.writeAll("                if (!settled) self.peer.allocator.destroy(ctx);\n");

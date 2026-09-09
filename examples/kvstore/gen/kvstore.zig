@@ -520,7 +520,7 @@ pub const Entry = struct {
 
         pub fn getKey(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
-            return try self._reader.readText(0);
+            return try self._reader.readTextStrict(0);
         }
 
         pub fn hasValue(self: Reader) bool {
@@ -549,6 +549,48 @@ pub const Entry = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Entry.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearKey(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getKey(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(0)) return "";
+            return try field_reader.readTextStrict(0);
+        }
+
+        pub fn clearValue(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getValue(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(1)) return &[_]u8{};
+            return try field_reader.readData(1);
+        }
+
+        pub fn clearVersion(self: *@This()) !void {
+            self._builder.writeU64(0, 0);
+        }
+
+        pub fn getVersion(self: @This()) !u64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU64(0);
         }
 
         pub fn hasKey(self: Builder) bool {
@@ -608,7 +650,7 @@ pub const WriteOp = struct {
 
         pub fn getKey(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
-            return try self._reader.readText(0);
+            return try self._reader.readTextStrict(0);
         }
 
         pub fn hasPut(self: Reader) bool {
@@ -640,6 +682,58 @@ pub const WriteOp = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.WriteOp.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn whichOrdinal(self: @This()) u16 {
+            return self._builder.readUnionDiscriminant(0);
+        }
+
+        pub fn which(self: @This()) error{InvalidEnumValue}!_capnp_file.WriteOp.WhichTag {
+            return std.enums.fromInt(_capnp_file.WriteOp.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearKey(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getKey(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(0)) return "";
+            return try field_reader.readTextStrict(0);
+        }
+
+        pub fn clearPut(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getPut(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if ((try self.which()) != .put) return error.WrongUnionMember;
+            if (field_reader.isPointerNull(1)) return &[_]u8{};
+            return try field_reader.readData(1);
+        }
+
+        pub fn clearDelete(self: *@This()) !void {
+            self._builder.writeU16(0, 1);
+        }
+
+        pub fn getDelete(self: @This()) !void {
+            if ((try self.which()) != .delete) return error.WrongUnionMember;
+            return {};
         }
 
         pub fn hasKey(self: Builder) bool {
@@ -702,7 +796,7 @@ pub const WriteOpResult = struct {
 
         pub fn getKey(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
-            return try self._reader.readText(0);
+            return try self._reader.readTextStrict(0);
         }
 
         pub fn hasPut(self: Reader) bool {
@@ -735,6 +829,63 @@ pub const WriteOpResult = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.WriteOpResult.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn whichOrdinal(self: @This()) u16 {
+            return self._builder.readUnionDiscriminant(0);
+        }
+
+        pub fn which(self: @This()) error{InvalidEnumValue}!_capnp_file.WriteOpResult.WhichTag {
+            return std.enums.fromInt(_capnp_file.WriteOpResult.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearKey(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getKey(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(0)) return "";
+            return try field_reader.readTextStrict(0);
+        }
+
+        pub fn clearPut(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getPut(self: *@This()) !Entry.Builder {
+            if ((try self.which()) != .put) return error.WrongUnionMember;
+            const pointer = try self._builder.getAnyPointer(1);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 2);
+            return Entry.Builder.wrap(raw);
+        }
+
+        pub fn setPut(self: *@This(), value: Entry.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(1);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn clearDelete(self: *@This()) !void {
+            self._builder.writeBool(2, 0, false);
+            self._builder.writeU16(0, 1);
+        }
+
+        pub fn getDelete(self: @This()) !bool {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            if ((try self.which()) != .delete) return error.WrongUnionMember;
+            return field_reader.readBool(2, 0) != false;
         }
 
         pub fn hasKey(self: Builder) bool {
@@ -810,6 +961,49 @@ pub const BackupInfo = struct {
             return .{ ._builder = builder };
         }
 
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.BackupInfo.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearBackupId(self: *@This()) !void {
+            self._builder.writeU32(0, 0);
+        }
+
+        pub fn getBackupId(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU32(0);
+        }
+
+        pub fn clearTimestamp(self: *@This()) !void {
+            self._builder.writeU64(8, 0);
+        }
+
+        pub fn getTimestamp(self: @This()) !i64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU64(8));
+        }
+
+        pub fn clearSize(self: *@This()) !void {
+            self._builder.writeU64(16, 0);
+        }
+
+        pub fn getSize(self: @This()) !u64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU64(16);
+        }
+
+        pub fn clearNumFiles(self: *@This()) !void {
+            self._builder.writeU32(4, 0);
+        }
+
+        pub fn getNumFiles(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU32(4);
+        }
+
         pub fn setBackupId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
@@ -883,7 +1077,8 @@ pub const KvClientNotifier = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -896,7 +1091,7 @@ pub const KvClientNotifier = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -923,7 +1118,7 @@ pub const KvClientNotifier = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -935,7 +1130,7 @@ pub const KvClientNotifier = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -1040,7 +1235,8 @@ pub const KvClientNotifier = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -1053,7 +1249,7 @@ pub const KvClientNotifier = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -1080,7 +1276,7 @@ pub const KvClientNotifier = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -1092,7 +1288,7 @@ pub const KvClientNotifier = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -1212,16 +1408,22 @@ pub const KvClientNotifier = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
         pointer_index: u16,
+        pointer_indexes: [64]u16 = undefined,
+        pointer_count: u8 = 0,
 
         pub fn callKeysChanged(self: PipelinedClient, user_ctx: *anyopaque, build: ?KeysChanged.BuildFn, on_return: KeysChanged.Callback) !u32 {
             return self.callKeysChangedWithOptions(user_ctx, build, on_return, .{});
         }
 
         pub fn callKeysChangedWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?KeysChanged.BuildFn, on_return: KeysChanged.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(KeysChanged.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, KeysChanged.ordinal, ctx, KeysChanged.callBuild, KeysChanged.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, KeysChanged.ordinal, ctx, KeysChanged.callBuild, KeysChanged.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -1236,10 +1438,14 @@ pub const KvClientNotifier = struct {
         }
 
         pub fn callStateResetRequiredWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?StateResetRequired.BuildFn, on_return: StateResetRequired.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(StateResetRequired.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, StateResetRequired.ordinal, ctx, StateResetRequired.callBuild, StateResetRequired.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, StateResetRequired.ordinal, ctx, StateResetRequired.callBuild, StateResetRequired.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -1410,6 +1616,28 @@ pub const KvClientNotifier = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvClientNotifier.KeysChangedParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearChanges(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getChanges(self: *@This()) !StructListBuilder(WriteOpResult) {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 2);
+                return .{ ._list = raw };
+            }
+
+            pub fn setChanges(self: *@This(), value: StructListReader(WriteOpResult)) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setList(pointer, value);
+            }
+
             pub fn hasChanges(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -1450,6 +1678,13 @@ pub const KvClientNotifier = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvClientNotifier.KeysChangedResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
 
         };
@@ -1493,6 +1728,31 @@ pub const KvClientNotifier = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvClientNotifier.StateResetRequiredParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearRestoredBackupId(self: *@This()) !void {
+                self._builder.writeU32(0, 0);
+            }
+
+            pub fn getRestoredBackupId(self: @This()) !u32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU32(0);
+            }
+
+            pub fn clearNextVersion(self: *@This()) !void {
+                self._builder.writeU64(8, 0);
+            }
+
+            pub fn getNextVersion(self: @This()) !u64 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU64(8);
+            }
+
             pub fn setRestoredBackupId(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
@@ -1532,6 +1792,13 @@ pub const KvClientNotifier = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvClientNotifier.StateResetRequiredResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
 
         };
@@ -1599,7 +1866,8 @@ pub const KvStore = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -1612,7 +1880,7 @@ pub const KvStore = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -1639,7 +1907,7 @@ pub const KvStore = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -1651,7 +1919,7 @@ pub const KvStore = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -1756,7 +2024,8 @@ pub const KvStore = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -1769,7 +2038,7 @@ pub const KvStore = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -1796,7 +2065,7 @@ pub const KvStore = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -1808,7 +2077,7 @@ pub const KvStore = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -1913,7 +2182,8 @@ pub const KvStore = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -1926,7 +2196,7 @@ pub const KvStore = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -1953,7 +2223,7 @@ pub const KvStore = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -1965,7 +2235,7 @@ pub const KvStore = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -2070,7 +2340,8 @@ pub const KvStore = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -2083,7 +2354,7 @@ pub const KvStore = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -2110,7 +2381,7 @@ pub const KvStore = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -2122,7 +2393,7 @@ pub const KvStore = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -2227,7 +2498,8 @@ pub const KvStore = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -2240,7 +2512,7 @@ pub const KvStore = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -2267,7 +2539,7 @@ pub const KvStore = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -2279,7 +2551,7 @@ pub const KvStore = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -2384,7 +2656,8 @@ pub const KvStore = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -2397,7 +2670,7 @@ pub const KvStore = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -2424,7 +2697,7 @@ pub const KvStore = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -2436,7 +2709,7 @@ pub const KvStore = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -2541,7 +2814,8 @@ pub const KvStore = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -2554,7 +2828,7 @@ pub const KvStore = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -2581,7 +2855,7 @@ pub const KvStore = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -2593,7 +2867,7 @@ pub const KvStore = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -2698,7 +2972,8 @@ pub const KvStore = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -2711,7 +2986,7 @@ pub const KvStore = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -2738,7 +3013,7 @@ pub const KvStore = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -2750,7 +3025,7 @@ pub const KvStore = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -2978,16 +3253,22 @@ pub const KvStore = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
         pointer_index: u16,
+        pointer_indexes: [64]u16 = undefined,
+        pointer_count: u8 = 0,
 
         pub fn callGet(self: PipelinedClient, user_ctx: *anyopaque, build: ?Get.BuildFn, on_return: Get.Callback) !u32 {
             return self.callGetWithOptions(user_ctx, build, on_return, .{});
         }
 
         pub fn callGetWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Get.BuildFn, on_return: Get.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(Get.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Get.ordinal, ctx, Get.callBuild, Get.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, Get.ordinal, ctx, Get.callBuild, Get.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3002,10 +3283,14 @@ pub const KvStore = struct {
         }
 
         pub fn callWriteBatchWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?WriteBatch.BuildFn, on_return: WriteBatch.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(WriteBatch.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, WriteBatch.ordinal, ctx, WriteBatch.callBuild, WriteBatch.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, WriteBatch.ordinal, ctx, WriteBatch.callBuild, WriteBatch.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3020,10 +3305,14 @@ pub const KvStore = struct {
         }
 
         pub fn callListWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?List.BuildFn, on_return: List.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(List.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, List.ordinal, ctx, List.callBuild, List.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, List.ordinal, ctx, List.callBuild, List.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3038,10 +3327,14 @@ pub const KvStore = struct {
         }
 
         pub fn callSubscribeWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Subscribe.BuildFn, on_return: Subscribe.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(Subscribe.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Subscribe.ordinal, ctx, Subscribe.callBuild, Subscribe.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, Subscribe.ordinal, ctx, Subscribe.callBuild, Subscribe.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3056,10 +3349,14 @@ pub const KvStore = struct {
         }
 
         pub fn callSetWatchedKeysWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?SetWatchedKeys.BuildFn, on_return: SetWatchedKeys.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(SetWatchedKeys.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, SetWatchedKeys.ordinal, ctx, SetWatchedKeys.callBuild, SetWatchedKeys.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, SetWatchedKeys.ordinal, ctx, SetWatchedKeys.callBuild, SetWatchedKeys.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3074,10 +3371,14 @@ pub const KvStore = struct {
         }
 
         pub fn callCreateBackupWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?CreateBackup.BuildFn, on_return: CreateBackup.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(CreateBackup.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, CreateBackup.ordinal, ctx, CreateBackup.callBuild, CreateBackup.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, CreateBackup.ordinal, ctx, CreateBackup.callBuild, CreateBackup.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3092,10 +3393,14 @@ pub const KvStore = struct {
         }
 
         pub fn callListBackupsWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?ListBackups.BuildFn, on_return: ListBackups.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(ListBackups.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ListBackups.ordinal, ctx, ListBackups.callBuild, ListBackups.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, ListBackups.ordinal, ctx, ListBackups.callBuild, ListBackups.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3110,10 +3415,14 @@ pub const KvStore = struct {
         }
 
         pub fn callRestoreFromBackupWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?RestoreFromBackup.BuildFn, on_return: RestoreFromBackup.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(RestoreFromBackup.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RestoreFromBackup.ordinal, ctx, RestoreFromBackup.callBuild, RestoreFromBackup.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, RestoreFromBackup.ordinal, ctx, RestoreFromBackup.callBuild, RestoreFromBackup.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3280,7 +3589,7 @@ pub const KvStore = struct {
 
             pub fn getKey(self: Reader) ![]const u8 {
                 if (self._reader.isPointerNull(0)) return "";
-                return try self._reader.readText(0);
+                return try self._reader.readTextStrict(0);
             }
 
         };
@@ -3296,6 +3605,26 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.GetParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearKey(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getKey(self: @This()) ![]const u8 {
+                var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+                defer storage.deinit();
+                try storage.bind(self._builder.builder);
+                const field_reader = try storage.reader(self._builder);
+                if (field_reader.isPointerNull(0)) return "";
+                return try field_reader.readTextStrict(0);
             }
 
             pub fn hasKey(self: Builder) bool {
@@ -3351,6 +3680,37 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.GetResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearEntry(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getEntry(self: *@This()) !Entry.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 2);
+                return Entry.Builder.wrap(raw);
+            }
+
+            pub fn setEntry(self: *@This(), value: Entry.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearFound(self: *@This()) !void {
+                self._builder.writeBool(0, 0, false);
+            }
+
+            pub fn getFound(self: @This()) !bool {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readBool(0, 0) != false;
             }
 
             pub fn hasEntry(self: Builder) bool {
@@ -3410,6 +3770,28 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.WriteBatchParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearOps(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getOps(self: *@This()) !StructListBuilder(WriteOp) {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 2);
+                return .{ ._list = raw };
+            }
+
+            pub fn setOps(self: *@This(), value: StructListReader(WriteOp)) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setList(pointer, value);
             }
 
             pub fn hasOps(self: Builder) bool {
@@ -3475,6 +3857,46 @@ pub const KvStore = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.WriteBatchResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearResults(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getResults(self: *@This()) !StructListBuilder(WriteOpResult) {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 2);
+                return .{ ._list = raw };
+            }
+
+            pub fn setResults(self: *@This(), value: StructListReader(WriteOpResult)) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setList(pointer, value);
+            }
+
+            pub fn clearApplied(self: *@This()) !void {
+                self._builder.writeU32(0, 0);
+            }
+
+            pub fn getApplied(self: @This()) !u32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU32(0);
+            }
+
+            pub fn clearNextVersion(self: *@This()) !void {
+                self._builder.writeU64(8, 0);
+            }
+
+            pub fn getNextVersion(self: @This()) !u64 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU64(8);
+            }
+
             pub fn hasResults(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -3516,7 +3938,7 @@ pub const KvStore = struct {
 
             pub fn getPrefix(self: Reader) ![]const u8 {
                 if (self._reader.isPointerNull(0)) return "";
-                return try self._reader.readText(0);
+                return try self._reader.readTextStrict(0);
             }
 
             pub fn getLimit(self: Reader) !u32 {
@@ -3536,6 +3958,35 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.ListParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearPrefix(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getPrefix(self: @This()) ![]const u8 {
+                var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+                defer storage.deinit();
+                try storage.bind(self._builder.builder);
+                const field_reader = try storage.reader(self._builder);
+                if (field_reader.isPointerNull(0)) return "";
+                return try field_reader.readTextStrict(0);
+            }
+
+            pub fn clearLimit(self: *@This()) !void {
+                self._builder.writeU32(0, 0);
+            }
+
+            pub fn getLimit(self: @This()) !u32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU32(0);
             }
 
             pub fn hasPrefix(self: Builder) bool {
@@ -3594,6 +4045,28 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.ListResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearEntries(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getEntries(self: *@This()) !StructListBuilder(Entry) {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 2);
+                return .{ ._list = raw };
+            }
+
+            pub fn setEntries(self: *@This(), value: StructListReader(Entry)) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setList(pointer, value);
             }
 
             pub fn hasEntries(self: Builder) bool {
@@ -3657,6 +4130,18 @@ pub const KvStore = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.SubscribeParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn getNotifier(self: *@This()) !message.Capability {
+                const pointer = try self._builder.getAnyPointer(0);
+                return try pointer.getCapability();
+            }
+
             pub fn hasNotifier(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -3666,13 +4151,11 @@ pub const KvStore = struct {
             }
 
             pub fn clearNotifier(self: *Builder) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setNull();
+                try (try self._builder.getAnyPointer(0)).setNull();
             }
 
             pub fn setNotifierCapability(self: *Builder, cap: message.Capability) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(cap);
+                try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
             pub fn setNotifierServer(self: *Builder, peer: *rpc.peer.Peer, server: *KvClientNotifier.Server) !void {
@@ -3719,6 +4202,13 @@ pub const KvStore = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.SubscribeResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
         };
     };
 
@@ -3741,9 +4231,9 @@ pub const KvStore = struct {
                 return !self._reader.isPointerNull(0);
             }
 
-            pub fn getKeys(self: Reader) !message.TextListReader {
-                if (self._reader.isPointerNull(0)) return self._reader.emptyList(message.TextListReader);
-                return try self._reader.readTextList(0);
+            pub fn getKeys(self: Reader) !message.StrictTextListReader {
+                if (self._reader.isPointerNull(0)) return self._reader.emptyList(message.StrictTextListReader);
+                return try self._reader.readTextListStrict(0);
             }
 
         };
@@ -3759,6 +4249,27 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.SetWatchedKeysParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearKeys(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getKeys(self: *@This()) !message.TextListBuilder {
+                const pointer = try self._builder.getAnyPointer(0);
+                return try pointer.getTextList();
+            }
+
+            pub fn setKeys(self: *@This(), value: message.StrictTextListReader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setList(pointer, value);
             }
 
             pub fn hasKeys(self: Builder) bool {
@@ -3802,6 +4313,13 @@ pub const KvStore = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.SetWatchedKeysResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
         };
     };
 
@@ -3837,6 +4355,22 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.CreateBackupParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearFlushBeforeBackup(self: *@This()) !void {
+                self._builder.writeBool(0, 0, false);
+            }
+
+            pub fn getFlushBeforeBackup(self: @This()) !bool {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readBool(0, 0) != false;
             }
 
             pub fn setFlushBeforeBackup(self: *Builder, value: bool) !void {
@@ -3890,6 +4424,37 @@ pub const KvStore = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.CreateBackupResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearBackup(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getBackup(self: *@This()) !BackupInfo.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 3, 0);
+                return BackupInfo.Builder.wrap(raw);
+            }
+
+            pub fn setBackup(self: *@This(), value: BackupInfo.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearBackupCount(self: *@This()) !void {
+                self._builder.writeU32(0, 0);
+            }
+
+            pub fn getBackupCount(self: @This()) !u32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU32(0);
+            }
+
             pub fn hasBackup(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -3936,6 +4501,13 @@ pub const KvStore = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.ListBackupsParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
         };
     };
 
@@ -3980,6 +4552,28 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.ListBackupsResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearBackups(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getBackups(self: *@This()) !StructListBuilder(BackupInfo) {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStructList(pointer, 3, 0);
+                return .{ ._list = raw };
+            }
+
+            pub fn setBackups(self: *@This(), value: StructListReader(BackupInfo)) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setList(pointer, value);
             }
 
             pub fn hasBackups(self: Builder) bool {
@@ -4032,6 +4626,31 @@ pub const KvStore = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.RestoreFromBackupParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearBackupId(self: *@This()) !void {
+                self._builder.writeU32(0, 0);
+            }
+
+            pub fn getBackupId(self: @This()) !u32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU32(0);
+            }
+
+            pub fn clearKeepLogFiles(self: *@This()) !void {
+                self._builder.writeBool(4, 0, false);
+            }
+
+            pub fn getKeepLogFiles(self: @This()) !bool {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readBool(4, 0) != false;
+            }
+
             pub fn setBackupId(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
@@ -4079,6 +4698,31 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.KvStore.RestoreFromBackupResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearRestoredBackupId(self: *@This()) !void {
+                self._builder.writeU32(0, 0);
+            }
+
+            pub fn getRestoredBackupId(self: @This()) !u32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU32(0);
+            }
+
+            pub fn clearNextVersion(self: *@This()) !void {
+                self._builder.writeU64(8, 0);
+            }
+
+            pub fn getNextVersion(self: @This()) !u64 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU64(8);
             }
 
             pub fn setRestoredBackupId(self: *Builder, value: u32) !void {

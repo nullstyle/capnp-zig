@@ -225,6 +225,28 @@ pub const AddressBook = struct {
             return .{ ._builder = builder };
         }
 
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.AddressBook.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearPeople(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getPeople(self: *@This()) !StructListBuilder(Person) {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 5);
+            return .{ ._list = raw };
+        }
+
+        pub fn setPeople(self: *@This(), value: StructListReader(Person)) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
         pub fn hasPeople(self: Builder) bool {
             return !self._builder.isPointerNull(0);
         }
@@ -279,7 +301,7 @@ pub const Person = struct {
 
         pub fn getName(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
-            return try self._reader.readText(0);
+            return try self._reader.readTextStrict(0);
         }
 
         pub fn hasEmail(self: Reader) bool {
@@ -288,7 +310,7 @@ pub const Person = struct {
 
         pub fn getEmail(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(1)) return "";
-            return try self._reader.readText(1);
+            return try self._reader.readTextStrict(1);
         }
 
         pub fn hasPhones(self: Reader) bool {
@@ -323,7 +345,7 @@ pub const Person = struct {
         pub fn getEmployer(self: Reader) ![]const u8 {
             if ((try self.which()) != .employer) return error.WrongUnionMember;
             if (self._reader.isPointerNull(4)) return "";
-            return try self._reader.readText(4);
+            return try self._reader.readTextStrict(4);
         }
 
         pub fn hasSchool(self: Reader) bool {
@@ -334,7 +356,7 @@ pub const Person = struct {
         pub fn getSchool(self: Reader) ![]const u8 {
             if ((try self.which()) != .school) return error.WrongUnionMember;
             if (self._reader.isPointerNull(4)) return "";
-            return try self._reader.readText(4);
+            return try self._reader.readTextStrict(4);
         }
 
         pub fn getSelfEmployed(self: Reader) !void {
@@ -354,6 +376,132 @@ pub const Person = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Person.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn whichOrdinal(self: @This()) u16 {
+            return self._builder.readUnionDiscriminant(4);
+        }
+
+        pub fn which(self: @This()) error{InvalidEnumValue}!_capnp_file.Person.WhichTag {
+            return std.enums.fromInt(_capnp_file.Person.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearId(self: *@This()) !void {
+            self._builder.writeU32(0, 0);
+        }
+
+        pub fn getId(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU32(0);
+        }
+
+        pub fn clearName(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getName(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(0)) return "";
+            return try field_reader.readTextStrict(0);
+        }
+
+        pub fn clearEmail(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getEmail(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(1)) return "";
+            return try field_reader.readTextStrict(1);
+        }
+
+        pub fn clearPhones(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(2)).setNull();
+        }
+
+        pub fn getPhones(self: *@This()) !StructListBuilder(Person.PhoneNumber) {
+            const pointer = try self._builder.getAnyPointer(2);
+            const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 1);
+            return .{ ._list = raw };
+        }
+
+        pub fn setPhones(self: *@This(), value: StructListReader(Person.PhoneNumber)) !void {
+            const pointer = try self._builder.getAnyPointer(2);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearAvatar(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(3)).setNull();
+        }
+
+        pub fn getAvatar(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(3)) return &[_]u8{};
+            return try field_reader.readData(3);
+        }
+
+        pub fn clearUnemployed(self: *@This()) !void {
+            self._builder.writeU16(4, 0);
+        }
+
+        pub fn getUnemployed(self: @This()) !void {
+            if ((try self.which()) != .unemployed) return error.WrongUnionMember;
+            return {};
+        }
+
+        pub fn clearEmployer(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(4)).setNull();
+            self._builder.writeU16(4, 1);
+        }
+
+        pub fn getEmployer(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if ((try self.which()) != .employer) return error.WrongUnionMember;
+            if (field_reader.isPointerNull(4)) return "";
+            return try field_reader.readTextStrict(4);
+        }
+
+        pub fn clearSchool(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(4)).setNull();
+            self._builder.writeU16(4, 2);
+        }
+
+        pub fn getSchool(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if ((try self.which()) != .school) return error.WrongUnionMember;
+            if (field_reader.isPointerNull(4)) return "";
+            return try field_reader.readTextStrict(4);
+        }
+
+        pub fn clearSelfEmployed(self: *@This()) !void {
+            self._builder.writeU16(4, 3);
+        }
+
+        pub fn getSelfEmployed(self: @This()) !void {
+            if ((try self.which()) != .selfEmployed) return error.WrongUnionMember;
+            return {};
         }
 
         pub fn setId(self: *Builder, value: u32) !void {
@@ -456,7 +604,7 @@ pub const Person = struct {
 
             pub fn getNumber(self: @This()) ![]const u8 {
                 if (self._reader.isPointerNull(0)) return "";
-                return try self._reader.readText(0);
+                return try self._reader.readTextStrict(0);
             }
 
             pub fn getType(self: @This()) !Person.PhoneType {
@@ -481,6 +629,11 @@ pub const Person = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getType(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setType(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -488,6 +641,35 @@ pub const Person = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Person.PhoneNumber.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearNumber(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getNumber(self: @This()) ![]const u8 {
+                var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+                defer storage.deinit();
+                try storage.bind(self._builder.builder);
+                const field_reader = try storage.reader(self._builder);
+                if (field_reader.isPointerNull(0)) return "";
+                return try field_reader.readTextStrict(0);
+            }
+
+            pub fn clearType(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getType(self: @This()) !Person.PhoneType {
+                const ordinal = try self.enumOrdinals().getType();
+                return std.enums.fromInt(Person.PhoneType, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasNumber(self: @This()) bool {

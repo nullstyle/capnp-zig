@@ -1,0 +1,32 @@
+const std = @import("std");
+const capnpc = @import("capnpc-zig");
+const Root = @import("generated.zig").Root;
+test "recursive generic round trip" {
+    var message = capnpc.message.MessageBuilder.init(std.testing.allocator);
+    defer message.deinit();
+    const root = Root.Builder.wrap(try message.allocateStruct(0, 1));
+    var head = try root.brands().initHead();
+    try head.setValue("first");
+    var next = try head.initNext();
+    try next.setValue("second");
+    var tail = try next.initNext();
+    try tail.setValue("third");
+    var children = try head.initChildren(1);
+    var child = try children.get(0);
+    try child.setValue("child");
+    var grandchild = try child.initNext();
+    try grandchild.setValue("grandchild");
+    const bytes = try message.toBytes();
+    defer std.testing.allocator.free(bytes);
+    var parsed = try capnpc.message.Message.init(std.testing.allocator, bytes, .{});
+    defer parsed.deinit();
+    const reader = Root.Reader.wrap(try parsed.getRootStruct());
+    const first = try reader.brands().getHead();
+    try std.testing.expectEqualStrings("first", try first.getValue());
+    const read_child = try (try first.getChildren()).get(0);
+    try std.testing.expectEqualStrings("child", try read_child.getValue());
+    try std.testing.expectEqualStrings("grandchild", try (try read_child.getNext()).getValue());
+    const second = try first.getNext();
+    try std.testing.expectEqualStrings("second", try second.getValue());
+    try std.testing.expectEqualStrings("third", try (try second.getNext()).getValue());
+}

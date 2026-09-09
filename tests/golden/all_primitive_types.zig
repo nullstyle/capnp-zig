@@ -5,6 +5,7 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const message = capnpc.message;
 const schema = capnpc.schema;
+const _capnp_file = @This();
 
 pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"all_types.capnp\",\"module\":\"all_types\",\"serde\":[{\"id\":14757395258967641089,\"type_name\":\"AllTypes\",\"to_json_export\":\"capnp_all_types_all_types_to_json\",\"from_json_export\":\"capnp_all_types_all_types_from_json\"}]}";
 pub fn capnpSchemaManifestJson() []const u8 {
@@ -73,7 +74,7 @@ pub const AllTypes = struct {
         }
 
         pub fn getTextField(self: Reader) ![]const u8 {
-            return try self._reader.readText(0);
+            return try self._reader.readTextStrict(0);
         }
 
         pub fn hasDataField(self: Reader) bool {
@@ -97,6 +98,137 @@ pub const AllTypes = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.AllTypes.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearBoolField(self: *@This()) !void {
+            self._builder.writeBool(0, 0, false);
+        }
+
+        pub fn getBoolField(self: @This()) !bool {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readBool(0, 0);
+        }
+
+        pub fn clearInt8Field(self: *@This()) !void {
+            self._builder.writeU8(1, 0);
+        }
+
+        pub fn getInt8Field(self: @This()) !i8 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU8(1));
+        }
+
+        pub fn clearInt16Field(self: *@This()) !void {
+            self._builder.writeU16(2, 0);
+        }
+
+        pub fn getInt16Field(self: @This()) !i16 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU16(2));
+        }
+
+        pub fn clearInt32Field(self: *@This()) !void {
+            self._builder.writeU32(4, 0);
+        }
+
+        pub fn getInt32Field(self: @This()) !i32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(4));
+        }
+
+        pub fn clearInt64Field(self: *@This()) !void {
+            self._builder.writeU64(8, 0);
+        }
+
+        pub fn getInt64Field(self: @This()) !i64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU64(8));
+        }
+
+        pub fn clearUint8Field(self: *@This()) !void {
+            self._builder.writeU8(2, 0);
+        }
+
+        pub fn getUint8Field(self: @This()) !u8 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU8(2);
+        }
+
+        pub fn clearUint16Field(self: *@This()) !void {
+            self._builder.writeU16(4, 0);
+        }
+
+        pub fn getUint16Field(self: @This()) !u16 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU16(4);
+        }
+
+        pub fn clearUint32Field(self: *@This()) !void {
+            self._builder.writeU32(8, 0);
+        }
+
+        pub fn getUint32Field(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU32(8);
+        }
+
+        pub fn clearUint64Field(self: *@This()) !void {
+            self._builder.writeU64(16, 0);
+        }
+
+        pub fn getUint64Field(self: @This()) !u64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU64(16);
+        }
+
+        pub fn clearFloat32Field(self: *@This()) !void {
+            self._builder.writeU32(12, 0);
+        }
+
+        pub fn getFloat32Field(self: @This()) !f32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU32(12));
+        }
+
+        pub fn clearFloat64Field(self: *@This()) !void {
+            self._builder.writeU64(24, 0);
+        }
+
+        pub fn getFloat64Field(self: @This()) !f64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return @bitCast(field_reader.readU64(24));
+        }
+
+        pub fn clearTextField(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getTextField(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            return try field_reader.readTextStrict(0);
+        }
+
+        pub fn clearDataField(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getDataField(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(1)) return &[_]u8{};
+            return try field_reader.readData(1);
         }
 
         pub fn setBoolField(self: *Builder, value: bool) !void {

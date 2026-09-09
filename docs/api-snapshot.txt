@@ -80,6 +80,7 @@ capnpc-zig.message.AnyListReader.getInlineCompositeList: fn (serialization.messa
 capnpc-zig.message.AnyListReader.getPointerList: fn (serialization.message.AnyListReader) error{InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader
 capnpc-zig.message.AnyListReader.getStructList: fn (serialization.message.AnyListReader) error{CannotUpgradeBitList,InvalidFarPointer,InvalidInlineCompositePointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).StructListReader
 capnpc-zig.message.AnyListReader.getTextList: fn (serialization.message.AnyListReader) error{InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).TextListReader
+capnpc-zig.message.AnyListReader.getTextListStrict: fn (serialization.message.AnyListReader) error{InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).StrictTextListReader
 capnpc-zig.message.AnyListReader.getU16List: fn (serialization.message.AnyListReader) error{InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_readers.PrimitiveListReader(u16,serialization.message.Message)
 capnpc-zig.message.AnyListReader.getU32List: fn (serialization.message.AnyListReader) error{InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_readers.PrimitiveListReader(u32,serialization.message.Message)
 capnpc-zig.message.AnyListReader.getU64List: fn (serialization.message.AnyListReader) error{InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_readers.PrimitiveListReader(u64,serialization.message.Message)
@@ -165,6 +166,7 @@ capnpc-zig.message.BoolListReader.get: fn (serialization.message.list_readers.de
 capnpc-zig.message.BoolListReader.len: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).BoolListReader) u32
 capnpc-zig.message.BoolListReader.message: field *const serialization.message.Message
 capnpc-zig.message.BoolListReader.segment_id: field u32
+capnpc-zig.message.BoolListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.BoolListReader: struct
 capnpc-zig.message.Capability.id: field u32
 capnpc-zig.message.Capability: struct
@@ -181,6 +183,7 @@ capnpc-zig.message.F32ListBuilder.elements_offset: field usize
 capnpc-zig.message.F32ListBuilder.len: fn (serialization.message.list_readers.PrimitiveListBuilder(f32,serialization.message.MessageBuilder)) u32
 capnpc-zig.message.F32ListBuilder.segment_id: field u32
 capnpc-zig.message.F32ListBuilder.set: fn (serialization.message.list_readers.PrimitiveListBuilder(f32,serialization.message.MessageBuilder), u32, f32) error{IndexOutOfBounds,OutOfBounds}!void
+capnpc-zig.message.F32ListBuilder.stride_bytes: field u32 = 0
 capnpc-zig.message.F32ListBuilder: struct
 capnpc-zig.message.F32ListReader.element_count: field u32
 capnpc-zig.message.F32ListReader.elements_offset: field usize
@@ -188,6 +191,7 @@ capnpc-zig.message.F32ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.F32ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(f32,serialization.message.Message)) u32
 capnpc-zig.message.F32ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.F32ListReader.segment_id: field u32
+capnpc-zig.message.F32ListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.F32ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.F32ListReader: struct
 capnpc-zig.message.F64ListBuilder.builder: field *serialization.message.MessageBuilder
@@ -196,6 +200,7 @@ capnpc-zig.message.F64ListBuilder.elements_offset: field usize
 capnpc-zig.message.F64ListBuilder.len: fn (serialization.message.list_readers.PrimitiveListBuilder(f64,serialization.message.MessageBuilder)) u32
 capnpc-zig.message.F64ListBuilder.segment_id: field u32
 capnpc-zig.message.F64ListBuilder.set: fn (serialization.message.list_readers.PrimitiveListBuilder(f64,serialization.message.MessageBuilder), u32, f64) error{IndexOutOfBounds,OutOfBounds}!void
+capnpc-zig.message.F64ListBuilder.stride_bytes: field u32 = 0
 capnpc-zig.message.F64ListBuilder: struct
 capnpc-zig.message.F64ListReader.element_count: field u32
 capnpc-zig.message.F64ListReader.elements_offset: field usize
@@ -203,6 +208,7 @@ capnpc-zig.message.F64ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.F64ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(f64,serialization.message.Message)) u32
 capnpc-zig.message.F64ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.F64ListReader.segment_id: field u32
+capnpc-zig.message.F64ListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.F64ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.F64ListReader: struct
 capnpc-zig.message.I16ListBuilder.builder: field *serialization.message.MessageBuilder
@@ -211,6 +217,7 @@ capnpc-zig.message.I16ListBuilder.elements_offset: field usize
 capnpc-zig.message.I16ListBuilder.len: fn (serialization.message.list_readers.PrimitiveListBuilder(i16,serialization.message.MessageBuilder)) u32
 capnpc-zig.message.I16ListBuilder.segment_id: field u32
 capnpc-zig.message.I16ListBuilder.set: fn (serialization.message.list_readers.PrimitiveListBuilder(i16,serialization.message.MessageBuilder), u32, i16) error{IndexOutOfBounds,OutOfBounds}!void
+capnpc-zig.message.I16ListBuilder.stride_bytes: field u32 = 0
 capnpc-zig.message.I16ListBuilder: struct
 capnpc-zig.message.I16ListReader.element_count: field u32
 capnpc-zig.message.I16ListReader.elements_offset: field usize
@@ -218,6 +225,7 @@ capnpc-zig.message.I16ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.I16ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(i16,serialization.message.Message)) u32
 capnpc-zig.message.I16ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.I16ListReader.segment_id: field u32
+capnpc-zig.message.I16ListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.I16ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.I16ListReader: struct
 capnpc-zig.message.I32ListBuilder.builder: field *serialization.message.MessageBuilder
@@ -226,6 +234,7 @@ capnpc-zig.message.I32ListBuilder.elements_offset: field usize
 capnpc-zig.message.I32ListBuilder.len: fn (serialization.message.list_readers.PrimitiveListBuilder(i32,serialization.message.MessageBuilder)) u32
 capnpc-zig.message.I32ListBuilder.segment_id: field u32
 capnpc-zig.message.I32ListBuilder.set: fn (serialization.message.list_readers.PrimitiveListBuilder(i32,serialization.message.MessageBuilder), u32, i32) error{IndexOutOfBounds,OutOfBounds}!void
+capnpc-zig.message.I32ListBuilder.stride_bytes: field u32 = 0
 capnpc-zig.message.I32ListBuilder: struct
 capnpc-zig.message.I32ListReader.element_count: field u32
 capnpc-zig.message.I32ListReader.elements_offset: field usize
@@ -233,6 +242,7 @@ capnpc-zig.message.I32ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.I32ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(i32,serialization.message.Message)) u32
 capnpc-zig.message.I32ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.I32ListReader.segment_id: field u32
+capnpc-zig.message.I32ListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.I32ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.I32ListReader: struct
 capnpc-zig.message.I64ListBuilder.builder: field *serialization.message.MessageBuilder
@@ -241,6 +251,7 @@ capnpc-zig.message.I64ListBuilder.elements_offset: field usize
 capnpc-zig.message.I64ListBuilder.len: fn (serialization.message.list_readers.PrimitiveListBuilder(i64,serialization.message.MessageBuilder)) u32
 capnpc-zig.message.I64ListBuilder.segment_id: field u32
 capnpc-zig.message.I64ListBuilder.set: fn (serialization.message.list_readers.PrimitiveListBuilder(i64,serialization.message.MessageBuilder), u32, i64) error{IndexOutOfBounds,OutOfBounds}!void
+capnpc-zig.message.I64ListBuilder.stride_bytes: field u32 = 0
 capnpc-zig.message.I64ListBuilder: struct
 capnpc-zig.message.I64ListReader.element_count: field u32
 capnpc-zig.message.I64ListReader.elements_offset: field usize
@@ -248,6 +259,7 @@ capnpc-zig.message.I64ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.I64ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(i64,serialization.message.Message)) u32
 capnpc-zig.message.I64ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.I64ListReader.segment_id: field u32
+capnpc-zig.message.I64ListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.I64ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.I64ListReader: struct
 capnpc-zig.message.I8ListBuilder.builder: field *serialization.message.MessageBuilder
@@ -256,6 +268,7 @@ capnpc-zig.message.I8ListBuilder.elements_offset: field usize
 capnpc-zig.message.I8ListBuilder.len: fn (serialization.message.list_builders.define(serialization.message.MessageBuilder).I8ListBuilder) u32
 capnpc-zig.message.I8ListBuilder.segment_id: field u32
 capnpc-zig.message.I8ListBuilder.set: fn (serialization.message.list_builders.define(serialization.message.MessageBuilder).I8ListBuilder, u32, i8) error{IndexOutOfBounds,OutOfBounds}!void
+capnpc-zig.message.I8ListBuilder.stride_bytes: field u32 = 0
 capnpc-zig.message.I8ListBuilder: struct
 capnpc-zig.message.I8ListReader.element_count: field u32
 capnpc-zig.message.I8ListReader.elements_offset: field usize
@@ -263,6 +276,7 @@ capnpc-zig.message.I8ListReader.get: fn (serialization.message.list_readers.defi
 capnpc-zig.message.I8ListReader.len: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).I8ListReader) u32
 capnpc-zig.message.I8ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.I8ListReader.segment_id: field u32
+capnpc-zig.message.I8ListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.I8ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.I8ListReader: struct
 capnpc-zig.message.InlineCompositeList.data_words: field u16
@@ -372,6 +386,7 @@ capnpc-zig.message.PointerListBuilder.setDataInSegment: fn (serialization.messag
 capnpc-zig.message.PointerListBuilder.setNull: fn (serialization.message.struct_builder.define(serialization.message.MessageBuilder,serialization.message.AnyPointerBuilder,serialization.message.StructListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).TextListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).VoidListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).U8ListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).I8ListBuilder,serialization.message.list_readers.PrimitiveListBuilder(u16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f64,serialization.message.MessageBuilder),serialization.message.list_builders.define(serialization.message.MessageBuilder).BoolListBuilder,serialization.message.Capability,@as(*const fn (u32) anyerror!u64, @ptrCast(&serialization.message.makeCapabilityPointer)),@as(*const fn (i32, u3, u32) anyerror!u64, @ptrCast(&serialization.message.makeListPointer)),@as(*const fn (bool, u32, u32) anyerror!u64, @ptrCast(&serialization.message.makeFarPointer))).PointerListBuilder, u32) error{IndexOutOfBounds,OutOfBounds}!void
 capnpc-zig.message.PointerListBuilder.setText: fn (serialization.message.struct_builder.define(serialization.message.MessageBuilder,serialization.message.AnyPointerBuilder,serialization.message.StructListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).TextListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).VoidListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).U8ListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).I8ListBuilder,serialization.message.list_readers.PrimitiveListBuilder(u16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f64,serialization.message.MessageBuilder),serialization.message.list_builders.define(serialization.message.MessageBuilder).BoolListBuilder,serialization.message.Capability,@as(*const fn (u32) anyerror!u64, @ptrCast(&serialization.message.makeCapabilityPointer)),@as(*const fn (i32, u3, u32) anyerror!u64, @ptrCast(&serialization.message.makeListPointer)),@as(*const fn (bool, u32, u32) anyerror!u64, @ptrCast(&serialization.message.makeFarPointer))).PointerListBuilder, u32, []const u8) error{FarPointerOffsetTooLarge,IndexOutOfBounds,InvalidSegmentId,ListTooLarge,OffsetOutOfRange,OutOfBounds,OutOfMemory,TextTooLong}!void
 capnpc-zig.message.PointerListBuilder.setTextInSegment: fn (serialization.message.struct_builder.define(serialization.message.MessageBuilder,serialization.message.AnyPointerBuilder,serialization.message.StructListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).TextListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).VoidListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).U8ListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).I8ListBuilder,serialization.message.list_readers.PrimitiveListBuilder(u16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f64,serialization.message.MessageBuilder),serialization.message.list_builders.define(serialization.message.MessageBuilder).BoolListBuilder,serialization.message.Capability,@as(*const fn (u32) anyerror!u64, @ptrCast(&serialization.message.makeCapabilityPointer)),@as(*const fn (i32, u3, u32) anyerror!u64, @ptrCast(&serialization.message.makeListPointer)),@as(*const fn (bool, u32, u32) anyerror!u64, @ptrCast(&serialization.message.makeFarPointer))).PointerListBuilder, u32, []const u8, u32) error{FarPointerOffsetTooLarge,IndexOutOfBounds,InvalidSegmentId,ListTooLarge,OffsetOutOfRange,OutOfBounds,OutOfMemory,TextTooLong}!void
+capnpc-zig.message.PointerListBuilder.stride_bytes: field u32 = 0
 capnpc-zig.message.PointerListBuilder: struct
 capnpc-zig.message.PointerListReader.element_count: field u32
 capnpc-zig.message.PointerListReader.elements_offset: field usize
@@ -390,6 +405,7 @@ capnpc-zig.message.PointerListReader.getStruct: fn (serialization.message.list_r
 capnpc-zig.message.PointerListReader.getStructList: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader, u32) error{CannotUpgradeBitList,IndexOutOfBounds,InvalidFarPointer,InvalidInlineCompositePointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).StructListReader
 capnpc-zig.message.PointerListReader.getText: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader, u32) error{IndexOutOfBounds,InvalidFarPointer,InvalidPointer,InvalidSegmentId,InvalidTextPointer,OutOfBounds,PointerDepthLimit}![]const u8
 capnpc-zig.message.PointerListReader.getTextList: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader, u32) anyerror!serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).TextListReader
+capnpc-zig.message.PointerListReader.getTextListStrict: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader, u32) anyerror!serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).StrictTextListReader
 capnpc-zig.message.PointerListReader.getTextStrict: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader, u32) error{IndexOutOfBounds,InvalidFarPointer,InvalidPointer,InvalidSegmentId,InvalidTextPointer,InvalidUtf8,OutOfBounds,PointerDepthLimit}![]const u8
 capnpc-zig.message.PointerListReader.getU16List: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader, u32) anyerror!serialization.message.list_readers.PrimitiveListReader(u16,serialization.message.Message)
 capnpc-zig.message.PointerListReader.getU32List: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader, u32) anyerror!serialization.message.list_readers.PrimitiveListReader(u32,serialization.message.Message)
@@ -400,8 +416,18 @@ capnpc-zig.message.PointerListReader.isNull: fn (serialization.message.list_read
 capnpc-zig.message.PointerListReader.len: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader) u32
 capnpc-zig.message.PointerListReader.message: field *const serialization.message.Message
 capnpc-zig.message.PointerListReader.segment_id: field u32
+capnpc-zig.message.PointerListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.PointerListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.PointerListReader: struct
+capnpc-zig.message.StrictTextListReader.element_count: field u32
+capnpc-zig.message.StrictTextListReader.elements_offset: field usize
+capnpc-zig.message.StrictTextListReader.get: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).StrictTextListReader, u32) error{IndexOutOfBounds,InvalidFarPointer,InvalidPointer,InvalidSegmentId,InvalidTextPointer,InvalidUtf8,OutOfBounds,PointerDepthLimit}![]const u8
+capnpc-zig.message.StrictTextListReader.len: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).StrictTextListReader) u32
+capnpc-zig.message.StrictTextListReader.message: field *const serialization.message.Message
+capnpc-zig.message.StrictTextListReader.segment_id: field u32
+capnpc-zig.message.StrictTextListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
+capnpc-zig.message.StrictTextListReader.stride_bytes: field u32 = 0
+capnpc-zig.message.StrictTextListReader: struct
 capnpc-zig.message.StructBuilder.builder: field *serialization.message.MessageBuilder
 capnpc-zig.message.StructBuilder.clearPointer: fn (serialization.message.struct_builder.define(serialization.message.MessageBuilder,serialization.message.AnyPointerBuilder,serialization.message.StructListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).TextListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).VoidListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).U8ListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).I8ListBuilder,serialization.message.list_readers.PrimitiveListBuilder(u16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f64,serialization.message.MessageBuilder),serialization.message.list_builders.define(serialization.message.MessageBuilder).BoolListBuilder,serialization.message.Capability,@as(*const fn (u32) anyerror!u64, @ptrCast(&serialization.message.makeCapabilityPointer)),@as(*const fn (i32, u3, u32) anyerror!u64, @ptrCast(&serialization.message.makeListPointer)),@as(*const fn (bool, u32, u32) anyerror!u64, @ptrCast(&serialization.message.makeFarPointer))).StructBuilder, usize) void
 capnpc-zig.message.StructBuilder.data_size: field u16
@@ -485,6 +511,7 @@ capnpc-zig.message.StructListReader.len: fn (serialization.message.list_readers.
 capnpc-zig.message.StructListReader.message: field *const serialization.message.Message
 capnpc-zig.message.StructListReader.pointer_words: field u16
 capnpc-zig.message.StructListReader.segment_id: field u32
+capnpc-zig.message.StructListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.StructListReader.sub_word_data_bytes: field u8 = 0
 capnpc-zig.message.StructListReader: struct
 capnpc-zig.message.StructReader.data_size: field u16
@@ -514,6 +541,7 @@ capnpc-zig.message.StructReader.readStruct: fn (serialization.message.StructRead
 capnpc-zig.message.StructReader.readStructList: fn (serialization.message.StructReader, usize) error{CannotUpgradeBitList,InvalidFarPointer,InvalidInlineCompositePointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).StructListReader
 capnpc-zig.message.StructReader.readText: fn (serialization.message.StructReader, usize) error{InvalidFarPointer,InvalidPointer,InvalidSegmentId,InvalidTextPointer,OutOfBounds,PointerDepthLimit}![]const u8
 capnpc-zig.message.StructReader.readTextList: fn (serialization.message.StructReader, usize) error{InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).TextListReader
+capnpc-zig.message.StructReader.readTextListStrict: fn (serialization.message.StructReader, usize) error{InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).StrictTextListReader
 capnpc-zig.message.StructReader.readTextStrict: fn (serialization.message.StructReader, usize) error{InvalidFarPointer,InvalidPointer,InvalidSegmentId,InvalidTextPointer,InvalidUtf8,OutOfBounds,PointerDepthLimit}![]const u8
 capnpc-zig.message.StructReader.readU16: fn (serialization.message.StructReader, usize) u16
 capnpc-zig.message.StructReader.readU16List: fn (serialization.message.StructReader, usize) error{InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_readers.PrimitiveListReader(u16,serialization.message.Message)
@@ -539,6 +567,7 @@ capnpc-zig.message.TextListBuilder.len: fn (serialization.message.list_builders.
 capnpc-zig.message.TextListBuilder.segment_id: field u32
 capnpc-zig.message.TextListBuilder.set: fn (serialization.message.list_builders.define(serialization.message.MessageBuilder).TextListBuilder, u32, []const u8) error{FarPointerOffsetTooLarge,IndexOutOfBounds,InvalidSegmentId,ListTooLarge,OffsetOutOfRange,OutOfBounds,OutOfMemory,TextTooLong}!void
 capnpc-zig.message.TextListBuilder.setInSegment: fn (serialization.message.list_builders.define(serialization.message.MessageBuilder).TextListBuilder, u32, []const u8, u32) error{FarPointerOffsetTooLarge,IndexOutOfBounds,InvalidSegmentId,ListTooLarge,OffsetOutOfRange,OutOfBounds,OutOfMemory,TextTooLong}!void
+capnpc-zig.message.TextListBuilder.stride_bytes: field u32 = 0
 capnpc-zig.message.TextListBuilder: struct
 capnpc-zig.message.TextListReader.element_count: field u32
 capnpc-zig.message.TextListReader.elements_offset: field usize
@@ -547,6 +576,7 @@ capnpc-zig.message.TextListReader.getStrict: fn (serialization.message.list_read
 capnpc-zig.message.TextListReader.len: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).TextListReader) u32
 capnpc-zig.message.TextListReader.message: field *const serialization.message.Message
 capnpc-zig.message.TextListReader.segment_id: field u32
+capnpc-zig.message.TextListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.TextListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.TextListReader: struct
 capnpc-zig.message.U16ListBuilder.builder: field *serialization.message.MessageBuilder
@@ -555,6 +585,7 @@ capnpc-zig.message.U16ListBuilder.elements_offset: field usize
 capnpc-zig.message.U16ListBuilder.len: fn (serialization.message.list_readers.PrimitiveListBuilder(u16,serialization.message.MessageBuilder)) u32
 capnpc-zig.message.U16ListBuilder.segment_id: field u32
 capnpc-zig.message.U16ListBuilder.set: fn (serialization.message.list_readers.PrimitiveListBuilder(u16,serialization.message.MessageBuilder), u32, u16) error{IndexOutOfBounds,OutOfBounds}!void
+capnpc-zig.message.U16ListBuilder.stride_bytes: field u32 = 0
 capnpc-zig.message.U16ListBuilder: struct
 capnpc-zig.message.U16ListReader.element_count: field u32
 capnpc-zig.message.U16ListReader.elements_offset: field usize
@@ -562,6 +593,7 @@ capnpc-zig.message.U16ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.U16ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(u16,serialization.message.Message)) u32
 capnpc-zig.message.U16ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.U16ListReader.segment_id: field u32
+capnpc-zig.message.U16ListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.U16ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.U16ListReader: struct
 capnpc-zig.message.U32ListBuilder.builder: field *serialization.message.MessageBuilder
@@ -570,6 +602,7 @@ capnpc-zig.message.U32ListBuilder.elements_offset: field usize
 capnpc-zig.message.U32ListBuilder.len: fn (serialization.message.list_readers.PrimitiveListBuilder(u32,serialization.message.MessageBuilder)) u32
 capnpc-zig.message.U32ListBuilder.segment_id: field u32
 capnpc-zig.message.U32ListBuilder.set: fn (serialization.message.list_readers.PrimitiveListBuilder(u32,serialization.message.MessageBuilder), u32, u32) error{IndexOutOfBounds,OutOfBounds}!void
+capnpc-zig.message.U32ListBuilder.stride_bytes: field u32 = 0
 capnpc-zig.message.U32ListBuilder: struct
 capnpc-zig.message.U32ListReader.element_count: field u32
 capnpc-zig.message.U32ListReader.elements_offset: field usize
@@ -577,6 +610,7 @@ capnpc-zig.message.U32ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.U32ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(u32,serialization.message.Message)) u32
 capnpc-zig.message.U32ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.U32ListReader.segment_id: field u32
+capnpc-zig.message.U32ListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.U32ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.U32ListReader: struct
 capnpc-zig.message.U64ListBuilder.builder: field *serialization.message.MessageBuilder
@@ -585,6 +619,7 @@ capnpc-zig.message.U64ListBuilder.elements_offset: field usize
 capnpc-zig.message.U64ListBuilder.len: fn (serialization.message.list_readers.PrimitiveListBuilder(u64,serialization.message.MessageBuilder)) u32
 capnpc-zig.message.U64ListBuilder.segment_id: field u32
 capnpc-zig.message.U64ListBuilder.set: fn (serialization.message.list_readers.PrimitiveListBuilder(u64,serialization.message.MessageBuilder), u32, u64) error{IndexOutOfBounds,OutOfBounds}!void
+capnpc-zig.message.U64ListBuilder.stride_bytes: field u32 = 0
 capnpc-zig.message.U64ListBuilder: struct
 capnpc-zig.message.U64ListReader.element_count: field u32
 capnpc-zig.message.U64ListReader.elements_offset: field usize
@@ -592,6 +627,7 @@ capnpc-zig.message.U64ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.U64ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(u64,serialization.message.Message)) u32
 capnpc-zig.message.U64ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.U64ListReader.segment_id: field u32
+capnpc-zig.message.U64ListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.U64ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.U64ListReader: struct
 capnpc-zig.message.U8ListBuilder.builder: field *serialization.message.MessageBuilder
@@ -601,6 +637,7 @@ capnpc-zig.message.U8ListBuilder.len: fn (serialization.message.list_builders.de
 capnpc-zig.message.U8ListBuilder.segment_id: field u32
 capnpc-zig.message.U8ListBuilder.set: fn (serialization.message.list_builders.define(serialization.message.MessageBuilder).U8ListBuilder, u32, u8) error{IndexOutOfBounds,OutOfBounds}!void
 capnpc-zig.message.U8ListBuilder.setAll: fn (serialization.message.list_builders.define(serialization.message.MessageBuilder).U8ListBuilder, []const u8) error{InvalidLength,OutOfBounds}!void
+capnpc-zig.message.U8ListBuilder.stride_bytes: field u32 = 0
 capnpc-zig.message.U8ListBuilder: struct
 capnpc-zig.message.U8ListReader.element_count: field u32
 capnpc-zig.message.U8ListReader.elements_offset: field usize
@@ -609,6 +646,7 @@ capnpc-zig.message.U8ListReader.len: fn (serialization.message.list_readers.defi
 capnpc-zig.message.U8ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.U8ListReader.segment_id: field u32
 capnpc-zig.message.U8ListReader.slice: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).U8ListReader) error{InvalidPointer,OutOfBounds}![]const u8
+capnpc-zig.message.U8ListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.U8ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.U8ListReader: struct
 capnpc-zig.message.VoidListBuilder.element_count: field u32
@@ -617,6 +655,7 @@ capnpc-zig.message.VoidListBuilder: struct
 capnpc-zig.message.VoidListReader.element_count: field u32
 capnpc-zig.message.VoidListReader.get: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).VoidListReader, u32) error{IndexOutOfBounds}!void
 capnpc-zig.message.VoidListReader.len: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).VoidListReader) u32
+capnpc-zig.message.VoidListReader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.VoidListReader: struct
 capnpc-zig.message.capability_remap.CapabilityPointerInfo.cap_id: field u32
 capnpc-zig.message.capability_remap.CapabilityPointerInfo.origin_code: field ?u4
@@ -685,11 +724,13 @@ capnpc-zig.message.typed_list_helpers.RawPointerListCodec.Builder.builder: field
 capnpc-zig.message.typed_list_helpers.RawPointerListCodec.Builder.element_count: field u32
 capnpc-zig.message.typed_list_helpers.RawPointerListCodec.Builder.elements_offset: field usize
 capnpc-zig.message.typed_list_helpers.RawPointerListCodec.Builder.segment_id: field u32
+capnpc-zig.message.typed_list_helpers.RawPointerListCodec.Builder.stride_bytes: field u32 = 0
 capnpc-zig.message.typed_list_helpers.RawPointerListCodec.Builder: struct
 capnpc-zig.message.typed_list_helpers.RawPointerListCodec.Reader.element_count: field u32
 capnpc-zig.message.typed_list_helpers.RawPointerListCodec.Reader.elements_offset: field usize
 capnpc-zig.message.typed_list_helpers.RawPointerListCodec.Reader.message: field *const serialization.message.Message
 capnpc-zig.message.typed_list_helpers.RawPointerListCodec.Reader.segment_id: field u32
+capnpc-zig.message.typed_list_helpers.RawPointerListCodec.Reader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.typed_list_helpers.RawPointerListCodec.Reader.stride_bytes: field u32 = 0
 capnpc-zig.message.typed_list_helpers.RawPointerListCodec.Reader: struct
 capnpc-zig.message.typed_list_helpers.RawPointerListCodec.empty: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader) serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader
@@ -703,6 +744,7 @@ capnpc-zig.message.typed_list_helpers.RawStructListReaderCodec.Reader.elements_o
 capnpc-zig.message.typed_list_helpers.RawStructListReaderCodec.Reader.message: field *const serialization.message.Message
 capnpc-zig.message.typed_list_helpers.RawStructListReaderCodec.Reader.pointer_words: field u16
 capnpc-zig.message.typed_list_helpers.RawStructListReaderCodec.Reader.segment_id: field u32
+capnpc-zig.message.typed_list_helpers.RawStructListReaderCodec.Reader.source_list: field ?serialization.message.element_list.ListSource(serialization.message.Message) = null
 capnpc-zig.message.typed_list_helpers.RawStructListReaderCodec.Reader.sub_word_data_bytes: field u8 = 0
 capnpc-zig.message.typed_list_helpers.RawStructListReaderCodec.Reader: struct
 capnpc-zig.message.typed_list_helpers.RawStructListReaderCodec.empty: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader) serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).StructListReader
@@ -1228,11 +1270,17 @@ capnpc-zig.rpc.wire.protocol.Payload.cap_table: field ?serialization.message.lis
 capnpc-zig.rpc.wire.protocol.Payload.content: field serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader
 capnpc-zig.rpc.wire.protocol.Payload: struct
 capnpc-zig.rpc.wire.protocol.PayloadBuilder._builder: field serialization.message.struct_builder.define(serialization.message.MessageBuilder,serialization.message.AnyPointerBuilder,serialization.message.StructListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).TextListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).VoidListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).U8ListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).I8ListBuilder,serialization.message.list_readers.PrimitiveListBuilder(u16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f64,serialization.message.MessageBuilder),serialization.message.list_builders.define(serialization.message.MessageBuilder).BoolListBuilder,serialization.message.Capability,@as(*const fn (u32) anyerror!u64, @ptrCast(&serialization.message.makeCapabilityPointer)),@as(*const fn (i32, u3, u32) anyerror!u64, @ptrCast(&serialization.message.makeListPointer)),@as(*const fn (bool, u32, u32) anyerror!u64, @ptrCast(&serialization.message.makeFarPointer))).StructBuilder
+capnpc-zig.rpc.wire.protocol.PayloadBuilder.clearCapTable: fn (*rpc.gen.capnp.rpc.Payload.Builder) error{InvalidSegmentId,OutOfBounds,PointerIndexOutOfBounds}!void
+capnpc-zig.rpc.wire.protocol.PayloadBuilder.clearContent: fn (*rpc.gen.capnp.rpc.Payload.Builder) error{InvalidSegmentId,OutOfBounds,PointerIndexOutOfBounds}!void
+capnpc-zig.rpc.wire.protocol.PayloadBuilder.getCapTable: fn (*rpc.gen.capnp.rpc.Payload.Builder) anyerror!serialization.message.typed_list_helpers.define(serialization.message).StructListBuilder(rpc.gen.capnp.rpc.CapDescriptor)
+capnpc-zig.rpc.wire.protocol.PayloadBuilder.getContent: fn (*rpc.gen.capnp.rpc.Payload.Builder) error{OutOfBounds,PointerIndexOutOfBounds}!serialization.message.AnyPointerBuilder
 capnpc-zig.rpc.wire.protocol.PayloadBuilder.hasCapTable: fn (rpc.gen.capnp.rpc.Payload.Builder) bool
 capnpc-zig.rpc.wire.protocol.PayloadBuilder.hasContent: fn (rpc.gen.capnp.rpc.Payload.Builder) bool
 capnpc-zig.rpc.wire.protocol.PayloadBuilder.init: fn (*serialization.message.MessageBuilder) error{OutOfMemory,TooManySegments}!rpc.gen.capnp.rpc.Payload.Builder
 capnpc-zig.rpc.wire.protocol.PayloadBuilder.initCapTable: fn (*rpc.gen.capnp.rpc.Payload.Builder, u32) error{ElementCountTooLarge,FarPointerOffsetTooLarge,InvalidSegmentId,ListTooLarge,OffsetOutOfRange,OutOfBounds,OutOfMemory,PointerIndexOutOfBounds,TooManySegments}!serialization.message.typed_list_helpers.define(serialization.message).StructListBuilder(rpc.gen.capnp.rpc.CapDescriptor)
 capnpc-zig.rpc.wire.protocol.PayloadBuilder.initContent: fn (*rpc.gen.capnp.rpc.Payload.Builder) error{OutOfBounds,PointerIndexOutOfBounds}!serialization.message.AnyPointerBuilder
+capnpc-zig.rpc.wire.protocol.PayloadBuilder.setCapTable: fn (*rpc.gen.capnp.rpc.Payload.Builder, serialization.message.typed_list_helpers.define(serialization.message).StructListReader(rpc.gen.capnp.rpc.CapDescriptor)) anyerror!void
+capnpc-zig.rpc.wire.protocol.PayloadBuilder.setContent: fn (*rpc.gen.capnp.rpc.Payload.Builder, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!void
 capnpc-zig.rpc.wire.protocol.PayloadBuilder.setContentCapability: fn (*rpc.gen.capnp.rpc.Payload.Builder, serialization.message.Capability) anyerror!void
 capnpc-zig.rpc.wire.protocol.PayloadBuilder.setContentData: fn (*rpc.gen.capnp.rpc.Payload.Builder, []const u8) error{ElementCountTooLarge,FarPointerOffsetTooLarge,InvalidPointer,InvalidSegmentId,ListTooLarge,OffsetOutOfRange,OutOfBounds,OutOfMemory,PointerIndexOutOfBounds}!void
 capnpc-zig.rpc.wire.protocol.PayloadBuilder.setContentNull: fn (*rpc.gen.capnp.rpc.Payload.Builder) error{InvalidSegmentId,OutOfBounds,PointerIndexOutOfBounds}!void

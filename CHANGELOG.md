@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Generated mutable APIs.** Builders gain field getters, typed struct/list
+  copy setters, `clearXxx()`, union inspection, and validated `asReader()` views
+  with explicit borrowed-reader storage. Reopening evolved struct/list fields
+  retains unknown sections; copy failures preserve the previous destination.
+- **Concrete generic collections and recursion.** `brands()` handles direct
+  `List(Box(Text))`, recursive data applications and lists, and alternating
+  concrete bindings in full and compact profiles. Recursive wrappers remain
+  finite and budgeted. Existing erased APIs remain available.
+- **Generated RPC navigation.** Pipelines follow non-union struct/group paths
+  to capabilities, including bounded recursive paths. Inherited same-name
+  methods receive declaring-interface suffixes while preserving wire IDs and
+  ordinals. The standard reflected StreamResult schema is bundled and
+  regenerated with the RPC bindings. Generic RPC APIs remain erased.
+
 - **Binary schema reflection (Experimental).** Generated modules embed a
   canonical, ID-sorted `CAPNP_SCHEMA_REQUEST` containing the original compiler
   Nodes, and generated structs, groups, enums, interfaces, and struct
@@ -29,12 +43,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Generated Text and Text-list getters validate UTF-8 and wire terminators;
+  `StrictTextListReader` is additive to the existing low-level list API.
+  See [generated-api.md](docs/generated-api.md) for the new API and lifetime
+  contract.
+
 - Plugin output includes reflection metadata by default and requires the matching
   runtime revision. Shape sharing keeps distinct schema identities when
-  reflection is enabled. `--no-reflection` preserves the previous metadata-free
-  output and shape-sharing behavior.
+  reflection is enabled. `--no-reflection` omits metadata and enables the
+  existing shape-sharing behavior; the new APIs still require matching runtime
+  sources.
 
 ### Fixed
+
+- Canonical double-far structs now validate their pointer sections and enforce
+  nesting/traversal limits. Zero-width composite lists charge logical elements
+  regardless of near/far encoding. Ambiguous zero-count legacy tags receive
+  canonical struct bounds checks; validation remains an init/explicit operation.
+- Mutable primitive and pointer list views honor evolved composite strides.
+  Typed copies preserve unknown stored sections through borrowed source
+  provenance; manually constructed readers copy their represented values.
+- Constrained AnyStruct/AnyList/capability setters reject wrong pointer kinds
+  before changing the destination or union discriminant.
 
 - Nested-workspace imports now resolve parent-relative and root-relative schema
   paths correctly while rejecting traversal outside the workspace. Output paths

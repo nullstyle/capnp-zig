@@ -181,7 +181,8 @@ pub const Persistent = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -194,7 +195,7 @@ pub const Persistent = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -221,7 +222,7 @@ pub const Persistent = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -233,7 +234,7 @@ pub const Persistent = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -328,23 +329,28 @@ pub const Persistent = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const PipelinedClient = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
         pointer_index: u16,
+        pointer_indexes: [64]u16 = undefined,
+        pointer_count: u8 = 0,
 
         pub fn callSave(self: PipelinedClient, user_ctx: *anyopaque, build: ?Save.BuildFn, on_return: Save.Callback) !u32 {
             return self.callSaveWithOptions(user_ctx, build, on_return, .{});
         }
 
         pub fn callSaveWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Save.BuildFn, on_return: Save.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(Save.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Save.ordinal, ctx, Save.callBuild, Save.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, Save.ordinal, ctx, Save.callBuild, Save.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -353,7 +359,6 @@ pub const Persistent = struct {
             self.peer.setQuestionDeinitCtx(question_id, Save.CallContext.deinitCtx);
             return question_id;
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -491,7 +496,6 @@ pub const Persistent = struct {
             pub fn getSealFor(self: @This()) !message.AnyPointerReader {
                 return try self._reader.readAnyPointer(0);
             }
-
         };
 
         pub const Builder = struct {
@@ -507,6 +511,26 @@ pub const Persistent = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Persistent.SaveParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearSealFor(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getSealFor(self: *@This()) !message.AnyPointerBuilder {
+                const pointer = try self._builder.getAnyPointer(0);
+                return pointer;
+            }
+
+            pub fn setSealFor(self: *@This(), value: message.AnyPointerReader) !void {
+                try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(0), value);
+            }
+
             pub fn hasSealFor(self: @This()) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -516,25 +540,20 @@ pub const Persistent = struct {
             }
 
             pub fn setSealForNull(self: *@This()) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setNull();
+                try (try self._builder.getAnyPointer(0)).setNull();
             }
 
             pub fn setSealForText(self: *@This(), value: []const u8) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setText(value);
+                try (try self._builder.getAnyPointer(0)).setText(value);
             }
 
             pub fn setSealForData(self: *@This(), value: []const u8) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setData(value);
+                try (try self._builder.getAnyPointer(0)).setData(value);
             }
 
             pub fn setSealForCapability(self: *@This(), cap: message.Capability) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(cap);
+                try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
-
         };
     };
 
@@ -560,7 +579,6 @@ pub const Persistent = struct {
             pub fn getSturdyRef(self: @This()) !message.AnyPointerReader {
                 return try self._reader.readAnyPointer(0);
             }
-
         };
 
         pub const Builder = struct {
@@ -576,6 +594,26 @@ pub const Persistent = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Persistent.SaveResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearSturdyRef(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getSturdyRef(self: *@This()) !message.AnyPointerBuilder {
+                const pointer = try self._builder.getAnyPointer(0);
+                return pointer;
+            }
+
+            pub fn setSturdyRef(self: *@This(), value: message.AnyPointerReader) !void {
+                try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(0), value);
+            }
+
             pub fn hasSturdyRef(self: @This()) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -585,28 +623,22 @@ pub const Persistent = struct {
             }
 
             pub fn setSturdyRefNull(self: *@This()) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setNull();
+                try (try self._builder.getAnyPointer(0)).setNull();
             }
 
             pub fn setSturdyRefText(self: *@This(), value: []const u8) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setText(value);
+                try (try self._builder.getAnyPointer(0)).setText(value);
             }
 
             pub fn setSturdyRefData(self: *@This(), value: []const u8) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setData(value);
+                try (try self._builder.getAnyPointer(0)).setData(value);
             }
 
             pub fn setSturdyRefCapability(self: *@This(), cap: message.Capability) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(cap);
+                try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
-
         };
     };
-
 };
 
 pub const persistent = struct {
@@ -626,4 +658,3 @@ pub const persistent = struct {
         .annotation = false,
     };
 };
-

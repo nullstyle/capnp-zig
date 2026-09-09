@@ -51,10 +51,10 @@ test "Codegen emits streaming method types and handlers" {
     const output = try generator.generateFile(file);
     defer allocator.free(output);
 
-    // The generated file stays under tests/test_schemas; the standard import
-    // resolves from there to the output workspace's capnp directory.
-    try expectContains(output, "pub const stream = @import(\"../../capnp/stream.zig\");");
-    try expectNotContains(output, "@import(\"/capnp/stream.zig\")");
+    // The package supplies the well-known streaming result type, so consumers
+    // do not need to generate a second copy of the standard schema.
+    try expectContains(output, "pub const Results = capnpc.rpc.generated.stream.StreamResult;");
+    try expectNotContains(output, "pub const stream = @import(");
 
     // Streaming methods should have StreamHandler instead of Handler
     try expectContains(output, "pub const DoStreamI = struct");

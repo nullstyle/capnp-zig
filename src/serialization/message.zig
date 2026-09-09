@@ -1263,6 +1263,15 @@ pub const Message = struct {
         const elements_offset = try wordsToBytes(@as(usize, landing_far.landing_pad_offset_words));
         const tag_type = @as(u2, @truncate(tag_word & 0x3));
         if (tag_type == 0) {
+            // A canonical double-far struct tag has a zero offset. Its pointer
+            // section must be traversed as a struct; interpreting that zero as
+            // a legacy list's element count would skip all of its children.
+            if (decodeOffsetWords(tag_word) == 0) {
+                return self.validateStructPointer(landing_far.segment_id, 0, tag_word, elements_offset, remaining_words, remaining_inline_composite_elements, nesting);
+            }
+            // Retain non-empty legacy Layout A lists, whose tag stores the
+            // element count in the offset bits. Empty tags are ambiguous and
+            // receive the canonical struct bounds and traversal checks above.
             return self.validateInlineCompositeTag(landing_far.segment_id, elements_offset, tag_word, remaining_words, remaining_inline_composite_elements, nesting);
         }
         if (tag_type == 1) {
@@ -1359,6 +1368,9 @@ pub const Message = struct {
 
             try consumeInlineCompositeElements(remaining_inline_composite_elements, @as(usize, element_count));
             try consumeWords(remaining_words, @as(usize, word_count));
+            if (words_per_element == 0) {
+                try consumeWords(remaining_words, @as(usize, element_count));
+            }
 
             if (pointer_words == 0 or element_count == 0) return;
             const element_stride = try wordsToBytes(@as(usize, data_words) + @as(usize, pointer_words));
@@ -1483,6 +1495,9 @@ pub const Message = struct {
 
         try consumeInlineCompositeElements(remaining_inline_composite_elements, @as(usize, element_count));
         try consumeWords(remaining_words, total_words);
+        if (words_per_element == 0) {
+            try consumeWords(remaining_words, @as(usize, element_count));
+        }
 
         if (pointer_words == 0 or element_count == 0) return;
         const element_stride = @as(usize, words_per_element) * 8;
@@ -1655,6 +1670,7 @@ pub const StructReader = struct {
         // empty list, but leaving this undefined is undefined behavior, not a
         // harmless don't-care.
         if (@hasField(ListReader, "stride_bytes")) reader.stride_bytes = 0;
+        if (@hasField(ListReader, "source_list")) reader.source_list = null;
         return reader;
     }
 
@@ -1802,6 +1818,7 @@ pub const StructReader = struct {
         const layout = try self.message.resolveStructListPointer(self.segment_id, absolute_pointer_pos, pointer_word);
 
         return .{
+            .source_list = .{ .message = self.message, .pointer = .{ .segment_id = self.segment_id, .pointer_pos = absolute_pointer_pos, .pointer_word = pointer_word } },
             .message = self.message,
             .segment_id = layout.segment_id,
             .elements_offset = layout.elements_offset,
@@ -1858,7 +1875,7 @@ pub const StructReader = struct {
         );
     }
 
-    /// Build a 4-field list reader plus its stride from a resolved view.
+    /// Build a list reader with its stride and borrowed source pointer.
     fn elementListReader(self: StructReader, comptime ReaderType: type, view: ElementListView) ReaderType {
         return .{
             .message = self.message,
@@ -1866,12 +1883,17 @@ pub const StructReader = struct {
             .elements_offset = view.elements_offset,
             .element_count = view.element_count,
             .stride_bytes = view.stride_bytes,
+            .source_list = .{ .message = self.message, .pointer = view.source_pointer.? },
         };
     }
 
     /// Read a list of text (string) pointers from the given pointer index.
     pub fn readTextList(self: StructReader, pointer_index: usize) !TextListReader {
         return self.elementListReader(TextListReader, try self.resolveElementListAt(pointer_index, 6));
+    }
+
+    pub fn readTextListStrict(self: StructReader, pointer_index: usize) !StrictTextListReader {
+        return self.elementListReader(StrictTextListReader, try self.resolveElementListAt(pointer_index, 6));
     }
 
     /// Read a list of pointers (type-erased) from the given pointer index.
@@ -1937,7 +1959,7 @@ pub const StructReader = struct {
     /// Cast a list reader to a different element type with the same layout.
     /// Used to reinterpret unsigned list readers as signed/float variants.
     ///
-    /// `stride_bytes` must be carried across: this is the one construction site
+    /// Stride and source provenance must be carried across: this construction site
     /// that copies an already-resolved reader, so dropping it here would leave
     /// `readI32List` and friends reading a downgraded struct list at the
     /// natural 4-byte stride while `readU32List` read it correctly.
@@ -1948,6 +1970,7 @@ pub const StructReader = struct {
             .elements_offset = source.elements_offset,
             .element_count = source.element_count,
             .stride_bytes = source.stride_bytes,
+            .source_list = source.source_list,
         };
     }
 
@@ -2004,7 +2027,9 @@ pub const StructReader = struct {
         const total_bytes = try listContentBytes(list.element_size, list.element_count);
         try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
 
+        const pointer = try self.readAnyPointer(pointer_index);
         return .{
+            .source_list = .{ .message = self.message, .pointer = .{ .segment_id = pointer.segment_id, .pointer_pos = pointer.pointer_pos, .pointer_word = pointer.pointer_word } },
             .message = self.message,
             .segment_id = list.segment_id,
             .elements_offset = list.content_offset,
@@ -2042,11 +2067,11 @@ pub const StructReader = struct {
             absolute_pointer_pos,
             pointer_word,
         )) |list| {
-            return .{ .element_count = list.element_count };
+            return .{ .source_list = .{ .message = self.message, .pointer = .{ .segment_id = self.segment_id, .pointer_pos = absolute_pointer_pos, .pointer_word = pointer_word } }, .element_count = list.element_count };
         } else |_| {}
 
         const list = try self.message.resolveListPointer(self.segment_id, absolute_pointer_pos, pointer_word);
-        return .{ .element_count = list.element_count };
+        return .{ .source_list = .{ .message = self.message, .pointer = .{ .segment_id = self.segment_id, .pointer_pos = absolute_pointer_pos, .pointer_word = pointer_word } }, .element_count = list.element_count };
     }
 
     /// Read a text (string) field from the struct's pointer section.
@@ -2106,6 +2131,7 @@ const list_reader_defs = list_reader_module.define(
 pub const StructListReader = list_reader_defs.StructListReader;
 /// Zero-copy reader for a list of text (pointer) elements.
 pub const TextListReader = list_reader_defs.TextListReader;
+pub const StrictTextListReader = list_reader_defs.StrictTextListReader;
 pub const U8ListReader = list_reader_defs.U8ListReader;
 pub const I8ListReader = list_reader_defs.I8ListReader;
 pub const U16ListReader = list_reader_defs.U16ListReader;
@@ -2168,7 +2194,11 @@ pub const AnyListReader = struct {
 
     fn concreteList(self: AnyListReader, comptime ListReader: type, comptime method: []const u8) !ListReader {
         const owner = self.pointerStruct();
-        if (self.isNull()) return owner.emptyList(ListReader);
+        if (self.isNull()) {
+            var empty = owner.emptyList(ListReader);
+            empty.source_list = .{ .message = self._reader.message, .pointer = .{ .segment_id = self._reader.segment_id, .pointer_pos = self._reader.pointer_pos, .pointer_word = 0 } };
+            return empty;
+        }
         return @call(.auto, @field(StructReader, method), .{ owner, 0 });
     }
 
@@ -2248,6 +2278,10 @@ pub const AnyListReader = struct {
         return self.concreteList(TextListReader, "readTextList");
     }
 
+    pub fn getTextListStrict(self: AnyListReader) !StrictTextListReader {
+        return self.concreteList(StrictTextListReader, "readTextListStrict");
+    }
+
     pub fn getPointerList(self: AnyListReader) !PointerListReader {
         return self.concreteList(PointerListReader, "readPointerList");
     }
@@ -2303,13 +2337,22 @@ pub const AnyPointerBuilder = struct {
                 .element_count = 0,
             };
         }
+        if (self.builder.resolveStructListBuilderPointer(self.segment_id, self.pointer_pos, pointer_word)) |composite| {
+            if (ListBuilder == VoidListBuilder) return .{ .element_count = composite.element_count };
+            if (ListBuilder == BoolListBuilder) return error.InvalidPointer;
+            const view = try element_list.downgradeInlineCompositeList(composite, expected_size);
+            return .{ .builder = self.builder, .segment_id = view.segment_id, .elements_offset = view.elements_offset, .element_count = view.element_count, .stride_bytes = view.stride_bytes };
+        } else |_| {}
         const list = try self.builder.resolveListBuilderPointer(
             self.segment_id,
             self.pointer_pos,
             pointer_word,
         );
+        if (ListBuilder == VoidListBuilder) {
+            if (list.element_size == 7) return error.InvalidPointer;
+            return .{ .element_count = list.element_count };
+        }
         if (list.element_size != expected_size) return error.InvalidPointer;
-        if (ListBuilder == VoidListBuilder) return .{ .element_count = list.element_count };
         return .{
             .builder = self.builder,
             .segment_id = list.segment_id,

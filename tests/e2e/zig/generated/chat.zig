@@ -2833,6 +2833,22 @@ pub const RoomId = struct {
             return .{ ._builder = builder };
         }
 
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.RoomId.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearId(self: *@This()) !void {
+            self._builder.writeU64(0, 0);
+        }
+
+        pub fn getId(self: @This()) !u64 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU64(0);
+        }
+
         pub fn setId(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
@@ -2903,6 +2919,66 @@ pub const ChatMessage = struct {
             }
 
             pub const capnpSchema = capnpc.reflection.SchemaRef{ .id = 0x96ea599df4f84fa5, .encoded_request = _capnp_file.CAPNP_SCHEMA_REQUEST };
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatMessage.Kind.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn whichOrdinal(self: @This()) u16 {
+            return self._builder.readUnionDiscriminant(0);
+        }
+
+        pub fn which(self: @This()) error{InvalidEnumValue}!_capnp_file.ChatMessage.Kind.WhichTag {
+            return std.enums.fromInt(_capnp_file.ChatMessage.Kind.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearNormal(self: *@This()) !void {
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getNormal(self: @This()) !void {
+            if ((try self.which()) != .normal) return error.WrongUnionMember;
+            return {};
+        }
+
+        pub fn clearEmote(self: *@This()) !void {
+            self._builder.writeU16(0, 1);
+        }
+
+        pub fn getEmote(self: @This()) !void {
+            if ((try self.which()) != .emote) return error.WrongUnionMember;
+            return {};
+        }
+
+        pub fn clearSystem(self: *@This()) !void {
+            self._builder.writeU16(0, 2);
+        }
+
+        pub fn getSystem(self: @This()) !void {
+            if ((try self.which()) != .system) return error.WrongUnionMember;
+            return {};
+        }
+
+        pub fn clearWhisper(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(3)).setNull();
+            self._builder.writeU16(0, 3);
+        }
+
+        pub fn getWhisper(self: *@This()) !game_types.PlayerId.Builder {
+            if ((try self.which()) != .whisper) return error.WrongUnionMember;
+            const pointer = try self._builder.getAnyPointer(3);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+            return game_types.PlayerId.Builder.wrap(raw);
+        }
+
+        pub fn setWhisper(self: *@This(), value: game_types.PlayerId.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(3);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            self._builder.writeU16(0, 3);
+        }
+
             pub fn setNormal(self: *@This(), value: void) !void {
             self._builder.writeU16(0, 0);
                 _ = value;
@@ -2961,7 +3037,7 @@ pub const ChatMessage = struct {
 
         pub fn getContent(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(1)) return "";
-            return try self._reader.readText(1);
+            return try self._reader.readTextStrict(1);
         }
 
         pub fn hasTimestamp(self: Reader) bool {
@@ -2991,6 +3067,61 @@ pub const ChatMessage = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatMessage.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearSender(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getSender(self: *@This()) !game_types.PlayerInfo.Builder {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 2);
+            return game_types.PlayerInfo.Builder.wrap(raw);
+        }
+
+        pub fn setSender(self: *@This(), value: game_types.PlayerInfo.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearContent(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getContent(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(1)) return "";
+            return try field_reader.readTextStrict(1);
+        }
+
+        pub fn clearTimestamp(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(2)).setNull();
+        }
+
+        pub fn getTimestamp(self: *@This()) !game_types.Timestamp.Builder {
+            const pointer = try self._builder.getAnyPointer(2);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+            return game_types.Timestamp.Builder.wrap(raw);
+        }
+
+        pub fn setTimestamp(self: *@This(), value: game_types.Timestamp.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(2);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearKind(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(3)).setNull();
+            self._builder.writeU16(0, 0);
         }
 
         pub fn hasSender(self: Builder) bool {
@@ -3057,7 +3188,7 @@ pub const RoomInfo = struct {
 
         pub fn getName(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(1)) return "";
-            return try self._reader.readText(1);
+            return try self._reader.readTextStrict(1);
         }
 
         pub fn getMemberCount(self: Reader) !u32 {
@@ -3070,7 +3201,7 @@ pub const RoomInfo = struct {
 
         pub fn getTopic(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(2)) return "";
-            return try self._reader.readText(2);
+            return try self._reader.readTextStrict(2);
         }
 
     };
@@ -3086,6 +3217,63 @@ pub const RoomInfo = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.RoomInfo.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearId(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getId(self: *@This()) !RoomId.Builder {
+            const pointer = try self._builder.getAnyPointer(0);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+            return RoomId.Builder.wrap(raw);
+        }
+
+        pub fn setId(self: *@This(), value: RoomId.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearName(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getName(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(1)) return "";
+            return try field_reader.readTextStrict(1);
+        }
+
+        pub fn clearMemberCount(self: *@This()) !void {
+            self._builder.writeU32(0, 0);
+        }
+
+        pub fn getMemberCount(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU32(0);
+        }
+
+        pub fn clearTopic(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(2)).setNull();
+        }
+
+        pub fn getTopic(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(2)) return "";
+            return try field_reader.readTextStrict(2);
         }
 
         pub fn hasId(self: Builder) bool {
@@ -3177,7 +3365,8 @@ pub const ChatRoom = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3190,7 +3379,7 @@ pub const ChatRoom = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3217,7 +3406,7 @@ pub const ChatRoom = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3229,7 +3418,7 @@ pub const ChatRoom = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3334,7 +3523,8 @@ pub const ChatRoom = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3347,7 +3537,7 @@ pub const ChatRoom = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3374,7 +3564,7 @@ pub const ChatRoom = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3386,7 +3576,7 @@ pub const ChatRoom = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3491,7 +3681,8 @@ pub const ChatRoom = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3504,7 +3695,7 @@ pub const ChatRoom = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3531,7 +3722,7 @@ pub const ChatRoom = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3543,7 +3734,7 @@ pub const ChatRoom = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3648,7 +3839,8 @@ pub const ChatRoom = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3661,7 +3853,7 @@ pub const ChatRoom = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3688,7 +3880,7 @@ pub const ChatRoom = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3700,7 +3892,7 @@ pub const ChatRoom = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -3805,7 +3997,8 @@ pub const ChatRoom = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -3818,7 +4011,7 @@ pub const ChatRoom = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -3845,7 +4038,7 @@ pub const ChatRoom = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -3857,7 +4050,7 @@ pub const ChatRoom = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -4031,16 +4224,22 @@ pub const ChatRoom = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
         pointer_index: u16,
+        pointer_indexes: [64]u16 = undefined,
+        pointer_count: u8 = 0,
 
         pub fn callSendMessage(self: PipelinedClient, user_ctx: *anyopaque, build: ?SendMessage.BuildFn, on_return: SendMessage.Callback) !u32 {
             return self.callSendMessageWithOptions(user_ctx, build, on_return, .{});
         }
 
         pub fn callSendMessageWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?SendMessage.BuildFn, on_return: SendMessage.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(SendMessage.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, SendMessage.ordinal, ctx, SendMessage.callBuild, SendMessage.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, SendMessage.ordinal, ctx, SendMessage.callBuild, SendMessage.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4055,10 +4254,14 @@ pub const ChatRoom = struct {
         }
 
         pub fn callSendEmoteWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?SendEmote.BuildFn, on_return: SendEmote.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(SendEmote.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, SendEmote.ordinal, ctx, SendEmote.callBuild, SendEmote.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, SendEmote.ordinal, ctx, SendEmote.callBuild, SendEmote.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4073,10 +4276,14 @@ pub const ChatRoom = struct {
         }
 
         pub fn callGetHistoryWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetHistory.BuildFn, on_return: GetHistory.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(GetHistory.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetHistory.ordinal, ctx, GetHistory.callBuild, GetHistory.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, GetHistory.ordinal, ctx, GetHistory.callBuild, GetHistory.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4091,10 +4298,14 @@ pub const ChatRoom = struct {
         }
 
         pub fn callGetInfoWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetInfo.BuildFn, on_return: GetInfo.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(GetInfo.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4109,10 +4320,14 @@ pub const ChatRoom = struct {
         }
 
         pub fn callLeaveWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Leave.BuildFn, on_return: Leave.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(Leave.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Leave.ordinal, ctx, Leave.callBuild, Leave.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, Leave.ordinal, ctx, Leave.callBuild, Leave.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4270,7 +4485,7 @@ pub const ChatRoom = struct {
 
             pub fn getContent(self: Reader) ![]const u8 {
                 if (self._reader.isPointerNull(0)) return "";
-                return try self._reader.readText(0);
+                return try self._reader.readTextStrict(0);
             }
 
         };
@@ -4286,6 +4501,26 @@ pub const ChatRoom = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatRoom.SendMessageParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearContent(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getContent(self: @This()) ![]const u8 {
+                var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+                defer storage.deinit();
+                try storage.bind(self._builder.builder);
+                const field_reader = try storage.reader(self._builder);
+                if (field_reader.isPointerNull(0)) return "";
+                return try field_reader.readTextStrict(0);
             }
 
             pub fn hasContent(self: Builder) bool {
@@ -4360,6 +4595,11 @@ pub const ChatRoom = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -4368,6 +4608,37 @@ pub const ChatRoom = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatRoom.SendMessageResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearMessage(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getMessage(self: *@This()) !ChatMessage.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 4);
+                return ChatMessage.Builder.wrap(raw);
+            }
+
+            pub fn setMessage(self: *@This(), value: ChatMessage.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasMessage(self: Builder) bool {
@@ -4407,7 +4678,7 @@ pub const ChatRoom = struct {
 
             pub fn getContent(self: Reader) ![]const u8 {
                 if (self._reader.isPointerNull(0)) return "";
-                return try self._reader.readText(0);
+                return try self._reader.readTextStrict(0);
             }
 
         };
@@ -4423,6 +4694,26 @@ pub const ChatRoom = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatRoom.SendEmoteParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearContent(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getContent(self: @This()) ![]const u8 {
+                var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+                defer storage.deinit();
+                try storage.bind(self._builder.builder);
+                const field_reader = try storage.reader(self._builder);
+                if (field_reader.isPointerNull(0)) return "";
+                return try field_reader.readTextStrict(0);
             }
 
             pub fn hasContent(self: Builder) bool {
@@ -4497,6 +4788,11 @@ pub const ChatRoom = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -4505,6 +4801,37 @@ pub const ChatRoom = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatRoom.SendEmoteResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearMessage(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getMessage(self: *@This()) !ChatMessage.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 4);
+                return ChatMessage.Builder.wrap(raw);
+            }
+
+            pub fn setMessage(self: *@This(), value: ChatMessage.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasMessage(self: Builder) bool {
@@ -4557,6 +4884,22 @@ pub const ChatRoom = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatRoom.GetHistoryParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearLimit(self: *@This()) !void {
+                self._builder.writeU32(0, 0);
+            }
+
+            pub fn getLimit(self: @This()) !u32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return field_reader.readU32(0);
+            }
+
             pub fn setLimit(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
@@ -4607,6 +4950,28 @@ pub const ChatRoom = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatRoom.GetHistoryResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearMessages(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getMessages(self: *@This()) !StructListBuilder(ChatMessage) {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 4);
+                return .{ ._list = raw };
+            }
+
+            pub fn setMessages(self: *@This(), value: StructListReader(ChatMessage)) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setList(pointer, value);
+            }
+
             pub fn hasMessages(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -4647,6 +5012,13 @@ pub const ChatRoom = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatRoom.GetInfoParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
 
         };
@@ -4692,6 +5064,28 @@ pub const ChatRoom = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatRoom.GetInfoResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearInfo(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getInfo(self: *@This()) !RoomInfo.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 3);
+                return RoomInfo.Builder.wrap(raw);
+            }
+
+            pub fn setInfo(self: *@This(), value: RoomInfo.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
             pub fn hasInfo(self: Builder) bool {
                 return !self._builder.isPointerNull(0);
             }
@@ -4732,6 +5126,13 @@ pub const ChatRoom = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatRoom.LeaveParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
 
         };
@@ -4788,6 +5189,11 @@ pub const ChatRoom = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -4796,6 +5202,22 @@ pub const ChatRoom = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatRoom.LeaveResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
@@ -4863,7 +5285,8 @@ pub const ChatService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -4876,7 +5299,7 @@ pub const ChatService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -4903,7 +5326,7 @@ pub const ChatService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -4915,7 +5338,7 @@ pub const ChatService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -5020,7 +5443,8 @@ pub const ChatService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -5033,7 +5457,7 @@ pub const ChatService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -5060,7 +5484,7 @@ pub const ChatService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -5072,7 +5496,7 @@ pub const ChatService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -5177,7 +5601,8 @@ pub const ChatService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -5190,7 +5615,7 @@ pub const ChatService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -5217,7 +5642,7 @@ pub const ChatService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -5229,7 +5654,7 @@ pub const ChatService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -5334,7 +5759,8 @@ pub const ChatService = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -5347,7 +5773,7 @@ pub const ChatService = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -5374,7 +5800,7 @@ pub const ChatService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -5386,7 +5812,7 @@ pub const ChatService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -5560,9 +5986,70 @@ pub const ChatService = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
 
+        const _PipelineRoot = @This();
+
         pub fn getRoom(self: @This()) ChatRoom.PipelinedClient {
             return .{ .peer = self.peer, .question_id = self.question_id, .pointer_index = 0 };
         }
+
+        pub fn getInfo(self: @This()) !_PipelineRoot._Pipeline_e5ba1809c2912ea6 {
+            var result: _PipelineRoot._Pipeline_e5ba1809c2912ea6 = .{ .peer = self.peer, .question_id = self.question_id };
+            result.pointer_indexes[result.pointer_count] = 1;
+            result.pointer_count += 1;
+            return result;
+        }
+
+        pub const _Pipeline_994640fc2bf454e3 = struct {
+            peer: *rpc.peer.Peer,
+            question_id: u32,
+            pointer_indexes: [64]u16 = undefined,
+            pointer_count: u8 = 0,
+
+            pub fn getRoom(self: @This()) !ChatRoom.PipelinedClient {
+                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                var result: ChatRoom.PipelinedClient = .{ .peer = self.peer, .question_id = self.question_id, .pointer_index = 0 };
+                result.pointer_count = self.pointer_count;
+                @memcpy(result.pointer_indexes[0..self.pointer_count], self.pointer_indexes[0..self.pointer_count]);
+                return result;
+            }
+
+            pub fn getInfo(self: @This()) !_PipelineRoot._Pipeline_e5ba1809c2912ea6 {
+                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                var result: _PipelineRoot._Pipeline_e5ba1809c2912ea6 = .{ .peer = self.peer, .question_id = self.question_id };
+                result.pointer_count = self.pointer_count;
+                @memcpy(result.pointer_indexes[0..self.pointer_count], self.pointer_indexes[0..self.pointer_count]);
+                result.pointer_indexes[result.pointer_count] = 1;
+                result.pointer_count += 1;
+                return result;
+            }
+
+        };
+
+        pub const _Pipeline_e5ba1809c2912ea6 = struct {
+            peer: *rpc.peer.Peer,
+            question_id: u32,
+            pointer_indexes: [64]u16 = undefined,
+            pointer_count: u8 = 0,
+
+            pub fn getId(self: @This()) !_PipelineRoot._Pipeline_e55842edf88fabbb {
+                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                var result: _PipelineRoot._Pipeline_e55842edf88fabbb = .{ .peer = self.peer, .question_id = self.question_id };
+                result.pointer_count = self.pointer_count;
+                @memcpy(result.pointer_indexes[0..self.pointer_count], self.pointer_indexes[0..self.pointer_count]);
+                result.pointer_indexes[result.pointer_count] = 0;
+                result.pointer_count += 1;
+                return result;
+            }
+
+        };
+
+        pub const _Pipeline_e55842edf88fabbb = struct {
+            peer: *rpc.peer.Peer,
+            question_id: u32,
+            pointer_indexes: [64]u16 = undefined,
+            pointer_count: u8 = 0,
+
+        };
 
     };
 
@@ -5580,16 +6067,22 @@ pub const ChatService = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
         pointer_index: u16,
+        pointer_indexes: [64]u16 = undefined,
+        pointer_count: u8 = 0,
 
         pub fn callCreateRoom(self: PipelinedClient, user_ctx: *anyopaque, build: ?CreateRoom.BuildFn, on_return: CreateRoom.Callback) !u32 {
             return self.callCreateRoomWithOptions(user_ctx, build, on_return, .{});
         }
 
         pub fn callCreateRoomWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?CreateRoom.BuildFn, on_return: CreateRoom.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(CreateRoom.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, CreateRoom.ordinal, ctx, CreateRoom.callBuild, CreateRoom.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, CreateRoom.ordinal, ctx, CreateRoom.callBuild, CreateRoom.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -5604,10 +6097,14 @@ pub const ChatService = struct {
         }
 
         pub fn callJoinRoomWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?JoinRoom.BuildFn, on_return: JoinRoom.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(JoinRoom.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, JoinRoom.ordinal, ctx, JoinRoom.callBuild, JoinRoom.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, JoinRoom.ordinal, ctx, JoinRoom.callBuild, JoinRoom.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -5622,10 +6119,14 @@ pub const ChatService = struct {
         }
 
         pub fn callListRoomsWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?ListRooms.BuildFn, on_return: ListRooms.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(ListRooms.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ListRooms.ordinal, ctx, ListRooms.callBuild, ListRooms.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, ListRooms.ordinal, ctx, ListRooms.callBuild, ListRooms.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -5640,10 +6141,14 @@ pub const ChatService = struct {
         }
 
         pub fn callWhisperWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Whisper.BuildFn, on_return: Whisper.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(Whisper.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Whisper.ordinal, ctx, Whisper.callBuild, Whisper.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, Whisper.ordinal, ctx, Whisper.callBuild, Whisper.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -5798,7 +6303,7 @@ pub const ChatService = struct {
 
             pub fn getName(self: Reader) ![]const u8 {
                 if (self._reader.isPointerNull(0)) return "";
-                return try self._reader.readText(0);
+                return try self._reader.readTextStrict(0);
             }
 
             pub fn hasTopic(self: Reader) bool {
@@ -5807,7 +6312,7 @@ pub const ChatService = struct {
 
             pub fn getTopic(self: Reader) ![]const u8 {
                 if (self._reader.isPointerNull(1)) return "";
-                return try self._reader.readText(1);
+                return try self._reader.readTextStrict(1);
             }
 
         };
@@ -5823,6 +6328,39 @@ pub const ChatService = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatService.CreateRoomParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearName(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getName(self: @This()) ![]const u8 {
+                var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+                defer storage.deinit();
+                try storage.bind(self._builder.builder);
+                const field_reader = try storage.reader(self._builder);
+                if (field_reader.isPointerNull(0)) return "";
+                return try field_reader.readTextStrict(0);
+            }
+
+            pub fn clearTopic(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(1)).setNull();
+            }
+
+            pub fn getTopic(self: @This()) ![]const u8 {
+                var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+                defer storage.deinit();
+                try storage.bind(self._builder.builder);
+                const field_reader = try storage.reader(self._builder);
+                if (field_reader.isPointerNull(1)) return "";
+                return try field_reader.readTextStrict(1);
             }
 
             pub fn hasName(self: Builder) bool {
@@ -5924,6 +6462,11 @@ pub const ChatService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -5932,6 +6475,42 @@ pub const ChatService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatService.CreateRoomResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn getRoom(self: *@This()) !message.Capability {
+                const pointer = try self._builder.getAnyPointer(0);
+                return try pointer.getCapability();
+            }
+
+            pub fn clearInfo(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(1)).setNull();
+            }
+
+            pub fn getInfo(self: *@This()) !RoomInfo.Builder {
+                const pointer = try self._builder.getAnyPointer(1);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 3);
+                return RoomInfo.Builder.wrap(raw);
+            }
+
+            pub fn setInfo(self: *@This(), value: RoomInfo.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(1);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasRoom(self: Builder) bool {
@@ -5943,13 +6522,11 @@ pub const ChatService = struct {
             }
 
             pub fn clearRoom(self: *Builder) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setNull();
+                try (try self._builder.getAnyPointer(0)).setNull();
             }
 
             pub fn setRoomCapability(self: *Builder, cap: message.Capability) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(cap);
+                try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
             pub fn setRoomServer(self: *Builder, peer: *rpc.peer.Peer, server: *ChatRoom.Server) !void {
@@ -6000,7 +6577,7 @@ pub const ChatService = struct {
 
             pub fn getName(self: Reader) ![]const u8 {
                 if (self._reader.isPointerNull(0)) return "";
-                return try self._reader.readText(0);
+                return try self._reader.readTextStrict(0);
             }
 
             pub fn hasPlayer(self: Reader) bool {
@@ -6026,6 +6603,41 @@ pub const ChatService = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatService.JoinRoomParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearName(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getName(self: @This()) ![]const u8 {
+                var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+                defer storage.deinit();
+                try storage.bind(self._builder.builder);
+                const field_reader = try storage.reader(self._builder);
+                if (field_reader.isPointerNull(0)) return "";
+                return try field_reader.readTextStrict(0);
+            }
+
+            pub fn clearPlayer(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(1)).setNull();
+            }
+
+            pub fn getPlayer(self: *@This()) !game_types.PlayerInfo.Builder {
+                const pointer = try self._builder.getAnyPointer(1);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 2);
+                return game_types.PlayerInfo.Builder.wrap(raw);
+            }
+
+            pub fn setPlayer(self: *@This(), value: game_types.PlayerInfo.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(1);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
             pub fn hasName(self: Builder) bool {
@@ -6118,6 +6730,11 @@ pub const ChatService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -6126,6 +6743,27 @@ pub const ChatService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatService.JoinRoomResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn getRoom(self: *@This()) !message.Capability {
+                const pointer = try self._builder.getAnyPointer(0);
+                return try pointer.getCapability();
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasRoom(self: Builder) bool {
@@ -6137,13 +6775,11 @@ pub const ChatService = struct {
             }
 
             pub fn clearRoom(self: *Builder) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setNull();
+                try (try self._builder.getAnyPointer(0)).setNull();
             }
 
             pub fn setRoomCapability(self: *Builder, cap: message.Capability) !void {
-                var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(cap);
+                try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
             pub fn setRoomServer(self: *Builder, peer: *rpc.peer.Peer, server: *ChatRoom.Server) !void {
@@ -6194,6 +6830,13 @@ pub const ChatService = struct {
                 return .{ ._builder = builder };
             }
 
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatService.ListRoomsParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
         };
     };
 
@@ -6238,6 +6881,28 @@ pub const ChatService = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatService.ListRoomsResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearRooms(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getRooms(self: *@This()) !StructListBuilder(RoomInfo) {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 3);
+                return .{ ._list = raw };
+            }
+
+            pub fn setRooms(self: *@This(), value: StructListReader(RoomInfo)) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setList(pointer, value);
             }
 
             pub fn hasRooms(self: Builder) bool {
@@ -6293,7 +6958,7 @@ pub const ChatService = struct {
 
             pub fn getContent(self: Reader) ![]const u8 {
                 if (self._reader.isPointerNull(2)) return "";
-                return try self._reader.readText(2);
+                return try self._reader.readTextStrict(2);
             }
 
         };
@@ -6309,6 +6974,56 @@ pub const ChatService = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatService.WhisperParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearFrom(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getFrom(self: *@This()) !game_types.PlayerInfo.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 2);
+                return game_types.PlayerInfo.Builder.wrap(raw);
+            }
+
+            pub fn setFrom(self: *@This(), value: game_types.PlayerInfo.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearTo(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(1)).setNull();
+            }
+
+            pub fn getTo(self: *@This()) !game_types.PlayerId.Builder {
+                const pointer = try self._builder.getAnyPointer(1);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+                return game_types.PlayerId.Builder.wrap(raw);
+            }
+
+            pub fn setTo(self: *@This(), value: game_types.PlayerId.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(1);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearContent(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(2)).setNull();
+            }
+
+            pub fn getContent(self: @This()) ![]const u8 {
+                var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+                defer storage.deinit();
+                try storage.bind(self._builder.builder);
+                const field_reader = try storage.reader(self._builder);
+                if (field_reader.isPointerNull(2)) return "";
+                return try field_reader.readTextStrict(2);
             }
 
             pub fn hasFrom(self: Builder) bool {
@@ -6401,6 +7116,11 @@ pub const ChatService = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getStatus(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(0);
+                }
+
                 pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
@@ -6409,6 +7129,37 @@ pub const ChatService = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.ChatService.WhisperResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearMessage(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(0)).setNull();
+            }
+
+            pub fn getMessage(self: *@This()) !ChatMessage.Builder {
+                const pointer = try self._builder.getAnyPointer(0);
+                const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 4);
+                return ChatMessage.Builder.wrap(raw);
+            }
+
+            pub fn setMessage(self: *@This(), value: ChatMessage.Reader) !void {
+                const pointer = try self._builder.getAnyPointer(0);
+                try capnpc.generated_helpers.setStruct(pointer, value._reader);
+            }
+
+            pub fn clearStatus(self: *@This()) !void {
+                self._builder.writeU16(0, 0);
+            }
+
+            pub fn getStatus(self: @This()) !game_types.StatusCode {
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasMessage(self: Builder) bool {

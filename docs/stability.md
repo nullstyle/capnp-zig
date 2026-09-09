@@ -231,6 +231,14 @@ generated `capnpSchema` references, and `Generator.setSchemaRequest` /
 Existing Stable generator signatures are unchanged. See
 [reflection.md](reflection.md) for the data-access and ownership contract.
 
+The additive `generated_helpers` module and generated `asReader(&storage)`
+views are also Experimental, including through the otherwise Stable
+`rpc.wire.protocol.PayloadBuilder` alias. Readers borrow the message buffers
+and explicit storage; mutation, rebinding, or deinitialization invalidates them.
+The new strict Text-list readers and defaulted list stride/source-provenance
+fields extend the Stable message API without changing existing signatures.
+See [generated-api.md](generated-api.md).
+
 Everything below is outside the frozen contract and may break at any 0.x minor
 bump. The L3 three-party arc in particular is **lightly soaked and
 Experimental**: main has a Zig↔C++ TCP success/failure matrix plus Go

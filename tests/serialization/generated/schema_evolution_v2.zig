@@ -257,6 +257,13 @@ pub const Empty = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Empty.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
     };
 };
 
@@ -291,6 +298,22 @@ pub const Child = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Child.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearValue(self: *@This()) !void {
+            self._builder.writeU32(0, 0);
+        }
+
+        pub fn getValue(self: @This()) !u32 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU32(0);
         }
 
         pub fn setValue(self: *Builder, value: u32) !void {
@@ -352,7 +375,8 @@ pub const Service = struct {
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
-        const CallContext = struct {
+        // Public so generated descendants in other modules can reuse the call machinery.
+        pub const CallContext = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
@@ -365,7 +389,7 @@ pub const Service = struct {
 
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
-            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
                 const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
                 ctx_allocator.destroy(dead);
             }
@@ -392,7 +416,7 @@ pub const Service = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -404,7 +428,7 @@ pub const Service = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
@@ -505,16 +529,22 @@ pub const Service = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
         pointer_index: u16,
+        pointer_indexes: [64]u16 = undefined,
+        pointer_count: u8 = 0,
 
         pub fn callPing(self: PipelinedClient, user_ctx: *anyopaque, build: ?Ping.BuildFn, on_return: Ping.Callback) !u32 {
             return self.callPingWithOptions(user_ctx, build, on_return, .{});
         }
 
         pub fn callPingWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Ping.BuildFn, on_return: Ping.Callback, options: rpc.peer.CallOptions) !u32 {
+            if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+            var ops: [64]rpc.wire.protocol.PromisedAnswerOp = undefined;
+            for (self.pointer_indexes[0..self.pointer_count], 0..) |index, i| ops[i] = .{ .tag = .getPointerField, .pointer_index = index };
+            ops[self.pointer_count] = .{ .tag = .getPointerField, .pointer_index = self.pointer_index };
             const ctx = try self.peer.allocator.create(Ping.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Ping.ordinal, ctx, Ping.callBuild, Ping.callReturn, options) catch |err| {
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, ops[0 .. @as(usize, self.pointer_count) + 1], interface_id, Ping.ordinal, ctx, Ping.callBuild, Ping.callReturn, options) catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -666,6 +696,13 @@ pub const Service = struct {
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
             }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Service.PingParams.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
         };
     };
 
@@ -696,6 +733,13 @@ pub const Service = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Service.PingResults.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
             }
         };
     };
@@ -743,7 +787,7 @@ pub const Evolution = struct {
 
             pub fn getNote(self: @This()) ![]const u8 {
                 if (self._reader.isPointerNull(9)) return "";
-                return try self._reader.readText(9);
+                return try self._reader.readTextStrict(9);
             }
 
             pub fn getState(self: @This()) !Status {
@@ -763,6 +807,11 @@ pub const Evolution = struct {
             pub const EnumOrdinals = struct {
                 _builder: message.StructBuilder,
 
+                pub fn getState(self: @This()) !u16 {
+                    const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                    return raw.readU16(4) ^ @as(u16, 1);
+                }
+
                 pub fn setState(self: @This(), value: u16) !void {
                     self._builder.writeU16(4, value ^ @as(u16, 1));
                 }
@@ -770,6 +819,35 @@ pub const Evolution = struct {
 
             pub fn enumOrdinals(self: @This()) EnumOrdinals {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Evolution.Details.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearNote(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(9)).setNull();
+            }
+
+            pub fn getNote(self: @This()) ![]const u8 {
+                var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+                defer storage.deinit();
+                try storage.bind(self._builder.builder);
+                const field_reader = try storage.reader(self._builder);
+                if (field_reader.isPointerNull(9)) return "";
+                return try field_reader.readTextStrict(9);
+            }
+
+            pub fn clearState(self: *@This()) !void {
+                self._builder.writeU16(4, 0);
+            }
+
+            pub fn getState(self: @This()) !Status {
+                const ordinal = try self.enumOrdinals().getState();
+                return std.enums.fromInt(Status, ordinal) orelse return error.InvalidEnumValue;
             }
 
             pub fn hasNote(self: @This()) bool {
@@ -840,7 +918,7 @@ pub const Evolution = struct {
 
         pub fn getText(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(1)) return "";
-            return try self._reader.readText(1);
+            return try self._reader.readTextStrict(1);
         }
 
         pub fn hasData(self: Reader) bool {
@@ -905,7 +983,7 @@ pub const Evolution = struct {
 
         pub fn getDefaultText(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(7)) return "fallback";
-            return try self._reader.readText(7);
+            return try self._reader.readTextStrict(7);
         }
 
         pub fn hasEmpty(self: Reader) bool {
@@ -931,7 +1009,7 @@ pub const Evolution = struct {
         pub fn getLabel(self: Reader) ![]const u8 {
             if ((try self.which()) != .label) return error.WrongUnionMember;
             if (self._reader.isPointerNull(9)) return "";
-            return try self._reader.readText(9);
+            return try self._reader.readTextStrict(9);
         }
 
         pub fn getDetails(self: Reader) !Details.Reader {
@@ -947,7 +1025,7 @@ pub const Evolution = struct {
         pub fn getFutureLabel(self: Reader) ![]const u8 {
             if ((try self.which()) != .futureLabel) return error.WrongUnionMember;
             if (self._reader.isPointerNull(9)) return "";
-            return try self._reader.readText(9);
+            return try self._reader.readTextStrict(9);
         }
 
         pub fn hasAddedText(self: Reader) bool {
@@ -956,7 +1034,7 @@ pub const Evolution = struct {
 
         pub fn getAddedText(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(10)) return "";
-            return try self._reader.readText(10);
+            return try self._reader.readTextStrict(10);
         }
     };
 
@@ -976,6 +1054,11 @@ pub const Evolution = struct {
         pub const EnumOrdinals = struct {
             _builder: message.StructBuilder,
 
+            pub fn getStatus(self: @This()) !u16 {
+                const raw = capnpc.generated_helpers.scalarReader(self._builder);
+                return raw.readU16(0) ^ @as(u16, 1);
+            }
+
             pub fn setStatus(self: @This(), value: u16) !void {
                 self._builder.writeU16(0, value ^ @as(u16, 1));
             }
@@ -983,6 +1066,209 @@ pub const Evolution = struct {
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
             return .{ ._builder = self._builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Evolution.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn whichOrdinal(self: @This()) u16 {
+            return self._builder.readUnionDiscriminant(2);
+        }
+
+        pub fn which(self: @This()) error{InvalidEnumValue}!_capnp_file.Evolution.WhichTag {
+            return std.enums.fromInt(_capnp_file.Evolution.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearStatus(self: *@This()) !void {
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getStatus(self: @This()) !Status {
+            const ordinal = try self.enumOrdinals().getStatus();
+            return std.enums.fromInt(Status, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearStatuses(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getStatuses(self: *@This()) !EnumListBuilder(Status) {
+            const pointer = try self._builder.getAnyPointer(0);
+            return .{ ._list = try pointer.getU16List() };
+        }
+
+        pub fn setStatuses(self: *@This(), value: EnumListReader(Status)) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearText(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getText(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(1)) return "";
+            return try field_reader.readTextStrict(1);
+        }
+
+        pub fn clearData(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(2)).setNull();
+        }
+
+        pub fn getData(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(2)) return &[_]u8{};
+            return try field_reader.readData(2);
+        }
+
+        pub fn clearChild(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(3)).setNull();
+        }
+
+        pub fn getChild(self: *@This()) !Child.Builder {
+            const pointer = try self._builder.getAnyPointer(3);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 1, 0);
+            return Child.Builder.wrap(raw);
+        }
+
+        pub fn setChild(self: *@This(), value: Child.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(3);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearChildren(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(4)).setNull();
+        }
+
+        pub fn getChildren(self: *@This()) !StructListBuilder(Child) {
+            const pointer = try self._builder.getAnyPointer(4);
+            const raw = try capnpc.generated_helpers.getStructList(pointer, 1, 0);
+            return .{ ._list = raw };
+        }
+
+        pub fn setChildren(self: *@This(), value: StructListReader(Child)) !void {
+            const pointer = try self._builder.getAnyPointer(4);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearAny(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(5)).setNull();
+        }
+
+        pub fn getAny(self: *@This()) !message.AnyPointerBuilder {
+            const pointer = try self._builder.getAnyPointer(5);
+            return pointer;
+        }
+
+        pub fn setAny(self: *@This(), value: message.AnyPointerReader) !void {
+            try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(5), value);
+        }
+
+        pub fn getService(self: *@This()) !message.Capability {
+            const pointer = try self._builder.getAnyPointer(6);
+            return try pointer.getCapability();
+        }
+
+        pub fn clearDefaultText(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(7)).setNull();
+        }
+
+        pub fn getDefaultText(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(7)) return "fallback";
+            return try field_reader.readTextStrict(7);
+        }
+
+        pub fn clearEmpty(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(8)).setNull();
+        }
+
+        pub fn getEmpty(self: *@This()) !Empty.Builder {
+            const pointer = try self._builder.getAnyPointer(8);
+            const raw = try capnpc.generated_helpers.getStruct(pointer, 0, 0);
+            return Empty.Builder.wrap(raw);
+        }
+
+        pub fn setEmpty(self: *@This(), value: Empty.Reader) !void {
+            const pointer = try self._builder.getAnyPointer(8);
+            try capnpc.generated_helpers.setStruct(pointer, value._reader);
+        }
+
+        pub fn clearNone(self: *@This()) !void {
+            self._builder.writeU16(2, 0);
+        }
+
+        pub fn getNone(self: @This()) !void {
+            if ((try self.which()) != .none) return error.WrongUnionMember;
+            return {};
+        }
+
+        pub fn clearLabel(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(9)).setNull();
+            self._builder.writeU16(2, 1);
+        }
+
+        pub fn getLabel(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if ((try self.which()) != .label) return error.WrongUnionMember;
+            if (field_reader.isPointerNull(9)) return "";
+            return try field_reader.readTextStrict(9);
+        }
+
+        pub fn clearDetails(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(9)).setNull();
+            self._builder.writeU16(4, 0);
+            self._builder.writeU16(2, 2);
+        }
+
+        pub fn getDetails(self: *@This()) !Details.Builder {
+            if ((try self.which()) != .details) return error.WrongUnionMember;
+            return Details.Builder.wrap(self._builder);
+        }
+
+        pub fn clearFutureLabel(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(9)).setNull();
+            self._builder.writeU16(2, 3);
+        }
+
+        pub fn getFutureLabel(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if ((try self.which()) != .futureLabel) return error.WrongUnionMember;
+            if (field_reader.isPointerNull(9)) return "";
+            return try field_reader.readTextStrict(9);
+        }
+
+        pub fn clearAddedText(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(10)).setNull();
+        }
+
+        pub fn getAddedText(self: @This()) ![]const u8 {
+            var storage = capnpc.generated_helpers.ReaderStorage.init(self._builder.builder.allocator);
+            defer storage.deinit();
+            try storage.bind(self._builder.builder);
+            const field_reader = try storage.reader(self._builder);
+            if (field_reader.isPointerNull(10)) return "";
+            return try field_reader.readTextStrict(10);
         }
 
         pub fn setStatus(self: *Builder, value: Status) !void {
@@ -1041,23 +1327,19 @@ pub const Evolution = struct {
         }
 
         pub fn setAnyNull(self: *Builder) !void {
-            var any = try self._builder.getAnyPointer(5);
-            try any.setNull();
+            try (try self._builder.getAnyPointer(5)).setNull();
         }
 
         pub fn setAnyText(self: *Builder, value: []const u8) !void {
-            var any = try self._builder.getAnyPointer(5);
-            try any.setText(value);
+            try (try self._builder.getAnyPointer(5)).setText(value);
         }
 
         pub fn setAnyData(self: *Builder, value: []const u8) !void {
-            var any = try self._builder.getAnyPointer(5);
-            try any.setData(value);
+            try (try self._builder.getAnyPointer(5)).setData(value);
         }
 
         pub fn setAnyCapability(self: *Builder, cap: message.Capability) !void {
-            var any = try self._builder.getAnyPointer(5);
-            try any.setCapability(cap);
+            try (try self._builder.getAnyPointer(5)).setCapability(cap);
         }
 
         pub fn hasService(self: Builder) bool {
@@ -1069,13 +1351,11 @@ pub const Evolution = struct {
         }
 
         pub fn clearService(self: *Builder) !void {
-            var any = try self._builder.getAnyPointer(6);
-            try any.setNull();
+            try (try self._builder.getAnyPointer(6)).setNull();
         }
 
         pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
-            var any = try self._builder.getAnyPointer(6);
-            try any.setCapability(cap);
+            try (try self._builder.getAnyPointer(6)).setCapability(cap);
         }
 
         pub fn setServiceServer(self: *Builder, peer: *rpc.peer.Peer, server: *Service.Server) !void {

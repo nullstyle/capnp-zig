@@ -282,6 +282,11 @@ pub fn Validation(comptime G: type) type {
             try scope.addCopy("_builder");
             if (self.hasReflection()) try scope.addCopy("capnpSchema");
             try scope.addCopy("wrap");
+            try scope.addCopy("asReader");
+            if (struct_info.discriminant_count > 0) {
+                try scope.addCopy("which");
+                try scope.addCopy("whichOrdinal");
+            }
             if (self.api_profile == .full) try scope.addCopy("init");
             if (structHasDirectEnumSlot(struct_info)) {
                 try scope.addCopy("EnumOrdinals");
@@ -304,22 +309,27 @@ pub fn Validation(comptime G: type) type {
                 const cap_name = try self.allocFieldCapName(field.name);
                 defer self.allocator.free(cap_name);
 
+                try scope.addPrint("clear{s}", .{cap_name});
                 if (field.group != null) {
                     if (field.discriminant_value != 0xFFFF and struct_info.discriminant_count > 0) {
                         try scope.addPrint("init{s}", .{cap_name});
-                    } else {
-                        try scope.addPrint("get{s}", .{cap_name});
                     }
+                    try scope.addPrint("get{s}", .{cap_name});
                     continue;
                 }
 
                 const slot = field.slot orelse continue;
+                try scope.addPrint("get{s}", .{cap_name});
                 if (isPointerSlotType(slot.type)) {
                     try scope.addPrint("has{s}", .{cap_name});
                 }
                 switch (slot.type) {
-                    .list, .@"struct" => try scope.addPrint("init{s}", .{cap_name}),
+                    .list, .@"struct" => {
+                        try scope.addPrint("init{s}", .{cap_name});
+                        try scope.addPrint("set{s}", .{cap_name});
+                    },
                     .any_pointer => {
+                        try scope.addPrint("set{s}", .{cap_name});
                         try scope.addPrint("init{s}", .{cap_name});
                         try scope.addPrint("set{s}Null", .{cap_name});
                         try scope.addPrint("set{s}Text", .{cap_name});
@@ -328,7 +338,6 @@ pub fn Validation(comptime G: type) type {
                     },
                     .interface => {
                         try scope.addPrint("init{s}", .{cap_name});
-                        try scope.addPrint("clear{s}", .{cap_name});
                         try scope.addPrint("set{s}Capability", .{cap_name});
                         try scope.addPrint("set{s}Server", .{cap_name});
                         try scope.addPrint("set{s}Client", .{cap_name});
@@ -467,6 +476,15 @@ pub fn Validation(comptime G: type) type {
             // methods that happen to share a Zig name.
             const ancestors = try self.collectAncestors(node);
             defer self.freeAncestors(ancestors);
+            const old_interface = self.interface_context;
+            const old_ancestors = self.interface_ancestors;
+            self.interface_context = node;
+            self.interface_ancestors = ancestors;
+            defer {
+                self.interface_context = old_interface;
+                self.interface_ancestors = old_ancestors;
+            }
+
             const has_streaming = self.hasStreamingMethods(node, ancestors);
 
             var interface_scope = G.GeneratedNameScope.init(self.allocator);
@@ -533,14 +551,14 @@ pub fn Validation(comptime G: type) type {
             // {Method} call-struct declaration, and (for interface-typed results) the
             // {Method}Pipeline type into the interface's own namespace.
             for (interface_info.methods) |method| {
-                try Self.registerInterfaceMethodNames(self, method, scopes, true);
+                try Self.registerInterfaceMethodNames(self, method, scopes, true, null);
             }
             // Inherited methods: only the Client/PipelinedClient/StreamClient/VTable
             // members are re-emitted; the call-struct and Pipeline type live on the
             // ancestor, so they are not re-registered in the interface namespace.
             for (ancestors) |ancestor| {
                 for (ancestor.methods) |method| {
-                    try Self.registerInterfaceMethodNames(self, method, scopes, false);
+                    try Self.registerInterfaceMethodNames(self, method, scopes, false, ancestor.name);
                 }
             }
         }
@@ -566,6 +584,7 @@ pub fn Validation(comptime G: type) type {
             method: schema.Method,
             scopes: InterfaceMethodScopes,
             is_own: bool,
+            ancestor_name: ?[]const u8,
         ) !void {
             if (is_own) {
                 const method_name = try self.allocEscapedTypeIdentifier(method.name);
@@ -575,7 +594,9 @@ pub fn Validation(comptime G: type) type {
                 try scopes.method_enum_scope.addOwned(enum_name);
             }
 
-            const call_name = try self.allocMethodCallName(method.name);
+            const member_name = try self.allocInterfaceMemberName(method.name, ancestor_name);
+            defer self.allocator.free(member_name);
+            const call_name = try std.fmt.allocPrint(self.allocator, "call{s}", .{member_name});
             defer self.allocator.free(call_name);
             try scopes.client_scope.addCopy(call_name);
             try scopes.client_scope.addPrint("{s}WithOptions", .{call_name});
@@ -595,7 +616,7 @@ pub fn Validation(comptime G: type) type {
                 try scopes.client_scope.addPrint("{s}PipelinedWithOptions", .{call_name});
             }
 
-            const field_name = try self.allocMethodVTableFieldName(method.name);
+            const field_name = try self.lowerFirst(member_name);
             defer self.allocator.free(field_name);
             try scopes.vtable_scope.addCopy(field_name);
             if (!method.isStreaming()) {
@@ -604,31 +625,30 @@ pub fn Validation(comptime G: type) type {
         }
 
         pub fn validatePipelineGeneratedNames(self: *G, method: schema.Method) !void {
-            const result_node = self.getNode(method.result_struct_type) orelse return;
-            const result_struct = result_node.struct_node orelse return;
-
-            var scope = G.GeneratedNameScope.init(self.allocator);
-            defer scope.deinit();
-            try scope.addCopy("peer");
-            try scope.addCopy("question_id");
-
-            for (result_struct.fields) |field| {
-                const slot = field.slot orelse continue;
-                if (slot.type != .interface) continue;
-                const field_name = try types.identToZigTypeName(self.allocator, field.name);
-                defer self.allocator.free(field_name);
-                try scope.addPrint("get{s}", .{field_name});
+            const nodes = try self.collectPipelineStructs(method.result_struct_type);
+            defer self.allocator.free(nodes);
+            for (nodes) |node| {
+                var scope = G.GeneratedNameScope.init(self.allocator);
+                defer scope.deinit();
+                try scope.addCopy("peer");
+                try scope.addCopy("question_id");
+                try scope.addCopy("pointer_indexes");
+                try scope.addCopy("pointer_count");
+                for (node.struct_node.?.fields) |field| {
+                    if (field.discriminant_value != 0xffff) continue;
+                    if (field.group == null) {
+                        const slot = field.slot orelse continue;
+                        if (slot.type != .interface and slot.type != .@"struct") continue;
+                    }
+                    const field_name = try types.identToZigTypeName(self.allocator, field.name);
+                    defer self.allocator.free(field_name);
+                    try scope.addPrint("get{s}", .{field_name});
+                }
             }
         }
 
         pub fn methodHasInterfaceResultFields(self: *G, method: schema.Method) !bool {
-            const result_node = self.getNode(method.result_struct_type) orelse return false;
-            const result_struct = result_node.struct_node orelse return false;
-            for (result_struct.fields) |field| {
-                const slot = field.slot orelse continue;
-                if (slot.type == .interface) return true;
-            }
-            return false;
+            return self.hasPipelineFields(method.result_struct_type);
         }
     };
 }

@@ -7,6 +7,7 @@
 const std = @import("std");
 const schema = @import("../serialization/schema.zig");
 const type_resolver = @import("../serialization/type_resolver.zig");
+const applications = @import("generic_application.zig");
 
 pub const Error = error{ InvalidSchema, CodegenBudgetExceeded };
 pub const LookupNode = *const fn (?*anyopaque, schema.Id) ?*const schema.Node;
@@ -16,6 +17,12 @@ pub const Inspection = struct {
     /// The root itself is one; nested generic struct fields add their own.
     specialization_count: usize,
 };
+
+/// The same root selection is used for direct struct and generic-list fields.
+pub fn inspectSlot(owner: *const schema.Node, slot: schema.FieldSlot, lookup: LookupNode, context: ?*anyopaque, remaining: usize) Error!?Inspection {
+    const application = (try applications.fromSlot(owner, slot, lookup, context)) orelse return null;
+    return inspectApplication(application.target, &application.resolver, lookup, context, remaining);
+}
 
 /// Return `null` for a well-formed application that the typed sidecar cannot
 /// represent. Malformed metadata is `InvalidSchema`.
@@ -35,6 +42,7 @@ pub fn inspectApplication(
         0,
         &specialization_count,
         max_specializations,
+        &.{},
     )) return null;
     return .{ .specialization_count = specialization_count };
 }
@@ -47,11 +55,12 @@ fn inspectApplicationDepth(
     depth: usize,
     specialization_count: *usize,
     max_specializations: usize,
+    ancestors: []const applications.Ref,
 ) Error!bool {
-    // Recursive generic schemas are legal, but an infinitely recursive typed
-    // sidecar is not finite code. Treat the bounded application as unsupported
-    // so generation retains the erased accessor instead of rejecting the
-    // schema itself.
+    const current = applications.Ref{ .target = target, .resolver = resolver };
+    for (ancestors) |ancestor| {
+        if (try applications.same(current, ancestor, lookup_node, lookup_context)) return true;
+    }
     if (depth >= type_resolver.max_resolution_depth) return false;
     if (target.kind != .@"struct") return error.InvalidSchema;
     const target_info = target.struct_node orelse return error.InvalidSchema;
@@ -68,6 +77,12 @@ fn inspectApplicationDepth(
     if (specialization_count.* >= max_specializations) return error.CodegenBudgetExceeded;
     specialization_count.* += 1;
 
+    var path: [type_resolver.max_resolution_depth]applications.Ref = undefined;
+    if (ancestors.len >= path.len) return false;
+    @memcpy(path[0..ancestors.len], ancestors);
+    path[ancestors.len] = current;
+    const descendants = path[0 .. ancestors.len + 1];
+
     // These are exactly the fields for which StructGenerator may recursively
     // emit a nested application wrapper: an erased parameter field or a named
     // generic struct field (including one whose brand inherits a caller scope).
@@ -82,6 +97,7 @@ fn inspectApplicationDepth(
                 depth + 1,
                 specialization_count,
                 max_specializations,
+                descendants,
             )) return false;
             continue;
         }
@@ -94,7 +110,7 @@ fn inspectApplicationDepth(
             const named = lookup_node(lookup_context, slot.type.@"struct".type_id) orelse return error.InvalidSchema;
             break :blk named.kind == .@"struct" and named.is_generic;
         } else false;
-        if (!is_parameter and !is_generic_named) continue;
+        if (!is_parameter and !is_generic_named and slot.type != .list) continue;
 
         const initial = resolver.cursor(.{ .type = slot.type, .metadata = slot.type_metadata });
         if (!try inspectNestedApplication(
@@ -105,6 +121,7 @@ fn inspectApplicationDepth(
             depth + 1,
             specialization_count,
             max_specializations,
+            descendants,
         )) return false;
     }
 
@@ -119,6 +136,7 @@ fn inspectApplicationFields(
     depth: usize,
     specialization_count: *usize,
     max_specializations: usize,
+    ancestors: []const applications.Ref,
 ) Error!bool {
     if (depth >= type_resolver.max_resolution_depth) return false;
     if (node.kind != .@"struct") return error.InvalidSchema;
@@ -141,6 +159,7 @@ fn inspectApplicationFields(
                 depth + 1,
                 specialization_count,
                 max_specializations,
+                ancestors,
             )) return false;
             continue;
         }
@@ -153,7 +172,7 @@ fn inspectApplicationFields(
             const named = lookup_node(lookup_context, slot.type.@"struct".type_id) orelse return error.InvalidSchema;
             break :blk named.kind == .@"struct" and named.is_generic;
         } else false;
-        if (!is_parameter and !is_generic_named) continue;
+        if (!is_parameter and !is_generic_named and slot.type != .list) continue;
         const initial = resolver.cursor(.{ .type = slot.type, .metadata = slot.type_metadata });
         if (!try inspectNestedApplication(
             resolver,
@@ -163,6 +182,7 @@ fn inspectApplicationFields(
             depth + 1,
             specialization_count,
             max_specializations,
+            ancestors,
         )) return false;
     }
     return true;
@@ -272,6 +292,7 @@ fn inspectNestedApplication(
     depth: usize,
     specialization_count: *usize,
     max_specializations: usize,
+    ancestors: []const applications.Ref,
 ) Error!bool {
     if (depth >= type_resolver.max_resolution_depth) return false;
     try resolver.validateExpression(initial);
@@ -287,6 +308,7 @@ fn inspectNestedApplication(
             depth + 1,
             specialization_count,
             max_specializations,
+            ancestors,
         ),
         .@"struct" => |named| blk: {
             const node = lookup_node(lookup_context, named.type_id) orelse return error.InvalidSchema;
@@ -302,6 +324,7 @@ fn inspectNestedApplication(
                 depth + 1,
                 specialization_count,
                 max_specializations,
+                ancestors,
             );
         },
         else => true,

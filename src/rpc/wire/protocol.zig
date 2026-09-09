@@ -1037,7 +1037,16 @@ pub const Exception = struct {
 
     fn fromReader(reader: message.StructReader) !Exception {
         const generated = rpc_capnp.Exception.Reader.wrap(reader);
-        const reason = try generated.getReason();
+        // Keep the frozen wire decoder error contract while rejecting the
+        // stricter generated reader's malformed UTF-8 diagnostic.
+        const reason = generated.getReason() catch |err| switch (err) {
+            error.InvalidUtf8, error.InvalidTextPointer => return error.InvalidTextPointer,
+            error.InvalidFarPointer => return error.InvalidFarPointer,
+            error.InvalidPointer => return error.InvalidPointer,
+            error.InvalidSegmentId => return error.InvalidSegmentId,
+            error.OutOfBounds => return error.OutOfBounds,
+            error.PointerDepthLimit => return error.PointerDepthLimit,
+        };
         const trace = generated.getTrace() catch "";
         const type_value = try generated.enumOrdinals().getType();
         return .{ .reason = reason, .trace = trace, .type_value = type_value };

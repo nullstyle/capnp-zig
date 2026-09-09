@@ -272,6 +272,8 @@ pub const Service = struct {
         peer: *rpc.peer.Peer,
         question_id: u32,
         pointer_index: u16,
+        pointer_indexes: [64]u16 = undefined,
+        pointer_count: u8 = 0,
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -420,6 +422,22 @@ pub const Child = struct {
             return .{ ._builder = builder };
         }
 
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Child.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn clearValue(self: *@This()) !void {
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getValue(self: @This()) !u16 {
+            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+            return field_reader.readU16(0);
+        }
+
         pub fn setValue(self: *Builder, value: u16) !void {
             self._builder.writeU16(0, @bitCast(value));
         }
@@ -490,6 +508,27 @@ pub const NestedListDemo = struct {
 
             pub fn nestedLists(self: @This()) NestedLists {
                 return .{ ._builder = self._builder };
+            }
+
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.NestedListDemo.Grouped.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
+
+            pub fn clearGroupRows(self: *@This()) !void {
+                try (try self._builder.getAnyPointer(8)).setNull();
+            }
+
+            pub fn getGroupRows(self: *@This()) !message.PointerListBuilder {
+                const pointer = try self._builder.getAnyPointer(8);
+                return try pointer.getPointerList();
+            }
+
+            pub fn setGroupRows(self: *@This(), value: message.PointerListReader) !void {
+                const pointer = try self._builder.getAnyPointer(8);
+                try capnpc.generated_helpers.setList(pointer, value);
             }
 
             pub fn hasGroupRows(self: @This()) bool {
@@ -1016,6 +1055,276 @@ pub const NestedListDemo = struct {
 
         pub fn nestedLists(self: @This()) NestedLists {
             return .{ ._builder = self._builder };
+        }
+
+        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.NestedListDemo.Reader {
+            try storage.bind(self._builder.builder);
+            try storage.message_view.validate(.{});
+            return .{ ._reader = try storage.reader(self._builder) };
+        }
+
+        pub fn whichOrdinal(self: @This()) u16 {
+            return self._builder.readUnionDiscriminant(0);
+        }
+
+        pub fn which(self: @This()) error{InvalidEnumValue}!_capnp_file.NestedListDemo.WhichTag {
+            return std.enums.fromInt(_capnp_file.NestedListDemo.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn clearNumbers(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(0)).setNull();
+        }
+
+        pub fn getNumbers(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(0);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setNumbers(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(0);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearDeepText(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(1)).setNull();
+        }
+
+        pub fn getDeepText(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(1);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setDeepText(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(1);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearRecords(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(2)).setNull();
+        }
+
+        pub fn getRecords(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(2);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setRecords(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(2);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearDataRows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(3)).setNull();
+        }
+
+        pub fn getDataRows(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(3);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setDataRows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(3);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearEnumRows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(4)).setNull();
+        }
+
+        pub fn getEnumRows(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(4);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setEnumRows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(4);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearServiceRows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(5)).setNull();
+        }
+
+        pub fn getServiceRows(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(5);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setServiceRows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(5);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearVoidRows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(6)).setNull();
+        }
+
+        pub fn getVoidRows(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(6);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setVoidRows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(6);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearChoiceRows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(7)).setNull();
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn getChoiceRows(self: *@This()) !message.PointerListBuilder {
+            if ((try self.which()) != .choiceRows) return error.WrongUnionMember;
+            const pointer = try self._builder.getAnyPointer(7);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setChoiceRows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(7);
+            try capnpc.generated_helpers.setList(pointer, value);
+            self._builder.writeU16(0, 0);
+        }
+
+        pub fn clearNone(self: *@This()) !void {
+            self._builder.writeU16(0, 1);
+        }
+
+        pub fn getNone(self: @This()) !void {
+            if ((try self.which()) != .none) return error.WrongUnionMember;
+            return {};
+        }
+
+        pub fn clearGrouped(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(8)).setNull();
+        }
+
+        pub fn clearDefaultRows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(9)).setNull();
+        }
+
+        pub fn getDefaultRows(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(9);
+            try capnpc.generated_helpers.materializeDefault(pointer, try _capnp_file.NestedListDemo.Reader._default_defaultRows_message.getRootAnyPointer());
+            return try pointer.getPointerList();
+        }
+
+        pub fn setDefaultRows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(9);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearI8Rows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(10)).setNull();
+        }
+
+        pub fn getI8Rows(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(10);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setI8Rows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(10);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearU8Rows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(11)).setNull();
+        }
+
+        pub fn getU8Rows(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(11);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setU8Rows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(11);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearI16Rows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(12)).setNull();
+        }
+
+        pub fn getI16Rows(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(12);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setI16Rows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(12);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearI32Rows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(13)).setNull();
+        }
+
+        pub fn getI32Rows(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(13);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setI32Rows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(13);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearI64Rows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(14)).setNull();
+        }
+
+        pub fn getI64Rows(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(14);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setI64Rows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(14);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearU64Rows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(15)).setNull();
+        }
+
+        pub fn getU64Rows(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(15);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setU64Rows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(15);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearF32Rows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(16)).setNull();
+        }
+
+        pub fn getF32Rows(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(16);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setF32Rows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(16);
+            try capnpc.generated_helpers.setList(pointer, value);
+        }
+
+        pub fn clearF64Rows(self: *@This()) !void {
+            try (try self._builder.getAnyPointer(17)).setNull();
+        }
+
+        pub fn getF64Rows(self: *@This()) !message.PointerListBuilder {
+            const pointer = try self._builder.getAnyPointer(17);
+            return try pointer.getPointerList();
+        }
+
+        pub fn setF64Rows(self: *@This(), value: message.PointerListReader) !void {
+            const pointer = try self._builder.getAnyPointer(17);
+            try capnpc.generated_helpers.setList(pointer, value);
         }
 
         pub fn hasNumbers(self: Builder) bool {
