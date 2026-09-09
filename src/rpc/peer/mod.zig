@@ -746,6 +746,9 @@ pub const Peer = struct {
     /// borrowed; dispatch depth covers the handler interval between route
     /// publication and terminal result delivery.
     automatic_third_party_operation_depth: u32 = 0,
+    /// Deferred streaming delivery and bounded retained input.
+    streaming: @import("stream_dispatch.zig").Registry(Peer) = .{},
+    streaming_operation_depth: usize = 0,
     automatic_third_party_deinit_deferred: bool = false,
     /// A terminal close observed while an automatic route operation borrows
     /// either peer is completed when the outermost operation unwinds. Unlike
@@ -2849,6 +2852,43 @@ pub const Peer = struct {
         return CallSendImpl.sendCallGeneratedWithOptions(self, target_id, interface_id, method_id, ctx, build, on_return, options);
     }
 
+    pub fn enterStreamingOperation(self: *Peer) void {
+        self.streaming_operation_depth += 1;
+    }
+    pub fn leaveStreamingOperation(self: *Peer) void {
+        self.streaming_operation_depth -= 1;
+        if (self.streaming_operation_depth != 0) return;
+        if (self.automatic_third_party_operation_depth != 0 or self.automatic_third_party_dispatch_depth != 0 or self.join_operation_depth != 0) return;
+        if (self.automatic_third_party_close_deferred) {
+            self.automatic_third_party_close_deferred = false;
+            self.finishTransportClosedNotification();
+        }
+        if (self.automatic_third_party_deinit_deferred) self.deinit();
+    }
+    pub fn dispatchStreamingCall(self: *Peer, ctx: *anyopaque, handler: @import("stream_dispatch.zig").Registry(Peer).DispatchFn, call: protocol.Call, caps: *const cap_table.InboundCapTable) !void {
+        try self.streaming.dispatch(self, ctx, handler, call, caps);
+    }
+    pub fn beginStreamingCall(self: *Peer, ctx: *anyopaque, question_id: u32) !u64 {
+        return self.streaming.begin(ctx, question_id);
+    }
+    pub fn completeStreamingCall(self: *Peer, ctx: *anyopaque, question_id: u32, token: u64, reason: ?[]const u8) !void {
+        try self.streaming.complete(self, ctx, question_id, token, reason);
+    }
+
+    /// Experimental generated streaming send with exact encoded-byte admission.
+    pub fn sendStreamingCallGenerated(
+        self: *Peer,
+        target_id: u32,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+        reservation: *@import("../transport/stream_state.zig").StreamState.Reservation,
+    ) !u32 {
+        return @import("streaming.zig").Streaming(Peer).send(self, target_id, interface_id, method_id, ctx, build, on_return, reservation);
+    }
+
     /// Body in `call/peer_call_send.zig`.
     pub fn sendForwardedVineCall(
         self: *Peer,
@@ -3963,7 +4003,7 @@ pub const Peer = struct {
         self.transport_close_notified = true;
         if (self.automatic_third_party_operation_depth != 0 or
             self.automatic_third_party_dispatch_depth != 0 or
-            self.join_operation_depth != 0)
+            self.join_operation_depth != 0 or self.streaming_operation_depth != 0)
         {
             self.automatic_third_party_close_deferred = true;
             return;
@@ -3978,6 +4018,7 @@ pub const Peer = struct {
         defer if (guards_automatic_routes) self.leaveAutomaticThirdPartyOperation();
 
         log.debug("connection closed", .{});
+        self.streaming.deinit(self);
         self.neutralizeAutomaticThirdPartyRoutesOnTargetPeer();
         self.neutralizeAutomaticThirdPartyRoutesOnSourcePeer();
         self.detachCrossPeerAcceptsOnHolderPeer();
@@ -4335,6 +4376,7 @@ pub const Peer = struct {
         // an OOM in the fan-out propagates out of dispatch instead of being
         // force-swallowed by the void FinishOps hook below.
         try self.detachProvisionForFinish(qid);
+        if (!self.resolving_answers.contains(qid)) self.streaming.cancel(self, qid);
         const was_active = self.active_inbound_questions.remove(qid);
         const was_resolving = self.resolving_answers.contains(qid);
         // The failed-answer record lives exactly as long as resolved_answers

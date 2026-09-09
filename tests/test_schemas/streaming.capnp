@@ -7,3 +7,11 @@ interface TestStreaming {
   doStreamJ @1 (j :UInt32) -> stream;
   finishStream @2 () -> (totalI :UInt32, totalJ :UInt32);
 }
+
+interface StreamCapability {
+  ping @0 () -> (value :UInt32);
+}
+interface CapabilityStream {
+  push @0 (data :Data, callback :StreamCapability) -> stream;
+  finish @1 () -> ();
+}

@@ -555,6 +555,75 @@ pub const Persistent = struct {
                 try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply(@field(bindings, "SturdyRef"), @field(bindings, "Owner"));
+        }
+        fn _Apply(comptime _Parameter0: type, comptime _Parameter1: type) type {
+            const _bindings = .{
+                .SturdyRef = _Parameter0,
+                .Owner = _Parameter1,
+            };
+            _ = &_bindings;
+            capnpc.generic.requirePointer(_Parameter0);
+            capnpc.generic.requirePointer(_Parameter1);
+            return struct {
+                const _Data = @This();
+                pub const Raw = _capnp_file.Persistent.SaveParams;
+                const _Field0 = @field(_bindings, "Owner");
+                comptime {
+                    capnpc.generic.requirePointer(_Field0);
+                }
+                pub const Reader = struct {
+                    inner: message.StructReader,
+                    pub fn wrap(inner: message.StructReader) @This() {
+                        return .{ .inner = inner };
+                    }
+                    pub fn raw(self: @This()) Raw.Reader {
+                        return Raw.Reader.wrap(self.inner);
+                    }
+                    pub fn getSealFor(self: @This()) !_Field0.Reader {
+                        const raw_value = self.raw();
+                        return _Field0.read(try raw_value.getSealFor());
+                    }
+                };
+                pub const Builder = struct {
+                    inner: message.StructBuilder,
+                    pub fn wrap(inner: message.StructBuilder) @This() {
+                        return .{ .inner = inner };
+                    }
+                    pub fn raw(self: @This()) Raw.Builder {
+                        return Raw.Builder.wrap(self.inner);
+                    }
+                    pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                        try storage.bind(self.inner.builder);
+                        return _Data.Reader.wrap(try storage.reader(self.inner));
+                    }
+                    pub fn getSealFor(self: @This()) !_Field0.Builder {
+                        var raw_value = self.raw();
+                        _ = &raw_value;
+                        return _Field0.get(try raw_value.getSealFor());
+                    }
+                    pub fn setSealFor(self: @This(), value: _Field0.Reader) !void {
+                        try _Field0.set(try self.inner.getAnyPointer(0), value);
+                    }
+                    pub const initSealFor = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+                };
+                pub const Pipeline = struct {
+                    peer: *@import("capnpc-zig").rpc.peer.Peer,
+                    question_id: u32,
+                    pointer_indexes: [64]u16 = undefined,
+                    pointer_count: u8 = 0,
+                    pub fn getSealFor(self: @This()) !_Field0.Pipeline {
+                        if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                        var path = self;
+                        path.pointer_indexes[path.pointer_count] = 0;
+                        path.pointer_count += 1;
+                        return _Field0.pipeline(path);
+                    }
+                };
+            };
+        }
     };
 
     pub const SaveResults = struct {
@@ -638,7 +707,143 @@ pub const Persistent = struct {
                 try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply(@field(bindings, "SturdyRef"), @field(bindings, "Owner"));
+        }
+        fn _Apply(comptime _Parameter0: type, comptime _Parameter1: type) type {
+            const _bindings = .{
+                .SturdyRef = _Parameter0,
+                .Owner = _Parameter1,
+            };
+            _ = &_bindings;
+            capnpc.generic.requirePointer(_Parameter0);
+            capnpc.generic.requirePointer(_Parameter1);
+            return struct {
+                const _Data = @This();
+                pub const Raw = _capnp_file.Persistent.SaveResults;
+                const _Field0 = @field(_bindings, "SturdyRef");
+                comptime {
+                    capnpc.generic.requirePointer(_Field0);
+                }
+                pub const Reader = struct {
+                    inner: message.StructReader,
+                    pub fn wrap(inner: message.StructReader) @This() {
+                        return .{ .inner = inner };
+                    }
+                    pub fn raw(self: @This()) Raw.Reader {
+                        return Raw.Reader.wrap(self.inner);
+                    }
+                    pub fn getSturdyRef(self: @This()) !_Field0.Reader {
+                        const raw_value = self.raw();
+                        return _Field0.read(try raw_value.getSturdyRef());
+                    }
+                };
+                pub const Builder = struct {
+                    inner: message.StructBuilder,
+                    pub fn wrap(inner: message.StructBuilder) @This() {
+                        return .{ .inner = inner };
+                    }
+                    pub fn raw(self: @This()) Raw.Builder {
+                        return Raw.Builder.wrap(self.inner);
+                    }
+                    pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                        try storage.bind(self.inner.builder);
+                        return _Data.Reader.wrap(try storage.reader(self.inner));
+                    }
+                    pub fn getSturdyRef(self: @This()) !_Field0.Builder {
+                        var raw_value = self.raw();
+                        _ = &raw_value;
+                        return _Field0.get(try raw_value.getSturdyRef());
+                    }
+                    pub fn setSturdyRef(self: @This(), value: _Field0.Reader) !void {
+                        try _Field0.set(try self.inner.getAnyPointer(0), value);
+                    }
+                    pub const initSturdyRef = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+                };
+                pub const Pipeline = struct {
+                    peer: *@import("capnpc-zig").rpc.peer.Peer,
+                    question_id: u32,
+                    pointer_indexes: [64]u16 = undefined,
+                    pointer_count: u8 = 0,
+                    pub fn getSturdyRef(self: @This()) !_Field0.Pipeline {
+                        if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                        var path = self;
+                        path.pointer_indexes[path.pointer_count] = 0;
+                        path.pointer_count += 1;
+                        return _Field0.pipeline(path);
+                    }
+                };
+            };
+        }
     };
+
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply(@field(bindings, "SturdyRef"), @field(bindings, "Owner"));
+    }
+    fn _Apply(comptime _Parameter0: type, comptime _Parameter1: type) type {
+        const _bindings = .{
+            .SturdyRef = _Parameter0,
+            .Owner = _Parameter1,
+        };
+        _ = &_bindings;
+        capnpc.generic.requirePointer(_Parameter0);
+        capnpc.generic.requirePointer(_Parameter1);
+        return struct {
+            const _Applied = @This();
+            pub const Raw = _capnp_file.Persistent;
+            pub const interface_id = Raw.interface_id;
+            pub const Save = capnpc.generic.Method(Raw.Save, _capnp_file.Persistent.SaveParams.Apply(.{
+                .SturdyRef = @field(_bindings, "SturdyRef"),
+                .Owner = @field(_bindings, "Owner"),
+            }), _capnp_file.Persistent.SaveResults.Apply(.{
+                .SturdyRef = @field(_bindings, "SturdyRef"),
+                .Owner = @field(_bindings, "Owner"),
+            }));
+            pub const Client = struct {
+                raw: Raw.Client,
+                pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() {
+                    return .{ .raw = Raw.Client.init(peer, cap_id) };
+                }
+                pub fn release(self: @This()) void {
+                    self.raw.release();
+                }
+                pub fn callSave(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Save.BuildFn, comptime callback: _Applied.Save.Callback) !u32 {
+                    const Adapter = _Applied.Save.ClientAdapter(build, callback);
+                    return self.raw.callSave(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                }
+                pub fn callSavePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Save.BuildFn, comptime callback: _Applied.Save.Callback) !_Applied.Save.Results.Pipeline {
+                    const qid = try self.callSave(ctx, build, callback);
+                    return .{ .peer = self.raw.peer, .question_id = qid };
+                }
+            };
+            pub const PipelinedClient = struct {
+                raw: Raw.PipelinedClient,
+                pub fn callSave(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Save.BuildFn, comptime callback: _Applied.Save.Callback) !u32 {
+                    const Adapter = _Applied.Save.ClientAdapter(build, callback);
+                    return self.raw.callSave(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                }
+            };
+            pub fn ServerAdapter(comptime handlers: anytype) type {
+                _ = &handlers;
+                return struct {
+                    raw: Raw.Server,
+                    pub fn init(ctx: *anyopaque) @This() {
+                        return .{ .raw = .{ .ctx = ctx, .vtable = .{
+                            .save = if (@hasField(@TypeOf(handlers), "save")) _Applied.Save.ServerAdapter(handlers.save).handle else unsupportedSave,
+                        } } };
+                    }
+                    pub fn exportServer(self: *@This(), peer: *rpc.peer.Peer) !u32 {
+                        return Raw.exportServer(peer, &self.raw);
+                    }
+                    fn unsupportedSave(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.Save.Params.Reader, _: *Raw.Save.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void {
+                        return error.Unimplemented;
+                    }
+                };
+            }
+        };
+    }
 };
 
 pub const persistent = struct {

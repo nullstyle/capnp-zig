@@ -86,7 +86,12 @@ const ValueWhich = enum(u16) {
 pub fn parseCodeGeneratorRequest(allocator: std.mem.Allocator, bytes: []const u8) !schema.CodeGeneratorRequest {
     var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
+    return parseCodeGeneratorRequestMessage(allocator, &msg);
+}
 
+/// Parse a message already validated by the caller. This permits one validation
+/// pass with caller-selected limits. The parsed graph owns its allocations.
+pub fn parseCodeGeneratorRequestMessage(allocator: std.mem.Allocator, msg: *const message.Message) !schema.CodeGeneratorRequest {
     const root = try msg.getRootStruct();
 
     const nodes = try parseNodeList(allocator, root);

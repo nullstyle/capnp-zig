@@ -15,6 +15,7 @@ const Descriptor = struct {
     discriminant_offset: u32 = 0,
     field_discriminant: u16 = 0xffff,
     default_uint64: ?u64 = null,
+    default_struct: bool = false,
 };
 
 /// Construct valid wire data describing one struct and one slot. The layout
@@ -41,8 +42,16 @@ fn makeRequest(allocator: std.mem.Allocator, options: Descriptor) ![]u8 {
     field.writeU16(2, options.field_discriminant ^ @as(u16, 0xffff));
     field.writeU32(4, options.slot_offset);
     try field.writeText(0, "value");
-    var typ = try field.initStruct(2, 1, 0);
+    var typ = try field.initStruct(2, 2, 0);
     typ.writeU16(0, options.type_discriminant);
+    if (options.default_struct) {
+        typ.writeU64(8, node_id);
+        var value = try field.initStruct(3, 2, 1);
+        value.writeU16(0, 16);
+        const child = try value.initStruct(0, 1, 0);
+        child.writeU64(0, 345);
+        field.writeBool(16, 0, true);
+    }
     if (options.default_uint64) |default| {
         var value = try field.initStruct(3, 2, 1);
         value.writeU16(0, 9); // schema::Value.uint64
@@ -123,4 +132,92 @@ test "registry permits valid schema defaults when reading an evolved smaller mes
     defer decoded.deinit();
     const reader = try reflection.DynamicStruct.Reader.init(struct_schema, &decoded);
     try std.testing.expectEqual(@as(u64, 99), (try reader.get("value")).uint64);
+}
+
+test "registry rejects oversized input before allocating" {
+    const allocator = std.testing.allocator;
+    const bytes = try makeRequest(allocator, .{});
+    defer allocator.free(bytes);
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.SchemaInputLimitExceeded, reflection.Registry.initWithOptions(failing.allocator(), bytes, .{ .max_input_bytes = bytes.len - 1 }));
+    try std.testing.expectEqual(@as(usize, 0), failing.alloc_index);
+    for ([_]usize{ bytes.len, bytes.len + 1 }) |limit| {
+        const registry = try reflection.Registry.initWithOptions(allocator, bytes, .{ .max_input_bytes = limit });
+        defer registry.deinit();
+        try std.testing.expectEqual(node_id, (try registry.get(node_id)).id());
+    }
+}
+
+test "registry memory budget bounds parsing allocations and distinguishes allocator failure" {
+    const allocator = std.testing.allocator;
+    const bytes = try makeRequest(allocator, .{});
+    defer allocator.free(bytes);
+    var tracking = std.testing.FailingAllocator.init(allocator, .{});
+    try std.testing.expectError(error.SchemaMemoryLimitExceeded, reflection.Registry.initWithOptions(tracking.allocator(), bytes, .{ .max_memory_bytes = bytes.len }));
+    try std.testing.expectEqual(tracking.allocated_bytes, tracking.freed_bytes);
+    var unavailable = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, reflection.Registry.initWithOptions(unavailable.allocator(), bytes, .{}));
+    const registry = try reflection.Registry.initWithOptions(allocator, bytes, .{ .max_memory_bytes = 1024 * 1024 });
+    defer registry.deinit();
+    try std.testing.expectEqual(node_id, (try registry.get(node_id)).id());
+}
+
+test "registry applies caller traversal and node limits before parsing descriptors" {
+    const allocator = std.testing.allocator;
+    const bytes = try makeRequest(allocator, .{});
+    defer allocator.free(bytes);
+    try std.testing.expectError(error.TraversalLimitExceeded, reflection.Registry.initWithOptions(allocator, bytes, .{ .validation = .{ .traversal_limit_words = 1 } }));
+    try std.testing.expectError(error.SchemaNodeLimitExceeded, reflection.Registry.initWithOptions(allocator, bytes, .{ .max_nodes = 0 }));
+    for ([_]usize{ 1, 2 }) |limit| {
+        const registry = try reflection.Registry.initWithOptions(allocator, bytes, .{ .max_nodes = limit });
+        defer registry.deinit();
+        try std.testing.expectEqual(@as(usize, 1), registry.nodes().len);
+    }
+}
+
+fn loadWithFailures(allocator: std.mem.Allocator, bytes: []const u8) !void {
+    const registry = try reflection.Registry.initWithOptions(allocator, bytes, .{});
+    defer registry.deinit();
+    const record = try (try registry.get(node_id)).asStruct();
+    try std.testing.expectEqualStrings("value", (try record.field("value")).proto().name);
+}
+
+test "registry bounded loading cleans up every allocation failure" {
+    const allocator = std.testing.allocator;
+    const bytes = try makeRequest(allocator, .{ .default_uint64 = 99 });
+    defer allocator.free(bytes);
+    try std.testing.checkAllAllocationFailures(allocator, loadWithFailures, .{bytes});
+}
+
+fn loadLazyWithFailures(allocator: std.mem.Allocator, bytes: []const u8) !void {
+    const registry = try reflection.Registry.initWithOptions(allocator, bytes, .{});
+    defer registry.deinit();
+    const value = (try (try (try registry.get(node_id)).asStruct()).field("value")).proto().slot.?.default_value.?;
+    const first = try registry.defaultPointer(value);
+    try std.testing.expectEqual(@as(u64, 345), (try first.getStruct()).readU64(0));
+    for (0..128) |_| {
+        const cached = try registry.defaultPointer(value);
+        try std.testing.expectEqual(first.message, cached.message);
+    }
+}
+
+test "registry lazy pointer defaults retain cache identity and clean every failed allocation" {
+    const bytes = try makeRequest(std.testing.allocator, .{ .type_discriminant = 16, .pointer_words = 1, .default_struct = true });
+    defer std.testing.allocator.free(bytes);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, loadLazyWithFailures, .{bytes});
+}
+
+test "registry memory limit accepts its measured boundary and rejects one byte below" {
+    const bytes = try makeRequest(std.testing.allocator, .{});
+    defer std.testing.allocator.free(bytes);
+    var accounting = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const measured = try reflection.Registry.init(accounting.allocator(), bytes);
+    const live = accounting.allocated_bytes - accounting.freed_bytes;
+    measured.deinit();
+    try std.testing.expectError(error.SchemaMemoryLimitExceeded, reflection.Registry.initWithOptions(std.testing.allocator, bytes, .{ .max_memory_bytes = live - 1 }));
+    for ([_]usize{ live, live + 1 }) |limit| {
+        const registry = try reflection.Registry.initWithOptions(std.testing.allocator, bytes, .{ .max_memory_bytes = limit });
+        defer registry.deinit();
+        try std.testing.expectEqual(node_id, (try registry.get(node_id)).id());
+    }
 }

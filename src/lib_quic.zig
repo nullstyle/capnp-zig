@@ -13,6 +13,7 @@ pub const schema = @import("serialization/schema.zig");
 /// Binary descriptors and dynamic schema-driven wire access.
 pub const reflection = @import("reflection/root.zig");
 pub const generated_helpers = @import("serialization/generated_helpers.zig");
+pub const generic = @import("serialization/generic.zig");
 
 /// Convenience re-exports for generated reader types.
 pub const reader = @import("serialization/reader.zig");

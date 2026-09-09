@@ -913,6 +913,69 @@ pub const WriteOpResult = struct {
         }
 
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{ };
+        _ = &_bindings;
+        return struct {
+        const _Data = @This();
+        pub const Raw = _capnp_file.WriteOpResult;
+        const _Field0 = capnpc.generic.Text;
+        comptime { capnpc.generic.requirePointer(_Field0); }
+        const _Field1 = capnpc.generic.Struct(_capnp_file.Entry, 1, 2);
+        comptime { capnpc.generic.requirePointer(_Field1); }
+        pub const Reader = struct {
+            inner: message.StructReader,
+            pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+            pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+            pub fn getKey(self: @This()) !_Field0.Reader {
+                const raw_value = self.raw();
+                return raw_value.getKey();
+            }
+            pub fn getPut(self: @This()) !_Field1.Reader {
+                const raw_value = self.raw();
+                return _Field1.wrapRawReader(try raw_value.getPut());
+            }
+            pub fn getDelete(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getDelete)).@"fn".return_type.? { return self.raw().getDelete(); }
+        };
+        pub const Builder = struct {
+            inner: message.StructBuilder,
+            pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+            pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+            pub fn getKey(self: @This()) !_Field0.Builder {
+                var raw_value = self.raw();
+                _ = &raw_value;
+                return raw_value.getKey();
+            }
+            pub fn setKey(self: @This(), value: _Field0.Reader) !void {
+                try _Field0.set(try self.inner.getAnyPointer(0), value);
+            }
+            pub const initKey = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            pub fn getPut(self: @This()) !_Field1.Builder {
+                var raw_value = self.raw();
+                _ = &raw_value;
+                return _Field1.wrapRawBuilder(try raw_value.getPut());
+            }
+            pub fn setPut(self: @This(), value: _Field1.Reader) !void {
+                try _Field1.set(try self.inner.getAnyPointer(1), value);
+                try self.inner.writeU16Strict(0, 0);
+            }
+            pub const initPut = capnpc.generic.Initializer(_Field1, _Data.Builder, 1, 0, 0).call;
+            pub fn getDelete(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getDelete)).@"fn".return_type.? { return self.raw().getDelete(); }
+            pub fn setDelete(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setDelete)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setDelete(value); }
+        };
+        pub const Pipeline = struct {
+            peer: *@import("capnpc-zig").rpc.peer.Peer,
+            question_id: u32,
+            pointer_indexes: [64]u16 = undefined,
+            pointer_count: u8 = 0,
+        };
+        };
+    }
 };
 
 pub const BackupInfo = struct {
@@ -1804,6 +1867,58 @@ pub const KvClientNotifier = struct {
         };
     };
 
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{ };
+        _ = &_bindings;
+        return struct {
+        const _Applied = @This();
+        pub const Raw = _capnp_file.KvClientNotifier;
+        pub const interface_id = Raw.interface_id;
+        pub const KeysChanged = capnpc.generic.Method(Raw.KeysChanged, _capnp_file.KvClientNotifier.KeysChangedParams, _capnp_file.KvClientNotifier.KeysChangedResults);
+        pub const StateResetRequired = capnpc.generic.Method(Raw.StateResetRequired, _capnp_file.KvClientNotifier.StateResetRequiredParams, _capnp_file.KvClientNotifier.StateResetRequiredResults);
+        pub const Client = struct {
+            raw: Raw.Client,
+            pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() { return .{ .raw = Raw.Client.init(peer, cap_id) }; }
+            pub fn release(self: @This()) void { self.raw.release(); }
+            pub fn callKeysChanged(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.KeysChanged.BuildFn, comptime callback: _Applied.KeysChanged.Callback) !u32 {
+                const Adapter = _Applied.KeysChanged.ClientAdapter(build, callback);
+                return self.raw.callKeysChanged(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callStateResetRequired(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.StateResetRequired.BuildFn, comptime callback: _Applied.StateResetRequired.Callback) !u32 {
+                const Adapter = _Applied.StateResetRequired.ClientAdapter(build, callback);
+                return self.raw.callStateResetRequired(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+        };
+        pub const PipelinedClient = struct {
+            raw: Raw.PipelinedClient,
+            pub fn callKeysChanged(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.KeysChanged.BuildFn, comptime callback: _Applied.KeysChanged.Callback) !u32 {
+                const Adapter = _Applied.KeysChanged.ClientAdapter(build, callback);
+                return self.raw.callKeysChanged(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callStateResetRequired(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.StateResetRequired.BuildFn, comptime callback: _Applied.StateResetRequired.Callback) !u32 {
+                const Adapter = _Applied.StateResetRequired.ClientAdapter(build, callback);
+                return self.raw.callStateResetRequired(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+        };
+        pub fn ServerAdapter(comptime handlers: anytype) type {
+            _ = &handlers;
+            return struct {
+                raw: Raw.Server,
+                pub fn init(ctx: *anyopaque) @This() { return .{ .raw = .{ .ctx = ctx, .vtable = .{
+                    .keysChanged = if (@hasField(@TypeOf(handlers), "keysChanged")) _Applied.KeysChanged.ServerAdapter(handlers.keysChanged).handle else unsupportedKeysChanged,
+                    .stateResetRequired = if (@hasField(@TypeOf(handlers), "stateResetRequired")) _Applied.StateResetRequired.ServerAdapter(handlers.stateResetRequired).handle else unsupportedStateResetRequired,
+                } } }; }
+                pub fn exportServer(self: *@This(), peer: *rpc.peer.Peer) !u32 { return Raw.exportServer(peer, &self.raw); }
+                fn unsupportedKeysChanged(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.KeysChanged.Params.Reader, _: *Raw.KeysChanged.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedStateResetRequired(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.StateResetRequired.Params.Reader, _: *Raw.StateResetRequired.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+            };
+        }
+        };
+    }
 };
 
 pub const KvStore = struct {
@@ -3727,6 +3842,60 @@ pub const KvStore = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.KvStore.GetResults;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.Entry, 1, 2);
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getEntry(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getEntry());
+                }
+                pub fn getFound(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getFound)).@"fn".return_type.? { return self.raw().getFound(); }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getEntry(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getEntry());
+                }
+                pub fn setEntry(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initEntry = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+                pub fn getFound(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getFound)).@"fn".return_type.? { return self.raw().getFound(); }
+                pub fn setFound(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setFound)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setFound(value); }
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getEntry(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const WriteBatchParams = struct {
@@ -4170,6 +4339,57 @@ pub const KvStore = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.KvStore.SubscribeParams;
+            const _Field0 = capnpc.generic.Capability(_capnp_file.KvClientNotifier.Apply(.{ }));
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getNotifier(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return raw_value.getNotifier();
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getNotifier(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return raw_value.getNotifier();
+                }
+                pub fn setNotifier(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initNotifier = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getNotifier(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const SubscribeResults = struct {
@@ -4469,6 +4689,60 @@ pub const KvStore = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.KvStore.CreateBackupResults;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.BackupInfo, 3, 0);
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getBackup(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getBackup());
+                }
+                pub fn getBackupCount(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getBackupCount)).@"fn".return_type.? { return self.raw().getBackupCount(); }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getBackup(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getBackup());
+                }
+                pub fn setBackup(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initBackup = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+                pub fn getBackupCount(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getBackupCount)).@"fn".return_type.? { return self.raw().getBackupCount(); }
+                pub fn setBackupCount(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setBackupCount)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setBackupCount(value); }
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getBackup(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const ListBackupsParams = struct {
@@ -4736,5 +5010,131 @@ pub const KvStore = struct {
         };
     };
 
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{ };
+        _ = &_bindings;
+        return struct {
+        const _Applied = @This();
+        pub const Raw = _capnp_file.KvStore;
+        pub const interface_id = Raw.interface_id;
+        pub const Get = capnpc.generic.Method(Raw.Get, _capnp_file.KvStore.GetParams, _capnp_file.KvStore.GetResults.Apply(.{ }));
+        pub const WriteBatch = capnpc.generic.Method(Raw.WriteBatch, _capnp_file.KvStore.WriteBatchParams, _capnp_file.KvStore.WriteBatchResults);
+        pub const List = capnpc.generic.Method(Raw.List, _capnp_file.KvStore.ListParams, _capnp_file.KvStore.ListResults);
+        pub const Subscribe = capnpc.generic.Method(Raw.Subscribe, _capnp_file.KvStore.SubscribeParams.Apply(.{ }), _capnp_file.KvStore.SubscribeResults);
+        pub const SetWatchedKeys = capnpc.generic.Method(Raw.SetWatchedKeys, _capnp_file.KvStore.SetWatchedKeysParams, _capnp_file.KvStore.SetWatchedKeysResults);
+        pub const CreateBackup = capnpc.generic.Method(Raw.CreateBackup, _capnp_file.KvStore.CreateBackupParams, _capnp_file.KvStore.CreateBackupResults.Apply(.{ }));
+        pub const ListBackups = capnpc.generic.Method(Raw.ListBackups, _capnp_file.KvStore.ListBackupsParams, _capnp_file.KvStore.ListBackupsResults);
+        pub const RestoreFromBackup = capnpc.generic.Method(Raw.RestoreFromBackup, _capnp_file.KvStore.RestoreFromBackupParams, _capnp_file.KvStore.RestoreFromBackupResults);
+        pub const Client = struct {
+            raw: Raw.Client,
+            pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() { return .{ .raw = Raw.Client.init(peer, cap_id) }; }
+            pub fn release(self: @This()) void { self.raw.release(); }
+            pub fn callGet(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Get.BuildFn, comptime callback: _Applied.Get.Callback) !u32 {
+                const Adapter = _Applied.Get.ClientAdapter(build, callback);
+                return self.raw.callGet(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callGetPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Get.BuildFn, comptime callback: _Applied.Get.Callback) !_Applied.Get.Results.Pipeline {
+                const qid = try self.callGet(ctx, build, callback);
+                return .{ .peer = self.raw.peer, .question_id = qid };
+            }
+            pub fn callWriteBatch(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.WriteBatch.BuildFn, comptime callback: _Applied.WriteBatch.Callback) !u32 {
+                const Adapter = _Applied.WriteBatch.ClientAdapter(build, callback);
+                return self.raw.callWriteBatch(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callList(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.List.BuildFn, comptime callback: _Applied.List.Callback) !u32 {
+                const Adapter = _Applied.List.ClientAdapter(build, callback);
+                return self.raw.callList(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callSubscribe(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Subscribe.BuildFn, comptime callback: _Applied.Subscribe.Callback) !u32 {
+                const Adapter = _Applied.Subscribe.ClientAdapter(build, callback);
+                return self.raw.callSubscribe(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callSetWatchedKeys(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SetWatchedKeys.BuildFn, comptime callback: _Applied.SetWatchedKeys.Callback) !u32 {
+                const Adapter = _Applied.SetWatchedKeys.ClientAdapter(build, callback);
+                return self.raw.callSetWatchedKeys(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callCreateBackup(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CreateBackup.BuildFn, comptime callback: _Applied.CreateBackup.Callback) !u32 {
+                const Adapter = _Applied.CreateBackup.ClientAdapter(build, callback);
+                return self.raw.callCreateBackup(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callCreateBackupPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CreateBackup.BuildFn, comptime callback: _Applied.CreateBackup.Callback) !_Applied.CreateBackup.Results.Pipeline {
+                const qid = try self.callCreateBackup(ctx, build, callback);
+                return .{ .peer = self.raw.peer, .question_id = qid };
+            }
+            pub fn callListBackups(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ListBackups.BuildFn, comptime callback: _Applied.ListBackups.Callback) !u32 {
+                const Adapter = _Applied.ListBackups.ClientAdapter(build, callback);
+                return self.raw.callListBackups(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callRestoreFromBackup(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.RestoreFromBackup.BuildFn, comptime callback: _Applied.RestoreFromBackup.Callback) !u32 {
+                const Adapter = _Applied.RestoreFromBackup.ClientAdapter(build, callback);
+                return self.raw.callRestoreFromBackup(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+        };
+        pub const PipelinedClient = struct {
+            raw: Raw.PipelinedClient,
+            pub fn callGet(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Get.BuildFn, comptime callback: _Applied.Get.Callback) !u32 {
+                const Adapter = _Applied.Get.ClientAdapter(build, callback);
+                return self.raw.callGet(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callWriteBatch(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.WriteBatch.BuildFn, comptime callback: _Applied.WriteBatch.Callback) !u32 {
+                const Adapter = _Applied.WriteBatch.ClientAdapter(build, callback);
+                return self.raw.callWriteBatch(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callList(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.List.BuildFn, comptime callback: _Applied.List.Callback) !u32 {
+                const Adapter = _Applied.List.ClientAdapter(build, callback);
+                return self.raw.callList(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callSubscribe(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Subscribe.BuildFn, comptime callback: _Applied.Subscribe.Callback) !u32 {
+                const Adapter = _Applied.Subscribe.ClientAdapter(build, callback);
+                return self.raw.callSubscribe(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callSetWatchedKeys(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SetWatchedKeys.BuildFn, comptime callback: _Applied.SetWatchedKeys.Callback) !u32 {
+                const Adapter = _Applied.SetWatchedKeys.ClientAdapter(build, callback);
+                return self.raw.callSetWatchedKeys(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callCreateBackup(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CreateBackup.BuildFn, comptime callback: _Applied.CreateBackup.Callback) !u32 {
+                const Adapter = _Applied.CreateBackup.ClientAdapter(build, callback);
+                return self.raw.callCreateBackup(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callListBackups(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ListBackups.BuildFn, comptime callback: _Applied.ListBackups.Callback) !u32 {
+                const Adapter = _Applied.ListBackups.ClientAdapter(build, callback);
+                return self.raw.callListBackups(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callRestoreFromBackup(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.RestoreFromBackup.BuildFn, comptime callback: _Applied.RestoreFromBackup.Callback) !u32 {
+                const Adapter = _Applied.RestoreFromBackup.ClientAdapter(build, callback);
+                return self.raw.callRestoreFromBackup(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+        };
+        pub fn ServerAdapter(comptime handlers: anytype) type {
+            _ = &handlers;
+            return struct {
+                raw: Raw.Server,
+                pub fn init(ctx: *anyopaque) @This() { return .{ .raw = .{ .ctx = ctx, .vtable = .{
+                    .get = if (@hasField(@TypeOf(handlers), "get")) _Applied.Get.ServerAdapter(handlers.get).handle else unsupportedGet,
+                    .writeBatch = if (@hasField(@TypeOf(handlers), "writeBatch")) _Applied.WriteBatch.ServerAdapter(handlers.writeBatch).handle else unsupportedWriteBatch,
+                    .list = if (@hasField(@TypeOf(handlers), "list")) _Applied.List.ServerAdapter(handlers.list).handle else unsupportedList,
+                    .subscribe = if (@hasField(@TypeOf(handlers), "subscribe")) _Applied.Subscribe.ServerAdapter(handlers.subscribe).handle else unsupportedSubscribe,
+                    .setWatchedKeys = if (@hasField(@TypeOf(handlers), "setWatchedKeys")) _Applied.SetWatchedKeys.ServerAdapter(handlers.setWatchedKeys).handle else unsupportedSetWatchedKeys,
+                    .createBackup = if (@hasField(@TypeOf(handlers), "createBackup")) _Applied.CreateBackup.ServerAdapter(handlers.createBackup).handle else unsupportedCreateBackup,
+                    .listBackups = if (@hasField(@TypeOf(handlers), "listBackups")) _Applied.ListBackups.ServerAdapter(handlers.listBackups).handle else unsupportedListBackups,
+                    .restoreFromBackup = if (@hasField(@TypeOf(handlers), "restoreFromBackup")) _Applied.RestoreFromBackup.ServerAdapter(handlers.restoreFromBackup).handle else unsupportedRestoreFromBackup,
+                } } }; }
+                pub fn exportServer(self: *@This(), peer: *rpc.peer.Peer) !u32 { return Raw.exportServer(peer, &self.raw); }
+                fn unsupportedGet(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.Get.Params.Reader, _: *Raw.Get.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedWriteBatch(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.WriteBatch.Params.Reader, _: *Raw.WriteBatch.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedList(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.List.Params.Reader, _: *Raw.List.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedSubscribe(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.Subscribe.Params.Reader, _: *Raw.Subscribe.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedSetWatchedKeys(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.SetWatchedKeys.Params.Reader, _: *Raw.SetWatchedKeys.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedCreateBackup(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.CreateBackup.Params.Reader, _: *Raw.CreateBackup.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedListBackups(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.ListBackups.Params.Reader, _: *Raw.ListBackups.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedRestoreFromBackup(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.RestoreFromBackup.Params.Reader, _: *Raw.RestoreFromBackup.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+            };
+        }
+        };
+    }
 };
 

@@ -3791,5 +3791,46 @@ pub const Number = struct {
         };
     };
 
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{ };
+        _ = &_bindings;
+        return struct {
+        const _Applied = @This();
+        pub const Raw = _capnp_file.Number;
+        pub const interface_id = Raw.interface_id;
+        pub const GetNumber = capnpc.generic.Method(Raw.GetNumber, _capnp_file.Number.GetNumberParams, _capnp_file.Number.GetNumberResults);
+        pub const Client = struct {
+            raw: Raw.Client,
+            pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() { return .{ .raw = Raw.Client.init(peer, cap_id) }; }
+            pub fn release(self: @This()) void { self.raw.release(); }
+            pub fn callGetNumber(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetNumber.BuildFn, comptime callback: _Applied.GetNumber.Callback) !u32 {
+                const Adapter = _Applied.GetNumber.ClientAdapter(build, callback);
+                return self.raw.callGetNumber(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+        };
+        pub const PipelinedClient = struct {
+            raw: Raw.PipelinedClient,
+            pub fn callGetNumber(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetNumber.BuildFn, comptime callback: _Applied.GetNumber.Callback) !u32 {
+                const Adapter = _Applied.GetNumber.ClientAdapter(build, callback);
+                return self.raw.callGetNumber(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+        };
+        pub fn ServerAdapter(comptime handlers: anytype) type {
+            _ = &handlers;
+            return struct {
+                raw: Raw.Server,
+                pub fn init(ctx: *anyopaque) @This() { return .{ .raw = .{ .ctx = ctx, .vtable = .{
+                    .getNumber = if (@hasField(@TypeOf(handlers), "getNumber")) _Applied.GetNumber.ServerAdapter(handlers.getNumber).handle else unsupportedGetNumber,
+                } } }; }
+                pub fn exportServer(self: *@This(), peer: *rpc.peer.Peer) !u32 { return Raw.exportServer(peer, &self.raw); }
+                fn unsupportedGetNumber(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.GetNumber.Params.Reader, _: *Raw.GetNumber.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+            };
+        }
+        };
+    }
 };
 

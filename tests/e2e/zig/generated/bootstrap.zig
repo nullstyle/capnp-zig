@@ -3961,6 +3961,57 @@ pub const Bootstrap = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.Bootstrap.GameWorldResults;
+            const _Field0 = capnpc.generic.Capability(_capnp_file.game_world.GameWorld.Apply(.{ }));
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getService(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return raw_value.getService();
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getService(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return raw_value.getService();
+                }
+                pub fn setService(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initService = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getService(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const ChatServiceParams = struct {
@@ -4092,6 +4143,57 @@ pub const Bootstrap = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.Bootstrap.ChatServiceResults;
+            const _Field0 = capnpc.generic.Capability(_capnp_file.chat.ChatService.Apply(.{ }));
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getService(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return raw_value.getService();
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getService(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return raw_value.getService();
+                }
+                pub fn setService(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initService = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getService(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const InventoryServiceParams = struct {
@@ -4223,6 +4325,57 @@ pub const Bootstrap = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.Bootstrap.InventoryServiceResults;
+            const _Field0 = capnpc.generic.Capability(_capnp_file.inventory.InventoryService.Apply(.{ }));
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getService(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return raw_value.getService();
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getService(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return raw_value.getService();
+                }
+                pub fn setService(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initService = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getService(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const MatchmakingServiceParams = struct {
@@ -4354,7 +4507,148 @@ pub const Bootstrap = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.Bootstrap.MatchmakingServiceResults;
+            const _Field0 = capnpc.generic.Capability(_capnp_file.matchmaking.MatchmakingService.Apply(.{ }));
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getService(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return raw_value.getService();
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getService(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return raw_value.getService();
+                }
+                pub fn setService(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initService = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getService(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{ };
+        _ = &_bindings;
+        return struct {
+        const _Applied = @This();
+        pub const Raw = _capnp_file.Bootstrap;
+        pub const interface_id = Raw.interface_id;
+        pub const GameWorld = capnpc.generic.Method(Raw.GameWorld, _capnp_file.Bootstrap.GameWorldParams, _capnp_file.Bootstrap.GameWorldResults.Apply(.{ }));
+        pub const ChatService = capnpc.generic.Method(Raw.ChatService, _capnp_file.Bootstrap.ChatServiceParams, _capnp_file.Bootstrap.ChatServiceResults.Apply(.{ }));
+        pub const InventoryService = capnpc.generic.Method(Raw.InventoryService, _capnp_file.Bootstrap.InventoryServiceParams, _capnp_file.Bootstrap.InventoryServiceResults.Apply(.{ }));
+        pub const MatchmakingService = capnpc.generic.Method(Raw.MatchmakingService, _capnp_file.Bootstrap.MatchmakingServiceParams, _capnp_file.Bootstrap.MatchmakingServiceResults.Apply(.{ }));
+        pub const Client = struct {
+            raw: Raw.Client,
+            pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() { return .{ .raw = Raw.Client.init(peer, cap_id) }; }
+            pub fn release(self: @This()) void { self.raw.release(); }
+            pub fn callGameWorld(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GameWorld.BuildFn, comptime callback: _Applied.GameWorld.Callback) !u32 {
+                const Adapter = _Applied.GameWorld.ClientAdapter(build, callback);
+                return self.raw.callGameWorld(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callGameWorldPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GameWorld.BuildFn, comptime callback: _Applied.GameWorld.Callback) !_Applied.GameWorld.Results.Pipeline {
+                const qid = try self.callGameWorld(ctx, build, callback);
+                return .{ .peer = self.raw.peer, .question_id = qid };
+            }
+            pub fn callChatService(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ChatService.BuildFn, comptime callback: _Applied.ChatService.Callback) !u32 {
+                const Adapter = _Applied.ChatService.ClientAdapter(build, callback);
+                return self.raw.callChatService(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callChatServicePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ChatService.BuildFn, comptime callback: _Applied.ChatService.Callback) !_Applied.ChatService.Results.Pipeline {
+                const qid = try self.callChatService(ctx, build, callback);
+                return .{ .peer = self.raw.peer, .question_id = qid };
+            }
+            pub fn callInventoryService(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.InventoryService.BuildFn, comptime callback: _Applied.InventoryService.Callback) !u32 {
+                const Adapter = _Applied.InventoryService.ClientAdapter(build, callback);
+                return self.raw.callInventoryService(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callInventoryServicePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.InventoryService.BuildFn, comptime callback: _Applied.InventoryService.Callback) !_Applied.InventoryService.Results.Pipeline {
+                const qid = try self.callInventoryService(ctx, build, callback);
+                return .{ .peer = self.raw.peer, .question_id = qid };
+            }
+            pub fn callMatchmakingService(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.MatchmakingService.BuildFn, comptime callback: _Applied.MatchmakingService.Callback) !u32 {
+                const Adapter = _Applied.MatchmakingService.ClientAdapter(build, callback);
+                return self.raw.callMatchmakingService(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callMatchmakingServicePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.MatchmakingService.BuildFn, comptime callback: _Applied.MatchmakingService.Callback) !_Applied.MatchmakingService.Results.Pipeline {
+                const qid = try self.callMatchmakingService(ctx, build, callback);
+                return .{ .peer = self.raw.peer, .question_id = qid };
+            }
+        };
+        pub const PipelinedClient = struct {
+            raw: Raw.PipelinedClient,
+            pub fn callGameWorld(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GameWorld.BuildFn, comptime callback: _Applied.GameWorld.Callback) !u32 {
+                const Adapter = _Applied.GameWorld.ClientAdapter(build, callback);
+                return self.raw.callGameWorld(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callChatService(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ChatService.BuildFn, comptime callback: _Applied.ChatService.Callback) !u32 {
+                const Adapter = _Applied.ChatService.ClientAdapter(build, callback);
+                return self.raw.callChatService(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callInventoryService(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.InventoryService.BuildFn, comptime callback: _Applied.InventoryService.Callback) !u32 {
+                const Adapter = _Applied.InventoryService.ClientAdapter(build, callback);
+                return self.raw.callInventoryService(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callMatchmakingService(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.MatchmakingService.BuildFn, comptime callback: _Applied.MatchmakingService.Callback) !u32 {
+                const Adapter = _Applied.MatchmakingService.ClientAdapter(build, callback);
+                return self.raw.callMatchmakingService(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+        };
+        pub fn ServerAdapter(comptime handlers: anytype) type {
+            _ = &handlers;
+            return struct {
+                raw: Raw.Server,
+                pub fn init(ctx: *anyopaque) @This() { return .{ .raw = .{ .ctx = ctx, .vtable = .{
+                    .gameWorld = if (@hasField(@TypeOf(handlers), "gameWorld")) _Applied.GameWorld.ServerAdapter(handlers.gameWorld).handle else unsupportedGameWorld,
+                    .chatService = if (@hasField(@TypeOf(handlers), "chatService")) _Applied.ChatService.ServerAdapter(handlers.chatService).handle else unsupportedChatService,
+                    .inventoryService = if (@hasField(@TypeOf(handlers), "inventoryService")) _Applied.InventoryService.ServerAdapter(handlers.inventoryService).handle else unsupportedInventoryService,
+                    .matchmakingService = if (@hasField(@TypeOf(handlers), "matchmakingService")) _Applied.MatchmakingService.ServerAdapter(handlers.matchmakingService).handle else unsupportedMatchmakingService,
+                } } }; }
+                pub fn exportServer(self: *@This(), peer: *rpc.peer.Peer) !u32 { return Raw.exportServer(peer, &self.raw); }
+                fn unsupportedGameWorld(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.GameWorld.Params.Reader, _: *Raw.GameWorld.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedChatService(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.ChatService.Params.Reader, _: *Raw.ChatService.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedInventoryService(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.InventoryService.Params.Reader, _: *Raw.InventoryService.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedMatchmakingService(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.MatchmakingService.Params.Reader, _: *Raw.MatchmakingService.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+            };
+        }
+        };
+    }
 };
 

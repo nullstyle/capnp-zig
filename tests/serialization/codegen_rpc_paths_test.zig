@@ -110,5 +110,7 @@ test "generated inherited collisions preserve separate client and server methods
 }
 
 test "packaged streaming schemas compile and run without generated standard imports" {
-    try runGeneratedHarnessFiles(std.testing.allocator, &.{"tests/test_schemas/streaming.capnp"}, @embedFile("support/rpc_stream_consumer.zig"), .full, true);
+    for ([_]capnpc.codegen.Generator.ApiProfile{ .full, .compact }) |profile| {
+        try runGeneratedHarnessFiles(std.testing.allocator, &.{"tests/test_schemas/streaming.capnp"}, @embedFile("support/rpc_stream_consumer.zig"), profile, true);
+    }
 }

@@ -283,7 +283,7 @@ pub fn ThirdPartyRoutes(comptime Peer: type) type {
         pub fn completeDeferredAutomaticThirdPartyLifecycle(self: *Peer) void {
             if (self.automatic_third_party_operation_depth != 0 or
                 self.automatic_third_party_dispatch_depth != 0 or
-                self.join_operation_depth != 0)
+                self.join_operation_depth != 0 or self.streaming_operation_depth != 0)
             {
                 return;
             }

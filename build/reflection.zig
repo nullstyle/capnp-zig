@@ -46,6 +46,13 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     const generation = b.addRunArtifact(generator);
     const source = generation.addOutputDirectoryArg("generated");
     const generated = bindings(b, source, target, optimize, core);
+    const performance = b.addExecutable(.{ .name = "reflection-performance", .root_module = b.createModule(.{
+        .root_source_file = b.path("tests/reflection/performance.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{ .{ .name = "capnpc-zig", .module = core }, .{ .name = "generated", .module = generated }, .{ .name = "alloc-counter", .module = b.createModule(.{ .root_source_file = b.path("bench/alloc_counter.zig"), .target = target, .optimize = optimize }) } },
+    }) });
+    b.step("bench-reflection", "Measure registry load and generated/dynamic read/copy costs").dependOn(&b.addRunArtifact(performance).step);
     const executable = consumer(b, target, optimize, core, generated);
     const run = b.addRunArtifact(executable);
     const output = run.addOutputDirectoryArg("reflection-output");
@@ -64,6 +71,19 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     }) });
     helpers.registered_test_compile_steps.append(b.allocator, &helper_names.step) catch @panic("OOM");
     const step = b.step("test-reflection", "Run generated reflection, schema ownership, helper-name and evolution regressions");
+    const dynamic_failure = helpers.addLibTest(b, "tests/reflection/dynamic_failure_test.zig", target, optimize, core);
+    step.dependOn(dynamic_failure);
+    b.step("test-dynamic-failure", "Run dynamic mutation ownership and query regressions").dependOn(dynamic_failure);
+    const copy_limits = helpers.addLibTest(b, "tests/reflection/copy_limits_test.zig", target, optimize, core);
+    step.dependOn(copy_limits);
+    b.step("test-copy-limits", "Run bounded copy work/allocation regressions").dependOn(copy_limits);
+    const reflection_fuzz = generatedTest(b, "tests/reflection/fuzz_test.zig", target, optimize, core, generated);
+    const reflection_fuzz_run = b.addRunArtifact(reflection_fuzz);
+    step.dependOn(&reflection_fuzz_run.step);
+    const fuzz_filter = b.option([]const u8, "reflection-fuzz-filter", "Select one reflection fuzz target");
+    const selected_reflection_fuzz = generatedTest(b, "tests/reflection/fuzz_test.zig", target, optimize, core, generated);
+    if (fuzz_filter) |filter| selected_reflection_fuzz.filters = b.allocator.dupe([]const u8, &.{filter}) catch @panic("OOM");
+    b.step("test-fuzz-reflection", "Run reflection mutation and schema fuzz targets").dependOn(&b.addRunArtifact(selected_reflection_fuzz).step);
     step.dependOn(&run.step);
     step.dependOn(helpers.addLibTest(b, "tests/reflection/wire_test.zig", target, optimize, core));
     step.dependOn(&b.addRunArtifact(registry).step);
@@ -87,6 +107,16 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     run_wasm.addFileArg(wasm_exe.getEmittedBin());
     run_wasm.addArg("--no-files");
     const wasm_step = b.step("test-reflection-wasi", "Run reflection consumer in WASI (requires Wasmtime)");
+    const wasm_dynamic_failure = generatedTest(b, "tests/reflection/dynamic_failure_test.zig", wasm_target, optimize, wasm_core, wasm_generated);
+    const run_wasm_dynamic_failure = b.addSystemCommand(&.{ "wasmtime", "run" });
+    run_wasm_dynamic_failure.addFileArg(wasm_dynamic_failure.getEmittedBin());
+    wasm_step.dependOn(&run_wasm_dynamic_failure.step);
+    b.step("test-dynamic-failure-wasi", "Run dynamic mutation ownership and queries in WASI").dependOn(&run_wasm_dynamic_failure.step);
+    const wasm_copy_limits = generatedTest(b, "tests/reflection/copy_limits_test.zig", wasm_target, optimize, wasm_core, wasm_generated);
+    const run_wasm_copy_limits = b.addSystemCommand(&.{ "wasmtime", "run" });
+    run_wasm_copy_limits.addFileArg(wasm_copy_limits.getEmittedBin());
+    wasm_step.dependOn(&run_wasm_copy_limits.step);
+    b.step("test-copy-limits-wasi", "Run bounded copy work/allocation regressions in WASI").dependOn(&run_wasm_copy_limits.step);
     wasm_step.dependOn(&run_wasm.step);
     const wasm_registry = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("tests/reflection/registry_test.zig"),
@@ -133,5 +163,15 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     run_oracle.addDirectoryArg(output);
     const cpp_step = b.step("test-reflection-cpp", "Validate every descriptor and evolved message with C++ (requires pkg-config capnp/kj)");
     cpp_step.dependOn(&run_oracle.step);
+    const oracle_ablation = std.Build.Step.Run.create(b, "reject injected C++ oracle mismatch");
+    oracle_ablation.addFileArg(oracle);
+    oracle_ablation.addFileArg(b.path("tests/reflection/request.bin"));
+    oracle_ablation.addFileArg(output.path(b, "schema.bin"));
+    oracle_ablation.addFileArg(output.path(b, "values.bin"));
+    oracle_ablation.addFileArg(output.path(b, "scalars.bin"));
+    oracle_ablation.addDirectoryArg(output);
+    oracle_ablation.addArg("--inject-mismatch");
+    oracle_ablation.expectExitCode(2);
+    b.step("test-reflection-oracle-ablation", "Prove the C++ oracle rejects injected mismatches").dependOn(&oracle_ablation.step);
     return step;
 }

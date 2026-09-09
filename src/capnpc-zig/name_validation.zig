@@ -15,6 +15,7 @@ const schema = @import("../serialization/schema.zig");
 const types = @import("types.zig");
 const type_resolver = @import("../serialization/type_resolver.zig");
 const brand_fidelity = @import("brand_fidelity.zig");
+const generic_rpc_gen = @import("generic_rpc_gen.zig");
 
 pub fn Validation(comptime G: type) type {
     return struct {
@@ -74,6 +75,11 @@ pub fn Validation(comptime G: type) type {
             if (self.hasReflection() and (node.kind == .@"struct" or node.kind == .@"enum" or node.kind == .interface)) {
                 try child_scope.addCopy("capnpSchema");
             }
+            if (node.kind == .interface or (node.kind == .@"struct" and !node.struct_node.?.is_group and generic_rpc_gen.Emitter(G).needsData(self, node))) {
+                try child_scope.addCopy("Apply");
+                try child_scope.addCopy("_Apply");
+            }
+            if (node.kind == .interface) try child_scope.addCopy("dispatchCall");
 
             for (node.nested_nodes) |nested| {
                 // Every nested named type — structs, enums, AND interfaces — now emits
@@ -141,6 +147,10 @@ pub fn Validation(comptime G: type) type {
             defer struct_scope.deinit();
             try struct_scope.addCopy("Reader");
             try struct_scope.addCopy("Builder");
+            if (!struct_info.is_group and generic_rpc_gen.Emitter(G).needsData(self, node)) {
+                try struct_scope.addCopy("Apply");
+                try struct_scope.addCopy("_Apply");
+            }
             if (self.hasReflection()) try struct_scope.addCopy("capnpSchema");
 
             const usage = try Self.collectStructListHelperUsage(self, struct_info.fields);
@@ -491,6 +501,12 @@ pub fn Validation(comptime G: type) type {
             defer interface_scope.deinit();
 
             try interface_scope.addCopy("interface_id");
+            try interface_scope.addCopy("Apply");
+            try interface_scope.addCopy("_Apply");
+            // Own method declarations also appear in the applied namespace.
+            try interface_scope.addCopy("Raw");
+            try interface_scope.addCopy("_Applied");
+            try interface_scope.addCopy("ServerAdapter");
             if (self.hasReflection()) try interface_scope.addCopy("capnpSchema");
             try interface_scope.addCopy("Method");
             try interface_scope.addCopy("Client");
@@ -508,6 +524,7 @@ pub fn Validation(comptime G: type) type {
             try interface_scope.addCopy("exportServer");
             try interface_scope.addCopy("setBootstrap");
             try interface_scope.addCopy("onCall");
+            try interface_scope.addCopy("dispatchCall");
 
             var method_enum_scope = G.GeneratedNameScope.init(self.allocator);
             defer method_enum_scope.deinit();
@@ -532,6 +549,7 @@ pub fn Validation(comptime G: type) type {
                 try stream_scope.addCopy("stream");
                 try stream_scope.addCopy("init");
                 try stream_scope.addCopy("waitStreaming");
+                try stream_scope.addCopy("whenStreamingReady");
             }
 
             var vtable_scope = G.GeneratedNameScope.init(self.allocator);
@@ -614,14 +632,16 @@ pub fn Validation(comptime G: type) type {
                 }
                 try scopes.client_scope.addPrint("{s}Pipelined", .{call_name});
                 try scopes.client_scope.addPrint("{s}PipelinedWithOptions", .{call_name});
+            } else if (self.getNode(method.result_struct_type)) |result_node| {
+                if (generic_rpc_gen.Emitter(G).needsData(self, result_node)) {
+                    try scopes.client_scope.addPrint("{s}Pipelined", .{call_name});
+                }
             }
 
             const field_name = try self.lowerFirst(member_name);
             defer self.allocator.free(field_name);
             try scopes.vtable_scope.addCopy(field_name);
-            if (!method.isStreaming()) {
-                try scopes.vtable_scope.addPrint("{s}_deferred", .{field_name});
-            }
+            try scopes.vtable_scope.addPrint("{s}_deferred", .{field_name});
         }
 
         pub fn validatePipelineGeneratedNames(self: *G, method: schema.Method) !void {

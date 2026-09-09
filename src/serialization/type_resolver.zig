@@ -328,9 +328,27 @@ pub const Resolver = struct {
             const node = self.findNode(cursor_id) orelse return error.InvalidSchema;
             if (node.id == scope_id) return true;
             if (node.scope_id == node.id) return error.InvalidSchema;
-            cursor_id = node.scope_id;
+            cursor_id = self.lexicalParent(node, scope_id);
         }
         return false;
+    }
+
+    /// Anonymous method structs have scopeId=0 on the wire, but parameters
+    /// inside them still inherit the declaring interface's lexical scopes.
+    fn lexicalParent(self: *const Resolver, node: *const schema.Node, expected_scope: schema.Id) schema.Id {
+        if (node.scope_id != 0 or node.kind != .@"struct") return node.scope_id;
+        for (self.nodes) |owner| {
+            const iface = owner.interface_node orelse continue;
+            for (iface.methods) |method| {
+                if (method.param_struct_type == node.id or method.result_struct_type == node.id) return owner.id;
+            }
+        }
+        if (self.findNode(expected_scope)) |owner| {
+            if (owner.interface_node) |iface| for (iface.methods) |method| {
+                if (method.param_struct_type == node.id or method.result_struct_type == node.id) return owner.id;
+            };
+        }
+        return 0;
     }
 
     fn findNode(self: *const Resolver, id: schema.Id) ?*const schema.Node {

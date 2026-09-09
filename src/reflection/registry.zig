@@ -4,6 +4,7 @@ const wire = @import("../serialization/message.zig");
 const schema = @import("../serialization/schema.zig");
 const request = @import("../serialization/request_reader.zig");
 const resolution = @import("../serialization/type_resolver.zig");
+const AllocationBudget = @import("../serialization/allocation_budget.zig");
 
 /// A generated type's identity and its complete binary schema dependency bundle.
 pub const SchemaRef = struct {
@@ -11,7 +12,11 @@ pub const SchemaRef = struct {
     encoded_request: []const u8,
 
     pub fn load(self: SchemaRef, allocator: std.mem.Allocator) !Registry {
-        const registry = try Registry.init(allocator, self.encoded_request);
+        return self.loadWithOptions(allocator, .{});
+    }
+
+    pub fn loadWithOptions(self: SchemaRef, allocator: std.mem.Allocator, options: Registry.Options) !Registry {
+        const registry = try Registry.initWithOptions(allocator, self.encoded_request, options);
         errdefer registry.deinit();
         _ = try registry.get(self.id);
         return registry;
@@ -29,8 +34,20 @@ pub const SchemaRef = struct {
 pub const Registry = struct {
     state: *State,
 
+    pub const Options = struct {
+        /// Reject larger requests before allocating or copying their bytes.
+        max_input_bytes: usize = 64 * 1024 * 1024,
+        /// Total backing allocation, including registry state, arena overhead,
+        /// parsed descriptors, and lazily cached pointer defaults.
+        max_memory_bytes: usize = 128 * 1024 * 1024,
+        max_nodes: usize = 65536,
+        validation: wire.Message.ValidationOptions = .{},
+    };
+
     const State = struct {
         owner: std.mem.Allocator,
+        budget: AllocationBudget,
+        options: Options,
         arena: std.heap.ArenaAllocator,
         bytes: []const u8,
         message: wire.Message,
@@ -40,15 +57,33 @@ pub const Registry = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, encoded_request: []const u8) !Registry {
+        return initWithOptions(allocator, encoded_request, .{});
+    }
+
+    pub fn initWithOptions(allocator: std.mem.Allocator, encoded_request: []const u8, options: Options) !Registry {
+        if (encoded_request.len > options.max_input_bytes) return error.SchemaInputLimitExceeded;
+        if (options.max_memory_bytes < @sizeOf(State)) return error.SchemaMemoryLimitExceeded;
         const state = try allocator.create(State);
         errdefer allocator.destroy(state);
         state.owner = allocator;
-        state.arena = std.heap.ArenaAllocator.init(allocator);
+        state.options = options;
+        state.budget = .{ .parent = allocator, .limit = options.max_memory_bytes, .used = @sizeOf(State) };
+        state.arena = std.heap.ArenaAllocator.init(state.budget.allocator());
         errdefer state.arena.deinit();
+        return load(state, encoded_request) catch |err| {
+            if (err == error.OutOfMemory and state.budget.denied) return error.SchemaMemoryLimitExceeded;
+            return err;
+        };
+    }
+
+    fn load(state: *State, encoded_request: []const u8) !Registry {
         const owned = state.arena.allocator();
         state.bytes = try owned.dupe(u8, encoded_request);
-        state.message = try wire.Message.init(owned, state.bytes, .{});
-        state.request = try request.parseCodeGeneratorRequest(owned, state.bytes);
+        state.message = try wire.Message.init(owned, state.bytes, state.options.validation);
+        const root = try state.message.getRootStruct();
+        const node_list = try root.readStructList(0);
+        if (node_list.len() > state.options.max_nodes) return error.SchemaNodeLimitExceeded;
+        state.request = try request.parseCodeGeneratorRequestMessage(owned, &state.message);
         state.by_id = std.AutoHashMap(schema.Id, usize).init(owned);
         state.defaults = std.AutoHashMap(usize, *wire.Message).init(owned);
         for (state.request.nodes, 0..) |node, index| {
@@ -83,6 +118,13 @@ pub const Registry = struct {
     /// graph. Do not pass external Values. Materializing a mutable default must
     /// clone this reader into the destination message.
     pub fn defaultPointer(self: Registry, value: schema.Value) !wire.AnyPointerReader {
+        return self.loadDefault(value) catch |err| {
+            if (err == error.OutOfMemory and self.state.budget.denied) return error.SchemaMemoryLimitExceeded;
+            return err;
+        };
+    }
+
+    fn loadDefault(self: Registry, value: schema.Value) !wire.AnyPointerReader {
         const bytes = switch (value) {
             .list => |p| p.message_bytes,
             .@"struct" => |p| p.message_bytes,
@@ -93,7 +135,7 @@ pub const Registry = struct {
         if (self.state.defaults.get(key)) |msg| return msg.getRootAnyPointer();
         const allocator = self.state.arena.allocator();
         const msg = try allocator.create(wire.Message);
-        msg.* = try wire.Message.initFlat(allocator, bytes, .{});
+        msg.* = try wire.Message.initFlat(allocator, bytes, self.state.options.validation);
         try self.state.defaults.put(key, msg);
         return msg.getRootAnyPointer();
     }

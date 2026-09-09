@@ -125,6 +125,75 @@ access. Incorrect value types return `TypeMismatch`; invalid indexes fail
 without changing the list. Missing fields and schemas report `FieldNotFound`
 and `SchemaNotFound`. Reflection's error sets remain Experimental.
 
+Builders also provide `getScalar(name)`, `has(name)`, `hasNonDefault(name)`,
+`which()`, and `whichDiscriminant()`. Scalar queries do not require borrowed
+storage. For pointer reads use `asReader(&storage)`, where `storage` is a
+`generated_helpers.ReaderStorage` owned by the caller:
+
+```zig
+var storage = capnpc.generated_helpers.ReaderStorage.init(allocator);
+defer storage.deinit();
+const before = try person.asReader(&storage);
+std.debug.assert(std.mem.eql(u8, "Ada", (try before.get("name")).text));
+try person.set("name", .{ .text = "Grace" });
+// Mutation invalidates before and its slices. Rebind before reading again.
+const after = try person.asReader(&storage);
+std.debug.assert(std.mem.eql(u8, "Grace", (try after.get("name")).text));
+```
+
+Keep storage at a stable address. Its reader and slices borrow builder buffers;
+any mutation or rebind invalidates them. Dynamic lists have the same explicit
+storage conversion and indexed `getScalar()`. Reacquire element/nested builders
+through the list after list growth.
+
+## Resource limits and copying
+
+`Registry.initWithOptions(allocator, bytes, options)` and
+`SchemaRef.loadWithOptions(allocator, options)` accept these defaults:
+
+| Option | Default | Accounting |
+|---|---|---|
+| `max_input_bytes` | 64 MiB | Checked before any input copy or allocation |
+| `max_memory_bytes` | 128 MiB | Registry state and live arena backing allocations, including parsed descriptors and lazy defaults |
+| `max_nodes` | 65,536 | Checked before descriptor parsing |
+| `validation` | `Message.ValidationOptions{}` | Wire traversal, nesting, and logical collection limits, also applied to materialized defaults |
+
+The existing `init()` and `load()` use these defaults. Input, memory, and node
+limits report `SchemaInputLimitExceeded`, `SchemaMemoryLimitExceeded`, and
+`SchemaNodeLimitExceeded`. A backing allocator failure remains `OutOfMemory`.
+The lazy default cache retains stable reader identity and is subject to the same
+memory budget. Synchronize shared registry access that can populate this cache.
+Wire validation occurs at initialization or explicit validation; ordinary reads
+do not charge a new per-access traversal budget.
+
+`generated_helpers.CopyOptions` bounds new copy operations. Defaults are
+8,388,608 work units, 8,388,608 reachable output words, 64 MiB additional live
+backing allocation, and 64 levels of nesting. Work counts pointer visits, data
+words, and logical list elements, including zero-width Void elements. Shared
+targets are charged for every incoming edge because copying expands them.
+Allocation accounting includes temporary snapshots and capacity growth beyond
+the destination's storage at entry. Limit failures preserve the destination's
+reachable value; unused allocations in the builder may remain until teardown.
+
+Use `setPointerWithOptions`, `setStructWithOptions`, and
+`getStructWithOptions` for bounded low-level helpers. Dynamic struct/list
+Builders carry `copy_options`, inherited by child views. Aggregate list growth
+and replacement use one budget, including existing sibling elements. Failed
+struct/group replacement, growth, and self-copy preserve fields, physical null
+presence, unknown sections, and union selection.
+Group copies copy known group fields and their discriminant while retaining the
+destination parent's unrelated/unknown fields; a group has no independent
+allocation whose entire source parent could be assigned.
+
+These are wire-copy operations: capability indices retain their source-table
+meaning. They do not transfer ownership into a different RPC table. The explicit
+RPC seam is `rpc.caps.table.payload_remap.clonePayloadWithRemappedCapsWithOptions`;
+its mapper supplies destination identities and owns staged leases. Existing
+`Peer.clonePayloadAcrossPeers` supplies proxy/pin ownership and release handling.
+Encode its origin-tagged intermediate pointers with the ordinary RPC outbound
+capability-table encoder before serialization. Mapping failure restores the
+destination pointer; the caller must roll back any staged mapper effects.
+
 ## Schema evolution and lifetime rules
 
 Registries own a copy of their input bytes and the parsed graph. The caller may
@@ -137,8 +206,8 @@ borrow the caller's binding slices.
 The registry lazily caches stable readers for schema-owned pointer defaults.
 Sharing a registry between threads requires synchronization around that cache.
 `Registry.defaultPointer()` accepts registry-owned values; clone a returned
-reader before modifying its data. Obtain readers from serialized messages rather
-than retaining readers into mutable builder storage.
+reader before modifying its data. Use serialized messages or the explicit
+`ReaderStorage` borrowing contract above when reading a mutable builder.
 
 Ordinary struct copies preserve unknown fields. Reopening a smaller struct with
 a newer schema expands its storage while preserving its contents. Struct lists
@@ -179,3 +248,11 @@ natively through the dynamic API. Focused tests also cover invalid schema layout
 struct/list evolution, retained unknown fields, and failed list-expansion
 rollback. The double-far list writer emits the reference-compatible layout;
 legacy Layout A remains readable.
+
+The mutation corpus adds 32 independently replayed C++ cases for generated and
+dynamic writes, defaults, unions, copies, near/single-far/double-far messages,
+and preserved unknown fields. Each emitted case includes initial/final messages
+and a TSV operation/expectation record. `test-reflection-oracle-ablation`
+deliberately changes an expectation and requires the oracle to reject it.
+`test-reflection-wasi` and `test-reflection-cpp` are mandatory in the provisioned
+Linux conformance job. Local success does not establish hosted platform results.

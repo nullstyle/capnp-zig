@@ -1,0 +1,1426 @@
+{
+  "metadata": {
+    "baseline_revision": "68ad72f",
+    "started_at_utc": "2026-09-09T01:52:36Z",
+    "current_base_revision": "68ad72f4d4b0739e4fa1a205c92aef840a38e702",
+    "host": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "optimize": "ReleaseSafe",
+    "strip": false,
+    "python": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]",
+    "zig": "0.17.0-dev.1683+5ceec001b",
+    "capnp": "Cap'n Proto version 1.5.0",
+    "source_digests": {
+      "baseline": "ecab267c22e4cc31637468bc39729daefd000d5d3bfbc934547cb985e0dbdff4",
+      "current": "4800aab376d39c630b29752eff86204c11f26d3bb38ac17a7ec14fb576e515f7"
+    },
+    "benchmark_source_sha256": "47cdc2c42a21d1a36cd6fdcfb4a96b9bea00d2466f5fa6f7bbfdea7d9fcff777",
+    "script_sha256": "b0c1d00798119b6446b8a5b62eb1cc510ed1f3ad06885e0403c01502b082da64",
+    "fixture_request_sha256": "24ca7732b17af83a2ae38cc20e25bf01d641e4cf5ca87e6c5143b6efd8037993",
+    "reference_gitlinks": "f8498184d20664406fc61bb91411a0d86e726e71 vendor/ext/capnproto (remotes/origin/HEAD)",
+    "timing_contract": "first process invocation and median repeated process invocations; no OS cache purge. First consumer compile uses a new local cache, shared default global Zig cache; warm compile repeats the same command. Runtime samples alternate baseline/current.",
+    "hardware": {
+      "machdep.cpu.brand_string": "Apple M5 Max",
+      "hw.physicalcpu": "18",
+      "hw.logicalcpu": "18",
+      "hw.memsize": "137438953472"
+    },
+    "schemas": {
+      "small": {
+        "source": "tests/reflection/schemas/helper-names.capnp",
+        "prefix": "tests/reflection/schemas",
+        "include": "tests/reflection/schemas/include",
+        "generated": "helper-names.zig",
+        "type": "Payload",
+        "setter": "setNumber",
+        "getter": "getNumber",
+        "request_bytes": 6304,
+        "request_sha256": "253789411328a6f886620027f777cbaf0b8efdf8323aaf85580b555889c7b7a6"
+      },
+      "large": {
+        "source": "vendor/ext/capnproto/c++/src/capnp/test.capnp",
+        "prefix": "vendor/ext/capnproto/c++/src",
+        "include": "vendor/ext/capnproto/c++/src",
+        "generated": "capnp/test.zig",
+        "type": "TestAllTypes",
+        "setter": "setInt64Field",
+        "getter": "getInt64Field",
+        "request_bytes": 185840,
+        "request_sha256": "6a2a50488e5937168863fcd0ec83bf4a573beacb2868ebabad6a145362f4ba38"
+      }
+    },
+    "final_source_digests": {
+      "baseline": "ecab267c22e4cc31637468bc39729daefd000d5d3bfbc934547cb985e0dbdff4",
+      "current": "4800aab376d39c630b29752eff86204c11f26d3bb38ac17a7ec14fb576e515f7"
+    },
+    "sources_unchanged_during_run": true
+  },
+  "measurement_notes": [
+    "Native and downstream conformance builds ran concurrently; wall times include scheduling and resource contention.",
+    "First generation is the first process invocation for each configuration, not an OS-cache-purged run. Only the first configuration launches a newly built generator for the first time.",
+    "First compilation uses a fresh local Zig cache and the shared default global cache. Repeat timing includes a complete process invocation.",
+    "Runtime samples alternate baseline/current; process CPU times sum CPU consumed by the process. All versions/repetitions produce matching per-case checksums.",
+    "Allocation bytes are cumulative successful allocation/growth, not peak live bytes. Setup is excluded; read cases instrument the Message allocator and do not materialize schema defaults.",
+    "Binary sizes are unstripped ReleaseSafe binaries for a minimal one-field consumer. Reflection-enabled consumers load the descriptor; the binary does not instantiate every generated RPC API."
+  ],
+  "generation": [
+    {
+      "version": "baseline",
+      "schema": "small",
+      "profile": "full",
+      "reflection": true,
+      "generated_source_bytes": 49402,
+      "binary_bytes": 610936,
+      "generation_first_ns": 230659209,
+      "generation_repeated_ns": [
+        3513042,
+        3208917,
+        3383708
+      ],
+      "generation_repeated_median_ns": 3383708,
+      "compile_first_ns": 5706770084,
+      "compile_repeated_ns": [
+        5742371750,
+        5867244666,
+        6627460292
+      ],
+      "compile_repeated_median_ns": 5867244666,
+      "generation_first_cpu_ns": 3151000,
+      "generation_repeated_cpu_ns": [
+        2435000,
+        2177999,
+        2373999
+      ],
+      "generation_repeated_cpu_median_ns": 2373999,
+      "compile_first_cpu_ns": 5969136999,
+      "compile_repeated_cpu_ns": [
+        5917366999,
+        6018602000,
+        6722341000
+      ],
+      "compile_repeated_cpu_median_ns": 6018602000
+    },
+    {
+      "version": "baseline",
+      "schema": "small",
+      "profile": "full",
+      "reflection": false,
+      "generated_source_bytes": 23066,
+      "binary_bytes": 529240,
+      "generation_first_ns": 3500667,
+      "generation_repeated_ns": [
+        3704667,
+        3340250,
+        2971959
+      ],
+      "generation_repeated_median_ns": 3340250,
+      "compile_first_ns": 5119298167,
+      "compile_repeated_ns": [
+        5106510958,
+        5248957708,
+        4931074000
+      ],
+      "compile_repeated_median_ns": 5106510958,
+      "generation_first_cpu_ns": 2225000,
+      "generation_repeated_cpu_ns": [
+        2459999,
+        2060999,
+        2026000
+      ],
+      "generation_repeated_cpu_median_ns": 2060999,
+      "compile_first_cpu_ns": 5314387000,
+      "compile_repeated_cpu_ns": [
+        5238257999,
+        5384029999,
+        5064366000
+      ],
+      "compile_repeated_cpu_median_ns": 5238257999
+    },
+    {
+      "version": "baseline",
+      "schema": "small",
+      "profile": "compact",
+      "reflection": true,
+      "generated_source_bytes": 47386,
+      "binary_bytes": 610936,
+      "generation_first_ns": 3241750,
+      "generation_repeated_ns": [
+        3155166,
+        2851708,
+        2941000
+      ],
+      "generation_repeated_median_ns": 2941000,
+      "compile_first_ns": 5699663458,
+      "compile_repeated_ns": [
+        5721622541,
+        5857976292,
+        5622229625
+      ],
+      "compile_repeated_median_ns": 5721622541,
+      "generation_first_cpu_ns": 2193999,
+      "generation_repeated_cpu_ns": [
+        2149999,
+        1942999,
+        2008000
+      ],
+      "generation_repeated_cpu_median_ns": 2008000,
+      "compile_first_cpu_ns": 5888634999,
+      "compile_repeated_cpu_ns": [
+        5902773000,
+        5947424000,
+        5819003000
+      ],
+      "compile_repeated_cpu_median_ns": 5902773000
+    },
+    {
+      "version": "baseline",
+      "schema": "small",
+      "profile": "compact",
+      "reflection": false,
+      "generated_source_bytes": 21050,
+      "binary_bytes": 529240,
+      "generation_first_ns": 3239708,
+      "generation_repeated_ns": [
+        3043708,
+        3137292,
+        3120958
+      ],
+      "generation_repeated_median_ns": 3120958,
+      "compile_first_ns": 4811163000,
+      "compile_repeated_ns": [
+        5058061250,
+        5203057541,
+        5007302250
+      ],
+      "compile_repeated_median_ns": 5058061250,
+      "generation_first_cpu_ns": 2139999,
+      "generation_repeated_cpu_ns": [
+        1958000,
+        2103999,
+        2005999
+      ],
+      "generation_repeated_cpu_median_ns": 2005999,
+      "compile_first_cpu_ns": 5003240999,
+      "compile_repeated_cpu_ns": [
+        5247819000,
+        5361000000,
+        5148135999
+      ],
+      "compile_repeated_cpu_median_ns": 5247819000
+    },
+    {
+      "version": "baseline",
+      "schema": "large",
+      "profile": "full",
+      "reflection": true,
+      "generated_source_bytes": 2789748,
+      "binary_bytes": 709432,
+      "generation_first_ns": 15914542,
+      "generation_repeated_ns": [
+        20349833,
+        27041959,
+        16093375
+      ],
+      "generation_repeated_median_ns": 20349833,
+      "compile_first_ns": 6517768292,
+      "compile_repeated_ns": [
+        5701106000,
+        5727099583,
+        5558570083
+      ],
+      "compile_repeated_median_ns": 5701106000,
+      "generation_first_cpu_ns": 14161000,
+      "generation_repeated_cpu_ns": [
+        14461000,
+        14650999,
+        14433000
+      ],
+      "generation_repeated_cpu_median_ns": 14461000,
+      "compile_first_cpu_ns": 6685883000,
+      "compile_repeated_cpu_ns": [
+        5859864999,
+        5842727000,
+        5721979000
+      ],
+      "compile_repeated_cpu_median_ns": 5842727000
+    },
+    {
+      "version": "baseline",
+      "schema": "large",
+      "profile": "full",
+      "reflection": false,
+      "generated_source_bytes": 2041390,
+      "binary_bytes": 529240,
+      "generation_first_ns": 11783125,
+      "generation_repeated_ns": [
+        11141125,
+        11385375,
+        11519791
+      ],
+      "generation_repeated_median_ns": 11385375,
+      "compile_first_ns": 4670061667,
+      "compile_repeated_ns": [
+        4954192917,
+        4896207125,
+        4727585209
+      ],
+      "compile_repeated_median_ns": 4896207125,
+      "generation_first_cpu_ns": 10230000,
+      "generation_repeated_cpu_ns": [
+        9810999,
+        9867000,
+        9793999
+      ],
+      "generation_repeated_cpu_median_ns": 9810999,
+      "compile_first_cpu_ns": 4886670000,
+      "compile_repeated_cpu_ns": [
+        5106790999,
+        5061200000,
+        4894333999
+      ],
+      "compile_repeated_cpu_median_ns": 5061200000
+    },
+    {
+      "version": "baseline",
+      "schema": "large",
+      "profile": "compact",
+      "reflection": true,
+      "generated_source_bytes": 2728335,
+      "binary_bytes": 709432,
+      "generation_first_ns": 14983500,
+      "generation_repeated_ns": [
+        14596542,
+        14476500,
+        14426542
+      ],
+      "generation_repeated_median_ns": 14476500,
+      "compile_first_ns": 6321930708,
+      "compile_repeated_ns": [
+        6221937834,
+        6078158792,
+        6170536708
+      ],
+      "compile_repeated_median_ns": 6170536708,
+      "generation_first_cpu_ns": 13399999,
+      "generation_repeated_cpu_ns": [
+        13058999,
+        12978000,
+        12842999
+      ],
+      "generation_repeated_cpu_median_ns": 12978000,
+      "compile_first_cpu_ns": 6385075999,
+      "compile_repeated_cpu_ns": [
+        6347808000,
+        6204667000,
+        6283888000
+      ],
+      "compile_repeated_cpu_median_ns": 6283888000
+    },
+    {
+      "version": "baseline",
+      "schema": "large",
+      "profile": "compact",
+      "reflection": false,
+      "generated_source_bytes": 1979977,
+      "binary_bytes": 529240,
+      "generation_first_ns": 12369875,
+      "generation_repeated_ns": [
+        11913875,
+        12237542,
+        12634208
+      ],
+      "generation_repeated_median_ns": 12237542,
+      "compile_first_ns": 5084230125,
+      "compile_repeated_ns": [
+        5167584250,
+        5305999958,
+        5085392750
+      ],
+      "compile_repeated_median_ns": 5167584250,
+      "generation_first_cpu_ns": 10439999,
+      "generation_repeated_cpu_ns": [
+        10592000,
+        10331999,
+        10708000
+      ],
+      "generation_repeated_cpu_median_ns": 10592000,
+      "compile_first_cpu_ns": 5277030000,
+      "compile_repeated_cpu_ns": [
+        5318193000,
+        5436061000,
+        5221369999
+      ],
+      "compile_repeated_cpu_median_ns": 5318193000
+    },
+    {
+      "version": "current",
+      "schema": "small",
+      "profile": "full",
+      "reflection": true,
+      "generated_source_bytes": 49402,
+      "binary_bytes": 611384,
+      "generation_first_ns": 234212209,
+      "generation_repeated_ns": [
+        4698666,
+        4040916,
+        4712084
+      ],
+      "generation_repeated_median_ns": 4698666,
+      "compile_first_ns": 7288676541,
+      "compile_repeated_ns": [
+        5609938416,
+        5952008667,
+        5763718416
+      ],
+      "compile_repeated_median_ns": 5763718416,
+      "generation_first_cpu_ns": 3635000,
+      "generation_repeated_cpu_ns": [
+        2730999,
+        2527000,
+        2760000
+      ],
+      "generation_repeated_cpu_median_ns": 2730999,
+      "compile_first_cpu_ns": 7056999999,
+      "compile_repeated_cpu_ns": [
+        5776040000,
+        6137911999,
+        5927202999
+      ],
+      "compile_repeated_cpu_median_ns": 5927202999
+    },
+    {
+      "version": "current",
+      "schema": "small",
+      "profile": "full",
+      "reflection": false,
+      "generated_source_bytes": 23066,
+      "binary_bytes": 529240,
+      "generation_first_ns": 3332042,
+      "generation_repeated_ns": [
+        3232125,
+        3020250,
+        3003208
+      ],
+      "generation_repeated_median_ns": 3020250,
+      "compile_first_ns": 4700157375,
+      "compile_repeated_ns": [
+        4660154917,
+        4691920875,
+        4688919250
+      ],
+      "compile_repeated_median_ns": 4688919250,
+      "generation_first_cpu_ns": 2103999,
+      "generation_repeated_cpu_ns": [
+        2245000,
+        1913000,
+        2032999
+      ],
+      "generation_repeated_cpu_median_ns": 2032999,
+      "compile_first_cpu_ns": 4914999999,
+      "compile_repeated_cpu_ns": [
+        4838396999,
+        4897335999,
+        4894335000
+      ],
+      "compile_repeated_cpu_median_ns": 4894335000
+    },
+    {
+      "version": "current",
+      "schema": "small",
+      "profile": "compact",
+      "reflection": true,
+      "generated_source_bytes": 47386,
+      "binary_bytes": 611400,
+      "generation_first_ns": 3371958,
+      "generation_repeated_ns": [
+        2702292,
+        2732833,
+        2719542
+      ],
+      "generation_repeated_median_ns": 2719542,
+      "compile_first_ns": 5522543042,
+      "compile_repeated_ns": [
+        5447689000,
+        5381916041,
+        5338772417
+      ],
+      "compile_repeated_median_ns": 5381916041,
+      "generation_first_cpu_ns": 2271999,
+      "generation_repeated_cpu_ns": [
+        1860000,
+        1860000,
+        1804000
+      ],
+      "generation_repeated_cpu_median_ns": 1860000,
+      "compile_first_cpu_ns": 5787563999,
+      "compile_repeated_cpu_ns": [
+        5651321999,
+        5563767000,
+        5549386999
+      ],
+      "compile_repeated_cpu_median_ns": 5563767000
+    },
+    {
+      "version": "current",
+      "schema": "small",
+      "profile": "compact",
+      "reflection": false,
+      "generated_source_bytes": 21050,
+      "binary_bytes": 529240,
+      "generation_first_ns": 3474875,
+      "generation_repeated_ns": [
+        2910750,
+        3033250,
+        2919083
+      ],
+      "generation_repeated_median_ns": 2919083,
+      "compile_first_ns": 4696619042,
+      "compile_repeated_ns": [
+        4681150166,
+        4734059083,
+        4673491541
+      ],
+      "compile_repeated_median_ns": 4681150166,
+      "generation_first_cpu_ns": 2272000,
+      "generation_repeated_cpu_ns": [
+        1904000,
+        1874000,
+        1913000
+      ],
+      "generation_repeated_cpu_median_ns": 1904000,
+      "compile_first_cpu_ns": 4957535999,
+      "compile_repeated_cpu_ns": [
+        4871133000,
+        4916344999,
+        4879772000
+      ],
+      "compile_repeated_cpu_median_ns": 4879772000
+    },
+    {
+      "version": "current",
+      "schema": "large",
+      "profile": "full",
+      "reflection": true,
+      "generated_source_bytes": 3216677,
+      "binary_bytes": 709880,
+      "generation_first_ns": 16053083,
+      "generation_repeated_ns": [
+        16015875,
+        16083250,
+        16422334
+      ],
+      "generation_repeated_median_ns": 16083250,
+      "compile_first_ns": 5623264333,
+      "compile_repeated_ns": [
+        5533990209,
+        5537883708,
+        5514800042
+      ],
+      "compile_repeated_median_ns": 5533990209,
+      "generation_first_cpu_ns": 14440000,
+      "generation_repeated_cpu_ns": [
+        14382999,
+        14536000,
+        14808999
+      ],
+      "generation_repeated_cpu_median_ns": 14536000,
+      "compile_first_cpu_ns": 5865552000,
+      "compile_repeated_cpu_ns": [
+        5731373999,
+        5738647999,
+        5717324999
+      ],
+      "compile_repeated_cpu_median_ns": 5731373999
+    },
+    {
+      "version": "current",
+      "schema": "large",
+      "profile": "full",
+      "reflection": false,
+      "generated_source_bytes": 2468319,
+      "binary_bytes": 529240,
+      "generation_first_ns": 13179333,
+      "generation_repeated_ns": [
+        13126917,
+        13386875,
+        13378500
+      ],
+      "generation_repeated_median_ns": 13378500,
+      "compile_first_ns": 4727150750,
+      "compile_repeated_ns": [
+        4525524916,
+        4704706708,
+        4715185542
+      ],
+      "compile_repeated_median_ns": 4704706708,
+      "generation_first_cpu_ns": 11507000,
+      "generation_repeated_cpu_ns": [
+        11468000,
+        11681000,
+        11791999
+      ],
+      "generation_repeated_cpu_median_ns": 11681000,
+      "compile_first_cpu_ns": 5008612999,
+      "compile_repeated_cpu_ns": [
+        4744181000,
+        4900027999,
+        4927762000
+      ],
+      "compile_repeated_cpu_median_ns": 4900027999
+    },
+    {
+      "version": "current",
+      "schema": "large",
+      "profile": "compact",
+      "reflection": true,
+      "generated_source_bytes": 3155264,
+      "binary_bytes": 709896,
+      "generation_first_ns": 15986667,
+      "generation_repeated_ns": [
+        15731584,
+        17145292,
+        16515875
+      ],
+      "generation_repeated_median_ns": 16515875,
+      "compile_first_ns": 5599232333,
+      "compile_repeated_ns": [
+        5535351250,
+        5454394625,
+        5476381667
+      ],
+      "compile_repeated_median_ns": 5476381667,
+      "generation_first_cpu_ns": 14399999,
+      "generation_repeated_cpu_ns": [
+        14252000,
+        15607999,
+        14962999
+      ],
+      "generation_repeated_cpu_median_ns": 14962999,
+      "compile_first_cpu_ns": 5862498999,
+      "compile_repeated_cpu_ns": [
+        5742575000,
+        5661288000,
+        5690035000
+      ],
+      "compile_repeated_cpu_median_ns": 5690035000
+    },
+    {
+      "version": "current",
+      "schema": "large",
+      "profile": "compact",
+      "reflection": false,
+      "generated_source_bytes": 2406906,
+      "binary_bytes": 529240,
+      "generation_first_ns": 13326208,
+      "generation_repeated_ns": [
+        13271917,
+        13578542,
+        13413334
+      ],
+      "generation_repeated_median_ns": 13413334,
+      "compile_first_ns": 4823379875,
+      "compile_repeated_ns": [
+        4594005500,
+        4543821875,
+        4610798750
+      ],
+      "compile_repeated_median_ns": 4594005500,
+      "generation_first_cpu_ns": 11757999,
+      "generation_repeated_cpu_ns": [
+        11685999,
+        11733000,
+        11741999
+      ],
+      "generation_repeated_cpu_median_ns": 11733000,
+      "compile_first_cpu_ns": 5082463000,
+      "compile_repeated_cpu_ns": [
+        4772630000,
+        4744217000,
+        4760511000
+      ],
+      "compile_repeated_cpu_median_ns": 4760511000
+    }
+  ],
+  "runtime": [
+    {
+      "version": "baseline",
+      "repetition": 0,
+      "case": "registry-small",
+      "size": 416,
+      "iterations": 500,
+      "elapsed_ns": 440375,
+      "ns_per_op": 880.75,
+      "cpu_ns_per_op": 880.0,
+      "alloc_calls_per_op": 2.166,
+      "allocated_bytes_per_op": 2680.84,
+      "checksum": 500
+    },
+    {
+      "version": "baseline",
+      "repetition": 0,
+      "case": "registry-corpus",
+      "size": 29376,
+      "iterations": 100,
+      "elapsed_ns": 3005000,
+      "ns_per_op": 30050.0,
+      "cpu_ns_per_op": 30050.0,
+      "alloc_calls_per_op": 3.0,
+      "allocated_bytes_per_op": 134360.0,
+      "checksum": 4400
+    },
+    {
+      "version": "baseline",
+      "repetition": 0,
+      "case": "generated-read",
+      "size": 4,
+      "iterations": 400000,
+      "elapsed_ns": 4513750,
+      "ns_per_op": 11.284,
+      "cpu_ns_per_op": 11.17,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 7000000
+    },
+    {
+      "version": "baseline",
+      "repetition": 0,
+      "case": "dynamic-read",
+      "size": 4,
+      "iterations": 400000,
+      "elapsed_ns": 297281875,
+      "ns_per_op": 743.205,
+      "cpu_ns_per_op": 741.095,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 7000000
+    },
+    {
+      "version": "baseline",
+      "repetition": 0,
+      "case": "generated-copy",
+      "size": 4,
+      "iterations": 1000,
+      "elapsed_ns": 1040167,
+      "ns_per_op": 1040.167,
+      "cpu_ns_per_op": 1033.0,
+      "alloc_calls_per_op": 5.0,
+      "allocated_bytes_per_op": 3760.0,
+      "checksum": 240000
+    },
+    {
+      "version": "baseline",
+      "repetition": 0,
+      "case": "dynamic-copy",
+      "size": 4,
+      "iterations": 1000,
+      "elapsed_ns": 2652750,
+      "ns_per_op": 2652.75,
+      "cpu_ns_per_op": 2653.0,
+      "alloc_calls_per_op": 2.0,
+      "allocated_bytes_per_op": 1808.0,
+      "checksum": 240000
+    },
+    {
+      "version": "baseline",
+      "repetition": 0,
+      "case": "generated-read",
+      "size": 4096,
+      "iterations": 163840,
+      "elapsed_ns": 1718250,
+      "ns_per_op": 10.487,
+      "cpu_ns_per_op": 10.492,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 338083840
+    },
+    {
+      "version": "baseline",
+      "repetition": 0,
+      "case": "dynamic-read",
+      "size": 4096,
+      "iterations": 163840,
+      "elapsed_ns": 122067333,
+      "ns_per_op": 745.04,
+      "cpu_ns_per_op": 742.517,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 338083840
+    },
+    {
+      "version": "baseline",
+      "repetition": 0,
+      "case": "generated-copy",
+      "size": 4096,
+      "iterations": 30,
+      "elapsed_ns": 6599041,
+      "ns_per_op": 219968.033,
+      "cpu_ns_per_op": 218666.667,
+      "alloc_calls_per_op": 7.0,
+      "allocated_bytes_per_op": 397328.0,
+      "checksum": 5899680
+    },
+    {
+      "version": "baseline",
+      "repetition": 0,
+      "case": "dynamic-copy",
+      "size": 4096,
+      "iterations": 30,
+      "elapsed_ns": 3197875,
+      "ns_per_op": 106595.833,
+      "cpu_ns_per_op": 106600.0,
+      "alloc_calls_per_op": 3.0,
+      "allocated_bytes_per_op": 198616.0,
+      "checksum": 5899680
+    },
+    {
+      "version": "current",
+      "repetition": 0,
+      "case": "registry-small",
+      "size": 416,
+      "iterations": 500,
+      "elapsed_ns": 680917,
+      "ns_per_op": 1361.834,
+      "cpu_ns_per_op": 1364.0,
+      "alloc_calls_per_op": 2.166,
+      "allocated_bytes_per_op": 2658.068,
+      "checksum": 500
+    },
+    {
+      "version": "current",
+      "repetition": 0,
+      "case": "registry-corpus",
+      "size": 29376,
+      "iterations": 100,
+      "elapsed_ns": 2784875,
+      "ns_per_op": 27848.75,
+      "cpu_ns_per_op": 27690.0,
+      "alloc_calls_per_op": 3.0,
+      "allocated_bytes_per_op": 134464.0,
+      "checksum": 4400
+    },
+    {
+      "version": "current",
+      "repetition": 0,
+      "case": "generated-read",
+      "size": 4,
+      "iterations": 400000,
+      "elapsed_ns": 4369334,
+      "ns_per_op": 10.923,
+      "cpu_ns_per_op": 10.78,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 7000000
+    },
+    {
+      "version": "current",
+      "repetition": 0,
+      "case": "dynamic-read",
+      "size": 4,
+      "iterations": 400000,
+      "elapsed_ns": 288578750,
+      "ns_per_op": 721.447,
+      "cpu_ns_per_op": 718.465,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 7000000
+    },
+    {
+      "version": "current",
+      "repetition": 0,
+      "case": "generated-copy",
+      "size": 4,
+      "iterations": 1000,
+      "elapsed_ns": 941250,
+      "ns_per_op": 941.25,
+      "cpu_ns_per_op": 941.0,
+      "alloc_calls_per_op": 5.0,
+      "allocated_bytes_per_op": 3760.0,
+      "checksum": 240000
+    },
+    {
+      "version": "current",
+      "repetition": 0,
+      "case": "dynamic-copy",
+      "size": 4,
+      "iterations": 1000,
+      "elapsed_ns": 2696083,
+      "ns_per_op": 2696.083,
+      "cpu_ns_per_op": 2696.0,
+      "alloc_calls_per_op": 2.0,
+      "allocated_bytes_per_op": 1808.0,
+      "checksum": 240000
+    },
+    {
+      "version": "current",
+      "repetition": 0,
+      "case": "generated-read",
+      "size": 4096,
+      "iterations": 163840,
+      "elapsed_ns": 1688417,
+      "ns_per_op": 10.305,
+      "cpu_ns_per_op": 10.303,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 338083840
+    },
+    {
+      "version": "current",
+      "repetition": 0,
+      "case": "dynamic-read",
+      "size": 4096,
+      "iterations": 163840,
+      "elapsed_ns": 115934916,
+      "ns_per_op": 707.611,
+      "cpu_ns_per_op": 706.75,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 338083840
+    },
+    {
+      "version": "current",
+      "repetition": 0,
+      "case": "generated-copy",
+      "size": 4096,
+      "iterations": 30,
+      "elapsed_ns": 6571958,
+      "ns_per_op": 219065.267,
+      "cpu_ns_per_op": 218400.0,
+      "alloc_calls_per_op": 7.0,
+      "allocated_bytes_per_op": 397328.0,
+      "checksum": 5899680
+    },
+    {
+      "version": "current",
+      "repetition": 0,
+      "case": "dynamic-copy",
+      "size": 4096,
+      "iterations": 30,
+      "elapsed_ns": 4909000,
+      "ns_per_op": 163633.333,
+      "cpu_ns_per_op": 163600.0,
+      "alloc_calls_per_op": 3.0,
+      "allocated_bytes_per_op": 198616.0,
+      "checksum": 5899680
+    },
+    {
+      "version": "baseline",
+      "repetition": 1,
+      "case": "registry-small",
+      "size": 416,
+      "iterations": 500,
+      "elapsed_ns": 428583,
+      "ns_per_op": 857.166,
+      "cpu_ns_per_op": 858.0,
+      "alloc_calls_per_op": 2.166,
+      "allocated_bytes_per_op": 2680.84,
+      "checksum": 500
+    },
+    {
+      "version": "baseline",
+      "repetition": 1,
+      "case": "registry-corpus",
+      "size": 29376,
+      "iterations": 100,
+      "elapsed_ns": 2821833,
+      "ns_per_op": 28218.33,
+      "cpu_ns_per_op": 28220.0,
+      "alloc_calls_per_op": 3.0,
+      "allocated_bytes_per_op": 134360.0,
+      "checksum": 4400
+    },
+    {
+      "version": "baseline",
+      "repetition": 1,
+      "case": "generated-read",
+      "size": 4,
+      "iterations": 400000,
+      "elapsed_ns": 4320625,
+      "ns_per_op": 10.802,
+      "cpu_ns_per_op": 10.748,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 7000000
+    },
+    {
+      "version": "baseline",
+      "repetition": 1,
+      "case": "dynamic-read",
+      "size": 4,
+      "iterations": 400000,
+      "elapsed_ns": 287487125,
+      "ns_per_op": 718.718,
+      "cpu_ns_per_op": 717.54,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 7000000
+    },
+    {
+      "version": "baseline",
+      "repetition": 1,
+      "case": "generated-copy",
+      "size": 4,
+      "iterations": 1000,
+      "elapsed_ns": 948166,
+      "ns_per_op": 948.166,
+      "cpu_ns_per_op": 948.0,
+      "alloc_calls_per_op": 5.0,
+      "allocated_bytes_per_op": 3760.0,
+      "checksum": 240000
+    },
+    {
+      "version": "baseline",
+      "repetition": 1,
+      "case": "dynamic-copy",
+      "size": 4,
+      "iterations": 1000,
+      "elapsed_ns": 2553667,
+      "ns_per_op": 2553.667,
+      "cpu_ns_per_op": 2554.0,
+      "alloc_calls_per_op": 2.0,
+      "allocated_bytes_per_op": 1808.0,
+      "checksum": 240000
+    },
+    {
+      "version": "baseline",
+      "repetition": 1,
+      "case": "generated-read",
+      "size": 4096,
+      "iterations": 163840,
+      "elapsed_ns": 1719167,
+      "ns_per_op": 10.493,
+      "cpu_ns_per_op": 10.492,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 338083840
+    },
+    {
+      "version": "baseline",
+      "repetition": 1,
+      "case": "dynamic-read",
+      "size": 4096,
+      "iterations": 163840,
+      "elapsed_ns": 118949791,
+      "ns_per_op": 726.012,
+      "cpu_ns_per_op": 725.531,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 338083840
+    },
+    {
+      "version": "baseline",
+      "repetition": 1,
+      "case": "generated-copy",
+      "size": 4096,
+      "iterations": 30,
+      "elapsed_ns": 6669875,
+      "ns_per_op": 222329.167,
+      "cpu_ns_per_op": 220700.0,
+      "alloc_calls_per_op": 7.0,
+      "allocated_bytes_per_op": 397328.0,
+      "checksum": 5899680
+    },
+    {
+      "version": "baseline",
+      "repetition": 1,
+      "case": "dynamic-copy",
+      "size": 4096,
+      "iterations": 30,
+      "elapsed_ns": 3159083,
+      "ns_per_op": 105302.767,
+      "cpu_ns_per_op": 105333.333,
+      "alloc_calls_per_op": 3.0,
+      "allocated_bytes_per_op": 198616.0,
+      "checksum": 5899680
+    },
+    {
+      "version": "current",
+      "repetition": 1,
+      "case": "registry-small",
+      "size": 416,
+      "iterations": 500,
+      "elapsed_ns": 432833,
+      "ns_per_op": 865.666,
+      "cpu_ns_per_op": 866.0,
+      "alloc_calls_per_op": 2.166,
+      "allocated_bytes_per_op": 2658.068,
+      "checksum": 500
+    },
+    {
+      "version": "current",
+      "repetition": 1,
+      "case": "registry-corpus",
+      "size": 29376,
+      "iterations": 100,
+      "elapsed_ns": 2661625,
+      "ns_per_op": 26616.25,
+      "cpu_ns_per_op": 26620.0,
+      "alloc_calls_per_op": 3.0,
+      "allocated_bytes_per_op": 134464.0,
+      "checksum": 4400
+    },
+    {
+      "version": "current",
+      "repetition": 1,
+      "case": "generated-read",
+      "size": 4,
+      "iterations": 400000,
+      "elapsed_ns": 4284541,
+      "ns_per_op": 10.711,
+      "cpu_ns_per_op": 10.653,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 7000000
+    },
+    {
+      "version": "current",
+      "repetition": 1,
+      "case": "dynamic-read",
+      "size": 4,
+      "iterations": 400000,
+      "elapsed_ns": 290654292,
+      "ns_per_op": 726.636,
+      "cpu_ns_per_op": 726.06,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 7000000
+    },
+    {
+      "version": "current",
+      "repetition": 1,
+      "case": "generated-copy",
+      "size": 4,
+      "iterations": 1000,
+      "elapsed_ns": 989375,
+      "ns_per_op": 989.375,
+      "cpu_ns_per_op": 989.0,
+      "alloc_calls_per_op": 5.0,
+      "allocated_bytes_per_op": 3760.0,
+      "checksum": 240000
+    },
+    {
+      "version": "current",
+      "repetition": 1,
+      "case": "dynamic-copy",
+      "size": 4,
+      "iterations": 1000,
+      "elapsed_ns": 2764250,
+      "ns_per_op": 2764.25,
+      "cpu_ns_per_op": 2765.0,
+      "alloc_calls_per_op": 2.0,
+      "allocated_bytes_per_op": 1808.0,
+      "checksum": 240000
+    },
+    {
+      "version": "current",
+      "repetition": 1,
+      "case": "generated-read",
+      "size": 4096,
+      "iterations": 163840,
+      "elapsed_ns": 1683833,
+      "ns_per_op": 10.277,
+      "cpu_ns_per_op": 10.278,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 338083840
+    },
+    {
+      "version": "current",
+      "repetition": 1,
+      "case": "dynamic-read",
+      "size": 4096,
+      "iterations": 163840,
+      "elapsed_ns": 115736250,
+      "ns_per_op": 706.398,
+      "cpu_ns_per_op": 705.927,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 338083840
+    },
+    {
+      "version": "current",
+      "repetition": 1,
+      "case": "generated-copy",
+      "size": 4096,
+      "iterations": 30,
+      "elapsed_ns": 6466042,
+      "ns_per_op": 215534.733,
+      "cpu_ns_per_op": 215533.333,
+      "alloc_calls_per_op": 7.0,
+      "allocated_bytes_per_op": 397328.0,
+      "checksum": 5899680
+    },
+    {
+      "version": "current",
+      "repetition": 1,
+      "case": "dynamic-copy",
+      "size": 4096,
+      "iterations": 30,
+      "elapsed_ns": 4579208,
+      "ns_per_op": 152640.267,
+      "cpu_ns_per_op": 152400.0,
+      "alloc_calls_per_op": 3.0,
+      "allocated_bytes_per_op": 198616.0,
+      "checksum": 5899680
+    },
+    {
+      "version": "baseline",
+      "repetition": 2,
+      "case": "registry-small",
+      "size": 416,
+      "iterations": 500,
+      "elapsed_ns": 411000,
+      "ns_per_op": 822.0,
+      "cpu_ns_per_op": 822.0,
+      "alloc_calls_per_op": 2.166,
+      "allocated_bytes_per_op": 2680.84,
+      "checksum": 500
+    },
+    {
+      "version": "baseline",
+      "repetition": 2,
+      "case": "registry-corpus",
+      "size": 29376,
+      "iterations": 100,
+      "elapsed_ns": 2816375,
+      "ns_per_op": 28163.75,
+      "cpu_ns_per_op": 28160.0,
+      "alloc_calls_per_op": 3.0,
+      "allocated_bytes_per_op": 134360.0,
+      "checksum": 4400
+    },
+    {
+      "version": "baseline",
+      "repetition": 2,
+      "case": "generated-read",
+      "size": 4,
+      "iterations": 400000,
+      "elapsed_ns": 4299167,
+      "ns_per_op": 10.748,
+      "cpu_ns_per_op": 10.725,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 7000000
+    },
+    {
+      "version": "baseline",
+      "repetition": 2,
+      "case": "dynamic-read",
+      "size": 4,
+      "iterations": 400000,
+      "elapsed_ns": 290073500,
+      "ns_per_op": 725.184,
+      "cpu_ns_per_op": 723.833,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 7000000
+    },
+    {
+      "version": "baseline",
+      "repetition": 2,
+      "case": "generated-copy",
+      "size": 4,
+      "iterations": 1000,
+      "elapsed_ns": 912625,
+      "ns_per_op": 912.625,
+      "cpu_ns_per_op": 912.0,
+      "alloc_calls_per_op": 5.0,
+      "allocated_bytes_per_op": 3760.0,
+      "checksum": 240000
+    },
+    {
+      "version": "baseline",
+      "repetition": 2,
+      "case": "dynamic-copy",
+      "size": 4,
+      "iterations": 1000,
+      "elapsed_ns": 2527208,
+      "ns_per_op": 2527.208,
+      "cpu_ns_per_op": 2527.0,
+      "alloc_calls_per_op": 2.0,
+      "allocated_bytes_per_op": 1808.0,
+      "checksum": 240000
+    },
+    {
+      "version": "baseline",
+      "repetition": 2,
+      "case": "generated-read",
+      "size": 4096,
+      "iterations": 163840,
+      "elapsed_ns": 1689083,
+      "ns_per_op": 10.309,
+      "cpu_ns_per_op": 10.309,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 338083840
+    },
+    {
+      "version": "baseline",
+      "repetition": 2,
+      "case": "dynamic-read",
+      "size": 4096,
+      "iterations": 163840,
+      "elapsed_ns": 114511000,
+      "ns_per_op": 698.92,
+      "cpu_ns_per_op": 697.882,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 338083840
+    },
+    {
+      "version": "baseline",
+      "repetition": 2,
+      "case": "generated-copy",
+      "size": 4096,
+      "iterations": 30,
+      "elapsed_ns": 6536375,
+      "ns_per_op": 217879.167,
+      "cpu_ns_per_op": 217633.333,
+      "alloc_calls_per_op": 7.0,
+      "allocated_bytes_per_op": 397328.0,
+      "checksum": 5899680
+    },
+    {
+      "version": "baseline",
+      "repetition": 2,
+      "case": "dynamic-copy",
+      "size": 4096,
+      "iterations": 30,
+      "elapsed_ns": 3175166,
+      "ns_per_op": 105838.867,
+      "cpu_ns_per_op": 105833.333,
+      "alloc_calls_per_op": 3.0,
+      "allocated_bytes_per_op": 198616.0,
+      "checksum": 5899680
+    },
+    {
+      "version": "current",
+      "repetition": 2,
+      "case": "registry-small",
+      "size": 416,
+      "iterations": 500,
+      "elapsed_ns": 393709,
+      "ns_per_op": 787.418,
+      "cpu_ns_per_op": 788.0,
+      "alloc_calls_per_op": 2.166,
+      "allocated_bytes_per_op": 2658.068,
+      "checksum": 500
+    },
+    {
+      "version": "current",
+      "repetition": 2,
+      "case": "registry-corpus",
+      "size": 29376,
+      "iterations": 100,
+      "elapsed_ns": 2474875,
+      "ns_per_op": 24748.75,
+      "cpu_ns_per_op": 24760.0,
+      "alloc_calls_per_op": 3.0,
+      "allocated_bytes_per_op": 134464.0,
+      "checksum": 4400
+    },
+    {
+      "version": "current",
+      "repetition": 2,
+      "case": "generated-read",
+      "size": 4,
+      "iterations": 400000,
+      "elapsed_ns": 4327458,
+      "ns_per_op": 10.819,
+      "cpu_ns_per_op": 10.753,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 7000000
+    },
+    {
+      "version": "current",
+      "repetition": 2,
+      "case": "dynamic-read",
+      "size": 4,
+      "iterations": 400000,
+      "elapsed_ns": 285052500,
+      "ns_per_op": 712.631,
+      "cpu_ns_per_op": 711.915,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 7000000
+    },
+    {
+      "version": "current",
+      "repetition": 2,
+      "case": "generated-copy",
+      "size": 4,
+      "iterations": 1000,
+      "elapsed_ns": 947625,
+      "ns_per_op": 947.625,
+      "cpu_ns_per_op": 948.0,
+      "alloc_calls_per_op": 5.0,
+      "allocated_bytes_per_op": 3760.0,
+      "checksum": 240000
+    },
+    {
+      "version": "current",
+      "repetition": 2,
+      "case": "dynamic-copy",
+      "size": 4,
+      "iterations": 1000,
+      "elapsed_ns": 2718750,
+      "ns_per_op": 2718.75,
+      "cpu_ns_per_op": 2719.0,
+      "alloc_calls_per_op": 2.0,
+      "allocated_bytes_per_op": 1808.0,
+      "checksum": 240000
+    },
+    {
+      "version": "current",
+      "repetition": 2,
+      "case": "generated-read",
+      "size": 4096,
+      "iterations": 163840,
+      "elapsed_ns": 1730125,
+      "ns_per_op": 10.56,
+      "cpu_ns_per_op": 10.559,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 338083840
+    },
+    {
+      "version": "current",
+      "repetition": 2,
+      "case": "dynamic-read",
+      "size": 4096,
+      "iterations": 163840,
+      "elapsed_ns": 118863250,
+      "ns_per_op": 725.484,
+      "cpu_ns_per_op": 724.817,
+      "alloc_calls_per_op": 0.0,
+      "allocated_bytes_per_op": 0.0,
+      "checksum": 338083840
+    },
+    {
+      "version": "current",
+      "repetition": 2,
+      "case": "generated-copy",
+      "size": 4096,
+      "iterations": 30,
+      "elapsed_ns": 6833333,
+      "ns_per_op": 227777.767,
+      "cpu_ns_per_op": 227133.333,
+      "alloc_calls_per_op": 7.0,
+      "allocated_bytes_per_op": 397328.0,
+      "checksum": 5899680
+    },
+    {
+      "version": "current",
+      "repetition": 2,
+      "case": "dynamic-copy",
+      "size": 4096,
+      "iterations": 30,
+      "elapsed_ns": 4772333,
+      "ns_per_op": 159077.767,
+      "cpu_ns_per_op": 159100.0,
+      "alloc_calls_per_op": 3.0,
+      "allocated_bytes_per_op": 198616.0,
+      "checksum": 5899680
+    }
+  ]
+}

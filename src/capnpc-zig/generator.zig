@@ -2,6 +2,7 @@ const std = @import("std");
 const schema = @import("../serialization/schema.zig");
 const type_resolver = @import("../serialization/type_resolver.zig");
 const brand_fidelity = @import("brand_fidelity.zig");
+const generic_rpc_gen = @import("generic_rpc_gen.zig");
 const StructGenerator = @import("struct_gen.zig").StructGenerator;
 const interface_gen = @import("interface_gen.zig");
 const validation_ns = @import("name_validation.zig");
@@ -71,6 +72,7 @@ pub const Generator = struct {
     /// Set during generateFile to the current file's node ID.
     current_file_id: ?schema.Id = null,
     interface_context: ?*const schema.Node = null,
+    generic_method_context: ?schema.Method = null,
     interface_ancestors: []const AncestorInfo = &.{},
     /// Maps imported file node IDs to their Zig module const names.
     import_modules: std.AutoHashMap(schema.Id, []const u8),
@@ -1125,7 +1127,11 @@ pub const Generator = struct {
         struct_gen.max_brand_specializations = self.codegen_budget.max_brand_specializations;
         struct_gen.setApiProfile(self.api_profile);
         struct_gen.emit_reflection = self.hasReflection();
-        try struct_gen.generate(node, writer, children, self_qualify);
+        var combined = std.ArrayList(u8).empty;
+        defer combined.deinit(self.allocator);
+        if (children) |content| try combined.appendSlice(self.allocator, content);
+        try generic_rpc_gen.Emitter(Generator).emitData(self, node, ArrayListWriter{ .list = &combined, .allocator = self.allocator, .max_bytes = self.codegen_budget.max_output_bytes });
+        try struct_gen.generate(node, writer, if (combined.items.len == 0) null else combined.items, self_qualify);
     }
 
     /// Generate a struct definition with optional shape sharing.
@@ -1303,7 +1309,11 @@ pub const Generator = struct {
     }
 
     fn generateInterface(self: *Generator, node: *const schema.Node, writer: anytype, children: ?[]const u8, self_qualify: bool) !void {
-        return interface_gen.Interface(Generator).generateInterface(self, node, writer, children, self_qualify);
+        var combined = std.ArrayList(u8).empty;
+        defer combined.deinit(self.allocator);
+        if (children) |content| try combined.appendSlice(self.allocator, content);
+        try generic_rpc_gen.Emitter(Generator).emitInterface(self, node, ArrayListWriter{ .list = &combined, .allocator = self.allocator, .max_bytes = self.codegen_budget.max_output_bytes });
+        return interface_gen.Interface(Generator).generateInterface(self, node, writer, combined.items, self_qualify);
     }
 
     fn generateMethodStruct(self: *Generator, iface_node: *const schema.Node, method: schema.Method, ordinal: usize, qual: []const u8, writer: anytype) !void {

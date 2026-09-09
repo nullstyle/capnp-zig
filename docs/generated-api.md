@@ -1,8 +1,8 @@
 # Generated readers, builders, and generic views
 
 The APIs below are unreleased additions. Use matching generator and runtime
-revisions. The generated `brands()` views and runtime support in
-`capnpc.generated_helpers` are Experimental. They extend the existing generated
+revisions. The generated `brands()` and `Apply()` views and runtime support in
+`capnpc.generated_helpers` and `capnpc.generic` are Experimental. They extend the existing generated
 APIs. This guide describes the supported operations and their ownership rules.
 
 ## Build, inspect, and read a message
@@ -117,8 +117,8 @@ Generation reuses an existing concrete wrapper for a recursive reference and
 charges distinct application expansions against the specialization budget.
 Traversal and generic binding depth remain bounded. Unbound parameters stay
 erased; this does not add language support for the reference compiler's
-unsupported `List(T)` declaration form. Generic interface clients and
-method-local generic parameters remain erased. Use [binary reflection](reflection.md)
+unsupported `List(T)` declaration form. `Apply()` additionally exposes caller-selected
+bindings for data and RPC types, as described below. Use [binary reflection](reflection.md)
 when tooling needs the complete original brand expression.
 
 ## Generated RPC paths
@@ -136,6 +136,76 @@ Diamond inheritance is deduplicated, and calls retain the original declaring
 interface ID and method ordinal. An interface ID suffix disambiguates normalized
 qualified-name collisions.
 
-These are concrete struct/group paths. A capability hidden behind a generic
-parameter, such as `Box(Service).value :T`, does not gain a specialized pipeline
-accessor. Parameterized interface and method APIs remain erased.
+## Typed generic RPC applications
+
+For a schema `interface Service(T) { echo @0 (value :T) -> (value :T); }`,
+choose a concrete pointer codec when applying the generated type:
+
+```zig
+const capnp = @import("capnpc-zig");
+const generated = @import("example");
+const TextService = generated.Service.Apply(.{ .T = capnp.generic.Text });
+const DataService = generated.Service.Apply(.{ .T = capnp.generic.Data });
+```
+
+`TextService.Echo.Params.Builder.setValue()` accepts Text, and the corresponding
+result getter returns validated Text. `DataService` carries arbitrary bytes.
+Their generated Reader/Builder types are distinct and can be used at the same
+time. `Apply()` is available in full and compact output. The original `Service`
+and `TextService.Raw` expose the existing erased API.
+
+`TextService.Client.init(peer, cap_id).callEcho(ctx, build, callback)` accepts
+compile-time build and callback functions using the typed method's `BuildFn`
+and `Callback` signatures. The callback's `response.unwrap()` yields the typed
+Results Reader; `response.raw` retains every ordinary response arm. The typed
+adapter delegates to the existing call wrapper, which owns the question and
+callback context. Borrowed results and capability tables have the same callback
+lifetime as ordinary calls. Typed clients' `raw` member provides existing
+options and lifecycle operations; a typed view does not acquire another
+capability reference.
+
+Create a server with `TextService.ServerAdapter(.{ .echo = handle }).init(ctx)`
+and register it with `adapter.exportServer(peer)`. The handler receives typed
+Params and Results. Keep the adapter and context alive while exported. Omitted
+handlers return `Unimplemented`.
+
+Method-local parameters are selected by the caller. For
+`identity @0 [T] (value :T) -> (value :T)`, obtain method signatures from
+`Factory.Apply(.{}).Identity.Apply(.{ .T = capnp.generic.Text })` and call
+`client.callIdentity(.{ .T = capnp.generic.Text }, ctx, build, callback)`.
+Named generic parameter/result structs are supported too. Server dispatch for
+these methods uses the original erased signature: Cap'n Proto sends no runtime
+type argument tags.
+
+Imported and multiply inherited interfaces retain their branded ancestor types,
+original interface IDs, and method ordinals. Equivalent diamonds share the same
+typed method. When a valid schema inherits the same interface with conflicting
+bindings, ambiguous typed shorthand methods are omitted; choose an explicit
+application with `client.asAncestor(Ancestor.Apply(bindings))`. The raw inherited
+method remains available.
+
+For a result such as `Box(Service(Text))`, `callGetServicePipelined()` returns a
+typed Results Pipeline. `pipeline.getBox().getValue()` (with `try` at each step)
+reaches a specialized service client before the parent reply. Recursive generic
+struct paths reuse their application type and enforce the same 64-transform
+limit. Union paths remain unavailable before the discriminant is known.
+
+Pointer bindings include `generic.Text`, `Data`, `AnyPointer`,
+`Capability(Interface)`, `Struct(Type, data_words, pointer_words)`, and
+`List(Element)`. Scalar and enum codecs are list elements, not valid standalone
+bindings. Applied data Builders expose typed getters/setters and `raw()`;
+struct initializers use `initXxx()`, list initializers use `initXxx(count)`.
+`asReader(&ReaderStorage)` follows the borrowed-storage contract above. Pointer
+defaults, union guards, and constrained pointer checks still apply.
+
+## Copying capabilities between messages
+
+Ordinary generated copy setters preserve a capability's numeric wire index.
+They do not move its entry between RPC capability tables. When forwarding a
+payload between different peers, use the Experimental
+`destination_peer.clonePayloadAcrossPeers()` seam with the source peer and
+inbound capability table. It remaps descriptors through proxy exports and
+retains or pins the source capability as required. The caller owns the returned
+proxy-ID list and must clean up unreferenced proxies if delivery is abandoned.
+The automatic redirected-result flow performs that ownership bookkeeping,
+including invocation, pipelining, release, and allocation-failure cleanup.

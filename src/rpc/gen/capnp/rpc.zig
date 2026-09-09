@@ -1446,6 +1446,316 @@ pub const Message = struct {
             return ThirdPartyAnswer.Builder{ ._builder = builder };
         }
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{};
+        _ = &_bindings;
+        return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.Message;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.Message.Apply(.{}), 1, 1);
+            comptime {
+                capnpc.generic.requirePointer(_Field0);
+            }
+            const _Field1 = capnpc.generic.Struct(_capnp_file.Exception, 1, 3);
+            comptime {
+                capnpc.generic.requirePointer(_Field1);
+            }
+            const _Field2 = capnpc.generic.Struct(_capnp_file.Call.Apply(.{}), 3, 3);
+            comptime {
+                capnpc.generic.requirePointer(_Field2);
+            }
+            const _Field3 = capnpc.generic.Struct(_capnp_file.Return.Apply(.{}), 2, 1);
+            comptime {
+                capnpc.generic.requirePointer(_Field3);
+            }
+            const _Field4 = capnpc.generic.Struct(_capnp_file.Finish, 1, 0);
+            comptime {
+                capnpc.generic.requirePointer(_Field4);
+            }
+            const _Field5 = capnpc.generic.Struct(_capnp_file.Resolve.Apply(.{}), 1, 1);
+            comptime {
+                capnpc.generic.requirePointer(_Field5);
+            }
+            const _Field6 = capnpc.generic.Struct(_capnp_file.Release, 1, 0);
+            comptime {
+                capnpc.generic.requirePointer(_Field6);
+            }
+            const _Field7 = capnpc.generic.AnyPointer;
+            comptime {
+                capnpc.generic.requirePointer(_Field7);
+            }
+            const _Field8 = capnpc.generic.Struct(_capnp_file.Bootstrap, 1, 1);
+            comptime {
+                capnpc.generic.requirePointer(_Field8);
+            }
+            const _Field9 = capnpc.generic.AnyPointer;
+            comptime {
+                capnpc.generic.requirePointer(_Field9);
+            }
+            const _Field10 = capnpc.generic.Struct(_capnp_file.Provide.Apply(.{}), 1, 2);
+            comptime {
+                capnpc.generic.requirePointer(_Field10);
+            }
+            const _Field11 = capnpc.generic.Struct(_capnp_file.Accept, 1, 2);
+            comptime {
+                capnpc.generic.requirePointer(_Field11);
+            }
+            const _Field12 = capnpc.generic.Struct(_capnp_file.Join.Apply(.{}), 1, 2);
+            comptime {
+                capnpc.generic.requirePointer(_Field12);
+            }
+            const _Field13 = capnpc.generic.Struct(_capnp_file.Disembargo.Apply(.{}), 1, 2);
+            comptime {
+                capnpc.generic.requirePointer(_Field13);
+            }
+            const _Field14 = capnpc.generic.Struct(_capnp_file.ThirdPartyAnswer, 1, 1);
+            comptime {
+                capnpc.generic.requirePointer(_Field14);
+            }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Reader {
+                    return Raw.Reader.wrap(self.inner);
+                }
+                pub fn getUnimplemented(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getUnimplemented());
+                }
+                pub fn getAbort(self: @This()) !_Field1.Reader {
+                    const raw_value = self.raw();
+                    return _Field1.wrapRawReader(try raw_value.getAbort());
+                }
+                pub fn getCall(self: @This()) !_Field2.Reader {
+                    const raw_value = self.raw();
+                    return _Field2.wrapRawReader(try raw_value.getCall());
+                }
+                pub fn getReturn(self: @This()) !_Field3.Reader {
+                    const raw_value = self.raw();
+                    return _Field3.wrapRawReader(try raw_value.getReturn());
+                }
+                pub fn getFinish(self: @This()) !_Field4.Reader {
+                    const raw_value = self.raw();
+                    return _Field4.wrapRawReader(try raw_value.getFinish());
+                }
+                pub fn getResolve(self: @This()) !_Field5.Reader {
+                    const raw_value = self.raw();
+                    return _Field5.wrapRawReader(try raw_value.getResolve());
+                }
+                pub fn getRelease(self: @This()) !_Field6.Reader {
+                    const raw_value = self.raw();
+                    return _Field6.wrapRawReader(try raw_value.getRelease());
+                }
+                pub fn getObsoleteSave(self: @This()) !_Field7.Reader {
+                    const raw_value = self.raw();
+                    return _Field7.read(try raw_value.getObsoleteSave());
+                }
+                pub fn getBootstrap(self: @This()) !_Field8.Reader {
+                    const raw_value = self.raw();
+                    return _Field8.wrapRawReader(try raw_value.getBootstrap());
+                }
+                pub fn getObsoleteDelete(self: @This()) !_Field9.Reader {
+                    const raw_value = self.raw();
+                    return _Field9.read(try raw_value.getObsoleteDelete());
+                }
+                pub fn getProvide(self: @This()) !_Field10.Reader {
+                    const raw_value = self.raw();
+                    return _Field10.wrapRawReader(try raw_value.getProvide());
+                }
+                pub fn getAccept(self: @This()) !_Field11.Reader {
+                    const raw_value = self.raw();
+                    return _Field11.wrapRawReader(try raw_value.getAccept());
+                }
+                pub fn getJoin(self: @This()) !_Field12.Reader {
+                    const raw_value = self.raw();
+                    return _Field12.wrapRawReader(try raw_value.getJoin());
+                }
+                pub fn getDisembargo(self: @This()) !_Field13.Reader {
+                    const raw_value = self.raw();
+                    return _Field13.wrapRawReader(try raw_value.getDisembargo());
+                }
+                pub fn getThirdPartyAnswer(self: @This()) !_Field14.Reader {
+                    const raw_value = self.raw();
+                    return _Field14.wrapRawReader(try raw_value.getThirdPartyAnswer());
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Builder {
+                    return Raw.Builder.wrap(self.inner);
+                }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                    try storage.bind(self.inner.builder);
+                    return _Data.Reader.wrap(try storage.reader(self.inner));
+                }
+                pub fn getUnimplemented(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getUnimplemented());
+                }
+                pub fn setUnimplemented(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 0);
+                }
+                pub const initUnimplemented = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 0).call;
+                pub fn getAbort(self: @This()) !_Field1.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field1.wrapRawBuilder(try raw_value.getAbort());
+                }
+                pub fn setAbort(self: @This(), value: _Field1.Reader) !void {
+                    try _Field1.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 1);
+                }
+                pub const initAbort = capnpc.generic.Initializer(_Field1, _Data.Builder, 0, 0, 1).call;
+                pub fn getCall(self: @This()) !_Field2.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field2.wrapRawBuilder(try raw_value.getCall());
+                }
+                pub fn setCall(self: @This(), value: _Field2.Reader) !void {
+                    try _Field2.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 2);
+                }
+                pub const initCall = capnpc.generic.Initializer(_Field2, _Data.Builder, 0, 0, 2).call;
+                pub fn getReturn(self: @This()) !_Field3.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field3.wrapRawBuilder(try raw_value.getReturn());
+                }
+                pub fn setReturn(self: @This(), value: _Field3.Reader) !void {
+                    try _Field3.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 3);
+                }
+                pub const initReturn = capnpc.generic.Initializer(_Field3, _Data.Builder, 0, 0, 3).call;
+                pub fn getFinish(self: @This()) !_Field4.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field4.wrapRawBuilder(try raw_value.getFinish());
+                }
+                pub fn setFinish(self: @This(), value: _Field4.Reader) !void {
+                    try _Field4.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 4);
+                }
+                pub const initFinish = capnpc.generic.Initializer(_Field4, _Data.Builder, 0, 0, 4).call;
+                pub fn getResolve(self: @This()) !_Field5.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field5.wrapRawBuilder(try raw_value.getResolve());
+                }
+                pub fn setResolve(self: @This(), value: _Field5.Reader) !void {
+                    try _Field5.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 5);
+                }
+                pub const initResolve = capnpc.generic.Initializer(_Field5, _Data.Builder, 0, 0, 5).call;
+                pub fn getRelease(self: @This()) !_Field6.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field6.wrapRawBuilder(try raw_value.getRelease());
+                }
+                pub fn setRelease(self: @This(), value: _Field6.Reader) !void {
+                    try _Field6.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 6);
+                }
+                pub const initRelease = capnpc.generic.Initializer(_Field6, _Data.Builder, 0, 0, 6).call;
+                pub fn getObsoleteSave(self: @This()) !_Field7.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field7.get(try raw_value.getObsoleteSave());
+                }
+                pub fn setObsoleteSave(self: @This(), value: _Field7.Reader) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setObsoleteSave(value);
+                }
+                pub const initObsoleteSave = capnpc.generic.Initializer(_Field7, _Data.Builder, 0, 0, 7).call;
+                pub fn getBootstrap(self: @This()) !_Field8.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field8.wrapRawBuilder(try raw_value.getBootstrap());
+                }
+                pub fn setBootstrap(self: @This(), value: _Field8.Reader) !void {
+                    try _Field8.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 8);
+                }
+                pub const initBootstrap = capnpc.generic.Initializer(_Field8, _Data.Builder, 0, 0, 8).call;
+                pub fn getObsoleteDelete(self: @This()) !_Field9.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field9.get(try raw_value.getObsoleteDelete());
+                }
+                pub fn setObsoleteDelete(self: @This(), value: _Field9.Reader) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setObsoleteDelete(value);
+                }
+                pub const initObsoleteDelete = capnpc.generic.Initializer(_Field9, _Data.Builder, 0, 0, 9).call;
+                pub fn getProvide(self: @This()) !_Field10.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field10.wrapRawBuilder(try raw_value.getProvide());
+                }
+                pub fn setProvide(self: @This(), value: _Field10.Reader) !void {
+                    try _Field10.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 10);
+                }
+                pub const initProvide = capnpc.generic.Initializer(_Field10, _Data.Builder, 0, 0, 10).call;
+                pub fn getAccept(self: @This()) !_Field11.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field11.wrapRawBuilder(try raw_value.getAccept());
+                }
+                pub fn setAccept(self: @This(), value: _Field11.Reader) !void {
+                    try _Field11.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 11);
+                }
+                pub const initAccept = capnpc.generic.Initializer(_Field11, _Data.Builder, 0, 0, 11).call;
+                pub fn getJoin(self: @This()) !_Field12.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field12.wrapRawBuilder(try raw_value.getJoin());
+                }
+                pub fn setJoin(self: @This(), value: _Field12.Reader) !void {
+                    try _Field12.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 12);
+                }
+                pub const initJoin = capnpc.generic.Initializer(_Field12, _Data.Builder, 0, 0, 12).call;
+                pub fn getDisembargo(self: @This()) !_Field13.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field13.wrapRawBuilder(try raw_value.getDisembargo());
+                }
+                pub fn setDisembargo(self: @This(), value: _Field13.Reader) !void {
+                    try _Field13.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 13);
+                }
+                pub const initDisembargo = capnpc.generic.Initializer(_Field13, _Data.Builder, 0, 0, 13).call;
+                pub fn getThirdPartyAnswer(self: @This()) !_Field14.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field14.wrapRawBuilder(try raw_value.getThirdPartyAnswer());
+                }
+                pub fn setThirdPartyAnswer(self: @This(), value: _Field14.Reader) !void {
+                    try _Field14.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 14);
+                }
+                pub const initThirdPartyAnswer = capnpc.generic.Initializer(_Field14, _Data.Builder, 0, 0, 14).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+            };
+        };
+    }
 };
 
 pub const Bootstrap = struct {
@@ -1891,6 +2201,154 @@ pub const Call = struct {
             self._builder.writeBool(16, 2, value != false);
         }
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{};
+        _ = &_bindings;
+        return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.Call;
+            const _Field1 = capnpc.generic.Struct(_capnp_file.MessageTarget.Apply(.{}), 1, 1);
+            comptime {
+                capnpc.generic.requirePointer(_Field1);
+            }
+            const _Field4 = capnpc.generic.Struct(_capnp_file.Payload, 0, 2);
+            comptime {
+                capnpc.generic.requirePointer(_Field4);
+            }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Reader {
+                    return Raw.Reader.wrap(self.inner);
+                }
+                pub fn getQuestionId(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getQuestionId)).@"fn".return_type.? {
+                    return self.raw().getQuestionId();
+                }
+                pub fn getTarget(self: @This()) !_Field1.Reader {
+                    const raw_value = self.raw();
+                    return _Field1.wrapRawReader(try raw_value.getTarget());
+                }
+                pub fn getInterfaceId(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getInterfaceId)).@"fn".return_type.? {
+                    return self.raw().getInterfaceId();
+                }
+                pub fn getMethodId(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getMethodId)).@"fn".return_type.? {
+                    return self.raw().getMethodId();
+                }
+                pub fn getParams(self: @This()) !_Field4.Reader {
+                    const raw_value = self.raw();
+                    return _Field4.wrapRawReader(try raw_value.getParams());
+                }
+                pub fn getAllowThirdPartyTailCall(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getAllowThirdPartyTailCall)).@"fn".return_type.? {
+                    return self.raw().getAllowThirdPartyTailCall();
+                }
+                pub fn getNoPromisePipelining(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getNoPromisePipelining)).@"fn".return_type.? {
+                    return self.raw().getNoPromisePipelining();
+                }
+                pub fn getOnlyPromisePipeline(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getOnlyPromisePipeline)).@"fn".return_type.? {
+                    return self.raw().getOnlyPromisePipeline();
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Builder {
+                    return Raw.Builder.wrap(self.inner);
+                }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                    try storage.bind(self.inner.builder);
+                    return _Data.Reader.wrap(try storage.reader(self.inner));
+                }
+                pub fn getQuestionId(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getQuestionId)).@"fn".return_type.? {
+                    return self.raw().getQuestionId();
+                }
+                pub fn setQuestionId(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setQuestionId)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setQuestionId(value);
+                }
+                pub fn getTarget(self: @This()) !_Field1.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field1.wrapRawBuilder(try raw_value.getTarget());
+                }
+                pub fn setTarget(self: @This(), value: _Field1.Reader) !void {
+                    try _Field1.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initTarget = capnpc.generic.Initializer(_Field1, _Data.Builder, 0, 0, 65535).call;
+                pub fn getInterfaceId(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getInterfaceId)).@"fn".return_type.? {
+                    return self.raw().getInterfaceId();
+                }
+                pub fn setInterfaceId(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setInterfaceId)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setInterfaceId(value);
+                }
+                pub fn getMethodId(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getMethodId)).@"fn".return_type.? {
+                    return self.raw().getMethodId();
+                }
+                pub fn setMethodId(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setMethodId)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setMethodId(value);
+                }
+                pub fn getParams(self: @This()) !_Field4.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field4.wrapRawBuilder(try raw_value.getParams());
+                }
+                pub fn setParams(self: @This(), value: _Field4.Reader) !void {
+                    try _Field4.set(try self.inner.getAnyPointer(1), value);
+                }
+                pub const initParams = capnpc.generic.Initializer(_Field4, _Data.Builder, 1, 0, 65535).call;
+                pub fn getAllowThirdPartyTailCall(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getAllowThirdPartyTailCall)).@"fn".return_type.? {
+                    return self.raw().getAllowThirdPartyTailCall();
+                }
+                pub fn setAllowThirdPartyTailCall(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setAllowThirdPartyTailCall)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setAllowThirdPartyTailCall(value);
+                }
+                pub fn getNoPromisePipelining(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getNoPromisePipelining)).@"fn".return_type.? {
+                    return self.raw().getNoPromisePipelining();
+                }
+                pub fn setNoPromisePipelining(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setNoPromisePipelining)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setNoPromisePipelining(value);
+                }
+                pub fn getOnlyPromisePipeline(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getOnlyPromisePipeline)).@"fn".return_type.? {
+                    return self.raw().getOnlyPromisePipeline();
+                }
+                pub fn setOnlyPromisePipeline(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setOnlyPromisePipeline)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setOnlyPromisePipeline(value);
+                }
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getTarget(self: @This()) !_Field1.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field1.pipeline(path);
+                }
+                pub fn getParams(self: @This()) !_Field4.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 1;
+                    path.pointer_count += 1;
+                    return _Field4.pipeline(path);
+                }
+            };
+        };
+    }
 };
 
 pub const Return = struct {
@@ -2202,6 +2660,160 @@ pub const Return = struct {
             self._builder.writeBool(4, 1, value != false);
         }
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{};
+        _ = &_bindings;
+        return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.Return;
+            const _Field2 = capnpc.generic.Struct(_capnp_file.Payload, 0, 2);
+            comptime {
+                capnpc.generic.requirePointer(_Field2);
+            }
+            const _Field3 = capnpc.generic.Struct(_capnp_file.Exception, 1, 3);
+            comptime {
+                capnpc.generic.requirePointer(_Field3);
+            }
+            const _Field7 = capnpc.generic.AnyPointer;
+            comptime {
+                capnpc.generic.requirePointer(_Field7);
+            }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Reader {
+                    return Raw.Reader.wrap(self.inner);
+                }
+                pub fn getAnswerId(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getAnswerId)).@"fn".return_type.? {
+                    return self.raw().getAnswerId();
+                }
+                pub fn getReleaseParamCaps(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getReleaseParamCaps)).@"fn".return_type.? {
+                    return self.raw().getReleaseParamCaps();
+                }
+                pub fn getResults(self: @This()) !_Field2.Reader {
+                    const raw_value = self.raw();
+                    return _Field2.wrapRawReader(try raw_value.getResults());
+                }
+                pub fn getException(self: @This()) !_Field3.Reader {
+                    const raw_value = self.raw();
+                    return _Field3.wrapRawReader(try raw_value.getException());
+                }
+                pub fn getCanceled(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getCanceled)).@"fn".return_type.? {
+                    return self.raw().getCanceled();
+                }
+                pub fn getResultsSentElsewhere(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getResultsSentElsewhere)).@"fn".return_type.? {
+                    return self.raw().getResultsSentElsewhere();
+                }
+                pub fn getTakeFromOtherQuestion(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getTakeFromOtherQuestion)).@"fn".return_type.? {
+                    return self.raw().getTakeFromOtherQuestion();
+                }
+                pub fn getAwaitFromThirdParty(self: @This()) !_Field7.Reader {
+                    const raw_value = self.raw();
+                    return _Field7.read(try raw_value.getAwaitFromThirdParty());
+                }
+                pub fn getNoFinishNeeded(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getNoFinishNeeded)).@"fn".return_type.? {
+                    return self.raw().getNoFinishNeeded();
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Builder {
+                    return Raw.Builder.wrap(self.inner);
+                }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                    try storage.bind(self.inner.builder);
+                    return _Data.Reader.wrap(try storage.reader(self.inner));
+                }
+                pub fn getAnswerId(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getAnswerId)).@"fn".return_type.? {
+                    return self.raw().getAnswerId();
+                }
+                pub fn setAnswerId(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setAnswerId)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setAnswerId(value);
+                }
+                pub fn getReleaseParamCaps(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getReleaseParamCaps)).@"fn".return_type.? {
+                    return self.raw().getReleaseParamCaps();
+                }
+                pub fn setReleaseParamCaps(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setReleaseParamCaps)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setReleaseParamCaps(value);
+                }
+                pub fn getResults(self: @This()) !_Field2.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field2.wrapRawBuilder(try raw_value.getResults());
+                }
+                pub fn setResults(self: @This(), value: _Field2.Reader) !void {
+                    try _Field2.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(6, 0);
+                }
+                pub const initResults = capnpc.generic.Initializer(_Field2, _Data.Builder, 0, 6, 0).call;
+                pub fn getException(self: @This()) !_Field3.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field3.wrapRawBuilder(try raw_value.getException());
+                }
+                pub fn setException(self: @This(), value: _Field3.Reader) !void {
+                    try _Field3.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(6, 1);
+                }
+                pub const initException = capnpc.generic.Initializer(_Field3, _Data.Builder, 0, 6, 1).call;
+                pub fn getCanceled(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getCanceled)).@"fn".return_type.? {
+                    return self.raw().getCanceled();
+                }
+                pub fn setCanceled(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setCanceled)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setCanceled(value);
+                }
+                pub fn getResultsSentElsewhere(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getResultsSentElsewhere)).@"fn".return_type.? {
+                    return self.raw().getResultsSentElsewhere();
+                }
+                pub fn setResultsSentElsewhere(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setResultsSentElsewhere)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setResultsSentElsewhere(value);
+                }
+                pub fn getTakeFromOtherQuestion(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getTakeFromOtherQuestion)).@"fn".return_type.? {
+                    return self.raw().getTakeFromOtherQuestion();
+                }
+                pub fn setTakeFromOtherQuestion(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setTakeFromOtherQuestion)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setTakeFromOtherQuestion(value);
+                }
+                pub fn getAwaitFromThirdParty(self: @This()) !_Field7.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field7.get(try raw_value.getAwaitFromThirdParty());
+                }
+                pub fn setAwaitFromThirdParty(self: @This(), value: _Field7.Reader) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setAwaitFromThirdParty(value);
+                }
+                pub const initAwaitFromThirdParty = capnpc.generic.Initializer(_Field7, _Data.Builder, 0, 6, 5).call;
+                pub fn getNoFinishNeeded(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getNoFinishNeeded)).@"fn".return_type.? {
+                    return self.raw().getNoFinishNeeded();
+                }
+                pub fn setNoFinishNeeded(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setNoFinishNeeded)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setNoFinishNeeded(value);
+                }
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+            };
+        };
+    }
 };
 
 pub const Finish = struct {
@@ -2449,6 +3061,92 @@ pub const Resolve = struct {
             return Exception.Builder{ ._builder = builder };
         }
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{};
+        _ = &_bindings;
+        return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.Resolve;
+            const _Field1 = capnpc.generic.Struct(_capnp_file.CapDescriptor.Apply(.{}), 1, 1);
+            comptime {
+                capnpc.generic.requirePointer(_Field1);
+            }
+            const _Field2 = capnpc.generic.Struct(_capnp_file.Exception, 1, 3);
+            comptime {
+                capnpc.generic.requirePointer(_Field2);
+            }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Reader {
+                    return Raw.Reader.wrap(self.inner);
+                }
+                pub fn getPromiseId(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getPromiseId)).@"fn".return_type.? {
+                    return self.raw().getPromiseId();
+                }
+                pub fn getCap(self: @This()) !_Field1.Reader {
+                    const raw_value = self.raw();
+                    return _Field1.wrapRawReader(try raw_value.getCap());
+                }
+                pub fn getException(self: @This()) !_Field2.Reader {
+                    const raw_value = self.raw();
+                    return _Field2.wrapRawReader(try raw_value.getException());
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Builder {
+                    return Raw.Builder.wrap(self.inner);
+                }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                    try storage.bind(self.inner.builder);
+                    return _Data.Reader.wrap(try storage.reader(self.inner));
+                }
+                pub fn getPromiseId(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getPromiseId)).@"fn".return_type.? {
+                    return self.raw().getPromiseId();
+                }
+                pub fn setPromiseId(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setPromiseId)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setPromiseId(value);
+                }
+                pub fn getCap(self: @This()) !_Field1.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field1.wrapRawBuilder(try raw_value.getCap());
+                }
+                pub fn setCap(self: @This(), value: _Field1.Reader) !void {
+                    try _Field1.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(4, 0);
+                }
+                pub const initCap = capnpc.generic.Initializer(_Field1, _Data.Builder, 0, 4, 0).call;
+                pub fn getException(self: @This()) !_Field2.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field2.wrapRawBuilder(try raw_value.getException());
+                }
+                pub fn setException(self: @This(), value: _Field2.Reader) !void {
+                    try _Field2.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(4, 1);
+                }
+                pub const initException = capnpc.generic.Initializer(_Field2, _Data.Builder, 0, 4, 1).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+            };
+        };
+    }
 };
 
 pub const Release = struct {
@@ -2736,6 +3434,70 @@ pub const Disembargo = struct {
             return .{ ._builder = self._builder };
         }
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{};
+        _ = &_bindings;
+        return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.Disembargo;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.MessageTarget.Apply(.{}), 1, 1);
+            comptime {
+                capnpc.generic.requirePointer(_Field0);
+            }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Reader {
+                    return Raw.Reader.wrap(self.inner);
+                }
+                pub fn getTarget(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getTarget());
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Builder {
+                    return Raw.Builder.wrap(self.inner);
+                }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                    try storage.bind(self.inner.builder);
+                    return _Data.Reader.wrap(try storage.reader(self.inner));
+                }
+                pub fn getTarget(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getTarget());
+                }
+                pub fn setTarget(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initTarget = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getTarget(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+        };
+    }
 };
 
 pub const Provide = struct {
@@ -2870,6 +3632,105 @@ pub const Provide = struct {
             try (try self._builder.getAnyPointer(1)).setCapability(cap);
         }
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{};
+        _ = &_bindings;
+        return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.Provide;
+            const _Field1 = capnpc.generic.Struct(_capnp_file.MessageTarget.Apply(.{}), 1, 1);
+            comptime {
+                capnpc.generic.requirePointer(_Field1);
+            }
+            const _Field2 = capnpc.generic.AnyPointer;
+            comptime {
+                capnpc.generic.requirePointer(_Field2);
+            }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Reader {
+                    return Raw.Reader.wrap(self.inner);
+                }
+                pub fn getQuestionId(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getQuestionId)).@"fn".return_type.? {
+                    return self.raw().getQuestionId();
+                }
+                pub fn getTarget(self: @This()) !_Field1.Reader {
+                    const raw_value = self.raw();
+                    return _Field1.wrapRawReader(try raw_value.getTarget());
+                }
+                pub fn getRecipient(self: @This()) !_Field2.Reader {
+                    const raw_value = self.raw();
+                    return _Field2.read(try raw_value.getRecipient());
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Builder {
+                    return Raw.Builder.wrap(self.inner);
+                }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                    try storage.bind(self.inner.builder);
+                    return _Data.Reader.wrap(try storage.reader(self.inner));
+                }
+                pub fn getQuestionId(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getQuestionId)).@"fn".return_type.? {
+                    return self.raw().getQuestionId();
+                }
+                pub fn setQuestionId(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setQuestionId)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setQuestionId(value);
+                }
+                pub fn getTarget(self: @This()) !_Field1.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field1.wrapRawBuilder(try raw_value.getTarget());
+                }
+                pub fn setTarget(self: @This(), value: _Field1.Reader) !void {
+                    try _Field1.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initTarget = capnpc.generic.Initializer(_Field1, _Data.Builder, 0, 0, 65535).call;
+                pub fn getRecipient(self: @This()) !_Field2.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field2.get(try raw_value.getRecipient());
+                }
+                pub fn setRecipient(self: @This(), value: _Field2.Reader) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setRecipient(value);
+                }
+                pub const initRecipient = capnpc.generic.Initializer(_Field2, _Data.Builder, 1, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getTarget(self: @This()) !_Field1.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field1.pipeline(path);
+                }
+                pub fn getRecipient(self: @This()) !_Field2.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 1;
+                    path.pointer_count += 1;
+                    return _Field2.pipeline(path);
+                }
+            };
+        };
+    }
 };
 
 pub const Accept = struct {
@@ -3234,6 +4095,105 @@ pub const Join = struct {
             try (try self._builder.getAnyPointer(1)).setCapability(cap);
         }
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{};
+        _ = &_bindings;
+        return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.Join;
+            const _Field1 = capnpc.generic.Struct(_capnp_file.MessageTarget.Apply(.{}), 1, 1);
+            comptime {
+                capnpc.generic.requirePointer(_Field1);
+            }
+            const _Field2 = capnpc.generic.AnyPointer;
+            comptime {
+                capnpc.generic.requirePointer(_Field2);
+            }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Reader {
+                    return Raw.Reader.wrap(self.inner);
+                }
+                pub fn getQuestionId(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getQuestionId)).@"fn".return_type.? {
+                    return self.raw().getQuestionId();
+                }
+                pub fn getTarget(self: @This()) !_Field1.Reader {
+                    const raw_value = self.raw();
+                    return _Field1.wrapRawReader(try raw_value.getTarget());
+                }
+                pub fn getKeyPart(self: @This()) !_Field2.Reader {
+                    const raw_value = self.raw();
+                    return _Field2.read(try raw_value.getKeyPart());
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Builder {
+                    return Raw.Builder.wrap(self.inner);
+                }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                    try storage.bind(self.inner.builder);
+                    return _Data.Reader.wrap(try storage.reader(self.inner));
+                }
+                pub fn getQuestionId(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getQuestionId)).@"fn".return_type.? {
+                    return self.raw().getQuestionId();
+                }
+                pub fn setQuestionId(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setQuestionId)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setQuestionId(value);
+                }
+                pub fn getTarget(self: @This()) !_Field1.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field1.wrapRawBuilder(try raw_value.getTarget());
+                }
+                pub fn setTarget(self: @This(), value: _Field1.Reader) !void {
+                    try _Field1.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initTarget = capnpc.generic.Initializer(_Field1, _Data.Builder, 0, 0, 65535).call;
+                pub fn getKeyPart(self: @This()) !_Field2.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field2.get(try raw_value.getKeyPart());
+                }
+                pub fn setKeyPart(self: @This(), value: _Field2.Reader) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setKeyPart(value);
+                }
+                pub const initKeyPart = capnpc.generic.Initializer(_Field2, _Data.Builder, 1, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getTarget(self: @This()) !_Field1.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field1.pipeline(path);
+                }
+                pub fn getKeyPart(self: @This()) !_Field2.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 1;
+                    path.pointer_count += 1;
+                    return _Field2.pipeline(path);
+                }
+            };
+        };
+    }
 };
 
 pub const MessageTarget = struct {
@@ -3355,6 +4315,74 @@ pub const MessageTarget = struct {
             return PromisedAnswer.Builder{ ._builder = builder };
         }
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{};
+        _ = &_bindings;
+        return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.MessageTarget;
+            const _Field1 = capnpc.generic.Struct(_capnp_file.PromisedAnswer, 1, 1);
+            comptime {
+                capnpc.generic.requirePointer(_Field1);
+            }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Reader {
+                    return Raw.Reader.wrap(self.inner);
+                }
+                pub fn getImportedCap(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getImportedCap)).@"fn".return_type.? {
+                    return self.raw().getImportedCap();
+                }
+                pub fn getPromisedAnswer(self: @This()) !_Field1.Reader {
+                    const raw_value = self.raw();
+                    return _Field1.wrapRawReader(try raw_value.getPromisedAnswer());
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Builder {
+                    return Raw.Builder.wrap(self.inner);
+                }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                    try storage.bind(self.inner.builder);
+                    return _Data.Reader.wrap(try storage.reader(self.inner));
+                }
+                pub fn getImportedCap(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getImportedCap)).@"fn".return_type.? {
+                    return self.raw().getImportedCap();
+                }
+                pub fn setImportedCap(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setImportedCap)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setImportedCap(value);
+                }
+                pub fn getPromisedAnswer(self: @This()) !_Field1.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field1.wrapRawBuilder(try raw_value.getPromisedAnswer());
+                }
+                pub fn setPromisedAnswer(self: @This(), value: _Field1.Reader) !void {
+                    try _Field1.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(4, 1);
+                }
+                pub const initPromisedAnswer = capnpc.generic.Initializer(_Field1, _Data.Builder, 0, 4, 1).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+            };
+        };
+    }
 };
 
 pub const Payload = struct {
@@ -3724,6 +4752,132 @@ pub const CapDescriptor = struct {
             self._builder.writeU8(2, stored);
         }
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{};
+        _ = &_bindings;
+        return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.CapDescriptor;
+            const _Field4 = capnpc.generic.Struct(_capnp_file.PromisedAnswer, 1, 1);
+            comptime {
+                capnpc.generic.requirePointer(_Field4);
+            }
+            const _Field5 = capnpc.generic.Struct(_capnp_file.ThirdPartyCapDescriptor, 1, 1);
+            comptime {
+                capnpc.generic.requirePointer(_Field5);
+            }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Reader {
+                    return Raw.Reader.wrap(self.inner);
+                }
+                pub fn getNone(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getNone)).@"fn".return_type.? {
+                    return self.raw().getNone();
+                }
+                pub fn getSenderHosted(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getSenderHosted)).@"fn".return_type.? {
+                    return self.raw().getSenderHosted();
+                }
+                pub fn getSenderPromise(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getSenderPromise)).@"fn".return_type.? {
+                    return self.raw().getSenderPromise();
+                }
+                pub fn getReceiverHosted(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getReceiverHosted)).@"fn".return_type.? {
+                    return self.raw().getReceiverHosted();
+                }
+                pub fn getReceiverAnswer(self: @This()) !_Field4.Reader {
+                    const raw_value = self.raw();
+                    return _Field4.wrapRawReader(try raw_value.getReceiverAnswer());
+                }
+                pub fn getThirdPartyHosted(self: @This()) !_Field5.Reader {
+                    const raw_value = self.raw();
+                    return _Field5.wrapRawReader(try raw_value.getThirdPartyHosted());
+                }
+                pub fn getAttachedFd(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getAttachedFd)).@"fn".return_type.? {
+                    return self.raw().getAttachedFd();
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Builder {
+                    return Raw.Builder.wrap(self.inner);
+                }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                    try storage.bind(self.inner.builder);
+                    return _Data.Reader.wrap(try storage.reader(self.inner));
+                }
+                pub fn getNone(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getNone)).@"fn".return_type.? {
+                    return self.raw().getNone();
+                }
+                pub fn setNone(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setNone)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setNone(value);
+                }
+                pub fn getSenderHosted(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getSenderHosted)).@"fn".return_type.? {
+                    return self.raw().getSenderHosted();
+                }
+                pub fn setSenderHosted(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setSenderHosted)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setSenderHosted(value);
+                }
+                pub fn getSenderPromise(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getSenderPromise)).@"fn".return_type.? {
+                    return self.raw().getSenderPromise();
+                }
+                pub fn setSenderPromise(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setSenderPromise)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setSenderPromise(value);
+                }
+                pub fn getReceiverHosted(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getReceiverHosted)).@"fn".return_type.? {
+                    return self.raw().getReceiverHosted();
+                }
+                pub fn setReceiverHosted(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setReceiverHosted)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setReceiverHosted(value);
+                }
+                pub fn getReceiverAnswer(self: @This()) !_Field4.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field4.wrapRawBuilder(try raw_value.getReceiverAnswer());
+                }
+                pub fn setReceiverAnswer(self: @This(), value: _Field4.Reader) !void {
+                    try _Field4.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 4);
+                }
+                pub const initReceiverAnswer = capnpc.generic.Initializer(_Field4, _Data.Builder, 0, 0, 4).call;
+                pub fn getThirdPartyHosted(self: @This()) !_Field5.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field5.wrapRawBuilder(try raw_value.getThirdPartyHosted());
+                }
+                pub fn setThirdPartyHosted(self: @This(), value: _Field5.Reader) !void {
+                    try _Field5.set(try self.inner.getAnyPointer(0), value);
+                    try self.inner.writeU16Strict(0, 5);
+                }
+                pub const initThirdPartyHosted = capnpc.generic.Initializer(_Field5, _Data.Builder, 0, 0, 5).call;
+                pub fn getAttachedFd(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getAttachedFd)).@"fn".return_type.? {
+                    return self.raw().getAttachedFd();
+                }
+                pub fn setAttachedFd(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setAttachedFd)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setAttachedFd(value);
+                }
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+            };
+        };
+    }
 };
 
 pub const PromisedAnswer = struct {

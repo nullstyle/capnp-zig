@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Deferred streaming and bounded reflection (Experimental).** Generated
+  streaming handlers can acknowledge after asynchronous work; configurable
+  call/byte windows, readiness, and drain notifications account for queued work.
+  Registry loading and lazy defaults enforce input, memory, and traversal
+  limits. Dynamic builders expose borrowed-reader queries and bounded copy
+  operations, with independent C++ mutation checks and native/WASI regressions.
+- **Reproducible hardening evidence.** Mandatory Linux reflection conformance,
+  positive-activity fuzz receipts, and a baseline/candidate performance matrix
+  cover the added surfaces. Stable API declarations remain unchanged.
 - **Generated mutable APIs.** Builders gain field getters, typed struct/list
   copy setters, `clearXxx()`, union inspection, and validated `asReader()` views
   with explicit borrowed-reader storage. Reopening evolved struct/list fields
@@ -21,7 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to capabilities, including bounded recursive paths. Inherited same-name
   methods receive declaring-interface suffixes while preserving wire IDs and
   ordinals. The standard reflected StreamResult schema is bundled and
-  regenerated with the RPC bindings. Generic RPC APIs remain erased.
+  regenerated with the RPC bindings.
+
+- **Typed generic RPC (Experimental).** Additive `Apply()` namespaces bind
+  concrete clients, server adapters, data views, imported branded ancestors,
+  and recursive capability pipelines in full and compact output. Callers can
+  bind method-local parameters, including named generic Params/Results; server
+  handlers for those methods remain erased because the wire carries no type
+  argument tags. Conflicting inherited applications require an explicit typed
+  ancestor view. Adapters share the existing raw call ownership. Native/WASI
+  consumers and real C++ calls in both directions cover Text, Data, inheritance,
+  method generics, and invocation before a generic parent result arrives.
 
 - **Binary schema reflection (Experimental).** Generated modules embed a
   canonical, ID-sorted `CAPNP_SCHEMA_REQUEST` containing the original compiler
@@ -56,6 +75,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Streaming contexts, deferred acknowledgements, and reservations settle once
+  across cancellation, disconnect, reentrant callbacks, and reused question IDs.
+  Nested transport teardown waits for active streaming operations to unwind.
+- Dynamic struct/group replacement and growth retain reachable values on
+  failure, including aliased copies. RPC-aware capability remapping restores
+  the destination pointer when cloning or mapping fails.
 - Canonical double-far structs now validate their pointer sections and enforce
   nesting/traversal limits. Zero-width composite lists charge logical elements
   regardless of near/far encoding. Ambiguous zero-count legacy tags receive
@@ -63,8 +88,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mutable primitive and pointer list views honor evolved composite strides.
   Typed copies preserve unknown stored sections through borrowed source
   provenance; manually constructed readers copy their represented values.
-- Constrained AnyStruct/AnyList/capability setters reject wrong pointer kinds
-  before changing the destination or union discriminant.
+- Constrained AnyStruct/AnyList/capability setters, including applied generic
+  views, reject wrong pointer kinds before changing the destination or union
+  discriminant. Generic anonymous RPC structs retain their lexical binding
+  scope, and named method parameter/result applications resolve method bindings.
 
 - Nested-workspace imports now resolve parent-relative and root-relative schema
   paths correctly while rejecting traversal outside the workspace. Output paths

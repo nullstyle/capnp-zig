@@ -21,12 +21,6 @@ fn corrupt(pointer: message.AnyPointerBuilder) void {
     std.mem.writeInt(u64, segment[pointer.pointer_pos..][0..8], invalid_far, .little);
 }
 
-fn allocatedBytes(builder: *const message.MessageBuilder) usize {
-    var count: usize = 0;
-    for (builder.segments.items) |segment| count += segment.items.len;
-    return count;
-}
-
 fn seed(root: reflection.DynamicStruct.Builder, data_words: u16, pointer_words: u16) !message.StructListBuilder {
     try root.set("marker", .{ .text = "parent intact" });
     const list = try (try root.builder.getAnyPointer(0)).initStructList(3, data_words, pointer_words);
@@ -81,13 +75,11 @@ fn copyingOriginalFails(allocator: std.mem.Allocator, schema: reflection.StructS
     corrupt(try (try old_list.get(2)).getAnyPointer(0));
     const parent = try root.builder.getAnyPointer(0);
     const original_pointer = pointerWord(parent);
-    const bytes_before = allocatedBytes(&builder);
     const list = try root.getList("records");
 
-    // Entry needs two data and two pointer words. Widening copies the first
-    // two healthy siblings, then encounters the malformed last sibling.
+    // Entry needs two data and two pointer words. The complete source graph
+    // must be checked before publishing the widened list.
     try expectError(error.InvalidSegmentId, list.getStruct(0));
-    try std.testing.expect(allocatedBytes(&builder) > bytes_before);
     try equal(original_pointer, pointerWord(parent));
     try checkOriginal(allocator, &builder, 1, 1, true);
 }
@@ -99,7 +91,6 @@ fn copyingReplacementFails(allocator: std.mem.Allocator, schema: reflection.Stru
     _ = try seed(root, 2, 2);
     const parent = try root.builder.getAnyPointer(0);
     const original_pointer = pointerWord(parent);
-    const bytes_before = allocatedBytes(&builder);
     const list = try root.getList("records");
 
     var source_builder = message.MessageBuilder.init(allocator);
@@ -110,8 +101,8 @@ fn copyingReplacementFails(allocator: std.mem.Allocator, schema: reflection.Stru
     source_root.writeU64(16, 0xfeed);
     try source_root.writeText(0, "replacement label");
     try source_root.writeText(1, "replacement note");
-    // An unknown extra pointer must be retained, so cloning must encounter
-    // this invalid target after allocating the replacement list and text.
+    // An unknown extra pointer must be retained and validated, even though
+    // the schema cannot interpret its target.
     corrupt(try source_root.getAnyPointer(2));
     const source_bytes = try source_builder.toBytes();
     defer allocator.free(source_bytes);
@@ -121,7 +112,6 @@ fn copyingReplacementFails(allocator: std.mem.Allocator, schema: reflection.Stru
     const source = try reflection.DynamicStruct.Reader.init(element_schema, &source_message);
 
     try expectError(error.InvalidSegmentId, list.set(1, .{ .@"struct" = source }));
-    try std.testing.expect(allocatedBytes(&builder) > bytes_before);
     try equal(original_pointer, pointerWord(parent));
     try checkOriginal(allocator, &builder, 2, 2, false);
 }

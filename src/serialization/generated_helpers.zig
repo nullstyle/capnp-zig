@@ -2,6 +2,9 @@
 //! the MessageBuilder and are invalidated by subsequent builder mutation.
 const std = @import("std");
 const message = @import("message.zig");
+const copy_budget = @import("copy_budget.zig");
+pub const CopyOptions = copy_budget.Options;
+const CopyAllocation = copy_budget.Allocation;
 
 /// Owns only a segment index, borrowing the MessageBuilder's actual storage.
 /// Keep this value at a stable address while any readers are live. Rebinding,
@@ -162,11 +165,91 @@ fn replacePointer(pointer: message.AnyPointerBuilder, source: message.AnyPointer
 }
 
 pub fn setPointer(pointer: message.AnyPointerBuilder, source: message.AnyPointerReader) !void {
+    if (!sourceMayAlias(pointer.builder, source.message)) return replacePointer(pointer, source);
     const bytes = try message.cloneAnyPointerToBytes(pointer.builder.allocator, source);
     defer pointer.builder.allocator.free(bytes);
     var snapshot = try message.Message.initFlatUnvalidated(pointer.builder.allocator, bytes);
     defer snapshot.deinit();
     try replacePointer(pointer, try snapshot.getRootAnyPointer());
+}
+
+fn overlaps(a: usize, a_len: usize, b: usize, b_len: usize) bool {
+    if (a_len == 0 or b_len == 0) return false;
+    return if (a <= b) b - a < a_len else a - b < b_len;
+}
+
+fn rangeMayAlias(builder: *const message.MessageBuilder, start: usize, len: usize) bool {
+    if (overlaps(start, len, @intFromPtr(builder.segments.items.ptr), builder.segments.capacity * @sizeOf(std.ArrayList(u8)))) return true;
+    for (builder.segments.items) |segment| {
+        if (overlaps(start, len, @intFromPtr(segment.items.ptr), segment.capacity)) return true;
+    }
+    return false;
+}
+
+// External immutable messages can clone directly while preserving pointer
+// rollback. Borrowed builder views need a snapshot before capacity can move.
+// Bound this optional optimization independently of graph width: unusually
+// fragmented inputs conservatively take the existing snapshot path.
+fn sourceMayAlias(builder: *const message.MessageBuilder, source: *const message.Message) bool {
+    if (builder.segments.items.len > 64 or source.segments.len > 64) return true;
+    if (rangeMayAlias(builder, @intFromPtr(source), @sizeOf(message.Message))) return true;
+    if (rangeMayAlias(builder, @intFromPtr(source.segments.ptr), source.segments.len * @sizeOf([]const u8))) return true;
+    for (source.segments) |segment| {
+        if (rangeMayAlias(builder, @intFromPtr(segment.ptr), segment.len)) return true;
+    }
+    return false;
+}
+
+/// Checks expanded work before creating temporary storage or publishing a new
+/// pointer. Capability indices retain their wire meaning; this is not an RPC
+/// capability-table transfer.
+pub fn setPointerWithOptions(pointer: message.AnyPointerBuilder, source: message.AnyPointerReader, options: CopyOptions) !void {
+    try checkPointerCopy(source, options);
+    var allocation: CopyAllocation = undefined;
+    try allocation.begin(pointer.builder, options.max_allocation_bytes);
+    defer allocation.end();
+    return setPointer(pointer, source) catch |err| return allocation.failure(err);
+}
+
+pub fn checkPointerCopy(source: message.AnyPointerReader, options: CopyOptions) !void {
+    var budget = copy_budget.Budget.init(options);
+    try budget.pointer(source, options.nesting_limit);
+}
+
+pub fn setStructWithOptions(pointer: message.AnyPointerBuilder, source: message.StructReader, options: CopyOptions) !void {
+    try checkStructCopy(source, options);
+    var allocation: CopyAllocation = undefined;
+    try allocation.begin(pointer.builder, options.max_allocation_bytes);
+    defer allocation.end();
+    return setStruct(pointer, source) catch |err| return allocation.failure(err);
+}
+
+pub fn checkStructCopy(source: message.StructReader, options: CopyOptions) !void {
+    var budget = copy_budget.Budget.init(options);
+    try budget.rootRecord(source, options.nesting_limit);
+}
+
+pub fn getStructWithOptions(pointer: message.AnyPointerBuilder, data_words: u16, pointer_words: u16, options: CopyOptions) !message.StructBuilder {
+    const current = try pointer.getStruct();
+    if (current.data_size >= data_words and current.pointer_count >= pointer_words) return current;
+    var storage = ReaderStorage.init(pointer.builder.allocator);
+    defer storage.deinit();
+    var allocation: CopyAllocation = undefined;
+    try allocation.begin(pointer.builder, options.max_allocation_bytes);
+    defer allocation.end();
+    storage.allocator = pointer.builder.allocator;
+    return growWithOptions(pointer, data_words, pointer_words, current, &storage, options) catch |err| return allocation.failure(err);
+}
+
+fn growWithOptions(pointer: message.AnyPointerBuilder, data_words: u16, pointer_words: u16, current: message.StructBuilder, storage: *ReaderStorage, options: CopyOptions) !message.StructBuilder {
+    try storage.bind(pointer.builder);
+    const additional = @as(usize, @max(current.data_size, data_words) - current.data_size) + @max(current.pointer_count, pointer_words) - current.pointer_count;
+    if (additional > options.max_output_words) return error.CopyOutputLimitExceeded;
+    var adjusted = options;
+    adjusted.max_output_words -= additional;
+    var budget = copy_budget.Budget.init(adjusted);
+    try budget.rootRecord(try storage.reader(current), options.nesting_limit);
+    return getStruct(pointer, data_words, pointer_words);
 }
 
 pub fn setList(pointer: message.AnyPointerBuilder, source: anytype) !void {

@@ -70,7 +70,14 @@ fn sameExpression(a: *const resolution.Resolver, ac: resolution.Cursor, b: *cons
     if (depth >= resolution.max_resolution_depth) return error.InvalidSchema;
     const left = try a.resolve(ac);
     const right = try b.resolve(bc);
-    if (left.unbound or right.unbound) return false;
+    if (left.unbound or right.unbound) {
+        if (!left.unbound or !right.unbound) return false;
+        const lm = left.cursor.expression.metadata;
+        const rm = right.cursor.expression.metadata;
+        if (lm != .any_pointer or rm != .any_pointer) return false;
+        if (lm.any_pointer != .parameter or rm.any_pointer != .parameter) return false;
+        return lm.any_pointer.parameter.scope_id == rm.any_pointer.parameter.scope_id and lm.any_pointer.parameter.parameter_index == rm.any_pointer.parameter.parameter_index;
+    }
     const at = left.cursor.expression.type;
     const bt = right.cursor.expression.type;
     if (std.meta.activeTag(at) != std.meta.activeTag(bt)) return false;
@@ -95,4 +102,45 @@ fn sameExpression(a: *const resolution.Resolver, ac: resolution.Cursor, b: *cons
         },
         else => true,
     };
+}
+
+/// Resolve every branded ancestor in the caller's environment. Equal diamonds
+/// share one application. Conflicting applications remain distinct, matching
+/// accepted reference schemas; callers must choose their intended ancestor.
+pub fn interfaceAncestors(allocator: std.mem.Allocator, nodes: []const schema.Node, root: *const schema.Node, max_applications: usize) ![]Application {
+    var result = std.ArrayList(Application).empty;
+    errdefer result.deinit(allocator);
+    const resolver = try resolution.Resolver.init(nodes, root, .{});
+    try appendInterfaceAncestors(allocator, nodes, .{ .target = root, .resolver = resolver }, &result, max_applications, &.{});
+    return result.toOwnedSlice(allocator);
+}
+fn nodeFromSlice(context: ?*anyopaque, id: schema.Id) ?*const schema.Node {
+    const nodes: *[]const schema.Node = @ptrCast(@alignCast(context.?));
+    for (nodes.*) |*node| if (node.id == id) return node;
+    return null;
+}
+fn appendInterfaceAncestors(allocator: std.mem.Allocator, nodes: []const schema.Node, current: Application, result: *std.ArrayList(Application), max_applications: usize, ancestors: []const schema.Id) (std.mem.Allocator.Error || error{ InvalidSchema, CodegenBudgetExceeded })!void {
+    if (ancestors.len >= resolution.max_resolution_depth) return error.InvalidSchema;
+    for (ancestors) |id| if (current.target.id == id) return error.InvalidSchema;
+    var path: [resolution.max_resolution_depth]schema.Id = undefined;
+    @memcpy(path[0..ancestors.len], ancestors);
+    path[ancestors.len] = current.target.id;
+    const iface = current.target.interface_node orelse return error.InvalidSchema;
+    for (iface.superclasses, 0..) |id, index| {
+        var node_slice = nodes;
+        const target = nodeFromSlice(@ptrCast(&node_slice), id) orelse return error.InvalidSchema;
+        const brand = if (index < iface.superclass_brands.len) iface.superclass_brands[index] else schema.Brand{};
+        const application = Application{ .target = target, .resolver = try current.resolver.enterNamed(id, brand, current.resolver.contextDepth()) };
+        var seen = false;
+        for (result.items) |*previous| if (previous.target.id == id) {
+            if (try same(.{ .target = previous.target, .resolver = &previous.resolver }, .{ .target = application.target, .resolver = &application.resolver }, nodeFromSlice, @ptrCast(&node_slice))) {
+                seen = true;
+                break;
+            }
+        };
+        if (seen) continue;
+        if (result.items.len >= max_applications) return error.CodegenBudgetExceeded;
+        try result.append(allocator, application);
+        try appendInterfaceAncestors(allocator, nodes, application, result, max_applications, path[0 .. ancestors.len + 1]);
+    }
 }

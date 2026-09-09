@@ -2,14 +2,17 @@
 //!
 //! Schema views borrow their Registry; readers also borrow their Message.
 //! Builders borrow their MessageBuilder. A builder mutation can invalidate
-//! readers into that builder's storage, so obtain readers only from serialized
-//! messages. Pointer defaults belong to the Registry and are copied on mutation.
+//! readers into that builder's storage. Use explicit ReaderStorage for borrowed
+//! builder readers and rebind it after every mutation. Pointer defaults belong
+//! to the Registry and are copied on mutation.
 //! Widening a struct list invalidates its previously acquired element and nested
 //! builders. Reacquire those views through the list, whose own handle remains valid.
 const std = @import("std");
 const message = @import("../serialization/message.zig");
 const schema = @import("../serialization/schema.zig");
 const meta = @import("registry.zig");
+const helpers = @import("../serialization/generated_helpers.zig");
+const copy_budget = @import("../serialization/copy_budget.zig");
 
 const no_discriminant = 0xffff;
 
@@ -138,16 +141,7 @@ pub const DynamicStruct = struct {
             if (!self.isActive(field)) return false;
             if (field.proto().group != null) return true;
             const slot = field.proto().slot orelse return error.InvalidSchema;
-            const offset: usize = slot.offset;
-            return switch (slot.type) {
-                .void => !non_default,
-                .bool => !non_default or self.reader.readBool(offset / 8, @intCast(offset % 8)),
-                .int8, .uint8 => !non_default or self.reader.readU8(offset) != 0,
-                .int16, .uint16, .@"enum" => !non_default or self.reader.readU16(offset * 2) != 0,
-                .int32, .uint32, .float32 => !non_default or self.reader.readU32(offset * 4) != 0,
-                .int64, .uint64, .float64 => !non_default or self.reader.readU64(offset * 8) != 0,
-                else => !self.reader.isPointerNull(offset),
-            };
+            return scalarPresence(slot, self.reader, non_default) orelse !self.reader.isPointerNull(slot.offset);
         }
 
         fn isActive(self: Reader, field: meta.Field) bool {
@@ -176,6 +170,8 @@ pub const DynamicStruct = struct {
     pub const Builder = struct {
         schema: meta.StructSchema,
         builder: message.StructBuilder,
+        /// Limits apply to copying and schema-evolution growth, including child views.
+        copy_options: helpers.CopyOptions = .{},
 
         pub fn init(struct_schema: meta.StructSchema, msg: *message.MessageBuilder) !Builder {
             const info = struct_schema.proto();
@@ -183,21 +179,93 @@ pub const DynamicStruct = struct {
             return .{ .schema = struct_schema, .builder = try msg.allocateStruct(info.data_word_count, info.pointer_count) };
         }
 
+        /// Read a scalar without allocating a segment index. Pointer and group
+        /// values require asReader() with explicit caller-owned storage.
+        pub fn getScalar(self: Builder, name: []const u8) anyerror!Value {
+            return self.getScalarField(try self.schema.field(name));
+        }
+
+        pub fn getScalarField(self: Builder, field: meta.Field) anyerror!Value {
+            try checkFieldOwner(self.schema, field);
+            try self.requireActive(field);
+            const slot = field.proto().slot orelse return error.TypeMismatch;
+            const typ = try (try field.type()).resolved();
+            return readScalar(typ, try typ.proto(), slot, helpers.scalarReader(self.builder));
+        }
+
+        /// Storage borrows the builder's buffers. Any mutation, storage rebind,
+        /// or storage deinit invalidates all readers and slices obtained here.
+        pub fn asReader(self: Builder, storage: *helpers.ReaderStorage) !Reader {
+            try storage.bind(self.builder.builder);
+            return .{ .schema = self.schema, .reader = try storage.reader(self.builder) };
+        }
+
+        pub fn whichDiscriminant(self: Builder) ?u16 {
+            const info = self.schema.proto();
+            if (info.discriminant_count == 0) return null;
+            return helpers.scalarReader(self.builder).readU16(@as(usize, info.discriminant_offset) * 2);
+        }
+
+        pub fn which(self: Builder) !?meta.Field {
+            const ordinal = self.whichDiscriminant() orelse return null;
+            for (self.schema.proto().fields, 0..) |field, index| {
+                if (field.discriminant_value == ordinal) return try self.schema.fieldByIndex(index);
+            }
+            return null;
+        }
+
+        pub fn has(self: Builder, name: []const u8) anyerror!bool {
+            return self.hasField(try self.schema.field(name), false);
+        }
+
+        pub fn hasNonDefault(self: Builder, name: []const u8) anyerror!bool {
+            return self.hasField(try self.schema.field(name), true);
+        }
+
+        fn hasField(self: Builder, field: meta.Field, non_default: bool) !bool {
+            const ordinal = field.proto().discriminant_value;
+            if (ordinal != no_discriminant and self.whichDiscriminant() != ordinal) return false;
+            if (field.proto().group != null) return true;
+            const slot = field.proto().slot orelse return error.InvalidSchema;
+            return scalarPresence(slot, helpers.scalarReader(self.builder), non_default) orelse !self.builder.isPointerNull(slot.offset);
+        }
+
         pub fn set(self: Builder, name: []const u8, value: Value) anyerror!void {
             return self.setField(try self.schema.field(name), value);
         }
 
         pub fn setField(self: Builder, field: meta.Field, value: Value) anyerror!void {
+            var allocation: copy_budget.Allocation = undefined;
+            try allocation.begin(self.builder.builder, self.copy_options.max_allocation_bytes);
+            defer allocation.end();
+            return self.setFieldScoped(field, value) catch |err| return allocation.failure(err);
+        }
+
+        fn setFieldScoped(self: Builder, field: meta.Field, value: Value) anyerror!void {
             try checkFieldOwner(self.schema, field);
             if (field.proto().group != null) {
                 if (value != .@"struct") return error.TypeMismatch;
                 const group_schema = try field.groupSchema();
                 if (!try sameStructSchema(group_schema, value.@"struct".schema, 0)) return error.TypeMismatch;
-                const group = try self.initGroup(field.proto().name);
-                return copyGroup(value.@"struct", group, 0);
+                // Snapshot the source before touching a possibly overlapping group.
+                var scratch = message.MessageBuilder.init(self.builder.builder.allocator);
+                defer scratch.deinit();
+                try helpers.setStructWithOptions(try scratch.initRootAnyPointer(), value.@"struct".reader, self.copy_options);
+                var storage = helpers.ReaderStorage.init(self.builder.builder.allocator);
+                defer storage.deinit();
+                try storage.bind(&scratch);
+                const source = Reader{ .schema = group_schema, .reader = try storage.message_view.getRootStruct() };
+                const backup = try StructBackup.init(self.builder);
+                defer backup.deinit();
+                errdefer backup.restore();
+                const group = Builder{ .schema = group_schema, .builder = self.builder, .copy_options = self.copy_options };
+                try clearGroup(group, 0);
+                try copyGroup(source, group, 0);
+                return self.select(field);
             }
             const slot = field.proto().slot orelse return error.InvalidSchema;
             const typ = try (try field.type()).resolved();
+            if (value == .text and try typ.proto() == .text) try checkByteCopy(value.text.len, true, self.copy_options);
             try requireValue(typ, value);
             const offset: usize = slot.offset;
             switch (try typ.proto()) {
@@ -214,7 +282,7 @@ pub const DynamicStruct = struct {
                 .float32 => try self.builder.writeU32Strict(offset * 4, @as(u32, @bitCast(value.float32)) ^ defaultBits(u32, slot)),
                 .float64 => try self.builder.writeU64Strict(offset * 8, @as(u64, @bitCast(value.float64)) ^ defaultBits(u64, slot)),
                 .@"enum" => try self.builder.writeU16Strict(offset * 2, value.@"enum".ordinal ^ defaultBits(u16, slot)),
-                else => try writePointer(typ, try self.builder.getAnyPointer(offset), value),
+                else => try writePointer(typ, try self.builder.getAnyPointer(offset), value, self.copy_options),
             }
             try self.select(field);
         }
@@ -227,27 +295,38 @@ pub const DynamicStruct = struct {
             const slot = field.proto().slot orelse return error.TypeMismatch;
             const result = try self.builder.initStruct(slot.offset, info.data_word_count, info.pointer_count);
             try self.select(field);
-            return .{ .schema = struct_schema, .builder = result };
+            return .{ .schema = struct_schema, .builder = result, .copy_options = self.copy_options };
         }
 
         /// Reopen a struct field. A schema default is copied before it becomes
         /// writable; Registry-owned defaults are never modified.
         pub fn getStruct(self: Builder, name: []const u8) !Builder {
+            var allocation: copy_budget.Allocation = undefined;
+            try allocation.begin(self.builder.builder, self.copy_options.max_allocation_bytes);
+            defer allocation.end();
+            return self.getStructScoped(name) catch |err| return allocation.failure(err);
+        }
+
+        fn getStructScoped(self: Builder, name: []const u8) !Builder {
             const field = try self.schema.field(name);
             try self.requireActive(field);
-            if (field.proto().group != null) return .{ .schema = try field.groupSchema(), .builder = self.builder };
+            if (field.proto().group != null) return .{ .schema = try field.groupSchema(), .builder = self.builder, .copy_options = self.copy_options };
             const struct_schema = try (try field.type()).asStruct();
+            const field_pointer = try self.builder.getAnyPointer(field.proto().slot.?.offset);
+            const original = try pointerWord(field_pointer);
+            errdefer restorePointer(field_pointer, original);
             const pointer = try self.mutablePointer(field);
             const info = struct_schema.proto();
-            const result = try writableStruct(pointer, info.data_word_count, info.pointer_count);
-            return .{ .schema = struct_schema, .builder = result };
+            const result = try writableStruct(pointer, info.data_word_count, info.pointer_count, self.copy_options);
+            return .{ .schema = struct_schema, .builder = result, .copy_options = self.copy_options };
         }
 
         pub fn initList(self: Builder, name: []const u8, count: u32) !DynamicList.Builder {
             const field = try self.schema.field(name);
             const typ = try field.type();
             const slot = field.proto().slot orelse return error.TypeMismatch;
-            const result = try DynamicList.Builder.init(typ, try self.builder.getAnyPointer(slot.offset), count);
+            var result = try DynamicList.Builder.init(typ, try self.builder.getAnyPointer(slot.offset), count);
+            result.copy_options = self.copy_options;
             try self.select(field);
             return result;
         }
@@ -258,13 +337,17 @@ pub const DynamicStruct = struct {
             const typ = try field.type();
             _ = try typ.listElement();
             const pointer = try self.mutablePointer(field);
-            if (self.builder.isPointerNull(field.proto().slot.?.offset)) return DynamicList.Builder.init(typ, pointer, 0);
-            return .{ .type = typ, .pointer = pointer };
+            if (self.builder.isPointerNull(field.proto().slot.?.offset)) {
+                var result = try DynamicList.Builder.init(typ, pointer, 0);
+                result.copy_options = self.copy_options;
+                return result;
+            }
+            return .{ .type = typ, .pointer = pointer, .copy_options = self.copy_options };
         }
 
         pub fn initGroup(self: Builder, name: []const u8) anyerror!Builder {
             const field = try self.schema.field(name);
-            const group = Builder{ .schema = try field.groupSchema(), .builder = self.builder };
+            const group = Builder{ .schema = try field.groupSchema(), .builder = self.builder, .copy_options = self.copy_options };
             try clearGroup(group, 0);
             try self.select(field);
             return group;
@@ -280,7 +363,7 @@ pub const DynamicStruct = struct {
 
         fn clearStorage(self: Builder, field: meta.Field, depth: usize) anyerror!void {
             if (depth >= 64) return error.SchemaRecursionLimitExceeded;
-            if (field.proto().group != null) return clearGroup(.{ .schema = try field.groupSchema(), .builder = self.builder }, depth + 1);
+            if (field.proto().group != null) return clearGroup(.{ .schema = try field.groupSchema(), .builder = self.builder, .copy_options = self.copy_options }, depth + 1);
             const slot = field.proto().slot orelse return error.InvalidSchema;
             const offset: usize = slot.offset;
             switch (slot.type) {
@@ -310,7 +393,7 @@ pub const DynamicStruct = struct {
             const pointer = try self.builder.getAnyPointer(slot.offset);
             if (self.builder.isPointerNull(slot.offset)) if (slot.default_value) |value| {
                 switch (value) {
-                    .list, .@"struct", .any_pointer => try message.cloneAnyPointer(try self.schema.schema.registry.defaultPointer(value), pointer),
+                    .list, .@"struct", .any_pointer => try helpers.setPointerWithOptions(pointer, try self.schema.schema.registry.defaultPointer(value), self.copy_options),
                     .text => |text| try pointer.setText(text),
                     .data => |data| try pointer.setData(data),
                     else => {},
@@ -360,6 +443,7 @@ pub const DynamicList = struct {
     pub const Builder = struct {
         type: meta.Type,
         pointer: message.AnyPointerBuilder,
+        copy_options: helpers.CopyOptions = .{},
 
         pub fn init(list_type: meta.Type, pointer: message.AnyPointerBuilder, count: u32) !Builder {
             const element = try (try list_type.listElement()).resolved();
@@ -410,9 +494,30 @@ pub const DynamicList = struct {
             };
         }
 
+        /// Borrows message buffers using the same invalidation contract as
+        /// DynamicStruct.Builder.asReader(). Rebind after any builder mutation.
+        pub fn asReader(self: Builder, storage: *helpers.ReaderStorage) !Reader {
+            try storage.bind(self.pointer.builder);
+            return .{ .type = self.type, .reader = try message.AnyListReader.wrap(try snapshotPointer(self.pointer, &storage.message_view)) };
+        }
+
+        /// Read an owned scalar value through a temporary segment index.
+        /// Pointer and struct values require an explicit asReader() storage.
+        pub fn getScalar(self: Builder, index: u32) anyerror!Value {
+            const element = try (try self.type.listElement()).resolved();
+            switch (try element.proto()) {
+                .text, .data, .@"struct", .list, .any_pointer, .interface => return error.TypeMismatch,
+                else => {},
+            }
+            var storage = helpers.ReaderStorage.init(self.pointer.builder.allocator);
+            defer storage.deinit();
+            return (try self.asReader(&storage)).get(index);
+        }
+
         pub fn set(self: Builder, index: u32, value: Value) anyerror!void {
             if (index >= try self.len()) return error.IndexOutOfBounds;
             const element = try (try self.type.listElement()).resolved();
+            if (value == .text and try element.proto() == .text) try checkByteCopy(value.text.len, true, self.copy_options);
             try requireValue(element, value);
             switch (try element.proto()) {
                 .void => {},
@@ -430,7 +535,7 @@ pub const DynamicList = struct {
                 .@"enum" => try (try self.pointer.getU16List()).set(index, value.@"enum".ordinal),
                 .@"struct" => {
                     if (!try usesInlineStructElements(self.type))
-                        return writePointer(element, try self.elementPointer(index), value);
+                        return writePointer(element, try self.elementPointer(index), value, self.copy_options);
                     const info = (try element.asStruct()).proto();
                     const source = value.@"struct".reader;
                     _ = try ensureStructList(
@@ -438,9 +543,10 @@ pub const DynamicList = struct {
                         @max(info.data_word_count, structDataWords(source)),
                         @max(info.pointer_count, source.pointer_count),
                         .{ .index = index, .reader = source },
+                        self.copy_options,
                     );
                 },
-                else => try writePointer(element, try self.elementPointer(index), value),
+                else => try writePointer(element, try self.elementPointer(index), value, self.copy_options),
             }
         }
 
@@ -451,10 +557,11 @@ pub const DynamicList = struct {
             const info = struct_schema.proto();
             if (!try usesInlineStructElements(self.type)) return .{
                 .schema = struct_schema,
-                .builder = try writableStruct(try self.elementPointer(index), info.data_word_count, info.pointer_count),
+                .builder = try writableStruct(try self.elementPointer(index), info.data_word_count, info.pointer_count, self.copy_options),
+                .copy_options = self.copy_options,
             };
-            const list = try ensureStructList(self.pointer, info.data_word_count, info.pointer_count, null);
-            return .{ .schema = struct_schema, .builder = try list.get(index) };
+            const list = try ensureStructList(self.pointer, info.data_word_count, info.pointer_count, null, self.copy_options);
+            return .{ .schema = struct_schema, .builder = try list.get(index), .copy_options = self.copy_options };
         }
 
         pub fn initStruct(self: Builder, index: u32) anyerror!DynamicStruct.Builder {
@@ -464,6 +571,7 @@ pub const DynamicList = struct {
                 return .{
                     .schema = struct_schema,
                     .builder = try (try self.elementPointer(index)).initStruct(info.data_word_count, info.pointer_count),
+                    .copy_options = self.copy_options,
                 };
             }
             const result = try self.getStruct(index);
@@ -476,13 +584,15 @@ pub const DynamicList = struct {
         pub fn initList(self: Builder, index: u32, count: u32) !Builder {
             const element = try (try self.type.listElement()).resolved();
             _ = try element.listElement();
-            return Builder.init(element, try self.elementPointer(index), count);
+            var result = try Builder.init(element, try self.elementPointer(index), count);
+            result.copy_options = self.copy_options;
+            return result;
         }
 
         pub fn getList(self: Builder, index: u32) !Builder {
             const element = try (try self.type.listElement()).resolved();
             _ = try element.listElement();
-            return .{ .type = element, .pointer = try self.elementPointer(index) };
+            return .{ .type = element, .pointer = try self.elementPointer(index), .copy_options = self.copy_options };
         }
 
         fn elementPointer(self: Builder, index: u32) !message.AnyPointerBuilder {
@@ -504,21 +614,58 @@ fn usesInlineStructElements(list_type: meta.Type) !bool {
     return (try list_type.listElement()).cursor.expression.type == .@"struct";
 }
 
-fn writableStruct(pointer: message.AnyPointerBuilder, data_words: u16, pointer_words: u16) !message.StructBuilder {
-    if (pointer.segment_id >= pointer.builder.segments.items.len) return error.InvalidSegmentId;
-    const segment = pointer.builder.segments.items[pointer.segment_id].items;
-    if (pointer.pointer_pos > segment.len or segment.len - pointer.pointer_pos < 8) return error.OutOfBounds;
-    if (std.mem.readInt(u64, segment[pointer.pointer_pos..][0..8], .little) == 0)
-        return pointer.initStruct(data_words, pointer_words);
-    const existing = try pointer.getStruct();
-    if (existing.data_size < data_words or existing.pointer_count < pointer_words)
-        return growStruct(pointer, data_words, pointer_words);
-    return existing;
+fn writableStruct(pointer: message.AnyPointerBuilder, data_words: u16, pointer_words: u16, options: helpers.CopyOptions) !message.StructBuilder {
+    if (try pointerWord(pointer) == 0) {
+        if (options.nesting_limit == 0) return error.RecursionLimitExceeded;
+        if (@as(usize, data_words) + pointer_words > options.max_output_words) return error.CopyOutputLimitExceeded;
+        if (options.max_work == 0) return error.CopyWorkLimitExceeded;
+        var allocation: copy_budget.Allocation = undefined;
+        try allocation.begin(pointer.builder, options.max_allocation_bytes);
+        defer allocation.end();
+        return pointer.initStruct(data_words, pointer_words) catch |err| return allocation.failure(err);
+    }
+    return helpers.getStructWithOptions(pointer, data_words, pointer_words, options);
 }
 
 fn checkFieldOwner(owner: meta.StructSchema, field: meta.Field) !void {
     if (owner.schema.node != field.parent.schema.node) return error.TypeMismatch;
     if (!try sameStructSchema(owner, field.parent, 0)) return error.TypeMismatch;
+}
+
+fn readScalar(typ: meta.Type, kind: schema.Type, slot: schema.FieldSlot, source: anytype) !Value {
+    const offset: usize = slot.offset;
+    return switch (kind) {
+        .void => .void,
+        .bool => .{ .bool = source.readBool(offset / 8, @intCast(offset % 8)) != defaultBool(slot) },
+        .int8 => .{ .int8 = @bitCast(source.readU8(offset) ^ defaultBits(u8, slot)) },
+        .int16 => .{ .int16 = @bitCast(source.readU16(offset * 2) ^ defaultBits(u16, slot)) },
+        .int32 => .{ .int32 = @bitCast(source.readU32(offset * 4) ^ defaultBits(u32, slot)) },
+        .int64 => .{ .int64 = @bitCast(source.readU64(offset * 8) ^ defaultBits(u64, slot)) },
+        .uint8 => .{ .uint8 = source.readU8(offset) ^ defaultBits(u8, slot) },
+        .uint16 => .{ .uint16 = source.readU16(offset * 2) ^ defaultBits(u16, slot) },
+        .uint32 => .{ .uint32 = source.readU32(offset * 4) ^ defaultBits(u32, slot) },
+        .uint64 => .{ .uint64 = source.readU64(offset * 8) ^ defaultBits(u64, slot) },
+        .float32 => .{ .float32 = @bitCast(source.readU32(offset * 4) ^ defaultBits(u32, slot)) },
+        .float64 => .{ .float64 = @bitCast(source.readU64(offset * 8) ^ defaultBits(u64, slot)) },
+        .@"enum" => .{ .@"enum" = .{
+            .schema = try typ.asEnum(),
+            .ordinal = source.readU16(offset * 2) ^ defaultBits(u16, slot),
+        } },
+        else => error.TypeMismatch,
+    };
+}
+
+fn scalarPresence(slot: schema.FieldSlot, source: anytype, non_default: bool) ?bool {
+    const offset: usize = slot.offset;
+    return switch (slot.type) {
+        .void => !non_default,
+        .bool => !non_default or source.readBool(offset / 8, @intCast(offset % 8)),
+        .int8, .uint8 => !non_default or source.readU8(offset) != 0,
+        .int16, .uint16, .@"enum" => !non_default or source.readU16(offset * 2) != 0,
+        .int32, .uint32, .float32 => !non_default or source.readU32(offset * 4) != 0,
+        .int64, .uint64, .float64 => !non_default or source.readU64(offset * 8) != 0,
+        else => null,
+    };
 }
 
 fn defaultBool(slot: schema.FieldSlot) bool {
@@ -651,21 +798,48 @@ fn requirePointerConstraint(typ: meta.Type, pointer: message.AnyPointerReader) !
     }
 }
 
-fn writePointer(typ: meta.Type, pointer: message.AnyPointerBuilder, value: Value) anyerror!void {
+fn writePointer(typ: meta.Type, pointer: message.AnyPointerBuilder, value: Value, options: helpers.CopyOptions) anyerror!void {
+    var allocation: copy_budget.Allocation = undefined;
+    try allocation.begin(pointer.builder, options.max_allocation_bytes);
+    defer allocation.end();
+    return writePointerScoped(typ, pointer, value, options) catch |err| return allocation.failure(err);
+}
+
+fn writePointerScoped(typ: meta.Type, pointer: message.AnyPointerBuilder, value: Value, options: helpers.CopyOptions) anyerror!void {
     try requireValue(typ, value);
     switch (value) {
-        .text => |text| try pointer.setText(text),
-        .data => |data| try pointer.setData(data),
+        .text => |text| {
+            try checkByteCopy(text.len, true, options);
+            const snapshot = try pointer.builder.allocator.dupe(u8, text);
+            defer pointer.builder.allocator.free(snapshot);
+            try pointer.setText(snapshot);
+        },
+        .data => |data| {
+            try checkByteCopy(data.len, false, options);
+            const snapshot = try pointer.builder.allocator.dupe(u8, data);
+            defer pointer.builder.allocator.free(snapshot);
+            try pointer.setData(snapshot);
+        },
         .@"struct" => |reader| {
             const info = (try typ.asStruct()).proto();
-            const dest = try pointer.initStruct(@max(info.data_word_count, structDataWords(reader.reader)), @max(info.pointer_count, reader.reader.pointer_count));
-            try copyStruct(reader.reader, dest);
+            const old = try pointerWord(pointer);
+            errdefer restorePointer(pointer, old);
+            try helpers.setStructWithOptions(pointer, reader.reader, options);
+            _ = try helpers.getStructWithOptions(pointer, info.data_word_count, info.pointer_count, options);
         },
-        .list => |list| try message.cloneAnyPointer(list.reader.raw(), pointer),
-        .any_pointer => |source| try message.cloneAnyPointer(source, pointer),
+        .list => |list| try helpers.setPointerWithOptions(pointer, list.reader.raw(), options),
+        .any_pointer => |source| try helpers.setPointerWithOptions(pointer, source, options),
         .capability => |capability| if (capability) |cap| try pointer.setCapability(cap) else try pointer.setNull(),
         else => return error.TypeMismatch,
     }
+}
+
+fn checkByteCopy(len: usize, terminator: bool, options: helpers.CopyOptions) !void {
+    if (options.nesting_limit == 0) return error.RecursionLimitExceeded;
+    const count = std.math.add(usize, len, @intFromBool(terminator)) catch return error.CopyOutputLimitExceeded;
+    const work = std.math.add(usize, count, 1) catch return error.CopyWorkLimitExceeded;
+    if (work > options.max_work) return error.CopyWorkLimitExceeded;
+    if (count / 8 + @intFromBool(count % 8 != 0) > options.max_output_words) return error.CopyOutputLimitExceeded;
 }
 
 fn listPointer(list: message.AnyListReader, index: u32) !message.AnyPointerReader {
@@ -698,6 +872,17 @@ fn structDataWords(source: message.StructReader) u16 {
     return @max(source.data_size, @as(u16, if (source.sub_word_data_bytes != 0) 1 else 0));
 }
 
+fn pointerWord(pointer: message.AnyPointerBuilder) !u64 {
+    if (pointer.segment_id >= pointer.builder.segments.items.len) return error.InvalidSegmentId;
+    const data = pointer.builder.segments.items[pointer.segment_id].items;
+    if (pointer.pointer_pos > data.len or data.len - pointer.pointer_pos < 8) return error.OutOfBounds;
+    return std.mem.readInt(u64, data[pointer.pointer_pos..][0..8], .little);
+}
+
+fn restorePointer(pointer: message.AnyPointerBuilder, word: u64) void {
+    std.mem.writeInt(u64, pointer.builder.segments.items[pointer.segment_id].items[pointer.pointer_pos..][0..8], word, .little);
+}
+
 fn snapshotPointer(pointer: message.AnyPointerBuilder, snapshot: *const message.Message) !message.AnyPointerReader {
     if (pointer.segment_id >= snapshot.segments.len) return error.OutOfBounds;
     const segment = snapshot.segments[pointer.segment_id];
@@ -719,23 +904,87 @@ fn readStructList(pointer: message.AnyPointerReader) !message.StructListReader {
 }
 
 fn structListLength(pointer: message.AnyPointerBuilder) !u32 {
-    // Ordinary composite lists and null pointers need no allocation. Reading
-    // the length of an older primitive list must not replace its storage.
+    // Ordinary composite lists and null pointers need no allocation. An older
+    // primitive list only needs a borrowed segment index, never a whole-message
+    // snapshot, to determine its logical element count.
     if (pointer.getStructList()) |list| return list.len() else |_| {}
-    const allocator = pointer.builder.allocator;
-    const bytes = try pointer.builder.toBytes();
-    defer allocator.free(bytes);
-    var snapshot = try message.Message.initUnvalidated(allocator, bytes);
-    defer snapshot.deinit();
-    return (try readStructList(try snapshotPointer(pointer, &snapshot))).len();
+    var storage = helpers.ReaderStorage.init(pointer.builder.allocator);
+    defer storage.deinit();
+    try storage.bind(pointer.builder);
+    return (try readStructList(try snapshotPointer(pointer, &storage.message_view))).len();
 }
 
 const StructElementReplacement = struct { index: u32, reader: message.StructReader };
 
-fn ensureStructList(pointer: message.AnyPointerBuilder, data_words: u16, pointer_words: u16, replacement: ?StructElementReplacement) !message.StructListBuilder {
+fn ensureStructList(pointer: message.AnyPointerBuilder, data_words: u16, pointer_words: u16, replacement: ?StructElementReplacement, options: helpers.CopyOptions) !message.StructListBuilder {
+    if (replacement == null) {
+        if (pointer.getStructList()) |list| {
+            if (list.data_words >= data_words and list.pointer_words >= pointer_words) return list;
+        } else |_| {}
+    }
+    var allocation: copy_budget.Allocation = undefined;
+    try allocation.begin(pointer.builder, options.max_allocation_bytes);
+    defer allocation.end();
+    return ensureStructListScoped(pointer, data_words, pointer_words, replacement, options) catch |err| return allocation.failure(err);
+}
+
+fn ensureStructListScoped(pointer: message.AnyPointerBuilder, data_words: u16, pointer_words: u16, replacement: ?StructElementReplacement, options: helpers.CopyOptions) !message.StructListBuilder {
+    try checkStructListCopy(pointer, data_words, pointer_words, replacement, options);
+    if (replacement) |value| {
+        // Even a different element can borrow a buffer that widening relocates.
+        var scratch = message.MessageBuilder.init(pointer.builder.allocator);
+        defer scratch.deinit();
+        try helpers.setStructWithOptions(try scratch.initRootAnyPointer(), value.reader, options);
+        var storage = helpers.ReaderStorage.init(pointer.builder.allocator);
+        defer storage.deinit();
+        try storage.bind(&scratch);
+        return ensureStructListSnapshot(pointer, data_words, pointer_words, .{ .index = value.index, .reader = try storage.message_view.getRootStruct() });
+    }
+    return ensureStructListSnapshot(pointer, data_words, pointer_words, null);
+}
+
+fn checkStructListCopy(pointer: message.AnyPointerBuilder, data_words: u16, pointer_words: u16, replacement: ?StructElementReplacement, options: helpers.CopyOptions) !void {
     if (pointer.getStructList()) |list| {
         if (list.data_words >= data_words and list.pointer_words >= pointer_words) {
-            if (replacement) |value| try copyStruct(value.reader, try list.get(value.index));
+            if (replacement) |value| try helpers.checkStructCopy(value.reader, options);
+            return;
+        }
+    } else |_| {}
+    var storage = helpers.ReaderStorage.init(pointer.builder.allocator);
+    defer storage.deinit();
+    try storage.bind(pointer.builder);
+    const source = try readStructList(try snapshotPointer(pointer, &storage.message_view));
+    var budget = copy_budget.Budget.init(options);
+    const count = source.len();
+    const initial_work = std.math.add(usize, count, 1) catch return error.CopyWorkLimitExceeded;
+    if (initial_work > budget.work) return error.CopyWorkLimitExceeded;
+    budget.work -= initial_work;
+    if (budget.words == 0) return error.CopyOutputLimitExceeded;
+    budget.words -= 1; // inline-composite tag
+    if (options.nesting_limit == 0) return error.RecursionLimitExceeded;
+    const old_data = @max(source.data_words, @as(u16, if (source.sub_word_data_bytes != 0) 1 else 0));
+    const new_width = @as(usize, @max(data_words, old_data)) + @max(pointer_words, source.pointer_words);
+    if (new_width == 0) return;
+    for (0..count) |index| {
+        const element = if (replacement != null and replacement.?.index == index) replacement.?.reader else try source.get(@intCast(index));
+        const width = @as(usize, structDataWords(element)) + element.pointer_count;
+        const extra = new_width - width;
+        if (extra > budget.words) return error.CopyOutputLimitExceeded;
+        budget.words -= extra;
+        try budget.record(element, options.nesting_limit - 1);
+    }
+}
+
+fn ensureStructListSnapshot(pointer: message.AnyPointerBuilder, data_words: u16, pointer_words: u16, replacement: ?StructElementReplacement) !message.StructListBuilder {
+    if (pointer.getStructList()) |list| {
+        if (list.data_words >= data_words and list.pointer_words >= pointer_words) {
+            if (replacement) |value| {
+                const destination = try list.get(value.index);
+                const backup = try StructBackup.init(destination);
+                defer backup.deinit();
+                errdefer backup.restore();
+                try copyStruct(value.reader, destination);
+            }
             return list;
         }
     } else |_| {}
@@ -775,27 +1024,30 @@ fn ensureStructList(pointer: message.AnyPointerBuilder, data_words: u16, pointer
     return result;
 }
 
-fn growStruct(pointer: message.AnyPointerBuilder, data_words: u16, pointer_words: u16) !message.StructBuilder {
-    // A snapshot keeps every source segment stable while destination allocation
-    // may relocate the builder's segment buffers. This slow path runs only when
-    // reopening an older, smaller physical struct with a newer schema.
-    const allocator = pointer.builder.allocator;
-    const bytes = try pointer.builder.toBytes();
-    defer allocator.free(bytes);
-    var snapshot = try message.Message.initUnvalidated(allocator, bytes);
-    defer snapshot.deinit();
-    const segment = snapshot.segments[pointer.segment_id];
-    const source_pointer = message.AnyPointerReader{
-        .message = &snapshot,
-        .segment_id = pointer.segment_id,
-        .pointer_pos = pointer.pointer_pos,
-        .pointer_word = std.mem.readInt(u64, segment[pointer.pointer_pos..][0..8], .little),
-    };
-    const source = try source_pointer.getStruct();
-    const result = try pointer.initStruct(@max(data_words, source.data_size), @max(pointer_words, source.pointer_count));
-    try copyStruct(source, result);
-    return result;
-}
+// A shallow physical backup is enough for rollback: setters allocate fresh
+// pointer targets, so the old reachable targets remain untouched. Always look
+// up the segment again after allocations, which may relocate its buffer.
+const StructBackup = struct {
+    destination: message.StructBuilder,
+    bytes: []u8,
+
+    fn init(destination: message.StructBuilder) !StructBackup {
+        if (destination.segment_id >= destination.builder.segments.items.len) return error.InvalidSegmentId;
+        const segment = destination.builder.segments.items[destination.segment_id].items;
+        const size = (@as(usize, destination.data_size) + destination.pointer_count) * 8;
+        if (destination.offset > segment.len or size > segment.len - destination.offset) return error.OutOfBounds;
+        return .{ .destination = destination, .bytes = try destination.builder.allocator.dupe(u8, segment[destination.offset..][0..size]) };
+    }
+
+    fn deinit(self: StructBackup) void {
+        self.destination.builder.allocator.free(self.bytes);
+    }
+
+    fn restore(self: StructBackup) void {
+        const segment = self.destination.builder.segments.items[self.destination.segment_id].items;
+        @memcpy(segment[self.destination.offset..][0..self.bytes.len], self.bytes);
+    }
+};
 
 fn zeroStruct(dest: message.StructBuilder) !void {
     for (0..@as(usize, dest.data_size) * 8) |index| try dest.writeU8Strict(index, 0);
@@ -818,7 +1070,11 @@ fn copyGroup(source: DynamicStruct.Reader, dest: DynamicStruct.Builder, depth: u
             const group_source = (try source.getField(field)).@"struct";
             const group_dest = try dest.initGroup(field.proto().name);
             try copyGroup(group_source, group_dest, depth + 1);
-        } else try dest.set(field.proto().name, try source.getField(field));
+        } else {
+            // Preserve physical nulls instead of materializing schema defaults.
+            // This also keeps presence queries unchanged by a group copy.
+            if (!try source.hasField(field, false)) try dest.clear(field.proto().name) else try dest.set(field.proto().name, try source.getField(field));
+        }
     }
     if (source.whichDiscriminant()) |ordinal|
         try dest.builder.writeU16Strict(@as(usize, dest.schema.proto().discriminant_offset) * 2, ordinal);

@@ -275,6 +275,11 @@ pub fn Interface(comptime G: type) type {
 
             // --- onCall dispatch ---
             try writer.writeAll("    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
+            if (self.hasStreamingMethods(node, ancestors)) {
+                try writer.print("        try peer.dispatchStreamingCall(ctx, {s}dispatchCall, call, caps);\n", .{qual});
+                try writer.writeAll("    }\n\n");
+                try writer.writeAll("    fn dispatchCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
+            }
             try writer.print("        const server: *{s}Server = @ptrCast(@alignCast(ctx));\n", .{qual});
 
             var dispatch_method_count: usize = interface_info.methods.len;
@@ -315,8 +320,8 @@ pub fn Interface(comptime G: type) type {
                         const escaped_deferred_field = try types.escapeZigKeyword(self.allocator, deferred_field);
                         defer self.allocator.free(escaped_deferred_field);
                         if (method.isStreaming()) {
-                            try writer.print("                {s}.{s}.ordinal => try {s}.{s}.handleCallDirect(server.vtable.{s}, server.ctx, peer, call, caps),\n", .{
-                                ancestor.name, zig_name, ancestor.name, zig_name, escaped_field,
+                            try writer.print("                {s}.{s}.ordinal => try {s}.{s}.handleCallDeferred(server.vtable.{s}, server.vtable.{s}, server, server.ctx, peer, call, caps),\n", .{
+                                ancestor.name, zig_name, ancestor.name, zig_name, escaped_field, escaped_deferred_field,
                             });
                         } else {
                             try writer.print("                {s}.{s}.ordinal => try {s}.{s}.handleCallDirect(server.vtable.{s}, server.vtable.{s}, server.ctx, peer, call, caps),\n", .{
@@ -383,6 +388,12 @@ pub fn Interface(comptime G: type) type {
 
             if (is_streaming) {
                 try writer.writeAll("        pub const StreamHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;\n");
+                try writer.writeAll("        pub const DeferredStreamHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: StreamReturnSender) anyerror!void;\n");
+                try writer.writeAll("        pub const StreamReturnSender = struct {\n");
+                try writer.writeAll("            peer: *rpc.peer.Peer,\n            server_ctx: *anyopaque,\n            question_id: u32,\n            token: u64,\n");
+                try writer.writeAll("            pub fn send(self: StreamReturnSender) !void {\n                try self.peer.completeStreamingCall(self.server_ctx, self.question_id, self.token, null);\n            }\n");
+                try writer.writeAll("            pub fn sendException(self: StreamReturnSender, reason: []const u8) !void {\n                try self.peer.completeStreamingCall(self.server_ctx, self.question_id, self.token, reason);\n            }\n");
+                try writer.writeAll("        };\n");
             } else {
                 try writer.writeAll("        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;\n");
                 try writer.writeAll("        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;\n");
@@ -515,19 +526,37 @@ pub fn Interface(comptime G: type) type {
                 try writer.writeAll("            try peer.sendReturnEmptyStruct(call.question_id);\n");
                 try writer.writeAll("        }\n\n");
 
-                // handleCall delegates to handleCallDirect
+                try writer.writeAll("        pub fn handleCallDeferred(handler: StreamHandler, deferred_handler: ?DeferredStreamHandler, server_ctx: *anyopaque, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
+                try writer.writeAll("            if (deferred_handler) |deferred_fn| {\n");
+                try writer.writeAll("                const params = Params.Reader.wrap(try call.params.content.getStruct());\n");
+                try writer.writeAll("                const token = try peer.beginStreamingCall(server_ctx, call.question_id);\n");
+                try writer.writeAll("                try deferred_fn(ctx, peer, params, caps, .{ .peer = peer, .server_ctx = server_ctx, .question_id = call.question_id, .token = token });\n");
+                try writer.writeAll("            } else try handleCallDirect(handler, ctx, peer, call, caps);\n");
+                try writer.writeAll("        }\n\n");
                 try writer.print("        fn handleCall(server: *{s}Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {{\n", .{qual});
-                try writer.print("            try handleCallDirect(server.vtable.{s}, server.ctx, peer, call, caps);\n", .{escaped_method_field});
+                const deferred_field = try std.fmt.allocPrint(self.allocator, "{s}_deferred", .{method_field});
+                defer self.allocator.free(deferred_field);
+                const escaped_deferred_field = try types.escapeZigKeyword(self.allocator, deferred_field);
+                defer self.allocator.free(escaped_deferred_field);
+                try writer.print("            try handleCallDeferred(server.vtable.{s}, server.vtable.{s}, server, server.ctx, peer, call, caps);\n", .{ escaped_method_field, escaped_deferred_field });
                 try writer.writeAll("        }\n\n");
 
                 // StreamCallContext + streamCallBuild + streamCallReturn for fire-and-forget streaming
                 try writer.writeAll("        pub const StreamCallContext = struct {\n");
-                try writer.writeAll("            stream: *rpc.transport.stream_state.StreamState,\n");
+                try writer.writeAll("            reservation: rpc.transport.stream_state.StreamState.Reservation,\n");
                 try writer.writeAll("            build_ctx: *anyopaque,\n");
                 try writer.writeAll("            build: ?BuildFn,\n");
+                try writer.writeAll("            settled_flag: ?*bool = null,\n\n");
+                try writer.writeAll("            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {\n");
+                try writer.writeAll("                const dead: *StreamCallContext = @ptrCast(@alignCast(ctx_ptr));\n");
+                try writer.writeAll("                if (dead.settled_flag) |flag| flag.* = true;\n");
+                try writer.writeAll("                var reservation = dead.reservation;\n");
+                try writer.writeAll("                ctx_allocator.destroy(dead);\n");
+                try writer.writeAll("                reservation.settle(error.StreamingCallFailed);\n");
+                try writer.writeAll("            }\n");
                 try writer.writeAll("        };\n\n");
 
-                try writer.writeAll("        fn streamCallBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {\n");
+                try writer.writeAll("        pub fn streamCallBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {\n");
                 try writer.writeAll("            const ctx: *StreamCallContext = @ptrCast(@alignCast(ctx_ptr));\n");
                 try writer.writeAll("            var payload = try call.payloadTyped();\n");
                 try writer.writeAll("            var params_any = try payload.initContent();\n");
@@ -540,11 +569,13 @@ pub fn Interface(comptime G: type) type {
                 try writer.writeAll("            _ = try call.initCapTableTyped(0);\n");
                 try writer.writeAll("        }\n\n");
 
-                try writer.writeAll("        fn streamCallReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
+                try writer.writeAll("        pub fn streamCallReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
                 try writer.writeAll("            const ctx: *StreamCallContext = @ptrCast(@alignCast(ctx_ptr));\n");
-                try writer.writeAll("            defer peer.allocator.destroy(ctx);\n");
+                try writer.writeAll("            if (ctx.settled_flag) |flag| flag.* = true;\n");
+                try writer.writeAll("            var reservation = ctx.reservation;\n");
+                try writer.writeAll("            peer.allocator.destroy(ctx);\n");
                 try writer.writeAll("            _ = caps;\n");
-                try writer.writeAll("            ctx.stream.handleReturn(ret.tag == .exception);\n");
+                try writer.writeAll("            reservation.settle(if (ret.tag == .results) null else error.StreamingCallFailed);\n");
                 try writer.writeAll("        }\n");
             } else {
                 // handleCallDirect: takes Handler + ?DeferredHandler + ctx directly
@@ -614,6 +645,7 @@ pub fn Interface(comptime G: type) type {
             if (ancestor_name) |aname| {
                 if (method.isStreaming()) {
                     try writer.print("        {s}: {s}.{s}.StreamHandler,\n", .{ escaped_field, aname, zig_name });
+                    try writer.print("        {s}: ?{s}.{s}.DeferredStreamHandler = null,\n", .{ escaped_deferred_field, aname, zig_name });
                 } else {
                     try writer.print("        {s}: {s}.{s}.Handler,\n", .{ escaped_field, aname, zig_name });
                     try writer.print("        {s}: ?{s}.{s}.DeferredHandler = null,\n", .{ escaped_deferred_field, aname, zig_name });
@@ -621,6 +653,7 @@ pub fn Interface(comptime G: type) type {
             } else {
                 if (method.isStreaming()) {
                     try writer.print("        {s}: {s}{s}.StreamHandler,\n", .{ escaped_field, qual, zig_name });
+                    try writer.print("        {s}: ?{s}{s}.DeferredStreamHandler = null,\n", .{ escaped_deferred_field, qual, zig_name });
                 } else {
                     try writer.print("        {s}: {s}{s}.Handler,\n", .{ escaped_field, qual, zig_name });
                     try writer.print("        {s}: ?{s}{s}.DeferredHandler = null,\n", .{ escaped_deferred_field, qual, zig_name });
@@ -724,7 +757,7 @@ pub fn Interface(comptime G: type) type {
             _ = node;
             try writer.writeAll("    pub const StreamClient = struct {\n");
             try writer.print("        client: {s}Client,\n", .{qual});
-            try writer.writeAll("        stream: rpc.transport.stream_state.StreamState = .{},\n\n");
+            try writer.writeAll("        stream: rpc.transport.stream_state.StreamState = .{ .max_in_flight = 64, .max_in_flight_bytes = 1024 * 1024 },\n\n");
 
             try writer.print("        pub fn init(client: {s}Client) {s}StreamClient {{\n", .{ qual, qual });
             try writer.writeAll("            return .{ .client = client };\n");
@@ -743,6 +776,9 @@ pub fn Interface(comptime G: type) type {
 
             try writer.print("        pub fn waitStreaming(self: *{s}StreamClient, ctx: *anyopaque, callback: rpc.transport.stream_state.StreamState.DrainCallback) void {{\n", .{qual});
             try writer.writeAll("            self.stream.waitStreaming(ctx, callback);\n");
+            try writer.writeAll("        }\n");
+            try writer.print("        pub fn whenStreamingReady(self: *{s}StreamClient, encoded_bytes: usize, ctx: *anyopaque, callback: rpc.transport.stream_state.StreamState.DrainCallback) void {{\n", .{qual});
+            try writer.writeAll("            self.stream.whenReady(encoded_bytes, ctx, callback);\n");
             try writer.writeAll("        }\n");
 
             try writer.writeAll("    };\n\n");
@@ -767,25 +803,36 @@ pub fn Interface(comptime G: type) type {
                     p.call_name, qual, p.method_prefix, p.dot, p.zig_name,
                 });
                 try writer.writeAll("            if (self.stream.hasFailed()) return self.stream.stream_error.?;\n");
+                // A transport callback may request teardown before this wrapper
+                // has installed its infallible pending-context destructor.
+                try writer.writeAll("            const peer = self.client.peer;\n            peer.enterStreamingOperation();\n            defer peer.leaveStreamingOperation();\n");
                 try writer.writeAll("            try self.stream.noteCallSent();\n");
                 try writer.print("            const ctx = self.client.peer.allocator.create({s}{s}{s}.StreamCallContext) catch |err| {{\n", .{ p.method_prefix, p.dot, p.zig_name });
                 try writer.writeAll("                self.stream.in_flight -= 1;\n");
                 try writer.writeAll("                return err;\n");
                 try writer.writeAll("            };\n");
-                try writer.writeAll("            ctx.* = .{ .stream = &self.stream, .build_ctx = build_ctx, .build = build };\n");
-                try writer.print("            _ = self.client.peer.sendCall(self.client.cap_id, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.streamCallBuild, {s}{s}{s}.streamCallReturn) catch |err| {{\n", .{
+                try writer.writeAll("            var settled = false;\n");
+                try writer.writeAll("            ctx.* = .{ .reservation = .{ .stream = &self.stream }, .build_ctx = build_ctx, .build = build, .settled_flag = &settled };\n");
+                try writer.print("            const question_id = self.client.peer.sendStreamingCallGenerated(self.client.cap_id, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.streamCallBuild, {s}{s}{s}.streamCallReturn, &ctx.reservation) catch |err| {{\n", .{
                     p.iface_id, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
                 });
-                try writer.writeAll("                self.stream.in_flight -= 1;\n");
-                try writer.writeAll("                self.client.peer.allocator.destroy(ctx);\n");
+                try writer.writeAll("                if (!settled) {\n");
+                try writer.writeAll("                    var reservation = ctx.reservation;\n");
+                try writer.writeAll("                    self.client.peer.allocator.destroy(ctx);\n");
+                try writer.writeAll("                    reservation.settle(null);\n");
+                try writer.writeAll("                }\n");
                 try writer.writeAll("                return err;\n");
                 try writer.writeAll("            };\n");
+                try writer.writeAll("            if (settled) return;\n");
+                try writer.writeAll("            ctx.settled_flag = null;\n");
+                try writer.print("            self.client.peer.setQuestionDeinitCtx(question_id, {s}{s}{s}.StreamCallContext.deinitCtx);\n", .{ p.method_prefix, p.dot, p.zig_name });
                 try writer.writeAll("        }\n\n");
             } else {
                 // Pass-through to inner Client
                 try writer.print("        pub fn {s}(self: *{s}StreamClient, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
                     p.call_name, qual, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
                 });
+                try writer.writeAll("            if (self.stream.hasFailed()) return self.stream.stream_error.?;\n");
                 try writer.print("            return self.client.{s}(user_ctx, build, on_return);\n", .{p.call_name});
                 try writer.writeAll("        }\n\n");
             }

@@ -79,9 +79,10 @@ test "Codegen emits streaming method types and handlers" {
 
     // StreamHandler present in streaming method
     try expectContains(doStreamI_section, "StreamHandler");
-    // No ReturnSender/ReturnContext/DeferredHandler/buildReturn for streaming methods
+    // Streaming acknowledgements have a dedicated deferred sender.
     try expectNotContains(doStreamI_section, "pub const DeferredHandler");
-    try expectNotContains(doStreamI_section, "ReturnSender");
+    try expectContains(doStreamI_section, "StreamReturnSender");
+    try expectContains(doStreamI_section, "DeferredStreamHandler");
     try expectNotContains(doStreamI_section, "ReturnContext");
     try expectNotContains(doStreamI_section, "buildReturn");
 
@@ -104,14 +105,14 @@ test "Codegen emits streaming method types and handlers" {
     // VTable should use Handler for non-streaming methods
     try expectContains(output, "finishStream: FinishStream.Handler");
 
-    // Streaming methods in VTable should NOT have _deferred
+    // Streaming and ordinary methods expose optional deferred handlers.
     // Find the VTable section
     const vtable_start = std.mem.indexOf(u8, output, "pub const VTable = struct") orelse return error.MissingExpectedOutput;
     const vtable_end = std.mem.indexOf(u8, output[vtable_start..], "};") orelse return error.MissingExpectedOutput;
     const vtable_section = output[vtable_start .. vtable_start + vtable_end];
 
-    try expectNotContains(vtable_section, "doStreamI_deferred");
-    try expectNotContains(vtable_section, "doStreamJ_deferred");
+    try expectContains(vtable_section, "doStreamI_deferred");
+    try expectContains(vtable_section, "doStreamJ_deferred");
     try expectContains(vtable_section, "finishStream_deferred");
 
     // Interface should still have Client with callXxx methods

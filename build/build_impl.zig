@@ -601,6 +601,7 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_codegen_annotations_tests = addLibTest(b, "tests/serialization/codegen_annotations_test.zig", target, optimize, lib_module);
     const run_codegen_rpc_nested_tests = addLibTest(b, "tests/serialization/codegen_rpc_nested_test.zig", target, optimize, lib_module);
     const run_codegen_rpc_paths_tests = addLibTest(b, "tests/serialization/codegen_rpc_paths_test.zig", target, optimize, lib_module);
+    const run_codegen_generic_rpc = addLibTest(b, "tests/serialization/generic_rpc_test.zig", target, optimize, lib_module);
     const run_generic_generated_api_tests = addLibTest(b, "tests/serialization/generic_generated_api_test.zig", target, optimize, lib_module);
     const run_codegen_streaming_tests = addLibTest(b, "tests/serialization/codegen_streaming_test.zig", target, optimize, lib_module);
     const run_codegen_generated_runtime_tests = addLibTest(b, "tests/serialization/codegen_generated_runtime_test.zig", target, optimize, lib_module);
@@ -655,6 +656,8 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_rpc_framing_tests = addLibTest(b, "tests/rpc/wire/rpc_framing_test.zig", target, optimize, lib_module);
     const run_rpc_cap_table_tests = addLibTest(b, "tests/rpc/caps/rpc_cap_table_encode_test.zig", target, optimize, lib_module);
     const run_rpc_caps_release_and_failure_tests = addLibTest(b, "tests/rpc/caps/rpc_release_and_failure_test.zig", target, optimize, lib_module);
+    const run_rpc_copy_tests = addLibTest(b, "tests/rpc/caps/rpc_copy_test.zig", target, optimize, lib_module);
+    b.step("test-rpc-copy", "Run capability-aware copy rollback and remapping regressions").dependOn(run_rpc_copy_tests);
     const run_rpc_protocol_tests = addLibTest(b, "tests/rpc/wire/rpc_protocol_test.zig", target, optimize, lib_module);
     // The published framing conformance fixtures are meant to be vendored
     // by downstreams; running them here keeps the published bytes and the
@@ -798,6 +801,35 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_fuzz_target_tests = addLibTest(b, "tests/fuzz/fuzz_targets.zig", target, optimize, lib_module);
     const test_fuzz_step = b.step("test-fuzz", "Run coverage-guided fuzz targets (add --fuzz to actually fuzz)");
     test_fuzz_step.dependOn(run_fuzz_target_tests);
+    const run_codegen_streaming_cpp = addLibTest(b, "tests/serialization/codegen_streaming_cpp_test.zig", target, optimize, lib_module);
+    b.step("test-codegen-streaming-cpp", "Run C++ and Zig deferred streaming interoperability").dependOn(run_codegen_streaming_cpp);
+    b.step("test-codegen-generic-rpc-cpp", "Run C++ and Zig typed generic RPC interoperability").dependOn(addLibTest(b, "tests/serialization/generic_rpc_cpp_test.zig", target, optimize, lib_module));
+    const fuzz_filter = b.option([]const u8, "fuzz-filter", "Select one wire/RPC fuzz target");
+    const selected_fuzz = b.addTest(.{
+        .root_module = b.createModule(.{ .root_source_file = b.path("tests/fuzz/fuzz_targets.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "capnpc-zig", .module = lib_module }} }),
+        .filters = if (fuzz_filter) |filter| &.{filter} else &.{},
+    });
+    helpers.registered_test_compile_steps.append(b.allocator, &selected_fuzz.step) catch @panic("OOM");
+    b.step("test-fuzz-target", "Run a selected fuzz target for evidence collection").dependOn(&b.addRunArtifact(selected_fuzz).step);
+    const stream_fixture_host_core = b.createModule(.{ .root_source_file = b.path("src/lib_core.zig"), .target = b.graph.host, .optimize = optimize });
+    stream_fixture_host_core.addImport("capnpc-zig", stream_fixture_host_core);
+    const stream_fixture_generator = b.addExecutable(.{ .name = "fuzz-streaming-generate", .root_module = b.createModule(.{
+        .root_source_file = b.path("tests/serialization/generate_streaming.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "capnpc-zig", .module = stream_fixture_host_core }},
+    }) });
+    const generate_stream_fixture = b.addRunArtifact(stream_fixture_generator);
+    const generated_stream_dir = generate_stream_fixture.addOutputDirectoryArg("generated");
+    const generated_stream_module = b.createModule(.{ .root_source_file = generated_stream_dir.path(b, "generated.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "capnpc-zig", .module = lib_module }} });
+    const generated_rpc_fuzz_module = b.createModule(.{ .root_source_file = b.path("tests/fuzz/generated_rpc_test.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "capnpc-zig", .module = lib_module }, .{ .name = "generated", .module = generated_stream_module } } });
+    const generated_rpc_fuzz = b.addTest(.{ .root_module = generated_rpc_fuzz_module });
+    registered_test_compile_steps.append(b.allocator, &generated_rpc_fuzz.step) catch @panic("OOM");
+    test_fuzz_smoke_step.dependOn(&b.addRunArtifact(generated_rpc_fuzz).step);
+    const generated_rpc_fuzz_filter = b.option([]const u8, "generated-rpc-fuzz-filter", "Select one generated RPC lifecycle fuzz target");
+    const selected_generated_rpc_fuzz = b.addTest(.{ .root_module = generated_rpc_fuzz_module, .filters = if (generated_rpc_fuzz_filter) |filter| &.{filter} else &.{} });
+    registered_test_compile_steps.append(b.allocator, &selected_generated_rpc_fuzz.step) catch @panic("OOM");
+    b.step("test-fuzz-generated-rpc", "Run generated RPC lifecycle fuzz targets").dependOn(&b.addRunArtifact(selected_generated_rpc_fuzz).step);
     const wire_fuzz = b.addTest(.{
         .root_module = b.createModule(.{ .root_source_file = b.path("tests/fuzz/fuzz_targets.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "capnpc-zig", .module = lib_module }} }),
         .filters = &.{"equivalent far list encodings"},
@@ -924,6 +956,8 @@ pub fn buildImpl(b: *std.Build) !void {
     test_codegen_step.dependOn(run_codegen_annotations_tests);
     test_codegen_step.dependOn(run_codegen_rpc_nested_tests);
     test_codegen_step.dependOn(run_codegen_rpc_paths_tests);
+    test_codegen_step.dependOn(run_codegen_generic_rpc);
+    b.step("test-codegen-generic-rpc", "Run typed generic RPC client/server and pipeline regressions").dependOn(run_codegen_generic_rpc);
     test_codegen_step.dependOn(run_generic_generated_api_tests);
     b.step("test-codegen-rpc-paths", "Run nested pipelines and inherited method generation regressions").dependOn(run_codegen_rpc_paths_tests);
     b.step("test-codegen-generics", "Run concrete generic list and recursive generated views").dependOn(run_generic_generated_api_tests);
@@ -978,6 +1012,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_serialization_step.dependOn(run_codegen_annotations_tests);
     test_serialization_step.dependOn(run_codegen_rpc_nested_tests);
     test_serialization_step.dependOn(run_codegen_rpc_paths_tests);
+    test_serialization_step.dependOn(run_codegen_generic_rpc);
     test_serialization_step.dependOn(run_generic_generated_api_tests);
     test_serialization_step.dependOn(run_codegen_streaming_tests);
     test_serialization_step.dependOn(run_codegen_generated_runtime_tests);
@@ -1007,6 +1042,7 @@ pub fn buildImpl(b: *std.Build) !void {
     const test_rpc_caps_step = b.step("test-rpc-caps", "Run RPC capability table tests");
     test_rpc_caps_step.dependOn(run_rpc_cap_table_tests);
     test_rpc_caps_step.dependOn(run_rpc_caps_release_and_failure_tests);
+    test_rpc_caps_step.dependOn(run_rpc_copy_tests);
 
     const test_rpc_promises_step = b.step("test-rpc-promises", "Run RPC promise/pipelining tests");
     test_rpc_promises_step.dependOn(run_rpc_promised_answer_tests);

@@ -107,7 +107,7 @@ jobs:
           mise exec zig@0.17.0-dev.1786+75044cb04 -- zig build test-rpc-wire --summary all
 
   fuzz:
-    name: Coverage-guided fuzzing (10 minutes)
+    name: Coverage-guided fuzzing with per-target evidence
     # arm64, not ubuntu-latest: on x86_64 the zig fuzzer's maker dies with
     # "start index 1 is larger than end index 0" right after the fuzz phase
     # starts, before any coverage-guided signal — reproduced on CI with both
@@ -117,7 +117,7 @@ jobs:
     # native ubuntu-24.04 container: 626s, zero infra panics, growing corpus).
     # arm runners are free for public repos.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 25
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
         with:
@@ -137,60 +137,24 @@ jobs:
       # panics — not just the exit code) before reintroducing a divergent pin.
       - uses: ./.github/actions/setup-zig
 
-      - name: Fuzz untrusted-input surfaces
-        # timeout rc 124 = ran the full window without finding a crash.
-        #
-        # Zig master's coverage-guided fuzzer is experimental and its own
-        # infrastructure can crash (build-runner tmp/ cleanup races with
-        # the fuzzer's log file, maker slice panics). Those are not
-        # findings: a real finding is the fuzz TARGET dying, reported by a
-        # normally exiting build runner. Classify maker crashes and
-        # fuzzer-runtime panics as warnings so the job fails only on
-        # genuine findings.
-        run: |
-          set +e
-          # A run that produced NO fuzzing must not be reportable as success.
-          # This job passed green for 30 consecutive nightlies while the zig
-          # fuzzer's `maker` aborted at startup: the infra-failure downgrade
-          # below fired every time, so "the fuzzer never started" was
-          # indistinguishable from "the window elapsed with no findings". The
-          # elapsed-time floor is that missing positive signal.
-          FUZZ_WINDOW=600
-          MIN_FUZZ_SECONDS=120
-          started=$(date +%s)
-          # -j1 caps the fuzzer at a single instance. With N instances the
-          # dev.1252 fuzzer's workers race creating the shared coverage file
-          # in .zig-cache/v/ and a loser can ABRT at init ("failed to open
-          # coverage file ...: FileNotFound"). One instance still fuzzes every
-          # fuzz test round-robin, so no target loses coverage.
-          timeout --kill-after=30 "$FUZZ_WINDOW" zig build test-fuzz --fuzz -j1 2>&1 | tee fuzz.log
-          rc=${PIPESTATUS[0]}
-          elapsed=$(( $(date +%s) - started ))
-          echo "fuzzing ran for ${elapsed}s (rc=${rc})"
+      - name: Prove evidence rejects missing activity and oracle failures
+        run: mise exec -- zig test tools/fuzz_evidence.zig
 
-          if [ "$rc" -eq 124 ]; then
-            echo "fuzzing window elapsed with no findings"
-            exit 0
-          fi
+      - name: Fuzz each target with a measured activity floor
+        run: mise exec -- zig run tools/fuzz_evidence.zig -- --runs=10000
 
-          # Downgrade ONLY zig fuzzer infrastructure failures (maker slice
-          # panics, libfuzzer harness errors) to warnings. Do NOT match the
-          # bare token `fuzzer.zig`: a genuine finding — the fuzz TARGET dying —
-          # prints a stack trace that also passes through `fuzzer.zig`, so
-          # matching it here silently swallowed real memory-safety findings.
-          # If a true infra panic ever fails to match these specific markers,
-          # the nightly (non-blocking) goes red for triage — the safe direction.
-          if grep -qE "the following maker command terminated with signal|libfuzzer\.log" fuzz.log; then
-            if [ "$elapsed" -lt "$MIN_FUZZ_SECONDS" ]; then
-              echo "::error::The zig fuzzer aborted after ${elapsed}s, before fuzzing began — this run produced ZERO coverage-guided signal. Not a fuzz finding, and not a pass either. Remediation: pin the fuzz lane to a zig snapshot whose fuzzer works, or vendor one. Until then this job is red by design; SECURITY.md must not claim coverage-guided fuzzing as an active control."
-              exit 1
-            fi
-            echo "::warning::zig fuzzer infrastructure failed after ${elapsed}s of real fuzzing (experimental on zig master) — not a fuzz finding"
-            exit 0
-          fi
-
-          echo "fuzzer exited early (rc=$rc) — likely a finding"
-          exit "$rc"
+      - name: Preserve fuzz receipts, reports, and replay corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            .zig-cache/fuzz-evidence/
+            .zig-cache/f/
+            .zig-cache/v/
 
   extended-gates:
     name: Extended gates

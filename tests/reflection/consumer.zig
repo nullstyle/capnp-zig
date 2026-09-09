@@ -344,6 +344,36 @@ fn capabilities(allocator: std.mem.Allocator, registry: reflection.Registry) !vo
     }
 }
 
+fn generatedBuilderRoundtrip(init: std.process.Init) !void {
+    var arena = message.MessageBuilder.init(init.gpa);
+    defer arena.deinit();
+    var value = try values.Values.Builder.init(&arena);
+    try value.setHigh(91);
+    try value.clearHigh();
+    var record = try value.getRecord();
+    try record.setLabel("generated default edit");
+    try (try value.getNumbers()).set(1, 37);
+    var records = try value.getRecords();
+    var first = try records.get(0);
+    try first.setLabel("generated list edit");
+    var storage = capnpc.generated_helpers.ReaderStorage.init(init.gpa);
+    defer storage.deinit();
+    // Typed self-copy must preserve the value across arena reallocation.
+    try value.setRecords(try (try value.asReader(&storage)).getRecords());
+    try value.setRecord(try (try value.asReader(&storage)).getRecord());
+    var selected = value.initSelected();
+    try selected.setName("generated union");
+    try selected.setPayload(&.{ 0, 128, 255 });
+    var details = value.getDetails();
+    try details.setEnabled(false);
+    try value.clearDetails();
+    try value.clearTagged();
+    try strings("generated union", try (try value.getSelected()).getName());
+    const bytes = try arena.toBytes();
+    defer init.gpa.free(bytes);
+    try write(init, "builder-values.bin", bytes);
+}
+
 pub fn main(init: std.process.Init) !void {
     const destination = try output.configure(init);
     defer if (destination) |path| init.gpa.free(path);
@@ -353,11 +383,13 @@ pub fn main(init: std.process.Init) !void {
     try valuesRoundtrip(init, registry);
     try brandsRoundtrip(init, registry);
     try scalarRoundtrip(init, registry);
+    try generatedBuilderRoundtrip(init);
     try invalidDescriptors(init.gpa);
     try constrainedPointers(init.gpa, registry);
     try capabilities(init.gpa, registry);
     try @import("list_evolution_test.zig").run(init, registry);
     try @import("list_failure_test.zig").run(init, registry);
     try @import("generic_list_test.zig").run(init, registry);
+    try @import("mutation_corpus.zig").run(init, registry);
     try write(init, "schema.bin", registry.encodedRequest());
 }

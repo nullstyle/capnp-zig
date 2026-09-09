@@ -2,6 +2,8 @@ const std = @import("std");
 const cap_table = @import("./table.zig");
 const message = @import("../../serialization/message.zig");
 const protocol = @import("../wire/protocol.zig");
+const helpers = @import("../../serialization/generated_helpers.zig");
+const copy_budget = @import("../../serialization/copy_budget.zig");
 const capability_remap = message.capability_remap;
 
 const buildMessageView = capability_remap.buildMessageView;
@@ -36,12 +38,57 @@ pub fn clonePayloadWithRemappedCaps(
     inbound_caps: *const cap_table.InboundCapTable,
     map_inbound_cap: *const fn (*PeerType, *const cap_table.InboundCapTable, u32) anyerror!?RemappedCap,
 ) anyerror!void {
+    // Keep the frozen entry point. Temporary storage now follows the builder's
+    // allocator so the bounded operation accounts for all of its backing bytes.
+    _ = allocator;
+    return clonePayloadWithRemappedCapsWithOptions(PeerType, peer, builder, payload_builder, source, inbound_caps, map_inbound_cap, .{});
+}
+
+/// Copy a wire payload and explicitly map its source capability table into the
+/// destination peer's id spaces. The destination pointer is restored on every
+/// failure. A mapper owns its staged capability leases and must roll them back
+/// if this function fails; Peer.clonePayloadAcrossPeers supplies that lifecycle.
+/// Mapper allocations/side effects belong to that separate ownership protocol.
+/// Returned origin-tagged pointers must pass through encodeCallPayloadCaps or
+/// encodeReturnPayloadCaps before serialization. Ordinary wire copying alone
+/// never transfers capabilities between tables.
+pub fn clonePayloadWithRemappedCapsWithOptions(
+    comptime PeerType: type,
+    peer: *PeerType,
+    builder: *message.MessageBuilder,
+    payload_builder: protocol.PayloadBuilder,
+    source: protocol.Payload,
+    inbound_caps: *const cap_table.InboundCapTable,
+    map_inbound_cap: *const fn (*PeerType, *const cap_table.InboundCapTable, u32) anyerror!?RemappedCap,
+    options: helpers.CopyOptions,
+) anyerror!void {
+    if (payload_builder._builder.builder != builder) return error.WrongMessageBuilder;
+    try helpers.checkPointerCopy(source.content, options);
+    var allocation: copy_budget.Allocation = undefined;
+    try allocation.begin(builder, options.max_allocation_bytes);
+    defer allocation.end();
+    return copyAndRemap(PeerType, peer, builder, payload_builder, source, inbound_caps, map_inbound_cap) catch |err| return allocation.failure(err);
+}
+
+fn copyAndRemap(
+    comptime PeerType: type,
+    peer: *PeerType,
+    builder: *message.MessageBuilder,
+    payload_builder: protocol.PayloadBuilder,
+    source: protocol.Payload,
+    inbound_caps: *const cap_table.InboundCapTable,
+    map_inbound_cap: *const fn (*PeerType, *const cap_table.InboundCapTable, u32) anyerror!?RemappedCap,
+) anyerror!void {
     var payload = payload_builder;
     const any_builder = try payload.initContent();
-    try message.cloneAnyPointer(source.content, any_builder);
+    const segment = builder.segments.items[any_builder.segment_id].items;
+    const old_word = std.mem.readInt(u64, segment[any_builder.pointer_pos..][0..8], .little);
+    errdefer writePointerWord(builder, any_builder.segment_id, any_builder.pointer_pos, old_word) catch unreachable;
+    // Snapshot first: source views may borrow this same builder's storage.
+    try helpers.setPointer(any_builder, source.content);
     try remapPayloadCapabilities(
         PeerType,
-        allocator,
+        builder.allocator,
         peer,
         builder,
         any_builder,

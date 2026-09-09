@@ -639,4 +639,56 @@ pub const PingPong = struct {
             }
         };
     };
+
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{};
+        _ = &_bindings;
+        return struct {
+            const _Applied = @This();
+            pub const Raw = _capnp_file.PingPong;
+            pub const interface_id = Raw.interface_id;
+            pub const Ping = capnpc.generic.Method(Raw.Ping, _capnp_file.PingPong.PingParams, _capnp_file.PingPong.PingResults);
+            pub const Client = struct {
+                raw: Raw.Client,
+                pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() {
+                    return .{ .raw = Raw.Client.init(peer, cap_id) };
+                }
+                pub fn release(self: @This()) void {
+                    self.raw.release();
+                }
+                pub fn callPing(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Ping.BuildFn, comptime callback: _Applied.Ping.Callback) !u32 {
+                    const Adapter = _Applied.Ping.ClientAdapter(build, callback);
+                    return self.raw.callPing(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                }
+            };
+            pub const PipelinedClient = struct {
+                raw: Raw.PipelinedClient,
+                pub fn callPing(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Ping.BuildFn, comptime callback: _Applied.Ping.Callback) !u32 {
+                    const Adapter = _Applied.Ping.ClientAdapter(build, callback);
+                    return self.raw.callPing(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                }
+            };
+            pub fn ServerAdapter(comptime handlers: anytype) type {
+                _ = &handlers;
+                return struct {
+                    raw: Raw.Server,
+                    pub fn init(ctx: *anyopaque) @This() {
+                        return .{ .raw = .{ .ctx = ctx, .vtable = .{
+                            .ping = if (@hasField(@TypeOf(handlers), "ping")) _Applied.Ping.ServerAdapter(handlers.ping).handle else unsupportedPing,
+                        } } };
+                    }
+                    pub fn exportServer(self: *@This(), peer: *rpc.peer.Peer) !u32 {
+                        return Raw.exportServer(peer, &self.raw);
+                    }
+                    fn unsupportedPing(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.Ping.Params.Reader, _: *Raw.Ping.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void {
+                        return error.Unimplemented;
+                    }
+                };
+            }
+        };
+    }
 };

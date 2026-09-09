@@ -3062,6 +3062,88 @@ pub const QueueTicket = struct {
         }
 
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{ };
+        _ = &_bindings;
+        return struct {
+        const _Data = @This();
+        pub const Raw = _capnp_file.QueueTicket;
+        const _Field1 = capnpc.generic.Struct(_capnp_file.game_types.PlayerInfo.Apply(.{ }), 1, 2);
+        comptime { capnpc.generic.requirePointer(_Field1); }
+        const _Field3 = capnpc.generic.Struct(_capnp_file.game_types.Timestamp, 1, 0);
+        comptime { capnpc.generic.requirePointer(_Field3); }
+        pub const Reader = struct {
+            inner: message.StructReader,
+            pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+            pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+            pub fn getTicketId(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getTicketId)).@"fn".return_type.? { return self.raw().getTicketId(); }
+            pub fn getPlayer(self: @This()) !_Field1.Reader {
+                const raw_value = self.raw();
+                return _Field1.wrapRawReader(try raw_value.getPlayer());
+            }
+            pub fn getMode(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getMode)).@"fn".return_type.? { return self.raw().getMode(); }
+            pub fn getEnqueuedAt(self: @This()) !_Field3.Reader {
+                const raw_value = self.raw();
+                return _Field3.wrapRawReader(try raw_value.getEnqueuedAt());
+            }
+            pub fn getEstimatedWaitSecs(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getEstimatedWaitSecs)).@"fn".return_type.? { return self.raw().getEstimatedWaitSecs(); }
+        };
+        pub const Builder = struct {
+            inner: message.StructBuilder,
+            pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+            pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+            pub fn getTicketId(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getTicketId)).@"fn".return_type.? { return self.raw().getTicketId(); }
+            pub fn setTicketId(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setTicketId)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setTicketId(value); }
+            pub fn getPlayer(self: @This()) !_Field1.Builder {
+                var raw_value = self.raw();
+                _ = &raw_value;
+                return _Field1.wrapRawBuilder(try raw_value.getPlayer());
+            }
+            pub fn setPlayer(self: @This(), value: _Field1.Reader) !void {
+                try _Field1.set(try self.inner.getAnyPointer(0), value);
+            }
+            pub const initPlayer = capnpc.generic.Initializer(_Field1, _Data.Builder, 0, 0, 65535).call;
+            pub fn getMode(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getMode)).@"fn".return_type.? { return self.raw().getMode(); }
+            pub fn setMode(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setMode)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setMode(value); }
+            pub fn getEnqueuedAt(self: @This()) !_Field3.Builder {
+                var raw_value = self.raw();
+                _ = &raw_value;
+                return _Field3.wrapRawBuilder(try raw_value.getEnqueuedAt());
+            }
+            pub fn setEnqueuedAt(self: @This(), value: _Field3.Reader) !void {
+                try _Field3.set(try self.inner.getAnyPointer(1), value);
+            }
+            pub const initEnqueuedAt = capnpc.generic.Initializer(_Field3, _Data.Builder, 1, 0, 65535).call;
+            pub fn getEstimatedWaitSecs(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getEstimatedWaitSecs)).@"fn".return_type.? { return self.raw().getEstimatedWaitSecs(); }
+            pub fn setEstimatedWaitSecs(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setEstimatedWaitSecs)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setEstimatedWaitSecs(value); }
+        };
+        pub const Pipeline = struct {
+            peer: *@import("capnpc-zig").rpc.peer.Peer,
+            question_id: u32,
+            pointer_indexes: [64]u16 = undefined,
+            pointer_count: u8 = 0,
+            pub fn getPlayer(self: @This()) !_Field1.Pipeline {
+                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                var path = self;
+                path.pointer_indexes[path.pointer_count] = 0;
+                path.pointer_count += 1;
+                return _Field1.pipeline(path);
+            }
+            pub fn getEnqueuedAt(self: @This()) !_Field3.Pipeline {
+                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                var path = self;
+                path.pointer_indexes[path.pointer_count] = 1;
+                path.pointer_count += 1;
+                return _Field3.pipeline(path);
+            }
+        };
+        };
+    }
 };
 
 pub const MatchInfo = struct {
@@ -3321,6 +3403,115 @@ pub const MatchInfo = struct {
         }
 
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{ };
+        _ = &_bindings;
+        return struct {
+        const _Data = @This();
+        pub const Raw = _capnp_file.MatchInfo;
+        const _Field0 = capnpc.generic.Struct(_capnp_file.MatchId, 1, 0);
+        comptime { capnpc.generic.requirePointer(_Field0); }
+        const _Field3 = capnpc.generic.List(capnpc.generic.Struct(_capnp_file.game_types.PlayerInfo.Apply(.{ }), 1, 2));
+        comptime { capnpc.generic.requirePointer(_Field3); }
+        const _Field4 = capnpc.generic.List(capnpc.generic.Struct(_capnp_file.game_types.PlayerInfo.Apply(.{ }), 1, 2));
+        comptime { capnpc.generic.requirePointer(_Field4); }
+        const _Field5 = capnpc.generic.Struct(_capnp_file.game_types.Timestamp, 1, 0);
+        comptime { capnpc.generic.requirePointer(_Field5); }
+        pub const Reader = struct {
+            inner: message.StructReader,
+            pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+            pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+            pub fn getId(self: @This()) !_Field0.Reader {
+                const raw_value = self.raw();
+                return _Field0.wrapRawReader(try raw_value.getId());
+            }
+            pub fn getMode(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getMode)).@"fn".return_type.? { return self.raw().getMode(); }
+            pub fn getState(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getState)).@"fn".return_type.? { return self.raw().getState(); }
+            pub fn getTeamA(self: @This()) !_Field3.Reader {
+                const raw_value = self.raw();
+                return _Field3.wrapRawReader(try raw_value.getTeamA());
+            }
+            pub fn getTeamB(self: @This()) !_Field4.Reader {
+                const raw_value = self.raw();
+                return _Field4.wrapRawReader(try raw_value.getTeamB());
+            }
+            pub fn getCreatedAt(self: @This()) !_Field5.Reader {
+                const raw_value = self.raw();
+                return _Field5.wrapRawReader(try raw_value.getCreatedAt());
+            }
+        };
+        pub const Builder = struct {
+            inner: message.StructBuilder,
+            pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+            pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+            pub fn getId(self: @This()) !_Field0.Builder {
+                var raw_value = self.raw();
+                _ = &raw_value;
+                return _Field0.wrapRawBuilder(try raw_value.getId());
+            }
+            pub fn setId(self: @This(), value: _Field0.Reader) !void {
+                try _Field0.set(try self.inner.getAnyPointer(0), value);
+            }
+            pub const initId = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            pub fn getMode(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getMode)).@"fn".return_type.? { return self.raw().getMode(); }
+            pub fn setMode(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setMode)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setMode(value); }
+            pub fn getState(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getState)).@"fn".return_type.? { return self.raw().getState(); }
+            pub fn setState(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setState)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setState(value); }
+            pub fn getTeamA(self: @This()) !_Field3.Builder {
+                var raw_value = self.raw();
+                _ = &raw_value;
+                return _Field3.wrapRawBuilder(try raw_value.getTeamA());
+            }
+            pub fn setTeamA(self: @This(), value: _Field3.Reader) !void {
+                try _Field3.set(try self.inner.getAnyPointer(1), value);
+            }
+            pub const initTeamA = capnpc.generic.Initializer(_Field3, _Data.Builder, 1, 0, 65535).call;
+            pub fn getTeamB(self: @This()) !_Field4.Builder {
+                var raw_value = self.raw();
+                _ = &raw_value;
+                return _Field4.wrapRawBuilder(try raw_value.getTeamB());
+            }
+            pub fn setTeamB(self: @This(), value: _Field4.Reader) !void {
+                try _Field4.set(try self.inner.getAnyPointer(2), value);
+            }
+            pub const initTeamB = capnpc.generic.Initializer(_Field4, _Data.Builder, 2, 0, 65535).call;
+            pub fn getCreatedAt(self: @This()) !_Field5.Builder {
+                var raw_value = self.raw();
+                _ = &raw_value;
+                return _Field5.wrapRawBuilder(try raw_value.getCreatedAt());
+            }
+            pub fn setCreatedAt(self: @This(), value: _Field5.Reader) !void {
+                try _Field5.set(try self.inner.getAnyPointer(3), value);
+            }
+            pub const initCreatedAt = capnpc.generic.Initializer(_Field5, _Data.Builder, 3, 0, 65535).call;
+        };
+        pub const Pipeline = struct {
+            peer: *@import("capnpc-zig").rpc.peer.Peer,
+            question_id: u32,
+            pointer_indexes: [64]u16 = undefined,
+            pointer_count: u8 = 0,
+            pub fn getId(self: @This()) !_Field0.Pipeline {
+                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                var path = self;
+                path.pointer_indexes[path.pointer_count] = 0;
+                path.pointer_count += 1;
+                return _Field0.pipeline(path);
+            }
+            pub fn getCreatedAt(self: @This()) !_Field5.Pipeline {
+                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                var path = self;
+                path.pointer_indexes[path.pointer_count] = 3;
+                path.pointer_count += 1;
+                return _Field5.pipeline(path);
+            }
+        };
+        };
+    }
 };
 
 pub const MatchResult = struct {
@@ -3466,6 +3657,78 @@ pub const MatchResult = struct {
         }
 
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{ };
+        _ = &_bindings;
+        return struct {
+        const _Data = @This();
+        pub const Raw = _capnp_file.MatchResult;
+        const _Field0 = capnpc.generic.Struct(_capnp_file.MatchId, 1, 0);
+        comptime { capnpc.generic.requirePointer(_Field0); }
+        const _Field3 = capnpc.generic.List(capnpc.generic.Struct(_capnp_file.PlayerMatchStats.Apply(.{ }), 2, 1));
+        comptime { capnpc.generic.requirePointer(_Field3); }
+        pub const Reader = struct {
+            inner: message.StructReader,
+            pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+            pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+            pub fn getMatchId(self: @This()) !_Field0.Reader {
+                const raw_value = self.raw();
+                return _Field0.wrapRawReader(try raw_value.getMatchId());
+            }
+            pub fn getWinningTeam(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getWinningTeam)).@"fn".return_type.? { return self.raw().getWinningTeam(); }
+            pub fn getDuration(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getDuration)).@"fn".return_type.? { return self.raw().getDuration(); }
+            pub fn getPlayerStats(self: @This()) !_Field3.Reader {
+                const raw_value = self.raw();
+                return _Field3.wrapRawReader(try raw_value.getPlayerStats());
+            }
+        };
+        pub const Builder = struct {
+            inner: message.StructBuilder,
+            pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+            pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+            pub fn getMatchId(self: @This()) !_Field0.Builder {
+                var raw_value = self.raw();
+                _ = &raw_value;
+                return _Field0.wrapRawBuilder(try raw_value.getMatchId());
+            }
+            pub fn setMatchId(self: @This(), value: _Field0.Reader) !void {
+                try _Field0.set(try self.inner.getAnyPointer(0), value);
+            }
+            pub const initMatchId = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            pub fn getWinningTeam(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getWinningTeam)).@"fn".return_type.? { return self.raw().getWinningTeam(); }
+            pub fn setWinningTeam(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setWinningTeam)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setWinningTeam(value); }
+            pub fn getDuration(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getDuration)).@"fn".return_type.? { return self.raw().getDuration(); }
+            pub fn setDuration(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setDuration)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setDuration(value); }
+            pub fn getPlayerStats(self: @This()) !_Field3.Builder {
+                var raw_value = self.raw();
+                _ = &raw_value;
+                return _Field3.wrapRawBuilder(try raw_value.getPlayerStats());
+            }
+            pub fn setPlayerStats(self: @This(), value: _Field3.Reader) !void {
+                try _Field3.set(try self.inner.getAnyPointer(1), value);
+            }
+            pub const initPlayerStats = capnpc.generic.Initializer(_Field3, _Data.Builder, 1, 0, 65535).call;
+        };
+        pub const Pipeline = struct {
+            peer: *@import("capnpc-zig").rpc.peer.Peer,
+            question_id: u32,
+            pointer_indexes: [64]u16 = undefined,
+            pointer_count: u8 = 0,
+            pub fn getMatchId(self: @This()) !_Field0.Pipeline {
+                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                var path = self;
+                path.pointer_indexes[path.pointer_count] = 0;
+                path.pointer_count += 1;
+                return _Field0.pipeline(path);
+            }
+        };
+        };
+    }
 };
 
 pub const PlayerMatchStats = struct {
@@ -3608,6 +3871,69 @@ pub const PlayerMatchStats = struct {
         }
 
     };
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{ };
+        _ = &_bindings;
+        return struct {
+        const _Data = @This();
+        pub const Raw = _capnp_file.PlayerMatchStats;
+        const _Field0 = capnpc.generic.Struct(_capnp_file.game_types.PlayerInfo.Apply(.{ }), 1, 2);
+        comptime { capnpc.generic.requirePointer(_Field0); }
+        pub const Reader = struct {
+            inner: message.StructReader,
+            pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+            pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+            pub fn getPlayer(self: @This()) !_Field0.Reader {
+                const raw_value = self.raw();
+                return _Field0.wrapRawReader(try raw_value.getPlayer());
+            }
+            pub fn getKills(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getKills)).@"fn".return_type.? { return self.raw().getKills(); }
+            pub fn getDeaths(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getDeaths)).@"fn".return_type.? { return self.raw().getDeaths(); }
+            pub fn getAssists(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getAssists)).@"fn".return_type.? { return self.raw().getAssists(); }
+            pub fn getScore(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getScore)).@"fn".return_type.? { return self.raw().getScore(); }
+        };
+        pub const Builder = struct {
+            inner: message.StructBuilder,
+            pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+            pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+            pub fn getPlayer(self: @This()) !_Field0.Builder {
+                var raw_value = self.raw();
+                _ = &raw_value;
+                return _Field0.wrapRawBuilder(try raw_value.getPlayer());
+            }
+            pub fn setPlayer(self: @This(), value: _Field0.Reader) !void {
+                try _Field0.set(try self.inner.getAnyPointer(0), value);
+            }
+            pub const initPlayer = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            pub fn getKills(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getKills)).@"fn".return_type.? { return self.raw().getKills(); }
+            pub fn setKills(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setKills)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setKills(value); }
+            pub fn getDeaths(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getDeaths)).@"fn".return_type.? { return self.raw().getDeaths(); }
+            pub fn setDeaths(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setDeaths)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setDeaths(value); }
+            pub fn getAssists(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getAssists)).@"fn".return_type.? { return self.raw().getAssists(); }
+            pub fn setAssists(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setAssists)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setAssists(value); }
+            pub fn getScore(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getScore)).@"fn".return_type.? { return self.raw().getScore(); }
+            pub fn setScore(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setScore)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setScore(value); }
+        };
+        pub const Pipeline = struct {
+            peer: *@import("capnpc-zig").rpc.peer.Peer,
+            question_id: u32,
+            pointer_indexes: [64]u16 = undefined,
+            pointer_count: u8 = 0,
+            pub fn getPlayer(self: @This()) !_Field0.Pipeline {
+                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                var path = self;
+                path.pointer_indexes[path.pointer_count] = 0;
+                path.pointer_count += 1;
+                return _Field0.pipeline(path);
+            }
+        };
+        };
+    }
 };
 
 pub const MatchController = struct {
@@ -4676,6 +5002,57 @@ pub const MatchController = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.MatchController.GetInfoResults;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.MatchInfo.Apply(.{ }), 1, 4);
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getInfo(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getInfo());
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getInfo(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getInfo());
+                }
+                pub fn setInfo(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initInfo = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getInfo(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const SignalReadyParams = struct {
@@ -4750,6 +5127,57 @@ pub const MatchController = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.MatchController.SignalReadyParams;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.game_types.PlayerId, 1, 0);
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getPlayer(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getPlayer());
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getPlayer(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getPlayer());
+                }
+                pub fn setPlayer(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initPlayer = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getPlayer(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const SignalReadyResults = struct {
@@ -4930,6 +5358,57 @@ pub const MatchController = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.MatchController.ReportResultParams;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.MatchResult.Apply(.{ }), 1, 2);
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getResult(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getResult());
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getResult(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getResult());
+                }
+                pub fn setResult(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initResult = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getResult(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const ReportResultResults = struct {
@@ -5150,6 +5629,84 @@ pub const MatchController = struct {
         };
     };
 
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{ };
+        _ = &_bindings;
+        return struct {
+        const _Applied = @This();
+        pub const Raw = _capnp_file.MatchController;
+        pub const interface_id = Raw.interface_id;
+        pub const GetInfo = capnpc.generic.Method(Raw.GetInfo, _capnp_file.MatchController.GetInfoParams, _capnp_file.MatchController.GetInfoResults.Apply(.{ }));
+        pub const SignalReady = capnpc.generic.Method(Raw.SignalReady, _capnp_file.MatchController.SignalReadyParams.Apply(.{ }), _capnp_file.MatchController.SignalReadyResults);
+        pub const ReportResult = capnpc.generic.Method(Raw.ReportResult, _capnp_file.MatchController.ReportResultParams.Apply(.{ }), _capnp_file.MatchController.ReportResultResults);
+        pub const CancelMatch = capnpc.generic.Method(Raw.CancelMatch, _capnp_file.MatchController.CancelMatchParams, _capnp_file.MatchController.CancelMatchResults);
+        pub const Client = struct {
+            raw: Raw.Client,
+            pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() { return .{ .raw = Raw.Client.init(peer, cap_id) }; }
+            pub fn release(self: @This()) void { self.raw.release(); }
+            pub fn callGetInfo(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInfo.BuildFn, comptime callback: _Applied.GetInfo.Callback) !u32 {
+                const Adapter = _Applied.GetInfo.ClientAdapter(build, callback);
+                return self.raw.callGetInfo(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callGetInfoPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInfo.BuildFn, comptime callback: _Applied.GetInfo.Callback) !_Applied.GetInfo.Results.Pipeline {
+                const qid = try self.callGetInfo(ctx, build, callback);
+                return .{ .peer = self.raw.peer, .question_id = qid };
+            }
+            pub fn callSignalReady(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SignalReady.BuildFn, comptime callback: _Applied.SignalReady.Callback) !u32 {
+                const Adapter = _Applied.SignalReady.ClientAdapter(build, callback);
+                return self.raw.callSignalReady(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callReportResult(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ReportResult.BuildFn, comptime callback: _Applied.ReportResult.Callback) !u32 {
+                const Adapter = _Applied.ReportResult.ClientAdapter(build, callback);
+                return self.raw.callReportResult(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callCancelMatch(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CancelMatch.BuildFn, comptime callback: _Applied.CancelMatch.Callback) !u32 {
+                const Adapter = _Applied.CancelMatch.ClientAdapter(build, callback);
+                return self.raw.callCancelMatch(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+        };
+        pub const PipelinedClient = struct {
+            raw: Raw.PipelinedClient,
+            pub fn callGetInfo(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInfo.BuildFn, comptime callback: _Applied.GetInfo.Callback) !u32 {
+                const Adapter = _Applied.GetInfo.ClientAdapter(build, callback);
+                return self.raw.callGetInfo(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callSignalReady(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SignalReady.BuildFn, comptime callback: _Applied.SignalReady.Callback) !u32 {
+                const Adapter = _Applied.SignalReady.ClientAdapter(build, callback);
+                return self.raw.callSignalReady(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callReportResult(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ReportResult.BuildFn, comptime callback: _Applied.ReportResult.Callback) !u32 {
+                const Adapter = _Applied.ReportResult.ClientAdapter(build, callback);
+                return self.raw.callReportResult(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callCancelMatch(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CancelMatch.BuildFn, comptime callback: _Applied.CancelMatch.Callback) !u32 {
+                const Adapter = _Applied.CancelMatch.ClientAdapter(build, callback);
+                return self.raw.callCancelMatch(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+        };
+        pub fn ServerAdapter(comptime handlers: anytype) type {
+            _ = &handlers;
+            return struct {
+                raw: Raw.Server,
+                pub fn init(ctx: *anyopaque) @This() { return .{ .raw = .{ .ctx = ctx, .vtable = .{
+                    .getInfo = if (@hasField(@TypeOf(handlers), "getInfo")) _Applied.GetInfo.ServerAdapter(handlers.getInfo).handle else unsupportedGetInfo,
+                    .signalReady = if (@hasField(@TypeOf(handlers), "signalReady")) _Applied.SignalReady.ServerAdapter(handlers.signalReady).handle else unsupportedSignalReady,
+                    .reportResult = if (@hasField(@TypeOf(handlers), "reportResult")) _Applied.ReportResult.ServerAdapter(handlers.reportResult).handle else unsupportedReportResult,
+                    .cancelMatch = if (@hasField(@TypeOf(handlers), "cancelMatch")) _Applied.CancelMatch.ServerAdapter(handlers.cancelMatch).handle else unsupportedCancelMatch,
+                } } }; }
+                pub fn exportServer(self: *@This(), peer: *rpc.peer.Peer) !u32 { return Raw.exportServer(peer, &self.raw); }
+                fn unsupportedGetInfo(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.GetInfo.Params.Reader, _: *Raw.GetInfo.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedSignalReady(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.SignalReady.Params.Reader, _: *Raw.SignalReady.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedReportResult(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.ReportResult.Params.Reader, _: *Raw.ReportResult.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedCancelMatch(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.CancelMatch.Params.Reader, _: *Raw.CancelMatch.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+            };
+        }
+        };
+    }
 };
 
 pub const MatchmakingService = struct {
@@ -6491,6 +7048,60 @@ pub const MatchmakingService = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.MatchmakingService.EnqueueParams;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.game_types.PlayerInfo.Apply(.{ }), 1, 2);
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getPlayer(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getPlayer());
+                }
+                pub fn getMode(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getMode)).@"fn".return_type.? { return self.raw().getMode(); }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getPlayer(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getPlayer());
+                }
+                pub fn setPlayer(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initPlayer = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+                pub fn getMode(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getMode)).@"fn".return_type.? { return self.raw().getMode(); }
+                pub fn setMode(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setMode)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setMode(value); }
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getPlayer(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const EnqueueResults = struct {
@@ -6614,6 +7225,60 @@ pub const MatchmakingService = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.MatchmakingService.EnqueueResults;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.QueueTicket.Apply(.{ }), 2, 2);
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getTicket(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getTicket());
+                }
+                pub fn getStatus(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getStatus)).@"fn".return_type.? { return self.raw().getStatus(); }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getTicket(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getTicket());
+                }
+                pub fn setTicket(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initTicket = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+                pub fn getStatus(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getStatus)).@"fn".return_type.? { return self.raw().getStatus(); }
+                pub fn setStatus(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setStatus)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setStatus(value); }
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getTicket(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const DequeueParams = struct {
@@ -6883,6 +7548,60 @@ pub const MatchmakingService = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.MatchmakingService.FindMatchParams;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.game_types.PlayerInfo.Apply(.{ }), 1, 2);
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getPlayer(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getPlayer());
+                }
+                pub fn getMode(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getMode)).@"fn".return_type.? { return self.raw().getMode(); }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getPlayer(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getPlayer());
+                }
+                pub fn setPlayer(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initPlayer = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+                pub fn getMode(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getMode)).@"fn".return_type.? { return self.raw().getMode(); }
+                pub fn setMode(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setMode)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setMode(value); }
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getPlayer(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const FindMatchResults = struct {
@@ -7008,6 +7727,79 @@ pub const MatchmakingService = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.MatchmakingService.FindMatchResults;
+            const _Field0 = capnpc.generic.Capability(_capnp_file.MatchController.Apply(.{ }));
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            const _Field1 = capnpc.generic.Struct(_capnp_file.MatchId, 1, 0);
+            comptime { capnpc.generic.requirePointer(_Field1); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getController(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return raw_value.getController();
+                }
+                pub fn getMatchId(self: @This()) !_Field1.Reader {
+                    const raw_value = self.raw();
+                    return _Field1.wrapRawReader(try raw_value.getMatchId());
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getController(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return raw_value.getController();
+                }
+                pub fn setController(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initController = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+                pub fn getMatchId(self: @This()) !_Field1.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field1.wrapRawBuilder(try raw_value.getMatchId());
+                }
+                pub fn setMatchId(self: @This(), value: _Field1.Reader) !void {
+                    try _Field1.set(try self.inner.getAnyPointer(1), value);
+                }
+                pub const initMatchId = capnpc.generic.Initializer(_Field1, _Data.Builder, 1, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getController(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+                pub fn getMatchId(self: @This()) !_Field1.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 1;
+                    path.pointer_count += 1;
+                    return _Field1.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const GetQueueStatsParams = struct {
@@ -7245,6 +8037,57 @@ pub const MatchmakingService = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.MatchmakingService.GetMatchResultParams;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.MatchId, 1, 0);
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getId(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getId());
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getId(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getId());
+                }
+                pub fn setId(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initId = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getId(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
     pub const GetMatchResultResults = struct {
@@ -7368,7 +8211,158 @@ pub const MatchmakingService = struct {
             }
 
         };
+        pub fn Apply(comptime bindings: anytype) type {
+            _ = &bindings;
+            return @This()._Apply();
+        }
+        fn _Apply() type {
+            const _bindings = .{ };
+            _ = &_bindings;
+            return struct {
+            const _Data = @This();
+            pub const Raw = _capnp_file.MatchmakingService.GetMatchResultResults;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.MatchResult.Apply(.{ }), 1, 2);
+            comptime { capnpc.generic.requirePointer(_Field0); }
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
+                pub fn getResult(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getResult());
+                }
+                pub fn getStatus(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getStatus)).@"fn".return_type.? { return self.raw().getStatus(); }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
+                pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
+                pub fn getResult(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getResult());
+                }
+                pub fn setResult(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initResult = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+                pub fn getStatus(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getStatus)).@"fn".return_type.? { return self.raw().getStatus(); }
+                pub fn setStatus(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setStatus)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setStatus(value); }
+            };
+            pub const Pipeline = struct {
+                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getResult(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
+            };
+        }
     };
 
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{ };
+        _ = &_bindings;
+        return struct {
+        const _Applied = @This();
+        pub const Raw = _capnp_file.MatchmakingService;
+        pub const interface_id = Raw.interface_id;
+        pub const Enqueue = capnpc.generic.Method(Raw.Enqueue, _capnp_file.MatchmakingService.EnqueueParams.Apply(.{ }), _capnp_file.MatchmakingService.EnqueueResults.Apply(.{ }));
+        pub const Dequeue = capnpc.generic.Method(Raw.Dequeue, _capnp_file.MatchmakingService.DequeueParams, _capnp_file.MatchmakingService.DequeueResults);
+        pub const FindMatch = capnpc.generic.Method(Raw.FindMatch, _capnp_file.MatchmakingService.FindMatchParams.Apply(.{ }), _capnp_file.MatchmakingService.FindMatchResults.Apply(.{ }));
+        pub const GetQueueStats = capnpc.generic.Method(Raw.GetQueueStats, _capnp_file.MatchmakingService.GetQueueStatsParams, _capnp_file.MatchmakingService.GetQueueStatsResults);
+        pub const GetMatchResult = capnpc.generic.Method(Raw.GetMatchResult, _capnp_file.MatchmakingService.GetMatchResultParams.Apply(.{ }), _capnp_file.MatchmakingService.GetMatchResultResults.Apply(.{ }));
+        pub const Client = struct {
+            raw: Raw.Client,
+            pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() { return .{ .raw = Raw.Client.init(peer, cap_id) }; }
+            pub fn release(self: @This()) void { self.raw.release(); }
+            pub fn callEnqueue(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Enqueue.BuildFn, comptime callback: _Applied.Enqueue.Callback) !u32 {
+                const Adapter = _Applied.Enqueue.ClientAdapter(build, callback);
+                return self.raw.callEnqueue(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callEnqueuePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Enqueue.BuildFn, comptime callback: _Applied.Enqueue.Callback) !_Applied.Enqueue.Results.Pipeline {
+                const qid = try self.callEnqueue(ctx, build, callback);
+                return .{ .peer = self.raw.peer, .question_id = qid };
+            }
+            pub fn callDequeue(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Dequeue.BuildFn, comptime callback: _Applied.Dequeue.Callback) !u32 {
+                const Adapter = _Applied.Dequeue.ClientAdapter(build, callback);
+                return self.raw.callDequeue(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callFindMatch(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.FindMatch.BuildFn, comptime callback: _Applied.FindMatch.Callback) !u32 {
+                const Adapter = _Applied.FindMatch.ClientAdapter(build, callback);
+                return self.raw.callFindMatch(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callFindMatchPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.FindMatch.BuildFn, comptime callback: _Applied.FindMatch.Callback) !_Applied.FindMatch.Results.Pipeline {
+                const qid = try self.callFindMatch(ctx, build, callback);
+                return .{ .peer = self.raw.peer, .question_id = qid };
+            }
+            pub fn callGetQueueStats(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetQueueStats.BuildFn, comptime callback: _Applied.GetQueueStats.Callback) !u32 {
+                const Adapter = _Applied.GetQueueStats.ClientAdapter(build, callback);
+                return self.raw.callGetQueueStats(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callGetMatchResult(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetMatchResult.BuildFn, comptime callback: _Applied.GetMatchResult.Callback) !u32 {
+                const Adapter = _Applied.GetMatchResult.ClientAdapter(build, callback);
+                return self.raw.callGetMatchResult(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callGetMatchResultPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetMatchResult.BuildFn, comptime callback: _Applied.GetMatchResult.Callback) !_Applied.GetMatchResult.Results.Pipeline {
+                const qid = try self.callGetMatchResult(ctx, build, callback);
+                return .{ .peer = self.raw.peer, .question_id = qid };
+            }
+        };
+        pub const PipelinedClient = struct {
+            raw: Raw.PipelinedClient,
+            pub fn callEnqueue(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Enqueue.BuildFn, comptime callback: _Applied.Enqueue.Callback) !u32 {
+                const Adapter = _Applied.Enqueue.ClientAdapter(build, callback);
+                return self.raw.callEnqueue(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callDequeue(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Dequeue.BuildFn, comptime callback: _Applied.Dequeue.Callback) !u32 {
+                const Adapter = _Applied.Dequeue.ClientAdapter(build, callback);
+                return self.raw.callDequeue(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callFindMatch(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.FindMatch.BuildFn, comptime callback: _Applied.FindMatch.Callback) !u32 {
+                const Adapter = _Applied.FindMatch.ClientAdapter(build, callback);
+                return self.raw.callFindMatch(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callGetQueueStats(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetQueueStats.BuildFn, comptime callback: _Applied.GetQueueStats.Callback) !u32 {
+                const Adapter = _Applied.GetQueueStats.ClientAdapter(build, callback);
+                return self.raw.callGetQueueStats(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+            pub fn callGetMatchResult(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetMatchResult.BuildFn, comptime callback: _Applied.GetMatchResult.Callback) !u32 {
+                const Adapter = _Applied.GetMatchResult.ClientAdapter(build, callback);
+                return self.raw.callGetMatchResult(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+            }
+        };
+        pub fn ServerAdapter(comptime handlers: anytype) type {
+            _ = &handlers;
+            return struct {
+                raw: Raw.Server,
+                pub fn init(ctx: *anyopaque) @This() { return .{ .raw = .{ .ctx = ctx, .vtable = .{
+                    .enqueue = if (@hasField(@TypeOf(handlers), "enqueue")) _Applied.Enqueue.ServerAdapter(handlers.enqueue).handle else unsupportedEnqueue,
+                    .dequeue = if (@hasField(@TypeOf(handlers), "dequeue")) _Applied.Dequeue.ServerAdapter(handlers.dequeue).handle else unsupportedDequeue,
+                    .findMatch = if (@hasField(@TypeOf(handlers), "findMatch")) _Applied.FindMatch.ServerAdapter(handlers.findMatch).handle else unsupportedFindMatch,
+                    .getQueueStats = if (@hasField(@TypeOf(handlers), "getQueueStats")) _Applied.GetQueueStats.ServerAdapter(handlers.getQueueStats).handle else unsupportedGetQueueStats,
+                    .getMatchResult = if (@hasField(@TypeOf(handlers), "getMatchResult")) _Applied.GetMatchResult.ServerAdapter(handlers.getMatchResult).handle else unsupportedGetMatchResult,
+                } } }; }
+                pub fn exportServer(self: *@This(), peer: *rpc.peer.Peer) !u32 { return Raw.exportServer(peer, &self.raw); }
+                fn unsupportedEnqueue(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.Enqueue.Params.Reader, _: *Raw.Enqueue.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedDequeue(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.Dequeue.Params.Reader, _: *Raw.Dequeue.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedFindMatch(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.FindMatch.Params.Reader, _: *Raw.FindMatch.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedGetQueueStats(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.GetQueueStats.Params.Reader, _: *Raw.GetQueueStats.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+                fn unsupportedGetMatchResult(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.GetMatchResult.Params.Reader, _: *Raw.GetMatchResult.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+            };
+        }
+        };
+    }
 };
 

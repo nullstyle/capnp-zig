@@ -46,7 +46,7 @@ pub fn Lifecycle(comptime Peer: type) type {
             if (self.in_deinit) return;
             if (self.automatic_third_party_operation_depth != 0 or
                 self.automatic_third_party_dispatch_depth != 0 or
-                self.join_operation_depth != 0)
+                self.join_operation_depth != 0 or self.streaming_operation_depth != 0)
             {
                 self.automatic_third_party_deinit_deferred = true;
                 self.is_shutting_down = true;
@@ -83,6 +83,7 @@ pub fn Lifecycle(comptime Peer: type) type {
             self.cancelJoinAcceptHostLinks();
             self.cancelAllHostedJoins();
             _ = forceCancelAllQuestions(self, disconnected_reason, .disconnected);
+            self.streaming.deinit(self);
             self.neutralizeJoinCoordinatorResultLinks();
             self.neutralizeJoinCoordinatorAcceptLinks();
             self.drainClosedProvisionsOnOwnerPeer(&provision_teardown);

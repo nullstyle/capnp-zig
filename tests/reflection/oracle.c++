@@ -126,6 +126,25 @@ void checkValues(capnp::DynamicStruct::Reader root) {
   KJ_REQUIRE(payload.size() == 3 && payload[0] == 0 && payload[1] == 128 && payload[2] == 255);
 }
 
+void checkBuilderValues(capnp::DynamicStruct::Reader root) {
+  KJ_REQUIRE(root.get("high").as<uint64_t>() == UINT64_MAX);
+  KJ_REQUIRE(root.get("record").as<capnp::DynamicStruct>().get("label").as<capnp::Text>() == "generated default edit");
+  auto numbers = root.get("numbers").as<capnp::DynamicList>();
+  KJ_REQUIRE(numbers.size() == 3 && numbers[0].as<uint64_t>() == 0 &&
+    numbers[1].as<uint64_t>() == 37 && numbers[2].as<uint64_t>() == UINT64_MAX);
+  auto records = root.get("records").as<capnp::DynamicList>();
+  KJ_REQUIRE(records.size() == 2 && records[0].as<capnp::DynamicStruct>().get("label").as<capnp::Text>() == "generated list edit");
+  KJ_REQUIRE(records[1].as<capnp::DynamicStruct>().get("mode").as<capnp::DynamicEnum>().getRaw() == 0);
+  auto details = root.get("details").as<capnp::DynamicStruct>();
+  KJ_REQUIRE(details.get("enabled").as<bool>() && details.get("mode").as<capnp::DynamicEnum>().getRaw() == 1);
+  auto selected = root.get("selected").as<capnp::DynamicStruct>();
+  KJ_REQUIRE(selected.get("name").as<capnp::Text>() == "generated union");
+  auto payload = selected.get("payload").as<capnp::Data>();
+  KJ_REQUIRE(payload.size() == 3 && payload[0] == 0 && payload[1] == 128 && payload[2] == 255);
+  KJ_REQUIRE(!root.has("tagged") && root.get("tagged").as<capnp::Text>() == "tagged");
+}
+
+
 void checkScalars(capnp::DynamicStruct::Reader root) {
   KJ_REQUIRE(!root.get("boolean").as<bool>());
   KJ_REQUIRE(root.get("signed8").as<int8_t>() == -128);
@@ -227,7 +246,7 @@ void checkEvolution(const std::string& directory, capnp::StructSchema schema) {
       (void)bitReader.getRoot<capnp::DynamicStruct>(schema).get("records").as<capnp::DynamicList>().size();
     }, description);
     KJ_REQUIRE(description.find("upgrading boolean lists to structs") != std::string::npos,
-      "unexpected boolean-list rejection", description);
+      "unexpected boolean-list rejection", description.c_str());
     KJ_REQUIRE(rejected, "C++ unexpectedly accepted a boolean-to-struct list upgrade", name);
   }
   auto nestedWords = readWords((directory + "/evolution-nested.bin").c_str());
@@ -243,10 +262,159 @@ void checkEvolution(const std::string& directory, capnp::StructSchema schema) {
   KJ_REQUIRE(middle.get("extra").as<uint64_t>() == 222 && middle.get("note").as<capnp::Text>() == "nested growth");
 }
 
+const char* mutationLabels[] = {"alpha", "café", "crab 🦀", "omega"};
+const char* mutationOldLabels[] = {"zero", "one", "two"};
+const char* mutationUnknownLabels[] = {"unknown zero", "unknown one", "unknown two"};
+
+void checkMutationEvolution(capnp::DynamicStruct::Reader root, capnp::AnyStruct::Reader raw,
+                            unsigned seed, bool injectMismatch) {
+  KJ_REQUIRE(root.get("marker").as<capnp::Text>() == "mutation corpus");
+  auto list = root.get("records").as<capnp::DynamicList>();
+  auto physical = raw.getPointerSection()[0].getAs<capnp::AnyList>().as<capnp::List<capnp::AnyStruct>>();
+  KJ_REQUIRE(list.size() == 3 && physical.size() == 3);
+  unsigned edited = seed % 3;
+  for (unsigned i = 0; i < 3; ++i) {
+    auto child = list[i].as<capnp::DynamicStruct>();
+    KJ_REQUIRE(child.get("value").as<uint64_t>() == 100 + seed * 10 + i);
+    KJ_REQUIRE(child.get("extra").as<uint64_t>() ==
+      (i == edited ? 888 + seed : seed % 2 == 1 ? 200 + i : 0));
+    KJ_REQUIRE(child.get("label").as<capnp::Text>() ==
+      (i == edited ? mutationLabels[seed] : mutationOldLabels[i]));
+    KJ_REQUIRE(child.get("note").as<capnp::Text>() ==
+      (i == edited ? "mutation note" : seed % 2 == 0 ? "prior note" : ""));
+    KJ_REQUIRE(readDataWord(physical[i], 2) == (seed % 2 == 1 ? 0x9000 + i : 0));
+    if (seed % 2 == 0) { KJ_REQUIRE(physical[i].getPointerSection()[2].getAs<capnp::Text>() == mutationUnknownLabels[i]); }
+  }
+  auto single = root.get("single").as<capnp::DynamicStruct>();
+  KJ_REQUIRE(single.get("value").as<uint64_t>() == 100 + seed * 10 + edited);
+  if (injectMismatch) {
+    KJ_REQUIRE(single.get("extra").as<uint64_t>() == 778 + seed,
+      "deliberate mutation oracle mismatch");
+  }
+  KJ_REQUIRE(single.get("extra").as<uint64_t>() == 777 + seed);
+  KJ_REQUIRE(single.get("label").as<capnp::Text>() == mutationLabels[seed]);
+  KJ_REQUIRE(single.get("note").as<capnp::Text>() == "mutation note");
+  auto rawSingle = raw.getPointerSection()[3].getAs<capnp::AnyStruct>();
+  KJ_REQUIRE(readDataWord(rawSingle, 2) == (seed % 2 == 1 ? 0x9000 + edited : 0));
+  if (seed % 2 == 0) { KJ_REQUIRE(rawSingle.getPointerSection()[2].getAs<capnp::Text>() == mutationUnknownLabels[edited]); }
+}
+
+void replayMutationEvolution(capnp::DynamicStruct::Builder root, unsigned seed) {
+  root.set("marker", "mutation corpus");
+  auto list = root.get("records").as<capnp::DynamicList>();
+  auto entry = list[seed % 3].as<capnp::DynamicStruct>();
+  entry.set("extra", uint64_t(777 + seed));
+  entry.set("label", mutationLabels[seed]);
+  entry.set("note", "mutation note");
+  root.set("single", entry.asReader());
+  entry.set("extra", uint64_t(888 + seed));
+  // Stabilize the value before logical self-copy. This keeps the reference
+  // replay independent of implementation-specific C++ aliasing guarantees.
+  capnp::MallocMessageBuilder snapshot;
+  snapshot.setRoot(root.asReader());
+  auto copy = snapshot.getRoot<capnp::DynamicStruct>(root.getSchema());
+  root.set("records", copy.get("records").as<capnp::DynamicList>().asReader());
+}
+
+void checkMutationValues(capnp::DynamicStruct::Reader root, unsigned seed) {
+  KJ_REQUIRE(root.get("high").as<uint64_t>() == (seed == 2 ? UINT64_MAX : 5 + seed));
+  KJ_REQUIRE(root.get("low").as<int64_t>() == INT64_MIN);
+  KJ_REQUIRE(root.has("record") == (seed % 2 != 0));
+  KJ_REQUIRE(root.get("record").as<capnp::DynamicStruct>().get("label").as<capnp::Text>() ==
+    (seed % 2 == 0 ? "constant é" : mutationLabels[seed]));
+  auto numbers = root.get("numbers").as<capnp::DynamicList>();
+  KJ_REQUIRE(numbers.size() == 3 && numbers[0].as<uint64_t>() == 0 &&
+    numbers[1].as<uint64_t>() == 11 + seed && numbers[2].as<uint64_t>() == UINT64_MAX);
+  KJ_REQUIRE(!root.has("tagged") && root.get("tagged").as<capnp::Text>() == "tagged");
+  auto details = root.get("details").as<capnp::DynamicStruct>();
+  KJ_REQUIRE(details.get("enabled").as<bool>() && details.get("mode").as<capnp::DynamicEnum>().getRaw() == 1);
+  KJ_REQUIRE(root.has("none") == (seed % 3 == 1));
+  KJ_REQUIRE(root.has("selected") == (seed % 3 != 1));
+  if (seed % 3 != 1) {
+    auto selected = root.get("selected").as<capnp::DynamicStruct>();
+    KJ_REQUIRE(selected.has("name") == (seed % 3 != 0));
+    KJ_REQUIRE(selected.has("payload") == (seed % 3 != 0));
+    KJ_REQUIRE(selected.get("name").as<capnp::Text>() == (seed % 3 == 0 ? "" : mutationLabels[seed]));
+    auto payload = selected.get("payload").as<capnp::Data>();
+    if (seed % 3 == 0) { KJ_REQUIRE(payload.size() == 0); }
+    else { KJ_REQUIRE(payload.size() == 3 && payload[0] == seed && payload[1] == 0x80 && payload[2] == 0xff); }
+  }
+}
+
+void replayMutationValues(capnp::DynamicStruct::Builder root, unsigned seed) {
+  KJ_REQUIRE(!root.has("record"));
+  root.set("high", uint64_t(5 + seed));
+  auto record = root.get("record").as<capnp::DynamicStruct>();
+  KJ_REQUIRE(record.asReader().get("label").as<capnp::Text>() == "constant é");
+  record.set("label", mutationLabels[seed]);
+  {
+    capnp::MallocMessageBuilder snapshot;
+    snapshot.setRoot(root.asReader());
+    auto copy = snapshot.getRoot<capnp::DynamicStruct>(root.getSchema());
+    root.set("record", copy.get("record").as<capnp::DynamicStruct>().asReader());
+  }
+  if (seed % 2 == 0) root.clear("record");
+  root.get("numbers").as<capnp::DynamicList>().set(1, uint64_t(11 + seed));
+  {
+    capnp::MallocMessageBuilder snapshot;
+    snapshot.setRoot(root.asReader());
+    auto copy = snapshot.getRoot<capnp::DynamicStruct>(root.getSchema());
+    root.set("numbers", copy.get("numbers").as<capnp::DynamicList>().asReader());
+  }
+  auto selected = root.init("selected").as<capnp::DynamicStruct>();
+  selected.set("name", mutationLabels[seed]);
+  const capnp::byte payload[] = {static_cast<capnp::byte>(seed), 0x80, 0xff};
+  selected.set("payload", capnp::Data::Reader(payload, 3));
+  if (seed % 3 == 0) root.clear("selected");
+  if (seed % 3 == 1) root.clear("none");
+  root.get("details").as<capnp::DynamicStruct>().set("enabled", false);
+  root.clear("details");
+  if (seed == 2) root.clear("high");
+  root.set("tagged", mutationLabels[seed]);
+  root.clear("tagged");
+}
+
+void checkMutationCorpus(const std::string& directory, capnp::StructSchema evolution,
+                         capnp::StructSchema values, bool injectMismatch) {
+  unsigned checked = 0;
+  for (const char* profile : {"dynamic", "generated"}) {
+    for (unsigned seed = 0; seed < 4; ++seed) {
+      auto prefix = directory + "/mutation-values-" + profile + "-" + std::to_string(seed);
+      auto input = readWords((prefix + "-input.bin").c_str());
+      auto actual = readWords((prefix + ".bin").c_str());
+      capnp::FlatArrayMessageReader inputReader(input), actualReader(actual);
+      capnp::MallocMessageBuilder reference;
+      reference.setRoot(inputReader.getRoot<capnp::AnyStruct>());
+      auto referenceRoot = reference.getRoot<capnp::DynamicStruct>(values);
+      replayMutationValues(referenceRoot, seed);
+      checkMutationValues(referenceRoot.asReader(), seed);
+      checkMutationValues(actualReader.getRoot<capnp::DynamicStruct>(values), seed);
+      ++checked;
+      for (unsigned encoding = 0; encoding < 3; ++encoding) {
+        auto casePrefix = directory + "/mutation-evolution-" + profile + "-" + std::to_string(seed) + "-" + std::to_string(encoding);
+        auto caseInput = readWords((casePrefix + "-input.bin").c_str());
+        auto caseActual = readWords((casePrefix + ".bin").c_str());
+        capnp::FlatArrayMessageReader caseInputReader(caseInput), caseActualReader(caseActual);
+        capnp::MallocMessageBuilder caseReference;
+        caseReference.setRoot(caseInputReader.getRoot<capnp::AnyStruct>());
+        auto caseRoot = caseReference.getRoot<capnp::DynamicStruct>(evolution);
+        replayMutationEvolution(caseRoot, seed);
+        checkMutationEvolution(caseRoot.asReader(), caseReference.getRoot<capnp::AnyStruct>().asReader(), seed, false);
+        checkMutationEvolution(caseActualReader.getRoot<capnp::DynamicStruct>(evolution),
+          caseActualReader.getRoot<capnp::AnyStruct>(), seed, injectMismatch && seed == 0 && encoding == 0);
+        ++checked;
+      }
+    }
+  }
+  KJ_REQUIRE(checked == 32, "mutation corpus coverage changed");
+  std::cout << "mutation corpus: " << checked << " generated/dynamic cases independently replayed and checked\n";
+}
+
 int main(int argc, char** argv) {
   std::string description;
+  bool injectMismatch = argc == 7 && std::string(argv[6]) == "--inject-mismatch";
   if (catches([&] {
-    KJ_REQUIRE(argc == 6);
+    KJ_REQUIRE(argc == 6 || injectMismatch);
     auto originalWords = readWords(argv[1]);
     auto descriptorWords = readWords(argv[2]);
     auto valueWords = readWords(argv[3]);
@@ -260,10 +428,16 @@ int main(int argc, char** argv) {
     capnp::SchemaLoader loader;
     checkDescriptors(original, embedded, loader);
     checkValues(valueReader.getRoot<capnp::DynamicStruct>(loader.get(findType(embedded, ":Values")).asStruct()));
+    auto builderWords = readWords((std::string(argv[5]) + "/builder-values.bin").c_str());
+    capnp::FlatArrayMessageReader builderReader(builderWords);
+    checkBuilderValues(builderReader.getRoot<capnp::DynamicStruct>(loader.get(findType(embedded, ":Values")).asStruct()));
     checkScalars(scalarReader.getRoot<capnp::DynamicStruct>(loader.get(findType(embedded, ":Scalars")).asStruct()));
     checkEvolution(argv[5], loader.get(findType(embedded, ":Evolution")).asStruct());
+    checkMutationCorpus(argv[5], loader.get(findType(embedded, ":Evolution")).asStruct(),
+      loader.get(findType(embedded, ":Values")).asStruct(), injectMismatch);
   }, description)) {
     std::cerr << description << '\n';
+    if (injectMismatch && description.find("deliberate mutation oracle mismatch") != std::string::npos) return 2;
     return 1;
   }
   return 0;

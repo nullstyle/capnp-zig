@@ -387,6 +387,43 @@ pub const Service = struct {
             else => try peer.sendReturnException(call.question_id, "unknown method"),
         }
     }
+    pub fn Apply(comptime bindings: anytype) type {
+        _ = &bindings;
+        return @This()._Apply();
+    }
+    fn _Apply() type {
+        const _bindings = .{};
+        _ = &_bindings;
+        return struct {
+            const _Applied = @This();
+            pub const Raw = _capnp_file.Service;
+            pub const interface_id = Raw.interface_id;
+            pub const Client = struct {
+                raw: Raw.Client,
+                pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() {
+                    return .{ .raw = Raw.Client.init(peer, cap_id) };
+                }
+                pub fn release(self: @This()) void {
+                    self.raw.release();
+                }
+            };
+            pub const PipelinedClient = struct {
+                raw: Raw.PipelinedClient,
+            };
+            pub fn ServerAdapter(comptime handlers: anytype) type {
+                _ = &handlers;
+                return struct {
+                    raw: Raw.Server,
+                    pub fn init(ctx: *anyopaque) @This() {
+                        return .{ .raw = .{ .ctx = ctx, .vtable = .{} } };
+                    }
+                    pub fn exportServer(self: *@This(), peer: *rpc.peer.Peer) !u32 {
+                        return Raw.exportServer(peer, &self.raw);
+                    }
+                };
+            }
+        };
+    }
 };
 
 pub const Child = struct {

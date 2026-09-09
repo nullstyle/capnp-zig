@@ -95,6 +95,8 @@ fn e(path: []const u8) Rule {
 // "thirdPartyHosted emission") as L3, so its whole get/set/clear trio is held
 // out of the frozen contract.
 const experimental_overrides = [_]Rule{
+    e("capnpc-zig.request.parseCodeGeneratorRequestMessage"),
+    e("capnpc-zig.rpc.caps.table.payload_remap.clonePayloadWithRemappedCapsWithOptions"),
     // Generated reflection handles remain Experimental through this Stable
     // wire builder alias, matching the reflection runtime they expose.
     e("capnpc-zig.rpc.wire.protocol.PayloadBuilder.capnpSchema"),

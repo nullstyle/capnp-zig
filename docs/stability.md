@@ -156,7 +156,7 @@ prove the backend works, and no lane executes it because none can.
 | Schema Types | `src/serialization/schema.zig` | In-memory schema representation (Node, Field, Type, Value). The frozen `Type` union remains unchanged; additive `TypeMetadata`, `TypeExpression`, parameters, and brands preserve AnyPointer sub-kinds and generic applications beside it. |
 | Schema Parsing | `src/serialization/request_reader.zig` | Parses `CodeGeneratorRequest` from Cap'n Proto wire format, including bounded recursive brand bindings, node/method parameters, AnyPointer sub-kinds, and interface brands. |
 | Schema Validation | `src/serialization/schema_validation.zig` | Validates and canonicalizes schema graphs. Additive `*WithBrand` entry points enforce a concrete root brand; legacy entry points use an empty root brand while still honoring concrete nested metadata. |
-| Code Generation | `src/capnpc-zig/generator.zig`, `src/capnpc-zig/struct_gen.zig`, `src/capnpc-zig/types.zig` | Generates idiomatic Zig Reader/Builder types, including additive `nestedLists()`, constrained-AnyPointer `pointerKinds()`, and finite concrete `brands()` views while preserving every erased/raw field accessor. A shared bounded resolver handles arbitrary nested lists (including generic-struct terminals), cross-file applications, lexical inheritance, exact arity, and parameter indexes; `CodegenBudget.max_brand_specializations` bounds emitted applications. Pointer defaults recursively materialize before Builder mutation. Generic RPC clients remain erased. |
+| Code Generation | `src/capnpc-zig/generator.zig`, `src/capnpc-zig/struct_gen.zig`, `src/capnpc-zig/types.zig` | Generates idiomatic Zig Reader/Builder types, including additive `nestedLists()`, constrained-AnyPointer `pointerKinds()`, and finite concrete `brands()` views while preserving every erased/raw field accessor. A shared bounded resolver handles arbitrary nested lists (including generic-struct terminals), cross-file applications, lexical inheritance, exact arity, and parameter indexes; `CodegenBudget.max_brand_specializations` bounds emitted applications. Pointer defaults recursively materialize before Builder mutation. The existing erased RPC API remains frozen; new typed `Apply()` applications are Experimental. |
 | Reader Convenience | `src/serialization/reader.zig` | Segment-aware message reader with packed support. |
 | Canonicalization (schema-free) | `src/serialization/canonical.zig` | The spec's canonical form: `canonicalize` / `canonicalizeFlat` / `isCanonical` plus the builder-direct `canonicalizeFlatFromBuilder` / `canonicalizeFromBuilder`. Line-cited port of the C++ reference; byte behavior pinned by acceptance-suite ports and `capnp convert binary:canonical` differential tests. Promoted from Experimental deliberately: downstream consensus consumers use `canonicalizeFlat` bytes as signing preimages, so byte drift is a network fork, not an API break. |
 
@@ -238,6 +238,12 @@ and explicit storage; mutation, rebinding, or deinitialization invalidates them.
 The new strict Text-list readers and defaulted list stride/source-provenance
 fields extend the Stable message API without changing existing signatures.
 See [generated-api.md](generated-api.md).
+
+Generated `Apply()` namespaces and `src/serialization/generic.zig` are
+Experimental. They provide concrete RPC applications, branded inheritance,
+caller-bound method generics, typed data views, and generic capability pipelines
+through adapters around existing calls. Original erased signatures and their
+ownership rules remain unchanged. See [generated-api.md](generated-api.md).
 
 Everything below is outside the frozen contract and may break at any 0.x minor
 bump. The L3 three-party arc in particular is **lightly soaked and
