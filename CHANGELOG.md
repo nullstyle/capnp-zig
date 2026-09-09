@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Windows timed TCP reads repair rejected batch bookkeeping and wake the
+  pinned backend's cancellation wait before joining the owned receive. Silent
+  peers time out; late bytes remain available for the next read, and successful
+  completions racing cancellation are retained. Windows CI reports each
+  timed-read test and bounds its execution before running the full suites.
 - Streaming contexts, deferred acknowledgements, and reservations settle once
   across cancellation, disconnect, reentrant callbacks, and reused question IDs.
   Nested transport teardown waits for active streaming operations to unwind.

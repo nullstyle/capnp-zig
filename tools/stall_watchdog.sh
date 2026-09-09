@@ -10,7 +10,7 @@
 # Recovering it costs a container, a hand-built stall detector and a lot of
 # guessing; that has now happened twice on this repo, for two unrelated faults.
 #
-# This wrapper makes the FIRST occurrence self-diagnosing. It watches the
+# This wrapper captures evidence on the first occurrence. It watches the
 # command's output for silence and, once quiet for `STALL_SECS`, dumps for
 # every live `test` process:
 #   * the full command line (which cache-keyed binary is running)
@@ -20,9 +20,10 @@
 #     graph
 # then keeps waiting, so the step still fails the way it would have.
 #
-# Deliberately Linux-only for the dump (that is where the CI hangs have been,
-# and where /proc and elfutils exist). Elsewhere it runs the command
-# unmodified, so it is safe to wire into every platform's job.
+# Linux captures stacks with /proc and elfutils. Windows captures the wrapped
+# command's native process tree, binary identities, CPU time and thread states.
+# Silence can also mean slow compilation; snapshots do not prove a deadlock.
+# Diagnostics do not terminate the command or change its eventual exit status.
 #
 # Usage: tools/stall_watchdog.sh <command...>
 #   STALL_SECS  seconds of silence before dumping (default 180)
@@ -31,6 +32,12 @@ set -uo pipefail
 set +m   # no job-control chatter when the mirror tail is reaped
 
 STALL_SECS="${STALL_SECS:-180}"
+if ! [[ "$STALL_SECS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "stall_watchdog: STALL_SECS must be a positive integer" >&2
+  exit 2
+fi
+POLL_SECS=15
+if [ "$STALL_SECS" -lt "$POLL_SECS" ]; then POLL_SECS="$STALL_SECS"; fi
 OUT="$(mktemp -t stall_watchdog.XXXXXX)"
 trap 'rm -f "$OUT"' EXIT
 
@@ -47,17 +54,79 @@ tail -f "$OUT" &
 TAIL_PID=$!
 trap 'kill "$TAIL_PID" 2>/dev/null; wait "$TAIL_PID" 2>/dev/null; rm -f "$OUT"' EXIT
 
+dump_windows() {
+  # Git Bash uses an MSYS PID namespace. task/process APIs need WINPID, not $!.
+  local winpid
+  winpid="$(ps -l -p "$CMD_PID" | awk '
+    NR == 1 { for (i = 1; i <= NF; i++) if ($i == "WINPID") column = i }
+    NR > 1 && column { if ($1 !~ /^[0-9]+$/) column++; print $column; exit }
+  ')"
+  if ! [[ "$winpid" =~ ^[1-9][0-9]*$ ]]; then
+    echo "(cannot resolve native Windows PID for wrapped MSYS PID $CMD_PID; command may have exited)"
+    return
+  fi
+  if ! command -v powershell.exe >/dev/null 2>&1; then
+    echo "(Windows diagnostics unavailable: powershell.exe not found; wrapped WINPID $winpid)"
+    return
+  fi
+  STALL_WATCHDOG_WINPID="$winpid" powershell.exe -NoLogo -NoProfile -NonInteractive -Command - <<'POWERSHELL'
+$ErrorActionPreference = 'Stop'
+$rootProcessId = [int]$env:STALL_WATCHDOG_WINPID
+Write-Output "Wrapped command process tree (Windows root PID $rootProcessId):"
+try {
+  $snapshot = @(Get-CimInstance Win32_Process -OperationTimeoutSec 10)
+  $owned = @($snapshot | Where-Object { $_.ProcessId -eq $rootProcessId })
+  $seen = @{}
+  foreach ($entry in $owned) { $seen[[int]$entry.ProcessId] = $true }
+  for ($index = 0; $index -lt $owned.Count; $index++) {
+    $parent = $owned[$index]
+    foreach ($child in $snapshot) {
+      if ($child.ParentProcessId -ne $parent.ProcessId) { continue }
+      $childProcessId = [int]$child.ProcessId
+      if ($seen.ContainsKey($childProcessId)) { continue }
+      # A parent PID may have been reused since an older process was created.
+      if ($null -eq $child.CreationDate -or $null -eq $parent.CreationDate -or
+          $child.CreationDate -lt $parent.CreationDate) { continue }
+      $seen[$childProcessId] = $true
+      $owned += $child
+    }
+  }
+  if ($owned.Count -eq 0) { Write-Output '(wrapped command exited before the process snapshot)' }
+  foreach ($entry in $owned) {
+    Write-Output "--- Windows PID $($entry.ProcessId), parent $($entry.ParentProcessId) ---"
+    Write-Output "  executable: $($entry.ExecutablePath)"
+    Write-Output "  command: $($entry.CommandLine)"
+    Write-Output "  created: $($entry.CreationDate.ToString('o'))"
+    try {
+      $process = Get-Process -Id $entry.ProcessId -ErrorAction Stop
+      Write-Output "  cpu_ms: $($process.TotalProcessorTime.TotalMilliseconds)"
+      Write-Output "  threads: $($process.Threads.Count)"
+      foreach ($thread in $process.Threads) {
+        $state = $thread.ThreadState
+        $reason = if ($state -eq 'Wait') { $thread.WaitReason } else { '-' }
+        Write-Output "    tid=$($thread.Id) state=$state wait=$reason cpu_ms=$($thread.TotalProcessorTime.TotalMilliseconds)"
+      }
+    } catch { Write-Output "  (thread snapshot unavailable: $($_.Exception.Message))" }
+  }
+} catch { Write-Output "(Windows process snapshot failed: $($_.Exception.Message))" }
+
+POWERSHELL
+}
+
 dump_stalled() {
   echo ""
   echo "==================== STALL WATCHDOG ===================="
-  echo "No output for ${STALL_SECS}s. The command is still running, so this is"
-  echo "a hang, not a slow step. Dumping every live test binary below."
-  echo "State R with no syscall means a spin; S means blocked in the kernel."
+  echo "No output for ${STALL_SECS}s while the command is still running."
+  echo "Capturing a possible stall or slow step; the command will keep running."
   echo "========================================================"
-  if [ "$(uname -s)" != "Linux" ]; then
-    echo "(dump skipped: not Linux)"
-    return
-  fi
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      dump_windows
+      echo "=================== END STALL WATCHDOG =================="
+      return ;;
+    Linux) ;;
+    *) echo "(dump skipped: no native diagnostics for this platform)"; return ;;
+  esac
   command -v eu-stack >/dev/null 2>&1 || {
     echo "(installing elfutils for backtraces)"
     (sudo apt-get install -y -qq elfutils >/dev/null 2>&1) || true
@@ -92,10 +161,10 @@ last_size=0
 quiet=0
 dumped=0
 while kill -0 "$CMD_PID" 2>/dev/null; do
-  sleep 15
+  sleep "$POLL_SECS"
   size=$(wc -c <"$OUT" 2>/dev/null || echo 0)
   if [ "$size" = "$last_size" ]; then
-    quiet=$((quiet + 15))
+    quiet=$((quiet + POLL_SECS))
   else
     quiet=0
     dumped=0

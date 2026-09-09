@@ -100,9 +100,23 @@ jobs:
         shell: bash
         run: bash tools/check-stall-watchdog.sh
 
+      - name: Windows timed-read regressions (Debug, 90s run limit)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tools/check-windows-timed-read.ps1 -Optimize Debug
+
+      - name: Upload Windows timed-read evidence (Debug)
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-timed-read-Debug-${{ github.run_id }}
+          path: |
+            .zig-cache/ci/windows-timed-read/Debug/*.log
+            .zig-cache/ci/windows-timed-read/Debug/receipt.json
+
       - name: Run tests
         # See the job timeout above. Wrapped in the stall watchdog so a hang
-        # dumps every live test binary's threads and stacks into this log
+        # captures native process evidence (including Linux stacks) in this log
         # before the cap kills the step, instead of dying anonymously.
         timeout-minutes: 35
         # PowerShell can open .sh via a Windows file association and report
@@ -592,6 +606,20 @@ jobs:
       - name: Verify test command execution and failure propagation
         shell: bash
         run: bash tools/check-stall-watchdog.sh
+
+      - name: Windows timed-read regressions (ReleaseSafe, 90s run limit)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tools/check-windows-timed-read.ps1 -Optimize ReleaseSafe
+
+      - name: Upload Windows timed-read evidence (ReleaseSafe)
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-timed-read-ReleaseSafe-${{ github.run_id }}
+          path: |
+            .zig-cache/ci/windows-timed-read/ReleaseSafe/*.log
+            .zig-cache/ci/windows-timed-read/ReleaseSafe/receipt.json
 
       - name: Run the full suite under ReleaseSafe
         shell: bash

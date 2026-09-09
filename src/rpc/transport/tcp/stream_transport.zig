@@ -561,6 +561,15 @@ fn ioReadVecTimeout(
         .data = bufs,
     } });
     batch.awaitConcurrent(io, deadline) catch |err| {
+        // The pinned Windows backend releases a rejected net_read slot but
+        // leaves its submitted head pointing at that now-unused slot. This
+        // batch owns one operation: repair only that fully inactive state,
+        // preserving backend userdata for the normal cancellation cleanup.
+        if (err == error.ConcurrencyUnavailable and batch.unused.head != .none and
+            batch.pending.head == .none and batch.completed.head == .none)
+        {
+            batch.submitted = .empty;
+        }
         // An await error may leave pending work or completed reads. Join it
         // before reusing the buffer and preserve bytes already consumed.
         batch.cancel(io);
@@ -600,7 +609,7 @@ fn ioReadVecWindowsTimeout(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, dead
     };
     var storage: [1]std.Io.Operation.Storage = undefined;
     var batch: std.Io.Batch = .init(&storage);
-    defer batch.cancel(io);
+    defer cancelWindowsReceive(io, &batch);
     batch.addAt(0, .{ .device_io_control = .{
         .file = .{ .handle = fd, .flags = .{ .nonblocking = true } },
         .code = windows.IOCTL.AFD.RECEIVE,
@@ -610,12 +619,25 @@ fn ioReadVecWindowsTimeout(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, dead
         // Ordinary Windows netRead can return Canceled after AFD consumed
         // bytes. Batch cancellation instead retains the final successful
         // IOSB, and keeps receive/vectors alive until the APC has completed.
-        batch.cancel(io);
+        cancelWindowsReceive(io, &batch);
         if (batch.next()) |completion| return windowsReadResult(completion.result.device_io_control);
         return err;
     };
     const completion = batch.next() orelse return error.Unexpected;
     return windowsReadResult(completion.result.device_io_control);
+}
+
+fn cancelWindowsReceive(io: std.Io, batch: *std.Io.Batch) void {
+    if (batch.pending.head != .none) {
+        // Pinned Threaded.batchCancel first waits indefinitely for an APC or
+        // alert, before issuing NtCancelIoFileEx. A silent receive has neither
+        // after its deadline. Wake that initial wait on the submitting thread;
+        // cancellation still targets this batch and joins its final APCs.
+        const windows = std.os.windows;
+        const status = windows.ntdll.NtAlertThread(windows.GetCurrentThread());
+        if (status != .SUCCESS) std.debug.panic("cannot wake Windows receive cancellation: NTSTATUS=0x{x}", .{@backingInt(status)});
+    }
+    batch.cancel(io);
 }
 
 fn windowsReadResult(iosb: std.os.windows.IO_STATUS_BLOCK) Transport.ReadError!usize {

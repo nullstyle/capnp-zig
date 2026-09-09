@@ -257,6 +257,63 @@ test "readTimeout delivers data that arrives before the deadline" {
     try std.testing.expectEqual(payload.len, n);
 }
 
+test "readTimeout expires before delayed data and leaves it for the next read" {
+    const DelayedPeer = struct {
+        var expired: std.atomic.Value(bool) = .init(false);
+        var write_failed: std.atomic.Value(bool) = .init(false);
+
+        fn awaitConcurrent(userdata: ?*anyopaque, batch: *std.Io.Batch, timeout: std.Io.Timeout) std.Io.Batch.AwaitConcurrentError!void {
+            std.testing.io.vtable.batchAwaitConcurrent(userdata, batch, timeout) catch |err| {
+                if (err == error.Timeout) expired.store(true, .release);
+                return err;
+            };
+        }
+
+        fn run(fd: tcp.SocketFd) void {
+            const io = std.testing.io;
+            defer tcp.closeFd(io, fd);
+            const end = std.Io.Clock.awake.now(io).nanoseconds + 5 * std.time.ns_per_s;
+            while (!expired.load(.acquire)) {
+                if (std.Io.Clock.awake.now(io).nanoseconds >= end) {
+                    write_failed.store(true, .release);
+                    return;
+                }
+                std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {
+                    write_failed.store(true, .release);
+                    return;
+                };
+            }
+            // Start the delay only after the actual backend deadline fires.
+            // Broken cleanup waits for this byte and returns it as late data.
+            std.Io.sleep(io, .fromMilliseconds(250), .awake) catch {
+                write_failed.store(true, .release);
+                return;
+            };
+            io_write_compat.writeAll(io, fd.handle, "after-deadline") catch {
+                write_failed.store(true, .release);
+            };
+        }
+    };
+    DelayedPeer.expired.store(false, .release);
+    DelayedPeer.write_failed.store(false, .release);
+    var vtable = std.testing.io.vtable.*;
+    vtable.batchAwaitConcurrent = DelayedPeer.awaitConcurrent;
+    const io: std.Io = .{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    const pair = try tcp.createLoopbackSocketPair(io);
+    var transport = try tcp.Transport.init(std.testing.allocator, io, pair[0], 64);
+    defer transport.deinit();
+    const feeder = std.Thread.spawn(.{}, DelayedPeer.run, .{pair[1]}) catch |err| {
+        tcp.closeFd(io, pair[1]);
+        return err;
+    };
+    defer feeder.join();
+    const timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(50), .clock = .awake } };
+    try std.testing.expectError(error.Timeout, transport.readTimeout(timeout.toDeadline(io)));
+    const n = try transport.readTimeout(.{ .duration = .{ .raw = .fromSeconds(2), .clock = .awake } });
+    try std.testing.expectEqualStrings("after-deadline", transport.read_buf[0..n]);
+    try std.testing.expect(!DelayedPeer.write_failed.load(.acquire));
+}
+
 fn withoutNetReadBatchConcurrency(userdata: ?*anyopaque, batch: *std.Io.Batch, timeout: std.Io.Timeout) std.Io.Batch.AwaitConcurrentError!void {
     var index = batch.submitted.head;
     while (index != .none) {
@@ -265,6 +322,33 @@ fn withoutNetReadBatchConcurrency(userdata: ?*anyopaque, batch: *std.Io.Batch, t
         index = submission.node.next;
     }
     return std.testing.io.vtable.batchAwaitConcurrent(userdata, batch, timeout);
+}
+
+test "readTimeout tolerates a rejected batch slot already returned to unused" {
+    const RejectedSubmission = struct {
+        fn awaitConcurrent(userdata: ?*anyopaque, batch: *std.Io.Batch, timeout: std.Io.Timeout) std.Io.Batch.AwaitConcurrentError!void {
+            const index = batch.submitted.head;
+            const submission = batch.storage[index.toIndex()].submission;
+            if (submission.operation != .net_read) return std.testing.io.vtable.batchAwaitConcurrent(userdata, batch, timeout);
+            // The pinned Windows backend does this while rejecting net_read:
+            // its error cleanup releases the sole slot, then restores the old
+            // submitted head. No socket operation has started.
+            batch.storage[index.toIndex()] = .{ .unused = .{ .prev = .none, .next = .none } };
+            batch.unused = .{ .head = index, .tail = index };
+            return error.ConcurrencyUnavailable;
+        }
+    };
+    var vtable = std.testing.io.vtable.*;
+    vtable.batchAwaitConcurrent = RejectedSubmission.awaitConcurrent;
+    const io: std.Io = .{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    const pair = try tcp.createLoopbackSocketPair(io);
+    defer tcp.closeFd(io, pair[1]);
+    var transport = try tcp.Transport.init(std.testing.allocator, io, pair[0], 64);
+    defer transport.deinit();
+    const payload = "after-rejection";
+    try io_write_compat.writeAll(io, pair[1].handle, payload);
+    const n = try transport.readTimeout(.{ .duration = .{ .raw = .fromSeconds(2), .clock = .awake } });
+    try std.testing.expectEqualStrings(payload, transport.read_buf[0..n]);
 }
 
 test "readTimeout works without batch concurrency and leaves the socket reusable" {
