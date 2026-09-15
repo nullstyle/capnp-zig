@@ -24,6 +24,94 @@ const State = struct {
         try peer.handleFrame(bytes);
     }
 };
+
+test "ordinary method exception does not poison an interface with streaming methods" {
+    const OrdinaryFailure = struct {
+        ack: ?g.TestStreaming.DoStreamI.StreamReturnSender = null,
+        calls: u32 = 0,
+        exceptions: u32 = 0,
+        results: u32 = 0,
+        fn deferStream(ctx: *anyopaque, _: *Peer, _: g.TestStreaming.DoStreamI.Params.Reader, _: *const rpc.caps.table.InboundCapTable, ack: g.TestStreaming.DoStreamI.StreamReturnSender) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.ack = ack;
+        }
+        fn finish(ctx: *anyopaque, _: *Peer, _: g.TestStreaming.FinishStream.Params.Reader, result: *g.TestStreaming.FinishStream.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.calls += 1;
+            if (self.calls == 1) return error.ExpectedOrdinaryFailure;
+            try result.setTotalI(42);
+        }
+        fn onReturn(ctx: *anyopaque, _: *Peer, response: g.TestStreaming.FinishStream.Response, _: *const rpc.caps.table.InboundCapTable) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            switch (response) {
+                .exception => |ex| {
+                    try std.testing.expectEqualStrings("ExpectedOrdinaryFailure", ex.reason);
+                    self.exceptions += 1;
+                },
+                .results => |result| {
+                    try std.testing.expectEqual(@as(u32, 42), try result.getTotalI());
+                    self.results += 1;
+                },
+                else => return error.UnexpectedReturn,
+            }
+        }
+    };
+    for ([_]bool{ false, true }) |queued| {
+        var client_peer = Peer.initDetached(std.testing.allocator);
+        defer client_peer.deinit();
+        var server_peer = Peer.initDetached(std.testing.allocator);
+        defer server_peer.deinit();
+        client_peer.setSendFrameOverride(&server_peer, State.send);
+        server_peer.setSendFrameOverride(&client_peer, State.send);
+        var state = OrdinaryFailure{};
+        var server = g.TestStreaming.Server{ .ctx = &state, .vtable = .{ .doStreamI = State.i, .doStreamI_deferred = OrdinaryFailure.deferStream, .doStreamJ = State.j, .finishStream = OrdinaryFailure.finish } };
+        const id = try g.TestStreaming.exportServer(&server_peer, &server);
+        const client = g.TestStreaming.Client.init(&client_peer, id);
+        var stream = g.TestStreaming.StreamClient.init(client);
+        if (queued) try stream.callDoStreamI(&state, null);
+        _ = try client.callFinishStream(&state, null, OrdinaryFailure.onReturn);
+        _ = try client.callFinishStream(&state, null, OrdinaryFailure.onReturn);
+        if (queued) {
+            try std.testing.expectEqual(@as(u32, 0), state.calls);
+            try state.ack.?.send();
+        }
+        try std.testing.expectEqual(@as(u32, 1), state.exceptions);
+        try std.testing.expectEqual(@as(u32, 1), state.results);
+        try std.testing.expectEqual(@as(usize, 0), server_peer.streaming.outstanding_calls);
+        try std.testing.expectEqual(@as(usize, 0), server_peer.streaming.outstanding_bytes);
+    }
+}
+
+test "stream handler failure still poisons later ordinary calls" {
+    const Failure = struct {
+        rejected: bool = false,
+        fn stream(_: *anyopaque, _: *Peer, _: g.TestStreaming.DoStreamI.Params.Reader, _: *const rpc.caps.table.InboundCapTable) anyerror!void {
+            return error.ExpectedStreamFailure;
+        }
+        fn onReturn(ctx: *anyopaque, _: *Peer, response: g.TestStreaming.FinishStream.Response, _: *const rpc.caps.table.InboundCapTable) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (response == .exception and std.mem.eql(u8, response.exception.reason, "StreamingCallFailed")) self.rejected = true;
+        }
+    };
+    var client_peer = Peer.initDetached(std.testing.allocator);
+    defer client_peer.deinit();
+    var server_peer = Peer.initDetached(std.testing.allocator);
+    defer server_peer.deinit();
+    client_peer.setSendFrameOverride(&server_peer, State.send);
+    server_peer.setSendFrameOverride(&client_peer, State.send);
+    var state = Failure{};
+    var server = g.TestStreaming.Server{ .ctx = &state, .vtable = .{ .doStreamI = Failure.stream, .doStreamJ = State.j, .finishStream = State.finish } };
+    const id = try g.TestStreaming.exportServer(&server_peer, &server);
+    const client = g.TestStreaming.Client.init(&client_peer, id);
+    var stream = g.TestStreaming.StreamClient.init(client);
+    try stream.callDoStreamI(&state, null);
+    try std.testing.expect(stream.stream.hasFailed());
+    _ = try client.callFinishStream(&state, null, Failure.onReturn);
+    try std.testing.expect(state.rejected);
+    try std.testing.expectEqual(@as(usize, 0), server_peer.streaming.outstanding_calls);
+    try std.testing.expectEqual(@as(usize, 0), server_peer.streaming.outstanding_bytes);
+}
+
 test "stream result is bundled and generated stream calls acknowledge" {
     try std.testing.expect(g.TestStreaming.DoStreamI.Results == rpc.generated.stream.StreamResult);
     var client_peer = Peer.initDetached(std.testing.allocator);

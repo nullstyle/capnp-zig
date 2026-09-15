@@ -125,7 +125,8 @@ pub fn Interface(comptime G: type) type {
             try writer.writeAll("    };\n\n");
 
             // --- StreamClient (only when interface or ancestors have streaming methods) ---
-            if (self.hasStreamingMethods(node, ancestors)) {
+            const has_streaming_methods = self.hasStreamingMethods(node, ancestors);
+            if (has_streaming_methods) {
                 try Self.generateStreamClient(self, node, interface_info, ancestors, qual, writer);
             }
 
@@ -275,7 +276,7 @@ pub fn Interface(comptime G: type) type {
 
             // --- onCall dispatch ---
             try writer.writeAll("    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
-            if (self.hasStreamingMethods(node, ancestors)) {
+            if (has_streaming_methods) {
                 try writer.print("        try peer.dispatchStreamingCall(ctx, {s}dispatchCall, call, caps);\n", .{qual});
                 try writer.writeAll("    }\n\n");
                 try writer.writeAll("    fn dispatchCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
@@ -298,7 +299,13 @@ pub fn Interface(comptime G: type) type {
                 for (interface_info.methods) |method| {
                     const zig_name = try self.toZigIdentifier(method.name);
                     defer self.allocator.free(zig_name);
-                    try writer.print("                {s}{s}.ordinal => try {s}{s}.handleCall(server, peer, call, caps),\n", .{ qual, zig_name, qual, zig_name });
+                    if (has_streaming_methods and !method.isStreaming()) {
+                        // A failed ordinary call settles only that question.
+                        // Only streaming failures poison the delivery queue.
+                        try writer.print("                {s}{s}.ordinal => {s}{s}.handleCall(server, peer, call, caps) catch |err| try peer.sendReturnException(call.question_id, @errorName(err)),\n", .{ qual, zig_name, qual, zig_name });
+                    } else {
+                        try writer.print("                {s}{s}.ordinal => try {s}{s}.handleCall(server, peer, call, caps),\n", .{ qual, zig_name, qual, zig_name });
+                    }
                 }
                 try writer.writeAll("                else => try peer.sendReturnException(call.question_id, \"unknown method\"),\n");
                 try writer.writeAll("            }\n");
@@ -323,6 +330,10 @@ pub fn Interface(comptime G: type) type {
                             try writer.print("                {s}.{s}.ordinal => try {s}.{s}.handleCallDeferred(server.vtable.{s}, server.vtable.{s}, server, server.ctx, peer, call, caps),\n", .{
                                 ancestor.name, zig_name, ancestor.name, zig_name, escaped_field, escaped_deferred_field,
                             });
+                        } else if (has_streaming_methods) {
+                            try writer.print("                {s}.{s}.ordinal => {s}.{s}.handleCallDirect(server.vtable.{s}, server.vtable.{s}, server.ctx, peer, call, caps) catch |err| try peer.sendReturnException(call.question_id, @errorName(err)),\n", .{
+                                ancestor.name, zig_name, ancestor.name, zig_name, escaped_field, escaped_deferred_field,
+                            });
                         } else {
                             try writer.print("                {s}.{s}.ordinal => try {s}.{s}.handleCallDirect(server.vtable.{s}, server.vtable.{s}, server.ctx, peer, call, caps),\n", .{
                                 ancestor.name, zig_name, ancestor.name, zig_name, escaped_field, escaped_deferred_field,
@@ -341,7 +352,11 @@ pub fn Interface(comptime G: type) type {
                 for (interface_info.methods) |method| {
                     const zig_name = try self.toZigIdentifier(method.name);
                     defer self.allocator.free(zig_name);
-                    try writer.print("            {s}{s}.ordinal => try {s}{s}.handleCall(server, peer, call, caps),\n", .{ qual, zig_name, qual, zig_name });
+                    if (has_streaming_methods and !method.isStreaming()) {
+                        try writer.print("            {s}{s}.ordinal => {s}{s}.handleCall(server, peer, call, caps) catch |err| try peer.sendReturnException(call.question_id, @errorName(err)),\n", .{ qual, zig_name, qual, zig_name });
+                    } else {
+                        try writer.print("            {s}{s}.ordinal => try {s}{s}.handleCall(server, peer, call, caps),\n", .{ qual, zig_name, qual, zig_name });
+                    }
                 }
                 try writer.writeAll("            else => try peer.sendReturnException(call.question_id, \"unknown method\"),\n");
                 try writer.writeAll("        }\n");
