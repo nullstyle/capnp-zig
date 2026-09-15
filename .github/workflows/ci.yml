@@ -40,6 +40,7 @@ jobs:
         with:
           version: 2026.7.17
       - uses: ./.github/actions/setup-zig
+      - uses: ./.github/actions/setup-capnp
       - name: Build the pinned C++ reference
         shell: bash
         run: |
@@ -52,13 +53,23 @@ jobs:
           "$RUNNER_TEMP/capnp-cxx23"
           cmake -S vendor/ext/capnproto -B .zig-cache/reference-cpp -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DWITH_OPENSSL=OFF \
+            -DCAPNP_LITE=OFF -DEXTERNAL_CAPNP=OFF \
             -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/capnp-reference"
           cmake --build .zig-cache/reference-cpp --parallel 4
           cmake --install .zig-cache/reference-cpp
-          echo "$RUNNER_TEMP/capnp-reference/bin" >> "$GITHUB_PATH"
-          echo "PKG_CONFIG_PATH=$RUNNER_TEMP/capnp-reference/lib/pkgconfig" >> "$GITHUB_ENV"
       - name: Native, WASI, and independent C++ checks
+        shell: bash
         run: |
+          # Only the C++ oracle step selects native capnp/capnpc-c++ and their
+          # matching headers/libraries. Zig request production uses the explicit
+          # WASM driver even when the native compiler is available on PATH.
+          export PATH="$RUNNER_TEMP/capnp-reference/bin:$PATH"
+          export PKG_CONFIG_LIBDIR="$RUNNER_TEMP/capnp-reference/lib/pkgconfig"
+          unset PKG_CONFIG_PATH
+          test "$(command -v capnp)" = "$RUNNER_TEMP/capnp-reference/bin/capnp"
+          test "$(command -v capnpc-c++)" = "$RUNNER_TEMP/capnp-reference/bin/capnpc-c++"
+          test "$(pkg-config --variable=prefix capnp)" = "$RUNNER_TEMP/capnp-reference"
+          test "$(capnp --version)" = "Cap'n Proto version $(pkg-config --modversion capnp)"
           mise exec -- zig build test-reflection test-reflection-wasi test-reflection-cpp --summary all -j4
           mise exec -- zig build -Doptimize=ReleaseSafe test-reflection test-reflection-wasi test-reflection-cpp --summary all -j4
           mise exec -- zig build test-reflection-oracle-ablation test-codegen-streaming-cpp test-codegen-generic-rpc-cpp --summary all -j2
@@ -89,12 +100,19 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
 
-      # capnp gates ten serialization/codegen suites, several of which FAIL
-      # rather than skip without it. The install + presence assertion lives in
-      # a composite action because five jobs need it, not just this one.
+      # Compiler-dependent serialization/codegen suites require the verified
+      # WASM compiler; missing tooling is a failure, never skipped coverage.
+      # Share artifact/runtime verification with the other full-suite jobs.
       # tests/hardening/toolchain_gate_test.zig covers committed fixtures but
       # cannot read the environment to check the tool.
       - uses: ./.github/actions/setup-capnp
+
+      - name: Portable compiler driver integrity and execution tests
+        # Uses the real WASM compiler and a fixture plugin process on every OS,
+        # including Windows binary streams and workspace/output paths with spaces.
+        # The package preflight below exercises the package-built Zig generator.
+        # Missing artifacts or Wasmtime fail these tests rather than skip them.
+        run: uv run --no-project --python 3.13 -m unittest discover -s tools -p test_capnp_tool.py
 
       - name: Verify test command execution and failure propagation
         shell: bash
@@ -151,7 +169,8 @@ jobs:
         run: just src/rpc/check-rpc
 
       - name: Generated-artifact drift check
-        # Linux only (needs the capnp CLI). Regenerates every committed
+        # Linux owns the complete golden refresh; portable driver generation
+        # and package-plugin acceptance run on every OS. Regenerates committed
         # generated file + the API snapshot and fails if any drifted — the
         # class of bug that turned this workflow red mid-sprint more than once.
         if: runner.os == 'Linux'
@@ -515,15 +534,9 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
 
-      - name: Install Cap'n Proto compiler
-        run: |
-          if command -v sudo >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y capnproto libcapnp-dev
-          else
-            apt-get update
-            apt-get install -y capnproto libcapnp-dev
-          fi
+      # Zig hooks use checked-in bindings. Each external backend Dockerfile
+      # installs its own compiler/runtime together; no host native compiler is
+      # needed or allowed to stand in for that independent implementation.
 
       - name: Run Zig e2e gate
         run: just e2e-zig

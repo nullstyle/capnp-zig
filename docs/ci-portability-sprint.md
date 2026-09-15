@@ -1,6 +1,10 @@
 # CI portability and release confidence
 
-The schema compiler is now checksum-pinned to Cap'n Proto 1.5.0 through
+Current repository tooling uses the verified 2.0-dev WASM compiler described in
+[the toolchain contract](capnp-wasm-toolchain.md). The results below record the
+earlier native-compiler portability work.
+
+That work checksum-pinned the schema compiler to Cap'n Proto 1.5.0 through
 `tools/capnp-toolchain.json`. The same source bootstrap serves Linux, macOS,
 and Windows. Compiler 1.0.2 omits metadata retained by lossless binary reflection,
 so it cannot reproduce the committed generated descriptors. The version checks

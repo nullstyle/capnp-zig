@@ -42,7 +42,7 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     zig = str(Path(shutil.which("zig")).resolve())
-    capnp = str(Path(shutil.which("capnp")).resolve())
+    capnp = [sys.executable, str(current / "tools/capnp_tool.py"), "compiler", "--"]
     commands = []
 
     def run(command, cwd=current, data=None):
@@ -74,7 +74,7 @@ def main():
         "host": platform.platform(), "machine": platform.machine(),
         "optimize": "ReleaseSafe", "strip": False,
         "python": sys.version, "zig": version([zig, "version"]),
-        "capnp": version([capnp, "--version"]),
+        "capnp": version([*capnp, "--version"]),
         "source_digests": initial_digests,
         "benchmark_source_sha256": hashlib.sha256((current / "tests/reflection/performance.zig").read_bytes()).hexdigest(),
         "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -91,7 +91,7 @@ def main():
     }
     requests = {}
     for name, schema in schemas.items():
-        request, _ = run([capnp, "compile", "-o-", "--src-prefix=" + schema["prefix"], "-I" + schema["include"], schema["source"]])
+        request, _ = run([*capnp, "compile", "-o-", "--src-prefix=" + schema["prefix"], "-I" + schema["include"], schema["source"]])
         (output / f"{name}-request.bin").write_bytes(request)
         requests[name] = request
         schema["request_bytes"] = len(request)

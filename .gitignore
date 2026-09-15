@@ -1,6 +1,7 @@
 zig-out/
 .zig-cache/
 .zig-global-cache/
+__pycache__/
 zig-pkg
 *.o
 *.a

@@ -70,11 +70,12 @@ shows the producing step.
 
 ## Updating the request fixture
 
-Change files under `schemas/`, then use a reference Cap'n Proto compiler to
-produce a temporary replacement request:
+Change files under `schemas/`, bootstrap the repository's pinned WASM compiler,
+then produce a temporary replacement request:
 
 ```sh
-capnp compile --no-standard-import -Ischemas/include --src-prefix=schemas -o- \
+uv run --no-project --python 3.13 ../../tools/capnp_tool.py compiler -- \
+  compile --no-standard-import -Ischemas/include --src-prefix=schemas -o- \
   schemas/values.capnp schemas/nested/brands.capnp schemas/shared/common.capnp \
   schemas/reflection.capnp schemas/helper-names.capnp > request.new
 ```

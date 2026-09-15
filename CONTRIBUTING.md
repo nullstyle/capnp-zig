@@ -8,13 +8,14 @@ fits together.
 ## Toolchain
 
 - **Zig**: the exact development snapshot is pinned in
-  [.github/workflows/ci.yml](.github/workflows/ci.yml) (`mlugg/setup-zig`)
+  [mise.toml](mise.toml), shared by CI and local development,
   and the floor is declared in [build.zig.zon](build.zig.zon)
   (`minimum_zig_version`). This branch tracks Zig master; older 0.17-dev
   snapshots will not build.
-- **Helper tools** (optional but recommended): `just`, `capnp`, and `mise`
-  (`mise install` provides `just`, `go`, and friends; Zig itself is
-  deliberately not managed by mise).
+- **Development tools**: `mise install` provides Zig, Wasmtime, `uv`, `just`
+  and the other pinned helpers. Run `mise run bootstrap:capnp` to install the
+  verified WASM schema compiler before compiler-dependent tests or generation.
+  Use `mise exec --` so commands use those tool versions.
 
 ## Building and testing
 
@@ -26,7 +27,7 @@ fits together.
 | Format | `just fmt` (never raw `zig fmt tests/` — it reformats excluded golden/generated files) |
 | Docs/snippets gate | `zig build docs-smoke` |
 | Self-interop e2e (no docker, all OSes) | `zig build e2e-self` (or `just e2e-self`) |
-| Cross-language e2e | `just e2e` (needs docker, `capnp`, and `go`) |
+| Cross-language e2e | `just e2e` (needs Docker; reference toolchains run in containers) |
 | Soak harness | `zig build soak -- --seconds 5 --workers 4` |
 | Fuzz targets | `zig build test-fuzz` (deterministic) / `--fuzz` (coverage-guided) |
 | Windows test compile gate | `zig build check-test-compile -Dtarget=x86_64-windows` |
@@ -42,21 +43,20 @@ e2e, and benchmark-regression jobs.
 Windows is a first-class development OS (see the
 [platform matrix](docs/stability.md#platform-support)). Quickstart:
 
-- **Zig**: install the pinned master snapshot from
-  [ci.yml](.github/workflows/ci.yml) — `zigup`/`scoop install zig-dev`
-  or a manual download both work; the version must match exactly.
+- **Zig and Wasmtime**: run `mise install` using [mise.toml](mise.toml);
+  the versions must match CI exactly.
 - **Shell**: install Git for Windows. `just` recipes assume a POSIX
   `sh`, which Git Bash provides (the Justfile pins `windows-shell` to
   it). Run `just` from Git Bash or any shell with `sh` on `PATH`.
-- **Cap'n Proto compiler**: put `capnp.exe` on `PATH` to run the complete
-  serialization/codegen suite. The verified upstream archive contains the
-  executable but omits the standard schemas; repository tests automatically
-  add `-Ivendor/ext/capnproto/c++/src`, so initialize submodules and do not copy
-  a separate schema tree into the install directory.
+- **Cap'n Proto compiler**: run `mise run bootstrap:capnp`. The portable driver
+  invokes the verified WASM compiler directly, including from PowerShell.
+  Initialize submodules for the vendored fidelity corpus. Explicit schema and
+  include inputs must share a drive; the compiler cache may use another drive.
+  See [the path and import contract](docs/capnp-wasm-toolchain.md#paths-and-imports).
 - **Line endings**: nothing to configure — `.gitattributes` forces LF
   for text and protects binary fixtures regardless of `core.autocrlf`.
 - **Everything except the docker e2e runs natively**: `just test` (including
-  the `capnp`-driven codegen/interop suites),
+  the WASM-compiler-driven codegen/interop suites),
   `just e2e-self`, `just hardening`, `zig build check-api`,
   `zig build soak -- --seconds 5`.
 - **Cross-language e2e**: needs Linux reference containers — install

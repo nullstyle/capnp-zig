@@ -31,14 +31,18 @@ fn runGeneratedHarnessFiles(allocator: std.mem.Allocator, schema_paths: []const 
     defer capnp_argv.deinit(allocator);
     try capnp_argv.appendSlice(allocator, &.{ "compile", "-o-", "--src-prefix=tests/test_schemas" });
     try capnp_argv.appendSlice(allocator, schema_paths);
-    const capnp_result = if (packaged_includes) blk: {
-        try capnp_argv.insert(allocator, 0, "capnp");
+    if (packaged_includes) {
         try capnp_argv.appendSlice(allocator, &.{ "--no-standard-import", "-Isrc/rpc" });
-        break :blk try std.process.run(allocator, io, .{ .argv = capnp_argv.items });
-    } else try capnp_cli.run(allocator, io, capnp_argv.items, .{});
+    }
+    const capnp_result = try capnp_cli.run(allocator, io, capnp_argv.items, .{
+        .standard_includes = if (packaged_includes) .explicit else .vendored,
+    });
     defer allocator.free(capnp_result.stdout);
     defer allocator.free(capnp_result.stderr);
-    try std.testing.expect(capnp_result.term == .exited and capnp_result.term.exited == 0);
+    if (!capnp_result.term.success()) {
+        std.debug.print("schema compiler failed:\n{s}\n", .{capnp_result.stderr});
+        return error.SchemaCompilerFailed;
+    }
 
     const request = try request_reader.parseCodeGeneratorRequest(allocator, capnp_result.stdout);
     defer request_reader.freeCodeGeneratorRequest(allocator, request);
@@ -113,4 +117,30 @@ test "packaged streaming schemas compile and run without generated standard impo
     for ([_]capnpc.codegen.Generator.ApiProfile{ .full, .compact }) |profile| {
         try runGeneratedHarnessFiles(std.testing.allocator, &.{"tests/test_schemas/streaming.capnp"}, @embedFile("support/rpc_stream_consumer.zig"), profile, true);
     }
+}
+
+test "missing packaged streaming schema fails without bundled or vendored fallback" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var empty_includes = std.testing.tmpDir(.{});
+    defer empty_includes.cleanup();
+    const include_path = try empty_includes.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(include_path);
+    const include_arg = try std.fmt.allocPrint(allocator, "-I{s}", .{include_path});
+    defer allocator.free(include_arg);
+    const schema_path = try std.Io.Dir.cwd().realPathFileAlloc(io, "tests/test_schemas/streaming.capnp", allocator);
+    defer allocator.free(schema_path);
+
+    const result = try capnp_cli.run(allocator, io, &.{
+        "compile", "-o-", "--no-standard-import", include_arg, schema_path,
+    }, .{ .standard_includes = .explicit, .cwd = .{ .dir = empty_includes.dir } });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    // MissingPolicy.skip must not turn a selected compiler's failure into a
+    // skip; this also catches accidental include injection by either layer.
+    try std.testing.expect(!result.term.success());
+    if (std.mem.indexOf(u8, result.stderr, "capnp/stream.capnp") == null) {
+        std.debug.print("unexpected compiler failure:\n{s}\n", .{result.stderr});
+    }
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "capnp/stream.capnp") != null);
 }

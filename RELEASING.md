@@ -57,6 +57,9 @@ git status --short          # must be empty
       last tag. Check with `git log --oneline <last-tag>..HEAD` and reconcile
       one line at a time.
 - [ ] The bump is classified per the table above.
+- [ ] `mise run bootstrap:capnp` and `mise run check:capnp` verify the pinned
+      WASM compiler package and Wasmtime runtime. Review compiler-provided
+      reflection metadata whenever the compiler pin changes.
 - [ ] `just check-generated` is clean; no committed consumer binding was made
       stale by a generator change.
 - [ ] `just package-preflight` passes. This is the manifest-filtered package

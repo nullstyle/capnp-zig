@@ -8,8 +8,6 @@ const Context = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     base_env: *const std.process.Environ.Map,
-    repo_abs: []const u8,
-    work_rel: []const u8,
     work_abs: []const u8,
     skip_quic: bool,
     keep_temp: bool,
@@ -89,20 +87,52 @@ fn run(
     cwd: std.process.Child.Cwd,
     environ_map: ?*const std.process.Environ.Map,
 ) !std.process.RunResult {
-    const result = try std.process.run(ctx.allocator, ctx.io, .{
+    return runWithStdin(ctx, argv, cwd, environ_map, .ignore);
+}
+
+fn runWithStdin(
+    ctx: *const Context,
+    argv: []const []const u8,
+    cwd: std.process.Child.Cwd,
+    environ_map: ?*const std.process.Environ.Map,
+    stdin: std.process.SpawnOptions.StdIo,
+) !std.process.RunResult {
+    var child = try std.process.spawn(ctx.io, .{
         .argv = argv,
         .cwd = cwd,
         .environ_map = environ_map,
-        .stdout_limit = .limited(max_process_output),
-        .stderr_limit = .limited(max_process_output),
+        .create_no_window = true,
+        .stdin = stdin,
+        .stdout = .pipe,
+        .stderr = .pipe,
     });
+    defer child.kill(ctx.io);
+
+    // Drain both streams together so a diagnostic cannot block a binary
+    // compiler request or generated output behind a full stderr pipe.
+    var buffers: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var reader: std.Io.File.MultiReader = undefined;
+    reader.init(ctx.allocator, ctx.io, buffers.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer reader.deinit();
+    while (reader.fill(4096, .none)) |_| {
+        if (reader.reader(0).buffered().len > max_process_output or
+            reader.reader(1).buffered().len > max_process_output) return error.StreamTooLong;
+    } else |err| switch (err) {
+        error.EndOfStream => {},
+        else => return err,
+    }
+    try reader.checkAnyError();
+    const term = try child.wait(ctx.io);
+    const stdout = try reader.toOwnedSlice(0);
+    errdefer ctx.allocator.free(stdout);
+    const stderr = try reader.toOwnedSlice(1);
+    errdefer ctx.allocator.free(stderr);
+    const result = std.process.RunResult{ .term = term, .stdout = stdout, .stderr = stderr };
     if (!result.term.success()) {
         std.debug.print(
             "command failed: {s}\nterm: {f}\nstdout:\n{s}\nstderr:\n{s}\n",
             .{ argv[0], result.term, result.stdout, result.stderr },
         );
-        ctx.allocator.free(result.stdout);
-        ctx.allocator.free(result.stderr);
         return error.PackagePreflightCommandFailed;
     }
     return result;
@@ -393,30 +423,45 @@ fn runConsumerBuilds(
 }
 
 fn verifyPackagedPlugin(ctx: *const Context, plugin_abs: []const u8) !void {
-    const plugin_rel = try std.fs.path.relative(
-        ctx.allocator,
-        ctx.repo_abs,
-        ctx.base_env,
-        ctx.repo_abs,
-        plugin_abs,
-    );
-    defer ctx.allocator.free(plugin_rel);
-    const output_rel = try join(ctx.allocator, &.{ ctx.work_rel, "plugin-output" });
-    defer ctx.allocator.free(output_rel);
-    try std.Io.Dir.cwd().createDirPath(ctx.io, output_rel);
-    const output_option = try std.fmt.allocPrint(ctx.allocator, "-o{s}:{s}", .{ plugin_rel, output_rel });
-    defer ctx.allocator.free(output_option);
+    const output_abs = try join(ctx.allocator, &.{ ctx.work_abs, "plugin-output" });
+    defer ctx.allocator.free(output_abs);
+    try std.Io.Dir.cwd().createDirPath(ctx.io, output_abs);
 
-    try runDiscard(ctx, &.{
-        "capnp",
+    const request = try run(ctx, &.{
+        "uv",
+        "run",
+        "--no-project",
+        "--python",
+        "3.13",
+        "tools/capnp_tool.py",
+        "compiler",
+        "--",
         "compile",
         "-Ivendor/ext/capnproto/c++/src",
-        output_option,
+        "-o-",
         "tests/test_schemas/enum_evolution_v1.capnp",
     }, .inherit, null);
+    defer ctx.allocator.free(request.stdout);
+    defer ctx.allocator.free(request.stderr);
+    if (request.stdout.len == 0) return error.EmptyCodeGeneratorRequest;
+
+    // A file preserves the framed request byte-for-byte and avoids pipe
+    // backpressure while the extracted package's native plugin reads stdin.
+    const request_path = try join(ctx.allocator, &.{ ctx.work_abs, "plugin-request.bin" });
+    defer ctx.allocator.free(request_path);
+    {
+        const file = try std.Io.Dir.cwd().createFile(ctx.io, request_path, .{});
+        defer file.close(ctx.io);
+        try file.writeStreamingAll(ctx.io, request.stdout);
+    }
+    const request_file = try std.Io.Dir.cwd().openFile(ctx.io, request_path, .{});
+    defer request_file.close(ctx.io);
+    const generated = try runWithStdin(ctx, &.{plugin_abs}, .{ .path = output_abs }, null, .{ .file = request_file });
+    ctx.allocator.free(generated.stdout);
+    ctx.allocator.free(generated.stderr);
 
     const actual_path = try join(ctx.allocator, &.{
-        output_rel,
+        output_abs,
         "tests",
         "test_schemas",
         "enum_evolution_v1.zig",
@@ -469,29 +514,17 @@ pub fn main(init: std.process.Init) !void {
         .allocator = init.gpa,
         .io = init.io,
         .base_env = init.environ_map,
-        .repo_abs = cwd_abs,
-        .work_rel = work_rel,
         .work_abs = work_abs,
         .skip_quic = args.skip_quic,
         .keep_temp = args.keep_temp,
     };
     defer if (!ctx.keep_temp) std.Io.Dir.cwd().deleteTree(init.io, work_rel) catch {};
 
-    // Lossless schema metadata makes the compiler part of the golden input.
-    // Fail before expensive clean-room builds if PATH selects another version.
-    const pin_bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, "tools/capnp-toolchain.json", init.gpa, .limited(4096));
-    defer init.gpa.free(pin_bytes);
-    const pin = try std.json.parseFromSlice(struct { version: []const u8 }, init.gpa, pin_bytes, .{ .ignore_unknown_fields = true });
-    defer pin.deinit();
-    const expected_version = try std.fmt.allocPrint(init.gpa, "Cap'n Proto version {s}", .{pin.value.version});
-    defer init.gpa.free(expected_version);
-    const compiler_version = try run(&ctx, &.{ "capnp", "--version" }, .inherit, null);
-    defer init.gpa.free(compiler_version.stdout);
-    defer init.gpa.free(compiler_version.stderr);
-    if (!std.mem.eql(u8, expected_version, std.mem.trim(u8, compiler_version.stdout, " \r\n"))) {
-        std.debug.print("package preflight requires {s}; run mise run bootstrap:capnp and use mise exec -- <command>\n", .{expected_version});
-        return error.SchemaCompilerVersionMismatch;
-    }
+    // Compiler identity includes the pinned package and runtime integrity,
+    // not only the version string embedded in schema metadata.
+    try runDiscard(&ctx, &.{
+        "uv", "run", "--no-project", "--python", "3.13", "tools/capnp_tool.py", "verify",
+    }, .inherit, null);
 
     const before = try status(&ctx);
     defer init.gpa.free(before);

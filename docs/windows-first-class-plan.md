@@ -8,6 +8,12 @@ session; this document is the source of truth for progress.
 
 Progress notes:
 
+- Schema-tooling migration (2026-09-14): repository generation and tests use
+  the verified 2.0-dev WASM compiler through Python and Wasmtime. This supersedes
+  the native compiler installation described below. The three-OS CI matrix
+  exercises binary streams, import isolation and paths with spaces; see
+  [the toolchain contract](capnp-wasm-toolchain.md).
+
 - QUIC follow-up (2026-08-11): boringssl-zig commit `292c70a` and quic-zig
   commit `e00d449` are published, and capnp-zig pins the latter archive.
   BoringSSL's Windows socket link bypasses package-config lookup, so native

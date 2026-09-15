@@ -19,13 +19,10 @@ wasmtime = "48.0.1"
 # shims. Either drop zvm from PATH or run `mise exec -- zig ...` to match CI.
 zig = "0.17.0-dev.1683+5ceec001b"
 
-[env]
-_.path = [".zig-cache/capnp-toolchain/install/bin"]
-
 [tasks."bootstrap:capnp"]
-description = "Build the checksum-pinned Cap'n Proto schema compiler"
-run = "uv run --no-project --python 3.13 tools/bootstrap_capnp.py"
+description = "Install the checksum-pinned Cap'n Proto WASM schema compiler"
+run = "uv run --no-project --python 3.13 tools/capnp_tool.py bootstrap"
 
 [tasks."check:capnp"]
-description = "Require the Cap'n Proto compiler used for committed generated artifacts"
-run = "uv run --no-project --python 3.13 tools/bootstrap_capnp.py --verify"
+description = "Verify the pinned schema compiler artifact and Wasmtime runtime"
+run = "uv run --no-project --python 3.13 tools/capnp_tool.py verify"

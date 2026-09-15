@@ -32,7 +32,9 @@ Requires **Zig 0.17-dev**. The exact toolchain is pinned in `mise.toml` — the 
 | Evented backend check | `zig build -Dio-backend=evented check` or `just check-evented` |
 | Docs/examples smoke | `zig build docs-smoke` or `just docs-smoke` |
 | Docs snippet fixtures | `zig build test-docs-snippets` or `just test-docs-snippets` |
-| Run example | `just example` (requires `capnp` CLI) |
+| Run example | `just example` |
+| Bootstrap schema compiler | `mise run bootstrap:capnp` |
+| Regenerate committed bindings | `mise exec -- just gen` |
 | Install plugin | `just install` (copies to `~/.local/bin/`) |
 
 ### Individual test suites
@@ -107,7 +109,8 @@ Phases 1–6 complete (wire format, builder, codegen, interop, benchmarks, RPC r
 
 ## Tooling & Configuration
 
-- Target Zig `0.17-dev`. Zig 0.16 is no longer a supported target for this branch. Keep a compatible master/zvm-style Zig on `PATH`; `mise.toml` manages helper tools only. `capnp`, `just`, and `mise` are optional but recommended for local workflows.
+- Use the exact Zig and Wasmtime versions in `mise.toml` through `mise exec --`.
+- Before running compiler-dependent tests or regeneration, run `mise run bootstrap:capnp`. Repository tooling uses the verified Cap'n Proto WASM compiler and this checkout's generator. When changing compiler invocation, generated fixtures or package preflight, read [docs/capnp-wasm-toolchain.md](docs/capnp-wasm-toolchain.md) for the binary-stream, import-isolation and native-oracle contracts.
 
 ## Landing the Plane (Session Completion)
 

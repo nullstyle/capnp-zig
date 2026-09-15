@@ -10,7 +10,7 @@ run: build
 	./kvstore-client
 
 generate: $(CAPNPC_GO)
-	capnp compile -I $(CAPNP_STD) -ogo:kvstore kvstore.capnp
+	uv run --no-project --python 3.13 ../../../tools/capnp_tool.py generate --plugin "$(CAPNPC_GO)" --output kvstore -- -I "$(CAPNP_STD)" kvstore.capnp
 
 $(CAPNPC_GO):
 	cd ../../../vendor/ext/go-capnp/capnpc-go && go build -o capnpc-go .

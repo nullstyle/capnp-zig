@@ -62,6 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Repository schema tooling uses the checksum-pinned Cap'n Proto 2.0-dev WASM
+  compiler through a portable Python/Wasmtime driver. Generation and package
+  checks continue to exercise this project's native plugin. Regenerated
+  reflection descriptors retain the newer compiler's source metadata; native
+  C++ interoperability keeps its matching reference toolchain. See
+  [the tooling migration](docs/capnp-wasm-toolchain.md).
+
 - Windows CI and local test recipes compile the selected suite before running
   it with one build-runner job. Actual Windows probes reproduced completed test
   processes being reported as unresponsive when sibling processes inherited

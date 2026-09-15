@@ -7,6 +7,7 @@ set windows-shell := ["sh", "-cu"]
 # recipes warm their compile graph first; every test recipe serializes Maker
 # jobs on Windows. This does not change concurrency inside a test executable.
 test_jobs := if os() == "windows" { "-j1" } else { "" }
+capnp_tool := justfile_directory() + "/tools/capnp_tool.py"
 
 # Build the plugin
 build:
@@ -249,35 +250,36 @@ ci:
     just e2e-l3-vatc
     zig build example-rpc
 
-# Regenerate every committed generated artifact and fail if any drifted from
-# the current generator/public API. Guards against the recurring "changed the
-# generator/API but forgot to regenerate the checked-in files" class that has
-# turned CI red more than once. Needs the `capnp` CLI.
-check-generated:
-    uv run --no-project --python 3.13 tools/bootstrap_capnp.py --verify
+# Regenerate committed bindings with the pinned WASM compiler and this checkout's
+# native plugin. Compiler inputs and generator outputs use separate processes.
+gen:
+    uv run --no-project --python 3.13 "{{ capnp_tool }}" verify
     zig build
     cd src/rpc && just gen-rpc
-    cd tests/e2e/schemas && capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/tests/e2e/zig/generated game_types.capnp bootstrap.capnp game_world.capnp inventory.capnp chat.capnp matchmaking.capnp resolve_disembargo.capnp l3_l4_interop.capnp
-    capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}} examples/addressbook.capnp examples/pingpong.capnp
-    cd examples/kvstore && capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/examples/kvstore/gen kvstore.capnp
+    cd tests/e2e/schemas && uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/tests/e2e/zig/generated" -- game_types.capnp bootstrap.capnp game_world.capnp inventory.capnp chat.capnp matchmaking.capnp resolve_disembargo.capnp l3_l4_interop.capnp
+    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}" -- examples/addressbook.capnp examples/pingpong.capnp
+    cd examples/kvstore && uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/examples/kvstore/gen" -- kvstore.capnp
     mkdir -p zig-out/check-generated/tests/test_schemas
-    capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/zig-out/check-generated tests/test_schemas/example.capnp
+    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/example.capnp
     cp zig-out/check-generated/tests/test_schemas/example.zig src/wasm/generated/example.zig
     mkdir -p tests/serialization/generated
     # These revisions share a file ID, so capnp must compile them in separate
     # requests even though their generated modules are checked together.
-    capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/zig-out/check-generated tests/test_schemas/enum_evolution_v1.capnp
+    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/enum_evolution_v1.capnp
     zig fmt zig-out/check-generated/tests/test_schemas/enum_evolution_v1.zig
     cp zig-out/check-generated/tests/test_schemas/enum_evolution_v1.zig tests/serialization/generated/schema_evolution_v1.zig
-    capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/zig-out/check-generated tests/test_schemas/enum_evolution_v2.capnp
+    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/enum_evolution_v2.capnp
     zig fmt zig-out/check-generated/tests/test_schemas/enum_evolution_v2.zig
     cp zig-out/check-generated/tests/test_schemas/enum_evolution_v2.zig tests/serialization/generated/schema_evolution_v2.zig
-    capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/zig-out/check-generated tests/test_schemas/nested_lists_runtime.capnp
+    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/nested_lists_runtime.capnp
     zig fmt zig-out/check-generated/tests/test_schemas/nested_lists_runtime.zig
     cp zig-out/check-generated/tests/test_schemas/nested_lists_runtime.zig tests/serialization/generated/nested_lists_runtime.zig
     CAPNPC_ZIG_UPDATE_GOLDENS=1 zig build {{ test_jobs }} test-codegen
     zig build api-snapshot
     just fmt
+
+# Fail if regeneration changes any committed binding or the Stable API surface.
+check-generated: gen
     # docs/api-snapshot-experimental.txt is deliberately NOT diffed here. It is
     # regenerated on every run by design ("drift here is expected and NEVER fails
     # the gate"), and it records target-dependent detail: `OwnerThreadId.value` is

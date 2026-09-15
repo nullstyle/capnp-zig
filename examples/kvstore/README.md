@@ -61,7 +61,19 @@ Schema: `examples/kvstore/kvstore.capnp`
 
 ## Build And Run
 
-Run from `examples/kvstore/`.
+Bootstrap the schema compiler and build the repository's generator once from
+the repository root:
+
+```sh
+mise run bootstrap:capnp
+mise exec -- zig build
+```
+
+Then run the commands below from `examples/kvstore/` through `mise exec --`.
+The Zig recipes use the parent checkout's native generator. The Go client's
+`make generate` uses the same WASM compiler with the vendored Go generator and
+its matching annotation schemas. Direct `zig build` and `go build` use the
+checked-in bindings.
 
 ### Common tasks
 

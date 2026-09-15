@@ -171,10 +171,9 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
 
-      # The full suite hard-requires the capnp CLI since 380e12e
-      # (schema_fidelity_test runs it with missing=.required). Every ci.yml
-      # job that runs the suite installs it; this job broke every Nightly
-      # from 2026-08-12 to 2026-08-20 by omitting it.
+      # The full suite requires the pinned WASM schema compiler. Keep the same
+      # integrity/runtime gate as per-push CI; unavailable tooling must fail
+      # compiler-dependent suites rather than silently remove their coverage.
       - uses: ./.github/actions/setup-capnp
 
       # setup-zig's built-in cache saves a fresh per-job entry every run, so

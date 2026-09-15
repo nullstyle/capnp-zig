@@ -1,8 +1,10 @@
+set windows-shell := ["sh", "-cu"]
+capnp_tool := justfile_directory() + "/../../tools/capnp_tool.py"
+
 gen-rpc:
-    @test -x ../../zig-out/bin/capnpc-zig || (echo "missing ../../zig-out/bin/capnpc-zig; run 'just build' first"; exit 1)
-    capnpc -o../../zig-out/bin/capnpc-zig:gen ./capnp/rpc.capnp
-    capnpc -o../../zig-out/bin/capnpc-zig:gen ./capnp/persistent.capnp
-    capnpc -o../../zig-out/bin/capnpc-zig:gen ./capnp/stream.capnp
+    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- ./capnp/rpc.capnp
+    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- ./capnp/persistent.capnp
+    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- ./capnp/stream.capnp
     zig fmt gen/capnp/rpc.zig gen/capnp/persistent.zig gen/capnp/stream.zig
 
 gen: gen-rpc
