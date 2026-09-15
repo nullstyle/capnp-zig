@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "url": "https://github.com/nullstyle/slcp-zig/releases/download/capnp-wasm-tools-v0.1.0-rc.2/capnp-wasm-tools-0.1.0-rc.2.tgz",
+  "url": "https://github.com/nullstyle/capnpc-wasm/releases/download/capnp-wasm-tools-v0.1.0-rc.2/capnp-wasm-tools-0.1.0-rc.2.tgz",
   "sha256": "84f6dd426dd0e94dd5d7fd3dd0e9390e84905ac4b5e6957af57788967e5065f4",
   "manifest_sha256": "282c217a8a8c525758dadd3e14b0d2a4a247b455a48e2413003eca7eafbe8d18",
   "source_commit": "0c45c08aa7a836a09e2d715f790823288769b04c",

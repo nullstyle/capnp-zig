@@ -1,7 +1,8 @@
 # Repository schema toolchain
 
 Repository development tooling uses the Cap'n Proto 2.0-dev compiler from the
-compiler-only capnp-wasm archive. `tools/capnp-toolchain.json` identifies the
+compiler-only archive published by [capnpc-wasm](https://github.com/nullstyle/capnpc-wasm/releases).
+`tools/capnp-toolchain.json` identifies the
 archive, source commit, manifest, compiler module and standard schemas by hash.
 Wasmtime is pinned in `mise.toml`. The Python driver invokes Wasmtime directly,
 so native Windows execution does not depend on a Bash launcher.
