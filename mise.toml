@@ -26,3 +26,6 @@ run = "uv run --no-project --python 3.13 tools/capnp_tool.py bootstrap"
 [tasks."check:capnp"]
 description = "Verify the pinned schema compiler artifact and Wasmtime runtime"
 run = "uv run --no-project --python 3.13 tools/capnp_tool.py verify"
+
+[env]
+ZIG_GLOBAL_CACHE_DIR = "{{config_root}}/.zig-global-cache"
