@@ -21,7 +21,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ReadTimeoutError`, and `WriteError` (and the QUIC listener sets built on
   them) now include it.
 
+- **WorkerPool now reaps silent and idle connections by default
+  (Experimental behavior).** Each worker serves one connection to
+  completion. Before this change, `concurrency` clients that connected and
+  never spoke pinned every worker forever (the TCP analog of QUIC half-open
+  immortality). `WorkerPool.Config` gains `first_frame_timeout_ms` (default
+  10 s). It reaps an accepted connection that has not delivered one complete
+  frame, including a client that trickles bytes of a frame it never finishes
+  before that first frame. `WorkerPool.Config` also gains `idle_timeout_ms`
+  (default 5 min, no inbound read and no outbound enqueue), which applies
+  when `connection_options.idle_timeout_ms` is null. Both reapings emit the
+  `.idle_connection` timeout event. `Connection` gains the Experimental
+  `first_frame_timeout_ms` field (default null), so raw `Connection`,
+  `ClientSession` and the Stable `ServerSession.accept` arm neither deadline.
+  Residual, by design: after its first frame, a client that keeps sending
+  anything (a cheap frame, or one byte of a frame it never finishes) at least
+  once per `idle_timeout_ms` still holds its worker; bound such clients with
+  `on_accept` admission control. **Migration:** WorkerPool servers whose
+  clients stay idle for more than 5 minutes (Cap'n Proto has no keepalive)
+  should raise `idle_timeout_ms` or set it to `null`. Servers whose clients
+  legitimately send nothing for 10 s after connecting, such as a protocol
+  where the server speaks first, should raise `first_frame_timeout_ms`, set
+  it to `null`, or override `conn.first_frame_timeout_ms` per connection in
+  `on_accept`.
+- **A question callback's error on a deadline cancel now reaches `on_error`,
+  and it closes the Stable `ClientSession` and `ServerSession`.** When
+  `checkDeadlines()` cancels a question (per-question deadline or shutdown
+  drain bound), a non-OOM error that the question's callback returns now goes
+  to `on_error`, as it already did for a wire Return; an OOM in the
+  cancellation itself goes there too. Before, both were only debug-logged.
+  Explicit `cancelQuestion()` and teardown still only log. `ClientSession`
+  and `ServerSession` close their transport on `on_error` and stamp a 30 s
+  call deadline by default. So a callback that returns `unwrap()`'s
+  `error.CallTimedOut`, as the `try response.unwrap()` idiom does, now ends
+  the whole session on one timed-out call (a returned
+  `error.RemoteException` already did); before, the session lived on.
+  **Migration:** in question callbacks, catch the `CallError` instead of
+  returning it: `const results = response.unwrap() catch |err| { ...;
+  return; };`. The migration guide snippet now does this. Apps whose
+  callbacks return errors on a timeout will now see them in `on_error`.
+
 ### Changed
+
+- **`zig build check` now compiles the tool, bench and e2e executables it
+  used to skip.** A new `check-tools` step builds: e2e-l3-cpp, e2e-l3-vatc,
+  e2e-l3-vatc-host, e2e-self, the `zig run` tools (e2e_runner,
+  e2e_l3_go_probe, fuzz_evidence and its tests), bench-check, hardening-
+  gate, package-preflight, quic-test-evidence, api-snapshot (analysis only),
+  the ping-pong/pack/RPC/QUIC benches, reflection-performance and
+  reflection-cpp-build. `check` skips it when the host or target is Windows,
+  because the L3 drivers wait on posix `poll`, which std does not wire for
+  Windows. There, `zig build check-tools` fails with that reason. This
+  closes the gap that let the e2e_l3_cpp `Io.VTable.netWrite` break reach CI
+  with local `check` green. The L3 e2e tools now share the io-write-compat
+  socket-write shim instead of carrying private copies.
+- **The clean-room package consumers now force analysis of the capnp-zig APIs that six audited downstreams call.** Zig analyzes lazily, and `package-preflight`'s consumer roots only named namespaces and types. So v0.18.0's TCP `Transport.read`, which does not compile on tagged Zig 0.17.0, passed the gate. Each consumer root (default, core, QUIC) now takes `&` of the functions its downstreams call. That includes the methods of the values those functions return, such as list readers and builders and AnyPointer readers and builders. Generic helpers are instantiated with concrete types in never-called functions. Each line names the downstream:
+  - TCP `Transport`, `Listener` and `connect` for slcp;
+  - the list wrappers that generated and hand-written code use, for slcp, bucketlist and prollytree;
+  - for mruby-quic and capnp-qmsg-demo (including the demo's tests): the QUIC connection, server and embedded-session surface, plus the Peer, wire-builder and vat surface;
+  - the serialization, `canonical` and `Framer` set for all of them.
+
+  With v0.18.0's read arm restored, `package-preflight` now fails. RELEASING.md now requires that any API a downstream newly uses, including a method on a returned value, is added to this list before a tag.
 
 - **The `io_backend` `.evented` selector returns
   `error.EventedBackendUnsupported` on every target (Experimental).** At
