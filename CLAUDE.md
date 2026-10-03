@@ -29,7 +29,7 @@ Requires **tagged Zig 0.17**. The exact toolchain is pinned in `mise.toml` — t
 | Run all tests | `zig build test --summary all` or `just test` |
 | Format code | `just fmt` (never raw `zig fmt tests/` — it reformats excluded golden/generated files) |
 | Check (no link) | `zig build check` or `just check` |
-| Evented backend check | `zig build -Dio-backend=evented check` or `just check-evented` |
+| Evented canary (expected-fail until std fixes Evented) | `zig build check-evented-canary` or `just check-evented` |
 | Docs/examples smoke | `zig build docs-smoke` or `just docs-smoke` |
 | Docs snippet fixtures | `zig build test-docs-snippets` or `just test-docs-snippets` |
 | Run example | `just example` |
@@ -63,7 +63,7 @@ Four-layer design, each building on the previous:
 
 **Code Generation** (`src/capnpc-zig/`) — Generates idiomatic Zig Reader/Builder types from Cap'n Proto schemas. `generator.zig` is the main driver; `struct_gen.zig` generates field accessors; `types.zig` maps Cap'n Proto types to Zig types.
 
-**RPC Runtime** (`src/rpc/`) — Cap'n Proto RPC over TCP with optional QUIC. All socket I/O flows through `std.Io`, so the runtime is polymorphic over the concrete backend (`std.Io.Threaded`, `std.Io.Evented` where Zig exposes it, or the process-provided default). Public modules are domain-shaped: `wire`, `caps`, `promises`, `events`, `transport`, `peer`, `integration`, `generated`, and `testing`.
+**RPC Runtime** (`src/rpc/`) — Cap'n Proto RPC over TCP with optional QUIC. Socket data I/O flows through `std.Io`, so the runtime is polymorphic over the concrete backend (`std.Io.Threaded` or the process-provided default); the TCP loop still waits in raw `poll(2)`. Public modules are domain-shaped: `wire`, `caps`, `promises`, `events`, `transport`, `peer`, `integration`, `generated`, and `testing`.
 
 ### Key data flows
 
@@ -83,11 +83,11 @@ The RPC runtime is polymorphic over `std.Io`. Centralised selection lives in `sr
 
 - `Backend.init(.process_init, gpa, init.io)` — reuse the `std.Io` provided by `std.process.Init` (currently `std.Io.Threaded`).
 - `Backend.init(.threaded, gpa, _)` — explicitly construct a fresh `std.Io.Threaded`.
-- `Backend.init(.evented, gpa, _)` — construct and own `std.Io.Evented` where Zig exposes it; returns `error.EventedBackendUnsupported` only when the target has no evented backend.
+- `Backend.init(.evented, gpa, _)` — returns `error.EventedBackendUnsupported` on every target at Zig 0.17.0, because no std evented backend compiles (`io_backend.evented_available = false`).
 
 RPC entry points (`examples/rpc_pingpong.zig`, `tests/e2e/zig/main_{server,client}.zig`) read the kind from the `-Dio-backend=process_init|threaded|evented` build option (default `process_init`) via the `io_backend_options` module wired up in `build.zig`.
 
-Use `just check-evented` (or `zig build -Dio-backend=evented check`) as the supported no-link gate for the Evented selector on targets where Zig exposes `std.Io.Evented`.
+`just check-evented` (`zig build check-evented-canary`) passes only while `std.Io.Evented` still fails to compile with the known `processReplacePath` error. When it goes red (or Nightly posts a notice), std was fixed: re-check `evented_available` in `src/io_backend.zig`.
 
 ## Coding Conventions
 

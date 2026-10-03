@@ -61,7 +61,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   return; };`. The migration guide snippet now does this. Apps whose
   callbacks return errors on a timeout will now see them in `on_error`.
 
+- **`rpc.events.DisconnectCause` is now non-exhaustive (`enum(u8) { ..., _
+  }`; Experimental).** New causes keep arriving as transports learn more
+  (`handshake_timeout` most recently), and with an exhaustive enum each one
+  broke every consumer `switch` that listed the variants. A new cause is now
+  additive: older code sees an unnamed value. Named values and their order
+  are unchanged; the tag type is now `u8`. The API snapshots are byte-
+  identical because they do not render exhaustiveness. **Migration:** a
+  `switch` on a `DisconnectCause` must handle unnamed values: add a `_ =>`
+  arm (treat it like `.unknown`) or keep an `else` arm. Do not `@tagName` a
+  cause you did not construct; use `std.enums.tagName`, which returns `null`
+  for an unnamed cause. Code that indexes an array by `@backingInt(cause)`
+  must bound the index first. `std.enums.EnumArray`/`EnumSet`/`EnumMap`
+  keyed by `DisconnectCause` now span all 256 backing values: iterate
+  `std.enums.values(DisconnectCause)` instead, and do not `@tagName` their
+  keys.
+
 ### Changed
+
+- **CI's evented check is now an expected-fail canary.** `zig build -Dio-
+  backend=evented check` compiled nothing evented:
+  `io_backend.evented_available` is `false` because no `std.Io.Evented`
+  compiles at Zig 0.17.0. `zig build check-evented-canary` (also `just
+  check-evented`) compiles a reference to `std.Io.Evented` and passes only
+  while that fails with the known `processReplacePath` VTable error. Red, or
+  a Nightly `::notice`, means re-check the flag. Docs were also corrected:
+  the Zig target, the narrowed `std.Io` claim, the macOS TSan and Evented
+  rows, the quic pin paragraph, and hosted cross-impl e2e. There is a new
+  'Consumer Build Pitfalls' troubleshooting section, and Zig fork handoffs
+  for `Stream.read`, the evented VTable and `zig fetch` cache poisoning.
+- **Soak gates with teeth (`tools/soak_rpc.zig`).** The soak's TCP client
+  now sets TCP_NODELAY. On Linux, p99 drops from about 45 ms (Nagle plus
+  delayed ACK) to under 1 ms; `--nagle` restores the old behaviour for A/B
+  runs. Windows is unchanged because std has no AFD NODELAY path yet. Setup
+  (dial) failures are now classified as refused, port_exhaustion, resources,
+  timeout or other, and counted separately from mid-session transport
+  errors. Mid-session errors are bounded: `transport_errors <= chaos_closes
+  + death_allowance + tolerance`, with the tolerance defaulting to max(8,
+  sessions/500). Unexplained dial failures fail the run. Port exhaustion is
+  reported with a `::warning::` annotation. Process RSS (Linux statm, macOS
+  task_info, Windows GetProcessMemoryInfo) now goes through the heap gate's
+  steady-state trend check. It is report-only by default; `--rss-gate
+  enforce` makes it fail the run. On the quic v0.19.0 pin it reads FAIL on
+  the AEAD-context leak while the Zig heap stays flat. Latency samples now
+  go into fixed-size histograms, so neither memory check grows with the call
+  count. DebugAllocator stack traces are off by default (`--alloc-traces`
+  turns them on), because the trace capture itself grows RSS. The harness's
+  own unit tests now run in `zig build test` (`test-soak-harness`); they had
+  never been compiled. Ablation hooks: `--inject-transport-error-every`,
+  `--inject-rss-growth-kib-per-s`.
 
 - **`zig build check` now compiles the tool, bench and e2e executables it
   used to skip.** A new `check-tools` step builds: e2e-l3-cpp, e2e-l3-vatc,
