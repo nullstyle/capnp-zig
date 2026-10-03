@@ -5,6 +5,14 @@ const request_reader = @import("serialization/request_reader.zig");
 
 const max_code_generator_request_bytes: usize = 64 * 1024 * 1024;
 
+/// Writes generated files under a directory instead of the current one. This
+/// lets a consumer's `build.zig` run the pinned plugin as a cached step whose
+/// output is a LazyPath:
+/// `run.addPrefixedOutputDirectoryArg("--output-dir=", "capnp-gen")`.
+/// `capnp compile -o<plugin>:<dir>` passes no arguments and changes into
+/// `<dir>` itself, so that contract is unchanged.
+const output_dir_option = "--output-dir=";
+
 const RunOptions = struct {
     verbose: bool = false,
     emit_schema_manifest: bool = true,
@@ -12,14 +20,28 @@ const RunOptions = struct {
     api_profile: Generator.ApiProfile = .full,
     shape_sharing: bool = false,
     codegen_budget: Generator.CodegenBudget = .{},
+    /// Root for generated files; null means the current directory.
+    output_dir: ?[]const u8 = null,
 };
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
 
-    var options = try parseRunOptionsFromArgs(allocator, init.minimal.args);
+    var options = try parseRunOptionsFromArgs(init.arena.allocator(), init.minimal.args);
     applyEnvRunOptions(init.environ_map, &options);
+
+    // Open (creating if needed) the output root before reading stdin, so a
+    // bad `--output-dir=` fails before any work is done.
+    var owned_output_root: ?std.Io.Dir = null;
+    defer if (owned_output_root) |dir| dir.close(io);
+    if (options.output_dir) |path| {
+        owned_output_root = openOutputRoot(std.Io.Dir.cwd(), io, path) catch |err| {
+            logStderr("Error opening output directory '{s}': {}\n", .{ path, err });
+            return err;
+        };
+    }
+    const output_root = owned_output_root orelse std.Io.Dir.cwd();
 
     // Read CodeGeneratorRequest from stdin
     const stdin = std.Io.File.stdin();
@@ -60,7 +82,7 @@ pub fn main(init: std.process.Init) !void {
         defer allocator.free(output_filename);
 
         // Write to file (creating parent directories for nested schema paths)
-        const file = try createOutputFileInDir(std.Io.Dir.cwd(), io, output_filename);
+        const file = try createOutputFileInDir(output_root, io, output_filename);
         defer file.close(io);
 
         try file.writeStreamingAll(io, output_code);
@@ -79,19 +101,21 @@ fn logStderr(comptime fmt: []const u8, args: anytype) void {
     std.debug.print(fmt, args);
 }
 
+/// `allocator` must outlive the returned options: `output_dir` is copied into
+/// it, because the argument iterator's storage is freed on return.
 fn parseRunOptionsFromArgs(allocator: std.mem.Allocator, args: std.process.Args) !RunOptions {
     var options = RunOptions{};
     // initAllocator is the cross-platform form; plain init is a compile
     // error on Windows, where plugin CLI options used to be silently
-    // ignored. All options parse to bools/enums, so nothing outlives
-    // the iterator.
+    // ignored.
     var iter = try std.process.Args.Iterator.initAllocator(args, allocator);
     defer iter.deinit();
     _ = iter.skip(); // skip program name
     while (iter.next()) |arg| {
-        applyOptionToken(arg, &options);
-        var tokens = std.mem.tokenizeAny(u8, arg, ",");
-        while (tokens.next()) |token| applyOptionToken(token, &options);
+        applyArgument(arg, &options);
+        if (std.mem.startsWith(u8, arg, output_dir_option)) {
+            options.output_dir = try allocator.dupe(u8, arg[output_dir_option.len..]);
+        }
     }
     return options;
 }
@@ -100,13 +124,26 @@ fn parseRunOptions(argv: anytype) RunOptions {
     var options = RunOptions{};
     if (argv.len <= 1) return options;
 
-    for (argv[1..]) |arg| {
-        const arg_slice: []const u8 = arg;
-        applyOptionToken(arg_slice, &options);
-        var tokens = std.mem.tokenizeAny(u8, arg_slice, ",");
-        while (tokens.next()) |token| applyOptionToken(token, &options);
-    }
+    for (argv[1..]) |arg| applyArgument(arg, &options);
     return options;
+}
+
+fn applyArgument(arg: []const u8, options: *RunOptions) void {
+    if (std.mem.startsWith(u8, arg, output_dir_option)) {
+        // A path may contain commas; never split it into option tokens.
+        options.output_dir = arg[output_dir_option.len..];
+        return;
+    }
+    applyOptionToken(arg, options);
+    var tokens = std.mem.tokenizeAny(u8, arg, ",");
+    while (tokens.next()) |token| applyOptionToken(token, options);
+}
+
+/// Open the `--output-dir=` root, creating it and its parents if missing.
+/// The path is relative to `base`, or absolute.
+fn openOutputRoot(base: std.Io.Dir, io: std.Io, path: []const u8) !std.Io.Dir {
+    if (path.len == 0) return error.InvalidOutputDir;
+    return base.createDirPathOpen(io, path, .{});
 }
 
 fn applyEnvRunOptions(environ_map: *const std.process.Environ.Map, options: *RunOptions) void {
@@ -527,6 +564,40 @@ test "parseRunOptions applies codegen budget tokens" {
     try std.testing.expectEqual(@as(usize, 4096), options.codegen_budget.max_output_bytes);
     try std.testing.expectEqual(@as(usize, 12), options.codegen_budget.max_fields);
     try std.testing.expectEqual(@as(usize, 27), options.codegen_budget.max_brand_specializations);
+}
+
+test "parseRunOptions writes to the current directory unless --output-dir= is given" {
+    const defaults = parseRunOptions(@as([]const []const u8, &.{"capnpc-zig"}));
+    try std.testing.expectEqual(@as(?[]const u8, null), defaults.output_dir);
+
+    const options = parseRunOptions(@as([]const []const u8, &.{ "capnpc-zig", "--output-dir=zig-cache/o/abc/capnp-gen" }));
+    try std.testing.expectEqualStrings("zig-cache/o/abc/capnp-gen", options.output_dir.?);
+}
+
+test "parseRunOptions never splits an --output-dir= path into option tokens" {
+    // A directory may contain commas. Tokenizing it would turn a path segment
+    // into an option (here `verbose` and `no-reflection`).
+    const options = parseRunOptions(@as([]const []const u8, &.{ "capnpc-zig", "--output-dir=out,verbose,no-reflection" }));
+    try std.testing.expectEqualStrings("out,verbose,no-reflection", options.output_dir.?);
+    try std.testing.expect(!options.verbose);
+    try std.testing.expect(options.emit_reflection);
+}
+
+test "openOutputRoot creates the directory and rejects an empty path" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try std.testing.expectError(error.InvalidOutputDir, openOutputRoot(tmp.dir, io, ""));
+
+    var root = try openOutputRoot(tmp.dir, io, "build/capnp-gen");
+    defer root.close(io);
+    var file = try createOutputFileInDir(root, io, "schema/addressbook.zig");
+    defer file.close(io);
+    try file.writeStreamingAll(io, "// generated\n");
+
+    var reopened = try tmp.dir.openFile(io, "build/capnp-gen/schema/addressbook.zig", .{});
+    defer reopened.close(io);
 }
 
 test "parseBoolToken accepts common true values" {
