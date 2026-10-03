@@ -682,7 +682,9 @@ const BootstrapProbe = struct {
     bound_ms: u64,
     session: *tcp.ClientSession = undefined,
     served: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    elapsed_ns: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+    // u32 milliseconds, not i64 nanoseconds: 32-bit targets (x86-linux-gnu
+    // in CI) have no 64-bit atomics.
+    elapsed_ms: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     setup_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     fn onBootstrap(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
@@ -694,7 +696,7 @@ const BootstrapProbe = struct {
     fn main(self: *BootstrapProbe) void {
         const io = std.testing.io;
         const start = nowNs(io);
-        defer self.elapsed_ns.store(nowNs(io) - start, .release);
+        defer self.elapsed_ms.store(std.math.lossyCast(u32, @divTrunc(nowNs(io) - start, std.time.ns_per_ms)), .release);
         const session = tcp.connect(std.testing.allocator, io, self.address, .{
             .default_call_timeout_ms = self.bound_ms,
         }) catch {
@@ -753,7 +755,7 @@ fn bootstrapPastTwoSilentClients(config: WorkerPool.Config, bound_ms: u64) !Sile
 
     return .{
         .served = probe.served.load(.acquire),
-        .elapsed_ms = @divTrunc(probe.elapsed_ns.load(.acquire), std.time.ns_per_ms),
+        .elapsed_ms = probe.elapsed_ms.load(.acquire),
     };
 }
 
@@ -827,11 +829,12 @@ test "WorkerPool: liveness deadlines default secure and explicit null opts out" 
 /// as the accept callback sees it.
 const FirstFrameObserver = struct {
     count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    seen: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    // u32: 32-bit targets have no 64-bit atomics; the deadline fits.
+    seen: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
     fn onAccept(ctx: *anyopaque, peer: *Peer, conn: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
         const self: *FirstFrameObserver = @ptrCast(@alignCast(ctx));
-        self.seen.store(conn.first_frame_timeout_ms orelse 0, .release);
+        self.seen.store(std.math.lossyCast(u32, conn.first_frame_timeout_ms orelse 0), .release);
         _ = self.count.fetchAdd(1, .acq_rel);
         peer.start(null, onPeerError, onPeerClose);
         return .accept;
@@ -848,5 +851,5 @@ test "WorkerPool: the first-frame deadline is armed before on_accept runs" {
         pool_thread.join();
     }
     _ = try connectUntilAccepted(std.testing.io, pool.server.socket.address, &observer.count, false);
-    try std.testing.expectEqual(@as(u64, WorkerPool.default_first_frame_timeout_ms), observer.seen.load(.acquire));
+    try std.testing.expectEqual(WorkerPool.default_first_frame_timeout_ms, @as(u64, observer.seen.load(.acquire)));
 }
