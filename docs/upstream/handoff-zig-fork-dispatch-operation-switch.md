@@ -1,5 +1,16 @@
 # HANDOFF — zig fork change branch: Io/Dispatch non-exhaustive Operation switch
 
+> **Status: SUPERSEDED at tagged 0.17.0 (checked 2026-10-03).** The compile
+> break below is gone: 0.17.0's `Dispatch.zig` handles every `Io.Operation`
+> variant, in `operate` (lines 1713-1716) and in both batch switches
+> (2137-2140, 2199-2202). It does so with `@panic("TODO implement ...")`
+> for `net_receive`, `net_send`, `net_read` and `net_write`, so option 1 of
+> "The fix" below (implement them) is still open, but as feature work for
+> the fork's `feat/evented-dispatch` branch, not as a build fix. At 0.17.0
+> `std.Io.Evented` fails to compile for a different reason; see
+> [handoff-zig-fork-evented-processreplacepath.md](handoff-zig-fork-evented-processreplacepath.md).
+> Do not open a `fix/dispatch-operation-switch` branch against 0.17.0.
+
 Paste this into a session working on the nullstyle zig fork. Self-contained.
 Second item for the fork's change-branch list (the first is
 `handoff-zig-fork-netacceptwindows.md`). Suggested branch:

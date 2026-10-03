@@ -1,5 +1,15 @@
 # HANDOFF — quic-zig: add a handshake liveness timer
 
+> **Status: RESOLVED upstream in quic-zig v0.19.0 (checked 2026-10-03).**
+> quic-zig commit `c1cb50e` ("connection: handshake-liveness backstop (dead
+> dials / SYN-flood slots die)") shipped in the v0.19.0 tag, which is the
+> version capnp-zig pins. It adds `handshake_timeout_ms` (defaults 30 s
+> client / 10 s server) and a `CloseSource.handshake_timeout` variant.
+> capnp-zig maps that variant to `DisconnectCause.handshake_timeout` in
+> `src/rpc/transport/quic/close.zig` (`disconnectCauseFor`) and keeps its
+> own embedder guards as defense in depth, as proposed below. Nothing here
+> is still open.
+
 For the agent working on nullstyle/quic-zig. Self-contained; the
 evidence comes from capnp-zig (the primary downstream, same machine at
 /Users/nullstyle/prj/zig/capnp-zig if you want to read the guards it

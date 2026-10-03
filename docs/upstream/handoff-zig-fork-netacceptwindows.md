@@ -8,18 +8,23 @@ a tracked list of side branches). Suggested branch name:
 
 ## The defect
 
-File: `lib/std/Io/Threaded.zig`, function `netAcceptWindows` (verified
-at 0.17.0-dev.1683+5ceec001b, around line 12695; re-locate on fork
-HEAD). The function performs two AFD ioctls and switches on the
-completion status. BOTH switches contain:
+File: `lib/std/Io/Threaded.zig`, function `netAcceptWindows`.
+Re-verified at tagged **0.17.0** (2026-10-03); first found at
+0.17.0-dev.1683+5ceec001b around line 12695. Re-locate on fork HEAD. The
+function performs two AFD ioctls and switches on the completion status.
+BOTH switches contain:
 
 ```zig
 .CANCELLED => unreachable,
 ```
 
-once for `IOCTL_AFD_WAIT_FOR_LISTEN` and once for `IOCTL_AFD_ACCEPT`.
-A third instance sits in the sibling `deferAcceptAfd` cleanup
-(`IOCTL_AFD_DEFER_ACCEPT` switch).
+| 0.17.0 line | Site |
+|---|---|
+| 12822 | `fn netAcceptWindows` |
+| 12836 | `.CANCELLED => unreachable` for `IOCTL.AFD.WAIT_FOR_LISTEN` |
+| 12860 | `.CANCELLED => unreachable` for `IOCTL.AFD.ACCEPT` |
+| 12867 | `fn deferAcceptAfd` (the sibling cleanup) |
+| 12881 | `.CANCELLED => unreachable` for `IOCTL.AFD.DEFER_ACCEPT` |
 
 `STATUS_CANCELLED` is treated as impossible on the theory that only
 Io-level cancelation cancels the IRP. But Windows also completes pending
@@ -70,8 +75,9 @@ pub fn main(init: std.process.Init) !void {
 }
 ```
 
-(Adjust `listen`/`Server` spelling to the fork's current std API if it
-has drifted.)
+(This compiles for `x86_64-windows` against tagged 0.17.0, checked
+2026-10-03 with `zig build-exe -target x86_64-windows -fno-emit-bin`.
+Adjust `listen`/`Server` spelling if the fork's std API has drifted.)
 
 ## The fix
 
@@ -87,6 +93,34 @@ Map `.CANCELLED` to a recoverable error instead of `unreachable`:
   `.CANCELLED => {}` (tolerated, like its `else` arm which already
   swallows unexpected statuses).
 
+### Same branch: map `STATUS_LOCAL_DISCONNECT` on read and write
+
+The 0.17.0 source shows a sibling gap in the same AFD layer.
+`netReadWindows` (Threaded.zig:12990) and `netWriteWindows` (13470) map
+the remote-side disconnect statuses but not the local one:
+
+```zig
+.CONNECTION_RESET, .REMOTE_DISCONNECT => return error.ConnectionResetByPeer, // 13012 and 13526
+```
+
+`STATUS_LOCAL_DISCONNECT` (`0xC000013B`, `os/windows/ntstatus.zig:1074`,
+"the network transport on your computer has closed a network connection")
+is not mapped anywhere in std, so it falls to
+`else => windows.unexpectedStatus(status)`: `error.Unexpected`, plus a
+printed NTSTATUS and stack dump when unexpected-error tracing is on (the
+Debug default). capnp-zig's Windows soak sees exactly this on its chaos
+closes: `error.Unexpected NTSTATUS=0xc000013b` from the reader task. A
+connection the local stack tore down is an ordinary disconnect, not an
+unexpected state. Add it to both arms:
+
+```zig
+.CONNECTION_RESET, .REMOTE_DISCONNECT, .LOCAL_DISCONNECT => return error.ConnectionResetByPeer,
+```
+
+(If the fork prefers a distinct error for a locally initiated disconnect,
+that also works; the requirement is a named error rather than
+`error.Unexpected`.)
+
 ## Verification
 
 1. The repro above: aborts before, prints "clean" after.
@@ -99,9 +133,17 @@ Map `.CANCELLED` to a recoverable error instead of `unreachable`:
 3. Whatever std test convention the fork uses for Windows-only Io
    behavior: a test asserting accept returns an error (not aborts) when
    the listener closes underneath it, gated to Windows.
+4. For the `LOCAL_DISCONNECT` arm: capnp-zig's Windows chaos soak
+   (`zig build soak -- --transport tcp --seconds 20`, chaos on by default)
+   should stop printing `error.Unexpected NTSTATUS=0xc000013b`. Note that
+   capnp-zig's own timed-read path (`windowsReadResult` in
+   `src/rpc/transport/tcp/stream_transport.zig`) maps statuses itself and
+   needs the same arm on the capnp-zig side; the std fix covers only the
+   untimed `net_read` / `net_write` operations.
 
 ## Bookkeeping
 
 Record the branch in the fork's change-branch list with a one-line
 rationale ("close/CancelIoEx during parked accept must error, not abort
-the process") so rebases onto upstream keep carrying it.
+the process; LOCAL_DISCONNECT is a disconnect, not Unexpected") so rebases
+onto upstream keep carrying it.
