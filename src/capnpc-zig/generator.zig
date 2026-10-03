@@ -337,22 +337,31 @@ pub const Generator = struct {
     /// in the file goes through `capnpc`, so when the check fails the
     /// dependent declarations fail silently and the consumer sees one error
     /// naming the release to upgrade to, not dozens deep inside the file.
+    ///
+    /// The guard sits at file scope, where a schema decides some names: its
+    /// constants and annotations, and the aliases of the files it imports
+    /// (`runtime_abi.capnp` gives `pub const runtime_abi`). Zig rejects a
+    /// block local that shadows a file-scope declaration, so every local here
+    /// is a quoted identifier with a space in it. Generated declaration names
+    /// only ever hold `[A-Za-z0-9_]`, so no schema can collide with these. The
+    /// block label lives in a separate namespace and cannot collide either.
     fn writeRuntimeGuard(writer: anytype) !void {
         const abi = codegen_abi.version;
         try writer.writeAll("// Resolving `capnpc` checks the runtime's codegen ABI, so a capnpc-zig\n");
-        try writer.writeAll("// plugin/runtime version skew fails here with one error.\n");
+        try writer.writeAll("// plugin/runtime version skew fails here with one error. The quoted local\n");
+        try writer.writeAll("// names cannot shadow a declaration that a schema names.\n");
         try writer.writeAll("const capnpc = capnpc_runtime: {\n");
-        try writer.writeAll("    const runtime = @import(\"capnpc-zig\");\n");
-        try writer.writeAll("    const runtime_abi = if (@hasDecl(runtime, \"codegen_abi\")) runtime.codegen_abi.version else 0;\n");
+        try writer.writeAll("    const @\"capnpc-zig runtime\" = @import(\"capnpc-zig\");\n");
+        try writer.writeAll("    const @\"runtime ABI\" = if (@hasDecl(@\"capnpc-zig runtime\", \"codegen_abi\")) @\"capnpc-zig runtime\".codegen_abi.version else 0;\n");
         try writer.print(
-            "    if (runtime_abi < {d}) @compileError(std.fmt.comptimePrint(\"capnpc-zig version skew: this file was generated for codegen ABI {d}, which needs the capnpc-zig {f} runtime or newer, but the imported runtime provides ABI {{d}}. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.\", .{{runtime_abi}}));\n",
+            "    if (@\"runtime ABI\" < {d}) @compileError(std.fmt.comptimePrint(\"capnpc-zig version skew: this file was generated for codegen ABI {d}, which needs the capnpc-zig {f} runtime or newer, but the imported runtime provides ABI {{d}}. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.\", .{{@\"runtime ABI\"}}));\n",
             .{ abi, abi, std.zig.fmtString(codegen_abi.release) },
         );
         try writer.print(
-            "    if (runtime.codegen_abi.oldest_supported > {d}) @compileError(std.fmt.comptimePrint(\"capnpc-zig version skew: this file was generated for codegen ABI {d}, but the imported capnpc-zig runtime (ABI {{d}}) only supports ABI {{d}} and newer. Regenerate the file with the capnpc-zig {{s}} plugin or newer.\", .{{ runtime_abi, runtime.codegen_abi.oldest_supported, runtime.codegen_abi.release }}));\n",
+            "    if (@\"capnpc-zig runtime\".codegen_abi.oldest_supported > {d}) @compileError(std.fmt.comptimePrint(\"capnpc-zig version skew: this file was generated for codegen ABI {d}, but the imported capnpc-zig runtime (ABI {{d}}) only supports ABI {{d}} and newer. Regenerate the file with the capnpc-zig {{s}} plugin or newer.\", .{{ @\"runtime ABI\", @\"capnpc-zig runtime\".codegen_abi.oldest_supported, @\"capnpc-zig runtime\".codegen_abi.release }}));\n",
             .{ abi, abi },
         );
-        try writer.writeAll("    break :capnpc_runtime runtime;\n");
+        try writer.writeAll("    break :capnpc_runtime @\"capnpc-zig runtime\";\n");
         try writer.writeAll("};\n");
     }
 
@@ -2667,6 +2676,38 @@ test "Generator.uniqueImportModuleName escapes keywords and disambiguates collis
     const r4 = try gen.uniqueImportModuleName("nested/error.capnp", &used);
     defer alloc.free(r4);
     try std.testing.expectEqualStrings("error_2", r4);
+}
+
+test "Generator.writeRuntimeGuard declares only locals that no schema can name" {
+    // The guard is a block at file scope, and Zig rejects a block local that
+    // shadows a file-scope declaration. Schema-derived declaration names (and
+    // import aliases) only hold [A-Za-z0-9_], so each local must be a quoted
+    // identifier holding some other character. The compile-level regression
+    // is codegen_generated_runtime_test's runtime_guard_names schema.
+    const alloc = std.testing.allocator;
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(alloc);
+    try Generator.writeRuntimeGuard(ArrayListWriter{ .list = &out, .allocator = alloc });
+
+    var locals: usize = 0;
+    var lines = std.mem.splitScalar(u8, out.items, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trimStart(u8, line, " ");
+        if (trimmed.len == line.len) continue; // file-scope line, not a block local
+        if (!std.mem.startsWith(u8, trimmed, "const ") and !std.mem.startsWith(u8, trimmed, "var ")) continue;
+        const after_kw = trimmed[std.mem.indexOfScalar(u8, trimmed, ' ').? + 1 ..];
+        const name = after_kw[0..(std.mem.indexOf(u8, after_kw, " = ") orelse return error.TestUnexpectedResult)];
+        locals += 1;
+        errdefer std.debug.print("guard local `{s}` is a name a schema can produce\n", .{name});
+        try std.testing.expect(std.mem.startsWith(u8, name, "@\"") and std.mem.endsWith(u8, name, "\""));
+        const inner = name[2 .. name.len - 1];
+        var has_foreign = false;
+        for (inner) |c| {
+            if (!std.ascii.isAlphanumeric(c) and c != '_') has_foreign = true;
+        }
+        try std.testing.expect(has_foreign);
+    }
+    try std.testing.expect(locals >= 2);
 }
 
 test "Generator.generateFile rejects duplicate file scope generated names" {

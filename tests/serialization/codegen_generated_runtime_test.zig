@@ -712,6 +712,107 @@ test "cross-file executable brands run in full and compact profiles" {
     }
 }
 
+/// Compile several schemas as one request, write each requested file's
+/// binding beside the harness as `<stem>.zig` (the name generated imports use
+/// for it), then `zig test` the harness against the real runtime.
+fn runMultiFileHarness(
+    allocator: std.mem.Allocator,
+    schema_paths: []const []const u8,
+    harness_source: []const u8,
+) !void {
+    const io = std.testing.io;
+    var capnp_argv = std.ArrayList([]const u8).empty;
+    defer capnp_argv.deinit(allocator);
+    try capnp_argv.appendSlice(allocator, &.{ "compile", "-o-" });
+    try capnp_argv.appendSlice(allocator, schema_paths);
+    const result = try capnp_cli.run(allocator, io, capnp_argv.items, .{});
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
+    const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
+    defer request_reader.freeCodeGeneratorRequest(allocator, request);
+    try std.testing.expectEqual(schema_paths.len, request.requested_files.len);
+
+    var generator = try capnpc.codegen.Generator.init(allocator, request.nodes);
+    defer generator.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for (request.requested_files) |file| {
+        const generated = try generator.generateFile(file);
+        defer allocator.free(generated);
+        const output_name = try std.fmt.allocPrint(allocator, "{s}.zig", .{std.fs.path.stem(file.filename)});
+        defer allocator.free(output_name);
+        try writeFile(tmp.dir, output_name, generated);
+    }
+    try writeFile(tmp.dir, "harness.zig", harness_source);
+
+    const harness_path = try tmp.dir.realPathFileAlloc(io, "harness.zig", allocator);
+    defer allocator.free(harness_path);
+    const lib_path = try std.Io.Dir.cwd().realPathFileAlloc(io, "src/lib.zig", allocator);
+    defer allocator.free(lib_path);
+    const root_arg = try std.fmt.allocPrint(allocator, "-Mroot={s}", .{harness_path});
+    defer allocator.free(root_arg);
+    const lib_arg = try std.fmt.allocPrint(allocator, "-Mcapnpc-zig={s}", .{lib_path});
+    defer allocator.free(lib_arg);
+    const zig_result = std.process.run(allocator, io, .{ .argv = &.{
+        "zig",
+        "test",
+        "--dep",
+        "capnpc-zig",
+        root_arg,
+        "--dep",
+        "capnpc-zig",
+        lib_arg,
+    } }) catch |err| switch (err) {
+        error.FileNotFound => return error.ZigCompilerUnavailable,
+        else => return err,
+    };
+    defer allocator.free(zig_result.stdout);
+    defer allocator.free(zig_result.stderr);
+    if (!(zig_result.term == .exited and zig_result.term.exited == 0)) {
+        std.debug.print("zig test stdout:\n{s}\n", .{zig_result.stdout});
+        std.debug.print("zig test stderr:\n{s}\n", .{zig_result.stderr});
+        return error.GeneratedRuntimeCompileFailed;
+    }
+}
+
+// The codegen-ABI guard at the top of every generated file resolves `capnpc`
+// in a block. Zig rejects a block local that shadows a file-scope
+// declaration, and a schema decides some file-scope names: its constants and
+// annotations, and the aliases of the files it imports. This schema declares
+// `runtime` (a constant) and `runtime_abi` (an import alias); the guard once
+// used both as locals, so the binding did not compile.
+test "Codegen guard locals cannot collide with schema-named file-scope declarations" {
+    try runMultiFileHarness(std.testing.allocator, &.{
+        "tests/test_schemas/runtime_guard_names.capnp",
+        "tests/test_schemas/runtime_abi.capnp",
+    },
+        \\const std = @import("std");
+        \\const capnpc = @import("capnpc-zig");
+        \\const message = capnpc.message;
+        \\const generated = @import("runtime_guard_names.zig");
+        \\
+        \\test "schema-named runtime and runtime_abi declarations" {
+        \\    try std.testing.expectEqual(@as(u32, 7), generated.runtime);
+        \\    try std.testing.expect(generated.runtime_abi == @import("runtime_abi.zig"));
+        \\
+        \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+        \\    defer builder.deinit();
+        \\    var root = try generated.Holder.Builder.init(&builder);
+        \\    var thing = try root.initThing();
+        \\    try thing.setValue(42);
+        \\    const bytes = try builder.toBytes();
+        \\    defer std.testing.allocator.free(bytes);
+        \\
+        \\    var msg = try message.Message.init(std.testing.allocator, bytes, .{});
+        \\    defer msg.deinit();
+        \\    const reader = try generated.Holder.Reader.init(&msg);
+        \\    try std.testing.expectEqual(@as(u32, 42), try (try reader.getThing()).getValue());
+        \\}
+        \\
+    );
+}
+
 fn runGeneratedHarness(
     allocator: std.mem.Allocator,
     schema_path: []const u8,
