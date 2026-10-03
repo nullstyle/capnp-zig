@@ -52,6 +52,8 @@ fn printUsage() void {
         \\  - snapshots tracked + untracked source files outside the worktree
         \\  - lets `zig fetch` apply build.zig.zon's package filter
         \\  - archives and re-fetches that filtered result (never a path dependency)
+        \\  - runs the documented pinned-plugin codegen consumer (dep.artifact
+        \\    "capnpc-zig" on a checked-in request) and proves its gen-check
         \\  - builds and runs default, core, and QUIC consumers in Debug/ReleaseSafe
         \\  - proves normal/core builds do not fetch the lazy QUIC dependency
         \\  - runs the packaged compiler plugin and compares checked-in output
@@ -97,6 +99,47 @@ fn runWithStdin(
     environ_map: ?*const std.process.Environ.Map,
     stdin: std.process.SpawnOptions.StdIo,
 ) !std.process.RunResult {
+    const result = try runCollect(ctx, argv, cwd, environ_map, stdin);
+    if (!result.term.success()) {
+        std.debug.print(
+            "command failed: {s}\nterm: {f}\nstdout:\n{s}\nstderr:\n{s}\n",
+            .{ argv[0], result.term, result.stdout, result.stderr },
+        );
+        ctx.allocator.free(result.stdout);
+        ctx.allocator.free(result.stderr);
+        return error.PackagePreflightCommandFailed;
+    }
+    return result;
+}
+
+/// Run a command that MUST fail: a gate proven only by its passing case has
+/// not been shown to catch anything.
+fn runExpectFailure(
+    ctx: *const Context,
+    argv: []const []const u8,
+    cwd: std.process.Child.Cwd,
+    environ_map: ?*const std.process.Environ.Map,
+) !void {
+    const result = try runCollect(ctx, argv, cwd, environ_map, .ignore);
+    defer ctx.allocator.free(result.stdout);
+    defer ctx.allocator.free(result.stderr);
+    if (result.term.success()) {
+        std.debug.print(
+            "command unexpectedly succeeded: {s}\nstdout:\n{s}\nstderr:\n{s}\n",
+            .{ argv[0], result.stdout, result.stderr },
+        );
+        return error.PackagePreflightCommandUnexpectedlySucceeded;
+    }
+}
+
+/// Spawn, drain and wait; the caller judges the exit status.
+fn runCollect(
+    ctx: *const Context,
+    argv: []const []const u8,
+    cwd: std.process.Child.Cwd,
+    environ_map: ?*const std.process.Environ.Map,
+    stdin: std.process.SpawnOptions.StdIo,
+) !std.process.RunResult {
     var child = try std.process.spawn(ctx.io, .{
         .argv = argv,
         .cwd = cwd,
@@ -126,16 +169,7 @@ fn runWithStdin(
     const stdout = try reader.toOwnedSlice(0);
     errdefer ctx.allocator.free(stdout);
     const stderr = try reader.toOwnedSlice(1);
-    errdefer ctx.allocator.free(stderr);
-    const result = std.process.RunResult{ .term = term, .stdout = stdout, .stderr = stderr };
-    if (!result.term.success()) {
-        std.debug.print(
-            "command failed: {s}\nterm: {f}\nstdout:\n{s}\nstderr:\n{s}\n",
-            .{ argv[0], result.term, result.stdout, result.stderr },
-        );
-        return error.PackagePreflightCommandFailed;
-    }
-    return result;
+    return .{ .term = term, .stdout = stdout, .stderr = stderr };
 }
 
 fn runDiscard(
@@ -483,6 +517,63 @@ fn verifyPackagedPlugin(ctx: *const Context, plugin_abs: []const u8) !void {
     if (!std.mem.eql(u8, actual, expected)) return error.PackagedPluginGoldenMismatch;
 }
 
+/// The documented consumer codegen recipe, run from the filtered archive.
+///
+/// `tests/package_consumer/codegen/build.zig` is the canonical `build.zig` in
+/// docs/build-integration.md, byte for byte (docs-smoke enforces that). It
+/// runs `b.addRunArtifact(dep.artifact("capnpc-zig"))` on a checked-in
+/// CodeGeneratorRequest through stdin, so no schema compiler is needed here,
+/// and compiles the output against the same package's runtime module.
+/// `Dependency.artifact` finds only artifacts the package's own `build.zig`
+/// installs, so dropping capnp-zig's `b.installArtifact` turns this red.
+///
+/// This runs before the library consumers so that red is attributable to this
+/// case: the default consumer also installs the plugin and would fail first.
+fn runCodegenConsumer(
+    ctx: *const Context,
+    archive_abs: []const u8,
+    codegen_abs: []const u8,
+    consumer_env: *const std.process.Environ.Map,
+) !void {
+    try runDiscard(
+        ctx,
+        &.{ "zig", "fetch", "--save=capnpc_zig", archive_abs },
+        .{ .path = codegen_abs },
+        consumer_env,
+    );
+
+    const install_abs = try join(ctx.allocator, &.{ ctx.work_abs, "install-codegen" });
+    defer ctx.allocator.free(install_abs);
+    try runDiscard(
+        ctx,
+        &.{ "zig", "build", "--prefix", install_abs, "--summary", "all" },
+        .{ .path = codegen_abs },
+        consumer_env,
+    );
+    const app_exe = try executableName(ctx.allocator, "app");
+    defer ctx.allocator.free(app_exe);
+    const app_path = try join(ctx.allocator, &.{ install_abs, "bin", app_exe });
+    defer ctx.allocator.free(app_path);
+    try runDiscard(ctx, &.{app_path}, .inherit, null);
+
+    // The checked-in-output variant: `gen` copies the pinned plugin's output
+    // into the source tree, `gen-check` passes on that copy, and must fail
+    // once the copy drifts. The last step is what proves the check has teeth.
+    try runDiscard(ctx, &.{ "zig", "build", "gen" }, .{ .path = codegen_abs }, consumer_env);
+    const checked_in = try join(ctx.allocator, &.{ codegen_abs, "src", "gen", "addressbook.zig" });
+    defer ctx.allocator.free(checked_in);
+    try runDiscard(ctx, &.{ "zig", "build", "gen-check" }, .{ .path = codegen_abs }, consumer_env);
+    {
+        const file = try std.Io.Dir.cwd().openFile(ctx.io, checked_in, .{ .mode = .read_write });
+        defer file.close(ctx.io);
+        try file.writePositionalAll(ctx.io, "// drift\n", try file.length(ctx.io));
+    }
+    runExpectFailure(ctx, &.{ "zig", "build", "gen-check" }, .{ .path = codegen_abs }, consumer_env) catch |err| {
+        std.debug.print("codegen consumer: gen-check passed on a drifted checked-in copy\n", .{});
+        return err;
+    };
+}
+
 fn status(ctx: *const Context) ![]u8 {
     const result = try run(
         ctx,
@@ -564,6 +655,12 @@ pub fn main(init: std.process.Init) !void {
     defer init.gpa.free(consumer_local);
     var consumer_env = try makeZigEnvironment(&ctx, consumer_global, consumer_local);
     defer consumer_env.deinit();
+    // tests/package_consumer/codegen is its own build root inside the copied
+    // fixture; it shares the consumer caches but not the root's manifest.
+    const codegen_abs = try join(init.gpa, &.{ consumer_abs, "codegen" });
+    defer init.gpa.free(codegen_abs);
+    try runCodegenConsumer(&ctx, archive_abs, codegen_abs, &consumer_env);
+
     try runDiscard(
         &ctx,
         &.{ "zig", "fetch", "--save=capnpc_zig", archive_abs },
@@ -583,7 +680,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     std.debug.print(
-        "package preflight passed: filtered archive, default/core{s}, packaged plugin, clean worktree\n",
+        "package preflight passed: filtered archive, pinned-plugin codegen consumer, default/core{s}, packaged plugin, clean worktree\n",
         .{if (ctx.skip_quic) " (QUIC skipped)" else "/QUIC"},
     );
     if (ctx.keep_temp) std.debug.print("kept preflight workspace at {s}\n", .{ctx.work_abs});

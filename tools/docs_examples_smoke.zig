@@ -137,7 +137,28 @@ const required_doc_needles = [_]RequiredNeedle{
     .{ .path = "docs/quic-transport.md", .needle = "rpc.transport.quic.Server", .reason = "QUIC guide should document multi-session fanout" },
     .{ .path = "docs/rpc-migration-guide.md", .needle = "rpc.protocol", .reason = "migration guide should preserve old-name mapping coverage" },
     .{ .path = "examples/rpc_pingpong.zig", .needle = "rpc.transport.tcp.ServerSession", .reason = "RPC example should use the current one-call session transport path" },
+    // The pinned-plugin recipe. A plugin found on PATH can come from any
+    // revision, and with reflection on by default a mismatch is a compile
+    // break, so both consumer entry points say so and show executed code.
+    .{ .path = "docs/build-integration.md", .needle = "never a PATH binary", .reason = "build guide must steer codegen to the pinned dep.artifact plugin" },
+    .{ .path = "docs/build-integration.md", .needle = verbatim_marker ++ codegen_consumer_build ++ verbatim_marker_end, .reason = "build guide's build.zig must be the package-preflight codegen consumer's" },
+    .{ .path = "docs/getting-started-serialization.md", .needle = "never a PATH binary", .reason = "serialization guide must steer codegen to the pinned dep.artifact plugin" },
+    .{ .path = "docs/getting-started-serialization.md", .needle = verbatim_marker ++ codegen_consumer_build ++ verbatim_marker_end, .reason = "serialization guide's codegen snippet must come from the package-preflight codegen consumer" },
 };
+
+/// A fenced code block in an active doc that must appear verbatim in a
+/// checked-in file some gate executes. The marker is an HTML comment on the
+/// line before the opening fence:
+///
+///     <!-- verbatim: tests/package_consumer/codegen/build.zig -->
+///
+/// The block may be an excerpt and may be dedented: it must match a run of
+/// consecutive lines of the file, every line carrying the same extra leading
+/// spaces there. A doc snippet tied this way cannot drift from code that runs.
+const verbatim_marker = "<!-- verbatim: ";
+const verbatim_marker_end = " -->";
+/// package-preflight builds and runs this consumer from the filtered archive.
+const codegen_consumer_build = "tests/package_consumer/codegen/build.zig";
 
 /// A doc string that must carry the version declared in `build.zig.zon`.
 /// `{v}` expands to the bare version (`0.5.0`), so `v{v}` renders `v0.5.0`.
@@ -386,6 +407,125 @@ fn verifyRequiredDocNeedles(ctx: *Context) void {
     }
 }
 
+fn splitLines(allocator: std.mem.Allocator, bytes: []const u8) ![][]const u8 {
+    var lines: std.ArrayList([]const u8) = .empty;
+    errdefer lines.deinit(allocator);
+    var it = std.mem.splitScalar(u8, bytes, '\n');
+    while (it.next()) |line| try lines.append(allocator, std.mem.trimEnd(u8, line, "\r"));
+    // A trailing newline is a line terminator, not an empty last line.
+    if (lines.items.len > 0 and lines.items[lines.items.len - 1].len == 0) _ = lines.pop();
+    return lines.toOwnedSlice(allocator);
+}
+
+fn isBlank(line: []const u8) bool {
+    return std.mem.trim(u8, line, " \t").len == 0;
+}
+
+/// True when `block` matches consecutive lines of `file`, every non-blank
+/// line carrying the same number of extra leading spaces in `file`.
+fn blockAppearsIn(block: []const []const u8, file: []const []const u8) bool {
+    const anchor = for (block, 0..) |line, i| {
+        if (!isBlank(line)) break i;
+    } else return false;
+    if (block.len > file.len) return false;
+
+    var start: usize = 0;
+    while (start + block.len <= file.len) : (start += 1) {
+        const file_anchor = file[start + anchor];
+        if (!std.mem.endsWith(u8, file_anchor, block[anchor])) continue;
+        const indent = file_anchor.len - block[anchor].len;
+        const matches = for (block, file[start..][0..block.len]) |want, have| {
+            if (!lineMatches(want, have, indent)) break false;
+        } else true;
+        if (matches) return true;
+    }
+    return false;
+}
+
+fn lineMatches(want: []const u8, have: []const u8, indent: usize) bool {
+    if (isBlank(want)) return isBlank(have);
+    if (have.len != indent + want.len) return false;
+    for (have[0..indent]) |c| {
+        if (c != ' ') return false;
+    }
+    return std.mem.eql(u8, have[indent..], want);
+}
+
+fn verifyVerbatimBlocksIn(ctx: *Context, doc_path: []const u8) !void {
+    const doc = try readFile(ctx, doc_path);
+    defer ctx.allocator.free(doc);
+    const lines = try splitLines(ctx.allocator, doc);
+    defer ctx.allocator.free(lines);
+
+    var i: usize = 0;
+    while (i < lines.len) : (i += 1) {
+        const marker_line = std.mem.trim(u8, lines[i], " \t");
+        if (!std.mem.startsWith(u8, marker_line, verbatim_marker)) continue;
+        ctx.checks += 1;
+        const marker_no = i + 1;
+        if (!std.mem.endsWith(u8, marker_line, verbatim_marker_end)) {
+            ctx.fail("{s}:{d}: unterminated verbatim marker", .{ doc_path, marker_no });
+            continue;
+        }
+        const source_path = marker_line[verbatim_marker.len .. marker_line.len - verbatim_marker_end.len];
+        if (i + 1 >= lines.len or !std.mem.startsWith(u8, lines[i + 1], "```")) {
+            ctx.fail("{s}:{d}: verbatim marker must sit directly above a fenced block", .{ doc_path, marker_no });
+            continue;
+        }
+        const block_start = i + 2;
+        var block_end = block_start;
+        while (block_end < lines.len and !std.mem.startsWith(u8, lines[block_end], "```")) block_end += 1;
+        if (block_end == lines.len) {
+            ctx.fail("{s}:{d}: verbatim block is never closed", .{ doc_path, marker_no });
+            return;
+        }
+        i = block_end;
+
+        const source = readFile(ctx, source_path) catch |err| {
+            ctx.fail("{s}:{d}: cannot read verbatim source {s}: {s}", .{ doc_path, marker_no, source_path, @errorName(err) });
+            continue;
+        };
+        defer ctx.allocator.free(source);
+        const source_lines = try splitLines(ctx.allocator, source);
+        defer ctx.allocator.free(source_lines);
+        if (!blockAppearsIn(lines[block_start..block_end], source_lines)) {
+            ctx.fail("{s}:{d}: fenced block is not a verbatim excerpt of {s}; copy it from that file", .{ doc_path, marker_no, source_path });
+        }
+    }
+}
+
+fn verifyVerbatimBlocks(ctx: *Context) !void {
+    for (active_docs) |path| try verifyVerbatimBlocksIn(ctx, path);
+}
+
+test "blockAppearsIn matches whole files and dedented excerpts only" {
+    const file = [_][]const u8{
+        "pub fn build(b: *std.Build) void {",
+        "    const run = b.addRunArtifact(plugin);",
+        "",
+        "    run.setStdIn(.{ .lazy_path = request });",
+        "}",
+    };
+    try std.testing.expect(blockAppearsIn(&file, &file));
+    try std.testing.expect(blockAppearsIn(&.{
+        "const run = b.addRunArtifact(plugin);",
+        "",
+        "run.setStdIn(.{ .lazy_path = request });",
+    }, &file));
+    // An edited line, a skipped line, or inconsistent indentation all fail.
+    try std.testing.expect(!blockAppearsIn(&.{"const run = b.addSystemCommand(plugin);"}, &file));
+    try std.testing.expect(!blockAppearsIn(&.{
+        "const run = b.addRunArtifact(plugin);",
+        "run.setStdIn(.{ .lazy_path = request });",
+    }, &file));
+    try std.testing.expect(!blockAppearsIn(&.{
+        "    const run = b.addRunArtifact(plugin);",
+        "",
+        "run.setStdIn(.{ .lazy_path = request });",
+    }, &file));
+    try std.testing.expect(!blockAppearsIn(&.{ "", "" }, &file));
+}
+
 fn parseManifestVersion(manifest: []const u8) ?[]const u8 {
     const key = ".version = \"";
     const start = std.mem.indexOf(u8, manifest, key) orelse return null;
@@ -470,6 +610,7 @@ pub fn main(init: std.process.Init) !void {
     try scanSourcePublicNames(&ctx);
     try verifyBuildAndJustfile(&ctx);
     verifyRequiredDocNeedles(&ctx);
+    try verifyVerbatimBlocks(&ctx);
     try verifyVersionStamps(&ctx);
 
     if (ctx.failures != 0) {

@@ -296,6 +296,16 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_docs_examples_smoke = b.addRunArtifact(docs_examples_smoke);
     const docs_smoke_step = b.step("docs-smoke", "Run documentation and examples smoke checks");
     docs_smoke_step.dependOn(&run_docs_examples_smoke.step);
+    // The smoke tool's own matcher tests (the verbatim doc-snippet check).
+    const docs_examples_smoke_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/docs_examples_smoke.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &docs_examples_smoke_tests.step) catch @panic("OOM");
+    docs_smoke_step.dependOn(&b.addRunArtifact(docs_examples_smoke_tests).step);
     // The RPC getting-started snippets compile against the REAL generated
     // modules (not hand-written mirrors), so codegen-surface drift breaks
     // the doc gate too.
@@ -327,7 +337,50 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_rpc_getting_started_snippet_tests = &b.addRunArtifact(rpc_getting_started_snippet_tests).step;
     const run_serialization_getting_started_snippet_tests = addLibTest(b, "tests/docs/serialization_getting_started_snippets_test.zig", target, optimize, lib_module);
     const run_rpc_events_snippet_tests = addLibTest(b, "tests/docs/rpc_events_snippets_test.zig", target, optimize, lib_module);
-    const run_build_integration_snippet_tests = addLibTest(b, "tests/docs/build_integration_snippets_test.zig", target, optimize, lib_module);
+    // The documented pinned-plugin recipe (docs/build-integration.md), run
+    // against this checkout: the plugin, built for the host so cross-target
+    // compile checks can still run it, reads the codegen consumer's checked-in
+    // request on stdin and writes into a cached output directory; the
+    // consumer's `exercise` then runs as a test against that output.
+    // package-preflight runs the same consumer from the filtered archive.
+    const docs_codegen_plugin = if (target.query.isNative()) exe else b.addExecutable(.{
+        .name = "capnpc-zig-host",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+    });
+    const docs_codegen = b.addRunArtifact(docs_codegen_plugin);
+    docs_codegen.setStdIn(.{ .lazy_path = b.path("tests/package_consumer/codegen/schema/addressbook.request.bin") });
+    const docs_codegen_dir = docs_codegen.addPrefixedOutputDirectoryArg("--output-dir=", "capnp-gen");
+    const docs_codegen_addressbook = b.createModule(.{
+        .root_source_file = docs_codegen_dir.path(b, "addressbook.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "capnpc-zig", .module = lib_module }},
+    });
+    const build_integration_snippet_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/docs/build_integration_snippets_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "codegen_consumer", .module = b.createModule(.{
+                    .root_source_file = b.path("tests/package_consumer/codegen/src/main.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                    .imports = &.{
+                        .{ .name = "capnpc-zig", .module = lib_module },
+                        .{ .name = "addressbook", .module = docs_codegen_addressbook },
+                    },
+                }) },
+            },
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &build_integration_snippet_tests.step) catch @panic("OOM");
+    const run_build_integration_snippet_tests = &b.addRunArtifact(build_integration_snippet_tests).step;
     const run_troubleshooting_contracts_snippet_tests = addLibTest(b, "tests/docs/troubleshooting_contracts_snippets_test.zig", target, optimize, lib_module);
     const run_quic_transport_disabled_snippet_tests: ?*std.Build.Step = if (!enable_quic)
         addLibTest(b, "tests/docs/quic_transport_disabled_snippets_test.zig", target, optimize, lib_module)

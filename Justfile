@@ -264,6 +264,10 @@ gen:
     uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}" -- examples/addressbook.capnp examples/pingpong.capnp
     cd examples/kvstore && uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/examples/kvstore/gen" -- kvstore.capnp
     mkdir -p zig-out/check-generated/tests/test_schemas
+    # The package-preflight codegen consumer reads this request on stdin, so its
+    # clean-room build needs no schema compiler (docs/build-integration.md).
+    uv run --no-project --python 3.13 "{{ capnp_tool }}" compiler -- compile -o- --src-prefix=tests/package_consumer/codegen/schema tests/package_consumer/codegen/schema/addressbook.capnp > zig-out/check-generated/addressbook.request.bin
+    cp zig-out/check-generated/addressbook.request.bin tests/package_consumer/codegen/schema/addressbook.request.bin
     uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/example.capnp
     cp zig-out/check-generated/tests/test_schemas/example.zig src/wasm/generated/example.zig
     mkdir -p tests/serialization/generated
@@ -290,7 +294,7 @@ check-generated: gen
     # `std.Thread.Id`, which renders u64 on macOS and u32 on Linux, so a committed
     # copy can never match on every OS. The Stable file MUST be target-stable and
     # stays in the diff — `zig build check-api` enforces that on all three tiers.
-    git diff --exit-code -- src/rpc/gen tests/e2e/zig/generated tests/golden examples/addressbook.zig examples/pingpong.zig examples/kvstore/gen/kvstore.zig src/wasm/generated/example.zig tests/serialization/generated docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
+    git diff --exit-code -- src/rpc/gen tests/e2e/zig/generated tests/golden examples/addressbook.zig examples/pingpong.zig examples/kvstore/gen/kvstore.zig src/wasm/generated/example.zig tests/serialization/generated tests/package_consumer/codegen/schema/addressbook.request.bin docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
 
 # Assert the Zig on PATH is the one mise.toml pins — the same check
 # .github/actions/setup-zig makes, so a local gate proves the same thing CI's

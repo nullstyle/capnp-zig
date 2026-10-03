@@ -1,0 +1,15 @@
+.{
+    .name = .capnp_zig_codegen_consumer,
+    .version = "0.0.0",
+    .fingerprint = 0xc0387f2fef25c64f,
+    .minimum_zig_version = "0.17.0",
+    // `tools/package_preflight.zig` copies this fixture and uses
+    // `zig fetch --save=capnpc_zig <filtered-archive>` to populate the entry.
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "schema",
+        "src",
+    },
+}

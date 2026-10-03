@@ -40,7 +40,9 @@ zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.18.0
 Then import `capnpc-zig` (full: serialization + codegen + RPC) or
 `capnpc-zig-core` (serialization + codegen only) — see
 [docs/build-integration.md](docs/build-integration.md) for the complete
-`build.zig` wiring, including running `capnp compile` during your build.
+`build.zig` wiring, including generating code during your build with the plugin
+from the same pinned package (`dep.artifact("capnpc-zig")`, never a PATH
+binary).
 
 ### Prerequisites
 

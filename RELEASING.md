@@ -64,9 +64,11 @@ git status --short          # must be empty
       stale by a generator change.
 - [ ] `just package-preflight` passes. This is the manifest-filtered package
       gate, not a working-tree/path-dependency build: it archives and re-fetches
-      the `.paths` result, exercises default/core/QUIC consumers in Debug and
-      ReleaseSafe, runs the packaged plugin, checks lazy QUIC fetching, and
-      leaves the checkout unchanged.
+      the `.paths` result, runs the documented pinned-plugin codegen consumer
+      (`dep.artifact("capnpc-zig")`, `tests/package_consumer/codegen`),
+      exercises default/core/QUIC consumers in Debug and ReleaseSafe, runs the
+      packaged plugin, checks lazy QUIC fetching, and leaves the checkout
+      unchanged.
 - [ ] Every API a downstream uses is on the package consumers' forced list
       (`tests/package_consumer/src/`: `common.zig` for every root, plus
       `default.zig`, `core.zig` and `quic.zig`). Zig analyzes lazily, so the

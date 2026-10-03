@@ -31,11 +31,7 @@ Each method has:
 
 ## 2. Generate Zig Code
 
-```bash
-capnp compile -o ./zig-out/bin/capnpc-zig pingpong.capnp
-```
-
-To run codegen from your own `build.zig` and import the generated module, follow [build-integration.md](build-integration.md) — this guide assumes the generated file is importable as `@import("pingpong")`.
+Generate with the `capnpc-zig` plugin from the capnp-zig package you pin, never a PATH binary: follow the [canonical build.zig](build-integration.md#canonical-buildzig), with `pingpong` in place of `addressbook` and the full `capnpc-zig` module in place of `capnpc-zig-core` (generated interfaces use the RPC runtime). This guide assumes the generated file is importable as `@import("pingpong")`.
 
 The generated `pingpong.zig` (checked in at `examples/pingpong.zig`) contains, per interface:
 

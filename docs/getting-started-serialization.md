@@ -13,12 +13,17 @@ This guide walks you through defining a Cap'n Proto schema and using the generat
 ## Prerequisites
 
 - **Tagged Zig 0.17** on `PATH` (`mise install` provides the pinned version)
-- **Cap'n Proto compiler** (`capnp`) — install via your package manager (e.g. `brew install capnp`, `apt install capnproto`)
-- **capnpc-zig** — built from this repo (`zig build`)
+- **A Cap'n Proto schema compiler** to turn the schema into a
+  `CodeGeneratorRequest`. CI verifies the plugin with the Cap'n Proto 2.0-dev
+  WASM compiler that capnp-zig pins; native `capnp` 1.x (`brew install capnp`,
+  `apt install capnproto`) is **unverified** with this plugin. See
+  [The schema compiler](build-integration.md#the-schema-compiler).
+- **No `capnpc-zig` install.** Your `build.zig` builds the plugin from the
+  capnp-zig package you pin (step 3).
 
 ## 1. Define Your Schema
 
-Create a file called `addressbook.capnp`:
+Create `schema/addressbook.capnp`:
 
 ```capnp
 @0x9eb32e19f86ee174;
@@ -51,20 +56,7 @@ Key points:
 - Fields have ordinals (`@0`, `@1`, ...) that define their position in the binary layout
 - Structs, enums, and lists compose naturally
 
-## 2. Generate Zig Code
-
-Run the Cap'n Proto compiler with capnpc-zig as the output plugin:
-
-```bash
-capnp compile -o ./zig-out/bin/capnpc-zig addressbook.capnp
-```
-
-This produces `addressbook.capnp.zig` (or similar, depending on the schema filename). The generated file contains `Reader` and `Builder` types for each struct, plus Zig enums for each Cap'n Proto enum.
-Codegen is quiet by default to keep build output clean.
-
-For a canonical `build.zig` automation pattern (codegen step + generated module wiring), see [build-integration.md](build-integration.md).
-
-## 3. Add capnpc-zig as a Dependency
+## 2. Add capnpc-zig as a Dependency
 
 Pin a tagged release. `zig fetch --save` downloads the tag's tarball and
 records its `.url` and `.hash` in your `build.zig.zon`:
@@ -91,22 +83,66 @@ the CHANGELOG when you do. To build against a local checkout instead, use
 fails on a hash you did not change, see
 [Consumer build pitfalls](troubleshooting.md#consumer-build-pitfalls).
 
-In your `build.zig`, import the module:
+In your `build.zig`, take the runtime module from the dependency:
 
+<!-- verbatim: tests/package_consumer/codegen/build.zig -->
 ```zig
+// The runtime. Generated code imports it as "capnpc-zig".
 const capnpc_dep = b.dependency("capnpc_zig", .{
     .target = target,
     .optimize = optimize,
 });
-
-// Use the core module (no TCP/QUIC transport surface)
-exe.root_module.addImport("capnpc-zig", capnpc_dep.module("capnpc-zig-core"));
+const capnpc_core = capnpc_dep.module("capnpc-zig-core");
 ```
 
 > Serialization-only code uses `capnpc-zig-core`; code that also uses RPC uses
 > the full `capnpc-zig` module. See
 > [supported-surface.md](supported-surface.md#modules--which-to-import) for the
 > canonical module-choice rule.
+
+## 3. Generate Zig Code
+
+Compile the schema to a `CodeGeneratorRequest` and commit it next to the
+schema, so `zig build` needs no schema compiler. The command below is native
+`capnp`; [The schema compiler](build-integration.md#the-schema-compiler) shows
+the same step with the CI-verified WASM compiler.
+
+```bash
+capnp compile -o- --src-prefix=schema schema/addressbook.capnp > schema/addressbook.request.bin
+```
+
+Then let your build run the `capnpc-zig` plugin from the same pinned package,
+never a PATH binary. A plugin from another revision can emit code your runtime
+does not compile. These lines are an excerpt of the `build.zig` that
+`zig build package-preflight` runs from the release archive:
+
+<!-- verbatim: tests/package_consumer/codegen/build.zig -->
+```zig
+const capnpc_host = b.dependency("capnpc_zig", .{
+    .target = b.graph.host,
+    .optimize = .ReleaseSafe,
+});
+const codegen = b.addRunArtifact(capnpc_host.artifact("capnpc-zig"));
+codegen.setStdIn(.{ .lazy_path = b.path("schema/addressbook.request.bin") });
+const gen_dir = codegen.addPrefixedOutputDirectoryArg("--output-dir=", "capnp-gen");
+
+const addressbook = b.createModule(.{
+    .root_source_file = gen_dir.path(b, "addressbook.zig"),
+    .target = target,
+    .optimize = optimize,
+    .imports = &.{.{ .name = "capnpc-zig", .module = capnpc_core }},
+});
+```
+
+Import both into your executable as `capnpc-zig` and `addressbook`. The
+generated `addressbook.zig` contains `Reader` and `Builder` types for each
+struct, plus Zig enums for each Cap'n Proto enum. It lives in the build cache,
+so it always matches your pinned runtime. Codegen is quiet by default.
+
+If you commit the generated file instead, add the `gen` and `gen-check` steps
+from the [canonical build.zig](build-integration.md#canonical-buildzig) and run
+`zig build gen-check` in CI. It fails, with the diff, when the checked-in copy
+differs from the pinned plugin's output.
 
 ## 4. Build a Message
 
