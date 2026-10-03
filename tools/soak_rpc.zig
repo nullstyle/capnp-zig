@@ -104,12 +104,29 @@ const Totals = struct {
     contention_disconnects: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     unexpected_exceptions: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     // Terminal transport close cause per session (the death certificate):
-    // indexed by @intFromEnum(rpc.events.DisconnectCause). TCP sessions all
+    // indexed by causeSlot(rpc.events.DisconnectCause). TCP sessions all
     // land in .unknown today; QUIC splits local/peer/idle/reset/error.
     disconnects_by_cause: [cause_count]std.atomic.Value(usize) = @splat(std.atomic.Value(usize).init(0)),
 };
 
 const cause_count = std.enums.values(rpc.events.DisconnectCause).len;
+
+comptime {
+    // `disconnects_by_cause` is indexed by a cause's backing integer and
+    // printed by declaration position, so the named causes must stay dense
+    // from zero for the two to agree.
+    for (std.enums.values(rpc.events.DisconnectCause), 0..) |cause, i| {
+        if (@backingInt(cause) != i) @compileError("DisconnectCause values must stay dense from 0");
+    }
+}
+
+/// The `disconnects_by_cause` slot for `cause`. `DisconnectCause` is
+/// non-exhaustive, so a cause this build does not name is counted as
+/// `.unknown` instead of indexing past the array.
+fn causeSlot(cause: rpc.events.DisconnectCause) usize {
+    const i: usize = @backingInt(cause);
+    return if (i < cause_count) i else @backingInt(rpc.events.DisconnectCause.unknown);
+}
 
 fn nowNs(io: std.Io) i64 {
     return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
@@ -582,7 +599,7 @@ fn WorkerOf(
 
             _ = self.totals.sessions.fetchAdd(1, .monotonic);
             const cause = peer.lastDisconnectCause();
-            _ = self.totals.disconnects_by_cause[@backingInt(cause)].fetchAdd(1, .monotonic);
+            _ = self.totals.disconnects_by_cause[causeSlot(cause)].fetchAdd(1, .monotonic);
             if (session.failed) {
                 _ = self.totals.transport_errors.fetchAdd(1, .monotonic);
             }
@@ -1387,7 +1404,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (cfg.abrupt_death_every_ms != null) {
         if (comptime quic.enabled) {
-            const reset_closes = totals.disconnects_by_cause[@backingInt(rpc.events.DisconnectCause.stateless_reset)].load(.acquire);
+            const reset_closes = totals.disconnects_by_cause[causeSlot(.stateless_reset)].load(.acquire);
             if (quic_srv.rebind_failed.load(.acquire)) {
                 std.debug.print("soak: FAIL — abrupt-death rebind race exhausted its retries\n", .{});
                 failed = true;

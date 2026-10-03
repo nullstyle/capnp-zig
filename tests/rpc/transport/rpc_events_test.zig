@@ -249,3 +249,23 @@ test "parked Accept timeout event carries only its answer id" {
     try std.testing.expectEqualStrings("parked_accepts", @tagName(rpc_events.Resource.parked_accepts));
     try std.testing.expectEqualStrings("parked_accept_bytes", @tagName(rpc_events.Resource.parked_accept_bytes));
 }
+
+test "DisconnectCause is non-exhaustive, so a newer cause reaches older code as an unnamed value" {
+    // Causes are added as transports learn more (handshake_timeout and
+    // stream_limit_exhausted landed in consecutive releases). An exhaustive
+    // enum turned each addition into a compile break in every consumer
+    // switch; non-exhaustive makes a `_` (or `else`) arm the contract.
+    const info = @typeInfo(rpc_events.DisconnectCause).@"enum";
+    try std.testing.expect(info.mode == .nonexhaustive);
+    try std.testing.expectEqual(u8, info.tag_type);
+
+    // A cause this build does not name is representable, has no tag name,
+    // and lands in the catch-all arm instead of being illegal to construct.
+    const future: rpc_events.DisconnectCause = @fromBackingInt(0xfe);
+    try std.testing.expectEqual(@as(?[:0]const u8, null), std.enums.tagName(rpc_events.DisconnectCause, future));
+    const routed_to_wildcard = switch (future) {
+        .unknown => false,
+        else => true,
+    };
+    try std.testing.expect(routed_to_wildcard);
+}

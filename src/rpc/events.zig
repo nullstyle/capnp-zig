@@ -122,7 +122,14 @@ pub const Resource = enum {
 /// transport that KNOWS more (QUIC's CloseEvent) says so. `.unknown` is
 /// the compatible default for transports that cannot distinguish causes
 /// (TCP today), so absence of plumbing never misreports a cause.
-pub const DisconnectCause = enum {
+///
+/// NON-EXHAUSTIVE on purpose: causes are added as transports learn more
+/// (two landed in consecutive releases), and an exhaustive enum turned every
+/// addition into a compile break in each consumer's switch. Handle `_` (or
+/// use `else`) and treat an unnamed cause like `.unknown`; never `@tagName`
+/// a value you did not construct — use `std.enums.tagName`, which returns
+/// null for an unnamed cause instead of panicking.
+pub const DisconnectCause = enum(u8) {
     /// No typed cause was available.
     unknown,
     /// We closed the connection locally and cleanly.
@@ -151,6 +158,7 @@ pub const DisconnectCause = enum {
     /// connection simply ran out. Redial — a fresh connection gets a fresh
     /// budget.
     stream_limit_exhausted,
+    _,
 };
 
 pub const Event = union(enum) {

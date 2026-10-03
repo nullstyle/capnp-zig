@@ -286,10 +286,21 @@ pub const WarmRedialClient = struct {
     }
 
     fn causeRedials(self: *const WarmRedialClient, cause: rpc_events.DisconnectCause) bool {
+        // Named causes are listed (not `else`) so a cause added to
+        // `DisconnectCause` must get a redial decision here at compile time.
         return switch (cause) {
             .stateless_reset => true,
             .idle_timeout => self.policy.redial_on_idle_timeout,
-            else => false,
+            .unknown,
+            .local_close,
+            .peer_close,
+            .transport_error,
+            .handshake_timeout,
+            .stream_limit_exhausted,
+            => false,
+            // A cause this build does not name proves nothing about the
+            // remote's state, so it is treated like `.unknown`.
+            _ => false,
         };
     }
 
