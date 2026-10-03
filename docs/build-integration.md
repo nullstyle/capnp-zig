@@ -94,6 +94,11 @@ This file is the clean-room consumer that `zig build package-preflight` builds
 from the filtered release archive and runs. `zig build docs-smoke` fails if the
 two differ.
 
+> **This recipe needs a capnp-zig release after v0.18.0.** <!-- unreleased-after: v0.18.0 -->
+> It passes the plugin's `--output-dir=` flag, which v0.18.0 does not have
+> (see the `--output-dir=` note below). Until the next tag, depend on a
+> capnp-zig checkout with `.path`, or `zig fetch --save` a commit of `main`.
+
 <!-- verbatim: tests/package_consumer/codegen/build.zig -->
 ```zig
 const std = @import("std");
@@ -163,11 +168,11 @@ How it fits together:
 - **The plugin step is cached.** It reruns only when the request or the plugin
   changes. The generated directory is a LazyPath, so the generated file never
   enters your source tree and cannot go stale.
-- **`--output-dir=`** (unreleased; v0.18.0 does not have it) makes the plugin
-  write under the step's output directory instead of its working directory.
-  `capnp compile -o<plugin>:<dir>` is unaffected. A v0.18.0 or older plugin
-  ignores the flag, writes `addressbook.zig` into its working directory, and
-  the build fails with the generated file not found.
+- **`--output-dir=`** makes the plugin write under the step's output directory
+  instead of its working directory. `capnp compile -o<plugin>:<dir>` is
+  unaffected. The flag is unreleased. <!-- unreleased-after: v0.18.0 --> A
+  v0.18.0 or older plugin ignores it, writes `addressbook.zig` into its working
+  directory, and the build fails with the generated file not found.
 - **`Dependency.artifact` finds only installed artifacts.** capnp-zig's own
   `build.zig` installs `capnpc-zig`; package-preflight fails if it stops.
 - **RPC schemas** import the full runtime: use

@@ -133,10 +133,17 @@ passes:
       "Known limitations" heading
 - [ ] `docs/stability.md` — "The current version is …"
 - [ ] `CHANGELOG.md` — dated section and link-footer entry (below)
+- [ ] Every caveat that says a documented feature is not released yet. Each
+      one carries an `unreleased-after` HTML comment naming the previous
+      version, and docs-smoke lists every one the bump left behind. The
+      feature now ships: delete the caveat and its marker, or rewrite it as a
+      plain "needs vX.Y.Z or later" note.
 
 If you add a new consumer-facing version stamp, add it to `version_needles` in
 the same commit — otherwise the next cut will miss it exactly the way this one
-missed the others.
+missed the others. If you document a feature before it ships, mark the caveat
+with `unreleased_marker` (see `tools/docs_examples_smoke.zig`) for the same
+reason.
 
 ## 4. CHANGELOG
 

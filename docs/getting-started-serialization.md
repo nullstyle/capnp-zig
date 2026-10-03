@@ -113,8 +113,17 @@ capnp compile -o- --src-prefix=schema schema/addressbook.capnp > schema/addressb
 
 Then let your build run the `capnpc-zig` plugin from the same pinned package,
 never a PATH binary. A plugin from another revision can emit code your runtime
-does not compile. These lines are an excerpt of the `build.zig` that
-`zig build package-preflight` runs from the release archive:
+does not compile.
+
+> **This recipe needs a capnp-zig release after v0.18.0.** <!-- unreleased-after: v0.18.0 -->
+> It passes the plugin's `--output-dir=` flag, which v0.18.0 does not have. A
+> v0.18.0 plugin ignores the flag and writes `addressbook.zig` into your project
+> root. The build then fails because `capnp-gen/addressbook.zig` is not found.
+> Until the next tag, depend on a capnp-zig checkout with `.path` (step 2), or
+> `zig fetch --save` a commit of `main`.
+
+These lines are an excerpt of the `build.zig` that `zig build package-preflight`
+runs from the release archive:
 
 <!-- verbatim: tests/package_consumer/codegen/build.zig -->
 ```zig

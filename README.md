@@ -42,7 +42,8 @@ Then import `capnpc-zig` (full: serialization + codegen + RPC) or
 [docs/build-integration.md](docs/build-integration.md) for the complete
 `build.zig` wiring, including generating code during your build with the plugin
 from the same pinned package (`dep.artifact("capnpc-zig")`, never a PATH
-binary).
+binary). That codegen recipe needs a release after v0.18.0; the guide says what
+to pin until then. <!-- unreleased-after: v0.18.0 -->
 
 ### Prerequisites
 

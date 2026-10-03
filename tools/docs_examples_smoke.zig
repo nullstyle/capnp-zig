@@ -201,6 +201,33 @@ const version_pinned_docs = [_][]const u8{
     "docs/getting-started-serialization.md",
 };
 
+/// Marks a doc caveat about a feature that is on `main` but in no release yet:
+///
+///     ... a release after v0.18.0. <!-- unreleased-after: v0.18.0 -->
+///
+/// The marker names the latest release, the one that lacks the feature, and
+/// must equal the `build.zig.zon` version. The release ceremony bumps the
+/// manifest first, so at the cut every such caveat fails here and is rewritten
+/// or removed instead of telling readers a shipped feature is unreleased.
+const unreleased_marker = "<!-- unreleased-after: v";
+const unreleased_marker_end = " -->";
+
+const UnreleasedMarkerProblem = enum { malformed, stale };
+
+/// Checks every unreleased-after marker on `line` against `version`.
+fn unreleasedMarkerProblem(line: []const u8, version: []const u8) ?UnreleasedMarkerProblem {
+    var search: usize = 0;
+    while (std.mem.indexOfPos(u8, line, search, unreleased_marker)) |idx| {
+        const after = line[idx + unreleased_marker.len ..];
+        const end = std.mem.indexOf(u8, after, unreleased_marker_end) orelse return .malformed;
+        const named = after[0..end];
+        if (named.len == 0 or std.mem.indexOfAny(u8, named, " \t<>") != null) return .malformed;
+        if (!std.mem.eql(u8, named, version)) return .stale;
+        search = idx + unreleased_marker.len + end + unreleased_marker_end.len;
+    }
+    return null;
+}
+
 const Context = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -224,6 +251,7 @@ fn printUsage() void {
         \\  - rejects stale RPC public-surface names in source/examples/tests
         \\  - rejects stale event-loop/xev wording in active docs
         \\  - requires consumer-facing docs to carry the build.zig.zon version
+        \\  - fails unreleased-feature caveats once build.zig.zon moves past them
         \\
     , .{});
 }
@@ -526,6 +554,38 @@ test "blockAppearsIn matches whole files and dedented excerpts only" {
     try std.testing.expect(!blockAppearsIn(&.{ "", "" }, &file));
 }
 
+test "unreleasedMarkerProblem flags caveats the manifest has moved past" {
+    // The current release: the caveat still describes an unreleased feature.
+    try std.testing.expectEqual(@as(?UnreleasedMarkerProblem, null), unreleasedMarkerProblem(
+        "- **`--flag`** is new. <!-- unreleased-after: v0.18.0 -->",
+        "0.18.0",
+    ));
+    try std.testing.expectEqual(@as(?UnreleasedMarkerProblem, null), unreleasedMarkerProblem("No marker here.", "0.18.0"));
+    // The cut bumped build.zig.zon: the feature has shipped.
+    try std.testing.expectEqual(@as(?UnreleasedMarkerProblem, .stale), unreleasedMarkerProblem(
+        "> Needs a release after v0.18.0. <!-- unreleased-after: v0.18.0 -->",
+        "0.19.0",
+    ));
+    // A prefix of the manifest version is not a match.
+    try std.testing.expectEqual(@as(?UnreleasedMarkerProblem, .stale), unreleasedMarkerProblem(
+        "<!-- unreleased-after: v0.1 -->",
+        "0.18.0",
+    ));
+    // The second marker on a line is checked too.
+    try std.testing.expectEqual(@as(?UnreleasedMarkerProblem, .stale), unreleasedMarkerProblem(
+        "<!-- unreleased-after: v0.18.0 --> and <!-- unreleased-after: v0.17.0 -->",
+        "0.18.0",
+    ));
+    try std.testing.expectEqual(@as(?UnreleasedMarkerProblem, .malformed), unreleasedMarkerProblem(
+        "<!-- unreleased-after: v0.18.0",
+        "0.18.0",
+    ));
+    try std.testing.expectEqual(@as(?UnreleasedMarkerProblem, .malformed), unreleasedMarkerProblem(
+        "<!-- unreleased-after: v -->",
+        "0.18.0",
+    ));
+}
+
 fn parseManifestVersion(manifest: []const u8) ?[]const u8 {
     const key = ".version = \"";
     const start = std.mem.indexOf(u8, manifest, key) orelse return null;
@@ -566,6 +626,30 @@ fn scanStalePins(ctx: *Context, path: []const u8, version: []const u8) !void {
     }
 }
 
+fn scanUnreleasedMarkers(ctx: *Context, path: []const u8, version: []const u8) !void {
+    const bytes = try readFile(ctx, path);
+    defer ctx.allocator.free(bytes);
+    ctx.checks += 1;
+
+    var line_no: usize = 1;
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw_line_with_cr| : (line_no += 1) {
+        const line = std.mem.trimEnd(u8, raw_line_with_cr, "\r");
+        const problem = unreleasedMarkerProblem(line, version) orelse continue;
+        switch (problem) {
+            .malformed => ctx.fail(
+                "{s}:{d}: malformed marker; write `{s}X.Y.Z{s}`",
+                .{ path, line_no, unreleased_marker, unreleased_marker_end },
+            ),
+            .stale => ctx.fail(
+                "{s}:{d}: unreleased-after marker does not name build.zig.zon version {s}; " ++
+                    "if the feature has shipped, rewrite or remove the caveat and its marker",
+                .{ path, line_no, version },
+            ),
+        }
+    }
+}
+
 fn verifyVersionStamps(ctx: *Context) !void {
     const manifest = try readFile(ctx, "build.zig.zon");
     defer ctx.allocator.free(manifest);
@@ -584,6 +668,10 @@ fn verifyVersionStamps(ctx: *Context) !void {
 
     for (version_pinned_docs) |path| {
         try scanStalePins(ctx, path, version);
+    }
+
+    for (active_docs) |path| {
+        try scanUnreleasedMarkers(ctx, path, version);
     }
 }
 
