@@ -11,6 +11,67 @@ comptime {
     _ = capnpc.rpc.peer.CallOptions;
 }
 
+// Downstream surface, shared by every root.
+//
+// Zig analyzes lazily: a function body is type-checked only when something
+// references it, and naming a namespace or a type does not. A consumer that
+// never references a function will build even if that function no longer
+// compiles. v0.18.0 shipped that way: `Transport.read` used std's
+// `net.Stream.read`, which does not compile on tagged Zig 0.17.0, and this
+// gate stayed green because no root referenced the TCP transport.
+//
+// Each `_ = &f;` below forces one function body through semantic analysis.
+// Bare `_ = f;` is not enough. A generic function is analyzed only when it is
+// called with concrete arguments, so those go through a never-called `force*`
+// function instead. The comment on each line names the downstream that uses
+// the API. When a downstream starts using an API that is not listed, add it
+// here or to its root's list before the next tag (RELEASING.md, section 1).
+//
+// Consumers by root: default = slcp-zig, bucketlist-zig, qmsg (`-Dcapnp`);
+// core = prollytree-zig; quic = mruby-quic, capnp-qmsg-demo.
+comptime {
+    const message = capnpc.message;
+    _ = &message.MessageBuilder.init; // slcp, bucketlist, prollytree, qmsg, capnp-qmsg-demo, mruby-quic
+    _ = &message.MessageBuilder.deinit; // slcp, bucketlist, prollytree, qmsg, capnp-qmsg-demo, mruby-quic
+    _ = &message.MessageBuilder.allocateStruct; // slcp, bucketlist, prollytree, qmsg, capnp-qmsg-demo, mruby-quic
+    _ = &message.MessageBuilder.toBytes; // slcp, bucketlist, capnp-qmsg-demo, mruby-quic
+    _ = &message.MessageBuilder.toPackedBytes; // qmsg (codec_capnp.encode)
+    _ = &message.Message.init; // slcp, bucketlist
+    _ = &message.Message.initFlat; // prollytree (format/capnp.readWithScratch)
+    _ = &message.Message.initPacked; // qmsg (codec_capnp.decode)
+    _ = &message.Message.initUnvalidated; // mruby-quic
+    _ = &message.Message.deinit; // slcp, bucketlist, prollytree, qmsg, mruby-quic
+    _ = &message.Message.getRootStruct; // slcp, bucketlist, prollytree, qmsg, capnp-qmsg-demo
+    _ = &message.cloneAnyPointer; // mruby-quic
+    // Generated bindings (slcp src/gen, bucketlist) call the StructReader and
+    // StructBuilder accessors; prollytree and qmsg call them by hand.
+    refAllFunctions(message.StructReader); // slcp, bucketlist, prollytree, qmsg (generated + hand-written readers)
+    refAllFunctions(message.StructBuilder); // slcp, bucketlist, prollytree, qmsg (generated + hand-written builders)
+
+    const canonical = capnpc.canonical;
+    _ = &canonical.isCanonical; // slcp
+    _ = &canonical.canonicalizeFlat; // slcp
+    _ = &canonical.canonicalizeFlatFromBuilder; // slcp, prollytree (format/capnp.serialize)
+
+    const Framer = capnpc.rpc.wire.framing.Framer;
+    _ = &Framer.initWithOptions; // slcp (node/overlay.zig: every consensus-network frame)
+    _ = &Framer.push; // slcp
+    _ = &Framer.popFrame; // slcp
+    _ = &Framer.reset; // slcp
+    _ = &Framer.deinit; // slcp
+}
+
+/// `_ = &` every function declared directly on `T`. A generic method stays
+/// uninstantiated (taking its address does not pick a type), so callers
+/// still cover those with a concrete call.
+pub fn refAllFunctions(comptime T: type) void {
+    inline for (comptime std.meta.declarations(T)) |name| {
+        if (@typeInfo(@TypeOf(@field(T, name))) == .@"fn") {
+            _ = &@field(T, name);
+        }
+    }
+}
+
 pub fn exerciseSerialization() !void {
     try exerciseReflection();
 

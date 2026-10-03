@@ -67,6 +67,16 @@ git status --short          # must be empty
       the `.paths` result, exercises default/core/QUIC consumers in Debug and
       ReleaseSafe, runs the packaged plugin, checks lazy QUIC fetching, and
       leaves the checkout unchanged.
+- [ ] Every API a downstream uses is on the package consumers' forced list
+      (`tests/package_consumer/src/`: `common.zig` for every root, plus
+      `default.zig`, `core.zig` and `quic.zig`). Zig analyzes lazily, so the
+      consumers build even when an API they never reference no longer
+      compiles. v0.18.0 shipped a TCP `Transport.read` that did not compile on
+      tagged Zig 0.17.0 for this reason. When a downstream starts using an API
+      that is not listed, add it before you tag: `_ = &Type.function;` with a
+      comment that names the downstream. A generic function needs a call with
+      concrete arguments inside a never-called function that the root takes
+      with `&`, as `forceQuicGenerics` in `quic.zig` does.
 
 ## 2. The commit's CI must already be green
 
