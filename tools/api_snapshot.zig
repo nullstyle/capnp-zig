@@ -27,6 +27,11 @@
 //! type, events, ...) keep evolving post-tag without a false-red gate or an
 //! accidental freeze.
 //!
+//! Builder rule: a Stable function on a builder type (a container whose name
+//! ends in `Builder`) may not render `anyerror`. `api-snapshot` and every
+//! `check-api` variant refuse to run until it spells a named set
+//! (`message.BuildError` / `message.CopyError`); see `stable_builder_anyerror`.
+//!
 //! Categorizer contract: `tierFor` DEFAULTS every path to Experimental. A
 //! declaration is Stable ONLY when its path matches an explicit rule in
 //! `stable_rules`. This makes "accidentally freezing something new" a
@@ -557,8 +562,35 @@ fn fieldEntries(
 }
 
 /// A rendered declaration line plus the path that produced it (kept so the
-/// categorizer can route lines after they are collected).
-const Entry = struct { path: []const u8, line: []const u8 };
+/// categorizer can route lines after they are collected). `builder_anyerror`
+/// marks a builder member whose rendered return set is `anyerror`; see
+/// `stable_builder_anyerror` below.
+const Entry = struct { path: []const u8, line: []const u8, builder_anyerror: bool = false };
+
+/// True when some container segment of `path` (any segment but the leaf) is a
+/// builder type: `message.StructBuilder.writePointerList`,
+/// `rpc.wire.protocol.MessageBuilder.buildAccept`,
+/// `message.typed_list_helpers.CapabilityListBuilder.set`, ...
+fn isBuilderMember(comptime path: []const u8) bool {
+    const leaf_start = (std.mem.lastIndexOfScalar(u8, path, '.') orelse return false);
+    var it = std.mem.splitScalar(u8, path[0..leaf_start], '.');
+    while (it.next()) |segment| {
+        if (std.mem.endsWith(u8, segment, "Builder")) return true;
+    }
+    return false;
+}
+
+/// True when the function renders `anyerror!T`. Generic functions are skipped:
+/// their inferred set is unresolvable here and they render opaquely anyway.
+fn returnsAnyerror(comptime FnType: type) bool {
+    const fn_info = @typeInfo(FnType).@"fn";
+    if (fn_info.is_generic) return false;
+    const ret = fn_info.return_type orelse return false;
+    return switch (@typeInfo(ret)) {
+        .error_union => |eu| @typeInfo(eu.error_set).error_set.error_names == null,
+        else => false,
+    };
+}
 
 fn walk(
     comptime T: type,
@@ -598,7 +630,11 @@ fn walk(
                 entries.* = entries.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": type = " ++ rendered }};
             }
         } else if (@typeInfo(DType) == .@"fn") {
-            entries.* = entries.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": " ++ renderFnType(DType) }};
+            entries.* = entries.* ++ [_]Entry{.{
+                .path = decl_path,
+                .line = decl_path ++ ": " ++ renderFnType(DType),
+                .builder_anyerror = isBuilderMember(decl_path) and returnsAnyerror(DType),
+            }};
         } else {
             entries.* = entries.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": const " ++ @typeName(DType) }};
         }
@@ -809,6 +845,27 @@ const stable_lines: []const []const u8 = blk: {
         }
     }
     break :blk stable;
+};
+
+/// Stable builder members whose signature renders `anyerror!`.
+///
+/// Builders are what generated `initX`/`setX` code calls, and an `anyerror`
+/// anywhere on that path makes the generated signature `anyerror` too: that is
+/// how `writePointerList` and the `anyerror`-typed pointer makers kept four
+/// slcp entry points out of its Stable tier. Builder primitives now spell
+/// `message.BuildError` / `message.CopyError`; this gate keeps a frozen builder
+/// line from regressing to `anyerror` (the snapshot diff alone would show it,
+/// but a reviewer refreezing the file would accept it). Reader and RPC-callback
+/// lines are out of scope: several legitimately carry user-callback errors.
+const stable_builder_anyerror: []const []const u8 = blk: {
+    @setEvalBranchQuota(20_000_000);
+    var out: []const []const u8 = &.{};
+    for (all_entries) |entry| {
+        if (entry.builder_anyerror and tierIsStable(entry.path)) {
+            out = out ++ [_][]const u8{entry.path};
+        }
+    }
+    break :blk out;
 };
 
 const experimental_lines: []const []const u8 = blk: {
@@ -1040,6 +1097,18 @@ pub fn main(init: std.process.Init) !void {
             .{},
         );
         return error.StableSurfaceNotClosed;
+    }
+
+    // Both writing and checking refuse a Stable builder line that renders
+    // `anyerror`, so the contract cannot be refrozen around one.
+    if (stable_builder_anyerror.len != 0) {
+        std.debug.print(
+            "api-snapshot: {d} STABLE builder declaration(s) return `anyerror`. Builder primitives and\n" ++
+                "generated builders must spell a named set (message.BuildError / message.CopyError):\n",
+            .{stable_builder_anyerror.len},
+        );
+        for (stable_builder_anyerror) |path| std.debug.print("  {s}\n", .{path});
+        return error.StableBuilderAnyerror;
     }
 
     const stable_rendered = try renderSnapshot(allocator, stable_lines, stable_header);
