@@ -24,6 +24,7 @@ fits together.
 | Build | `zig build` |
 | All tests | `zig build test --summary all` (or `just test`) |
 | Compile-only check | `zig build check` |
+| Tool, bench and e2e binaries (inside `check` unless host or target is Windows) | `zig build check-tools` |
 | Format | `just fmt` (never raw `zig fmt tests/` — it reformats excluded golden/generated files) |
 | Docs/snippets gate | `zig build docs-smoke` |
 | Self-interop e2e (no docker, all OSes) | `zig build e2e-self` (or `just e2e-self`) |
