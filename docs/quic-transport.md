@@ -361,3 +361,15 @@ Recommended hardening posture:
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.
 - Mode mismatch is treated as malformed transport input and closes cleanly.
+- **Native mode has a per-connection LIFETIME stream budget.** Each frame
+  larger than `inline_frame_threshold` (64 KiB by default) travels on its own
+  one-shot unidirectional stream, and the underlying QUIC library caps every
+  grant of peer stream credit at a fixed lifetime maximum (4096 at the
+  current pin, read from the library rather than copied). A connection that
+  has opened that many large-frame streams can never open another. It then
+  closes with `rpc.events.DisconnectCause.stream_limit_exhausted` instead of
+  stalling: the cause is certified, nothing is faulty, and a fresh connection
+  gets a fresh budget — redial. Running short of credit BELOW the cap is
+  ordinary flow control and is simply retried. Baseline mode (one
+  bidirectional stream) and small frames on the native control stream are
+  unaffected.

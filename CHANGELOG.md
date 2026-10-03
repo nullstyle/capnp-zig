@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Native-mode QUIC no longer stalls forever when a connection's lifetime
+  stream budget runs out.** Each large frame (over `inline_frame_threshold`)
+  rides its own unidirectional stream, and the QUIC library clamps every
+  grant of peer stream credit — the initial transport parameter AND each
+  later MAX_STREAMS — at a fixed lifetime cap (4096 at the current pin).
+  The outbound queue treated `StreamLimitExceeded` as "retry later", which
+  is right for ordinary credit exhaustion below the cap but, at the cap,
+  meant every large frame from then on was retried forever: no error, no
+  close, no cause — a silent hang of exactly the long-lived connections RPC
+  cares about. Now a stream index at or above the cap fails with
+  `error.StreamLifetimeExhausted`, the owning connection, fanout session,
+  or embedded session closes, and the new certified cause
+  `rpc.events.DisconnectCause.stream_limit_exhausted` (Experimental) tells
+  the app to redial. Below the cap the retry behavior is unchanged — a
+  blanket "close on StreamLimitExceeded" would have killed healthy
+  connections that were merely waiting for credit. The cap is read from
+  the library, not copied, so the check follows upstream if it lifts the
+  limit. Proven red-then-green at the queue (both client and server stream
+  numbering) and at the shared termination path, with a guard that the
+  boundary index just below the cap stays transient and that unrelated
+  internal errors do not claim the cause.
+
 ### Added
 
 - **Deferred streaming and bounded reflection (Experimental).** Generated

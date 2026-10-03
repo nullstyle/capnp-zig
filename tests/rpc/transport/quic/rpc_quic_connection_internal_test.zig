@@ -1074,3 +1074,126 @@ test "a frame parked at engine deinit does not leak" {
     // std.testing.allocator fails the test on leak if deinit forgets it.
     engine.deinit(allocator);
 }
+
+// ---------------------------------------------------------------------------
+// Native outbound queue: stream-credit exhaustion, transient vs lifetime.
+//
+// `openUni` reports `StreamLimitExceeded` whenever the PEER's stream credit
+// is used up. That is normally transient — the peer can grant more with
+// MAX_STREAMS — so the queue retries. But quic clamps every credit grant at
+// `stream_lifetime_cap`, so once the next stream index reaches the cap no
+// grant can ever cover it. Retrying then is a silent, permanent stall.
+// ---------------------------------------------------------------------------
+
+const native_queue = quic.testing.native_outbound_queue;
+
+/// Three-method fake: every uni open fails for lack of stream credit. The
+/// other two methods must never run on these paths (no stream was opened).
+const CreditExhaustedConn = struct {
+    open_calls: usize = 0,
+
+    pub fn openUni(self: *CreditExhaustedConn, stream_id: u64) anyerror!*u8 {
+        _ = stream_id;
+        self.open_calls += 1;
+        return error.StreamLimitExceeded;
+    }
+    pub fn streamWrite(_: *CreditExhaustedConn, _: u64, _: []const u8) anyerror!usize {
+        unreachable; // no stream was opened
+    }
+    pub fn streamFinish(_: *CreditExhaustedConn, _: u64) anyerror!void {
+        unreachable; // no stream was opened
+    }
+};
+
+/// A client-side queue holding one data-stream frame (larger than the
+/// inline threshold, so it needs its own uni stream).
+fn queueWithOneDataFrame(allocator: std.mem.Allocator) !native_queue.OutboundQueue {
+    var queue = native_queue.OutboundQueue.init(.client, 16, 1 << 20, .{
+        .inline_frame_threshold = 8,
+        .max_control_frame_bytes = 64,
+        .max_pending_data_streams = 4,
+        .max_pending_data_bytes = 1 << 20,
+    });
+    const payload: [32]u8 = @splat(0xAB);
+    try queue.enqueue(allocator, &payload);
+    return queue;
+}
+
+/// Client-initiated uni stream id for a stream INDEX (RFC 9000 §2.1: the
+/// low two bits are the type; 0b10 = client-initiated unidirectional).
+fn clientUniStreamId(index: u64) u64 {
+    return index * 4 + 2;
+}
+
+test "native queue: credit exhausted AT the lifetime cap fails loudly, not a silent stall" {
+    const allocator = std.testing.allocator;
+    // Both roles: client uni ids are 4n+2, server uni ids are 4n+3 (RFC
+    // 9000 §2.1). Long-lived SERVER sessions are the likeliest victims, so
+    // the index math must hold for both type encodings.
+    const roles = [_]struct { role: quic.Role, type_bits: u64 }{
+        .{ .role = .client, .type_bits = 2 },
+        .{ .role = .server, .type_bits = 3 },
+    };
+    for (roles) |r| {
+        var queue = native_queue.OutboundQueue.init(r.role, 16, 1 << 20, .{
+            .inline_frame_threshold = 8,
+            .max_control_frame_bytes = 64,
+            .max_pending_data_streams = 4,
+            .max_pending_data_bytes = 1 << 20,
+        });
+        defer queue.drain(allocator);
+        const payload: [32]u8 = @splat(0xAB);
+        try queue.enqueue(allocator, &payload);
+
+        // The connection has already opened `cap` uni streams over its life.
+        queue.next_uni_stream_id = native_queue.stream_lifetime_cap * 4 + r.type_bits;
+
+        var conn = CreditExhaustedConn{};
+        try std.testing.expectError(error.StreamLifetimeExhausted, queue.flush(allocator, &conn, null));
+        try std.testing.expectEqual(@as(usize, 1), conn.open_calls);
+    }
+}
+
+test "native queue: credit exhausted BELOW the lifetime cap stays transient (retry, never fail)" {
+    const allocator = std.testing.allocator;
+    // Index 0 and the very last index under the cap (the off-by-one edge):
+    // both are waiting for MAX_STREAMS, which is normal flow control.
+    const indices = [_]u64{ 0, native_queue.stream_lifetime_cap - 1 };
+    for (indices) |index| {
+        var queue = try queueWithOneDataFrame(allocator);
+        defer queue.drain(allocator);
+        queue.next_uni_stream_id = clientUniStreamId(index);
+
+        var conn = CreditExhaustedConn{};
+        try queue.flush(allocator, &conn, null); // no error: just not done yet
+        try std.testing.expect(!queue.isEmpty()); // frame kept for the next pass
+        try queue.flush(allocator, &conn, null); // and it really does retry
+        try std.testing.expectEqual(@as(usize, 2), conn.open_calls);
+    }
+}
+
+test "lifetime stream exhaustion closes the connection with a certified cause" {
+    // Drives the exact termination entry point the run loop calls when a
+    // step fails. Without the latch, this failure surfaces as the generic
+    // `.transport_error` (any non-zero local close), indistinguishable
+    // from every other local fault; the app could not know to redial.
+    const allocator = std.testing.allocator;
+    var conn = try initTestClient(allocator);
+    defer conn.deinit();
+
+    Connection.AdapterAccess.terminateInternalError(&conn, error.StreamLifetimeExhausted);
+
+    try std.testing.expect(conn.isClosing());
+    try std.testing.expectEqual(capnp.rpc.events.DisconnectCause.stream_limit_exhausted, conn.closeCause());
+}
+
+test "other internal errors do NOT claim the stream-exhaustion cause" {
+    const allocator = std.testing.allocator;
+    var conn = try initTestClient(allocator);
+    defer conn.deinit();
+
+    Connection.AdapterAccess.terminateInternalError(&conn, error.OutOfMemory);
+
+    try std.testing.expect(conn.isClosing());
+    try std.testing.expect(conn.closeCause() != .stream_limit_exhausted);
+}

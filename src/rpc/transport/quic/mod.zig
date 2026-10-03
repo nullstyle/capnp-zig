@@ -85,6 +85,10 @@ pub const testing = if (builtin.is_test) struct {
     /// dispatch path touches only the framer and the Owner vtable, so the
     /// internal suite drives it with no network at all.
     pub const baseline_engine = @import("baseline_engine.zig");
+    /// Direct outbound-queue access for the stream-credit decision
+    /// (transient vs lifetime-exhausted): `flush` is generic over `conn`,
+    /// so the internal suite drives it with a three-method fake, no network.
+    pub const native_outbound_queue = @import("native_outbound_queue.zig");
     pub const ListenerAccess = listener.Listener.TestingHooks;
     pub const nonWindowsReceive = non_windows_receive.receive;
     pub const UdpReceiveBridge = udp_receive_bridge.Bridge;

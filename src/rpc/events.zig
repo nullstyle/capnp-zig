@@ -145,6 +145,12 @@ pub const DisconnectCause = enum {
     /// is the half-open-exhaustion (QUIC SYN-flood analog) guard firing;
     /// on a client it is a dial that never got answered.
     handshake_timeout,
+    /// The connection used up its LIFETIME budget of locally opened
+    /// streams (quic's per-connection cap) and could never send another
+    /// stream-carried frame. Not a fault on either side: a long-lived
+    /// connection simply ran out. Redial — a fresh connection gets a fresh
+    /// budget.
+    stream_limit_exhausted,
 };
 
 pub const Event = union(enum) {
