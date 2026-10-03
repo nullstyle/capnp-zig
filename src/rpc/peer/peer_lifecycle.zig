@@ -8,6 +8,7 @@ const events = @import("../events.zig");
 const peer_cleanup = @import("./peer_cleanup.zig");
 const peer_outbound_control = @import("./peer_outbound_control.zig");
 const peer_return_frames = @import("./return/peer_return_frames.zig");
+const peer_return_dispatch = @import("./return/peer_return_dispatch.zig");
 
 /// Peer lifecycle: teardown, graceful shutdown, question cancellation, and
 /// the deadline sweep — extracted from `peer/mod.zig` (P10) and made generic
@@ -454,6 +455,39 @@ pub fn Lifecycle(comptime Peer: type) type {
             reason: []const u8,
             ex_type: protocol.ExceptionType,
         ) !void {
+            return cancelQuestionRouted(self, question_id, reason, ex_type, .log);
+        }
+
+        /// Where a failure inside a locally synthesized cancellation goes: a
+        /// non-OOM error the question callback returns, or the cancel itself
+        /// failing (OOM).
+        ///
+        /// `.report` is the deadline sweep (`checkDeadlines`: per-question
+        /// deadlines and the shutdown drain bound). The failure goes to
+        /// `on_error`, the same nonfatal seam a wire Return's failing callback
+        /// takes (`peer_return_dispatch.dispatchQuestionReturn`); before this a
+        /// timeout-path failure under load vanished into a debug log.
+        ///
+        /// `.log` keeps the debug-only behavior for an explicit
+        /// `cancelQuestion` (its caller is on the stack) and for teardown
+        /// (`deinit`, transport close), where `on_error` must not fire into an
+        /// owner that is going away.
+        const CancelFailureRoute = enum { report, log };
+
+        fn routeCancelFailure(self: *Peer, route: CancelFailureRoute, question_id: u32, err: anyerror) void {
+            switch (route) {
+                .report => peer_return_dispatch.reportNonfatalErrorForPeer(Peer, self, err),
+                .log => log.debug("cancel delivery failed for question {}: {}", .{ question_id, err }),
+            }
+        }
+
+        fn cancelQuestionRouted(
+            self: *Peer,
+            question_id: u32,
+            reason: []const u8,
+            ex_type: protocol.ExceptionType,
+            route: CancelFailureRoute,
+        ) !void {
             self.assertThreadAffinity();
             const logical_question_id = if (self.retained_questions.contains(question_id))
                 question_id
@@ -475,7 +509,7 @@ pub fn Lifecycle(comptime Peer: type) type {
             if (question.is_loopback) {
                 _ = self.loopback_questions.remove(wire_answer_id);
                 self.removeQuestion(wire_answer_id);
-                try deliverLocalException(self, question, logical_question_id, reason, ex_type);
+                try deliverLocalException(self, question, logical_question_id, reason, ex_type, route);
                 return;
             }
 
@@ -499,7 +533,7 @@ pub fn Lifecycle(comptime Peer: type) type {
                 log.debug("cancel finish send failed for question {}: {}", .{ wire_answer_id, err });
             };
 
-            try deliverLocalException(self, question, logical_question_id, reason, ex_type);
+            try deliverLocalException(self, question, logical_question_id, reason, ex_type, route);
         }
 
         /// Cancel every question whose deadline has passed, and enforce the
@@ -537,11 +571,18 @@ pub fn Lifecycle(comptime Peer: type) type {
                 if (now >= deadline) expired.append(self.allocator, kv.key_ptr.*) catch break;
             }
 
+            // Failures go to `on_error` from THIS loop, which walks the copied
+            // id list, never from the map iteration above: a handler that
+            // re-enters the peer (new calls, cancels, close) may mutate
+            // `self.questions` freely. An id a re-entrant handler already
+            // retired surfaces as UnknownQuestion: it is already settled, so
+            // it is logged rather than reported.
             var cancelled: usize = 0;
             for (expired.items) |question_id| {
                 events.emitTimeout(self.observer, .peer, .unknown, .call_deadline, question_id);
-                cancelQuestionTyped(self, question_id, deadline_reason, .overloaded) catch |err| {
-                    log.debug("deadline cancel failed for question {}: {}", .{ question_id, err });
+                cancelQuestionRouted(self, question_id, deadline_reason, .overloaded, .report) catch |err| {
+                    const route: CancelFailureRoute = if (err == error.UnknownQuestion) .log else .report;
+                    routeCancelFailure(self, route, question_id, err);
                     continue;
                 };
                 cancelled += 1;
@@ -557,7 +598,7 @@ pub fn Lifecycle(comptime Peer: type) type {
                     if (now >= drain_deadline and self.questions.count() != 0) {
                         self.shutdown_deadline_ns = null;
                         events.emitTimeout(self.observer, .peer, .unknown, .shutdown_drain, null);
-                        cancelled += forceCancelAllQuestions(self, shutdown_reason, .disconnected);
+                        cancelled += forceCancelAllQuestionsRouted(self, shutdown_reason, .disconnected, .report);
                     }
                 }
             }
@@ -572,12 +613,16 @@ pub fn Lifecycle(comptime Peer: type) type {
         /// before the callback could run, the ctx is freed here via
         /// `question.deinit_ctx` — callers have already removed the entry from
         /// the questions map (or dropped its cleanup hook), so nothing else can.
-        pub fn deliverLocalException(
+        ///
+        /// A non-OOM callback failure is consumed here and sent along `route`;
+        /// OOM propagates to the caller.
+        fn deliverLocalException(
             self: *Peer,
             question: Question,
             question_id: u32,
             reason: []const u8,
             ex_type: protocol.ExceptionType,
+            route: CancelFailureRoute,
         ) !void {
             var callback_ran = false;
             errdefer if (!callback_ran) {
@@ -602,14 +647,27 @@ pub fn Lifecycle(comptime Peer: type) type {
             callback_ran = true;
             question.on_return(question.ctx, self, ret, &inbound_caps) catch |err| {
                 if (err == error.OutOfMemory) return error.OutOfMemory;
-                log.debug("cancel exception callback error for question {}: {}", .{ question_id, err });
+                routeCancelFailure(self, route, question_id, err);
             };
         }
 
         /// Remove and cancel every outstanding question (drain-bound
         /// enforcement). Unlike `cancelQuestion` this does not keep entries
         /// for late Returns — the transport is about to close.
+        ///
+        /// This entry point serves teardown (`deinit`, transport close), so
+        /// delivery failures are only logged; the drain-bound sweep uses the
+        /// `.report` route instead.
         pub fn forceCancelAllQuestions(self: *Peer, reason: []const u8, ex_type: protocol.ExceptionType) usize {
+            return forceCancelAllQuestionsRouted(self, reason, ex_type, .log);
+        }
+
+        fn forceCancelAllQuestionsRouted(
+            self: *Peer,
+            reason: []const u8,
+            ex_type: protocol.ExceptionType,
+            route: CancelFailureRoute,
+        ) usize {
             var ids: std.ArrayList(u32) = .empty;
             defer ids.deinit(self.allocator);
             var it = self.questions.keyIterator();
@@ -639,8 +697,8 @@ pub fn Lifecycle(comptime Peer: type) type {
                         log.debug("drain finish send failed for question {}: {}", .{ question_id, err });
                     };
                 }
-                deliverLocalException(self, question, logical_question_id, reason, ex_type) catch |err| {
-                    log.debug("drain exception delivery failed for question {}: {}", .{ logical_question_id, err });
+                deliverLocalException(self, question, logical_question_id, reason, ex_type, route) catch |err| {
+                    routeCancelFailure(self, route, logical_question_id, err);
                 };
                 cancelled += 1;
             }
