@@ -19,8 +19,45 @@
 //! outstanding-question depth via --inflight (high-in-flight mode).
 //!
 //! Exit code is nonzero when invariants fail: zero successful calls, an
-//! unexpected exception reason, a client-side allocation leak, or a
-//! steady-state live-heap growth beyond the configured threshold.
+//! unexpected exception reason, mid-session transport errors past their
+//! bound, unclassified setup failures past the same tolerance, a
+//! client-side allocation leak, or a steady-state live-heap growth beyond
+//! the configured threshold (and, with --rss-gate enforce, RSS growth).
+//!
+//! Failure accounting is split by phase:
+//!   * SETUP failures happen before a session carries RPC traffic (TCP
+//!     connect or Connection.init; QUIC client init). They are classified:
+//!     refused, port_exhaustion, resources, timeout, other. The named
+//!     classes are properties of the host or its load, not of the code under
+//!     test, so they are reported (port exhaustion with the run offset
+//!     where it began, plus a ::warning:: annotation under GitHub Actions)
+//!     rather than gated. `other` gates past the tolerance below, because an
+//!     unexplained dial failure is a defect until shown otherwise. On
+//!     Windows, std 0.17 maps an ephemeral-port bind collision during
+//!     connect (AddressInUse) to error.Unexpected, so a connect-stage
+//!     Unexpected is classified port_exhaustion there.
+//!   * MID-SESSION transport errors (anything that fails after the
+//!     connection is up) must satisfy
+//!         transport_errors <= chaos_closes + death_allowance + tolerance
+//!     chaos_closes: every chaos session ends with exactly one mid-session
+//!     error by construction (after it rips its own connection, its next
+//!     pump fails). death_allowance (QUIC --abrupt-death-every-ms only):
+//!     deaths x churn workers, the most live sessions abrupt deaths can
+//!     kill. tolerance: --transport-error-tolerance N, default
+//!     max(8, sessions / 500) (0.2%). Before this bound existed, a Windows
+//!     64-worker lane passed with 22130 transport errors against 1110 chaos
+//!     closes: its last ~60% was dials failing on port exhaustion.
+//!
+//! Memory has two instruments sharing one steady-state trend check
+//! (`assessMemory`): the live Zig heap (counting allocator; enforcing) and
+//! the process resident set (RSS: Linux /proc/self/statm, macOS
+//! task_info, Windows GetProcessMemoryInfo). RSS sees what the heap counter
+//! cannot — BoringSSL's C heap under QUIC, page-level growth — so it is
+//! the instrument that can see a C-side leak. It lands REPORT-ONLY
+//! (`--rss-gate report`, the default: prints its verdict, never fails the
+//! run); `--rss-gate enforce` makes it gate. The harness's own telemetry
+//! is bounded (fixed-size latency histograms, preallocated sample series),
+//! so neither instrument grows with the call count.
 //!
 //! Usage: zig build soak -- [--seconds N] [--workers N] [--calls N]
 //!                          [--inflight K] [--mem-sample-ms N]
@@ -32,8 +69,24 @@
 //!                          [--heal-workers K]  (quic only: K workers run
 //!                           persistent WarmRedialClients that auto-heal
 //!                           across abrupt deaths instead of churn sessions)
+//!                          [--nagle]  (tcp: leave Nagle on in the client, the
+//!                           pre-TCP_NODELAY behaviour, for A/B latency runs)
+//!                          [--transport-error-tolerance N]
+//!                          [--rss-gate report|enforce] [--rss-growth-pct P]
+//!                          [--rss-floor-mib N]
+//!                          [--alloc-traces]  (DebugAllocator allocation stack
+//!                           traces for leak reports; off by default because
+//!                           the tracer itself grows RSS, see SoakGpa)
+//!   Ablation hooks (prove the gates have teeth; never use in a real lane):
+//!                          [--inject-transport-error-every N]  (count one
+//!                           synthetic mid-session transport error on every
+//!                           Nth session of each worker)
+//!                          [--inject-rss-growth-kib-per-s N]  (touch N KiB/s
+//!                           of page memory outside the Zig heap: RSS grows,
+//!                           the heap counter does not)
 
 const std = @import("std");
+const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
 
 const rpc = capnpc.rpc;
@@ -84,7 +137,30 @@ const Config = struct {
     // Memory-curve sampling interval and the steady-state growth ceiling.
     mem_sample_ms: u64 = 100,
     mem_growth_pct: f64 = 25.0,
+    // TCP client sockets disable Nagle like every other client in the tree
+    // (ClientSession, the e2e drivers). Without it, a Finish followed by the
+    // next small Call write waits on the server's delayed ACK: the ~42 ms
+    // p99 floor every Linux soak lane showed. `--nagle` restores the old
+    // behaviour for A/B runs.
+    nodelay: bool = true,
+    // Absolute override for the mid-session transport-error tolerance;
+    // null means the documented default, max(8, sessions / 500).
+    transport_error_tolerance: ?usize = null,
+    // RSS gate: report-only by default (verdict printed, never fails).
+    rss_gate: RssGate = .report,
+    rss_growth_pct: f64 = 25.0,
+    // Absolute floor under which RSS growth is never a finding: allocator
+    // caches, thread stacks and page-granular arenas settle in MiB steps,
+    // not bytes, so the heap gate's 256 KiB floor would be noise here.
+    rss_floor_mib: u64 = 16,
+    // DebugAllocator allocation stack traces (see SoakGpa).
+    alloc_traces: bool = false,
+    // Ablation hooks; see the file header.
+    inject_transport_error_every: ?u64 = null,
+    inject_rss_growth_kib_per_s: ?u64 = null,
 };
+
+const RssGate = enum { report, enforce };
 
 /// Counters are `usize`, not `u64`, so this harness cross-compiles for
 /// 32-bit targets: `@atomicLoad`/`@atomicRmw` reject operands wider than the
@@ -97,7 +173,16 @@ const Totals = struct {
     calls_ok: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     calls_cancelled: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     chaos_closes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    // MID-SESSION failures only (see the file header); setup failures are
+    // counted, by class, in `setup_failures`.
     transport_errors: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    setup_failures: [setup_class_count]std.atomic.Value(usize) = @splat(std.atomic.Value(usize).init(0)),
+    // Run offset (ms) of the first port-exhaustion setup failure; maxInt
+    // means none. usize, not u64, for the same 32-bit reason as above.
+    first_port_exhaustion_ms: std.atomic.Value(usize) = std.atomic.Value(usize).init(std.math.maxInt(usize)),
+    injected_transport_errors: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    // Written once by main before any worker spawns; read-only afterwards.
+    start_ns: i64 = 0,
     expected_disconnects: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     // Disconnect-reason Returns on non-chaos sessions: legitimate at high peer
     // counts (idle-timeout drops under contention), not a correctness failure.
@@ -126,6 +211,108 @@ comptime {
 fn causeSlot(cause: rpc.events.DisconnectCause) usize {
     const i: usize = @backingInt(cause);
     return if (i < cause_count) i else @backingInt(rpc.events.DisconnectCause.unknown);
+}
+
+// -- Setup-failure classification --------------------------------------------
+
+/// Where in session setup a dial failed. Only a `connect`-stage failure can
+/// be port exhaustion; `init` covers Connection/QUIC-client construction.
+const SetupStage = enum { connect, init };
+
+const SetupClass = enum {
+    /// Nothing accepted the dial (listen backlog overflow, server down).
+    refused,
+    /// The host ran out of ephemeral ports (TIME_WAIT pile-up).
+    port_exhaustion,
+    /// Memory, fd or other OS resource limits.
+    resources,
+    timeout,
+    /// Anything unexplained: gated, because it may be a defect.
+    other,
+};
+
+const setup_class_count = std.enums.values(SetupClass).len;
+
+/// Classify a setup (pre-traffic) failure. `os_tag` is a parameter rather
+/// than read from `builtin` so the Windows arm is unit-testable anywhere.
+fn classifySetupFailure(err: anyerror, stage: SetupStage, os_tag: std.Target.Os.Tag) SetupClass {
+    return switch (err) {
+        error.ConnectionRefused => .refused,
+        error.AddressInUse, error.AddressUnavailable => .port_exhaustion,
+        error.SystemResources,
+        error.ProcessFdQuotaExceeded,
+        error.SystemFdQuotaExceeded,
+        error.OutOfMemory,
+        => .resources,
+        error.Timeout, error.ConnectionTimedOut => .timeout,
+        // std 0.17's netConnectIpWindows binds an ephemeral port before
+        // AFD_CONNECT and maps that bind's AddressInUse to Unexpected: on
+        // Windows, the connect stage's Unexpected IS port exhaustion (the
+        // nightly 64-worker lane logged 21020 of them after ~8 s).
+        error.Unexpected => if (os_tag == .windows and stage == .connect) .port_exhaustion else .other,
+        else => .other,
+    };
+}
+
+test "classifySetupFailure: connect-stage errors map to their classes" {
+    try std.testing.expectEqual(SetupClass.refused, classifySetupFailure(error.ConnectionRefused, .connect, .linux));
+    try std.testing.expectEqual(SetupClass.port_exhaustion, classifySetupFailure(error.AddressUnavailable, .connect, .linux));
+    try std.testing.expectEqual(SetupClass.port_exhaustion, classifySetupFailure(error.AddressInUse, .connect, .macos));
+    try std.testing.expectEqual(SetupClass.resources, classifySetupFailure(error.SystemResources, .connect, .linux));
+    try std.testing.expectEqual(SetupClass.timeout, classifySetupFailure(error.Timeout, .connect, .linux));
+    try std.testing.expectEqual(SetupClass.other, classifySetupFailure(error.BrokenPipe, .connect, .linux));
+}
+
+test "classifySetupFailure: Unexpected is port exhaustion only for a Windows connect" {
+    try std.testing.expectEqual(SetupClass.port_exhaustion, classifySetupFailure(error.Unexpected, .connect, .windows));
+    // The same error from Connection.init, or on POSIX, stays unexplained.
+    try std.testing.expectEqual(SetupClass.other, classifySetupFailure(error.Unexpected, .init, .windows));
+    try std.testing.expectEqual(SetupClass.other, classifySetupFailure(error.Unexpected, .connect, .linux));
+}
+
+// -- Transport-error bound ---------------------------------------------------
+
+/// Default slack on top of the structural allowances: max(8, 0.2% of
+/// sessions). Every CI TCP lane before this gate landed showed exactly
+/// transport_errors == chaos_closes, so the floor absorbs rare contention
+/// without hiding a per-session failure mode (which scales with sessions
+/// far past 0.2%).
+fn defaultTransportTolerance(sessions: usize) usize {
+    return @max(8, sessions / 500);
+}
+
+const TransportVerdict = struct {
+    ok: bool,
+    allowed: usize,
+};
+
+/// transport_errors <= chaos_closes + death_allowance + tolerance. See the
+/// file header for why each term exists.
+fn assessTransport(transport_errors: usize, chaos_closes: usize, death_allowance: usize, tolerance: usize) TransportVerdict {
+    const allowed = chaos_closes +| death_allowance +| tolerance;
+    return .{ .ok = transport_errors <= allowed, .allowed = allowed };
+}
+
+test "assessTransport: chaos-only errors pass" {
+    // The steady CI shape: one post-rip pump failure per chaos session.
+    const v = assessTransport(1117, 1117, 0, defaultTransportTolerance(5533));
+    try std.testing.expect(v.ok);
+}
+
+test "assessTransport: errors past chaos + tolerance fail" {
+    // The pre-gate Windows 64-worker shape: 22130 errors, 1110 chaos closes.
+    const v = assessTransport(22130, 1110, 0, defaultTransportTolerance(5517));
+    try std.testing.expect(!v.ok);
+    try std.testing.expectEqual(@as(usize, 1110 + 11), v.allowed);
+    // One past the bound is already red.
+    try std.testing.expect(!assessTransport(1110 + 8 + 1, 1110, 0, 8).ok);
+    try std.testing.expect(assessTransport(1110 + 8, 1110, 0, 8).ok);
+}
+
+test "assessTransport: abrupt deaths widen the bound by their allowance only" {
+    // Nightly QUIC heal soak: 299 errors, 243 chaos, 10 deaths x 8 churn.
+    try std.testing.expect(assessTransport(299, 243, 10 * 8, defaultTransportTolerance(1285)).ok);
+    try std.testing.expect(!assessTransport(299, 243, 0, defaultTransportTolerance(1285)).ok);
 }
 
 fn nowNs(io: std.Io) i64 {
@@ -210,46 +397,123 @@ const CountingAllocator = struct {
 
 // -- Latency accounting ------------------------------------------------------
 //
-// Each worker owns its own growable latency buffer (no cross-thread locking on
-// the hot path). Buffers are merged after all workers join.
+// Each worker owns its own fixed-size latency histogram (no cross-thread
+// locking on the hot path, no allocation per call). Histograms are merged
+// after all workers join.
+//
+// Fixed size is load-bearing for BOTH memory instruments. The previous
+// design appended 8 bytes per successful call to a growable list. Counted
+// by the heap gate, that turned the steady-state check into a
+// calls-per-run gate — exactly how the Windows soak lane failed every
+// nightly from its first run (2026-08-12): Windows completed 2-4x the calls
+// of the Nagle-capped Linux client in the same 120 s, and the "growth" was
+// ~6 B/call of the harness's own samples. Moving the list to an uncounted
+// allocator fixed the heap gate, but the list still lived in the process's
+// resident set, so the RSS gate would have inherited the same false trend.
 
-const LatencyBuf = struct {
-    /// Telemetry allocator — deliberately NOT the counted allocator the
-    /// memory gate watches. Every successful call appends 8 bytes here,
-    /// and the buffer is only freed after the memory verdict, so counting
-    /// it turns the steady-state gate into a calls-per-run gate. That is
-    /// exactly how the Windows soak lane failed every nightly from its
-    /// first run (2026-08-12): Windows completes 2-4x the calls of the
-    /// Nagle-capped Linux client in the same 120s, and the "growth" was
-    /// ~6 B/call of the harness's own samples on both platforms — the
-    /// terminal leak check passed on every red run.
-    allocator: std.mem.Allocator,
-    list: std.ArrayList(u64) = .empty,
+/// Log-linear histogram (HDR-style): values below 128 ns get exact buckets;
+/// above that, each power-of-two range is split into 64 equal sub-buckets,
+/// so a reported percentile is within 1/128 (<0.8%) of the true sample
+/// value (the bucket midpoint, never above the observed max). Max is exact.
+/// ~30 KiB per worker, allocated and touched before sampling starts.
+const LatencyHist = struct {
+    const sub_bits = 7;
+    const half: usize = 1 << (sub_bits - 1);
+    const bucket_count: usize = half * (64 - sub_bits + 2);
 
-    fn record(self: *LatencyBuf, ns: u64) void {
-        // A dropped sample under memory pressure is acceptable for a soak
-        // percentile estimate; never abort traffic over it.
-        self.list.append(self.allocator, ns) catch {};
-    }
-
-    fn deinit(self: *LatencyBuf) void {
-        self.list.deinit(self.allocator);
-    }
-};
-
-const Percentiles = struct {
-    p50: u64 = 0,
-    p99: u64 = 0,
+    buckets: [bucket_count]u64 = @splat(0),
+    count: u64 = 0,
     max: u64 = 0,
-    count: usize = 0,
+
+    fn indexOf(v: u64) usize {
+        if (v < 2 * half) return @intCast(v);
+        const msb: u7 = 63 - @as(u7, @clz(v));
+        const shift: u6 = @intCast(msb + 1 - sub_bits);
+        return half * @as(usize, shift) + @as(usize, @intCast(v >> shift));
+    }
+
+    fn lowerBound(index: usize) u64 {
+        if (index < 2 * half) return index;
+        const shift: u6 = @intCast(index / half - 1);
+        return @as(u64, index - half * @as(usize, shift)) << shift;
+    }
+
+    fn width(index: usize) u64 {
+        if (index < 2 * half) return 1;
+        const shift: u6 = @intCast(index / half - 1);
+        return @as(u64, 1) << shift;
+    }
+
+    fn record(self: *LatencyHist, ns: u64) void {
+        self.buckets[indexOf(ns)] += 1;
+        self.count += 1;
+        self.max = @max(self.max, ns);
+    }
+
+    fn merge(self: *LatencyHist, other: *const LatencyHist) void {
+        for (&self.buckets, other.buckets) |*a, b| a.* += b;
+        self.count += other.count;
+        self.max = @max(self.max, other.max);
+    }
+
+    /// Nearest-rank percentile over the recorded samples (same rank rule as
+    /// the sorted-list implementation this replaced).
+    fn percentile(self: *const LatencyHist, pct: f64) u64 {
+        if (self.count == 0) return 0;
+        const rank: u64 = @intFromFloat(@round(pct / 100.0 * @as(f64, @floatFromInt(self.count - 1))));
+        var cumulative: u64 = 0;
+        for (self.buckets, 0..) |c, i| {
+            cumulative += c;
+            if (cumulative > rank) return @min(lowerBound(i) + (width(i) - 1) / 2, self.max);
+        }
+        return self.max;
+    }
 };
 
-fn percentile(sorted: []const u64, pct: f64) u64 {
-    if (sorted.len == 0) return 0;
-    if (sorted.len == 1) return sorted[0];
-    const rank = pct / 100.0 * @as(f64, @floatFromInt(sorted.len - 1));
-    const idx: usize = @intFromFloat(@round(rank));
-    return sorted[@min(idx, sorted.len - 1)];
+test "LatencyHist: buckets are contiguous and cover u64" {
+    try std.testing.expectEqual(@as(usize, 0), LatencyHist.indexOf(0));
+    try std.testing.expectEqual(@as(usize, 127), LatencyHist.indexOf(127));
+    try std.testing.expectEqual(@as(usize, 128), LatencyHist.indexOf(128));
+    try std.testing.expectEqual(LatencyHist.bucket_count - 1, LatencyHist.indexOf(std.math.maxInt(u64)));
+    // Every bucket's lower bound maps back to that bucket, and the next
+    // bucket starts exactly where this one ends.
+    var i: usize = 0;
+    while (i + 1 < LatencyHist.bucket_count) : (i += 1) {
+        try std.testing.expectEqual(i, LatencyHist.indexOf(LatencyHist.lowerBound(i)));
+        try std.testing.expectEqual(LatencyHist.lowerBound(i + 1), LatencyHist.lowerBound(i) + LatencyHist.width(i));
+    }
+}
+
+test "LatencyHist: percentiles track exact values within bucket precision" {
+    var h: LatencyHist = .{};
+    // 1 us .. 100 ms in 1 us steps: nearest-rank p50 is 50_001_000 ns and
+    // p99 is 99_000_000 ns.
+    var v: u64 = 1;
+    while (v <= 100_000) : (v += 1) h.record(v * 1000);
+    try std.testing.expectEqual(@as(u64, 100_000), h.count);
+    try std.testing.expectEqual(@as(u64, 100_000_000), h.max);
+    const p50 = @as(f64, @floatFromInt(h.percentile(50)));
+    const p99 = @as(f64, @floatFromInt(h.percentile(99)));
+    try std.testing.expect(@abs(p50 - 50_000_000) / 50_000_000 < 0.01);
+    try std.testing.expect(@abs(p99 - 99_000_000) / 99_000_000 < 0.01);
+    // Small values are exact, and an empty histogram reports zeros.
+    var small: LatencyHist = .{};
+    for ([_]u64{ 3, 5, 7 }) |s| small.record(s);
+    try std.testing.expectEqual(@as(u64, 5), small.percentile(50));
+    const empty: LatencyHist = .{};
+    try std.testing.expectEqual(@as(u64, 0), empty.percentile(99));
+}
+
+test "LatencyHist: merge sums counts and keeps the larger max" {
+    var a: LatencyHist = .{};
+    var b: LatencyHist = .{};
+    a.record(42_000_000);
+    b.record(1_000);
+    b.record(2_000);
+    a.merge(&b);
+    try std.testing.expectEqual(@as(u64, 3), a.count);
+    try std.testing.expectEqual(@as(u64, 42_000_000), a.max);
+    try std.testing.expectEqual(@as(u64, 42_000_000), a.percentile(100));
 }
 
 // -- Server ------------------------------------------------------------------
@@ -320,7 +584,7 @@ fn SessionOf(comptime ConnT: type) type {
         conn: *ConnT,
         peer: *Peer,
         totals: *Totals,
-        latency: *LatencyBuf,
+        latency: *LatencyHist,
         mode: SessionMode,
         calls_target: u32,
         // Max outstanding questions for this session. Deadline/chaos sessions run
@@ -478,9 +742,18 @@ fn SessionOf(comptime ConnT: type) type {
 
 const Session = SessionOf(Connection);
 
-fn dialTcp(allocator: std.mem.Allocator, io: std.Io, address: net.IpAddress, _: *const Config) anyerror!Connection {
+fn dialTcp(allocator: std.mem.Allocator, io: std.Io, address: net.IpAddress, cfg: *const Config, stage: *SetupStage) anyerror!Connection {
     var addr = address;
+    stage.* = .connect;
     const stream = try net.IpAddress.connect(&addr, io, .{ .mode = .stream });
+    stage.* = .init;
+    const tcp_runtime = rpc.transport.tcp.runtime;
+    // Connection.init takes ownership of the socket only on success.
+    errdefer tcp_runtime.closeFd(io, .{ .handle = stream.socket.handle });
+    // Best-effort and a no-op on Windows, where std's AFD sockets expose no
+    // TCP_NODELAY path yet (see setTcpNoDelay; Windows NODELAY via AFD is
+    // deferred work). The server side already sets it on every accept.
+    if (cfg.nodelay) tcp_runtime.setTcpNoDelay(.{ .handle = stream.socket.handle });
     return try Connection.init(allocator, io, .{ .handle = stream.socket.handle }, .{
         .tick_interval_ms = 5,
         // Generous idle timeout: under high peer counts a session's event
@@ -491,7 +764,10 @@ fn dialTcp(allocator: std.mem.Allocator, io: std.Io, address: net.IpAddress, _: 
     });
 }
 
-fn dialQuic(allocator: std.mem.Allocator, io: std.Io, address: net.IpAddress, cfg: *const Config) anyerror!quic.Connection {
+fn dialQuic(allocator: std.mem.Allocator, io: std.Io, address: net.IpAddress, cfg: *const Config, stage: *SetupStage) anyerror!quic.Connection {
+    // Client init binds the UDP socket and starts the handshake; nothing
+    // here is a connect in the TCP sense.
+    stage.* = .init;
     var options = quic.ClientOptions{
         .remote_addr = address,
         .server_name = "localhost",
@@ -517,9 +793,14 @@ fn applyCc(field: anytype, choice: CcChoice) void {
     }
 }
 
+/// Log at most this many setup failures per class, process-wide; the
+/// end-of-run summary carries the full classified counts. (The Windows
+/// 64-worker lane once printed 21020 identical lines.)
+const setup_failure_log_limit = 3;
+
 fn WorkerOf(
     comptime ConnT: type,
-    comptime dialFn: fn (std.mem.Allocator, std.Io, net.IpAddress, *const Config) anyerror!ConnT,
+    comptime dialFn: fn (std.mem.Allocator, std.Io, net.IpAddress, *const Config, *SetupStage) anyerror!ConnT,
 ) type {
     return struct {
         const Self = @This();
@@ -530,20 +811,33 @@ fn WorkerOf(
         address: net.IpAddress,
         cfg: *const Config,
         totals: *Totals,
-        latency: *LatencyBuf,
+        latency: *LatencyHist,
         stop_at_ns: i64,
         index: u32,
 
         fn main(self: Self) void {
             var session_index: u64 = 0;
             while (nowNs(self.io) < self.stop_at_ns) : (session_index += 1) {
+                // runSession absorbs setup failures itself; an error here
+                // happened after the connection was up.
                 self.runSession(session_index) catch |err| {
                     _ = self.totals.transport_errors.fetchAdd(1, .monotonic);
-                    if (err != error.ConnectionRefused) {
-                        std.debug.print("soak: worker {} session error: {}\n", .{ self.index, err });
-                    }
+                    std.debug.print("soak: worker {} mid-session error: {}\n", .{ self.index, err });
                     sleepMs(self.io, 5);
                 };
+            }
+        }
+
+        fn noteSetupFailure(self: Self, err: anyerror, stage: SetupStage) void {
+            const class = classifySetupFailure(err, stage, builtin.os.tag);
+            const n = self.totals.setup_failures[@backingInt(class)].fetchAdd(1, .monotonic) + 1;
+            if (class == .port_exhaustion) {
+                const offset_ns = nowNs(self.io) - self.totals.start_ns;
+                const offset_ms: usize = @intCast(@max(0, @divTrunc(offset_ns, std.time.ns_per_ms)));
+                _ = self.totals.first_port_exhaustion_ms.fetchMin(offset_ms, .monotonic);
+            }
+            if (n <= setup_failure_log_limit) {
+                std.debug.print("soak: worker {} setup failure ({s}, {s} stage): {}\n", .{ self.index, @tagName(class), @tagName(stage), err });
             }
         }
 
@@ -556,7 +850,15 @@ fn WorkerOf(
         fn runSession(self: Self, session_index: u64) !void {
             const conn = try self.allocator.create(ConnT);
             errdefer self.allocator.destroy(conn);
-            conn.* = try dialFn(self.allocator, self.io, self.address, self.cfg);
+            var stage: SetupStage = .connect;
+            conn.* = dialFn(self.allocator, self.io, self.address, self.cfg, &stage) catch |err| {
+                // Setup failure: counted by class, never as a mid-session
+                // transport error. Returning normally skips the errdefer.
+                self.allocator.destroy(conn);
+                self.noteSetupFailure(err, stage);
+                sleepMs(self.io, 5);
+                return;
+            };
 
             const peer = try self.allocator.create(Peer);
             errdefer self.allocator.destroy(peer);
@@ -602,6 +904,14 @@ fn WorkerOf(
             _ = self.totals.disconnects_by_cause[causeSlot(cause)].fetchAdd(1, .monotonic);
             if (session.failed) {
                 _ = self.totals.transport_errors.fetchAdd(1, .monotonic);
+            }
+            if (self.cfg.inject_transport_error_every) |every| {
+                // Ablation hook: a synthetic mid-session error on every Nth
+                // session of this worker, so the bound can be shown red.
+                if (session_index % every == every - 1) {
+                    _ = self.totals.transport_errors.fetchAdd(1, .monotonic);
+                    _ = self.totals.injected_transport_errors.fetchAdd(1, .monotonic);
+                }
             }
 
             _ = peer.takeAttachedConnection(*ConnT);
@@ -939,24 +1249,150 @@ const MemSampler = struct {
     interval_ms: u64,
     stop_at_ns: i64,
     stop_flag: *std.atomic.Value(bool),
-    // Sample series (live bytes) written by the sampler, read after join.
+    // Sample series (live heap bytes; process RSS bytes) written by the
+    // sampler, read after join. Both are preallocated for the whole run so
+    // appending never moves them mid-run.
     samples: *std.ArrayList(u64),
+    rss_samples: *std.ArrayList(u64),
     samples_allocator: std.mem.Allocator,
+    rss_injector: ?*RssInjector,
 
     fn main(self: MemSampler) void {
         while (!self.stop_flag.load(.acquire) and nowNs(self.io) < self.stop_at_ns) {
+            if (self.rss_injector) |injector| injector.advance(self.io);
             const live = self.counter.liveBytes();
             self.samples.append(self.samples_allocator, live) catch {};
+            if (processRssBytes(self.io)) |rss| {
+                self.rss_samples.append(self.samples_allocator, rss) catch {};
+            }
             sleepMs(self.io, self.interval_ms);
         }
+    }
+};
+
+/// Samples the sampler can take in a run, with headroom: it runs from
+/// before the workers start until a second past their stop.
+fn expectedSampleCount(seconds: u64, interval_ms: u64) usize {
+    return @intCast(((seconds + 2) * std.time.ms_per_s) / interval_ms + 16);
+}
+
+// -- Process resident set ----------------------------------------------------
+
+/// Current resident set size of this process in bytes, or null where the
+/// platform has no reading (the caller reports that as UNAVAILABLE rather
+/// than passing silently). This is the instrument that sees memory the
+/// counting allocator cannot: C allocations (BoringSSL under QUIC),
+/// allocator caches, and page-level growth.
+fn processRssBytes(io: std.Io) ?u64 {
+    switch (builtin.os.tag) {
+        .linux => {
+            // statm: size resident shared text lib data dt, in pages.
+            var buf: [256]u8 = undefined;
+            const text = std.Io.Dir.cwd().readFile(io, "/proc/self/statm", &buf) catch return null;
+            var fields = std.mem.tokenizeAny(u8, text, " \n");
+            _ = fields.next() orelse return null;
+            const resident_pages = std.fmt.parseUnsigned(u64, fields.next() orelse return null, 10) catch return null;
+            return resident_pages * std.heap.pageSize();
+        },
+        .windows => {
+            var counters: WinProcessMemoryCounters = undefined;
+            counters.cb = @sizeOf(WinProcessMemoryCounters);
+            if (K32GetProcessMemoryInfo(std.os.windows.GetCurrentProcess(), &counters, counters.cb) == 0) return null;
+            return counters.WorkingSetSize;
+        },
+        else => {
+            if (comptime builtin.os.tag.isDarwin()) {
+                var info: std.c.mach_task_basic_info = undefined;
+                var count: std.c.mach_msg_type_number_t = std.c.MACH.TASK.BASIC.INFO_COUNT;
+                const kr = std.c.task_info(std.c.mach_task_self(), std.c.MACH.TASK.BASIC.INFO, @ptrCast(&info), &count);
+                if (kr != 0) return null;
+                return info.resident_size;
+            }
+            return null;
+        },
+    }
+}
+
+/// psapi's PROCESS_MEMORY_COUNTERS. GetProcessMemoryInfo is exported from
+/// kernel32 as K32GetProcessMemoryInfo since Windows 7, so no psapi link.
+const WinProcessMemoryCounters = extern struct {
+    cb: u32,
+    PageFaultCount: u32,
+    PeakWorkingSetSize: usize,
+    WorkingSetSize: usize,
+    QuotaPeakPagedPoolUsage: usize,
+    QuotaPagedPoolUsage: usize,
+    QuotaPeakNonPagedPoolUsage: usize,
+    QuotaNonPagedPoolUsage: usize,
+    PagefileUsage: usize,
+    PeakPagefileUsage: usize,
+};
+
+extern "kernel32" fn K32GetProcessMemoryInfo(
+    process: std.os.windows.HANDLE,
+    counters: *WinProcessMemoryCounters,
+    cb: u32,
+) callconv(.winapi) c_int;
+
+test "processRssBytes: reads a plausible resident set on supported hosts" {
+    const supported = switch (builtin.os.tag) {
+        .linux, .windows => true,
+        else => builtin.os.tag.isDarwin(),
+    };
+    const rss = processRssBytes(std.testing.io);
+    if (!supported) return error.SkipZigTest;
+    // A running test binary is resident: more than a page, less than 64 GiB.
+    try std.testing.expect(rss != null);
+    try std.testing.expect(rss.? > std.heap.pageSize());
+    try std.testing.expect(rss.? < 64 * 1024 * 1024 * 1024);
+}
+
+/// Ablation hook (--inject-rss-growth-kib-per-s): grows the resident set at
+/// a fixed rate WITHOUT any allocator call the heap gate can see. One page
+/// allocator reservation covers the whole run up front (untouched pages are
+/// not resident); each sampler tick touches the next slice. Freed after the
+/// verdicts, so the terminal leak check is unaffected.
+const RssInjector = struct {
+    region: []u8,
+    touched: usize = 0,
+    start_ns: i64,
+    bytes_per_s: u64,
+
+    fn init(seconds: u64, kib_per_s: u64, start_ns: i64) !RssInjector {
+        const bytes_per_s = kib_per_s * 1024;
+        const len: usize = @intCast(@max(bytes_per_s * (seconds + 2), 1));
+        // rawAlloc, not alloc: Allocator.alloc fills the slice with the
+        // `undefined` pattern in safe builds, which would touch (and make
+        // resident) the whole region before the run starts.
+        const ptr = std.heap.page_allocator.rawAlloc(len, .fromByteUnits(std.heap.pageSize()), @returnAddress()) orelse
+            return error.OutOfMemory;
+        return .{
+            .region = ptr[0..len],
+            .start_ns = start_ns,
+            .bytes_per_s = bytes_per_s,
+        };
+    }
+
+    fn advance(self: *RssInjector, io: std.Io) void {
+        const elapsed_ns: u64 = @intCast(@max(0, nowNs(io) - self.start_ns));
+        const want: u64 = @min(self.region.len, (elapsed_ns / std.time.ns_per_ms) * self.bytes_per_s / std.time.ms_per_s);
+        const target: usize = @intCast(want);
+        if (target <= self.touched) return;
+        @memset(self.region[self.touched..target], 0xA5);
+        self.touched = target;
+    }
+
+    fn deinit(self: *RssInjector) void {
+        std.heap.page_allocator.rawFree(self.region, .fromByteUnits(std.heap.pageSize()), @returnAddress());
     }
 };
 
 /// Programmatic flat-memory check: split the steady-state window (samples
 /// after an initial warmup ramp) into a head and tail quarter and compare
 /// their means. Growth beyond the configured percentage (with an absolute
-/// floor so tiny heaps do not trip on noise) fails the run. This is a slope
-/// check over the whole run, not a final leak snapshot.
+/// floor so small series do not trip on noise) fails the run. This is a
+/// slope check over the whole run, not a final leak snapshot. Shared by the
+/// heap gate and the RSS gate; only the thresholds differ.
 const MemVerdict = struct {
     ok: bool,
     head_mean: f64,
@@ -970,10 +1406,15 @@ fn meanOf(slice: []const u64) f64 {
     if (slice.len == 0) return 0;
     var sum: u128 = 0;
     for (slice) |v| sum += v;
-    return @as(f64, @floatFromInt(@as(u64, @intCast(sum)))) / @as(f64, @floatFromInt(slice.len));
+    return @as(f64, @floatFromInt(sum)) / @as(f64, @floatFromInt(slice.len));
 }
 
-fn assessMemory(samples: []const u64, growth_pct: f64) MemVerdict {
+/// Heap gate floor: ignore live-heap growth under 256 KiB. That is
+/// churn/fragmentation noise, not a leak, and small enough not to matter
+/// over a bounded soak.
+const heap_abs_floor_bytes: f64 = 256 * 1024;
+
+fn assessMemory(samples: []const u64, growth_pct: f64, abs_floor_bytes: f64) MemVerdict {
     var peak: u64 = 0;
     for (samples) |v| peak = @max(peak, v);
 
@@ -1002,9 +1443,8 @@ fn assessMemory(samples: []const u64, growth_pct: f64) MemVerdict {
     const growth = tail_mean - head_mean;
     const rel_pct = if (head_mean > 0) (growth / head_mean) * 100.0 else 0;
 
-    // Absolute floor: ignore growth under 256 KiB — that is churn/fragmentation
-    // noise, not a leak, and small enough not to matter over a bounded soak.
-    const abs_floor_bytes: f64 = 256 * 1024;
+    // Absolute floor first: growth under it is never a finding, however
+    // large relative to a small series.
     const ok = (growth <= abs_floor_bytes) or (rel_pct <= growth_pct);
 
     return .{
@@ -1021,7 +1461,7 @@ test "assessMemory: a flat steady-state series passes" {
     // ~1 MiB heap wobbling within a few percent — allocator noise, not a leak.
     var series: [40]u64 = undefined;
     for (&series, 0..) |*v, i| v.* = 1_000_000 + (i % 5) * 8_000;
-    const verdict = assessMemory(&series, 25.0);
+    const verdict = assessMemory(&series, 25.0, heap_abs_floor_bytes);
     try std.testing.expect(verdict.ok);
 }
 
@@ -1030,7 +1470,7 @@ test "assessMemory: a monotonically growing series above the floor fails" {
     // well past the 256 KiB absolute floor and the 25% relative threshold.
     var series: [40]u64 = undefined;
     for (&series, 0..) |*v, i| v.* = 1_000_000 + i * 100_000;
-    const verdict = assessMemory(&series, 25.0);
+    const verdict = assessMemory(&series, 25.0, heap_abs_floor_bytes);
     try std.testing.expect(!verdict.ok);
     try std.testing.expect(verdict.growth_pct > 25.0);
 }
@@ -1040,11 +1480,34 @@ test "assessMemory: sub-floor growth on a tiny heap is tolerated" {
     // floor, so churn on a tiny heap must not trip the gate.
     var series: [40]u64 = undefined;
     for (&series, 0..) |*v, i| v.* = 4_096 + i * 128;
-    const verdict = assessMemory(&series, 25.0);
+    const verdict = assessMemory(&series, 25.0, heap_abs_floor_bytes);
     try std.testing.expect(verdict.ok);
 }
 
+test "assessMemory: RSS thresholds see a steady C-side climb the heap never shows" {
+    const floor: f64 = 16 * 1024 * 1024;
+    // 60 MiB resident, climbing ~1 MiB per sample: the shape of a C heap
+    // leaking under handshake churn. Far past the 16 MiB floor and 25%.
+    var leaking: [100]u64 = undefined;
+    for (&leaking, 0..) |*v, i| v.* = 60 * 1024 * 1024 + i * 1024 * 1024;
+    try std.testing.expect(!assessMemory(&leaking, 25.0, floor).ok);
+    // The same baseline wobbling by a few MiB (allocator caches settling)
+    // stays under the RSS floor even though it would trip the heap floor.
+    var settling: [100]u64 = undefined;
+    for (&settling, 0..) |*v, i| v.* = 60 * 1024 * 1024 + (i % 7) * 512 * 1024 + i * 32 * 1024;
+    try std.testing.expect(assessMemory(&settling, 25.0, floor).ok);
+    try std.testing.expect(!assessMemory(&settling, 0.0, heap_abs_floor_bytes).ok);
+}
+
 // -- Helpers -----------------------------------------------------------------
+
+/// A finding that is classified and reported but does not fail the run: a
+/// `soak: WARN` line, plus a `::warning::` annotation under GitHub Actions
+/// so a passing lane cannot hide it in its log.
+fn warn(annotate: bool, comptime fmt: []const u8, args: anytype) void {
+    std.debug.print("soak: WARN — " ++ fmt ++ "\n", args);
+    if (annotate) std.debug.print("::warning title=soak::" ++ fmt ++ "\n", args);
+}
 
 fn sleepMs(io: std.Io, ms: u64) void {
     const duration: std.Io.Clock.Duration = .{
@@ -1088,6 +1551,26 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Config {
             const value = iter.next() orelse return error.InvalidArgument;
             cfg.cc = std.meta.stringToEnum(CcChoice, value) orelse
                 return error.InvalidArgument;
+        } else if (std.mem.eql(u8, arg, "--nagle")) {
+            cfg.nodelay = false;
+        } else if (std.mem.eql(u8, arg, "--alloc-traces")) {
+            // Consumed by main before parsing (it picks the allocator type).
+            cfg.alloc_traces = true;
+        } else if (std.mem.eql(u8, arg, "--transport-error-tolerance")) {
+            cfg.transport_error_tolerance = try std.fmt.parseUnsigned(usize, iter.next() orelse return error.InvalidArgument, 10);
+        } else if (std.mem.eql(u8, arg, "--rss-gate")) {
+            const value = iter.next() orelse return error.InvalidArgument;
+            cfg.rss_gate = std.meta.stringToEnum(RssGate, value) orelse
+                return error.InvalidArgument;
+        } else if (std.mem.eql(u8, arg, "--rss-growth-pct")) {
+            cfg.rss_growth_pct = try std.fmt.parseFloat(f64, iter.next() orelse return error.InvalidArgument);
+        } else if (std.mem.eql(u8, arg, "--rss-floor-mib")) {
+            cfg.rss_floor_mib = try std.fmt.parseUnsigned(u64, iter.next() orelse return error.InvalidArgument, 10);
+        } else if (std.mem.eql(u8, arg, "--inject-transport-error-every")) {
+            cfg.inject_transport_error_every = try std.fmt.parseUnsigned(u64, iter.next() orelse return error.InvalidArgument, 10);
+            if (cfg.inject_transport_error_every.? == 0) return error.InvalidArgument;
+        } else if (std.mem.eql(u8, arg, "--inject-rss-growth-kib-per-s")) {
+            cfg.inject_rss_growth_kib_per_s = try std.fmt.parseUnsigned(u64, iter.next() orelse return error.InvalidArgument, 10);
         } else {
             std.debug.print("soak: unknown argument: {s}\n", .{arg});
             return error.InvalidArgument;
@@ -1121,26 +1604,67 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Config {
     return cfg;
 }
 
+/// The soak's DebugAllocator. Allocation stack traces are OFF by default,
+/// even in Debug, where std would capture 6 frames per allocation and per
+/// free. Measured on 0.17.0 (TCP, 8 workers, live heap flat at ~840 KB in
+/// every case): with traces on, process RSS climbed linearly — ~4.7 MB/s on
+/// Linux (6.6 MB -> 147 MB in 30 s) and ~11 MB/s on macOS (4.7 MB -> 267 MB
+/// in 20 s) — and macOS Debug call latency rose from p50 0.33 ms to 6 ms.
+/// With traces off, RSS held flat at ~9.8 MB. That growth belongs to the
+/// tracer, not the code under test, and it would make every Debug lane's
+/// RSS verdict a false FAIL. The leak check at exit is unaffected; pass
+/// `--alloc-traces` to get allocation sites in a leak report (and expect
+/// the RSS verdict to be meaningless while they are on).
+fn SoakGpa(comptime alloc_traces: bool) type {
+    return std.heap.DebugAllocator(.{
+        .thread_safe = true,
+        .stack_trace_frames = if (alloc_traces) traced_alloc_frames else 0,
+    });
+}
+
+const traced_alloc_frames: usize = if (std.debug.sys_can_stack_trace) 6 else 0;
+
 pub fn main(init: std.process.Init) !void {
-    var gpa: std.heap.DebugAllocator(.{ .thread_safe = true }) = .init;
+    // The allocator type is comptime, so peek for its one flag before
+    // anything is allocated from it.
+    if (wantsAllocTraces(init)) return run(SoakGpa(true), init);
+    return run(SoakGpa(false), init);
+}
+
+fn wantsAllocTraces(init: std.process.Init) bool {
+    var iter = std.process.Args.Iterator.initAllocator(init.minimal.args, init.arena.allocator()) catch return false;
+    defer iter.deinit();
+    while (iter.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--alloc-traces")) return true;
+    }
+    return false;
+}
+
+fn run(comptime Gpa: type, init: std.process.Init) !void {
+    var gpa: Gpa = .init;
     var counter = CountingAllocator.init(gpa.allocator());
     const allocator = counter.allocator();
-    // Harness telemetry (latency samples, the memory curve itself) goes
-    // straight to the DebugAllocator, BYPASSING the counter: the
+    // Harness telemetry (latency histograms, the memory curves themselves)
+    // goes straight to the DebugAllocator, BYPASSING the counter: the
     // steady-state memory gate must measure the system under test, not
-    // the instrument. Still leak-checked by the terminal gpa.deinit.
-    // See the LatencyBuf doc for the nightly failure this caused.
+    // the instrument. Still leak-checked by the terminal gpa.deinit. All
+    // of it is sized up front (see LatencyHist), so it is flat in RSS too.
     const telemetry_allocator = gpa.allocator();
     const io = init.io;
 
     const cfg = try parseArgs(allocator, init.minimal.args);
+    // Under GitHub Actions, report-only findings are also emitted as
+    // `::warning::` annotations so they surface on the run summary instead
+    // of hiding in a passing step's log.
+    const annotate = if (init.environ_map.get("GITHUB_ACTIONS")) |v| std.mem.eql(u8, v, "true") else false;
 
     var totals = Totals{};
     EchoServer.server_io = io;
 
-    // Per-worker latency buffers (merged after join).
-    const latency_bufs = try telemetry_allocator.alloc(LatencyBuf, cfg.workers);
-    for (latency_bufs) |*b| b.* = .{ .allocator = telemetry_allocator };
+    // Per-worker latency histograms (merged after join). Initializing them
+    // here touches every page before the sampler takes its first reading.
+    const latency_hists = try telemetry_allocator.alloc(LatencyHist, cfg.workers);
+    for (latency_hists) |*h| h.* = .{};
 
     var pool: WorkerPool = undefined;
     var pool_thread: std.Thread = undefined;
@@ -1181,11 +1705,23 @@ pub fn main(init: std.process.Init) !void {
         },
     }
 
-    const stop_at_ns = nowNs(io) + @as(i64, @intCast(cfg.seconds)) * std.time.ns_per_s;
+    totals.start_ns = nowNs(io);
+    const stop_at_ns = totals.start_ns + @as(i64, @intCast(cfg.seconds)) * std.time.ns_per_s;
 
-    // Memory sampler thread: watches live heap for the run duration.
+    // Memory sampler thread: watches live heap and process RSS for the run
+    // duration. Both series are sized for the whole run before it starts.
+    const sample_capacity = expectedSampleCount(cfg.seconds, cfg.mem_sample_ms);
     var mem_samples: std.ArrayList(u64) = .empty;
     defer mem_samples.deinit(telemetry_allocator);
+    try mem_samples.ensureTotalCapacity(telemetry_allocator, sample_capacity);
+    var rss_samples: std.ArrayList(u64) = .empty;
+    defer rss_samples.deinit(telemetry_allocator);
+    try rss_samples.ensureTotalCapacity(telemetry_allocator, sample_capacity);
+    var rss_injector: ?RssInjector = if (cfg.inject_rss_growth_kib_per_s) |kib|
+        try RssInjector.init(cfg.seconds, kib, totals.start_ns)
+    else
+        null;
+    defer if (rss_injector) |*injector| injector.deinit();
     var mem_stop = std.atomic.Value(bool).init(false);
     const mem_thread = try std.Thread.spawn(.{}, MemSampler.main, .{MemSampler{
         .counter = &counter,
@@ -1194,7 +1730,9 @@ pub fn main(init: std.process.Init) !void {
         .stop_at_ns = stop_at_ns + std.time.ns_per_s, // sample a bit past worker stop
         .stop_flag = &mem_stop,
         .samples = &mem_samples,
+        .rss_samples = &rss_samples,
         .samples_allocator = telemetry_allocator,
+        .rss_injector = if (rss_injector) |*injector| injector else null,
     }});
 
     // Healing clients (QUIC only; parseArgs enforced the pairing): stable
@@ -1245,7 +1783,7 @@ pub fn main(init: std.process.Init) !void {
                 .address = address,
                 .cfg = &cfg,
                 .totals = &totals,
-                .latency = &latency_bufs[i],
+                .latency = &latency_hists[i],
                 .stop_at_ns = stop_at_ns,
                 .index = @intCast(i),
             }}),
@@ -1255,7 +1793,7 @@ pub fn main(init: std.process.Init) !void {
                 .address = address,
                 .cfg = &cfg,
                 .totals = &totals,
-                .latency = &latency_bufs[i],
+                .latency = &latency_hists[i],
                 .stop_at_ns = stop_at_ns,
                 .index = @intCast(i),
             }}) else unreachable,
@@ -1324,26 +1862,23 @@ pub fn main(init: std.process.Init) !void {
                         .{ cfg.heal_workers, heal_rebinds, heal_redials, heal_give_ups, heal_echo, heal_min_rebinds },
                     );
                 }
+                // Client handshakes started: one per churn session (setup
+                // failures never got that far), plus each healing client's
+                // first dial and redials. The per-handshake C-side cost is
+                // what the RSS gate exists to watch across a quic bump.
+                const handshakes = totals.sessions.load(.acquire) + heal_redials + cfg.heal_workers;
+                std.debug.print("soak-quic: client handshakes~{} ({d:.1}/s)\n", .{
+                    handshakes,
+                    @as(f64, @floatFromInt(handshakes)) / @as(f64, @floatFromInt(@max(cfg.seconds, 1))),
+                });
             } else unreachable;
         },
     }
 
-    // -- Merge latency samples & compute percentiles ----------------------
-    var all_latencies: std.ArrayList(u64) = .empty;
-    defer all_latencies.deinit(telemetry_allocator);
-    for (latency_bufs) |b| {
-        all_latencies.appendSlice(telemetry_allocator, b.list.items) catch {};
-    }
-    var lat = Percentiles{};
-    if (all_latencies.items.len > 0) {
-        std.mem.sort(u64, all_latencies.items, {}, std.sort.asc(u64));
-        lat = .{
-            .p50 = percentile(all_latencies.items, 50.0),
-            .p99 = percentile(all_latencies.items, 99.0),
-            .max = all_latencies.items[all_latencies.items.len - 1],
-            .count = all_latencies.items.len,
-        };
-    }
+    // -- Merge latency histograms & compute percentiles -------------------
+    var lat: LatencyHist = .{};
+    for (latency_hists) |*h| lat.merge(h);
+    telemetry_allocator.free(latency_hists);
 
     const sessions = totals.sessions.load(.acquire);
     const ok = totals.calls_ok.load(.acquire);
@@ -1353,23 +1888,40 @@ pub fn main(init: std.process.Init) !void {
     const expected_disconnects = totals.expected_disconnects.load(.acquire);
     const contention_disconnects = totals.contention_disconnects.load(.acquire);
     const unexpected = totals.unexpected_exceptions.load(.acquire);
+    var setup_counts: [setup_class_count]usize = undefined;
+    var setup_total: usize = 0;
+    for (&setup_counts, &totals.setup_failures) |*c, *a| {
+        c.* = a.load(.acquire);
+        setup_total += c.*;
+    }
 
     std.debug.print(
         "soak: sessions={} calls_ok={} cancelled={} chaos_closes={} transport_errors={} expected_disconnects={} contention_disconnects={} unexpected_exceptions={}\n",
         .{ sessions, ok, cancelled, chaos_closes, transport_errors, expected_disconnects, contention_disconnects, unexpected },
     );
+    std.debug.print("soak: setup failures={} (", .{setup_total});
+    inline for (comptime std.enums.values(SetupClass), 0..) |class, i| {
+        std.debug.print("{s}{s}={}", .{ if (i == 0) "" else " ", @tagName(class), setup_counts[i] });
+    }
+    std.debug.print(")\n", .{});
     std.debug.print("soak: session close causes:", .{});
     inline for (comptime std.enums.values(rpc.events.DisconnectCause), 0..) |cause, i| {
         std.debug.print(" {s}={}", .{ @tagName(cause), totals.disconnects_by_cause[i].load(.acquire) });
     }
     std.debug.print("\n", .{});
     std.debug.print(
-        "soak: latency p50={}ns p99={}ns max={}ns (samples={})\n",
-        .{ lat.p50, lat.p99, lat.max, lat.count },
+        "soak: latency p50={}ns p99={}ns max={}ns (samples={}, client TCP_NODELAY={s})\n",
+        .{
+            lat.percentile(50.0),
+            lat.percentile(99.0),
+            lat.max,
+            lat.count,
+            if (cfg.transport != .tcp) "n/a" else if (!cfg.nodelay) "off (--nagle)" else if (builtin.os.tag == .windows) "unavailable (std AFD)" else "on",
+        },
     );
 
-    // -- Memory-growth curve + flat assessment ----------------------------
-    const verdict = assessMemory(mem_samples.items, cfg.mem_growth_pct);
+    // -- Memory-growth curves + flat assessments ---------------------------
+    const verdict = assessMemory(mem_samples.items, cfg.mem_growth_pct, heap_abs_floor_bytes);
     std.debug.print("soak: memory curve (live bytes, {} samples @ {}ms):\n", .{ mem_samples.items.len, cfg.mem_sample_ms });
     printMemCurve(mem_samples.items);
     std.debug.print(
@@ -1377,9 +1929,28 @@ pub fn main(init: std.process.Init) !void {
         .{ verdict.head_mean, verdict.tail_mean, verdict.growth_pct, verdict.peak, cfg.mem_growth_pct },
     );
 
-    // -- Free per-worker buffers before the leak check --------------------
-    for (latency_bufs) |*b| b.deinit();
-    telemetry_allocator.free(latency_bufs);
+    const rss_floor_bytes: f64 = @floatFromInt(cfg.rss_floor_mib * 1024 * 1024);
+    const rss_available = rss_samples.items.len > 0;
+    const rss_verdict = assessMemory(rss_samples.items, cfg.rss_growth_pct, rss_floor_bytes);
+    const rss_mode = @tagName(cfg.rss_gate);
+    if (rss_available) {
+        std.debug.print("soak: rss curve (resident bytes, {} samples @ {}ms):\n", .{ rss_samples.items.len, cfg.mem_sample_ms });
+        printMemCurve(rss_samples.items);
+        std.debug.print(
+            "soak: rss steady-state head_mean={d:.0}B tail_mean={d:.0}B growth={d:.2}% delta={d:.0}B peak={}B threshold={d:.1}% floor={}MiB\n",
+            .{ rss_verdict.head_mean, rss_verdict.tail_mean, rss_verdict.growth_pct, rss_verdict.tail_mean - rss_verdict.head_mean, rss_verdict.peak, cfg.rss_growth_pct, cfg.rss_floor_mib },
+        );
+        std.debug.print("soak: rss verdict: {s} ({s}{s})\n", .{
+            if (rss_verdict.ok) "PASS" else "FAIL",
+            rss_mode,
+            if (cfg.alloc_traces) "; --alloc-traces on: RSS includes the tracer's own growth" else "",
+        });
+    } else {
+        std.debug.print("soak: rss verdict: UNAVAILABLE on {s} ({s})\n", .{ @tagName(builtin.os.tag), rss_mode });
+    }
+    if (rss_injector) |*injector| {
+        std.debug.print("soak: ablation: injected {} bytes of RSS growth outside the Zig heap\n", .{injector.touched});
+    }
 
     var failed = false;
     if (sessions == 0 or ok == 0) {
@@ -1439,6 +2010,51 @@ pub fn main(init: std.process.Init) !void {
             }
         } else unreachable;
     }
+    // Mid-session transport errors: bounded (see the file header).
+    const churn_workers: usize = cfg.workers - cfg.heal_workers;
+    const deaths: usize = @intCast(quic_srv.deaths);
+    const death_allowance = deaths * churn_workers;
+    const tolerance = cfg.transport_error_tolerance orelse defaultTransportTolerance(sessions);
+    const transport_verdict = assessTransport(transport_errors, chaos_closes, death_allowance, tolerance);
+    std.debug.print(
+        "soak: transport-error bound: transport_errors={} allowed={} (chaos_closes={} + death_allowance={} + tolerance={}) -> {s}\n",
+        .{ transport_errors, transport_verdict.allowed, chaos_closes, death_allowance, tolerance, if (transport_verdict.ok) "ok" else "EXCEEDED" },
+    );
+    const injected = totals.injected_transport_errors.load(.acquire);
+    if (injected > 0) {
+        std.debug.print("soak: ablation: {} of those transport errors were injected (--inject-transport-error-every)\n", .{injected});
+    }
+    if (!transport_verdict.ok) {
+        std.debug.print(
+            "soak: FAIL — {} mid-session transport errors exceed the bound of {}\n",
+            .{ transport_errors, transport_verdict.allowed },
+        );
+        failed = true;
+    }
+    // Setup failures: classified; only the unexplained class gates.
+    const other_setup = setup_counts[@backingInt(SetupClass.other)];
+    if (other_setup > tolerance) {
+        std.debug.print(
+            "soak: FAIL — {} unclassified setup failures exceed the tolerance of {}\n",
+            .{ other_setup, tolerance },
+        );
+        failed = true;
+    }
+    const port_exhausted = setup_counts[@backingInt(SetupClass.port_exhaustion)];
+    if (port_exhausted > 0) {
+        const first_ms = totals.first_port_exhaustion_ms.load(.acquire);
+        // Host-side, not a defect in the code under test: reported loudly,
+        // with where in the run it began, but not gated.
+        warn(
+            annotate,
+            "host ephemeral-port exhaustion: {} dials failed from +{d:.1}s of a {}s run; traffic after that point was not exercised",
+            .{ port_exhausted, @as(f64, @floatFromInt(first_ms)) / 1000.0, cfg.seconds },
+        );
+    }
+    const other_reported = setup_total - other_setup - port_exhausted;
+    if (other_reported > 0) {
+        warn(annotate, "{} classified setup failures (refused/resources/timeout); see the setup failures line", .{other_reported});
+    }
     if (!verdict.ok) {
         std.debug.print(
             "soak: FAIL — steady-state live heap grew {d:.2}% (> {d:.1}% threshold)\n",
@@ -1446,14 +2062,38 @@ pub fn main(init: std.process.Init) !void {
         );
         failed = true;
     }
-    // Everything above must be freed before this final leak check. mem_samples
-    // and all_latencies are freed by their `defer`s after this scope, so they
-    // are not yet freed here — free them explicitly first so the DebugAllocator
-    // sees a clean slate.
-    all_latencies.deinit(telemetry_allocator);
-    all_latencies = .empty;
+    switch (cfg.rss_gate) {
+        .enforce => {
+            if (!rss_available) {
+                // An enforcing gate cannot pass on a reading it never took.
+                std.debug.print("soak: FAIL — --rss-gate enforce, but RSS is unavailable on this platform\n", .{});
+                failed = true;
+            } else if (!rss_verdict.ok) {
+                std.debug.print(
+                    "soak: FAIL — steady-state RSS grew {d:.2}% (> {d:.1}% threshold, delta {d:.0}B > {}MiB floor)\n",
+                    .{ rss_verdict.growth_pct, cfg.rss_growth_pct, rss_verdict.tail_mean - rss_verdict.head_mean, cfg.rss_floor_mib },
+                );
+                failed = true;
+            }
+        },
+        .report => {
+            if (rss_available and !rss_verdict.ok) {
+                warn(
+                    annotate,
+                    "report-only RSS gate would FAIL: steady-state RSS grew {d:.2}% (> {d:.1}%, delta {d:.0}B > {}MiB floor); pass --rss-gate enforce to gate",
+                    .{ rss_verdict.growth_pct, cfg.rss_growth_pct, rss_verdict.tail_mean - rss_verdict.head_mean, cfg.rss_floor_mib },
+                );
+            }
+        },
+    }
+    // Everything above must be freed before this final leak check. The
+    // sample series are freed by their `defer`s after this scope, so they
+    // are not yet freed here — free them explicitly first so the
+    // DebugAllocator sees a clean slate.
     mem_samples.deinit(telemetry_allocator);
     mem_samples = .empty;
+    rss_samples.deinit(telemetry_allocator);
+    rss_samples = .empty;
     if (gpa.deinit() != .ok) {
         std.debug.print("soak: FAIL — client-side allocation leaks detected\n", .{});
         failed = true;

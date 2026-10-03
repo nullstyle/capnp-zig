@@ -204,7 +204,8 @@ integer, so the snapshots used to differ by the platform that generated them.
 
 - **Soaked, with committed regression evidence.** A `bench-rpc` regression gate
   and the RPC soak harness (latency percentiles + a flat memory-growth curve
-  asserted at ≥100 concurrent peers) run against the two-party core. This is
+  asserted at ≥100 concurrent peers, a bound on mid-session transport errors,
+  and a report-only process-RSS trend check) run against the two-party core. This is
   real soak evidence, not a claim. Scope of the bench gate, precisely: the
   **pipelined throughput** case (calls/sec) is enforced in CI. The **sequential
   round-trip latency** percentiles (p50/p99) and its calls/sec are measured and

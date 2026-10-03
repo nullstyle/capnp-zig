@@ -26,11 +26,15 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
 
+      # --rss-gate report: the process-RSS trend check prints its verdict
+      # (plus a ::warning:: annotation when it would fail) but never fails
+      # the lane. It lands report-only until RSS baselines exist; switch a
+      # lane to `--rss-gate enforce` to gate on it.
       - name: Run soak harness (2 minutes, 8 workers)
-        run: zig build soak -- --seconds 120 --workers 8
+        run: zig build soak -- --seconds 120 --workers 8 --rss-gate report
 
       - name: Run soak harness under ReleaseSafe (1 minute)
-        run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 8
+        run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 8 --rss-gate report
 
       # 64 workers, not 8: the accept-churn abort class (setTcpNoDelay
       # dying through std.posix.setsockopt's `unreachable` errno arms when
@@ -54,9 +58,17 @@ jobs:
       # unchanged. Repro evidence: branch lane ci/win-accept-teardown,
       # runs 33031327060 (red, pre-fix) / 33032117486 (20s green x2 +
       # 60s diagnostic red with the port census).
+      #
+      # Dial failures are classified apart from mid-session transport
+      # errors (which are bounded). The 2026-10-03 nightly's Windows run of
+      # this lane was port-exhausted from ~+8s (21020 dials failed while
+      # the earlier lanes' ports sat in TIME_WAIT) and still passed, since
+      # those failures were folded into an unbounded transport_errors. The
+      # soak now reports that class with a ::warning:: annotation and gates
+      # only unclassified dial failures.
       - name: Run soak harness under ReleaseSafe (64 workers)
         shell: bash
-        run: zig build -Doptimize=ReleaseSafe soak -- --seconds ${{ runner.os == 'Windows' && '20' || '60' }} --workers 64
+        run: zig build -Doptimize=ReleaseSafe soak -- --seconds ${{ runner.os == 'Windows' && '20' || '60' }} --workers 64 --rss-gate report
 
       # Linux-only: the TSan lane is validated on Linux only (libtsan used to
       # segfault at startup on darwin), and Windows has no zig TSan runtime;
@@ -174,8 +186,13 @@ jobs:
       # WarmRedialClients. The soak's own gates enforce: every death
       # produced reset-certified closes AND every healing client healed
       # across every death (min_rebinds), zero give-ups.
+      #
+      # --rss-gate report: on the quic v0.19.0 pin this lane's RSS climbs
+      # while the Zig heap stays flat (BoringSSL AEAD contexts leaked per
+      # handshake, fixed upstream in quic 0.21.1), so its RSS verdict is
+      # expected to read FAIL until the quic bump. Report-only here.
       - name: QUIC self-healing soak (abrupt deaths + healing workers)
-        run: zig build -Dquic=true -Doptimize=ReleaseSafe soak -- --transport quic --abrupt-death-every-ms 2000 --seconds 20 --workers 16 --heal-workers 8
+        run: zig build -Dquic=true -Doptimize=ReleaseSafe soak -- --transport quic --abrupt-death-every-ms 2000 --seconds 20 --workers 16 --heal-workers 8 --rss-gate report
 
       - name: ReleaseSafe hardening tests
         run: zig build test-release-safe --summary all

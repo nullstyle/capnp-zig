@@ -192,6 +192,24 @@ pub fn buildImpl(b: *std.Build) !void {
     const soak_step = b.step("soak", "Run RPC soak harness (use -- --seconds N --workers N)");
     soak_step.dependOn(&run_soak_rpc.step);
 
+    // The harness's own verdict logic (memory trend, transport-error bound,
+    // setup-failure classifier, latency histogram, RSS reader) is unit
+    // tested. Before this target existed its `test` blocks never compiled:
+    // nothing used tools/soak_rpc.zig as a test root.
+    const soak_rpc_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/soak_rpc.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &soak_rpc_tests.step) catch @panic("OOM");
+    const test_soak_harness_step = b.step("test-soak-harness", "Run the soak harness's own unit tests (gate verdicts, classifiers, latency histogram, RSS reader)");
+    test_soak_harness_step.dependOn(&b.addRunArtifact(soak_rpc_tests).step);
+
     const bench_check = b.addExecutable(.{
         .name = "bench-check",
         .root_module = b.createModule(.{
@@ -1429,6 +1447,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_step.dependOn(test_toolchain_gate_step);
     test_step.dependOn(test_resource_budgets_step);
     test_step.dependOn(test_oom_step);
+    test_step.dependOn(test_soak_harness_step);
 
     // Configure these after the suites are complete. Windows can warm their
     // exact compile prerequisites in parallel, then run the unchanged suites

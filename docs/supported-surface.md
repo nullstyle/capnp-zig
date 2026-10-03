@@ -208,7 +208,12 @@ a committed baseline (`bench-check`), and the RPC soak harness reports latency
 percentiles plus a memory-growth curve asserted flat at ≥100 concurrent peers.
 On Windows the soak cannot report success without positive session, call,
 chaos-close, and applicable deadline-cancellation counters; the old successful
-no-op is gone.
+no-op is gone. Mid-session transport errors are bounded (chaos closes plus a
+documented tolerance), dial failures are classified separately (port
+exhaustion is reported, unexplained dial failures gate), and the process
+resident set runs through the same steady-state trend check as the Zig heap.
+The RSS check — the one that sees C-side memory such as BoringSSL's under
+QUIC — is report-only in CI for now (`--rss-gate enforce` makes it gate).
 In CI the *pipelined throughput* case is enforced; the *sequential latency*
 cases are advisory (a shared runner cannot measure a serialized round-trip
 reliably — see [`stability.md`](stability.md)), and gate on a quiet machine via
