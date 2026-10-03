@@ -1180,6 +1180,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_serialization_step.dependOn(run_codegen_generated_runtime_tests);
     test_serialization_step.dependOn(run_nested_lists_runtime_tests);
     test_serialization_step.dependOn(run_schema_evolution_api_tests);
+    test_serialization_step.dependOn(run_codegen_error_sets_tests);
     test_serialization_step.dependOn(run_integration_tests);
     test_serialization_step.dependOn(run_interop_tests);
     test_serialization_step.dependOn(run_interop_roundtrip_tests);
