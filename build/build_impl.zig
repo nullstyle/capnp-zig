@@ -591,7 +591,8 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_core_tests = b.addRunArtifact(core_tests);
 
     // Serialization tests
-    const test_reflection_step = @import("reflection.zig").add(b, target, optimize, core_module);
+    const reflection = @import("reflection.zig").add(b, target, optimize, core_module);
+    const test_reflection_step = reflection.test_step;
     const run_message_tests = addLibTest(b, "tests/serialization/message_test.zig", target, optimize, lib_module);
     const run_serialization_fuzz_tests = addLibTest(b, "tests/serialization/serialization_fuzz_test.zig", target, optimize, lib_module);
     const run_fuzz_smoke_tests = addLibTest(b, "tests/hardening/fuzz_smoke_test.zig", target, optimize, lib_module);
@@ -1442,6 +1443,8 @@ pub fn buildImpl(b: *std.Build) !void {
     // (verified on x86_64-windows). The L3/C++ driver is deliberately NOT here:
     // its TCP rendezvous uses posix `poll`, which std does not wire for Windows
     // on the current toolchain, and this gate runs natively on Windows in CI.
+    // It is compiled by `check-tools` below, which `check` pulls in on every
+    // non-Windows host and target.
     check_compile_step.dependOn(&e2e_l4_zig.step);
     check_compile_step.dependOn(&wasm_host_module.step);
 
@@ -1453,9 +1456,97 @@ pub fn buildImpl(b: *std.Build) !void {
         check_test_compile_step.dependOn(test_compile);
     }
 
+    // Tool, bench and e2e executables that `check-compile` leaves out.
+    //
+    // Before this step each of them compiled only inside its own run or
+    // install step, and three never entered the build graph at all: they run
+    // as `zig run` from tests/e2e/Justfile or the Nightly workflow. 428197a
+    // moved to tagged Zig 0.17.0, which deleted `Io.VTable.netWrite`;
+    // tools/e2e_l3_cpp.zig still called it, `zig build check` stayed green,
+    // and only the Docker e2e lane in CI went red. Ablation: making the
+    // vtable arm of that tool's socket write unconditional leaves the old
+    // `check` green and turns this step (and so `check`) red.
+    //
+    // `check` depends on this only when neither the host nor the target is
+    // Windows. The L3/C++ driver and the VatC host wait on their TCP sockets
+    // with posix `poll`, which std does not wire for Windows on the current
+    // toolchain (`ws2_32` has no `pollfd`), and `check` runs natively on
+    // Windows in CI; tools/e2e_runner.zig also opens raw posix sockets with
+    // `SOCK.CLOEXEC`. The host matters too: quic-test-evidence and
+    // reflection-cpp-build always build for it. Asked for directly on
+    // Windows, the step fails with that reason rather than passing having
+    // compiled nothing.
+    const check_tools_step = b.step("check-tools", "Compile the tool, bench and e2e executables that check-compile leaves out (non-Windows host and target)");
+    const check_tools_supported = target.result.os.tag != .windows and b.graph.host.result.os.tag != .windows;
+    if (check_tools_supported) {
+        // Already in the graph behind run or install steps; depending on the
+        // same compile nodes shares their cache with `*-install`.
+        const graph_tools = [_]*std.Build.Step.Compile{
+            e2e_l3_cpp,
+            e2e_l3_vatc,
+            e2e_l3_vatc_host,
+            e2e_self,
+            bench_check,
+            hardening_gate,
+            package_preflight,
+            quic_test_evidence,
+            ping_pong_bench,
+            pack_unpack_bench,
+            rpc_round_trip_bench,
+        } ++ reflection.tools;
+        for (graph_tools) |tool| check_tools_step.dependOn(&tool.step);
+        if (quic_round_trip_bench) |bench_exe| check_tools_step.dependOn(&bench_exe.step);
+
+        // api-snapshot is the one expensive member. After a src/ edit its
+        // full build took 25s on an M-series Mac against 11s for analysis
+        // alone, and the full build roughly doubled `check` (15s -> 30s).
+        // So this is a separate analysis-only node (-fno-emit-bin) on the
+        // same root module, which still fails on a std break; `check-api`
+        // builds and runs the real binary on every push.
+        const api_snapshot_analysis = b.addExecutable(.{
+            .name = "api-snapshot",
+            .root_module = api_snapshot_tool.root_module,
+        });
+        check_tools_step.dependOn(&api_snapshot_analysis.step);
+
+        // `zig run` tools with no other build node. Each binary is emitted
+        // (not -fno-emit-bin) so link-time breaks surface here too. They
+        // import only std, so this costs little.
+        const zig_run_tools = [_]struct { name: []const u8, path: []const u8 }{
+            .{ .name = "e2e-l3-go-probe", .path = "tools/e2e_l3_go_probe.zig" },
+            .{ .name = "e2e-runner", .path = "tools/e2e_runner.zig" },
+            .{ .name = "fuzz-evidence", .path = "tools/fuzz_evidence.zig" },
+        };
+        for (zig_run_tools) |tool| {
+            const tool_module = b.createModule(.{
+                .root_source_file = b.path(tool.path),
+                .target = target,
+                .optimize = optimize,
+            });
+            const tool_exe = b.addExecutable(.{ .name = tool.name, .root_module = tool_module });
+            _ = tool_exe.getEmittedBin();
+            check_tools_step.dependOn(&tool_exe.step);
+        }
+        // The Nightly also runs `zig test tools/fuzz_evidence.zig`: its tests
+        // prove the evidence gate rejects missing activity, so compile them.
+        const fuzz_evidence_tests = b.addTest(.{
+            .name = "fuzz-evidence-test",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/fuzz_evidence.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        _ = fuzz_evidence_tests.getEmittedBin();
+        check_tools_step.dependOn(&fuzz_evidence_tests.step);
+    } else {
+        check_tools_step.dependOn(&b.addFail("check-tools needs a non-Windows host and target: the L3/C++ e2e driver and the VatC host use posix poll, which std does not wire for Windows on the current toolchain, and the e2e runner uses raw posix sockets. Run it on Linux or macOS without -Dtarget=*-windows.").step);
+    }
+
     // Check step (compile visible user-facing targets without running them,
     // plus the docs/examples smoke gate which does execute on the host).
     const check_step = b.step("check", "Check for compilation errors");
     check_step.dependOn(check_compile_step);
     check_step.dependOn(docs_smoke_step);
+    if (check_tools_supported) check_step.dependOn(check_tools_step);
 }

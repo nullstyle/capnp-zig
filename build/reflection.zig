@@ -35,7 +35,17 @@ fn generatedTest(b: *std.Build, path: []const u8, target: std.Build.ResolvedTarg
     return exe;
 }
 
-pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, core: *std.Build.Module) *std.Build.Step {
+pub const Steps = struct {
+    /// `test-reflection`.
+    test_step: *std.Build.Step,
+    /// Executables that no test runs: the registry/read-cost bench and the
+    /// host helper that builds the optional C++ oracle. `check-tools`
+    /// compiles them so a std break cannot hide until someone runs
+    /// `bench-reflection` or `test-reflection-cpp`.
+    tools: [2]*std.Build.Step.Compile,
+};
+
+pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, core: *std.Build.Module) Steps {
     const host_core = runtime(b, b.graph.host, optimize);
     const generator = b.addExecutable(.{ .name = "reflection-generate", .root_module = b.createModule(.{
         .root_source_file = b.path("tests/reflection/generate.zig"),
@@ -173,5 +183,5 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     oracle_ablation.addArg("--inject-mismatch");
     oracle_ablation.expectExitCode(2);
     b.step("test-reflection-oracle-ablation", "Prove the C++ oracle rejects injected mismatches").dependOn(&oracle_ablation.step);
-    return step;
+    return .{ .test_step = step, .tools = .{ performance, cpp_builder } };
 }
