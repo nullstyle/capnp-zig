@@ -10,6 +10,8 @@ pub const generated_helpers = @import("serialization/generated_helpers.zig");
 pub const generic = @import("serialization/generic.zig");
 pub const reader = @import("serialization/reader.zig");
 pub const codegen = @import("capnpc-zig/generator.zig");
+/// The generated-code ABI this runtime implements. See `lib.zig`.
+pub const codegen_abi = @import("codegen_abi.zig");
 pub const request = @import("serialization/request_reader.zig");
 pub const schema_validation = @import("serialization/schema_validation.zig");
 pub const canonical = @import("serialization/canonical.zig");

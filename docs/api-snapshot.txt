@@ -32,6 +32,10 @@ capnpc-zig.codegen.Generator.setCodegenBudget: fn (*capnpc-zig.generator.Generat
 capnpc-zig.codegen.Generator.setEmitSchemaManifest: fn (*capnpc-zig.generator.Generator, bool) void
 capnpc-zig.codegen.Generator.setShapeSharing: fn (*capnpc-zig.generator.Generator, bool) void
 capnpc-zig.codegen.Generator.setVerbose: fn (*capnpc-zig.generator.Generator, bool) void
+capnpc-zig.codegen_abi.oldest_supported: const u32
+capnpc-zig.codegen_abi.release: const []const u8
+capnpc-zig.codegen_abi.version: const u32
+capnpc-zig.codegen_abi: struct
 capnpc-zig.message.AnyListBuilder._builder: field serialization.message.AnyPointerBuilder
 capnpc-zig.message.AnyListBuilder.getBoolList: fn (serialization.message.AnyListBuilder) error{InvalidFarPointer,InvalidInlineCompositePointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_builders.define(serialization.message.MessageBuilder).BoolListBuilder
 capnpc-zig.message.AnyListBuilder.getF32List: fn (serialization.message.AnyListBuilder) error{InvalidFarPointer,InvalidInlineCompositePointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit}!serialization.message.list_readers.PrimitiveListBuilder(f32,serialization.message.MessageBuilder)

@@ -213,8 +213,22 @@ pass the installed path, for example
 The plugin emits `CAPNP_SCHEMA_REQUEST` and per-type `capnpSchema` references
 by default. That output compiles only against a runtime from the same
 revision; released runtimes without `capnpc.reflection` cannot compile it. The
-recipe above guarantees the match. Both `capnpc-zig` and `capnpc-zig-core`
-expose the reflection API under the generated module's existing
+recipe above guarantees the match.
+
+Generated files check this for you. Each one resolves its `capnpc` binding
+through a comptime check of the runtime's `capnpc.codegen_abi`, so a plugin
+that is newer than the runtime you pin (for example a `capnpc-zig` on `PATH`
+ahead of your `build.zig.zon`) fails with one error that names the runtime
+release to move to:
+
+```
+error: capnpc-zig version skew: this file was generated for codegen ABI 1, which needs the capnpc-zig 0.19.0 runtime or newer, but the imported runtime provides ABI 0. ...
+```
+
+Upgrade the dependency, or regenerate with the plugin from the same release.
+A runtime that has dropped an old generated shape reports the reverse and asks
+for regeneration. Both `capnpc-zig` and `capnpc-zig-core` expose `codegen_abi`
+and the reflection API under the generated module's existing
 `@import("capnpc-zig")` binding.
 
 Pass `--no-reflection` (`codegen.addArg("--no-reflection")`) to keep the

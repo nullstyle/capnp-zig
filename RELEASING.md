@@ -138,6 +138,9 @@ passes:
       version, and docs-smoke lists every one the bump left behind. The
       feature now ships: delete the caveat and its marker, or rewrite it as a
       plain "needs vX.Y.Z or later" note.
+- [ ] `src/codegen_abi.zig` — if this release raised `version`, `release` must
+      name this release: every generated file quotes it in its skew error.
+      (Not a gate: it changes only when the codegen ABI does.)
 
 If you add a new consumer-facing version stamp, add it to `version_needles` in
 the same commit — otherwise the next cut will miss it exactly the way this one

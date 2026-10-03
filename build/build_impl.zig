@@ -774,6 +774,7 @@ pub fn buildImpl(b: *std.Build) !void {
     });
     registered_test_compile_steps.append(b.allocator, &codegen_error_sets_tests.step) catch @panic("OOM");
     const run_codegen_error_sets_tests = &b.addRunArtifact(codegen_error_sets_tests).step;
+    const codegen_skew_step = addCodegenSkewChecks(b, target, optimize);
     const run_integration_tests = addLibTest(b, "tests/serialization/integration_test.zig", target, optimize, lib_module);
     const run_interop_tests = addLibTest(b, "tests/serialization/interop_test.zig", target, optimize, lib_module);
     const run_interop_roundtrip_tests = addLibTest(b, "tests/serialization/interop_roundtrip_test.zig", target, optimize, lib_module);
@@ -1127,6 +1128,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_codegen_step.dependOn(run_schema_evolution_api_tests);
     test_codegen_step.dependOn(run_codegen_error_sets_tests);
     b.step("test-codegen-error-sets", "Pin the named error sets on generated Builder mutators").dependOn(run_codegen_error_sets_tests);
+    test_codegen_step.dependOn(codegen_skew_step);
     test_codegen_step.dependOn(run_codegen_union_group_tests);
     test_codegen_step.dependOn(run_codegen_golden_tests);
 
@@ -1181,6 +1183,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_serialization_step.dependOn(run_nested_lists_runtime_tests);
     test_serialization_step.dependOn(run_schema_evolution_api_tests);
     test_serialization_step.dependOn(run_codegen_error_sets_tests);
+    test_serialization_step.dependOn(codegen_skew_step);
     test_serialization_step.dependOn(run_integration_tests);
     test_serialization_step.dependOn(run_interop_tests);
     test_serialization_step.dependOn(run_interop_roundtrip_tests);
@@ -1718,4 +1721,87 @@ pub fn buildImpl(b: *std.Build) !void {
     check_step.dependOn(check_compile_step);
     check_step.dependOn(docs_smoke_step);
     if (check_tools_supported) check_step.dependOn(check_tools_step);
+}
+
+/// Plugin/runtime skew guard (`test-codegen-skew`).
+///
+/// Every generated file resolves `capnpc` through a comptime check of the
+/// runtime's `codegen_abi` (see src/codegen_abi.zig). This step generates a
+/// binding with the generator from this tree, then compiles it against stub
+/// runtimes that report other ABIs, and requires EXACTLY one compile error:
+/// the guard's message naming the release to move to. Any other error, or a
+/// second one, means a consumer with a mismatched plugin would again see
+/// failures deep inside generated code.
+///
+/// The binding is generated at build time rather than taken from a committed
+/// file, so the step follows the emitter: dropping the guard from
+/// `Generator.generateFile` turns it red with no regeneration needed.
+fn addCodegenSkewChecks(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step {
+    const codegen_abi = @import("../src/codegen_abi.zig");
+    const step = b.step("test-codegen-skew", "Compile generated code against older/newer stub runtimes and expect the one skew error");
+
+    // The generator runs at build time, so it is built for the host.
+    const host_core = b.createModule(.{
+        .root_source_file = b.path("src/lib_core.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    host_core.addImport("capnpc-zig", host_core);
+    const generate_fixture = b.addExecutable(.{
+        .name = "codegen-skew-fixture",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/codegen_skew/generate_fixture.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .imports = &.{.{ .name = "capnpc-zig", .module = host_core }},
+        }),
+    });
+    const run_generate = b.addRunArtifact(generate_fixture);
+    const fixture = run_generate.addOutputFileArg("skew.zig");
+
+    const too_old = std.fmt.comptimePrint(
+        ":?:?: error: capnpc-zig version skew: this file was generated for codegen ABI {d}, which needs the capnpc-zig {s} runtime or newer, but the imported runtime provides ABI 0. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.",
+        .{ codegen_abi.version, codegen_abi.release },
+    );
+    const too_new = std.fmt.comptimePrint(
+        ":?:?: error: capnpc-zig version skew: this file was generated for codegen ABI {d}, but the imported capnpc-zig runtime (ABI 1000) only supports ABI 999 and newer. Regenerate the file with the capnpc-zig 99.0.0 plugin or newer.",
+        .{codegen_abi.version},
+    );
+    const cases = [_]struct { name: []const u8, stub: []const u8, expected: []const u8 }{
+        // A runtime that declares an older ABI than the plugin emits.
+        .{ .name = "codegen-skew-older-abi", .stub = "tests/codegen_skew/stub_runtime_older_abi.zig", .expected = too_old },
+        // A runtime from before the guard existed (no `codegen_abi` at all).
+        .{ .name = "codegen-skew-pre-guard", .stub = "tests/codegen_skew/stub_runtime_pre_guard.zig", .expected = too_old },
+        // A runtime that no longer supports the ABI the plugin emits.
+        .{ .name = "codegen-skew-newer-abi", .stub = "tests/codegen_skew/stub_runtime_newer_abi.zig", .expected = too_new },
+    };
+    inline for (cases) |case| {
+        const stub = b.createModule(.{
+            .root_source_file = b.path(case.stub),
+            .target = target,
+            .optimize = optimize,
+        });
+        const fixture_module = b.createModule(.{
+            .root_source_file = fixture,
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "capnpc-zig", .module = stub }},
+        });
+        const check = b.addObject(.{
+            .name = case.name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/codegen_skew/use_fixture.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "fixture", .module = fixture_module }},
+            }),
+        });
+        check.expect_errors = .{ .exact = &.{case.expected} };
+        step.dependOn(&check.step);
+    }
+    return step;
 }

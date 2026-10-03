@@ -173,6 +173,12 @@ const stable_rules = [_]Rule{
     // ports and the `capnp convert binary:canonical` differential tests in
     // tests/serialization/canonical_test.zig.
     p("capnpc-zig.canonical"),
+    // CODEGEN ABI: frozen deliberately. Every generated file looks these up
+    // by name (`@hasDecl(runtime, "codegen_abi")`, then `.version`,
+    // `.oldest_supported` and `.release`), so renaming or retyping one breaks
+    // every binding a consumer has already generated. Values change only on a
+    // reviewed ABI bump.
+    p("capnpc-zig.codegen_abi"),
     // CODEGEN: entry points are frozen, INTERNALS are not. Decided
     // deliberately (2026-08-13) rather than inherited.
     //

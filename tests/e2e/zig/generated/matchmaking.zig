@@ -2,7 +2,15 @@
 // Source: matchmaking.capnp
 
 const std = @import("std");
-const capnpc = @import("capnpc-zig");
+// Resolving `capnpc` checks the runtime's codegen ABI, so a capnpc-zig
+// plugin/runtime version skew fails here with one error.
+const capnpc = capnpc_runtime: {
+    const runtime = @import("capnpc-zig");
+    const runtime_abi = if (@hasDecl(runtime, "codegen_abi")) runtime.codegen_abi.version else 0;
+    if (runtime_abi < 1) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 1, which needs the capnpc-zig 0.19.0 runtime or newer, but the imported runtime provides ABI {d}. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.", .{runtime_abi}));
+    if (runtime.codegen_abi.oldest_supported > 1) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 1, but the imported capnpc-zig runtime (ABI {d}) only supports ABI {d} and newer. Regenerate the file with the capnpc-zig {s} plugin or newer.", .{ runtime_abi, runtime.codegen_abi.oldest_supported, runtime.codegen_abi.release }));
+    break :capnpc_runtime runtime;
+};
 const message = capnpc.message;
 const schema = capnpc.schema;
 const _capnp_file = @This();
@@ -3123,7 +3131,7 @@ pub const QueueTicket = struct {
             pub fn setEstimatedWaitSecs(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setEstimatedWaitSecs)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setEstimatedWaitSecs(value); }
         };
         pub const Pipeline = struct {
-            peer: *@import("capnpc-zig").rpc.peer.Peer,
+            peer: *capnpc.rpc.peer.Peer,
             question_id: u32,
             pointer_indexes: [64]u16 = undefined,
             pointer_count: u8 = 0,
@@ -3491,7 +3499,7 @@ pub const MatchInfo = struct {
             pub const initCreatedAt = capnpc.generic.Initializer(_Field5, _Data.Builder, 3, 0, 65535).call;
         };
         pub const Pipeline = struct {
-            peer: *@import("capnpc-zig").rpc.peer.Peer,
+            peer: *capnpc.rpc.peer.Peer,
             question_id: u32,
             pointer_indexes: [64]u16 = undefined,
             pointer_count: u8 = 0,
@@ -3715,7 +3723,7 @@ pub const MatchResult = struct {
             pub const initPlayerStats = capnpc.generic.Initializer(_Field3, _Data.Builder, 1, 0, 65535).call;
         };
         pub const Pipeline = struct {
-            peer: *@import("capnpc-zig").rpc.peer.Peer,
+            peer: *capnpc.rpc.peer.Peer,
             question_id: u32,
             pointer_indexes: [64]u16 = undefined,
             pointer_count: u8 = 0,
@@ -3920,7 +3928,7 @@ pub const PlayerMatchStats = struct {
             pub fn setScore(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setScore)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setScore(value); }
         };
         pub const Pipeline = struct {
-            peer: *@import("capnpc-zig").rpc.peer.Peer,
+            peer: *capnpc.rpc.peer.Peer,
             question_id: u32,
             pointer_indexes: [64]u16 = undefined,
             pointer_count: u8 = 0,
@@ -5039,7 +5047,7 @@ pub const MatchController = struct {
                 pub const initInfo = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
             };
             pub const Pipeline = struct {
-                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                peer: *capnpc.rpc.peer.Peer,
                 question_id: u32,
                 pointer_indexes: [64]u16 = undefined,
                 pointer_count: u8 = 0,
@@ -5164,7 +5172,7 @@ pub const MatchController = struct {
                 pub const initPlayer = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
             };
             pub const Pipeline = struct {
-                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                peer: *capnpc.rpc.peer.Peer,
                 question_id: u32,
                 pointer_indexes: [64]u16 = undefined,
                 pointer_count: u8 = 0,
@@ -5395,7 +5403,7 @@ pub const MatchController = struct {
                 pub const initResult = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
             };
             pub const Pipeline = struct {
-                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                peer: *capnpc.rpc.peer.Peer,
                 question_id: u32,
                 pointer_indexes: [64]u16 = undefined,
                 pointer_count: u8 = 0,
@@ -7088,7 +7096,7 @@ pub const MatchmakingService = struct {
                 pub fn setMode(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setMode)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setMode(value); }
             };
             pub const Pipeline = struct {
-                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                peer: *capnpc.rpc.peer.Peer,
                 question_id: u32,
                 pointer_indexes: [64]u16 = undefined,
                 pointer_count: u8 = 0,
@@ -7265,7 +7273,7 @@ pub const MatchmakingService = struct {
                 pub fn setStatus(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setStatus)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setStatus(value); }
             };
             pub const Pipeline = struct {
-                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                peer: *capnpc.rpc.peer.Peer,
                 question_id: u32,
                 pointer_indexes: [64]u16 = undefined,
                 pointer_count: u8 = 0,
@@ -7588,7 +7596,7 @@ pub const MatchmakingService = struct {
                 pub fn setMode(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setMode)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setMode(value); }
             };
             pub const Pipeline = struct {
-                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                peer: *capnpc.rpc.peer.Peer,
                 question_id: u32,
                 pointer_indexes: [64]u16 = undefined,
                 pointer_count: u8 = 0,
@@ -7779,7 +7787,7 @@ pub const MatchmakingService = struct {
                 pub const initMatchId = capnpc.generic.Initializer(_Field1, _Data.Builder, 1, 0, 65535).call;
             };
             pub const Pipeline = struct {
-                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                peer: *capnpc.rpc.peer.Peer,
                 question_id: u32,
                 pointer_indexes: [64]u16 = undefined,
                 pointer_count: u8 = 0,
@@ -8074,7 +8082,7 @@ pub const MatchmakingService = struct {
                 pub const initId = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
             };
             pub const Pipeline = struct {
-                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                peer: *capnpc.rpc.peer.Peer,
                 question_id: u32,
                 pointer_indexes: [64]u16 = undefined,
                 pointer_count: u8 = 0,
@@ -8251,7 +8259,7 @@ pub const MatchmakingService = struct {
                 pub fn setStatus(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setStatus)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setStatus(value); }
             };
             pub const Pipeline = struct {
-                peer: *@import("capnpc-zig").rpc.peer.Peer,
+                peer: *capnpc.rpc.peer.Peer,
                 question_id: u32,
                 pointer_indexes: [64]u16 = undefined,
                 pointer_count: u8 = 0,

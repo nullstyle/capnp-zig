@@ -431,6 +431,23 @@ in the graph pass the same options (Zig reuses one instance per option set),
 and pass the module down to library modules. A library that wraps capnp-zig
 should forward `quic` from its own build options instead of hard-coding it.
 
+### `capnpc-zig version skew` in a generated file
+
+```
+error: capnpc-zig version skew: this file was generated for codegen ABI 1, which needs the capnpc-zig 0.19.0 runtime or newer, but the imported runtime provides ABI 0. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.
+```
+
+The plugin that generated the file is newer than the capnp-zig runtime your
+`build.zig.zon` pins. The usual cause is a `capnpc-zig` on `PATH` from a newer
+checkout than the dependency. Every generated file checks the runtime's
+`capnpc.codegen_abi` before it touches anything else, so this is the only
+error you see instead of many failures inside the generated code.
+
+**Fix:** move the dependency to the release the message names, or regenerate
+with the plugin built from the release you pin. The reverse message,
+"only supports ABI N and newer", means the runtime is newer than the generated
+file: regenerate with the matching plugin.
+
 ### `hash mismatch ... N-V-__8AA...` on a pin that is correct
 
 ```

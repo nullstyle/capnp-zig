@@ -224,7 +224,7 @@ pub fn Emitter(comptime G: type) type {
                 }
                 try writer.writeAll("    };\n");
             }
-            try writer.writeAll("    pub const Pipeline = struct {\n        peer: *@import(\"capnpc-zig\").rpc.peer.Peer,\n        question_id: u32,\n        pointer_indexes: [64]u16 = undefined,\n        pointer_count: u8 = 0,\n");
+            try writer.writeAll("    pub const Pipeline = struct {\n        peer: *capnpc.rpc.peer.Peer,\n        question_id: u32,\n        pointer_indexes: [64]u16 = undefined,\n        pointer_count: u8 = 0,\n");
             for (info.fields, 0..) |field, index| {
                 const slot = field.slot orelse continue;
                 if (!resolvableType(self, slot.type)) continue;

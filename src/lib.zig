@@ -23,6 +23,10 @@ pub const reader = @import("serialization/reader.zig");
 /// from Cap'n Proto schema nodes.
 pub const codegen = @import("capnpc-zig/generator.zig");
 
+/// The generated-code ABI this runtime implements. Every generated file checks
+/// it when it imports the runtime, so plugin/runtime skew fails with one error.
+pub const codegen_abi = @import("codegen_abi.zig");
+
 /// Parses a `CodeGeneratorRequest` from the Cap'n Proto compiler plugin
 /// protocol (stdin wire format).
 pub const request = @import("serialization/request_reader.zig");
