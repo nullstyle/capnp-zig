@@ -150,7 +150,7 @@ capnpc-zig.generic.Text: struct
 capnpc-zig.generic.requirePointer: fn (comptime type) void
 capnpc-zig.generic: struct
 capnpc-zig.io_backend.Backend.deinit: fn (*io_backend.Backend) void
-capnpc-zig.io_backend.Backend.evented: variant io_backend.EventedState__struct_*
+capnpc-zig.io_backend.Backend.evented: variant void
 capnpc-zig.io_backend.Backend.fromInit: fn (Io) io_backend.Backend
 capnpc-zig.io_backend.Backend.init: fn (io_backend.Kind, mem.Allocator, Io) error{EventedBackendInitFailed,EventedBackendUnsupported,OutOfMemory}!io_backend.Backend
 capnpc-zig.io_backend.Backend.initEvented: fn (mem.Allocator) error{EventedBackendInitFailed,EventedBackendUnsupported,OutOfMemory}!io_backend.Backend
@@ -3207,9 +3207,9 @@ capnpc-zig.rpc.transport.tcp.stream.Transport.QueueStats.items: field usize
 capnpc-zig.rpc.transport.tcp.stream.Transport.QueueStats.max_bytes: field usize
 capnpc-zig.rpc.transport.tcp.stream.Transport.QueueStats.max_items: field usize
 capnpc-zig.rpc.transport.tcp.stream.Transport.QueueStats: struct
-capnpc-zig.rpc.transport.tcp.stream.Transport.ReadError: type = error{AccessDenied,Canceled,ConnectionResetByPeer,NetworkDown,SocketUnconnected,SystemResources,Unexpected}
-capnpc-zig.rpc.transport.tcp.stream.Transport.ReadTimeoutError: type = error{AccessDenied,Canceled,ConcurrencyUnavailable,ConnectionResetByPeer,NetworkDown,SocketUnconnected,SystemResources,Timeout,Unexpected}
-capnpc-zig.rpc.transport.tcp.stream.Transport.WriteError: type = error{AddressFamilyUnsupported,Canceled,ConnectionRefused,ConnectionResetByPeer,FastOpenAlreadyInProgress,HostUnreachable,NetworkDown,NetworkUnreachable,SocketNotBound,SocketUnconnected,SystemResources,Unexpected}
+capnpc-zig.rpc.transport.tcp.stream.Transport.ReadError: type = error{AccessDenied,Canceled,ConnectionResetByPeer,ConnectionTimedOut,NetworkDown,SocketUnconnected,SystemResources,Unexpected}
+capnpc-zig.rpc.transport.tcp.stream.Transport.ReadTimeoutError: type = error{AccessDenied,Canceled,ConcurrencyUnavailable,ConnectionResetByPeer,ConnectionTimedOut,NetworkDown,SocketUnconnected,SystemResources,Timeout,Unexpected}
+capnpc-zig.rpc.transport.tcp.stream.Transport.WriteError: type = error{AddressFamilyUnsupported,Canceled,ConnectionRefused,ConnectionResetByPeer,ConnectionTimedOut,FastOpenAlreadyInProgress,HostUnreachable,NetworkDown,NetworkUnreachable,SocketNotBound,SocketUnconnected,SystemResources,Unexpected}
 capnpc-zig.rpc.transport.tcp.stream.Transport.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.stream.Transport.close: fn (*rpc.transport.tcp.stream_transport.Transport) void
 capnpc-zig.rpc.transport.tcp.stream.Transport.close_requested: field atomic.Value(bool) = <default>
@@ -3226,13 +3226,13 @@ capnpc-zig.rpc.transport.tcp.stream.Transport.io: field Io
 capnpc-zig.rpc.transport.tcp.stream.Transport.isClosing: fn (*const rpc.transport.tcp.stream_transport.Transport) bool
 capnpc-zig.rpc.transport.tcp.stream.Transport.observer: field ?rpc.events.Observer = null
 capnpc-zig.rpc.transport.tcp.stream.Transport.queueStats: fn (*rpc.transport.tcp.stream_transport.Transport) rpc.transport.tcp.stream_transport.Transport.QueueStats
-capnpc-zig.rpc.transport.tcp.stream.Transport.read: fn (*rpc.transport.tcp.stream_transport.Transport) error{AccessDenied,Canceled,ConnectionResetByPeer,NetworkDown,SocketUnconnected,SystemResources,Unexpected}!usize
-capnpc-zig.rpc.transport.tcp.stream.Transport.readTimeout: fn (*rpc.transport.tcp.stream_transport.Transport, Io.Timeout) error{AccessDenied,Canceled,ConcurrencyUnavailable,ConnectionResetByPeer,NetworkDown,SocketUnconnected,SystemResources,Timeout,Unexpected}!usize
+capnpc-zig.rpc.transport.tcp.stream.Transport.read: fn (*rpc.transport.tcp.stream_transport.Transport) error{AccessDenied,Canceled,ConnectionResetByPeer,ConnectionTimedOut,NetworkDown,SocketUnconnected,SystemResources,Unexpected}!usize
+capnpc-zig.rpc.transport.tcp.stream.Transport.readTimeout: fn (*rpc.transport.tcp.stream_transport.Transport, Io.Timeout) error{AccessDenied,Canceled,ConcurrencyUnavailable,ConnectionResetByPeer,ConnectionTimedOut,NetworkDown,SocketUnconnected,SystemResources,Timeout,Unexpected}!usize
 capnpc-zig.rpc.transport.tcp.stream.Transport.read_buf: field []u8
 capnpc-zig.rpc.transport.tcp.stream.Transport.shutdown: fn (*rpc.transport.tcp.stream_transport.Transport) void
 capnpc-zig.rpc.transport.tcp.stream.Transport.startWriter: fn (*rpc.transport.tcp.stream_transport.Transport) error{LockedMemoryLimitExceeded,OutOfMemory,SystemResources,ThreadQuotaExceeded,Unexpected}!void
 capnpc-zig.rpc.transport.tcp.stream.Transport.stopWriter: fn (*rpc.transport.tcp.stream_transport.Transport) void
-capnpc-zig.rpc.transport.tcp.stream.Transport.write: fn (*rpc.transport.tcp.stream_transport.Transport, []const u8) error{AddressFamilyUnsupported,Canceled,ConnectionRefused,ConnectionResetByPeer,FastOpenAlreadyInProgress,HostUnreachable,NetworkDown,NetworkUnreachable,SocketNotBound,SocketUnconnected,SystemResources,Unexpected}!void
+capnpc-zig.rpc.transport.tcp.stream.Transport.write: fn (*rpc.transport.tcp.stream_transport.Transport, []const u8) error{AddressFamilyUnsupported,Canceled,ConnectionRefused,ConnectionResetByPeer,ConnectionTimedOut,FastOpenAlreadyInProgress,HostUnreachable,NetworkDown,NetworkUnreachable,SocketNotBound,SocketUnconnected,SystemResources,Unexpected}!void
 capnpc-zig.rpc.transport.tcp.stream.Transport.write_queue: field rpc.transport.tcp.stream_transport.Transport.WriteQueue = <default>
 capnpc-zig.rpc.transport.tcp.stream.Transport.writer_thread: field ?Thread = null
 capnpc-zig.rpc.transport.tcp.stream.Transport: struct

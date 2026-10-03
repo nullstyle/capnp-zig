@@ -1300,10 +1300,13 @@ pub fn buildImpl(b: *std.Build) !void {
     test_release_fast_step.dependOn(run_release_fast_schema_fidelity_tests);
     test_release_fast_step.dependOn(run_release_fast_brand_fidelity_internal_tests);
 
-    // ThreadSanitizer lane. Linux-only: libtsan segfaults at startup on
-    // darwin at 0.17.0-dev.1683 (an instrumented binary dies with SIGSEGV
-    // before any output), while the same probe compiled for linux detects a
-    // seeded race. Races are optimize-mode-independent, so the lane runs
+    // ThreadSanitizer lane. Linux-only, because Linux is where it is
+    // validated. When it was written, libtsan segfaulted at startup on
+    // darwin (an instrumented binary died with SIGSEGV before any output).
+    // Re-probed 2026-10-03 on Darwin 27: a `zig test -fsanitize-thread -lc`
+    // probe now runs clean and reports a seeded race at both dev.1683 and
+    // 0.17.0, but the full lane has never run there, so the gate stays.
+    // Races are optimize-mode-independent, so the lane runs
     // Debug for the best stacks. The instrumented modules link libc: without
     // it std.Thread uses raw clone() on Linux, which TSan cannot intercept,
     // leaving every spawned thread invisible to the runtime. On unsupported
@@ -1376,12 +1379,12 @@ pub fn buildImpl(b: *std.Build) !void {
             run_soak_tsan.addPassthruArgs();
             soak_tsan_step.dependOn(&run_soak_tsan.step);
         } else {
-            const tsan_run_fail = b.addFail("test-tsan/soak-tsan run only on a Linux host at 0.17.0-dev.1683: libtsan segfaults at startup on darwin. Use check-tsan locally (compile-only) and run the lane in CI or a Linux container.");
+            const tsan_run_fail = b.addFail("test-tsan/soak-tsan run only on a Linux host, where the lane is validated (libtsan used to segfault at startup on darwin). Use check-tsan locally (compile-only) and run the lane in CI or a Linux container.");
             test_tsan_step.dependOn(&tsan_run_fail.step);
             soak_tsan_step.dependOn(&tsan_run_fail.step);
         }
     } else {
-        const tsan_fail = b.addFail("ThreadSanitizer steps need a Linux target at 0.17.0-dev.1683 (libtsan is broken on darwin): pass -Dtarget=aarch64-linux-gnu or x86_64-linux-gnu for check-tsan, or run test-tsan/soak-tsan on a Linux host.");
+        const tsan_fail = b.addFail("ThreadSanitizer steps need a Linux target, where the lane is validated (libtsan used to segfault on darwin): pass -Dtarget=aarch64-linux-gnu or x86_64-linux-gnu for check-tsan, or run test-tsan/soak-tsan on a Linux host.");
         test_tsan_step.dependOn(&tsan_fail.step);
         soak_tsan_step.dependOn(&tsan_fail.step);
         check_tsan_step.dependOn(&tsan_fail.step);

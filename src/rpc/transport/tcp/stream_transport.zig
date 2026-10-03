@@ -498,12 +498,27 @@ fn ioWrite(io: std.Io, fd: net.Socket.Handle, bytes: []const u8) Transport.Write
     return io.vtable.netWrite(io.userdata, fd, bytes, &data, 0);
 }
 
+/// Submits the `net_read` operation directly rather than calling
+/// `net.Stream.read`: at 0.17.0 that std wrapper destructures the
+/// operation's new `ReadResult` struct as a tuple, so it stops compiling
+/// the moment anything references it.
 fn ioReadVec(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8) Transport.ReadError!usize {
-    if (comptime @hasDecl(net.Stream, "read")) {
-        var stream = net.Stream{ .socket = .{ .handle = fd, .address = undefined } };
-        return stream.read(io, bufs);
+    if (comptime @hasField(std.Io.Operation, "net_read")) {
+        const result = try io.operate(.{ .net_read = .{
+            .socket_handle = fd,
+            .data = bufs,
+        } });
+        return netReadLen(try result.net_read);
     }
     return io.vtable.netRead(io.userdata, fd, bufs);
+}
+
+/// Byte count of a completed `net_read`. zig 0.17.0 widened the result from
+/// a bare `usize` to `net.Stream.ReadResult` (data plus control lengths).
+/// Selecting on the result TYPE, as `ioWrite` selects on the operation,
+/// keeps one source tree building on both shapes.
+fn netReadLen(result: anytype) usize {
+    return if (@TypeOf(result) == usize) result else result.data_len;
 }
 
 /// Shut down a socket for both reading and writing via Io. Ignores errors.
@@ -573,7 +588,7 @@ fn ioReadVecTimeout(
         // An await error may leave pending work or completed reads. Join it
         // before reusing the buffer and preserve bytes already consumed.
         batch.cancel(io);
-        if (batch.next()) |completion| return completion.result.net_read;
+        if (batch.next()) |completion| return netReadLen(try completion.result.net_read);
         return switch (err) {
             error.ConcurrencyUnavailable => if (comptime builtin.os.tag == .windows)
                 ioReadVecWindowsTimeout(io, fd, bufs, deadline)
@@ -583,7 +598,7 @@ fn ioReadVecTimeout(
         };
     };
     const completion = batch.next() orelse return error.Unexpected;
-    return completion.result.net_read;
+    return netReadLen(try completion.result.net_read);
 }
 
 fn ioReadVecWindowsTimeout(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, deadline: std.Io.Timeout) Transport.ReadTimeoutError!usize {

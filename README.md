@@ -13,7 +13,7 @@ A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serializ
 
 ## Features
 
-- **Pure Zig Implementation**: No C++ dependencies, targets Zig 0.17-dev
+- **Pure Zig Implementation**: No C++ dependencies, targets tagged Zig 0.17
 - **Full Serialization Support**: Complete Cap'n Proto wire format including packed encoding and far pointers
 - **Zero-Copy Deserialization**: Readers work directly with message bytes
 - **Builder Pattern**: Ergonomic API for constructing messages
@@ -44,7 +44,7 @@ Then import `capnpc-zig` (full: serialization + codegen + RPC) or
 
 ### Prerequisites
 
-- Zig 0.17-dev on `PATH` (minimum declared in `build.zig.zon`; helper tools remain in `mise.toml`)
+- Tagged Zig 0.17 on `PATH` (`mise install` provides the pinned version; the floor is declared in `build.zig.zon`)
 - The pinned WASM schema compiler for repository generation and compiler-dependent tests (`mise run bootstrap:capnp`)
 - `mise` (recommended, for environment management)
 - `just` (recommended, for task automation)
@@ -83,13 +83,14 @@ and the condition for removing this workaround.
 ## Toolchain Support
 
 The exact Zig toolchain is pinned in `mise.toml` — the single specifier for
-both CI and local development, tracking zig master. Read that file for the
+both CI and local development, always a tagged release (ziglang.org deletes
+dev builds, so a dev pin eventually stops resolving). Read that file for the
 current value; it is deliberately not repeated here so it cannot go stale.
 `mise install` gets it; CI installs from the same file and asserts the
 toolchain on PATH matches it. `build.zig.zon` carries a floor
-(`minimum_zig_version`), not a second pin. Zig 0.16 is no longer a supported
-target for this branch; downstream consumers should use a compatible 0.17-dev
-snapshot until Zig 0.17 stabilizes.
+(`minimum_zig_version`), not a second pin. Zig 0.16 and the 0.17-dev
+snapshots are not supported targets for this branch; downstream consumers
+should use a tagged Zig 0.17 release.
 
 If you manage Zig with zvm, its PATH entry takes precedence over mise's shims —
 use `mise exec -- zig ...` to match CI exactly.
@@ -398,15 +399,18 @@ compile gate for the Evented selector on targets where Zig exposes
 `std.Io.Evented`.
 
 **The Evented selector compiles, but it cannot yet carry RPC**, and the reason
-is upstream rather than here. At the pinned toolchain (`0.17.0-dev.1683`),
+is upstream rather than here. At the pinned toolchain (`0.17.0`),
 `std.Io.Evented` resolves to `std.Io.Dispatch` on macOS and `std.Io.Uring` on
-Linux, and neither has a working socket vtable: Dispatch implements only
-`netClose`, and Uring only `netBindIp` / `netClose` / `netShutdown` — every
-other entry, including `netListenIp`, `netAccept`, and `netConnectIp`, is an
-`...Unavailable` stub. Since every RPC path is socket-based, selecting
-`.evented` for a real connection fails at runtime. Treat this selector as
-compile-checked plumbing awaiting upstream, not as a supported transport; the
-selector itself lives behind `src/io_backend.zig`.
+Linux, and neither compiles: both set an `Io.VTable` field
+(`processReplacePath`) that the VTable dropped. So `.evented` returns
+`error.EventedBackendUnsupported` on every target instead of referencing one.
+Neither had a working socket vtable even before that: Uring implements only
+`netBindIp` / `netClose` / `netShutdown`, Dispatch only `netClose`, and every
+other entry — including `netListenIp`, `netAccept`, and `netConnectIp` — is
+an `...Unavailable` stub. Since every RPC path is socket-based, neither could
+carry a real connection. Treat this selector as compile-checked plumbing
+awaiting upstream, not as a supported transport; the selector itself lives
+behind `src/io_backend.zig`.
 
 ### Running the RPC Example
 

@@ -23,14 +23,18 @@ description: >
 runs:
   using: composite
   steps:
-    # mlugg/setup-zig pointed BOTH Zig cache dirs at the workspace. Keep that:
-    # `zig build --fetch=all` writes packages into the GLOBAL cache, and the
-    # `actions/cache` step that caches `.zig-cache/p` only sees them because of
-    # this. Dropping it would silently empty that cache rather than fail loudly.
+    # Keep both Zig cache dirs in the workspace. `zig build --fetch=all`
+    # writes packages into the GLOBAL cache, and the `actions/cache` steps
+    # that cache `.zig-global-cache/p` only see them because of this.
+    #
+    # The global dir MUST match mise.toml's `[env] ZIG_GLOBAL_CACHE_DIR`:
+    # CI runs zig through mise's shims, and a shim applies mise's [env] over
+    # anything exported here. When this said `.zig-cache` while mise said
+    # `.zig-global-cache`, zig silently ignored the restored package cache.
     - name: Point Zig caches at the workspace
       shell: bash
       run: |
-        echo "ZIG_GLOBAL_CACHE_DIR=${GITHUB_WORKSPACE}/.zig-cache" >> "$GITHUB_ENV"
+        echo "ZIG_GLOBAL_CACHE_DIR=${GITHUB_WORKSPACE}/.zig-global-cache" >> "$GITHUB_ENV"
         echo "ZIG_LOCAL_CACHE_DIR=${GITHUB_WORKSPACE}/.zig-cache" >> "$GITHUB_ENV"
 
     # Compare PATH against the repo pin rather than against a copy of it, so

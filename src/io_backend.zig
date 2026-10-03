@@ -6,10 +6,10 @@
 //! backend to construct so that swapping concrete backends is a single-line
 //! change rather than a sweep through every `main`.
 //!
-//! The project currently builds against Zig 0.17-dev. On platforms where Zig
-//! exposes `std.Io.Evented`, the `.evented` selector constructs and owns that
-//! backend. On platforms where `std.Io.Evented == void`, initialization returns
-//! `error.EventedBackendUnsupported`.
+//! The project builds against Zig 0.17.0. The `.evented` selector constructs
+//! and owns a `std.Io.Evented` where the standard library provides one that
+//! compiles. At 0.17.0 none does (see `evented_available`), so
+//! initialization returns `error.EventedBackendUnsupported` on every target.
 //!
 //! Typical usage:
 //!
@@ -35,18 +35,25 @@ pub const Kind = enum {
     /// instances in the same process.
     threaded,
 
-    /// Construct `std.Io.Evented` on platforms where Zig exposes it. On
-    /// unsupported platforms (`std.Io.Evented == void`), initialization returns
-    /// `error.EventedBackendUnsupported`.
+    /// Construct `std.Io.Evented` where the standard library provides one
+    /// that compiles. At the pinned 0.17.0 none does, so initialization
+    /// returns `error.EventedBackendUnsupported` (see `evented_available`).
     evented,
 };
 
-const EventedState = if (std.Io.Evented == void) void else struct {
+/// Whether a `std.Io.Evented` backend may be referenced at all. At the
+/// pinned 0.17.0 none compiles: Uring (Linux) and Dispatch (Darwin) both set
+/// an `Io.VTable` field (`processReplacePath`) that the VTable dropped, so
+/// naming either one is a compile error. Neither has ever carried a working
+/// socket vtable (see docs/stability.md), so no RPC path could run on one
+/// anyway. The selector stays wired and reports unsupported; re-check this
+/// on every toolchain bump.
+const evented_available = false;
+
+const EventedState = if (evented_available) struct {
     allocator: std.mem.Allocator,
     instance: *std.Io.Evented,
-};
-
-const evented_deinit_available = if (std.Io.Evented == void) false else std.Io.Evented != std.Io.Dispatch;
+} else void;
 
 /// Errors returned by `Backend.init`. Deliberately target-stable: the
 /// evented backend's target-specific init failures (io_uring setup, mmap
@@ -54,8 +61,8 @@ const evented_deinit_available = if (std.Io.Evented == void) false else std.Io.E
 /// `EventedBackendInitFailed` so the public surface — and the
 /// docs/api-snapshot.txt gate built from it — does not vary by platform.
 pub const InitError = error{
-    /// Zig's standard library does not provide `std.Io.Evented` for this
-    /// target.
+    /// Zig's standard library does not provide a usable `std.Io.Evented`
+    /// for this target.
     EventedBackendUnsupported,
     /// `std.Io.Evented` exists for this target but failed to initialize
     /// (kernel support, fd/memory limits, ...).
@@ -107,10 +114,10 @@ pub const Backend = union(Kind) {
 
     /// Construct a fresh `std.Io.Evented` with default options. The
     /// platform-specific options type is deliberately not part of the
-    /// public surface — it varies by target (Dispatch vs io_uring), which
+    /// public surface — it varies by target (io_uring vs kqueue), which
     /// would make this API and its snapshot platform-dependent.
     pub fn initEvented(gpa: std.mem.Allocator) InitError!Backend {
-        if (comptime std.Io.Evented == void) {
+        if (comptime !evented_available) {
             return error.EventedBackendUnsupported;
         } else {
             const instance = try gpa.create(std.Io.Evented);
@@ -132,13 +139,8 @@ pub const Backend = union(Kind) {
             .process_init => {},
             .threaded => |*t| t.deinit(),
             .evented => |state| {
-                if (comptime std.Io.Evented != void) {
-                    // Zig master (through 0.17.0-dev.813) exposes Dispatch as
-                    // Evented on Darwin, but Dispatch.deinit does not compile
-                    // in std because it passes a pointer-to-array to
-                    // Allocator.free. Other Evented backends use their normal
-                    // deinitializer here.
-                    if (comptime evented_deinit_available) state.instance.deinit();
+                if (comptime evented_available) {
+                    state.instance.deinit();
                     state.allocator.destroy(state.instance);
                 }
             },
@@ -151,7 +153,7 @@ pub const Backend = union(Kind) {
             .process_init => |existing| existing,
             .threaded => |*t| t.io(),
             .evented => |state| {
-                if (comptime std.Io.Evented == void) unreachable;
+                if (comptime !evented_available) unreachable;
                 return state.instance.io();
             },
         };
@@ -200,17 +202,13 @@ test "init dispatches by Kind" {
 }
 
 test "init dispatches evented when supported" {
-    if (comptime std.Io.Evented == void) {
+    if (comptime !evented_available) {
         try std.testing.expectError(
             error.EventedBackendUnsupported,
             Backend.init(.evented, std.testing.allocator, std.testing.io),
         );
     } else {
-        const allocator = if (comptime evented_deinit_available)
-            std.testing.allocator
-        else
-            std.heap.page_allocator;
-        var backend = try Backend.init(.evented, allocator, std.testing.io);
+        var backend = try Backend.init(.evented, std.testing.allocator, std.testing.io);
         defer backend.deinit();
         try std.testing.expectEqual(Kind.evented, std.meta.activeTag(backend));
 

@@ -8,7 +8,7 @@ Every Zig snippet in this guide is compile-gated: `tests/docs/rpc_getting_starte
 
 ## Prerequisites
 
-- **Zig 0.17-dev** on `PATH` (`mise.toml` manages helper tools only)
+- **Tagged Zig 0.17** on `PATH` (`mise install` provides the pinned version)
 - **Cap'n Proto compiler** (`capnp`) — for schema compilation
 - **capnpc-zig** — built from this repo (`zig build`)
 

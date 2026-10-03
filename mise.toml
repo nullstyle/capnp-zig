@@ -11,13 +11,15 @@ wasmtime = "48.0.1"
 # `mise current zig` rather than repeating the number, and build.zig.zon holds a
 # FLOOR (minimum_zig_version), not a second pin.
 #
-# mise resolves explicit dev builds fine even though `mise ls-remote zig` lists
-# only tagged releases. Bumping Zig is this one line (plus the floor when it
-# genuinely moves).
+# Pin TAGGED releases. ziglang.org deletes dev builds within weeks and the
+# community mirrors follow: by 2026-10 the old dev.1683 pin was gone from
+# ziglang.org and half-gone from the mirrors, which turned every CI Zig
+# install into a lottery. Bumping Zig is this one line (plus the floor when
+# it genuinely moves).
 #
 # NOTE for local dev: if you manage Zig with zvm, its PATH entry wins over mise's
 # shims. Either drop zvm from PATH or run `mise exec -- zig ...` to match CI.
-zig = "0.17.0-dev.1683+5ceec001b"
+zig = "0.17.0"
 
 [tasks."bootstrap:capnp"]
 description = "Install the checksum-pinned Cap'n Proto WASM schema compiler"

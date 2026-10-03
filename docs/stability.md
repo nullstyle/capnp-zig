@@ -129,12 +129,15 @@ developers without `capnp` retain the documented optional-test skips.
 
 Note on the **Evented `std.Io` backend**: "compile-checked only" is the whole
 claim, and the limit is upstream, not here. At the pinned toolchain
-(`0.17.0-dev.1683`) `std.Io.Evented` resolves to `std.Io.Dispatch` on macOS and
-`std.Io.Uring` on Linux, and neither carries a working socket vtable — Dispatch
+(`0.17.0`) `std.Io.Evented` resolves to `std.Io.Dispatch` on macOS and
+`std.Io.Uring` on Linux, and neither compiles: both set an `Io.VTable` field
+(`processReplacePath`) that the VTable dropped. The selector therefore reports
+`error.EventedBackendUnsupported` on every target instead of referencing one.
+Neither carried a working socket vtable even before that — Dispatch
 implements `netClose` alone, Uring only `netBindIp` / `netClose` /
-`netShutdown`, and everything else (`netListenIp`, `netAccept`, `netConnectIp`,
-…) is an `...Unavailable` stub. Every RPC path is socket-based, so the selector
-compiles and then fails at runtime on a real connection. `zig build
+`netShutdown`, and everything else (`netListenIp`, `netAccept`,
+`netConnectIp`, …) is an `...Unavailable` stub. Every RPC path is
+socket-based, so neither could carry a real connection. `zig build
 -Dio-backend=evented check` proves the selector still *builds*; it does not
 prove the backend works, and no lane executes it because none can.
 

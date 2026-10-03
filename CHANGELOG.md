@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **Minimum Zig is now `0.17.0`, the tagged release.** The pin moves off
+  `0.17.0-dev.1683+5ceec001b`, which ziglang.org has already deleted. Only
+  some community mirrors still carry it, and one serves the tarball without
+  its signature, which makes `mise install` fail outright — two CI jobs hit
+  exactly that. Tagged releases stay on ziglang.org. **Migration:** upgrade
+  to Zig 0.17.0; `mise.toml` carries the exact pin. The frozen
+  `docs/api-snapshot.txt` is byte-identical across the move. In the
+  Experimental surface, std's network error sets gained
+  `ConnectionTimedOut`, so `tcp.stream.Transport.ReadError`,
+  `ReadTimeoutError`, and `WriteError` (and the QUIC listener sets built on
+  them) now include it.
+
+### Changed
+
+- **The `io_backend` `.evented` selector returns
+  `error.EventedBackendUnsupported` on every target (Experimental).** At
+  0.17.0 no std evented backend compiles: `std.Io.Uring` (Linux) and
+  `std.Io.Dispatch` (macOS) both set an `Io.VTable` field
+  (`processReplacePath`) that the VTable dropped, so naming either is a
+  compile error. Neither ever had a working socket vtable, so no RPC path
+  could run on one — nothing that worked stops working.
+- **TCP reads submit the `net_read` operation directly.** At 0.17.0 std's
+  `net.Stream.read` destructures the operation's new `ReadResult` struct as
+  a tuple and fails to compile once referenced. The transport now reads
+  `data_len` itself, selecting on the result type so the same source still
+  builds where the result is a bare `usize`. No behavior change.
+- **CI's package cache follows `mise.toml`.** `[env]` now sets
+  `ZIG_GLOBAL_CACHE_DIR` to `.zig-global-cache`, and mise's shims apply it
+  over CI's own export, so the cached `.zig-cache/p` had silently stopped
+  reaching zig. The cache steps and `setup-zig` now use the same directory.
+- **The nightly forward-compat lane (zig dev.1786) is gone.** The pin is
+  now past the std.Io net move that lane guarded, and dev.1786 is deleted
+  upstream too.
+
 ### Fixed
 
 - **Native-mode QUIC no longer stalls forever when a connection's lifetime

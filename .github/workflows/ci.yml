@@ -275,7 +275,7 @@ jobs:
       - name: Restore Zig package cache
         uses: actions/cache@v5
         with:
-          path: .zig-cache/p
+          path: .zig-global-cache/p
           key: zig-packages-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
 
       - name: Prefetch dependency tree
@@ -506,9 +506,9 @@ jobs:
       - uses: ./.github/actions/setup-zig
 
       # Races are optimize-mode-independent, so the lane runs Debug for the
-      # best stacks. Linux-only by design: libtsan segfaults at startup on
-      # darwin at the pinned Zig (build.zig's tsan block documents the
-      # probe), and build.zig hard-fails the step elsewhere rather than
+      # best stacks. Linux-only, where the lane is validated: libtsan used to
+      # segfault at startup on darwin (build.zig's tsan block documents the
+      # probes), and build.zig hard-fails the step elsewhere rather than
       # letting it pass vacuously. Instrumented modules link libc so
       # std.Thread goes through pthreads, which TSan can intercept.
       - name: Run threaded suites under ThreadSanitizer

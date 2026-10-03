@@ -7,11 +7,11 @@ fits together.
 
 ## Toolchain
 
-- **Zig**: the exact development snapshot is pinned in
+- **Zig**: the exact tagged release is pinned in
   [mise.toml](mise.toml), shared by CI and local development,
   and the floor is declared in [build.zig.zon](build.zig.zon)
-  (`minimum_zig_version`). This branch tracks Zig master; older 0.17-dev
-  snapshots will not build.
+  (`minimum_zig_version`). This branch builds against tagged Zig 0.17;
+  the 0.17-dev snapshots are not supported.
 - **Development tools**: `mise install` provides Zig, Wasmtime, `uv`, `just`
   and the other pinned helpers. Run `mise run bootstrap:capnp` to install the
   verified WASM schema compiler before compiler-dependent tests or generation.

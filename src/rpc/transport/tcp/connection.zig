@@ -514,8 +514,14 @@ pub const Connection = struct {
                             if (self.wake_fds) |wake_fds| {
                                 var drain_buf: [64]u8 = undefined;
                                 var bufs: [1][]u8 = .{&drain_buf};
-                                var wake_stream = std.Io.net.Stream{ .socket = .{ .handle = wake_fds[0], .address = undefined } };
-                                _ = wake_stream.read(self.io, &bufs) catch {};
+                                // The raw operation, not `net.Stream.read`,
+                                // which does not compile at 0.17.0 (see
+                                // stream_transport's ioReadVec). Only the
+                                // drain matters; the byte count does not.
+                                _ = self.io.operate(.{ .net_read = .{
+                                    .socket_handle = wake_fds[0],
+                                    .data = &bufs,
+                                } }) catch {};
                             }
                             if (self.on_wake) |cb| self.invokeTickWakeCallback(cb);
                             if (self.deinit_requested) break;
