@@ -85,7 +85,12 @@ pub fn setup(b: *std.Build) !Graph {
     const quic_zig_module: ?*std.Build.Module = if (enable_quic)
         (try b.dependencyLazy("quic", .{
             .target = target,
-            .optimize = optimize,
+            // quic-zig has no `optimize` option: it builds Debug or
+            // ReleaseSafe only, selected by the boolean `release`. An
+            // `.optimize` here is reported as `invalid option` and ignored,
+            // which silently built quic and BoringSSL in Debug inside every
+            // ReleaseSafe build (`--verbose` showed `-Odebug -Mquic=`).
+            .release = optimize != .debug,
             // BoringSSL's C/C++ objects must not reference the UBSan
             // runtime: they are linked as static archives into test
             // binaries whose root module is Zig code, so nothing pulls

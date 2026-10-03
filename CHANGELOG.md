@@ -45,6 +45,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **QUIC builds now honor ReleaseSafe.** The build passed `.optimize` to the
+  quic-zig dependency, which has no such option: quic-zig builds Debug or
+  ReleaseSafe only, chosen by the boolean `release`. Zig reported
+  `invalid option: "optimize"` and ignored it, so quic-zig and BoringSSL
+  compiled in **Debug inside every ReleaseSafe build** (`zig build --verbose`
+  showed `-Osafe -Mroot=…` next to `-Odebug -Mquic=…`). Both dependency sites
+  now pass `.release`. Consequences: earlier "ReleaseSafe" QUIC evidence ran
+  our code in ReleaseSafe but the quic module in Debug, and every earlier QUIC
+  throughput, latency or memory figure was taken with a Debug quic. Consumers
+  that enable QUIC get a ReleaseSafe quic in release builds from this version
+  on (faster QUIC, longer first builds). Found by the quic-zig maintainers.
+
 - **Native-mode QUIC no longer stalls forever when a connection's lifetime
   stream budget runs out.** Each large frame (over `inline_frame_threshold`)
   rides its own unidirectional stream, and the QUIC library clamps every
