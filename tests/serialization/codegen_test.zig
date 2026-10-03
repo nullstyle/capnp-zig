@@ -1035,13 +1035,13 @@ test "Codegen: void list and pointer helper builders" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "readVoidList(0)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getService(self: Reader) !message.Capability"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "readCapability(1)"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initEmptyList(self: *Builder, element_count: u32) !message.VoidListBuilder"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initEmptyList(self: *Builder, element_count: u32) message.BuildError!message.VoidListBuilder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "writeVoidList(0, element_count)"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn clearService(self: *Builder) !void"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setPayloadNull(self: *Builder) !void"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setPayloadText(self: *Builder, value: []const u8) !void"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setPayloadData(self: *Builder, value: []const u8) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn clearService(self: *Builder) message.BuildError!void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setServiceCapability(self: *Builder, cap: message.Capability) message.BuildError!void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setPayloadNull(self: *Builder) message.BuildError!void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setPayloadText(self: *Builder, value: []const u8) message.BuildError!void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setPayloadData(self: *Builder, value: []const u8) message.BuildError!void"));
 }
 
 test "TypeGenerator: complex type mappings are concrete" {
@@ -1161,19 +1161,19 @@ test "Codegen: unresolved enum uses u16 setter value path" {
     const output = try gen.generateFile(requested_file);
     defer testing.allocator.free(output);
 
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setStatus(self: *Builder, value: u16) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setStatus(self: *Builder, value: u16) message.BuildError!void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self.enumOrdinals().setStatus(@as(u16, value));"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if ((try self.which()) != .status) return error.WrongUnionMember;"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 2, "pub const EnumOrdinals = struct"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getStatus(self: @This()) !u16"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if (self._reader.readUnionDiscriminant(2) != 0) return error.WrongUnionMember;"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setStatus(self: @This(), value: u16) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setStatus(self: @This(), value: u16) message.BuildError!void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(2, 0);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn enumOrdinals(self: @This()) EnumOrdinals"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn whichOrdinal(self: Reader) u16"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 2, "message.typed_list_helpers.ScalarListCodec(.uint16)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getStatusRows(self: @This()) !message.typed_list_helpers.NestedListReader"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initStatusRows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initStatusRows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder"));
 }
 
 test "Codegen: unresolved struct getter falls back to StructReader" {
@@ -1253,7 +1253,7 @@ test "Codegen: unresolved struct getter falls back to StructReader" {
 
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getChild(self: Reader) !message.StructReader"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return try self._reader.readStruct(0);"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initChild(self: *Builder, data_words: u16, pointer_words: u16) !message.StructBuilder"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initChild(self: *Builder, data_words: u16, pointer_words: u16) message.BuildError!message.StructBuilder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return try self._builder.initStruct(0, data_words, pointer_words);"));
     try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "UnsupportedType"));
 }
@@ -1347,10 +1347,10 @@ test "Codegen: unresolved struct list builder accepts explicit layout" {
     const output = try gen.generateFile(requested_file);
     defer testing.allocator.free(output);
 
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initChildren(self: *Builder, element_count: u32, data_words: u16, pointer_words: u16) !message.StructListBuilder"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initChildren(self: *Builder, element_count: u32, data_words: u16, pointer_words: u16) message.BuildError!message.StructListBuilder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return try self._builder.writeStructList(0, element_count, data_words, pointer_words);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getNestedChildren(self: @This()) !message.typed_list_helpers.NestedListReader(message.typed_list_helpers.RawStructListReaderCodec)"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initNestedChildren(self: @This(), element_count: u32) !message.typed_list_helpers.RawStructNestedListBuilder"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initNestedChildren(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.RawStructNestedListBuilder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 2, "pub fn nestedLists(self: @This()) NestedLists"));
     try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "UnsupportedType"));
 }
@@ -1457,7 +1457,7 @@ test "Codegen: enum list fields use typed wrappers" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getColors(self: Reader) !EnumListReader(Color)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const raw = try self._reader.readU16List(0);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return EnumListReader(Color){ ._list = raw };"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initColors(self: *Builder, element_count: u32) !EnumListBuilder(Color)"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initColors(self: *Builder, element_count: u32) message.BuildError!EnumListBuilder(Color)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const raw = try self._builder.writeU16List(0, element_count);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return EnumListBuilder(Color){ ._list = raw };"));
 }
@@ -1567,7 +1567,7 @@ test "Codegen: struct list fields use typed wrappers" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getChildren(self: Reader) !StructListReader(Child)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const raw = try self._reader.readStructList(0);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return StructListReader(Child){ ._list = raw };"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initChildren(self: *Builder, element_count: u32) !StructListBuilder(Child)"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initChildren(self: *Builder, element_count: u32) message.BuildError!StructListBuilder(Child)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const raw = try self._builder.writeStructList(0, element_count, 0, 0);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return StructListBuilder(Child){ ._list = raw };"));
 }
@@ -1684,14 +1684,14 @@ test "Codegen: data and capability list fields use typed wrappers" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getDataItems(self: Reader) !DataListReader"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return DataListReader{ ._list = raw };"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initDataItems(self: *Builder, element_count: u32) !DataListBuilder"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initDataItems(self: *Builder, element_count: u32) message.BuildError!DataListBuilder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return DataListBuilder{ ._list = raw };"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getServices(self: Reader) !CapabilityListReader"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return CapabilityListReader{ ._list = raw };"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn resolveServices(self: Reader, index: u32, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !Service.Client"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "var mutable_caps = caps.*;"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "try mutable_caps.retainCapability(cap);"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initServices(self: *Builder, element_count: u32) !CapabilityListBuilder"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initServices(self: *Builder, element_count: u32) message.BuildError!CapabilityListBuilder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return CapabilityListBuilder{ ._list = raw };"));
 }
 
@@ -1891,7 +1891,7 @@ test "Codegen: zero numeric and enum defaults skip xor paths" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self.enumOrdinals().setState(@as(u16, @intFromEnum(value)));"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getState(self: @This()) !u16"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self._reader.readU16(2);"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setState(self: @This(), value: u16) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setState(self: @This(), value: u16) message.BuildError!void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(2, value);"));
 
     try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "^ @as(u32, 0)"));

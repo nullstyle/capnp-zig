@@ -3227,7 +3227,7 @@ pub const CallSequence = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearN(self: *@This()) !void {
+            pub fn clearN(self: *@This()) message.BuildError!void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -3236,7 +3236,7 @@ pub const CallSequence = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn setN(self: *Builder, value: u32) !void {
+            pub fn setN(self: *Builder, value: u32) message.BuildError!void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
@@ -4324,15 +4324,15 @@ pub const Reflector = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initTarget(self: *Builder) !message.AnyPointerBuilder {
+            pub fn initTarget(self: *Builder) message.BuildError!message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearTarget(self: *Builder) !void {
+            pub fn clearTarget(self: *Builder) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
-            pub fn setTargetCapability(self: *Builder, cap: message.Capability) !void {
+            pub fn setTargetCapability(self: *Builder, cap: message.Capability) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
@@ -4342,7 +4342,7 @@ pub const Reflector = struct {
                 try any.setCapability(.{ .id = cap_id });
             }
 
-            pub fn setTargetClient(self: *Builder, client: CallSequence.Client) !void {
+            pub fn setTargetClient(self: *Builder, client: CallSequence.Client) message.BuildError!void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setCapability(.{ .id = client.cap_id });
             }
@@ -4466,15 +4466,15 @@ pub const Reflector = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initPromise(self: *Builder) !message.AnyPointerBuilder {
+            pub fn initPromise(self: *Builder) message.BuildError!message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearPromise(self: *Builder) !void {
+            pub fn clearPromise(self: *Builder) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
-            pub fn setPromiseCapability(self: *Builder, cap: message.Capability) !void {
+            pub fn setPromiseCapability(self: *Builder, cap: message.Capability) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
@@ -4484,7 +4484,7 @@ pub const Reflector = struct {
                 try any.setCapability(.{ .id = cap_id });
             }
 
-            pub fn setPromiseClient(self: *Builder, client: CallSequence.Client) !void {
+            pub fn setPromiseClient(self: *Builder, client: CallSequence.Client) message.BuildError!void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setCapability(.{ .id = client.cap_id });
             }
@@ -4688,15 +4688,15 @@ pub const Reflector = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initCb(self: *Builder) !message.AnyPointerBuilder {
+            pub fn initCb(self: *Builder) message.BuildError!message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearCb(self: *Builder) !void {
+            pub fn clearCb(self: *Builder) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
-            pub fn setCbCapability(self: *Builder, cap: message.Capability) !void {
+            pub fn setCbCapability(self: *Builder, cap: message.Capability) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
@@ -4706,7 +4706,7 @@ pub const Reflector = struct {
                 try any.setCapability(.{ .id = cap_id });
             }
 
-            pub fn setCbClient(self: *Builder, client: CallSequence.Client) !void {
+            pub fn setCbClient(self: *Builder, client: CallSequence.Client) message.BuildError!void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setCapability(.{ .id = client.cap_id });
             }
@@ -4806,7 +4806,7 @@ pub const Reflector = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearObserved(self: *@This()) !void {
+            pub fn clearObserved(self: *@This()) message.BuildError!void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -4815,7 +4815,7 @@ pub const Reflector = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn setObserved(self: *Builder, value: u32) !void {
+            pub fn setObserved(self: *Builder, value: u32) message.BuildError!void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
@@ -4903,7 +4903,7 @@ pub const Reflector = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearUnused(self: *@This()) !void {
+            pub fn clearUnused(self: *@This()) message.BuildError!void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -4912,7 +4912,7 @@ pub const Reflector = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn setUnused(self: *Builder, value: u32) !void {
+            pub fn setUnused(self: *Builder, value: u32) message.BuildError!void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 

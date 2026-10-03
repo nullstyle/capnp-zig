@@ -91,6 +91,12 @@ restores the schema default; clearing a union field also selects that arm.
 `whichOrdinal()` preserves its raw value. An inactive union getter reports
 `WrongUnionMember`. Use `enumOrdinals()` when forwarding unknown enum ordinals.
 
+Builder mutators spell their error sets so a consumer can pin them. `initXxx`,
+value `setXxx` and `clearXxx` return `message.BuildError`; copy setters, which
+also read their source, return `message.CopyError` (a superset). `setXxxServer`
+and the generic `Apply`/`brands()` views keep inferred sets. Both sets are
+listed in [supported-surface.md](supported-surface.md#error-contract).
+
 Growing a list can replace its storage. Reacquire previously obtained element
 and nested builders afterward. This also applies when an older primitive or
 pointer list is viewed through an evolved struct-list field. Larger unknown

@@ -232,7 +232,7 @@ pub const AddressBook = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearPeople(self: *@This()) !void {
+        pub fn clearPeople(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -242,7 +242,7 @@ pub const AddressBook = struct {
             return .{ ._list = raw };
         }
 
-        pub fn setPeople(self: *@This(), value: StructListReader(Person)) !void {
+        pub fn setPeople(self: *@This(), value: StructListReader(Person)) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(0);
             try capnpc.generated_helpers.setList(pointer, value);
         }
@@ -251,7 +251,7 @@ pub const AddressBook = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initPeople(self: *Builder, element_count: u32) !StructListBuilder(Person) {
+        pub fn initPeople(self: *Builder, element_count: u32) message.BuildError!StructListBuilder(Person) {
             const raw = try self._builder.writeStructList(0, element_count, 1, 5);
             return StructListBuilder(Person){ ._list = raw };
         }
@@ -393,7 +393,7 @@ pub const Person = struct {
             return std.enums.fromInt(_capnp_file.Person.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearId(self: *@This()) !void {
+        pub fn clearId(self: *@This()) message.BuildError!void {
             self._builder.writeU32(0, 0);
         }
 
@@ -402,7 +402,7 @@ pub const Person = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearName(self: *@This()) !void {
+        pub fn clearName(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -415,7 +415,7 @@ pub const Person = struct {
             return try field_reader.readTextStrict(0);
         }
 
-        pub fn clearEmail(self: *@This()) !void {
+        pub fn clearEmail(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -428,7 +428,7 @@ pub const Person = struct {
             return try field_reader.readTextStrict(1);
         }
 
-        pub fn clearPhones(self: *@This()) !void {
+        pub fn clearPhones(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(2)).setNull();
         }
 
@@ -438,12 +438,12 @@ pub const Person = struct {
             return .{ ._list = raw };
         }
 
-        pub fn setPhones(self: *@This(), value: StructListReader(Person.PhoneNumber)) !void {
+        pub fn setPhones(self: *@This(), value: StructListReader(Person.PhoneNumber)) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(2);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearAvatar(self: *@This()) !void {
+        pub fn clearAvatar(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(3)).setNull();
         }
 
@@ -456,7 +456,7 @@ pub const Person = struct {
             return try field_reader.readData(3);
         }
 
-        pub fn clearUnemployed(self: *@This()) !void {
+        pub fn clearUnemployed(self: *@This()) message.BuildError!void {
             self._builder.writeU16(4, 0);
         }
 
@@ -465,7 +465,7 @@ pub const Person = struct {
             return {};
         }
 
-        pub fn clearEmployer(self: *@This()) !void {
+        pub fn clearEmployer(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(4)).setNull();
             self._builder.writeU16(4, 1);
         }
@@ -480,7 +480,7 @@ pub const Person = struct {
             return try field_reader.readTextStrict(4);
         }
 
-        pub fn clearSchool(self: *@This()) !void {
+        pub fn clearSchool(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(4)).setNull();
             self._builder.writeU16(4, 2);
         }
@@ -495,7 +495,7 @@ pub const Person = struct {
             return try field_reader.readTextStrict(4);
         }
 
-        pub fn clearSelfEmployed(self: *@This()) !void {
+        pub fn clearSelfEmployed(self: *@This()) message.BuildError!void {
             self._builder.writeU16(4, 3);
         }
 
@@ -504,7 +504,7 @@ pub const Person = struct {
             return {};
         }
 
-        pub fn setId(self: *Builder, value: u32) !void {
+        pub fn setId(self: *Builder, value: u32) message.BuildError!void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
@@ -512,7 +512,7 @@ pub const Person = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn setName(self: *Builder, value: []const u8) !void {
+        pub fn setName(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeText(0, value);
         }
 
@@ -520,7 +520,7 @@ pub const Person = struct {
             return !self._builder.isPointerNull(1);
         }
 
-        pub fn setEmail(self: *Builder, value: []const u8) !void {
+        pub fn setEmail(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeText(1, value);
         }
 
@@ -528,7 +528,7 @@ pub const Person = struct {
             return !self._builder.isPointerNull(2);
         }
 
-        pub fn initPhones(self: *Builder, element_count: u32) !StructListBuilder(Person.PhoneNumber) {
+        pub fn initPhones(self: *Builder, element_count: u32) message.BuildError!StructListBuilder(Person.PhoneNumber) {
             const raw = try self._builder.writeStructList(2, element_count, 1, 1);
             return StructListBuilder(Person.PhoneNumber){ ._list = raw };
         }
@@ -537,11 +537,11 @@ pub const Person = struct {
             return !self._builder.isPointerNull(3);
         }
 
-        pub fn setAvatar(self: *Builder, value: []const u8) !void {
+        pub fn setAvatar(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeData(3, value);
         }
 
-        pub fn setUnemployed(self: *Builder, value: void) !void {
+        pub fn setUnemployed(self: *Builder, value: void) message.BuildError!void {
             self._builder.writeU16(4, 0);
             _ = value;
         }
@@ -551,7 +551,7 @@ pub const Person = struct {
             return !self._builder.isPointerNull(4);
         }
 
-        pub fn setEmployer(self: *Builder, value: []const u8) !void {
+        pub fn setEmployer(self: *Builder, value: []const u8) message.BuildError!void {
             self._builder.writeU16(4, 1);
             try self._builder.writeText(4, value);
         }
@@ -561,12 +561,12 @@ pub const Person = struct {
             return !self._builder.isPointerNull(4);
         }
 
-        pub fn setSchool(self: *Builder, value: []const u8) !void {
+        pub fn setSchool(self: *Builder, value: []const u8) message.BuildError!void {
             self._builder.writeU16(4, 2);
             try self._builder.writeText(4, value);
         }
 
-        pub fn setSelfEmployed(self: *Builder, value: void) !void {
+        pub fn setSelfEmployed(self: *Builder, value: void) message.BuildError!void {
             self._builder.writeU16(4, 3);
             _ = value;
         }
@@ -634,7 +634,7 @@ pub const Person = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setType(self: @This(), value: u16) !void {
+                pub fn setType(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(0, value);
                 }
             };
@@ -650,7 +650,7 @@ pub const Person = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearNumber(self: *@This()) !void {
+            pub fn clearNumber(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -663,7 +663,7 @@ pub const Person = struct {
                 return try field_reader.readTextStrict(0);
             }
 
-            pub fn clearType(self: *@This()) !void {
+            pub fn clearType(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -676,11 +676,11 @@ pub const Person = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn setNumber(self: *@This(), value: []const u8) !void {
+            pub fn setNumber(self: *@This(), value: []const u8) message.BuildError!void {
                 try self._builder.writeText(0, value);
             }
 
-            pub fn setType(self: *@This(), value: Person.PhoneType) !void {
+            pub fn setType(self: *@This(), value: Person.PhoneType) message.BuildError!void {
                 return self.enumOrdinals().setType(@as(u16, @backingInt(value)));
             }
         };

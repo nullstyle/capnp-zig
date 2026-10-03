@@ -122,7 +122,7 @@ test "Codegen emits nested interface definitions" {
     // GAP-3: Typed capability parameter passing in builders. The nested-interface
     // param types are parent-qualified.
     try expectContains(output, "pub fn setInnerServer(self: *Builder, peer: *rpc.peer.Peer, server: *Outer.Inner.Server) !void {");
-    try expectContains(output, "pub fn setInnerClient(self: *Builder, client: Outer.Inner.Client) !void {");
+    try expectContains(output, "pub fn setInnerClient(self: *Builder, client: Outer.Inner.Client) message.BuildError!void {");
 
     // GAP-8: Deferred handler returns
     try expectContains(output, "pub const DeferredHandler");

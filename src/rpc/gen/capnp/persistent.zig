@@ -518,7 +518,7 @@ pub const Persistent = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearSealFor(self: *@This()) !void {
+            pub fn clearSealFor(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -527,7 +527,7 @@ pub const Persistent = struct {
                 return pointer;
             }
 
-            pub fn setSealFor(self: *@This(), value: message.AnyPointerReader) !void {
+            pub fn setSealFor(self: *@This(), value: message.AnyPointerReader) message.CopyError!void {
                 try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(0), value);
             }
 
@@ -535,23 +535,23 @@ pub const Persistent = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initSealFor(self: *@This()) !message.AnyPointerBuilder {
+            pub fn initSealFor(self: *@This()) message.BuildError!message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn setSealForNull(self: *@This()) !void {
+            pub fn setSealForNull(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
-            pub fn setSealForText(self: *@This(), value: []const u8) !void {
+            pub fn setSealForText(self: *@This(), value: []const u8) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setText(value);
             }
 
-            pub fn setSealForData(self: *@This(), value: []const u8) !void {
+            pub fn setSealForData(self: *@This(), value: []const u8) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setData(value);
             }
 
-            pub fn setSealForCapability(self: *@This(), cap: message.Capability) !void {
+            pub fn setSealForCapability(self: *@This(), cap: message.Capability) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
         };
@@ -670,7 +670,7 @@ pub const Persistent = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearSturdyRef(self: *@This()) !void {
+            pub fn clearSturdyRef(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -679,7 +679,7 @@ pub const Persistent = struct {
                 return pointer;
             }
 
-            pub fn setSturdyRef(self: *@This(), value: message.AnyPointerReader) !void {
+            pub fn setSturdyRef(self: *@This(), value: message.AnyPointerReader) message.CopyError!void {
                 try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(0), value);
             }
 
@@ -687,23 +687,23 @@ pub const Persistent = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initSturdyRef(self: *@This()) !message.AnyPointerBuilder {
+            pub fn initSturdyRef(self: *@This()) message.BuildError!message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn setSturdyRefNull(self: *@This()) !void {
+            pub fn setSturdyRefNull(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
-            pub fn setSturdyRefText(self: *@This(), value: []const u8) !void {
+            pub fn setSturdyRefText(self: *@This(), value: []const u8) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setText(value);
             }
 
-            pub fn setSturdyRefData(self: *@This(), value: []const u8) !void {
+            pub fn setSturdyRefData(self: *@This(), value: []const u8) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setData(value);
             }
 
-            pub fn setSturdyRefCapability(self: *@This(), cap: message.Capability) !void {
+            pub fn setSturdyRefCapability(self: *@This(), cap: message.Capability) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
         };

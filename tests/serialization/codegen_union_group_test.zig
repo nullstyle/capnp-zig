@@ -215,15 +215,15 @@ test "Codegen: union setter writes discriminant before value" {
 
     // Setters should write discriminant
     // For void field (idle), the setter should write discriminant 0
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setIdle(self: *Builder, value: void) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setIdle(self: *Builder, value: void) message.BuildError!void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(0, 0)"));
 
     // For u32 field (running), the setter should write discriminant 1
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setRunning(self: *Builder, value: u32) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setRunning(self: *Builder, value: u32) message.BuildError!void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(0, 1)"));
 
     // For text field (message), the setter should write discriminant 2
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setMessage(self: *Builder, value: []const u8) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setMessage(self: *Builder, value: []const u8) message.BuildError!void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(0, 2)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn hasMessage(self: Reader) bool"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if (self._reader.readUnionDiscriminant(0) != 2) return false;"));
@@ -775,11 +775,11 @@ test "Codegen: group union generates WhichTag and which method" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if ((try self.which()) != .mode) return error.WrongUnionMember;"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(4, 3);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(6, value ^ @as(u16, 1));"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setSenderLoopback(self: *@This(), value: u32) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setSenderLoopback(self: *@This(), value: u32) message.BuildError!void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(4, 0)"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setReceiverLoopback(self: *@This(), value: u32) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setReceiverLoopback(self: *@This(), value: u32) message.BuildError!void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(4, 1)"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setAccept(self: *@This(), value: []const u8) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setAccept(self: *@This(), value: []const u8) message.BuildError!void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(4, 2)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn hasAccept(self: @This()) bool"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if (self._reader.readUnionDiscriminant(4) != 2) return false;"));

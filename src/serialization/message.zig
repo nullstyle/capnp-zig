@@ -9,6 +9,17 @@ const struct_builder_module = @import("message/struct_builder.zig");
 const clone_any_pointer_module = @import("message/clone_any_pointer.zig");
 const typed_list_helpers_module = @import("message/typed_list_helpers.zig");
 const element_list = @import("message/element_list.zig");
+const errors = @import("message/errors.zig");
+
+/// Every error a builder primitive can return while writing into a
+/// `MessageBuilder`. Generated `initX`, value `setX` and `clearX` methods
+/// return exactly this set; see `message/errors.zig`.
+pub const BuildError = errors.BuildError;
+
+/// `BuildError` plus the errors raised while reading the source of a deep
+/// copy. `cloneAnyPointer` and the generated copy setters (`setX` from a
+/// Reader) return exactly this set; see `message/errors.zig`.
+pub const CopyError = errors.CopyError;
 
 const parse_diagnostics_enabled = if (@hasField(std.Options, "capnp_message_parse_diagnostics"))
     std.options.capnp_message_parse_diagnostics

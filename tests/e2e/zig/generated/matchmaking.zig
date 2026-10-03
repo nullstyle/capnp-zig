@@ -2857,7 +2857,7 @@ pub const MatchId = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearId(self: *@This()) !void {
+        pub fn clearId(self: *@This()) message.BuildError!void {
             self._builder.writeU64(0, 0);
         }
 
@@ -2866,7 +2866,7 @@ pub const MatchId = struct {
             return field_reader.readU64(0);
         }
 
-        pub fn setId(self: *Builder, value: u64) !void {
+        pub fn setId(self: *Builder, value: u64) message.BuildError!void {
             self._builder.writeU64(0, @bitCast(value));
         }
 
@@ -2957,7 +2957,7 @@ pub const QueueTicket = struct {
                 return raw.readU16(8);
             }
 
-            pub fn setMode(self: @This(), value: u16) !void {
+            pub fn setMode(self: @This(), value: u16) message.BuildError!void {
                 self._builder.writeU16(8, value);
             }
 
@@ -2974,7 +2974,7 @@ pub const QueueTicket = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearTicketId(self: *@This()) !void {
+        pub fn clearTicketId(self: *@This()) message.BuildError!void {
             self._builder.writeU64(0, 0);
         }
 
@@ -2983,7 +2983,7 @@ pub const QueueTicket = struct {
             return field_reader.readU64(0);
         }
 
-        pub fn clearPlayer(self: *@This()) !void {
+        pub fn clearPlayer(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -2993,12 +2993,12 @@ pub const QueueTicket = struct {
             return game_types.PlayerInfo.Builder.wrap(raw);
         }
 
-        pub fn setPlayer(self: *@This(), value: game_types.PlayerInfo.Reader) !void {
+        pub fn setPlayer(self: *@This(), value: game_types.PlayerInfo.Reader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(0);
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearMode(self: *@This()) !void {
+        pub fn clearMode(self: *@This()) message.BuildError!void {
             self._builder.writeU16(8, 0);
         }
 
@@ -3007,7 +3007,7 @@ pub const QueueTicket = struct {
             return std.enums.fromInt(GameMode, ordinal) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearEnqueuedAt(self: *@This()) !void {
+        pub fn clearEnqueuedAt(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -3017,12 +3017,12 @@ pub const QueueTicket = struct {
             return game_types.Timestamp.Builder.wrap(raw);
         }
 
-        pub fn setEnqueuedAt(self: *@This(), value: game_types.Timestamp.Reader) !void {
+        pub fn setEnqueuedAt(self: *@This(), value: game_types.Timestamp.Reader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(1);
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearEstimatedWaitSecs(self: *@This()) !void {
+        pub fn clearEstimatedWaitSecs(self: *@This()) message.BuildError!void {
             self._builder.writeU32(12, 0);
         }
 
@@ -3031,7 +3031,7 @@ pub const QueueTicket = struct {
             return field_reader.readU32(12);
         }
 
-        pub fn setTicketId(self: *Builder, value: u64) !void {
+        pub fn setTicketId(self: *Builder, value: u64) message.BuildError!void {
             self._builder.writeU64(0, @bitCast(value));
         }
 
@@ -3039,12 +3039,12 @@ pub const QueueTicket = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initPlayer(self: *Builder) !game_types.PlayerInfo.Builder {
+        pub fn initPlayer(self: *Builder) message.BuildError!game_types.PlayerInfo.Builder {
             const builder = try self._builder.initStruct(0, 1, 2);
             return game_types.PlayerInfo.Builder{ ._builder = builder };
         }
 
-        pub fn setMode(self: *Builder, value: GameMode) !void {
+        pub fn setMode(self: *Builder, value: GameMode) message.BuildError!void {
             return self.enumOrdinals().setMode(@as(u16, @intFromEnum(value)));
         }
 
@@ -3052,12 +3052,12 @@ pub const QueueTicket = struct {
             return !self._builder.isPointerNull(1);
         }
 
-        pub fn initEnqueuedAt(self: *Builder) !game_types.Timestamp.Builder {
+        pub fn initEnqueuedAt(self: *Builder) message.BuildError!game_types.Timestamp.Builder {
             const builder = try self._builder.initStruct(1, 1, 0);
             return game_types.Timestamp.Builder{ ._builder = builder };
         }
 
-        pub fn setEstimatedWaitSecs(self: *Builder, value: u32) !void {
+        pub fn setEstimatedWaitSecs(self: *Builder, value: u32) message.BuildError!void {
             self._builder.writeU32(12, @bitCast(value));
         }
 
@@ -3254,7 +3254,7 @@ pub const MatchInfo = struct {
                 return raw.readU16(0);
             }
 
-            pub fn setMode(self: @This(), value: u16) !void {
+            pub fn setMode(self: @This(), value: u16) message.BuildError!void {
                 self._builder.writeU16(0, value);
             }
 
@@ -3263,7 +3263,7 @@ pub const MatchInfo = struct {
                 return raw.readU16(2);
             }
 
-            pub fn setState(self: @This(), value: u16) !void {
+            pub fn setState(self: @This(), value: u16) message.BuildError!void {
                 self._builder.writeU16(2, value);
             }
 
@@ -3280,7 +3280,7 @@ pub const MatchInfo = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearId(self: *@This()) !void {
+        pub fn clearId(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3290,12 +3290,12 @@ pub const MatchInfo = struct {
             return MatchId.Builder.wrap(raw);
         }
 
-        pub fn setId(self: *@This(), value: MatchId.Reader) !void {
+        pub fn setId(self: *@This(), value: MatchId.Reader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(0);
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearMode(self: *@This()) !void {
+        pub fn clearMode(self: *@This()) message.BuildError!void {
             self._builder.writeU16(0, 0);
         }
 
@@ -3304,7 +3304,7 @@ pub const MatchInfo = struct {
             return std.enums.fromInt(GameMode, ordinal) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearState(self: *@This()) !void {
+        pub fn clearState(self: *@This()) message.BuildError!void {
             self._builder.writeU16(2, 0);
         }
 
@@ -3313,7 +3313,7 @@ pub const MatchInfo = struct {
             return std.enums.fromInt(MatchState, ordinal) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearTeamA(self: *@This()) !void {
+        pub fn clearTeamA(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -3323,12 +3323,12 @@ pub const MatchInfo = struct {
             return .{ ._list = raw };
         }
 
-        pub fn setTeamA(self: *@This(), value: StructListReader(game_types.PlayerInfo)) !void {
+        pub fn setTeamA(self: *@This(), value: StructListReader(game_types.PlayerInfo)) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(1);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearTeamB(self: *@This()) !void {
+        pub fn clearTeamB(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(2)).setNull();
         }
 
@@ -3338,12 +3338,12 @@ pub const MatchInfo = struct {
             return .{ ._list = raw };
         }
 
-        pub fn setTeamB(self: *@This(), value: StructListReader(game_types.PlayerInfo)) !void {
+        pub fn setTeamB(self: *@This(), value: StructListReader(game_types.PlayerInfo)) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(2);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearCreatedAt(self: *@This()) !void {
+        pub fn clearCreatedAt(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(3)).setNull();
         }
 
@@ -3353,7 +3353,7 @@ pub const MatchInfo = struct {
             return game_types.Timestamp.Builder.wrap(raw);
         }
 
-        pub fn setCreatedAt(self: *@This(), value: game_types.Timestamp.Reader) !void {
+        pub fn setCreatedAt(self: *@This(), value: game_types.Timestamp.Reader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(3);
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
@@ -3362,16 +3362,16 @@ pub const MatchInfo = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initId(self: *Builder) !MatchId.Builder {
+        pub fn initId(self: *Builder) message.BuildError!MatchId.Builder {
             const builder = try self._builder.initStruct(0, 1, 0);
             return MatchId.Builder{ ._builder = builder };
         }
 
-        pub fn setMode(self: *Builder, value: GameMode) !void {
+        pub fn setMode(self: *Builder, value: GameMode) message.BuildError!void {
             return self.enumOrdinals().setMode(@as(u16, @intFromEnum(value)));
         }
 
-        pub fn setState(self: *Builder, value: MatchState) !void {
+        pub fn setState(self: *Builder, value: MatchState) message.BuildError!void {
             return self.enumOrdinals().setState(@as(u16, @intFromEnum(value)));
         }
 
@@ -3379,7 +3379,7 @@ pub const MatchInfo = struct {
             return !self._builder.isPointerNull(1);
         }
 
-        pub fn initTeamA(self: *Builder, element_count: u32) !StructListBuilder(game_types.PlayerInfo) {
+        pub fn initTeamA(self: *Builder, element_count: u32) message.BuildError!StructListBuilder(game_types.PlayerInfo) {
             const raw = try self._builder.writeStructList(1, element_count, 1, 2);
             return StructListBuilder(game_types.PlayerInfo){ ._list = raw };
         }
@@ -3388,7 +3388,7 @@ pub const MatchInfo = struct {
             return !self._builder.isPointerNull(2);
         }
 
-        pub fn initTeamB(self: *Builder, element_count: u32) !StructListBuilder(game_types.PlayerInfo) {
+        pub fn initTeamB(self: *Builder, element_count: u32) message.BuildError!StructListBuilder(game_types.PlayerInfo) {
             const raw = try self._builder.writeStructList(2, element_count, 1, 2);
             return StructListBuilder(game_types.PlayerInfo){ ._list = raw };
         }
@@ -3397,7 +3397,7 @@ pub const MatchInfo = struct {
             return !self._builder.isPointerNull(3);
         }
 
-        pub fn initCreatedAt(self: *Builder) !game_types.Timestamp.Builder {
+        pub fn initCreatedAt(self: *Builder) message.BuildError!game_types.Timestamp.Builder {
             const builder = try self._builder.initStruct(3, 1, 0);
             return game_types.Timestamp.Builder{ ._builder = builder };
         }
@@ -3582,7 +3582,7 @@ pub const MatchResult = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearMatchId(self: *@This()) !void {
+        pub fn clearMatchId(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3592,12 +3592,12 @@ pub const MatchResult = struct {
             return MatchId.Builder.wrap(raw);
         }
 
-        pub fn setMatchId(self: *@This(), value: MatchId.Reader) !void {
+        pub fn setMatchId(self: *@This(), value: MatchId.Reader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(0);
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearWinningTeam(self: *@This()) !void {
+        pub fn clearWinningTeam(self: *@This()) message.BuildError!void {
             self._builder.writeU8(0, 0);
         }
 
@@ -3606,7 +3606,7 @@ pub const MatchResult = struct {
             return field_reader.readU8(0);
         }
 
-        pub fn clearDuration(self: *@This()) !void {
+        pub fn clearDuration(self: *@This()) message.BuildError!void {
             self._builder.writeU32(4, 0);
         }
 
@@ -3615,7 +3615,7 @@ pub const MatchResult = struct {
             return field_reader.readU32(4);
         }
 
-        pub fn clearPlayerStats(self: *@This()) !void {
+        pub fn clearPlayerStats(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -3625,7 +3625,7 @@ pub const MatchResult = struct {
             return .{ ._list = raw };
         }
 
-        pub fn setPlayerStats(self: *@This(), value: StructListReader(PlayerMatchStats)) !void {
+        pub fn setPlayerStats(self: *@This(), value: StructListReader(PlayerMatchStats)) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(1);
             try capnpc.generated_helpers.setList(pointer, value);
         }
@@ -3634,16 +3634,16 @@ pub const MatchResult = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initMatchId(self: *Builder) !MatchId.Builder {
+        pub fn initMatchId(self: *Builder) message.BuildError!MatchId.Builder {
             const builder = try self._builder.initStruct(0, 1, 0);
             return MatchId.Builder{ ._builder = builder };
         }
 
-        pub fn setWinningTeam(self: *Builder, value: u8) !void {
+        pub fn setWinningTeam(self: *Builder, value: u8) message.BuildError!void {
             self._builder.writeU8(0, @bitCast(value));
         }
 
-        pub fn setDuration(self: *Builder, value: u32) !void {
+        pub fn setDuration(self: *Builder, value: u32) message.BuildError!void {
             self._builder.writeU32(4, @bitCast(value));
         }
 
@@ -3651,7 +3651,7 @@ pub const MatchResult = struct {
             return !self._builder.isPointerNull(1);
         }
 
-        pub fn initPlayerStats(self: *Builder, element_count: u32) !StructListBuilder(PlayerMatchStats) {
+        pub fn initPlayerStats(self: *Builder, element_count: u32) message.BuildError!StructListBuilder(PlayerMatchStats) {
             const raw = try self._builder.writeStructList(1, element_count, 2, 1);
             return StructListBuilder(PlayerMatchStats){ ._list = raw };
         }
@@ -3794,7 +3794,7 @@ pub const PlayerMatchStats = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearPlayer(self: *@This()) !void {
+        pub fn clearPlayer(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3804,12 +3804,12 @@ pub const PlayerMatchStats = struct {
             return game_types.PlayerInfo.Builder.wrap(raw);
         }
 
-        pub fn setPlayer(self: *@This(), value: game_types.PlayerInfo.Reader) !void {
+        pub fn setPlayer(self: *@This(), value: game_types.PlayerInfo.Reader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(0);
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearKills(self: *@This()) !void {
+        pub fn clearKills(self: *@This()) message.BuildError!void {
             self._builder.writeU32(0, 0);
         }
 
@@ -3818,7 +3818,7 @@ pub const PlayerMatchStats = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearDeaths(self: *@This()) !void {
+        pub fn clearDeaths(self: *@This()) message.BuildError!void {
             self._builder.writeU32(4, 0);
         }
 
@@ -3827,7 +3827,7 @@ pub const PlayerMatchStats = struct {
             return field_reader.readU32(4);
         }
 
-        pub fn clearAssists(self: *@This()) !void {
+        pub fn clearAssists(self: *@This()) message.BuildError!void {
             self._builder.writeU32(8, 0);
         }
 
@@ -3836,7 +3836,7 @@ pub const PlayerMatchStats = struct {
             return field_reader.readU32(8);
         }
 
-        pub fn clearScore(self: *@This()) !void {
+        pub fn clearScore(self: *@This()) message.BuildError!void {
             self._builder.writeU32(12, 0);
         }
 
@@ -3849,24 +3849,24 @@ pub const PlayerMatchStats = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initPlayer(self: *Builder) !game_types.PlayerInfo.Builder {
+        pub fn initPlayer(self: *Builder) message.BuildError!game_types.PlayerInfo.Builder {
             const builder = try self._builder.initStruct(0, 1, 2);
             return game_types.PlayerInfo.Builder{ ._builder = builder };
         }
 
-        pub fn setKills(self: *Builder, value: u32) !void {
+        pub fn setKills(self: *Builder, value: u32) message.BuildError!void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
-        pub fn setDeaths(self: *Builder, value: u32) !void {
+        pub fn setDeaths(self: *Builder, value: u32) message.BuildError!void {
             self._builder.writeU32(4, @bitCast(value));
         }
 
-        pub fn setAssists(self: *Builder, value: u32) !void {
+        pub fn setAssists(self: *Builder, value: u32) message.BuildError!void {
             self._builder.writeU32(8, @bitCast(value));
         }
 
-        pub fn setScore(self: *Builder, value: i32) !void {
+        pub fn setScore(self: *Builder, value: i32) message.BuildError!void {
             self._builder.writeU32(12, @bitCast(value));
         }
 
@@ -4977,7 +4977,7 @@ pub const MatchController = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearInfo(self: *@This()) !void {
+            pub fn clearInfo(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4987,7 +4987,7 @@ pub const MatchController = struct {
                 return MatchInfo.Builder.wrap(raw);
             }
 
-            pub fn setInfo(self: *@This(), value: MatchInfo.Reader) !void {
+            pub fn setInfo(self: *@This(), value: MatchInfo.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
@@ -4996,7 +4996,7 @@ pub const MatchController = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initInfo(self: *Builder) !MatchInfo.Builder {
+            pub fn initInfo(self: *Builder) message.BuildError!MatchInfo.Builder {
                 const builder = try self._builder.initStruct(0, 1, 4);
                 return MatchInfo.Builder{ ._builder = builder };
             }
@@ -5102,7 +5102,7 @@ pub const MatchController = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearPlayer(self: *@This()) !void {
+            pub fn clearPlayer(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -5112,7 +5112,7 @@ pub const MatchController = struct {
                 return game_types.PlayerId.Builder.wrap(raw);
             }
 
-            pub fn setPlayer(self: *@This(), value: game_types.PlayerId.Reader) !void {
+            pub fn setPlayer(self: *@This(), value: game_types.PlayerId.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
@@ -5121,7 +5121,7 @@ pub const MatchController = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initPlayer(self: *Builder) !game_types.PlayerId.Builder {
+            pub fn initPlayer(self: *Builder) message.BuildError!game_types.PlayerId.Builder {
                 const builder = try self._builder.initStruct(0, 1, 0);
                 return game_types.PlayerId.Builder{ ._builder = builder };
             }
@@ -5240,7 +5240,7 @@ pub const MatchController = struct {
                     return raw.readU16(2);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) !void {
+                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(2, value);
                 }
 
@@ -5257,7 +5257,7 @@ pub const MatchController = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearAllReady(self: *@This()) !void {
+            pub fn clearAllReady(self: *@This()) message.BuildError!void {
                 self._builder.writeBool(0, 0, false);
             }
 
@@ -5266,7 +5266,7 @@ pub const MatchController = struct {
                 return field_reader.readBool(0, 0) != false;
             }
 
-            pub fn clearStatus(self: *@This()) !void {
+            pub fn clearStatus(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(2, 0);
             }
 
@@ -5275,11 +5275,11 @@ pub const MatchController = struct {
                 return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
-            pub fn setAllReady(self: *Builder, value: bool) !void {
+            pub fn setAllReady(self: *Builder, value: bool) message.BuildError!void {
                 self._builder.writeBool(0, 0, value != false);
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -5333,7 +5333,7 @@ pub const MatchController = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearResult(self: *@This()) !void {
+            pub fn clearResult(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -5343,7 +5343,7 @@ pub const MatchController = struct {
                 return MatchResult.Builder.wrap(raw);
             }
 
-            pub fn setResult(self: *@This(), value: MatchResult.Reader) !void {
+            pub fn setResult(self: *@This(), value: MatchResult.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
@@ -5352,7 +5352,7 @@ pub const MatchController = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initResult(self: *Builder) !MatchResult.Builder {
+            pub fn initResult(self: *Builder) message.BuildError!MatchResult.Builder {
                 const builder = try self._builder.initStruct(0, 1, 2);
                 return MatchResult.Builder{ ._builder = builder };
             }
@@ -5467,7 +5467,7 @@ pub const MatchController = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) !void {
+                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -5484,7 +5484,7 @@ pub const MatchController = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearStatus(self: *@This()) !void {
+            pub fn clearStatus(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -5493,7 +5493,7 @@ pub const MatchController = struct {
                 return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -5596,7 +5596,7 @@ pub const MatchController = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) !void {
+                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -5613,7 +5613,7 @@ pub const MatchController = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearStatus(self: *@This()) !void {
+            pub fn clearStatus(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -5622,7 +5622,7 @@ pub const MatchController = struct {
                 return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -6993,7 +6993,7 @@ pub const MatchmakingService = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setMode(self: @This(), value: u16) !void {
+                pub fn setMode(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -7010,7 +7010,7 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearPlayer(self: *@This()) !void {
+            pub fn clearPlayer(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -7020,12 +7020,12 @@ pub const MatchmakingService = struct {
                 return game_types.PlayerInfo.Builder.wrap(raw);
             }
 
-            pub fn setPlayer(self: *@This(), value: game_types.PlayerInfo.Reader) !void {
+            pub fn setPlayer(self: *@This(), value: game_types.PlayerInfo.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearMode(self: *@This()) !void {
+            pub fn clearMode(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -7038,12 +7038,12 @@ pub const MatchmakingService = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initPlayer(self: *Builder) !game_types.PlayerInfo.Builder {
+            pub fn initPlayer(self: *Builder) message.BuildError!game_types.PlayerInfo.Builder {
                 const builder = try self._builder.initStruct(0, 1, 2);
                 return game_types.PlayerInfo.Builder{ ._builder = builder };
             }
 
-            pub fn setMode(self: *Builder, value: GameMode) !void {
+            pub fn setMode(self: *Builder, value: GameMode) message.BuildError!void {
                 return self.enumOrdinals().setMode(@as(u16, @intFromEnum(value)));
             }
 
@@ -7170,7 +7170,7 @@ pub const MatchmakingService = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) !void {
+                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -7187,7 +7187,7 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearTicket(self: *@This()) !void {
+            pub fn clearTicket(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -7197,12 +7197,12 @@ pub const MatchmakingService = struct {
                 return QueueTicket.Builder.wrap(raw);
             }
 
-            pub fn setTicket(self: *@This(), value: QueueTicket.Reader) !void {
+            pub fn setTicket(self: *@This(), value: QueueTicket.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearStatus(self: *@This()) !void {
+            pub fn clearStatus(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -7215,12 +7215,12 @@ pub const MatchmakingService = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initTicket(self: *Builder) !QueueTicket.Builder {
+            pub fn initTicket(self: *Builder) message.BuildError!QueueTicket.Builder {
                 const builder = try self._builder.initStruct(0, 2, 2);
                 return QueueTicket.Builder{ ._builder = builder };
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -7322,7 +7322,7 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearTicketId(self: *@This()) !void {
+            pub fn clearTicketId(self: *@This()) message.BuildError!void {
                 self._builder.writeU64(0, 0);
             }
 
@@ -7331,7 +7331,7 @@ pub const MatchmakingService = struct {
                 return field_reader.readU64(0);
             }
 
-            pub fn setTicketId(self: *Builder, value: u64) !void {
+            pub fn setTicketId(self: *Builder, value: u64) message.BuildError!void {
                 self._builder.writeU64(0, @bitCast(value));
             }
 
@@ -7394,7 +7394,7 @@ pub const MatchmakingService = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) !void {
+                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -7411,7 +7411,7 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearStatus(self: *@This()) !void {
+            pub fn clearStatus(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -7420,7 +7420,7 @@ pub const MatchmakingService = struct {
                 return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -7493,7 +7493,7 @@ pub const MatchmakingService = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setMode(self: @This(), value: u16) !void {
+                pub fn setMode(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -7510,7 +7510,7 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearPlayer(self: *@This()) !void {
+            pub fn clearPlayer(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -7520,12 +7520,12 @@ pub const MatchmakingService = struct {
                 return game_types.PlayerInfo.Builder.wrap(raw);
             }
 
-            pub fn setPlayer(self: *@This(), value: game_types.PlayerInfo.Reader) !void {
+            pub fn setPlayer(self: *@This(), value: game_types.PlayerInfo.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearMode(self: *@This()) !void {
+            pub fn clearMode(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -7538,12 +7538,12 @@ pub const MatchmakingService = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initPlayer(self: *Builder) !game_types.PlayerInfo.Builder {
+            pub fn initPlayer(self: *Builder) message.BuildError!game_types.PlayerInfo.Builder {
                 const builder = try self._builder.initStruct(0, 1, 2);
                 return game_types.PlayerInfo.Builder{ ._builder = builder };
             }
 
-            pub fn setMode(self: *Builder, value: GameMode) !void {
+            pub fn setMode(self: *Builder, value: GameMode) message.BuildError!void {
                 return self.enumOrdinals().setMode(@as(u16, @intFromEnum(value)));
             }
 
@@ -7675,7 +7675,7 @@ pub const MatchmakingService = struct {
                 return try pointer.getCapability();
             }
 
-            pub fn clearMatchId(self: *@This()) !void {
+            pub fn clearMatchId(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(1)).setNull();
             }
 
@@ -7685,7 +7685,7 @@ pub const MatchmakingService = struct {
                 return MatchId.Builder.wrap(raw);
             }
 
-            pub fn setMatchId(self: *@This(), value: MatchId.Reader) !void {
+            pub fn setMatchId(self: *@This(), value: MatchId.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(1);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
@@ -7694,15 +7694,15 @@ pub const MatchmakingService = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initController(self: *Builder) !message.AnyPointerBuilder {
+            pub fn initController(self: *Builder) message.BuildError!message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearController(self: *Builder) !void {
+            pub fn clearController(self: *Builder) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
-            pub fn setControllerCapability(self: *Builder, cap: message.Capability) !void {
+            pub fn setControllerCapability(self: *Builder, cap: message.Capability) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
@@ -7712,7 +7712,7 @@ pub const MatchmakingService = struct {
                 try any.setCapability(.{ .id = cap_id });
             }
 
-            pub fn setControllerClient(self: *Builder, client: MatchController.Client) !void {
+            pub fn setControllerClient(self: *Builder, client: MatchController.Client) message.BuildError!void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setCapability(.{ .id = client.cap_id });
             }
@@ -7721,7 +7721,7 @@ pub const MatchmakingService = struct {
                 return !self._builder.isPointerNull(1);
             }
 
-            pub fn initMatchId(self: *Builder) !MatchId.Builder {
+            pub fn initMatchId(self: *Builder) message.BuildError!MatchId.Builder {
                 const builder = try self._builder.initStruct(1, 1, 0);
                 return MatchId.Builder{ ._builder = builder };
             }
@@ -7858,7 +7858,7 @@ pub const MatchmakingService = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setMode(self: @This(), value: u16) !void {
+                pub fn setMode(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -7875,7 +7875,7 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearMode(self: *@This()) !void {
+            pub fn clearMode(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -7884,7 +7884,7 @@ pub const MatchmakingService = struct {
                 return std.enums.fromInt(GameMode, ordinal) orelse return error.InvalidEnumValue;
             }
 
-            pub fn setMode(self: *Builder, value: GameMode) !void {
+            pub fn setMode(self: *Builder, value: GameMode) message.BuildError!void {
                 return self.enumOrdinals().setMode(@as(u16, @intFromEnum(value)));
             }
 
@@ -7936,7 +7936,7 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearPlayersInQueue(self: *@This()) !void {
+            pub fn clearPlayersInQueue(self: *@This()) message.BuildError!void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -7945,7 +7945,7 @@ pub const MatchmakingService = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn clearAvgWaitSecs(self: *@This()) !void {
+            pub fn clearAvgWaitSecs(self: *@This()) message.BuildError!void {
                 self._builder.writeU32(4, 0);
             }
 
@@ -7954,11 +7954,11 @@ pub const MatchmakingService = struct {
                 return field_reader.readU32(4);
             }
 
-            pub fn setPlayersInQueue(self: *Builder, value: u32) !void {
+            pub fn setPlayersInQueue(self: *Builder, value: u32) message.BuildError!void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
-            pub fn setAvgWaitSecs(self: *Builder, value: u32) !void {
+            pub fn setAvgWaitSecs(self: *Builder, value: u32) message.BuildError!void {
                 self._builder.writeU32(4, @bitCast(value));
             }
 
@@ -8012,7 +8012,7 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearId(self: *@This()) !void {
+            pub fn clearId(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -8022,7 +8022,7 @@ pub const MatchmakingService = struct {
                 return MatchId.Builder.wrap(raw);
             }
 
-            pub fn setId(self: *@This(), value: MatchId.Reader) !void {
+            pub fn setId(self: *@This(), value: MatchId.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
@@ -8031,7 +8031,7 @@ pub const MatchmakingService = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initId(self: *Builder) !MatchId.Builder {
+            pub fn initId(self: *Builder) message.BuildError!MatchId.Builder {
                 const builder = try self._builder.initStruct(0, 1, 0);
                 return MatchId.Builder{ ._builder = builder };
             }
@@ -8156,7 +8156,7 @@ pub const MatchmakingService = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) !void {
+                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -8173,7 +8173,7 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearResult(self: *@This()) !void {
+            pub fn clearResult(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -8183,12 +8183,12 @@ pub const MatchmakingService = struct {
                 return MatchResult.Builder.wrap(raw);
             }
 
-            pub fn setResult(self: *@This(), value: MatchResult.Reader) !void {
+            pub fn setResult(self: *@This(), value: MatchResult.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearStatus(self: *@This()) !void {
+            pub fn clearStatus(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -8201,12 +8201,12 @@ pub const MatchmakingService = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initResult(self: *Builder) !MatchResult.Builder {
+            pub fn initResult(self: *Builder) message.BuildError!MatchResult.Builder {
                 const builder = try self._builder.initStruct(0, 1, 2);
                 return MatchResult.Builder{ ._builder = builder };
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 

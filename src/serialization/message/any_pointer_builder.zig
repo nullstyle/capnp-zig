@@ -1,5 +1,6 @@
 const std = @import("std");
 const bounds = @import("bounds.zig");
+const BuildError = @import("errors.zig").BuildError;
 
 pub fn setNull(builder: anytype, segment_id: u32, pointer_pos: usize) !void {
     if (segment_id >= builder.segments.items.len) return error.InvalidSegmentId;
@@ -33,7 +34,7 @@ pub fn setCapability(
     segment_id: u32,
     pointer_pos: usize,
     cap: anytype,
-    make_capability_pointer: *const fn (u32) anyerror!u64,
+    make_capability_pointer: *const fn (u32) BuildError!u64,
 ) !void {
     if (segment_id >= builder.segments.items.len) return error.InvalidSegmentId;
     const segment = &builder.segments.items[segment_id];

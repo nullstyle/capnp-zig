@@ -66,7 +66,7 @@ pub const Person = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearName(self: *@This()) !void {
+        pub fn clearName(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -78,7 +78,7 @@ pub const Person = struct {
             return try field_reader.readTextStrict(0);
         }
 
-        pub fn clearAge(self: *@This()) !void {
+        pub fn clearAge(self: *@This()) message.BuildError!void {
             self._builder.writeU32(0, 0);
         }
 
@@ -87,7 +87,7 @@ pub const Person = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearEmail(self: *@This()) !void {
+        pub fn clearEmail(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -103,11 +103,11 @@ pub const Person = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn setName(self: *Builder, value: []const u8) !void {
+        pub fn setName(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeText(0, value);
         }
 
-        pub fn setAge(self: *Builder, value: u32) !void {
+        pub fn setAge(self: *Builder, value: u32) message.BuildError!void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
@@ -115,7 +115,7 @@ pub const Person = struct {
             return !self._builder.isPointerNull(1);
         }
 
-        pub fn setEmail(self: *Builder, value: []const u8) !void {
+        pub fn setEmail(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeText(1, value);
         }
 

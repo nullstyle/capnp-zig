@@ -3937,15 +3937,15 @@ pub const Bootstrap = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initService(self: *Builder) !message.AnyPointerBuilder {
+            pub fn initService(self: *Builder) message.BuildError!message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearService(self: *Builder) !void {
+            pub fn clearService(self: *Builder) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
-            pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
+            pub fn setServiceCapability(self: *Builder, cap: message.Capability) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
@@ -3955,7 +3955,7 @@ pub const Bootstrap = struct {
                 try any.setCapability(.{ .id = cap_id });
             }
 
-            pub fn setServiceClient(self: *Builder, client: game_world.GameWorld.Client) !void {
+            pub fn setServiceClient(self: *Builder, client: game_world.GameWorld.Client) message.BuildError!void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setCapability(.{ .id = client.cap_id });
             }
@@ -4119,15 +4119,15 @@ pub const Bootstrap = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initService(self: *Builder) !message.AnyPointerBuilder {
+            pub fn initService(self: *Builder) message.BuildError!message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearService(self: *Builder) !void {
+            pub fn clearService(self: *Builder) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
-            pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
+            pub fn setServiceCapability(self: *Builder, cap: message.Capability) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
@@ -4137,7 +4137,7 @@ pub const Bootstrap = struct {
                 try any.setCapability(.{ .id = cap_id });
             }
 
-            pub fn setServiceClient(self: *Builder, client: chat.ChatService.Client) !void {
+            pub fn setServiceClient(self: *Builder, client: chat.ChatService.Client) message.BuildError!void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setCapability(.{ .id = client.cap_id });
             }
@@ -4301,15 +4301,15 @@ pub const Bootstrap = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initService(self: *Builder) !message.AnyPointerBuilder {
+            pub fn initService(self: *Builder) message.BuildError!message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearService(self: *Builder) !void {
+            pub fn clearService(self: *Builder) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
-            pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
+            pub fn setServiceCapability(self: *Builder, cap: message.Capability) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
@@ -4319,7 +4319,7 @@ pub const Bootstrap = struct {
                 try any.setCapability(.{ .id = cap_id });
             }
 
-            pub fn setServiceClient(self: *Builder, client: inventory.InventoryService.Client) !void {
+            pub fn setServiceClient(self: *Builder, client: inventory.InventoryService.Client) message.BuildError!void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setCapability(.{ .id = client.cap_id });
             }
@@ -4483,15 +4483,15 @@ pub const Bootstrap = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initService(self: *Builder) !message.AnyPointerBuilder {
+            pub fn initService(self: *Builder) message.BuildError!message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearService(self: *Builder) !void {
+            pub fn clearService(self: *Builder) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
-            pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
+            pub fn setServiceCapability(self: *Builder, cap: message.Capability) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setCapability(cap);
             }
 
@@ -4501,7 +4501,7 @@ pub const Bootstrap = struct {
                 try any.setCapability(.{ .id = cap_id });
             }
 
-            pub fn setServiceClient(self: *Builder, client: matchmaking.MatchmakingService.Client) !void {
+            pub fn setServiceClient(self: *Builder, client: matchmaking.MatchmakingService.Client) message.BuildError!void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setCapability(.{ .id = client.cap_id });
             }

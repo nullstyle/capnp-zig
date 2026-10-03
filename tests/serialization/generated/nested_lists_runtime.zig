@@ -466,7 +466,7 @@ pub const Child = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearValue(self: *@This()) !void {
+        pub fn clearValue(self: *@This()) message.BuildError!void {
             self._builder.writeU16(0, 0);
         }
 
@@ -475,7 +475,7 @@ pub const Child = struct {
             return field_reader.readU16(0);
         }
 
-        pub fn setValue(self: *Builder, value: u16) !void {
+        pub fn setValue(self: *Builder, value: u16) message.BuildError!void {
             self._builder.writeU16(0, @bitCast(value));
         }
     };
@@ -532,12 +532,12 @@ pub const NestedListDemo = struct {
             pub const NestedLists = struct {
                 _builder: message.StructBuilder,
 
-                pub fn initGroupRows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.bool)) {
+                pub fn initGroupRows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.bool)) {
                     const raw = try self._builder.writePointerList(8, element_count);
                     return .{ ._list = raw };
                 }
 
-                pub fn initGroupRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.bool)) {
+                pub fn initGroupRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.bool)) {
                     const raw = try self._builder.writePointerListInSegment(8, element_count, target_segment_id);
                     return .{ ._list = raw };
                 }
@@ -554,7 +554,7 @@ pub const NestedListDemo = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearGroupRows(self: *@This()) !void {
+            pub fn clearGroupRows(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(8)).setNull();
             }
 
@@ -563,7 +563,7 @@ pub const NestedListDemo = struct {
                 return try pointer.getPointerList();
             }
 
-            pub fn setGroupRows(self: *@This(), value: message.PointerListReader) !void {
+            pub fn setGroupRows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(8);
                 try capnpc.generated_helpers.setList(pointer, value);
             }
@@ -572,7 +572,7 @@ pub const NestedListDemo = struct {
                 return !self._builder.isPointerNull(8);
             }
 
-            pub fn initGroupRows(self: *@This(), element_count: u32) !message.PointerListBuilder {
+            pub fn initGroupRows(self: *@This(), element_count: u32) message.BuildError!message.PointerListBuilder {
                 return try self._builder.writePointerList(8, element_count);
             }
         };
@@ -917,174 +917,174 @@ pub const NestedListDemo = struct {
         pub const NestedLists = struct {
             _builder: message.StructBuilder,
 
-            pub fn initNumbers(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint16)) {
+            pub fn initNumbers(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint16)) {
                 const raw = try self._builder.writePointerList(0, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initNumbersInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint16)) {
+            pub fn initNumbersInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint16)) {
                 const raw = try self._builder.writePointerListInSegment(0, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initDeepText(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.NestedBuilderCodec(message.typed_list_helpers.ScalarListCodec(.text))) {
+            pub fn initDeepText(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.NestedBuilderCodec(message.typed_list_helpers.ScalarListCodec(.text))) {
                 const raw = try self._builder.writePointerList(1, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initDeepTextInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.NestedBuilderCodec(message.typed_list_helpers.ScalarListCodec(.text))) {
+            pub fn initDeepTextInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.NestedBuilderCodec(message.typed_list_helpers.ScalarListCodec(.text))) {
                 const raw = try self._builder.writePointerListInSegment(1, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initRecords(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.StructListCodec(_capnp_file.Child, 1, 0)) {
+            pub fn initRecords(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.StructListCodec(_capnp_file.Child, 1, 0)) {
                 const raw = try self._builder.writePointerList(2, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initRecordsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.StructListCodec(_capnp_file.Child, 1, 0)) {
+            pub fn initRecordsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.StructListCodec(_capnp_file.Child, 1, 0)) {
                 const raw = try self._builder.writePointerListInSegment(2, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initDataRows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.DataListCodec) {
+            pub fn initDataRows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.DataListCodec) {
                 const raw = try self._builder.writePointerList(3, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initDataRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.DataListCodec) {
+            pub fn initDataRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.DataListCodec) {
                 const raw = try self._builder.writePointerListInSegment(3, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initEnumRows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.EnumListCodec(_capnp_file.Shade)) {
+            pub fn initEnumRows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.EnumListCodec(_capnp_file.Shade)) {
                 const raw = try self._builder.writePointerList(4, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initEnumRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.EnumListCodec(_capnp_file.Shade)) {
+            pub fn initEnumRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.EnumListCodec(_capnp_file.Shade)) {
                 const raw = try self._builder.writePointerListInSegment(4, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initServiceRows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.CapabilityListCodec) {
+            pub fn initServiceRows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.CapabilityListCodec) {
                 const raw = try self._builder.writePointerList(5, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initServiceRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.CapabilityListCodec) {
+            pub fn initServiceRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.CapabilityListCodec) {
                 const raw = try self._builder.writePointerListInSegment(5, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initVoidRows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.void)) {
+            pub fn initVoidRows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.void)) {
                 const raw = try self._builder.writePointerList(6, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initVoidRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.void)) {
+            pub fn initVoidRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.void)) {
                 const raw = try self._builder.writePointerListInSegment(6, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initChoiceRows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint32)) {
+            pub fn initChoiceRows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint32)) {
                 self._builder.writeU16(0, 0);
                 const raw = try self._builder.writePointerList(7, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initChoiceRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint32)) {
+            pub fn initChoiceRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint32)) {
                 self._builder.writeU16(0, 0);
                 const raw = try self._builder.writePointerListInSegment(7, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initDefaultRows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint16)) {
+            pub fn initDefaultRows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint16)) {
                 const raw = try self._builder.writePointerList(9, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initDefaultRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint16)) {
+            pub fn initDefaultRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint16)) {
                 const raw = try self._builder.writePointerListInSegment(9, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initI8Rows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int8)) {
+            pub fn initI8Rows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int8)) {
                 const raw = try self._builder.writePointerList(10, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initI8RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int8)) {
+            pub fn initI8RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int8)) {
                 const raw = try self._builder.writePointerListInSegment(10, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initU8Rows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint8)) {
+            pub fn initU8Rows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint8)) {
                 const raw = try self._builder.writePointerList(11, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initU8RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint8)) {
+            pub fn initU8RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint8)) {
                 const raw = try self._builder.writePointerListInSegment(11, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initI16Rows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int16)) {
+            pub fn initI16Rows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int16)) {
                 const raw = try self._builder.writePointerList(12, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initI16RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int16)) {
+            pub fn initI16RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int16)) {
                 const raw = try self._builder.writePointerListInSegment(12, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initI32Rows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int32)) {
+            pub fn initI32Rows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int32)) {
                 const raw = try self._builder.writePointerList(13, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initI32RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int32)) {
+            pub fn initI32RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int32)) {
                 const raw = try self._builder.writePointerListInSegment(13, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initI64Rows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int64)) {
+            pub fn initI64Rows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int64)) {
                 const raw = try self._builder.writePointerList(14, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initI64RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int64)) {
+            pub fn initI64RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.int64)) {
                 const raw = try self._builder.writePointerListInSegment(14, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initU64Rows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint64)) {
+            pub fn initU64Rows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint64)) {
                 const raw = try self._builder.writePointerList(15, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initU64RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint64)) {
+            pub fn initU64RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.uint64)) {
                 const raw = try self._builder.writePointerListInSegment(15, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initF32Rows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.float32)) {
+            pub fn initF32Rows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.float32)) {
                 const raw = try self._builder.writePointerList(16, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initF32RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.float32)) {
+            pub fn initF32RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.float32)) {
                 const raw = try self._builder.writePointerListInSegment(16, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
 
-            pub fn initF64Rows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.float64)) {
+            pub fn initF64Rows(self: @This(), element_count: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.float64)) {
                 const raw = try self._builder.writePointerList(17, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initF64RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.float64)) {
+            pub fn initF64RowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) message.BuildError!message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.ScalarListCodec(.float64)) {
                 const raw = try self._builder.writePointerListInSegment(17, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
@@ -1109,7 +1109,7 @@ pub const NestedListDemo = struct {
             return std.enums.fromInt(_capnp_file.NestedListDemo.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearNumbers(self: *@This()) !void {
+        pub fn clearNumbers(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -1118,12 +1118,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setNumbers(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setNumbers(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(0);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearDeepText(self: *@This()) !void {
+        pub fn clearDeepText(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -1132,12 +1132,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setDeepText(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setDeepText(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(1);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearRecords(self: *@This()) !void {
+        pub fn clearRecords(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(2)).setNull();
         }
 
@@ -1146,12 +1146,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setRecords(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setRecords(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(2);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearDataRows(self: *@This()) !void {
+        pub fn clearDataRows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(3)).setNull();
         }
 
@@ -1160,12 +1160,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setDataRows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setDataRows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(3);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearEnumRows(self: *@This()) !void {
+        pub fn clearEnumRows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(4)).setNull();
         }
 
@@ -1174,12 +1174,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setEnumRows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setEnumRows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(4);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearServiceRows(self: *@This()) !void {
+        pub fn clearServiceRows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(5)).setNull();
         }
 
@@ -1188,12 +1188,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setServiceRows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setServiceRows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(5);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearVoidRows(self: *@This()) !void {
+        pub fn clearVoidRows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(6)).setNull();
         }
 
@@ -1202,12 +1202,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setVoidRows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setVoidRows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(6);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearChoiceRows(self: *@This()) !void {
+        pub fn clearChoiceRows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(7)).setNull();
             self._builder.writeU16(0, 0);
         }
@@ -1218,13 +1218,13 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setChoiceRows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setChoiceRows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(7);
             try capnpc.generated_helpers.setList(pointer, value);
             self._builder.writeU16(0, 0);
         }
 
-        pub fn clearNone(self: *@This()) !void {
+        pub fn clearNone(self: *@This()) message.BuildError!void {
             self._builder.writeU16(0, 1);
         }
 
@@ -1233,11 +1233,11 @@ pub const NestedListDemo = struct {
             return {};
         }
 
-        pub fn clearGrouped(self: *@This()) !void {
+        pub fn clearGrouped(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(8)).setNull();
         }
 
-        pub fn clearDefaultRows(self: *@This()) !void {
+        pub fn clearDefaultRows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(9)).setNull();
         }
 
@@ -1247,12 +1247,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setDefaultRows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setDefaultRows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(9);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearI8Rows(self: *@This()) !void {
+        pub fn clearI8Rows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(10)).setNull();
         }
 
@@ -1261,12 +1261,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setI8Rows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setI8Rows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(10);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearU8Rows(self: *@This()) !void {
+        pub fn clearU8Rows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(11)).setNull();
         }
 
@@ -1275,12 +1275,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setU8Rows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setU8Rows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(11);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearI16Rows(self: *@This()) !void {
+        pub fn clearI16Rows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(12)).setNull();
         }
 
@@ -1289,12 +1289,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setI16Rows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setI16Rows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(12);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearI32Rows(self: *@This()) !void {
+        pub fn clearI32Rows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(13)).setNull();
         }
 
@@ -1303,12 +1303,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setI32Rows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setI32Rows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(13);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearI64Rows(self: *@This()) !void {
+        pub fn clearI64Rows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(14)).setNull();
         }
 
@@ -1317,12 +1317,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setI64Rows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setI64Rows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(14);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearU64Rows(self: *@This()) !void {
+        pub fn clearU64Rows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(15)).setNull();
         }
 
@@ -1331,12 +1331,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setU64Rows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setU64Rows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(15);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearF32Rows(self: *@This()) !void {
+        pub fn clearF32Rows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(16)).setNull();
         }
 
@@ -1345,12 +1345,12 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setF32Rows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setF32Rows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(16);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearF64Rows(self: *@This()) !void {
+        pub fn clearF64Rows(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(17)).setNull();
         }
 
@@ -1359,7 +1359,7 @@ pub const NestedListDemo = struct {
             return try pointer.getPointerList();
         }
 
-        pub fn setF64Rows(self: *@This(), value: message.PointerListReader) !void {
+        pub fn setF64Rows(self: *@This(), value: message.PointerListReader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(17);
             try capnpc.generated_helpers.setList(pointer, value);
         }
@@ -1368,7 +1368,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initNumbers(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initNumbers(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(0, element_count);
         }
 
@@ -1376,7 +1376,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(1);
         }
 
-        pub fn initDeepText(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initDeepText(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(1, element_count);
         }
 
@@ -1384,7 +1384,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(2);
         }
 
-        pub fn initRecords(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initRecords(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(2, element_count);
         }
 
@@ -1392,7 +1392,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(3);
         }
 
-        pub fn initDataRows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initDataRows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(3, element_count);
         }
 
@@ -1400,7 +1400,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(4);
         }
 
-        pub fn initEnumRows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initEnumRows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(4, element_count);
         }
 
@@ -1408,7 +1408,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(5);
         }
 
-        pub fn initServiceRows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initServiceRows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(5, element_count);
         }
 
@@ -1416,7 +1416,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(6);
         }
 
-        pub fn initVoidRows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initVoidRows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(6, element_count);
         }
 
@@ -1425,12 +1425,12 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(7);
         }
 
-        pub fn initChoiceRows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initChoiceRows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             self._builder.writeU16(0, 0);
             return try self._builder.writePointerList(7, element_count);
         }
 
-        pub fn setNone(self: *Builder, value: void) !void {
+        pub fn setNone(self: *Builder, value: void) message.BuildError!void {
             self._builder.writeU16(0, 1);
             _ = value;
         }
@@ -1443,7 +1443,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(9);
         }
 
-        pub fn initDefaultRows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initDefaultRows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(9, element_count);
         }
 
@@ -1451,7 +1451,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(10);
         }
 
-        pub fn initI8Rows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initI8Rows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(10, element_count);
         }
 
@@ -1459,7 +1459,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(11);
         }
 
-        pub fn initU8Rows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initU8Rows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(11, element_count);
         }
 
@@ -1467,7 +1467,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(12);
         }
 
-        pub fn initI16Rows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initI16Rows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(12, element_count);
         }
 
@@ -1475,7 +1475,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(13);
         }
 
-        pub fn initI32Rows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initI32Rows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(13, element_count);
         }
 
@@ -1483,7 +1483,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(14);
         }
 
-        pub fn initI64Rows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initI64Rows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(14, element_count);
         }
 
@@ -1491,7 +1491,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(15);
         }
 
-        pub fn initU64Rows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initU64Rows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(15, element_count);
         }
 
@@ -1499,7 +1499,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(16);
         }
 
-        pub fn initF32Rows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initF32Rows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(16, element_count);
         }
 
@@ -1507,7 +1507,7 @@ pub const NestedListDemo = struct {
             return !self._builder.isPointerNull(17);
         }
 
-        pub fn initF64Rows(self: *Builder, element_count: u32) !message.PointerListBuilder {
+        pub fn initF64Rows(self: *Builder, element_count: u32) message.BuildError!message.PointerListBuilder {
             return try self._builder.writePointerList(17, element_count);
         }
     };

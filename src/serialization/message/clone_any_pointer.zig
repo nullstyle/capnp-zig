@@ -1,5 +1,6 @@
 const std = @import("std");
 const bounds = @import("bounds.zig");
+const CopyError = @import("errors.zig").CopyError;
 
 pub fn define(
     comptime MessageBuilderType: type,
@@ -8,8 +9,8 @@ pub fn define(
     comptime StructReaderType: type,
     comptime StructBuilderType: type,
     comptime StructListReaderType: type,
-    comptime list_content_bytes: *const fn (u3, u32) anyerror!usize,
-    comptime decode_capability_pointer: *const fn (u64) anyerror!u32,
+    comptime list_content_bytes: *const fn (u3, u32) CopyError!usize,
+    comptime decode_capability_pointer: *const fn (u64) CopyError!u32,
 ) type {
     return struct {
         const max_depth: u32 = 64;
@@ -30,11 +31,11 @@ pub fn define(
             return out;
         }
 
-        pub fn cloneAnyPointer(src: AnyPointerReaderType, dest: AnyPointerBuilderType) anyerror!void {
+        pub fn cloneAnyPointer(src: AnyPointerReaderType, dest: AnyPointerBuilderType) CopyError!void {
             return cloneAnyPointerDepth(src, dest, max_depth);
         }
 
-        fn cloneAnyPointerDepth(src: AnyPointerReaderType, dest: AnyPointerBuilderType, depth: u32) anyerror!void {
+        fn cloneAnyPointerDepth(src: AnyPointerReaderType, dest: AnyPointerBuilderType, depth: u32) CopyError!void {
             if (depth == 0) return error.RecursionLimitExceeded;
             const resolved = try src.message.resolvePointer(src.segment_id, src.pointer_pos, src.pointer_word, 8);
             if (resolved.pointer_word == 0 and resolved.content_override == null) {
@@ -60,7 +61,7 @@ pub fn define(
             }
         }
 
-        fn cloneStructDepth(src: StructReaderType, dest: StructBuilderType, depth: u32) anyerror!void {
+        fn cloneStructDepth(src: StructReaderType, dest: StructBuilderType, depth: u32) CopyError!void {
             const src_data = src.getDataSection();
             const dest_segment = &dest.builder.segments.items[dest.segment_id];
             const dest_start = dest.offset;
@@ -95,7 +96,7 @@ pub fn define(
             }
         }
 
-        fn cloneListDepth(src: AnyPointerReaderType, dest: AnyPointerBuilderType, resolved_pointer_word: u64, depth: u32) anyerror!void {
+        fn cloneListDepth(src: AnyPointerReaderType, dest: AnyPointerBuilderType, resolved_pointer_word: u64, depth: u32) CopyError!void {
             const element_size = @as(u3, @truncate((resolved_pointer_word >> 32) & 0x7));
 
             if (element_size == 7) {

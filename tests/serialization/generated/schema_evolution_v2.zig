@@ -307,7 +307,7 @@ pub const Child = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearValue(self: *@This()) !void {
+        pub fn clearValue(self: *@This()) message.BuildError!void {
             self._builder.writeU32(0, 0);
         }
 
@@ -316,7 +316,7 @@ pub const Child = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn setValue(self: *Builder, value: u32) !void {
+        pub fn setValue(self: *Builder, value: u32) message.BuildError!void {
             self._builder.writeU32(0, @bitCast(value));
         }
     };
@@ -864,7 +864,7 @@ pub const Evolution = struct {
                     return raw.readU16(4) ^ @as(u16, 1);
                 }
 
-                pub fn setState(self: @This(), value: u16) !void {
+                pub fn setState(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(4, value ^ @as(u16, 1));
                 }
             };
@@ -880,7 +880,7 @@ pub const Evolution = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearNote(self: *@This()) !void {
+            pub fn clearNote(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(9)).setNull();
             }
 
@@ -893,7 +893,7 @@ pub const Evolution = struct {
                 return try field_reader.readTextStrict(9);
             }
 
-            pub fn clearState(self: *@This()) !void {
+            pub fn clearState(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(4, 0);
             }
 
@@ -906,11 +906,11 @@ pub const Evolution = struct {
                 return !self._builder.isPointerNull(9);
             }
 
-            pub fn setNote(self: *@This(), value: []const u8) !void {
+            pub fn setNote(self: *@This(), value: []const u8) message.BuildError!void {
                 try self._builder.writeText(9, value);
             }
 
-            pub fn setState(self: *@This(), value: Status) !void {
+            pub fn setState(self: *@This(), value: Status) message.BuildError!void {
                 return self.enumOrdinals().setState(@as(u16, @backingInt(value)));
             }
         };
@@ -1111,7 +1111,7 @@ pub const Evolution = struct {
                 return raw.readU16(0) ^ @as(u16, 1);
             }
 
-            pub fn setStatus(self: @This(), value: u16) !void {
+            pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
                 self._builder.writeU16(0, value ^ @as(u16, 1));
             }
         };
@@ -1135,7 +1135,7 @@ pub const Evolution = struct {
             return std.enums.fromInt(_capnp_file.Evolution.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearStatus(self: *@This()) !void {
+        pub fn clearStatus(self: *@This()) message.BuildError!void {
             self._builder.writeU16(0, 0);
         }
 
@@ -1144,7 +1144,7 @@ pub const Evolution = struct {
             return std.enums.fromInt(Status, ordinal) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearStatuses(self: *@This()) !void {
+        pub fn clearStatuses(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -1153,12 +1153,12 @@ pub const Evolution = struct {
             return .{ ._list = try pointer.getU16List() };
         }
 
-        pub fn setStatuses(self: *@This(), value: EnumListReader(Status)) !void {
+        pub fn setStatuses(self: *@This(), value: EnumListReader(Status)) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(0);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearText(self: *@This()) !void {
+        pub fn clearText(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -1171,7 +1171,7 @@ pub const Evolution = struct {
             return try field_reader.readTextStrict(1);
         }
 
-        pub fn clearData(self: *@This()) !void {
+        pub fn clearData(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(2)).setNull();
         }
 
@@ -1184,7 +1184,7 @@ pub const Evolution = struct {
             return try field_reader.readData(2);
         }
 
-        pub fn clearChild(self: *@This()) !void {
+        pub fn clearChild(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(3)).setNull();
         }
 
@@ -1194,12 +1194,12 @@ pub const Evolution = struct {
             return Child.Builder.wrap(raw);
         }
 
-        pub fn setChild(self: *@This(), value: Child.Reader) !void {
+        pub fn setChild(self: *@This(), value: Child.Reader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(3);
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearChildren(self: *@This()) !void {
+        pub fn clearChildren(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(4)).setNull();
         }
 
@@ -1209,12 +1209,12 @@ pub const Evolution = struct {
             return .{ ._list = raw };
         }
 
-        pub fn setChildren(self: *@This(), value: StructListReader(Child)) !void {
+        pub fn setChildren(self: *@This(), value: StructListReader(Child)) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(4);
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearAny(self: *@This()) !void {
+        pub fn clearAny(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(5)).setNull();
         }
 
@@ -1223,7 +1223,7 @@ pub const Evolution = struct {
             return pointer;
         }
 
-        pub fn setAny(self: *@This(), value: message.AnyPointerReader) !void {
+        pub fn setAny(self: *@This(), value: message.AnyPointerReader) message.CopyError!void {
             try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(5), value);
         }
 
@@ -1232,7 +1232,7 @@ pub const Evolution = struct {
             return try pointer.getCapability();
         }
 
-        pub fn clearDefaultText(self: *@This()) !void {
+        pub fn clearDefaultText(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(7)).setNull();
         }
 
@@ -1245,7 +1245,7 @@ pub const Evolution = struct {
             return try field_reader.readTextStrict(7);
         }
 
-        pub fn clearEmpty(self: *@This()) !void {
+        pub fn clearEmpty(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(8)).setNull();
         }
 
@@ -1255,12 +1255,12 @@ pub const Evolution = struct {
             return Empty.Builder.wrap(raw);
         }
 
-        pub fn setEmpty(self: *@This(), value: Empty.Reader) !void {
+        pub fn setEmpty(self: *@This(), value: Empty.Reader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(8);
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearNone(self: *@This()) !void {
+        pub fn clearNone(self: *@This()) message.BuildError!void {
             self._builder.writeU16(2, 0);
         }
 
@@ -1269,7 +1269,7 @@ pub const Evolution = struct {
             return {};
         }
 
-        pub fn clearLabel(self: *@This()) !void {
+        pub fn clearLabel(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(9)).setNull();
             self._builder.writeU16(2, 1);
         }
@@ -1284,7 +1284,7 @@ pub const Evolution = struct {
             return try field_reader.readTextStrict(9);
         }
 
-        pub fn clearDetails(self: *@This()) !void {
+        pub fn clearDetails(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(9)).setNull();
             self._builder.writeU16(4, 0);
             self._builder.writeU16(2, 2);
@@ -1295,7 +1295,7 @@ pub const Evolution = struct {
             return Details.Builder.wrap(self._builder);
         }
 
-        pub fn clearFutureLabel(self: *@This()) !void {
+        pub fn clearFutureLabel(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(9)).setNull();
             self._builder.writeU16(2, 3);
         }
@@ -1310,7 +1310,7 @@ pub const Evolution = struct {
             return try field_reader.readTextStrict(9);
         }
 
-        pub fn clearAddedText(self: *@This()) !void {
+        pub fn clearAddedText(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(10)).setNull();
         }
 
@@ -1323,7 +1323,7 @@ pub const Evolution = struct {
             return try field_reader.readTextStrict(10);
         }
 
-        pub fn setStatus(self: *Builder, value: Status) !void {
+        pub fn setStatus(self: *Builder, value: Status) message.BuildError!void {
             return self.enumOrdinals().setStatus(@as(u16, @backingInt(value)));
         }
 
@@ -1331,7 +1331,7 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initStatuses(self: *Builder, element_count: u32) !EnumListBuilder(Status) {
+        pub fn initStatuses(self: *Builder, element_count: u32) message.BuildError!EnumListBuilder(Status) {
             const raw = try self._builder.writeU16List(0, element_count);
             return EnumListBuilder(Status){ ._list = raw };
         }
@@ -1340,7 +1340,7 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(1);
         }
 
-        pub fn setText(self: *Builder, value: []const u8) !void {
+        pub fn setText(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeText(1, value);
         }
 
@@ -1348,7 +1348,7 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(2);
         }
 
-        pub fn setData(self: *Builder, value: []const u8) !void {
+        pub fn setData(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeData(2, value);
         }
 
@@ -1356,7 +1356,7 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(3);
         }
 
-        pub fn initChild(self: *Builder) !Child.Builder {
+        pub fn initChild(self: *Builder) message.BuildError!Child.Builder {
             const builder = try self._builder.initStruct(3, 1, 0);
             return Child.Builder{ ._builder = builder };
         }
@@ -1365,7 +1365,7 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(4);
         }
 
-        pub fn initChildren(self: *Builder, element_count: u32) !StructListBuilder(Child) {
+        pub fn initChildren(self: *Builder, element_count: u32) message.BuildError!StructListBuilder(Child) {
             const raw = try self._builder.writeStructList(4, element_count, 1, 0);
             return StructListBuilder(Child){ ._list = raw };
         }
@@ -1374,23 +1374,23 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(5);
         }
 
-        pub fn initAny(self: *Builder) !message.AnyPointerBuilder {
+        pub fn initAny(self: *Builder) message.BuildError!message.AnyPointerBuilder {
             return try self._builder.getAnyPointer(5);
         }
 
-        pub fn setAnyNull(self: *Builder) !void {
+        pub fn setAnyNull(self: *Builder) message.BuildError!void {
             try (try self._builder.getAnyPointer(5)).setNull();
         }
 
-        pub fn setAnyText(self: *Builder, value: []const u8) !void {
+        pub fn setAnyText(self: *Builder, value: []const u8) message.BuildError!void {
             try (try self._builder.getAnyPointer(5)).setText(value);
         }
 
-        pub fn setAnyData(self: *Builder, value: []const u8) !void {
+        pub fn setAnyData(self: *Builder, value: []const u8) message.BuildError!void {
             try (try self._builder.getAnyPointer(5)).setData(value);
         }
 
-        pub fn setAnyCapability(self: *Builder, cap: message.Capability) !void {
+        pub fn setAnyCapability(self: *Builder, cap: message.Capability) message.BuildError!void {
             try (try self._builder.getAnyPointer(5)).setCapability(cap);
         }
 
@@ -1398,15 +1398,15 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(6);
         }
 
-        pub fn initService(self: *Builder) !message.AnyPointerBuilder {
+        pub fn initService(self: *Builder) message.BuildError!message.AnyPointerBuilder {
             return try self._builder.getAnyPointer(6);
         }
 
-        pub fn clearService(self: *Builder) !void {
+        pub fn clearService(self: *Builder) message.BuildError!void {
             try (try self._builder.getAnyPointer(6)).setNull();
         }
 
-        pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
+        pub fn setServiceCapability(self: *Builder, cap: message.Capability) message.BuildError!void {
             try (try self._builder.getAnyPointer(6)).setCapability(cap);
         }
 
@@ -1416,7 +1416,7 @@ pub const Evolution = struct {
             try any.setCapability(.{ .id = cap_id });
         }
 
-        pub fn setServiceClient(self: *Builder, client: Service.Client) !void {
+        pub fn setServiceClient(self: *Builder, client: Service.Client) message.BuildError!void {
             var any = try self._builder.getAnyPointer(6);
             try any.setCapability(.{ .id = client.cap_id });
         }
@@ -1425,7 +1425,7 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(7);
         }
 
-        pub fn setDefaultText(self: *Builder, value: []const u8) !void {
+        pub fn setDefaultText(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeText(7, value);
         }
 
@@ -1433,12 +1433,12 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(8);
         }
 
-        pub fn initEmpty(self: *Builder) !Empty.Builder {
+        pub fn initEmpty(self: *Builder) message.BuildError!Empty.Builder {
             const builder = try self._builder.initStruct(8, 0, 0);
             return Empty.Builder{ ._builder = builder };
         }
 
-        pub fn setNone(self: *Builder, value: void) !void {
+        pub fn setNone(self: *Builder, value: void) message.BuildError!void {
             self._builder.writeU16(2, 0);
             _ = value;
         }
@@ -1448,7 +1448,7 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(9);
         }
 
-        pub fn setLabel(self: *Builder, value: []const u8) !void {
+        pub fn setLabel(self: *Builder, value: []const u8) message.BuildError!void {
             self._builder.writeU16(2, 1);
             try self._builder.writeText(9, value);
         }
@@ -1465,7 +1465,7 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(9);
         }
 
-        pub fn setFutureLabel(self: *Builder, value: []const u8) !void {
+        pub fn setFutureLabel(self: *Builder, value: []const u8) message.BuildError!void {
             self._builder.writeU16(2, 3);
             try self._builder.writeText(9, value);
         }
@@ -1474,7 +1474,7 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(10);
         }
 
-        pub fn setAddedText(self: *Builder, value: []const u8) !void {
+        pub fn setAddedText(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeText(10, value);
         }
     };

@@ -1,5 +1,6 @@
 const std = @import("std");
 const bounds = @import("bounds.zig");
+const BuildError = @import("errors.zig").BuildError;
 
 pub fn define(
     comptime MessageBuilderType: type,
@@ -19,9 +20,9 @@ pub fn define(
     comptime F64ListBuilderType: type,
     comptime BoolListBuilderType: type,
     comptime CapabilityType: type,
-    comptime make_capability_pointer: *const fn (u32) anyerror!u64,
-    comptime make_list_pointer: *const fn (i32, u3, u32) anyerror!u64,
-    comptime make_far_pointer: *const fn (bool, u32, u32) anyerror!u64,
+    comptime make_capability_pointer: *const fn (u32) BuildError!u64,
+    comptime make_list_pointer: *const fn (i32, u3, u32) BuildError!u64,
+    comptime make_far_pointer: *const fn (bool, u32, u32) BuildError!u64,
 ) type {
     return struct {
         /// Builder for a list of pointers (text, data, structs, or capabilities) within a message.
@@ -1033,7 +1034,7 @@ pub fn define(
                 element_count: u32,
                 data_words: u16,
                 pointer_words: u16,
-            ) !StructListBuilderType {
+            ) BuildError!StructListBuilderType {
                 return self.writeStructListInSegments(pointer_index, element_count, data_words, pointer_words, self.segment_id, self.segment_id);
             }
 
@@ -1045,7 +1046,7 @@ pub fn define(
                 data_words: u16,
                 pointer_words: u16,
                 target_segment_id: u32,
-            ) !StructListBuilderType {
+            ) BuildError!StructListBuilderType {
                 return self.writeStructListInSegments(pointer_index, element_count, data_words, pointer_words, target_segment_id, target_segment_id);
             }
 
@@ -1060,7 +1061,7 @@ pub fn define(
                 pointer_words: u16,
                 landing_segment_id: u32,
                 content_segment_id: u32,
-            ) !StructListBuilderType {
+            ) BuildError!StructListBuilderType {
                 if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
                 const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
                 return self.builder.writeStructListPointer(
@@ -1075,7 +1076,7 @@ pub fn define(
             }
 
             /// Allocate a text (pointer) list at the given pointer index and return its builder.
-            pub fn writeTextList(self: @This(), pointer_index: usize, element_count: u32) !TextListBuilderType {
+            pub fn writeTextList(self: @This(), pointer_index: usize, element_count: u32) BuildError!TextListBuilderType {
                 return self.writeTextListInSegments(pointer_index, element_count, self.segment_id, self.segment_id);
             }
 
@@ -1085,7 +1086,7 @@ pub fn define(
                 pointer_index: usize,
                 element_count: u32,
                 target_segment_id: u32,
-            ) !TextListBuilderType {
+            ) BuildError!TextListBuilderType {
                 return self.writeTextListInSegments(pointer_index, element_count, target_segment_id, target_segment_id);
             }
 
@@ -1096,7 +1097,7 @@ pub fn define(
                 element_count: u32,
                 landing_segment_id: u32,
                 content_segment_id: u32,
-            ) !TextListBuilderType {
+            ) BuildError!TextListBuilderType {
                 if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
 
                 const total_bytes = @as(usize, element_count) * 8;
@@ -1168,7 +1169,7 @@ pub fn define(
 
             /// Allocate a pointer list at the given pointer index and return its builder.
             /// Each element is a single pointer (text, data, struct, or capability).
-            pub fn writePointerList(self: @This(), pointer_index: usize, element_count: u32) anyerror!PointerListBuilder {
+            pub fn writePointerList(self: @This(), pointer_index: usize, element_count: u32) BuildError!PointerListBuilder {
                 return self.writePointerListInSegment(pointer_index, element_count, self.segment_id);
             }
 
@@ -1178,7 +1179,7 @@ pub fn define(
                 pointer_index: usize,
                 element_count: u32,
                 target_segment_id: u32,
-            ) anyerror!PointerListBuilder {
+            ) BuildError!PointerListBuilder {
                 if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
 
                 while (self.builder.segments.items.len <= target_segment_id) {

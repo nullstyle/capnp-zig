@@ -177,6 +177,26 @@ The one frozen public error set is validation:
   (`src/serialization/message.zig`). A returned error outside it fails to build,
   so the set stays exact.
 
+Builders spell two named sets (`src/serialization/message/errors.zig`):
+
+- `message.BuildError` — every error a builder primitive can return while
+  writing into a `MessageBuilder` (allocation, bounds, wire-encoding limits).
+  Generated `initX`, value `setX` (including `setXCapability`, `setXClient`,
+  `setXText`, `setXData` and `setXNull`) and `clearX` methods on struct, group and view
+  Builders return exactly this set, as do `StructBuilder.writePointerList*`,
+  `writeStructList*` and `writeTextList*`. The pointer makers the builders call
+  through are typed with it, so a path that starts returning a new error fails
+  to compile rather than widening a signature to `anyerror`.
+- `message.CopyError` — `BuildError` plus the errors raised while reading the
+  source of a deep copy. `message.cloneAnyPointer` and the generated copy
+  setters (`setX(value: T.Reader)`, `setX(value: SomeListReader)`,
+  `setX(value: message.AnyPointerReader)`) return exactly this set.
+
+Generated methods that are not plain message writes keep inferred sets:
+`setXServer` (exports through the `Peer`), and the codec-parametric generic
+(`Apply`) and concrete-brand (`brands()`) views. `zig build check-api` rejects
+any Stable builder declaration that renders `anyerror`.
+
 For RPC, the frozen client-facing set is:
 
 - `rpc.peer.CallError` = `{ RemoteException, Disconnected, CallTimedOut,
@@ -606,15 +626,14 @@ cooperating peer.
   (`*std.Io.Writer` and `message.StructBuilder` respectively) and so also
   cleared their `api-closure` skip.
 
-  Two more lost the opaque marker without gaining a tighter pin, and the
-  snapshot now says so honestly by rendering `anyerror!void`:
-  `rpc.wire.protocol.CapDescriptor.writeThirdPartyHosted` (it calls
-  `message.cloneAnyPointer`, which is declared `anyerror!void` because it
-  recurses across a type-erased boundary whose helpers are `@ptrCast` to
-  `anyerror` signatures) and
-  `rpc.caps.table.payload_remap.clonePayloadWithRemappedCaps` (its
-  `map_inbound_cap` parameter is an `anyerror`-typed callback). Both resolve to
-  `anyerror` at *every* instantiation, so there is nothing to tighten.
+  Two more lost the opaque marker without gaining a tighter pin at first.
+  `rpc.wire.protocol.CapDescriptor.writeThirdPartyHosted` rendered
+  `anyerror!void` because `message.cloneAnyPointer` was declared that way; the
+  clone helpers now return `message.CopyError`, so it renders that concrete set.
+  `rpc.caps.table.payload_remap.clonePayloadWithRemappedCaps` still renders
+  `anyerror!void`: its `map_inbound_cap` parameter is an `anyerror`-typed
+  callback, so it resolves to `anyerror` at *every* instantiation and there is
+  nothing to tighten.
 
   **The generic-parameter holes are otherwise closed.**
   `reader.Reader.readMessage` and `reader.Reader.readPackedMessage` — the last
@@ -623,9 +642,9 @@ cooperating peer.
   only purpose was feeding them, was removed — use
   `std.Io.Reader.fixed(bytes)`). Their error sets now render concretely and an
   error rename turns `check-api` red, verified in both directions. What
-  remains is the honest pair above: a signature that resolves to `anyerror` at
-  every instantiation cannot drift-detect either, but there is no tighter
-  truth to pin.
+  remains is `clonePayloadWithRemappedCaps` above: a signature that resolves to
+  `anyerror` at every instantiation cannot drift-detect either, but there is no
+  tighter truth to pin.
 
 - **The frozen surface IS now closed under its own signatures**, gated by
   `zig build api-closure` on all three CI tiers. Its first run reported 14

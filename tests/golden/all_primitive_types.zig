@@ -107,7 +107,7 @@ pub const AllTypes = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearBoolField(self: *@This()) !void {
+        pub fn clearBoolField(self: *@This()) message.BuildError!void {
             self._builder.writeBool(0, 0, false);
         }
 
@@ -116,7 +116,7 @@ pub const AllTypes = struct {
             return field_reader.readBool(0, 0);
         }
 
-        pub fn clearInt8Field(self: *@This()) !void {
+        pub fn clearInt8Field(self: *@This()) message.BuildError!void {
             self._builder.writeU8(1, 0);
         }
 
@@ -125,7 +125,7 @@ pub const AllTypes = struct {
             return @bitCast(field_reader.readU8(1));
         }
 
-        pub fn clearInt16Field(self: *@This()) !void {
+        pub fn clearInt16Field(self: *@This()) message.BuildError!void {
             self._builder.writeU16(2, 0);
         }
 
@@ -134,7 +134,7 @@ pub const AllTypes = struct {
             return @bitCast(field_reader.readU16(2));
         }
 
-        pub fn clearInt32Field(self: *@This()) !void {
+        pub fn clearInt32Field(self: *@This()) message.BuildError!void {
             self._builder.writeU32(4, 0);
         }
 
@@ -143,7 +143,7 @@ pub const AllTypes = struct {
             return @bitCast(field_reader.readU32(4));
         }
 
-        pub fn clearInt64Field(self: *@This()) !void {
+        pub fn clearInt64Field(self: *@This()) message.BuildError!void {
             self._builder.writeU64(8, 0);
         }
 
@@ -152,7 +152,7 @@ pub const AllTypes = struct {
             return @bitCast(field_reader.readU64(8));
         }
 
-        pub fn clearUint8Field(self: *@This()) !void {
+        pub fn clearUint8Field(self: *@This()) message.BuildError!void {
             self._builder.writeU8(2, 0);
         }
 
@@ -161,7 +161,7 @@ pub const AllTypes = struct {
             return field_reader.readU8(2);
         }
 
-        pub fn clearUint16Field(self: *@This()) !void {
+        pub fn clearUint16Field(self: *@This()) message.BuildError!void {
             self._builder.writeU16(4, 0);
         }
 
@@ -170,7 +170,7 @@ pub const AllTypes = struct {
             return field_reader.readU16(4);
         }
 
-        pub fn clearUint32Field(self: *@This()) !void {
+        pub fn clearUint32Field(self: *@This()) message.BuildError!void {
             self._builder.writeU32(8, 0);
         }
 
@@ -179,7 +179,7 @@ pub const AllTypes = struct {
             return field_reader.readU32(8);
         }
 
-        pub fn clearUint64Field(self: *@This()) !void {
+        pub fn clearUint64Field(self: *@This()) message.BuildError!void {
             self._builder.writeU64(16, 0);
         }
 
@@ -188,7 +188,7 @@ pub const AllTypes = struct {
             return field_reader.readU64(16);
         }
 
-        pub fn clearFloat32Field(self: *@This()) !void {
+        pub fn clearFloat32Field(self: *@This()) message.BuildError!void {
             self._builder.writeU32(12, 0);
         }
 
@@ -197,7 +197,7 @@ pub const AllTypes = struct {
             return @bitCast(field_reader.readU32(12));
         }
 
-        pub fn clearFloat64Field(self: *@This()) !void {
+        pub fn clearFloat64Field(self: *@This()) message.BuildError!void {
             self._builder.writeU64(24, 0);
         }
 
@@ -206,7 +206,7 @@ pub const AllTypes = struct {
             return @bitCast(field_reader.readU64(24));
         }
 
-        pub fn clearTextField(self: *@This()) !void {
+        pub fn clearTextField(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -218,7 +218,7 @@ pub const AllTypes = struct {
             return try field_reader.readTextStrict(0);
         }
 
-        pub fn clearDataField(self: *@This()) !void {
+        pub fn clearDataField(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -231,47 +231,47 @@ pub const AllTypes = struct {
             return try field_reader.readData(1);
         }
 
-        pub fn setBoolField(self: *Builder, value: bool) !void {
+        pub fn setBoolField(self: *Builder, value: bool) message.BuildError!void {
             self._builder.writeBool(0, 0, value);
         }
 
-        pub fn setInt8Field(self: *Builder, value: i8) !void {
+        pub fn setInt8Field(self: *Builder, value: i8) message.BuildError!void {
             self._builder.writeU8(1, @bitCast(value));
         }
 
-        pub fn setInt16Field(self: *Builder, value: i16) !void {
+        pub fn setInt16Field(self: *Builder, value: i16) message.BuildError!void {
             self._builder.writeU16(2, @bitCast(value));
         }
 
-        pub fn setInt32Field(self: *Builder, value: i32) !void {
+        pub fn setInt32Field(self: *Builder, value: i32) message.BuildError!void {
             self._builder.writeU32(4, @bitCast(value));
         }
 
-        pub fn setInt64Field(self: *Builder, value: i64) !void {
+        pub fn setInt64Field(self: *Builder, value: i64) message.BuildError!void {
             self._builder.writeU64(8, @bitCast(value));
         }
 
-        pub fn setUint8Field(self: *Builder, value: u8) !void {
+        pub fn setUint8Field(self: *Builder, value: u8) message.BuildError!void {
             self._builder.writeU8(2, @bitCast(value));
         }
 
-        pub fn setUint16Field(self: *Builder, value: u16) !void {
+        pub fn setUint16Field(self: *Builder, value: u16) message.BuildError!void {
             self._builder.writeU16(4, @bitCast(value));
         }
 
-        pub fn setUint32Field(self: *Builder, value: u32) !void {
+        pub fn setUint32Field(self: *Builder, value: u32) message.BuildError!void {
             self._builder.writeU32(8, @bitCast(value));
         }
 
-        pub fn setUint64Field(self: *Builder, value: u64) !void {
+        pub fn setUint64Field(self: *Builder, value: u64) message.BuildError!void {
             self._builder.writeU64(16, @bitCast(value));
         }
 
-        pub fn setFloat32Field(self: *Builder, value: f32) !void {
+        pub fn setFloat32Field(self: *Builder, value: f32) message.BuildError!void {
             self._builder.writeU32(12, @bitCast(value));
         }
 
-        pub fn setFloat64Field(self: *Builder, value: f64) !void {
+        pub fn setFloat64Field(self: *Builder, value: f64) message.BuildError!void {
             self._builder.writeU64(24, @bitCast(value));
         }
 
@@ -279,7 +279,7 @@ pub const AllTypes = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn setTextField(self: *Builder, value: []const u8) !void {
+        pub fn setTextField(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeText(0, value);
         }
 
@@ -287,7 +287,7 @@ pub const AllTypes = struct {
             return !self._builder.isPointerNull(1);
         }
 
-        pub fn setDataField(self: *Builder, value: []const u8) !void {
+        pub fn setDataField(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeData(1, value);
         }
 

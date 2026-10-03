@@ -161,12 +161,9 @@ pub const CapDescriptor = struct {
         try third_builder.setIdNull();
     }
 
-    /// NOTE: this one resolves to `anyerror` even when instantiated, because
-    /// `message.cloneAnyPointer` is declared `anyerror!void` (it recurses across
-    /// a type-erased boundary whose helpers are `@ptrCast` to `anyerror`
-    /// signatures). De-genericizing the builder parameter still pins the
-    /// parameter types and clears the `api-closure` skip, but the error set
-    /// cannot be tightened from here.
+    /// The error set is inferred from `message.cloneAnyPointer`, which returns
+    /// `message.CopyError`; it used to be `anyerror` until the clone helpers
+    /// were given that named set.
     pub fn writeThirdPartyHosted(
         builder: message.StructBuilder,
         third_party_id: message.AnyPointerReader,

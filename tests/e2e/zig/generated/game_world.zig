@@ -2840,7 +2840,7 @@ pub const EntityId = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearId(self: *@This()) !void {
+        pub fn clearId(self: *@This()) message.BuildError!void {
             self._builder.writeU64(0, 0);
         }
 
@@ -2849,7 +2849,7 @@ pub const EntityId = struct {
             return field_reader.readU64(0);
         }
 
-        pub fn setId(self: *Builder, value: u64) !void {
+        pub fn setId(self: *Builder, value: u64) message.BuildError!void {
             self._builder.writeU64(0, @bitCast(value));
         }
 
@@ -2970,7 +2970,7 @@ pub const Entity = struct {
                 return raw.readU16(0);
             }
 
-            pub fn setKind(self: @This(), value: u16) !void {
+            pub fn setKind(self: @This(), value: u16) message.BuildError!void {
                 self._builder.writeU16(0, value);
             }
 
@@ -2979,7 +2979,7 @@ pub const Entity = struct {
                 return raw.readU16(2);
             }
 
-            pub fn setFaction(self: @This(), value: u16) !void {
+            pub fn setFaction(self: @This(), value: u16) message.BuildError!void {
                 self._builder.writeU16(2, value);
             }
 
@@ -2996,7 +2996,7 @@ pub const Entity = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearId(self: *@This()) !void {
+        pub fn clearId(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3006,12 +3006,12 @@ pub const Entity = struct {
             return EntityId.Builder.wrap(raw);
         }
 
-        pub fn setId(self: *@This(), value: EntityId.Reader) !void {
+        pub fn setId(self: *@This(), value: EntityId.Reader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(0);
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearKind(self: *@This()) !void {
+        pub fn clearKind(self: *@This()) message.BuildError!void {
             self._builder.writeU16(0, 0);
         }
 
@@ -3020,7 +3020,7 @@ pub const Entity = struct {
             return std.enums.fromInt(EntityKind, ordinal) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearName(self: *@This()) !void {
+        pub fn clearName(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -3033,7 +3033,7 @@ pub const Entity = struct {
             return try field_reader.readTextStrict(1);
         }
 
-        pub fn clearPosition(self: *@This()) !void {
+        pub fn clearPosition(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(2)).setNull();
         }
 
@@ -3043,12 +3043,12 @@ pub const Entity = struct {
             return game_types.Position.Builder.wrap(raw);
         }
 
-        pub fn setPosition(self: *@This(), value: game_types.Position.Reader) !void {
+        pub fn setPosition(self: *@This(), value: game_types.Position.Reader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(2);
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearHealth(self: *@This()) !void {
+        pub fn clearHealth(self: *@This()) message.BuildError!void {
             self._builder.writeU32(4, 0);
         }
 
@@ -3057,7 +3057,7 @@ pub const Entity = struct {
             return @bitCast(field_reader.readU32(4));
         }
 
-        pub fn clearMaxHealth(self: *@This()) !void {
+        pub fn clearMaxHealth(self: *@This()) message.BuildError!void {
             self._builder.writeU32(8, 0);
         }
 
@@ -3066,7 +3066,7 @@ pub const Entity = struct {
             return @bitCast(field_reader.readU32(8));
         }
 
-        pub fn clearFaction(self: *@This()) !void {
+        pub fn clearFaction(self: *@This()) message.BuildError!void {
             self._builder.writeU16(2, 0);
         }
 
@@ -3075,7 +3075,7 @@ pub const Entity = struct {
             return std.enums.fromInt(game_types.Faction, ordinal) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearAlive(self: *@This()) !void {
+        pub fn clearAlive(self: *@This()) message.BuildError!void {
             self._builder.writeBool(12, 0, false);
         }
 
@@ -3088,12 +3088,12 @@ pub const Entity = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initId(self: *Builder) !EntityId.Builder {
+        pub fn initId(self: *Builder) message.BuildError!EntityId.Builder {
             const builder = try self._builder.initStruct(0, 1, 0);
             return EntityId.Builder{ ._builder = builder };
         }
 
-        pub fn setKind(self: *Builder, value: EntityKind) !void {
+        pub fn setKind(self: *Builder, value: EntityKind) message.BuildError!void {
             return self.enumOrdinals().setKind(@as(u16, @intFromEnum(value)));
         }
 
@@ -3101,7 +3101,7 @@ pub const Entity = struct {
             return !self._builder.isPointerNull(1);
         }
 
-        pub fn setName(self: *Builder, value: []const u8) !void {
+        pub fn setName(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeText(1, value);
         }
 
@@ -3109,24 +3109,24 @@ pub const Entity = struct {
             return !self._builder.isPointerNull(2);
         }
 
-        pub fn initPosition(self: *Builder) !game_types.Position.Builder {
+        pub fn initPosition(self: *Builder) message.BuildError!game_types.Position.Builder {
             const builder = try self._builder.initStruct(2, 2, 0);
             return game_types.Position.Builder{ ._builder = builder };
         }
 
-        pub fn setHealth(self: *Builder, value: i32) !void {
+        pub fn setHealth(self: *Builder, value: i32) message.BuildError!void {
             self._builder.writeU32(4, @bitCast(value));
         }
 
-        pub fn setMaxHealth(self: *Builder, value: i32) !void {
+        pub fn setMaxHealth(self: *Builder, value: i32) message.BuildError!void {
             self._builder.writeU32(8, @bitCast(value));
         }
 
-        pub fn setFaction(self: *Builder, value: game_types.Faction) !void {
+        pub fn setFaction(self: *Builder, value: game_types.Faction) message.BuildError!void {
             return self.enumOrdinals().setFaction(@as(u16, @intFromEnum(value)));
         }
 
-        pub fn setAlive(self: *Builder, value: bool) !void {
+        pub fn setAlive(self: *Builder, value: bool) message.BuildError!void {
             self._builder.writeBool(12, 0, value != true);
         }
 
@@ -3326,7 +3326,7 @@ pub const SpawnRequest = struct {
                 return raw.readU16(0);
             }
 
-            pub fn setKind(self: @This(), value: u16) !void {
+            pub fn setKind(self: @This(), value: u16) message.BuildError!void {
                 self._builder.writeU16(0, value);
             }
 
@@ -3335,7 +3335,7 @@ pub const SpawnRequest = struct {
                 return raw.readU16(2);
             }
 
-            pub fn setFaction(self: @This(), value: u16) !void {
+            pub fn setFaction(self: @This(), value: u16) message.BuildError!void {
                 self._builder.writeU16(2, value);
             }
 
@@ -3352,7 +3352,7 @@ pub const SpawnRequest = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearKind(self: *@This()) !void {
+        pub fn clearKind(self: *@This()) message.BuildError!void {
             self._builder.writeU16(0, 0);
         }
 
@@ -3361,7 +3361,7 @@ pub const SpawnRequest = struct {
             return std.enums.fromInt(EntityKind, ordinal) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearName(self: *@This()) !void {
+        pub fn clearName(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3374,7 +3374,7 @@ pub const SpawnRequest = struct {
             return try field_reader.readTextStrict(0);
         }
 
-        pub fn clearPosition(self: *@This()) !void {
+        pub fn clearPosition(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -3384,12 +3384,12 @@ pub const SpawnRequest = struct {
             return game_types.Position.Builder.wrap(raw);
         }
 
-        pub fn setPosition(self: *@This(), value: game_types.Position.Reader) !void {
+        pub fn setPosition(self: *@This(), value: game_types.Position.Reader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(1);
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearFaction(self: *@This()) !void {
+        pub fn clearFaction(self: *@This()) message.BuildError!void {
             self._builder.writeU16(2, 0);
         }
 
@@ -3398,7 +3398,7 @@ pub const SpawnRequest = struct {
             return std.enums.fromInt(game_types.Faction, ordinal) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearMaxHealth(self: *@This()) !void {
+        pub fn clearMaxHealth(self: *@This()) message.BuildError!void {
             self._builder.writeU32(4, 0);
         }
 
@@ -3409,7 +3409,7 @@ pub const SpawnRequest = struct {
             return @bitCast(value);
         }
 
-        pub fn setKind(self: *Builder, value: EntityKind) !void {
+        pub fn setKind(self: *Builder, value: EntityKind) message.BuildError!void {
             return self.enumOrdinals().setKind(@as(u16, @intFromEnum(value)));
         }
 
@@ -3417,7 +3417,7 @@ pub const SpawnRequest = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn setName(self: *Builder, value: []const u8) !void {
+        pub fn setName(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeText(0, value);
         }
 
@@ -3425,16 +3425,16 @@ pub const SpawnRequest = struct {
             return !self._builder.isPointerNull(1);
         }
 
-        pub fn initPosition(self: *Builder) !game_types.Position.Builder {
+        pub fn initPosition(self: *Builder) message.BuildError!game_types.Position.Builder {
             const builder = try self._builder.initStruct(1, 2, 0);
             return game_types.Position.Builder{ ._builder = builder };
         }
 
-        pub fn setFaction(self: *Builder, value: game_types.Faction) !void {
+        pub fn setFaction(self: *Builder, value: game_types.Faction) message.BuildError!void {
             return self.enumOrdinals().setFaction(@as(u16, @intFromEnum(value)));
         }
 
-        pub fn setMaxHealth(self: *Builder, value: i32) !void {
+        pub fn setMaxHealth(self: *Builder, value: i32) message.BuildError!void {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 100);
             self._builder.writeU32(4, stored);
         }
@@ -3598,7 +3598,7 @@ pub const AreaQuery = struct {
                     return raw.readU16(6);
                 }
 
-                pub fn setByKind(self: @This(), value: u16) !void {
+                pub fn setByKind(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(4, 1);
                     self._builder.writeU16(6, value);
                 }
@@ -3609,7 +3609,7 @@ pub const AreaQuery = struct {
                     return raw.readU16(6);
                 }
 
-                pub fn setByFaction(self: @This(), value: u16) !void {
+                pub fn setByFaction(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(4, 2);
                     self._builder.writeU16(6, value);
                 }
@@ -3635,7 +3635,7 @@ pub const AreaQuery = struct {
             return std.enums.fromInt(_capnp_file.AreaQuery.Filter.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearAll(self: *@This()) !void {
+        pub fn clearAll(self: *@This()) message.BuildError!void {
             self._builder.writeU16(4, 0);
         }
 
@@ -3644,7 +3644,7 @@ pub const AreaQuery = struct {
             return {};
         }
 
-        pub fn clearByKind(self: *@This()) !void {
+        pub fn clearByKind(self: *@This()) message.BuildError!void {
             self._builder.writeU16(6, 0);
             self._builder.writeU16(4, 1);
         }
@@ -3655,7 +3655,7 @@ pub const AreaQuery = struct {
             return std.enums.fromInt(EntityKind, ordinal) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearByFaction(self: *@This()) !void {
+        pub fn clearByFaction(self: *@This()) message.BuildError!void {
             self._builder.writeU16(6, 0);
             self._builder.writeU16(4, 2);
         }
@@ -3666,16 +3666,16 @@ pub const AreaQuery = struct {
             return std.enums.fromInt(game_types.Faction, ordinal) orelse return error.InvalidEnumValue;
         }
 
-            pub fn setAll(self: *@This(), value: void) !void {
+            pub fn setAll(self: *@This(), value: void) message.BuildError!void {
             self._builder.writeU16(4, 0);
                 _ = value;
             }
 
-            pub fn setByKind(self: *@This(), value: EntityKind) !void {
+            pub fn setByKind(self: *@This(), value: EntityKind) message.BuildError!void {
                 return self.enumOrdinals().setByKind(@as(u16, @intFromEnum(value)));
             }
 
-            pub fn setByFaction(self: *@This(), value: game_types.Faction) !void {
+            pub fn setByFaction(self: *@This(), value: game_types.Faction) message.BuildError!void {
                 return self.enumOrdinals().setByFaction(@as(u16, @intFromEnum(value)));
             }
 
@@ -3735,7 +3735,7 @@ pub const AreaQuery = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearCenter(self: *@This()) !void {
+        pub fn clearCenter(self: *@This()) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3745,12 +3745,12 @@ pub const AreaQuery = struct {
             return game_types.Position.Builder.wrap(raw);
         }
 
-        pub fn setCenter(self: *@This(), value: game_types.Position.Reader) !void {
+        pub fn setCenter(self: *@This(), value: game_types.Position.Reader) message.CopyError!void {
             const pointer = try self._builder.getAnyPointer(0);
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearRadius(self: *@This()) !void {
+        pub fn clearRadius(self: *@This()) message.BuildError!void {
             self._builder.writeU32(0, 0);
         }
 
@@ -3759,7 +3759,7 @@ pub const AreaQuery = struct {
             return @bitCast(field_reader.readU32(0));
         }
 
-        pub fn clearFilter(self: *@This()) !void {
+        pub fn clearFilter(self: *@This()) message.BuildError!void {
             self._builder.writeU16(6, 0);
             self._builder.writeU16(6, 0);
             self._builder.writeU16(4, 0);
@@ -3769,12 +3769,12 @@ pub const AreaQuery = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initCenter(self: *Builder) !game_types.Position.Builder {
+        pub fn initCenter(self: *Builder) message.BuildError!game_types.Position.Builder {
             const builder = try self._builder.initStruct(0, 2, 0);
             return game_types.Position.Builder{ ._builder = builder };
         }
 
-        pub fn setRadius(self: *Builder, value: f32) !void {
+        pub fn setRadius(self: *Builder, value: f32) message.BuildError!void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
@@ -5244,7 +5244,7 @@ pub const GameWorld = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearRequest(self: *@This()) !void {
+            pub fn clearRequest(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -5254,7 +5254,7 @@ pub const GameWorld = struct {
                 return SpawnRequest.Builder.wrap(raw);
             }
 
-            pub fn setRequest(self: *@This(), value: SpawnRequest.Reader) !void {
+            pub fn setRequest(self: *@This(), value: SpawnRequest.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
@@ -5263,7 +5263,7 @@ pub const GameWorld = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initRequest(self: *Builder) !SpawnRequest.Builder {
+            pub fn initRequest(self: *Builder) message.BuildError!SpawnRequest.Builder {
                 const builder = try self._builder.initStruct(0, 1, 2);
                 return SpawnRequest.Builder{ ._builder = builder };
             }
@@ -5388,7 +5388,7 @@ pub const GameWorld = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) !void {
+                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -5405,7 +5405,7 @@ pub const GameWorld = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearEntity(self: *@This()) !void {
+            pub fn clearEntity(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -5415,12 +5415,12 @@ pub const GameWorld = struct {
                 return Entity.Builder.wrap(raw);
             }
 
-            pub fn setEntity(self: *@This(), value: Entity.Reader) !void {
+            pub fn setEntity(self: *@This(), value: Entity.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearStatus(self: *@This()) !void {
+            pub fn clearStatus(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -5433,12 +5433,12 @@ pub const GameWorld = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initEntity(self: *Builder) !Entity.Builder {
+            pub fn initEntity(self: *Builder) message.BuildError!Entity.Builder {
                 const builder = try self._builder.initStruct(0, 2, 3);
                 return Entity.Builder{ ._builder = builder };
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -5546,7 +5546,7 @@ pub const GameWorld = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearId(self: *@This()) !void {
+            pub fn clearId(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -5556,7 +5556,7 @@ pub const GameWorld = struct {
                 return EntityId.Builder.wrap(raw);
             }
 
-            pub fn setId(self: *@This(), value: EntityId.Reader) !void {
+            pub fn setId(self: *@This(), value: EntityId.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
@@ -5565,7 +5565,7 @@ pub const GameWorld = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initId(self: *Builder) !EntityId.Builder {
+            pub fn initId(self: *Builder) message.BuildError!EntityId.Builder {
                 const builder = try self._builder.initStruct(0, 1, 0);
                 return EntityId.Builder{ ._builder = builder };
             }
@@ -5680,7 +5680,7 @@ pub const GameWorld = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) !void {
+                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -5697,7 +5697,7 @@ pub const GameWorld = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearStatus(self: *@This()) !void {
+            pub fn clearStatus(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -5706,7 +5706,7 @@ pub const GameWorld = struct {
                 return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -5760,7 +5760,7 @@ pub const GameWorld = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearId(self: *@This()) !void {
+            pub fn clearId(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -5770,7 +5770,7 @@ pub const GameWorld = struct {
                 return EntityId.Builder.wrap(raw);
             }
 
-            pub fn setId(self: *@This(), value: EntityId.Reader) !void {
+            pub fn setId(self: *@This(), value: EntityId.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
@@ -5779,7 +5779,7 @@ pub const GameWorld = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initId(self: *Builder) !EntityId.Builder {
+            pub fn initId(self: *Builder) message.BuildError!EntityId.Builder {
                 const builder = try self._builder.initStruct(0, 1, 0);
                 return EntityId.Builder{ ._builder = builder };
             }
@@ -5904,7 +5904,7 @@ pub const GameWorld = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) !void {
+                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -5921,7 +5921,7 @@ pub const GameWorld = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearEntity(self: *@This()) !void {
+            pub fn clearEntity(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -5931,12 +5931,12 @@ pub const GameWorld = struct {
                 return Entity.Builder.wrap(raw);
             }
 
-            pub fn setEntity(self: *@This(), value: Entity.Reader) !void {
+            pub fn setEntity(self: *@This(), value: Entity.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearStatus(self: *@This()) !void {
+            pub fn clearStatus(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -5949,12 +5949,12 @@ pub const GameWorld = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initEntity(self: *Builder) !Entity.Builder {
+            pub fn initEntity(self: *Builder) message.BuildError!Entity.Builder {
                 const builder = try self._builder.initStruct(0, 2, 3);
                 return Entity.Builder{ ._builder = builder };
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -6072,7 +6072,7 @@ pub const GameWorld = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearId(self: *@This()) !void {
+            pub fn clearId(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -6082,12 +6082,12 @@ pub const GameWorld = struct {
                 return EntityId.Builder.wrap(raw);
             }
 
-            pub fn setId(self: *@This(), value: EntityId.Reader) !void {
+            pub fn setId(self: *@This(), value: EntityId.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearNewPosition(self: *@This()) !void {
+            pub fn clearNewPosition(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(1)).setNull();
             }
 
@@ -6097,7 +6097,7 @@ pub const GameWorld = struct {
                 return game_types.Position.Builder.wrap(raw);
             }
 
-            pub fn setNewPosition(self: *@This(), value: game_types.Position.Reader) !void {
+            pub fn setNewPosition(self: *@This(), value: game_types.Position.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(1);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
@@ -6106,7 +6106,7 @@ pub const GameWorld = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initId(self: *Builder) !EntityId.Builder {
+            pub fn initId(self: *Builder) message.BuildError!EntityId.Builder {
                 const builder = try self._builder.initStruct(0, 1, 0);
                 return EntityId.Builder{ ._builder = builder };
             }
@@ -6115,7 +6115,7 @@ pub const GameWorld = struct {
                 return !self._builder.isPointerNull(1);
             }
 
-            pub fn initNewPosition(self: *Builder) !game_types.Position.Builder {
+            pub fn initNewPosition(self: *Builder) message.BuildError!game_types.Position.Builder {
                 const builder = try self._builder.initStruct(1, 2, 0);
                 return game_types.Position.Builder{ ._builder = builder };
             }
@@ -6262,7 +6262,7 @@ pub const GameWorld = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) !void {
+                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -6279,7 +6279,7 @@ pub const GameWorld = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearEntity(self: *@This()) !void {
+            pub fn clearEntity(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -6289,12 +6289,12 @@ pub const GameWorld = struct {
                 return Entity.Builder.wrap(raw);
             }
 
-            pub fn setEntity(self: *@This(), value: Entity.Reader) !void {
+            pub fn setEntity(self: *@This(), value: Entity.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearStatus(self: *@This()) !void {
+            pub fn clearStatus(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -6307,12 +6307,12 @@ pub const GameWorld = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initEntity(self: *Builder) !Entity.Builder {
+            pub fn initEntity(self: *Builder) message.BuildError!Entity.Builder {
                 const builder = try self._builder.initStruct(0, 2, 3);
                 return Entity.Builder{ ._builder = builder };
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -6424,7 +6424,7 @@ pub const GameWorld = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearId(self: *@This()) !void {
+            pub fn clearId(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -6434,12 +6434,12 @@ pub const GameWorld = struct {
                 return EntityId.Builder.wrap(raw);
             }
 
-            pub fn setId(self: *@This(), value: EntityId.Reader) !void {
+            pub fn setId(self: *@This(), value: EntityId.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearAmount(self: *@This()) !void {
+            pub fn clearAmount(self: *@This()) message.BuildError!void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -6452,12 +6452,12 @@ pub const GameWorld = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initId(self: *Builder) !EntityId.Builder {
+            pub fn initId(self: *Builder) message.BuildError!EntityId.Builder {
                 const builder = try self._builder.initStruct(0, 1, 0);
                 return EntityId.Builder{ ._builder = builder };
             }
 
-            pub fn setAmount(self: *Builder, value: i32) !void {
+            pub fn setAmount(self: *Builder, value: i32) message.BuildError!void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
@@ -6588,7 +6588,7 @@ pub const GameWorld = struct {
                     return raw.readU16(2);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) !void {
+                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
                     self._builder.writeU16(2, value);
                 }
 
@@ -6605,7 +6605,7 @@ pub const GameWorld = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearEntity(self: *@This()) !void {
+            pub fn clearEntity(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -6615,12 +6615,12 @@ pub const GameWorld = struct {
                 return Entity.Builder.wrap(raw);
             }
 
-            pub fn setEntity(self: *@This(), value: Entity.Reader) !void {
+            pub fn setEntity(self: *@This(), value: Entity.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearKilled(self: *@This()) !void {
+            pub fn clearKilled(self: *@This()) message.BuildError!void {
                 self._builder.writeBool(0, 0, false);
             }
 
@@ -6629,7 +6629,7 @@ pub const GameWorld = struct {
                 return field_reader.readBool(0, 0) != false;
             }
 
-            pub fn clearStatus(self: *@This()) !void {
+            pub fn clearStatus(self: *@This()) message.BuildError!void {
                 self._builder.writeU16(2, 0);
             }
 
@@ -6642,16 +6642,16 @@ pub const GameWorld = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initEntity(self: *Builder) !Entity.Builder {
+            pub fn initEntity(self: *Builder) message.BuildError!Entity.Builder {
                 const builder = try self._builder.initStruct(0, 2, 3);
                 return Entity.Builder{ ._builder = builder };
             }
 
-            pub fn setKilled(self: *Builder, value: bool) !void {
+            pub fn setKilled(self: *Builder, value: bool) message.BuildError!void {
                 self._builder.writeBool(0, 0, value != false);
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -6762,7 +6762,7 @@ pub const GameWorld = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearQuery(self: *@This()) !void {
+            pub fn clearQuery(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -6772,7 +6772,7 @@ pub const GameWorld = struct {
                 return AreaQuery.Builder.wrap(raw);
             }
 
-            pub fn setQuery(self: *@This(), value: AreaQuery.Reader) !void {
+            pub fn setQuery(self: *@This(), value: AreaQuery.Reader) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
@@ -6781,7 +6781,7 @@ pub const GameWorld = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initQuery(self: *Builder) !AreaQuery.Builder {
+            pub fn initQuery(self: *Builder) message.BuildError!AreaQuery.Builder {
                 const builder = try self._builder.initStruct(0, 1, 1);
                 return AreaQuery.Builder{ ._builder = builder };
             }
@@ -6894,7 +6894,7 @@ pub const GameWorld = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearEntities(self: *@This()) !void {
+            pub fn clearEntities(self: *@This()) message.BuildError!void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -6904,12 +6904,12 @@ pub const GameWorld = struct {
                 return .{ ._list = raw };
             }
 
-            pub fn setEntities(self: *@This(), value: StructListReader(Entity)) !void {
+            pub fn setEntities(self: *@This(), value: StructListReader(Entity)) message.CopyError!void {
                 const pointer = try self._builder.getAnyPointer(0);
                 try capnpc.generated_helpers.setList(pointer, value);
             }
 
-            pub fn clearCount(self: *@This()) !void {
+            pub fn clearCount(self: *@This()) message.BuildError!void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -6922,12 +6922,12 @@ pub const GameWorld = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initEntities(self: *Builder, element_count: u32) !StructListBuilder(Entity) {
+            pub fn initEntities(self: *Builder, element_count: u32) message.BuildError!StructListBuilder(Entity) {
                 const raw = try self._builder.writeStructList(0, element_count, 2, 3);
                 return StructListBuilder(Entity){ ._list = raw };
             }
 
-            pub fn setCount(self: *Builder, value: u32) !void {
+            pub fn setCount(self: *Builder, value: u32) message.BuildError!void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
