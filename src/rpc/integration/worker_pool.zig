@@ -57,11 +57,11 @@ pub const WorkerPool = struct {
         /// (`Connection.first_frame_timeout_ms`). Each worker serves one
         /// connection to completion, so without it `concurrency` clients
         /// that connect and never speak pin every worker forever, and every
-        /// later client waits in the kernel backlog. A client trickling the
-        /// bytes of a frame it never finishes is reaped too. It is set on
-        /// the connection before `on_accept` runs, so the callback may
-        /// override it per connection (for example, a server that speaks
-        /// first). Null is the explicit opt-out.
+        /// later client waits in the kernel backlog. Before the first frame,
+        /// a client trickling the bytes of a frame it never finishes is
+        /// reaped too. It is set on the connection before `on_accept` runs,
+        /// so the callback may override it per connection (for example, a
+        /// server that speaks first). Null is the explicit opt-out.
         first_frame_timeout_ms: ?u64 = default_first_frame_timeout_ms,
         /// Secure default: reap a connection after this long with no
         /// inbound read and no outbound enqueue (`Connection.idle_timeout_ms`),
@@ -70,6 +70,10 @@ pub const WorkerPool = struct {
         /// null; an explicit value there wins. Cap'n Proto has no keepalive,
         /// so clients that sit idle for longer than this get disconnected;
         /// raise it, or set null (the explicit opt-out), if yours do.
+        /// Neither deadline stops a client that keeps sending: any inbound
+        /// read refreshes the idle clock, even a lone byte of a frame that
+        /// never completes, so such a client holds its worker indefinitely.
+        /// Bound those with admission control in `on_accept`.
         idle_timeout_ms: ?u64 = default_idle_timeout_ms,
     };
 
