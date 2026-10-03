@@ -339,11 +339,13 @@ test "the first complete frame disarms the first-frame deadline" {
 
     const fds = try createSocketPair(io);
 
+    // One complete frame (one segment of zero words), written before the
+    // run loop starts so a slow thread start on a loaded runner cannot let
+    // the 100ms deadline fire first. The speaker then stays silent well past
+    // the deadline, then sends EOF.
+    writeBytes(io, fds[1], &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 });
     const Speaker = struct {
         fn run(fd: tcp.SocketFd, write_io: std.Io) void {
-            // One complete frame (one segment of zero words), then silence
-            // well past the deadline, then EOF.
-            writeBytes(write_io, fd, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 });
             sleepAwakeMs(write_io, 400);
             closeFd(write_io, fd);
         }

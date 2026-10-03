@@ -957,8 +957,10 @@ pub const Connection = struct {
 
     fn idleDeadlineExceeded(self: *const Connection) bool {
         const timeout_ms = self.idle_timeout_ms orelse return false;
-        const now = nowNs(self.io);
-        return now - self.last_activity_ns >= @as(i64, @intCast(timeout_ms)) * std.time.ns_per_ms;
+        // Saturating, like the first-frame deadline: `idle_timeout_ms` is
+        // now reachable from WorkerPool.Config, and a huge value (meaning
+        // "effectively never") must not overflow and panic in safe builds.
+        return nowNs(self.io) -| self.last_activity_ns >= msToNs(timeout_ms);
     }
 };
 
