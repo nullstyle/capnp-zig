@@ -230,6 +230,75 @@ test "embedded quic session echoes a native inline frame over a foreign host loo
     try runEmbeddedEchoExchange(allocator, .{ .mode = .native });
 }
 
+const raw_faults = @import("raw_fault_client.zig");
+
+/// The seat refuses peer streams the protocol never uses, so they do not
+/// hold the host's stream window. The host's Driver has table room for
+/// every stream here, so any refusal comes from the seat, not the Driver.
+fn runEmbeddedRefusal(allocator: std.mem.Allocator, mode: quic.EmbeddedSessionOptions) !void {
+    var host = HostApp{
+        .allocator = allocator,
+        .mode = mode,
+        .state = undefined,
+    };
+    defer host.seats.deinit(allocator);
+
+    var server_state = loopback.QuicEndpointState{};
+    host.state = &server_state;
+
+    var driver = try D.init(.{
+        .allocator = allocator,
+        .app = &host,
+        .max_tracked_streams = 64,
+        .hooks = .{
+            .on_connect = HostApp.onConnect,
+            .on_handshake = HostApp.onHandshake,
+            .on_stream_open = HostApp.onStreamOpen,
+            .on_stream_data = HostApp.onStreamData,
+            .on_stream_end = HostApp.onStreamEnd,
+            .on_disconnect = HostApp.onDisconnect,
+        },
+    });
+    var params = quic.defaultTransportParams();
+    params.initial_max_streams_bidi = raw_faults.refusal_case_window;
+    params.initial_max_streams_uni = raw_faults.refusal_case_window;
+    var listener = quic.Listener.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .alpn_protocols = &.{"capnp-rpc/1"},
+        .transport_params = params,
+        .max_concurrent_connections = 4,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = mode.mode,
+    }) catch |err| {
+        driver.deinit();
+        return err;
+    };
+    driver.attach(&listener.server);
+    // Same load-bearing deinit order as runEmbeddedEchoExchange.
+    defer driver.deinit();
+    defer listener.deinit();
+
+    var host_thread = try std.Thread.spawn(.{}, runHost, .{ &host, &listener, &driver });
+    defer {
+        host.stop.store(true, .release);
+        host_thread.join();
+    }
+
+    try raw_faults.openUnexpectedPeerStreams(allocator, listener.getAddress(), &server_state, mode.mode, 40);
+    try std.testing.expectEqual(@as(usize, 0), server_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), server_state.closes.load(.acquire));
+}
+
+test "embedded quic session refuses peer streams it never uses (baseline)" {
+    try runEmbeddedRefusal(std.testing.allocator, .{ .mode = .baseline });
+}
+
+test "embedded quic session refuses peer streams it never uses (native)" {
+    try runEmbeddedRefusal(std.testing.allocator, .{ .mode = .native });
+}
+
 // ---------------------------------------------------------------------------
 // Peer-level coverage: a real `Peer` attached to an embedded session over a
 // foreign host loop — the full Bootstrap → Call → Return → Finish lifecycle

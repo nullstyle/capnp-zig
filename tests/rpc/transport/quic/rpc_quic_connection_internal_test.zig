@@ -1217,3 +1217,64 @@ test "native queue: after the window reopens the frame goes out on the SAME stre
     }
 }
 
+// ---------------------------------------------------------------------------
+// Peer-opened streams: which ones the transport refuses.
+// ---------------------------------------------------------------------------
+
+const peer_streams = quic.testing.peer_streams;
+
+test "peer streams: only the client's stream 0 and native uni data streams are expected" {
+    // RFC 9000 §2.1 id types: 4n client bidi, 4n+1 server bidi,
+    // 4n+2 client uni, 4n+3 server uni. A role only ever sees the PEER's.
+    for ([_]quic.TransportMode{ .baseline, .native }) |mode| {
+        // Server: the client's bidi stream 0 is the RPC/control stream;
+        // every other client bidi stream is refused.
+        try std.testing.expect(peer_streams.expected(.server, mode, 0));
+        for ([_]u64{ 4, 8, 4096 * 4, (1 << 60) * 4 - 4 }) |id| {
+            try std.testing.expect(!peer_streams.expected(.server, mode, id));
+        }
+        // Client: a server never opens a bidi stream in this protocol.
+        for ([_]u64{ 1, 5, 4096 * 4 + 1 }) |id| {
+            try std.testing.expect(!peer_streams.expected(.client, mode, id));
+        }
+        // Uni streams carry native data frames, both ways; baseline has none.
+        for ([_]u64{ 2, 6, 4096 * 4 + 2 }) |id| {
+            try std.testing.expectEqual(mode == .native, peer_streams.expected(.server, mode, id));
+        }
+        for ([_]u64{ 3, 7, 4096 * 4 + 3 }) |id| {
+            try std.testing.expectEqual(mode == .native, peer_streams.expected(.client, mode, id));
+        }
+    }
+}
+
+/// Records the refusal calls `peer_streams.refuse` makes.
+const RefusalRecorder = struct {
+    stop_sending: ?u64 = null,
+    reset: ?u64 = null,
+    code: ?u64 = null,
+
+    pub fn streamStopSending(self: *RefusalRecorder, id: u64, code: u64) anyerror!void {
+        self.stop_sending = id;
+        self.code = code;
+    }
+    pub fn streamReset(self: *RefusalRecorder, id: u64, code: u64) anyerror!void {
+        self.reset = id;
+        if (self.code != code) return error.RefusalCodeMismatch;
+    }
+};
+
+test "peer streams: a refusal ends both halves of a bidi stream, the one half of a uni stream" {
+    var bidi = RefusalRecorder{};
+    peer_streams.refuse(&bidi, 8, true);
+    try std.testing.expectEqual(@as(?u64, 8), bidi.stop_sending);
+    // STOP_SENDING alone would leave our send half open, and the stream
+    // would keep its place in the peer's window for good.
+    try std.testing.expectEqual(@as(?u64, 8), bidi.reset);
+    try std.testing.expectEqual(@as(?u64, peer_streams.refusal_code), bidi.code);
+
+    var uni = RefusalRecorder{};
+    peer_streams.refuse(&uni, 6, false);
+    try std.testing.expectEqual(@as(?u64, 6), uni.stop_sending);
+    // We have no send half on a peer's uni stream; a reset would be an error.
+    try std.testing.expectEqual(@as(?u64, null), uni.reset);
+}

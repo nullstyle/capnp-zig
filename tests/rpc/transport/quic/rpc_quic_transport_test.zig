@@ -1426,6 +1426,17 @@ test "quic native raw peer data stream violations close with typed frame errors"
     }, error.FrameTooLarge);
 }
 
+test "quic server refuses peer streams it never uses, so they do not fill its stream window" {
+    // Since quic v0.24.0 a stream holds its place in the peer's window
+    // until it is fully closed. A stream the server never reads, finishes
+    // or resets would hold it for the life of the connection: with a
+    // window of 4, a peer that opened 40 such streams would be stuck after
+    // 3. The server refuses each one (STOP_SENDING + RESET_STREAM) and the
+    // connection stays up.
+    try raw_faults.runUnexpectedPeerStreamsCase(.baseline, 40);
+    try raw_faults.runUnexpectedPeerStreamsCase(.native, 40);
+}
+
 test "quic localhost oversized baseline frame terminates server" {
     const allocator = std.testing.allocator;
 

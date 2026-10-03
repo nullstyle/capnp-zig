@@ -10,6 +10,7 @@ const connection_dispatch = @import("connection_dispatch.zig");
 const connection_termination = @import("connection_termination.zig");
 const mode_router = @import("mode_router.zig");
 const native_engine = @import("native_engine.zig");
+const peer_streams = @import("peer_streams.zig");
 const quic_options = @import("options.zig");
 
 const BaselineEngine = baseline_engine.BaselineEngine;
@@ -292,19 +293,27 @@ pub const EmbeddedSession = struct {
 
     // ---- Embedder hook bodies ---------------------------------------------
 
-    /// Forward from the embedder's `on_stream_open`. `bidi` is ignored: the
-    /// engines validate stream roles themselves (baseline reads only stream
-    /// 0; native reads stream 0 plus peer-initiated uni streams).
+    /// Forward from the embedder's `on_stream_open`. A stream with no place
+    /// in the protocol (anything but the client's stream 0 and, in native
+    /// mode, the peer's unidirectional data streams) is refused on both
+    /// halves at once, as the owned loops do (`peer_streams.zig`): left
+    /// unanswered it would keep its place in the peer's stream window for
+    /// the life of the connection.
     pub fn onStreamOpen(self: *EmbeddedSession, stream_id: u64, bidi: bool) !void {
-        _ = bidi;
+        if (!peer_streams.expected(self.role, self.mode, stream_id)) {
+            peer_streams.refuse(self.conn, stream_id, bidi);
+            return;
+        }
         const gop = try self.streams.getOrPut(self.allocator, stream_id);
         if (!gop.found_existing) gop.value_ptr.* = .{};
     }
 
     /// Forward from the embedder's `on_stream_data`. Bytes buffer in
     /// arrival order; the next `service` pass feeds them to the engines.
+    /// Bytes of a refused stream (see `onStreamOpen`) are dropped.
     pub fn onStreamData(self: *EmbeddedSession, stream_id: u64, chunk: []const u8) !void {
         if (chunk.len == 0) return;
+        if (!peer_streams.expected(self.role, self.mode, stream_id)) return;
         const gop = try self.streams.getOrPut(self.allocator, stream_id);
         if (!gop.found_existing) gop.value_ptr.* = .{};
         const buf = gop.value_ptr;

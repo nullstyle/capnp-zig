@@ -5,6 +5,7 @@ const baseline_engine = @import("baseline_engine.zig");
 const engine_owner = @import("engine_owner.zig");
 const endpoint_mod = @import("endpoint.zig");
 const native_engine = @import("native_engine.zig");
+const peer_streams = @import("peer_streams.zig");
 const quic_options = @import("options.zig");
 
 const BaselineEngine = baseline_engine.BaselineEngine;
@@ -47,12 +48,16 @@ pub const Router = struct {
         };
     }
 
+    /// One stream pass for an owned-loop transport (`Connection`,
+    /// `ServerSession`): refuse the peer streams this protocol never
+    /// answers (see `peer_streams.zig`), then run the mode engine.
     pub fn service(
         self: Router,
         owner: EngineOwner,
-        conn: anytype,
+        conn: *quic_zig.Connection,
         now_us: u64,
     ) !void {
+        peer_streams.refuseUnexpected(conn, owner.role, self.mode);
         switch (self.mode) {
             .baseline => try self.baseline.service(owner.baseline(), conn),
             .native => try self.native.service(owner.native(), conn, now_us),

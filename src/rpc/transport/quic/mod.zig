@@ -90,6 +90,9 @@ pub const testing = if (builtin.is_test) struct {
     /// `flush` is generic over `conn`, so the internal suite drives it with
     /// a three-method fake, no network.
     pub const native_outbound_queue = @import("native_outbound_queue.zig");
+    /// Which peer-opened streams the transport refuses (a pure function of
+    /// role, mode and id), tested for every combination without a network.
+    pub const peer_streams = @import("peer_streams.zig");
     pub const ListenerAccess = listener.Listener.TestingHooks;
     /// Void on Windows, where `non_windows_receive.receive` is a deliberate
     /// `@compileError` (receives go through the bridge): `refAllRecursive`

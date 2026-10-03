@@ -292,6 +292,14 @@ budgets:
   inbound side also rejects any referenced data RPC frame larger than this
   budget.
 
+Streams the protocol never uses are refused, so they cannot hold a place in
+the window: any peer-opened bidirectional stream except the client's stream
+0, and in baseline mode any peer-opened unidirectional stream. The transport
+sends STOP_SENDING and, for a bidirectional stream, RESET_STREAM, both with
+application error code `ApplicationCloseCode.protocol_error`
+(`0x434e5002`). The connection stays up. `EmbeddedSession` refuses the same
+streams from its `onStreamOpen` hook.
+
 Invalid native budgets fail during `Connection.initClient`,
 `Connection.initServer`, `Listener.init`, or `serverConfigFromOptions` with a
 specific error:

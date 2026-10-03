@@ -326,3 +326,123 @@ pub fn runRawNativeFaultCase(
     try std.testing.expectEqual(@as(?anyerror, expected_err), status.err);
     try std.testing.expect(server.isClosing());
 }
+
+/// The server's stream windows for the refusal case: small, so a stream
+/// the server never closes is felt after a handful of opens.
+pub const refusal_case_window: u64 = 4;
+
+/// Open `count` streams of one kind that the transport has no use for,
+/// one after another, each carrying one byte and a FIN. The server's
+/// window holds `refusal_case_window` of them; opening the rest succeeds
+/// only if the server closes each unexpected stream completely (STOP_SENDING
+/// plus, for a bidirectional stream, RESET_STREAM), which gives its id back.
+fn openRefusedStreams(
+    raw_client: *RawFaultClient,
+    server_state: *const loopback.QuicEndpointState,
+    first_id: u64,
+    count: usize,
+    bidi: bool,
+) !void {
+    var id = first_id;
+    var opened: usize = 0;
+    while (opened < count) : (opened += 1) {
+        const deadline_us = raw_client.nowUs() + loopback.loopback_timeout_ms * 1000;
+        while (true) {
+            const result = if (bidi) raw_client.client.conn.openBidi(id) else raw_client.client.conn.openUni(id);
+            if (result) |_| break else |err| switch (err) {
+                // The server has not given an id back yet: pump and retry.
+                error.StreamLimitExceeded => {},
+                else => return err,
+            }
+            if (server_state.errors.load(.acquire) > 0) return error.QuicLoopbackUnexpectedServerError;
+            if (raw_client.nowUs() >= deadline_us) {
+                std.debug.print("refusal case: stream {d} ({d} of {d}) never got a window slot\n", .{ id, opened + 1, count });
+                return error.QuicLoopbackTimedOut;
+            }
+            try raw_client.step(std.Io.Duration.fromMilliseconds(1));
+        }
+        try raw_client.writeAll(id, "x");
+        try raw_client.client.conn.streamFinish(id);
+        try raw_client.drainOutgoing(raw_client.nowUs());
+        id += 4;
+    }
+}
+
+/// Dial `server_addr` with a raw client, open the RPC stream 0, then open
+/// `count` bidirectional streams the transport never uses (and, in baseline
+/// mode, `count` unidirectional ones), each one only after the server gave
+/// an id back. The server must run with stream windows of
+/// `refusal_case_window`. Fails if any open stalls or the server errors.
+pub fn openUnexpectedPeerStreams(
+    allocator: std.mem.Allocator,
+    server_addr: std.Io.net.IpAddress,
+    server_state: *const loopback.QuicEndpointState,
+    mode: quic.TransportMode,
+    count: usize,
+) !void {
+    var raw_client = try RawFaultClient.init(allocator, std.testing.io, server_addr);
+    defer raw_client.deinit();
+
+    try raw_client.waitForHandshake(server_state);
+    // The legitimate stream: it holds one bidi slot for the whole run.
+    try raw_client.ensureControlStream();
+
+    // Client bidirectional ids are 4n; 0 is the RPC stream.
+    try openRefusedStreams(&raw_client, server_state, 4, count, true);
+    // Client unidirectional ids are 4n+2. Baseline mode has no use for any.
+    if (mode == .baseline) try openRefusedStreams(&raw_client, server_state, 2, count, false);
+
+    // Refused, not ignored: the server's RESET_STREAM reached the client
+    // (or the client already reaped the stream, which needs it too).
+    const last_bidi: u64 = 4 * @as(u64, @intCast(count));
+    const deadline_us = raw_client.nowUs() + loopback.loopback_timeout_ms * 1000;
+    while (raw_client.client.conn.streamRecvState(last_bidi)) |st| {
+        if (st.reset_seen) break;
+        if (raw_client.nowUs() >= deadline_us) return error.QuicLoopbackTimedOut;
+        try raw_client.step(std.Io.Duration.fromMilliseconds(1));
+    }
+}
+
+/// A peer that opens streams the RPC transport never uses (any bidi
+/// stream but the client's stream 0, and in baseline mode any uni stream)
+/// gets each one refused, and keeps a working connection: the server's
+/// window never fills up with streams nobody answers.
+pub fn runUnexpectedPeerStreamsCase(mode: quic.TransportMode, count: usize) !void {
+    const allocator = std.testing.allocator;
+
+    var params = quic.defaultTransportParams();
+    params.initial_max_streams_bidi = refusal_case_window;
+    params.initial_max_streams_uni = refusal_case_window;
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .transport_params = params,
+        .mode = mode,
+    });
+    defer server.deinit();
+
+    var server_state = loopback.QuicEndpointState{};
+    server.start(&server_state, loopback.rejectUnexpectedQuicMessage, loopback.recordQuicError, loopback.recordQuicClose);
+
+    var server_thread = try std.Thread.spawn(.{}, loopback.runQuicConnection, .{&server});
+    var joined = false;
+    defer if (!joined) {
+        server.requestClose();
+        server_thread.join();
+    };
+
+    try openUnexpectedPeerStreams(allocator, server.getAddress(), &server_state, mode, count);
+
+    const server_closing = server.isClosing();
+    server.requestClose();
+    server_thread.join();
+    joined = true;
+
+    // The connection survived: refusing a stream is not a connection error.
+    try std.testing.expect(!server_closing);
+    try std.testing.expectEqual(@as(usize, 0), server_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), server_state.messages.load(.acquire));
+}
