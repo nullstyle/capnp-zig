@@ -64,8 +64,10 @@ jobs:
       # this lane was port-exhausted from ~+8s (21020 dials failed while
       # the earlier lanes' ports sat in TIME_WAIT) and still passed, since
       # those failures were folded into an unbounded transport_errors. The
-      # soak now reports that class with a ::warning:: annotation and gates
-      # only unclassified dial failures.
+      # soak now reports port exhaustion with a ::warning:: annotation. It
+      # gates unexplained dial failures, refused or timed-out dials, and a
+      # Windows connect-stage error.Unexpected that does not have the
+      # exhaustion shape (see tools/soak_rpc.zig).
       - name: Run soak harness under ReleaseSafe (64 workers)
         shell: bash
         run: zig build -Doptimize=ReleaseSafe soak -- --seconds ${{ runner.os == 'Windows' && '20' || '60' }} --workers 64 --rss-gate report

@@ -20,22 +20,40 @@
 //!
 //! Exit code is nonzero when invariants fail: zero successful calls, an
 //! unexpected exception reason, mid-session transport errors past their
-//! bound, unclassified setup failures past the same tolerance, a
-//! client-side allocation leak, or a steady-state live-heap growth beyond
-//! the configured threshold (and, with --rss-gate enforce, RSS growth).
+//! bound, unexplained setup failures past the same tolerance, a TCP server
+//! under test that stopped serving before shutdown, a client-side
+//! allocation leak, or a steady-state live-heap growth beyond the
+//! configured threshold (and, with --rss-gate enforce, RSS growth).
 //!
 //! Failure accounting is split by phase:
 //!   * SETUP failures happen before a session carries RPC traffic (TCP
-//!     connect or Connection.init; QUIC client init). They are classified:
-//!     refused, port_exhaustion, resources, timeout, other. The named
-//!     classes are properties of the host or its load, not of the code under
-//!     test, so they are reported (port exhaustion with the run offset
-//!     where it began, plus a ::warning:: annotation under GitHub Actions)
-//!     rather than gated. `other` gates past the tolerance below, because an
-//!     unexplained dial failure is a defect until shown otherwise. On
-//!     Windows, std 0.17 maps an ephemeral-port bind collision during
-//!     connect (AddressInUse) to error.Unexpected, so a connect-stage
-//!     Unexpected is classified port_exhaustion there.
+//!     connect or Connection.init; QUIC client init). They are classified
+//!     (refused, port_exhaustion, resources, timeout, ambiguous, other) and
+//!     then resolved by `assessSetup`:
+//!       - Reported, not gated: port exhaustion and resource limits, which
+//!         are properties of the host or its load. Port exhaustion is
+//!         printed with the run offset where it began, and every reported
+//!         class also gets a ::warning:: annotation under GitHub Actions.
+//!       - Gated past the tolerance below, all together: `other`, because
+//!         an unexplained dial failure is a defect until shown otherwise;
+//!         and refused and timeout, because the server under test is
+//!         in-process and should accept every dial (if it stops, earlier
+//!         traffic must not carry the run). Under QUIC
+//!         --abrupt-death-every-ms the server is down by design between
+//!         incarnations, so there refused and timeout are reported instead.
+//!       - `ambiguous`: a Windows connect-stage error.Unexpected. std 0.17's
+//!         netConnectIpWindows returns it for several distinct failures
+//!         (unmapped bind statuses including AddressInUse, a failed
+//!         SO_REUSE_UNICASTPORT, and every AFD_CONNECT status but refused
+//!         and insufficient resources), and a ReleaseSafe build does not
+//!         print the NTSTATUS. It counts as port exhaustion only with that
+//!         shape (`ambiguousIsPortExhaustion`): it began after at least 100
+//!         successful dials, and from then on at least half of all dial
+//!         attempts failed this way. Otherwise it gates with `other`. A host
+//!         that was already port-exhausted when the run began therefore
+//!         fails the run too: it exercised almost nothing.
+//!     The TCP server's WorkerPool.run must also last until shutdown is
+//!     requested; returning earlier fails the run.
 //!   * MID-SESSION transport errors (anything that fails after the
 //!     connection is up) must satisfy
 //!         transport_errors <= chaos_closes + death_allowance + tolerance
@@ -180,6 +198,13 @@ const Totals = struct {
     // Run offset (ms) of the first port-exhaustion setup failure; maxInt
     // means none. usize, not u64, for the same 32-bit reason as above.
     first_port_exhaustion_ms: std.atomic.Value(usize) = std.atomic.Value(usize).init(std.math.maxInt(usize)),
+    // Sessions whose dial (connect + init) succeeded, and the AmbiguousShape
+    // inputs: the onset of the first ambiguous failure (maxInt: none) and
+    // how many dials had succeeded by then (written once, by the worker
+    // that set the onset; read after join).
+    dials_ok: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    ambiguous_onset_ms: std.atomic.Value(usize) = std.atomic.Value(usize).init(std.math.maxInt(usize)),
+    dials_ok_at_ambiguous_onset: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     injected_transport_errors: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     // Written once by main before any worker spawns; read-only afterwards.
     start_ns: i64 = 0,
@@ -220,13 +245,19 @@ fn causeSlot(cause: rpc.events.DisconnectCause) usize {
 const SetupStage = enum { connect, init };
 
 const SetupClass = enum {
-    /// Nothing accepted the dial (listen backlog overflow, server down).
+    /// Nothing accepted the dial. The server under test is in-process, so
+    /// this gates unless the server is down by design (abrupt deaths).
     refused,
-    /// The host ran out of ephemeral ports (TIME_WAIT pile-up).
+    /// The host ran out of ephemeral ports (TIME_WAIT pile-up). Reported.
     port_exhaustion,
-    /// Memory, fd or other OS resource limits.
+    /// Memory, fd or other OS resource limits. Reported.
     resources,
+    /// Gates like `refused`.
     timeout,
+    /// A Windows connect-stage error.Unexpected. Resolved at the end of the
+    /// run by its shape (ambiguousIsPortExhaustion): port exhaustion, or
+    /// unexplained.
+    ambiguous,
     /// Anything unexplained: gated, because it may be a defect.
     other,
 };
@@ -245,12 +276,93 @@ fn classifySetupFailure(err: anyerror, stage: SetupStage, os_tag: std.Target.Os.
         error.OutOfMemory,
         => .resources,
         error.Timeout, error.ConnectionTimedOut => .timeout,
-        // std 0.17's netConnectIpWindows binds an ephemeral port before
-        // AFD_CONNECT and maps that bind's AddressInUse to Unexpected: on
-        // Windows, the connect stage's Unexpected IS port exhaustion (the
-        // nightly 64-worker lane logged 21020 of them after ~8 s).
-        error.Unexpected => if (os_tag == .windows and stage == .connect) .port_exhaustion else .other,
+        // std 0.17's netConnectIpWindows returns Unexpected for several
+        // distinct failures: the ephemeral bind's AddressInUse and its other
+        // unmapped NTSTATUSes, a failed SO_REUSE_UNICASTPORT, and every
+        // AFD_CONNECT status except refused and insufficient resources. With
+        // SO_REUSE_UNICASTPORT the port is only chosen at AFD_CONNECT, so
+        // exhaustion most likely surfaces there, but a ReleaseSafe build does
+        // not print the status. The nightly 64-worker lane logged 21020 of
+        // them from ~+8 s; that one had the exhaustion shape. A regression in
+        // the same path would not, so the shape decides, not the error.
+        error.Unexpected => if (os_tag == .windows and stage == .connect) .ambiguous else .other,
         else => .other,
+    };
+}
+
+/// How the ambiguous (Windows connect-stage Unexpected) failures fell
+/// across the run. Successful dials are counted at the first ambiguous
+/// failure (the onset), so `dials_ok_before` + `dials_ok_after` is every
+/// successful dial of the run.
+const AmbiguousShape = struct {
+    failures: usize = 0,
+    dials_ok_before: usize = 0,
+    dials_ok_after: usize = 0,
+};
+
+/// The dial path must have worked this many times before an onset can be
+/// exhaustion. A broken path (a std AFD regression) fails from its first
+/// dial; ephemeral ports run out only after many of them were used.
+const exhaustion_min_dials_before: usize = 100;
+
+/// Port exhaustion has one shape: the dial path demonstrably works, then
+/// the host runs out of ports and stays out. Windows holds a closed port in
+/// TIME_WAIT for 120 s, so from the onset nearly every dial fails, with a
+/// trickle of successes as old TIME_WAITs expire. "Stays out" is: at least
+/// half of all dial attempts from the onset on failed this way. A path
+/// broken from the start fails the first test; an intermittent defect, which
+/// fails a fraction of dials throughout, fails the second.
+fn ambiguousIsPortExhaustion(shape: AmbiguousShape) bool {
+    if (shape.failures == 0) return false;
+    if (shape.dials_ok_before < exhaustion_min_dials_before) return false;
+    return shape.failures >= shape.dials_ok_after;
+}
+
+const SetupVerdict = struct {
+    /// Counted against the tolerance: `other`, ambiguous failures without
+    /// the exhaustion shape, and refused/timeout while the server under
+    /// test should be accepting.
+    gated: usize,
+    /// Reported: port exhaustion, plus ambiguous failures with its shape.
+    port_exhaustion: usize,
+    /// Reported: resource limits, plus refused/timeout while the server is
+    /// down by design.
+    reported: usize,
+    ambiguous_is_exhaustion: bool,
+    ok: bool,
+};
+
+/// Resolve the setup-failure classes into gated and reported totals.
+/// `server_down_by_design` is true only under QUIC --abrupt-death-every-ms,
+/// where dials into a restart gap are expected to be refused or time out.
+/// Everywhere else the server under test is an in-process listener that
+/// should accept every dial: refused or timed-out dials mean it stopped
+/// serving, which is a failure of the code under test, not host noise.
+fn assessSetup(
+    counts: [setup_class_count]usize,
+    ambiguous: AmbiguousShape,
+    server_down_by_design: bool,
+    tolerance: usize,
+) SetupVerdict {
+    const at = struct {
+        fn n(c: [setup_class_count]usize, class: SetupClass) usize {
+            return c[@backingInt(class)];
+        }
+    }.n;
+    const ambiguous_is_exhaustion = ambiguousIsPortExhaustion(ambiguous);
+    const ambiguous_count = at(counts, .ambiguous);
+    const not_accepted = at(counts, .refused) +| at(counts, .timeout);
+    var gated = at(counts, .other);
+    var port_exhaustion = at(counts, .port_exhaustion);
+    var reported = at(counts, .resources);
+    if (ambiguous_is_exhaustion) port_exhaustion +|= ambiguous_count else gated +|= ambiguous_count;
+    if (server_down_by_design) reported +|= not_accepted else gated +|= not_accepted;
+    return .{
+        .gated = gated,
+        .port_exhaustion = port_exhaustion,
+        .reported = reported,
+        .ambiguous_is_exhaustion = ambiguous_is_exhaustion,
+        .ok = gated <= tolerance,
     };
 }
 
@@ -263,11 +375,86 @@ test "classifySetupFailure: connect-stage errors map to their classes" {
     try std.testing.expectEqual(SetupClass.other, classifySetupFailure(error.BrokenPipe, .connect, .linux));
 }
 
-test "classifySetupFailure: Unexpected is port exhaustion only for a Windows connect" {
-    try std.testing.expectEqual(SetupClass.port_exhaustion, classifySetupFailure(error.Unexpected, .connect, .windows));
+test "classifySetupFailure: a Windows connect-stage Unexpected is ambiguous, never exhaustion outright" {
+    // std 0.17 folds several distinct AFD failures into it; only its shape
+    // over the run can make it port exhaustion (ambiguousIsPortExhaustion).
+    try std.testing.expectEqual(SetupClass.ambiguous, classifySetupFailure(error.Unexpected, .connect, .windows));
     // The same error from Connection.init, or on POSIX, stays unexplained.
     try std.testing.expectEqual(SetupClass.other, classifySetupFailure(error.Unexpected, .init, .windows));
     try std.testing.expectEqual(SetupClass.other, classifySetupFailure(error.Unexpected, .connect, .linux));
+}
+
+test "ambiguousIsPortExhaustion: the 2026-10-03 Windows 64-worker shape is exhaustion" {
+    // 5517 sessions, then 21020 Unexpected dials from ~+8 s to the end of a
+    // 20 s run. The log does not record how the sessions split around the
+    // onset; the memory curve puts nearly all of them before it.
+    try std.testing.expect(ambiguousIsPortExhaustion(.{ .failures = 21020, .dials_ok_before = 5000, .dials_ok_after = 517 }));
+    // Exhaustion that throttles a longer run (old TIME_WAITs expiring) is
+    // still exhaustion while failures are at least half the attempts.
+    try std.testing.expect(ambiguousIsPortExhaustion(.{ .failures = 8000, .dials_ok_before = 16000, .dials_ok_after = 8000 }));
+}
+
+test "ambiguousIsPortExhaustion: a dial path that never worked is not exhaustion" {
+    // Broken from the first dial (a std AFD regression, or a host that was
+    // already exhausted when the run began: either way nothing was tested).
+    try std.testing.expect(!ambiguousIsPortExhaustion(.{ .failures = 30000, .dials_ok_before = 0, .dials_ok_after = 0 }));
+    try std.testing.expect(!ambiguousIsPortExhaustion(.{ .failures = 30000, .dials_ok_before = exhaustion_min_dials_before - 1, .dials_ok_after = 0 }));
+    try std.testing.expect(ambiguousIsPortExhaustion(.{ .failures = 30000, .dials_ok_before = exhaustion_min_dials_before, .dials_ok_after = 0 }));
+}
+
+test "ambiguousIsPortExhaustion: intermittent failures are not exhaustion" {
+    // A tenth of the dials fail, from early on to the end.
+    try std.testing.expect(!ambiguousIsPortExhaustion(.{ .failures = 1500, .dials_ok_before = 200, .dials_ok_after = 13500 }));
+    // One past even is already not sustained.
+    try std.testing.expect(!ambiguousIsPortExhaustion(.{ .failures = 999, .dials_ok_before = 200, .dials_ok_after = 1000 }));
+    try std.testing.expect(!ambiguousIsPortExhaustion(.{ .failures = 0, .dials_ok_before = 200, .dials_ok_after = 0 }));
+}
+
+fn setupCounts(pairs: []const struct { SetupClass, usize }) [setup_class_count]usize {
+    var counts: [setup_class_count]usize = @splat(0);
+    for (pairs) |p| counts[@backingInt(p[0])] = p[1];
+    return counts;
+}
+
+test "assessSetup: refused and timeout gate while the server under test should be up" {
+    // The in-process server stopped accepting: every later dial is refused.
+    const refused = setupCounts(&.{.{ .refused, 9 }});
+    const v = assessSetup(refused, .{}, false, 8);
+    try std.testing.expect(!v.ok);
+    try std.testing.expectEqual(@as(usize, 9), v.gated);
+    // Refused and timeout add up with `other` against one tolerance.
+    try std.testing.expect(!assessSetup(setupCounts(&.{ .{ .refused, 3 }, .{ .timeout, 3 }, .{ .other, 3 } }), .{}, false, 8).ok);
+    try std.testing.expect(assessSetup(setupCounts(&.{ .{ .refused, 4 }, .{ .timeout, 4 } }), .{}, false, 8).ok);
+}
+
+test "assessSetup: refused and timeout are reported while the server is down by design" {
+    // QUIC --abrupt-death-every-ms: dials into the restart gap fail.
+    const v = assessSetup(setupCounts(&.{ .{ .refused, 400 }, .{ .timeout, 50 } }), .{}, true, 8);
+    try std.testing.expect(v.ok);
+    try std.testing.expectEqual(@as(usize, 0), v.gated);
+    try std.testing.expectEqual(@as(usize, 450), v.reported);
+    // `other` still gates in that mode.
+    try std.testing.expect(!assessSetup(setupCounts(&.{.{ .other, 9 }}), .{}, true, 8).ok);
+}
+
+test "assessSetup: ambiguous Windows dials gate unless they have the exhaustion shape" {
+    const counts = setupCounts(&.{.{ .ambiguous, 21020 }});
+    const exhausted = assessSetup(counts, .{ .failures = 21020, .dials_ok_before = 5000, .dials_ok_after = 517 }, false, 11);
+    try std.testing.expect(exhausted.ok);
+    try std.testing.expect(exhausted.ambiguous_is_exhaustion);
+    try std.testing.expectEqual(@as(usize, 21020), exhausted.port_exhaustion);
+    const broken = assessSetup(counts, .{ .failures = 21020, .dials_ok_before = 0, .dials_ok_after = 0 }, false, 11);
+    try std.testing.expect(!broken.ok);
+    try std.testing.expect(!broken.ambiguous_is_exhaustion);
+    try std.testing.expectEqual(@as(usize, 21020), broken.gated);
+    try std.testing.expectEqual(@as(usize, 0), broken.port_exhaustion);
+}
+
+test "assessSetup: port exhaustion and resource limits are reported, not gated" {
+    const v = assessSetup(setupCounts(&.{ .{ .port_exhaustion, 5000 }, .{ .resources, 20 } }), .{}, false, 8);
+    try std.testing.expect(v.ok);
+    try std.testing.expectEqual(@as(usize, 5000), v.port_exhaustion);
+    try std.testing.expectEqual(@as(usize, 20), v.reported);
 }
 
 // -- Transport-error bound ---------------------------------------------------
@@ -565,11 +752,37 @@ const EchoServer = struct {
     }
 };
 
-fn poolThreadMain(pool: *WorkerPool) void {
-    pool.run() catch |err| {
-        std.debug.print("soak: worker pool run failed: {}\n", .{err});
-    };
-}
+/// Runs the TCP server under test (WorkerPool.run) on its own thread and
+/// records whether it stopped serving before main asked it to. If run()
+/// returns early (a spawn failure, or accept loops that quit), later dials
+/// are refused or sit in the backlog unserved, while sessions that finished
+/// earlier still count as traffic: without this flag the run could pass.
+const PoolRunner = struct {
+    pool: *WorkerPool,
+    io: std.Io,
+    stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    // Written by the pool thread, read by main after join.
+    run_error: ?anyerror = null,
+    exited_early: bool = false,
+    exit_ns: i64 = 0,
+
+    fn threadMain(self: *PoolRunner) void {
+        self.pool.run() catch |err| {
+            self.run_error = err;
+            std.debug.print("soak: worker pool run failed: {}\n", .{err});
+        };
+        if (!self.stop_requested.load(.acquire)) {
+            self.exited_early = true;
+            self.exit_ns = nowNs(self.io);
+            std.debug.print("soak: worker pool stopped serving before shutdown was requested\n", .{});
+        }
+    }
+
+    /// Whether the server under test served the whole run.
+    fn servedWholeRun(self: *const PoolRunner) bool {
+        return self.run_error == null and !self.exited_early;
+    }
+};
 
 // -- Client session ----------------------------------------------------------
 
@@ -831,10 +1044,19 @@ fn WorkerOf(
         fn noteSetupFailure(self: Self, err: anyerror, stage: SetupStage) void {
             const class = classifySetupFailure(err, stage, builtin.os.tag);
             const n = self.totals.setup_failures[@backingInt(class)].fetchAdd(1, .monotonic) + 1;
-            if (class == .port_exhaustion) {
-                const offset_ns = nowNs(self.io) - self.totals.start_ns;
-                const offset_ms: usize = @intCast(@max(0, @divTrunc(offset_ns, std.time.ns_per_ms)));
-                _ = self.totals.first_port_exhaustion_ms.fetchMin(offset_ms, .monotonic);
+            const offset_ns = nowNs(self.io) - self.totals.start_ns;
+            const offset_ms: usize = @intCast(@max(0, @divTrunc(offset_ns, std.time.ns_per_ms)));
+            switch (class) {
+                .port_exhaustion => _ = self.totals.first_port_exhaustion_ms.fetchMin(offset_ms, .monotonic),
+                .ambiguous => {
+                    // The first one fixes the onset and the successful-dial
+                    // count before it (see AmbiguousShape).
+                    const none = std.math.maxInt(usize);
+                    if (self.totals.ambiguous_onset_ms.cmpxchgStrong(none, offset_ms, .acq_rel, .monotonic) == null) {
+                        self.totals.dials_ok_at_ambiguous_onset.store(self.totals.dials_ok.load(.monotonic), .monotonic);
+                    }
+                },
+                else => {},
             }
             if (n <= setup_failure_log_limit) {
                 std.debug.print("soak: worker {} setup failure ({s}, {s} stage): {}\n", .{ self.index, @tagName(class), @tagName(stage), err });
@@ -859,6 +1081,7 @@ fn WorkerOf(
                 sleepMs(self.io, 5);
                 return;
             };
+            _ = self.totals.dials_ok.fetchAdd(1, .monotonic);
 
             const peer = try self.allocator.create(Peer);
             errdefer self.allocator.destroy(peer);
@@ -1667,6 +1890,7 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
     for (latency_hists) |*h| h.* = .{};
 
     var pool: WorkerPool = undefined;
+    var pool_runner: PoolRunner = undefined;
     var pool_thread: std.Thread = undefined;
     var quic_srv = QuicServerHarness{};
     var address: net.IpAddress = undefined;
@@ -1686,7 +1910,8 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
             // Windows' native socket handle type.
             const port = pool.server.socket.address.getPort();
             address = .{ .ip4 = .loopback(port) };
-            pool_thread = try std.Thread.spawn(.{}, poolThreadMain, .{&pool});
+            pool_runner = .{ .pool = &pool, .io = io };
+            pool_thread = try std.Thread.spawn(.{}, PoolRunner.threadMain, .{&pool_runner});
             std.debug.print(
                 "soak: tcp server listening on port {} (workers {}, inflight {}, pool concurrency {})\n",
                 .{ port, cfg.workers, cfg.inflight, @max(2, cfg.workers / 2) },
@@ -1837,6 +2062,7 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
 
     switch (cfg.transport) {
         .tcp => {
+            pool_runner.stop_requested.store(true, .release);
             pool.shutdownGraceful(2_000);
             std.debug.print("soak: pool drained, joining pool thread\n", .{});
             pool_thread.join();
@@ -2031,29 +2257,78 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
         );
         failed = true;
     }
-    // Setup failures: classified; only the unexplained class gates.
-    const other_setup = setup_counts[@backingInt(SetupClass.other)];
-    if (other_setup > tolerance) {
-        std.debug.print(
-            "soak: FAIL — {} unclassified setup failures exceed the tolerance of {}\n",
-            .{ other_setup, tolerance },
-        );
+    // The TCP server under test must serve the whole run.
+    if (cfg.transport == .tcp and !pool_runner.servedWholeRun()) {
+        if (pool_runner.run_error) |err| {
+            std.debug.print("soak: FAIL — the server under test (WorkerPool.run) failed: {}\n", .{err});
+        } else {
+            const exit_ms = @divTrunc(pool_runner.exit_ns - totals.start_ns, std.time.ns_per_ms);
+            std.debug.print(
+                "soak: FAIL — the server under test (WorkerPool.run) stopped serving at +{d:.1}s of a {}s run, before shutdown was requested\n",
+                .{ @as(f64, @floatFromInt(exit_ms)) / 1000.0, cfg.seconds },
+            );
+        }
         failed = true;
     }
-    const port_exhausted = setup_counts[@backingInt(SetupClass.port_exhaustion)];
-    if (port_exhausted > 0) {
-        const first_ms = totals.first_port_exhaustion_ms.load(.acquire);
+    // Setup failures: classified, then resolved into gated and reported
+    // totals (see assessSetup and the file header).
+    const dials_ok = totals.dials_ok.load(.acquire);
+    const dials_ok_at_onset = totals.dials_ok_at_ambiguous_onset.load(.acquire);
+    const ambiguous_shape: AmbiguousShape = .{
+        .failures = setup_counts[@backingInt(SetupClass.ambiguous)],
+        .dials_ok_before = dials_ok_at_onset,
+        .dials_ok_after = dials_ok -| dials_ok_at_onset,
+    };
+    const server_down_by_design = cfg.abrupt_death_every_ms != null;
+    const setup_verdict = assessSetup(setup_counts, ambiguous_shape, server_down_by_design, tolerance);
+    const ambiguous_onset_ms = totals.ambiguous_onset_ms.load(.acquire);
+    if (ambiguous_shape.failures > 0) {
+        std.debug.print(
+            "soak: windows connect-stage error.Unexpected: {} dials failed from +{d:.1}s, after {} successful dials (port exhaustion needs >= {}); {} dials succeeded since -> {s}\n",
+            .{
+                ambiguous_shape.failures,
+                @as(f64, @floatFromInt(ambiguous_onset_ms)) / 1000.0,
+                ambiguous_shape.dials_ok_before,
+                exhaustion_min_dials_before,
+                ambiguous_shape.dials_ok_after,
+                if (setup_verdict.ambiguous_is_exhaustion) "port-exhaustion shape" else "NOT the port-exhaustion shape: unexplained",
+            },
+        );
+    }
+    if (!setup_verdict.ok) {
+        std.debug.print(
+            "soak: FAIL — {} unexplained setup failures exceed the tolerance of {} (other={} ambiguous={} refused={} timeout={}; refused and timeout count because the server under test should be accepting{s})\n",
+            .{
+                setup_verdict.gated,
+                tolerance,
+                setup_counts[@backingInt(SetupClass.other)],
+                if (setup_verdict.ambiguous_is_exhaustion) 0 else ambiguous_shape.failures,
+                if (server_down_by_design) 0 else setup_counts[@backingInt(SetupClass.refused)],
+                if (server_down_by_design) 0 else setup_counts[@backingInt(SetupClass.timeout)],
+                if (ambiguous_shape.failures > 0 and !setup_verdict.ambiguous_is_exhaustion) "; a host already port-exhausted when the run began also lands here, and exercised nothing" else "",
+            },
+        );
+        failed = true;
+    } else if (setup_verdict.gated > 0) {
+        warn(annotate, "{} unexplained setup failures, within the tolerance of {}; see the setup failures line", .{ setup_verdict.gated, tolerance });
+    }
+    if (setup_verdict.port_exhaustion > 0) {
+        var first_ms = totals.first_port_exhaustion_ms.load(.acquire);
+        if (setup_verdict.ambiguous_is_exhaustion) first_ms = @min(first_ms, ambiguous_onset_ms);
         // Host-side, not a defect in the code under test: reported loudly,
         // with where in the run it began, but not gated.
         warn(
             annotate,
             "host ephemeral-port exhaustion: {} dials failed from +{d:.1}s of a {}s run; traffic after that point was not exercised",
-            .{ port_exhausted, @as(f64, @floatFromInt(first_ms)) / 1000.0, cfg.seconds },
+            .{ setup_verdict.port_exhaustion, @as(f64, @floatFromInt(first_ms)) / 1000.0, cfg.seconds },
         );
     }
-    const other_reported = setup_total - other_setup - port_exhausted;
-    if (other_reported > 0) {
-        warn(annotate, "{} classified setup failures (refused/resources/timeout); see the setup failures line", .{other_reported});
+    if (setup_verdict.reported > 0) {
+        warn(
+            annotate,
+            "{} reported setup failures (resource limits{s}); see the setup failures line",
+            .{ setup_verdict.reported, if (server_down_by_design) ", and dials refused or timed out while the server was down by design" else "" },
+        );
     }
     if (!verdict.ok) {
         std.debug.print(

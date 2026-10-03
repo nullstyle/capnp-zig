@@ -209,8 +209,14 @@ percentiles plus a memory-growth curve asserted flat at ≥100 concurrent peers.
 On Windows the soak cannot report success without positive session, call,
 chaos-close, and applicable deadline-cancellation counters; the old successful
 no-op is gone. Mid-session transport errors are bounded (chaos closes plus a
-documented tolerance), dial failures are classified separately (port
-exhaustion is reported, unexplained dial failures gate), and the process
+documented tolerance). Dial failures are classified separately: port
+exhaustion and resource limits are reported. Unexplained failures gate, and so
+do refused or timed-out dials, because the server under test is in-process.
+On Windows, std 0.17 returns `error.Unexpected` for several different connect
+failures, so it counts as port exhaustion only when it has that shape: it
+starts after at least 100 successful dials, and from then on at least half of
+the dials fail. Otherwise it gates. The soak also fails if the TCP server
+under test stops serving before shutdown. The process
 resident set runs through the same steady-state trend check as the Zig heap.
 The RSS check — the one that sees C-side memory such as BoringSSL's under
 QUIC — is report-only in CI for now (`--rss-gate enforce` makes it gate).
