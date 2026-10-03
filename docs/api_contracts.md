@@ -56,6 +56,30 @@ Internal helper behavior may change, but exported type semantics and error class
   Stats/events contain aggregate record, part, provision-byte, and inbound
   answer-ID data, never targets, provisions, keys, or addresses.
 
+## Experimental Liveness Contract
+
+- `WorkerPool` serves one connection per worker to completion, so it reaps
+  connections that hold a worker without using it.
+  `WorkerPool.Config.first_frame_timeout_ms` (default 10 seconds) reaps a
+  connection that has not delivered one complete frame since its accept. A
+  remote that trickles bytes of a frame it never completes is reaped too.
+  `WorkerPool.Config.idle_timeout_ms` (default 5 minutes) reaps a connection
+  with no inbound read and no outbound enqueue. An explicit
+  `connection_options.idle_timeout_ms` wins over the pool default. Null opts
+  out of each deadline. Both deadlines emit the `.idle_connection` timeout
+  event.
+- The pool arms the first-frame deadline on the `Connection` before
+  `on_accept` runs, so the callback can change it for one connection.
+- Raw `Connection`, `ClientSession` and the Stable `ServerSession.accept` do not
+  arm either deadline by default.
+- When the deadline sweep in `checkDeadlines()` cancels a question, a non-OOM
+  error from that question's callback goes to `on_error`. A failure of the
+  cancellation itself (OOM) also goes to `on_error`. The shutdown drain bound
+  does the same. A wire Return's failing callback already took this route.
+  An explicit `cancelQuestion()` and teardown (`deinit`, transport close) only
+  log these failures. `ClientSession` and `ServerSession` close their
+  transport on `on_error`, as they do for a wire Return.
+
 ## Error Taxonomy
 Errors are grouped by class for caller policy decisions:
 
