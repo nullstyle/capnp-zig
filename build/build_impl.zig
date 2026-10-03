@@ -415,6 +415,11 @@ pub fn buildImpl(b: *std.Build) !void {
         },
     });
 
+    // The L3 drivers write raw frames to their sockets. They share the test
+    // suites' socket-write shim rather than each carrying a private copy of
+    // the std vtable-vs-Operation selection (see build/helpers.zig).
+    const e2e_io_write_compat_module = helpers.ioWriteCompatModule(b, target, optimize, lib_module);
+
     const e2e_l3_cpp = b.addExecutable(.{
         .name = "e2e-l3-cpp",
         .root_module = b.createModule(.{
@@ -425,6 +430,7 @@ pub fn buildImpl(b: *std.Build) !void {
                 .{ .name = "capnpc-zig", .module = lib_module },
                 .{ .name = "io_backend_options", .module = io_backend_options_module },
                 .{ .name = "l3_l4_interop", .module = e2e_l3_l4_module },
+                .{ .name = "io-write-compat", .module = e2e_io_write_compat_module },
             },
         }),
     });
@@ -468,6 +474,7 @@ pub fn buildImpl(b: *std.Build) !void {
                 .{ .name = "capnpc-zig", .module = lib_module },
                 .{ .name = "io_backend_options", .module = io_backend_options_module },
                 .{ .name = "l3_l4_interop", .module = e2e_l3_l4_module },
+                .{ .name = "io-write-compat", .module = e2e_io_write_compat_module },
             },
         }),
     });
@@ -1465,7 +1472,9 @@ pub fn buildImpl(b: *std.Build) !void {
     // tools/e2e_l3_cpp.zig still called it, `zig build check` stayed green,
     // and only the Docker e2e lane in CI went red. Ablation: making the
     // vtable arm of that tool's socket write unconditional leaves the old
-    // `check` green and turns this step (and so `check`) red.
+    // `check` green and turns this step (and so `check`) red. That write now
+    // lives in the shared io-write-compat shim; forcing its vtable arm turns
+    // `check` red through e2e-l3-cpp and e2e-l3-vatc-host the same way.
     //
     // `check` depends on this only when neither the host nor the target is
     // Windows. The L3/C++ driver and the VatC host wait on their TCP sockets

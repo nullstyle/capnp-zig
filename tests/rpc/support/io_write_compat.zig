@@ -1,4 +1,5 @@
-//! Socket-write compatibility for tests across the std.Io net move.
+//! Socket-write compatibility for tests and e2e tools across the std.Io
+//! net move.
 //!
 //! Zig deleted the `netWrite`/`netRead` `Io.VTable` entries and replaced
 //! them with `net_write`/`net_read` `Operation` variants around
@@ -6,6 +7,14 @@
 //! `rpc.transport.tcp.stream`'s `ioWrite`; tests need the same choice in
 //! two shapes — a plain write helper, and a FAKE Io that intercepts
 //! writes — so the suite builds on both sides of the move.
+//!
+//! This is the ONLY non-production copy of that selection. The L3 e2e
+//! executables (`tools/e2e_l3_cpp.zig`, `tests/e2e/zig/l3_vatc_host.zig`)
+//! import it as `io-write-compat` (wired by `build/helpers.zig`) instead of
+//! carrying their own; a private copy in e2e_l3_cpp is what reached CI
+//! still calling the deleted vtable entry. `zig build check` compiles those
+//! executables through `check-tools`, so a std move that breaks this file
+//! fails locally.
 //!
 //! Selection keys on the OPERATION's presence, never on a version number.
 

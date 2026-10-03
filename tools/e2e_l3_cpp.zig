@@ -1,6 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const io_backend_options = @import("io_backend_options");
+const io_write_compat = @import("io-write-compat");
 
 const rpc = capnpc.rpc;
 const message = capnpc.message;
@@ -257,7 +258,7 @@ const TcpPeer = struct {
         var progressed = false;
         while (self.host.popOutgoingFrame()) |frame| {
             defer self.host.freeFrame(frame);
-            try writeAll(io, self.socket, frame);
+            try io_write_compat.writeAll(io, self.socket.handle, frame);
             progressed = true;
         }
         return progressed;
@@ -288,32 +289,6 @@ const TcpPeer = struct {
         }
     }
 };
-
-fn writeAll(io: std.Io, socket: rpc.transport.tcp.SocketFd, bytes: []const u8) !void {
-    const pattern: []const u8 = &.{};
-    const data: [1][]const u8 = .{pattern};
-    var offset: usize = 0;
-    while (offset < bytes.len) {
-        const n = blk: {
-            // Same selection as tests/e2e/zig/l3_vatc_host.zig: zig moved
-            // socket writes from the vtable onto Operation.net_write around
-            // 0.17.0-dev.1786, and tagged 0.17.0 has only the operation.
-            if (comptime @hasField(std.Io.Operation, "net_write")) {
-                const result = io.operate(.{ .net_write = .{
-                    .socket_handle = socket.handle,
-                    .header = bytes[offset..],
-                    .data = &data,
-                    .splat = 0,
-                } }) catch return error.WriteFailed;
-                break :blk result.net_write catch return error.WriteFailed;
-            }
-            break :blk io.vtable.netWrite(io.userdata, socket.handle, bytes[offset..], &data, 0) catch
-                return error.WriteFailed;
-        };
-        if (n == 0) return error.BrokenPipe;
-        offset += n;
-    }
-}
 
 const Pump = struct {
     io: std.Io,

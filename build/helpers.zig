@@ -71,7 +71,14 @@ pub fn addLibTest(
     return &b.addRunArtifact(t).step;
 }
 
-fn ioWriteCompatModule(
+/// The one hand-written socket-write shim outside production
+/// (`tests/rpc/support/io_write_compat.zig`), as the `io-write-compat`
+/// module. Test suites get it through `addLibTest`; the e2e tool
+/// executables that write raw frames import it too, so there is a single
+/// copy of the std vtable-vs-Operation selection to port when std moves.
+/// Production keeps its own selection in `rpc.transport.tcp.stream`'s
+/// `ioWrite`, which this does not replace.
+pub fn ioWriteCompatModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,

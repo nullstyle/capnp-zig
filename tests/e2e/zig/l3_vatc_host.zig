@@ -21,6 +21,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const io_backend_options = @import("io_backend_options");
+const io_write_compat = @import("io-write-compat");
 
 const rpc = capnpc.rpc;
 const HostPeer = rpc.integration.HostPeer;
@@ -524,7 +525,7 @@ const HostConn = struct {
             defer self.host.freeFrame(frame);
             traceFrame(self.allocator, "-->", self.index, frame);
             if (self.wire_probes) |wp| wp.noteOutbound(self.allocator, frame);
-            writeAll(io, self.socket, frame) catch {
+            io_write_compat.writeAll(io, self.socket.handle, frame) catch {
                 // Abrupt driver disconnect (EPIPE/reset) is a tolerated end
                 // state in every scenario; the drain asserts decide pass/fail.
                 self.markTransportClosed();
@@ -596,32 +597,6 @@ const HostConn = struct {
 fn drainOrder(conns: []HostConn, quiet_first: bool) [2]usize {
     if (!quiet_first or conns.len < 2) return .{ 0, 1 };
     return if (conns[1].frames_in < conns[0].frames_in) .{ 1, 0 } else .{ 0, 1 };
-}
-
-fn writeAll(io: std.Io, socket: rpc.transport.tcp.SocketFd, bytes: []const u8) !void {
-    const pattern: []const u8 = &.{};
-    const data: [1][]const u8 = .{pattern};
-    var offset: usize = 0;
-    while (offset < bytes.len) {
-        const n = blk: {
-            // See rpc.transport.tcp.stream's ioWrite: zig moved socket
-            // writes from the vtable onto Operation.net_write around
-            // 0.17.0-dev.1786.
-            if (comptime @hasField(std.Io.Operation, "net_write")) {
-                const result = io.operate(.{ .net_write = .{
-                    .socket_handle = socket.handle,
-                    .header = bytes[offset..],
-                    .data = &data,
-                    .splat = 0,
-                } }) catch return error.WriteFailed;
-                break :blk result.net_write catch return error.WriteFailed;
-            }
-            break :blk io.vtable.netWrite(io.userdata, socket.handle, bytes[offset..], &data, 0) catch
-                return error.WriteFailed;
-        };
-        if (n == 0) return error.BrokenPipe;
-        offset += n;
-    }
 }
 
 // -- Probes: sampled after every inbound frame -------------------------------
