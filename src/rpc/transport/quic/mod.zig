@@ -90,7 +90,11 @@ pub const testing = if (builtin.is_test) struct {
     /// so the internal suite drives it with a three-method fake, no network.
     pub const native_outbound_queue = @import("native_outbound_queue.zig");
     pub const ListenerAccess = listener.Listener.TestingHooks;
-    pub const nonWindowsReceive = non_windows_receive.receive;
+    /// Void on Windows, where `non_windows_receive.receive` is a deliberate
+    /// `@compileError` (receives go through the bridge): `refAllRecursive`
+    /// walks this namespace in test builds, so naming the function there
+    /// broke every Windows QUIC test compile.
+    pub const nonWindowsReceive = if (builtin.target.os.tag == .windows) {} else non_windows_receive.receive;
     pub const UdpReceiveBridge = udp_receive_bridge.Bridge;
     /// Exposed through the seam rather than tested in place: a `test` block in
     /// datagram_io.zig never runs, because `refAllRecursive` does not reach
