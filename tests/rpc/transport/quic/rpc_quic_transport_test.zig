@@ -1280,6 +1280,210 @@ test "quic native receiver takes back-to-back control frames larger together tha
     try client_state.expectOrder(&expected_order);
 }
 
+/// One endpoint of the many-frames run. Frames arrive on the loop thread;
+/// the test thread only reads the atomics.
+const ManyFramesEndpoint = struct {
+    /// Every frame the run sends, in send order. Each one differs from the
+    /// others (its question id is its index), so a byte compare against
+    /// `frames[next]` is an E-order check, not just a count.
+    frames: []const []const u8,
+    /// Client only: frames handed to `sendFrame` so far.
+    sent: usize = 0,
+    next: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    out_of_order: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    errors: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    closes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    last_error: ?anyerror = null,
+
+    fn expectNext(self: *ManyFramesEndpoint, frame: []const u8) !void {
+        const index = self.next.load(.acquire);
+        if (index >= self.frames.len or !std.mem.eql(u8, frame, self.frames[index])) {
+            _ = self.out_of_order.fetchAdd(1, .acq_rel);
+            return error.QuicLoopbackOutOfOrder;
+        }
+        self.next.store(index + 1, .release);
+    }
+
+    fn of(conn: *quic.Connection) *ManyFramesEndpoint {
+        return @ptrCast(@alignCast(conn.context().?));
+    }
+
+    /// Server: check E-order, echo the frame back (on its own uni stream).
+    fn serverEcho(conn: *quic.Connection, frame: []const u8) !void {
+        try of(conn).expectNext(frame);
+        try conn.sendFrame(frame);
+    }
+
+    /// Client: check E-order, then keep the pipeline full.
+    fn clientReceive(conn: *quic.Connection, frame: []const u8) !void {
+        const self = of(conn);
+        try self.expectNext(frame);
+        if (self.sent < self.frames.len) {
+            try conn.sendFrame(self.frames[self.sent]);
+            self.sent += 1;
+        }
+    }
+
+    fn recordError(conn: *quic.Connection, err: anyerror) void {
+        const self = of(conn);
+        self.last_error = err;
+        _ = self.errors.fetchAdd(1, .acq_rel);
+        conn.requestClose();
+    }
+
+    fn recordClose(conn: *quic.Connection) void {
+        _ = of(conn).closes.fetchAdd(1, .acq_rel);
+    }
+};
+
+test "quic native connection carries more than 10,000 large frames with no disconnect, in E-order" {
+    // Native mode sends every frame above `inline_frame_threshold` on its
+    // own one-shot unidirectional stream. quic v0.19.0 let a connection
+    // open 4096 streams of each type over its whole LIFE; from stream 4097
+    // on, every open failed for good. From quic v0.24.0 the limit is a
+    // window: an id comes back when a stream is fully closed. This run
+    // pushes 10,240 frames each way (the server echoes) through ONE
+    // connection with the default transport parameters, keeps 64 frames in
+    // flight (more than the uni window, so `StreamLimitExceeded` and the
+    // queue's retry run all the time), and asserts zero disconnects and
+    // that both sides see every frame in send order.
+    try runManyLargeFrames(null);
+}
+
+test "quic native connection carries 10,000 large frames through a stream window of one" {
+    // The tightest window: every data stream must be fully closed, and its
+    // id given back, before the next frame can leave. Every frame after the
+    // first hits `StreamLimitExceeded` and goes out only on a retry after a
+    // later pump, so a queue that failed (or dropped the frame) on that
+    // error could not finish this run.
+    try runManyLargeFrames(1);
+}
+
+/// Pushes 10,240 large frames each way over one native connection (see the
+/// test above). `uni_window` overrides `initial_max_streams_uni` on both
+/// ends; null keeps `quic.defaultTransportParams()`.
+fn runManyLargeFrames(uni_window: ?u64) !void {
+    // A leak-checking allocator WITHOUT stack traces: `std.testing.allocator`
+    // records a trace per allocation, which dominates a run of ~20,000
+    // stream lifetimes in Debug. A leak still fails the test.
+    var leak_checker: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .init;
+    defer if (leak_checker.deinit() == .leak) @panic("many-frames run leaked");
+    const allocator = leak_checker.allocator();
+    const total_frames: usize = 10_240;
+    const inflight: usize = 64;
+
+    var params = quic.defaultTransportParams();
+    if (uni_window) |w| params.initial_max_streams_uni = w;
+
+    const native_options = quic.NativeOptions{
+        .inline_frame_threshold = 128,
+        .max_control_frame_bytes = 256,
+        .max_pending_data_streams = 2 * inflight,
+        .max_pending_data_bytes = 1 << 20,
+    };
+
+    const frames = try allocator.alloc([]const u8, total_frames);
+    defer allocator.free(frames);
+    var built: usize = 0;
+    defer for (frames[0..built]) |frame| allocator.free(frame);
+    while (built < total_frames) : (built += 1) {
+        frames[built] = try buildCallFrameWithData(allocator, @intCast(built), 160);
+    }
+    // Every frame must ride a data stream, or the run proves nothing about
+    // stream ids.
+    for (frames) |frame| try std.testing.expect(frame.len > native_options.inline_frame_threshold);
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .transport_params = params,
+        .mode = .native,
+        .native = native_options,
+    });
+    defer server.deinit();
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .transport_params = params,
+        .mode = .native,
+        .native = native_options,
+    });
+    defer client.deinit();
+
+    var server_state = ManyFramesEndpoint{ .frames = frames };
+    var client_state = ManyFramesEndpoint{ .frames = frames };
+    server.start(&server_state, ManyFramesEndpoint.serverEcho, ManyFramesEndpoint.recordError, ManyFramesEndpoint.recordClose);
+    client.start(&client_state, ManyFramesEndpoint.clientReceive, ManyFramesEndpoint.recordError, ManyFramesEndpoint.recordClose);
+
+    while (client_state.sent < inflight) : (client_state.sent += 1) {
+        try client.sendFrame(frames[client_state.sent]);
+    }
+
+    var server_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&server});
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        server.requestClose();
+        client_thread.join();
+        server_thread.join();
+    };
+
+    // Fail on a STALL, not on a wall-clock budget: the run must keep
+    // moving. A window id that never comes back shows up here.
+    const stall_limit_ms: u64 = 15_000;
+    var last_progress: usize = 0;
+    var idle_ms: u64 = 0;
+    var disconnected = false;
+    while (true) {
+        const done = client_state.next.load(.acquire);
+        if (done >= total_frames) break;
+        if (client_state.errors.load(.acquire) > 0 or server_state.errors.load(.acquire) > 0 or
+            client_state.closes.load(.acquire) > 0 or server_state.closes.load(.acquire) > 0)
+        {
+            disconnected = true;
+            break;
+        }
+        if (done != last_progress) {
+            last_progress = done;
+            idle_ms = 0;
+        } else if (idle_ms >= stall_limit_ms) {
+            break;
+        }
+        loopback.sleepMs(loopback.loopback_poll_ms);
+        idle_ms += loopback.loopback_poll_ms;
+    }
+    // Zero disconnects up to here: neither side closed nor reported an
+    // error while the frames ran.
+    const client_closing = client.isClosing();
+    const server_closing = server.isClosing();
+
+    client.requestClose();
+    server.requestClose();
+    client_thread.join();
+    server_thread.join();
+    joined = true;
+
+    if (disconnected or client_state.next.load(.acquire) < total_frames) {
+        std.debug.print("many-frames run stopped after {d} echoes: client err={?} server err={?}\n", .{
+            client_state.next.load(.acquire), client_state.last_error, server_state.last_error,
+        });
+    }
+    try std.testing.expect(!disconnected);
+    try std.testing.expect(!client_closing);
+    try std.testing.expect(!server_closing);
+    try std.testing.expectEqual(@as(usize, 0), client_state.out_of_order.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), server_state.out_of_order.load(.acquire));
+    try std.testing.expectEqual(total_frames, server_state.next.load(.acquire));
+    try std.testing.expectEqual(total_frames, client_state.next.load(.acquire));
+    try std.testing.expectEqual(total_frames, client_state.sent);
+}
+
 test "quic native mode mismatch closes baseline peer cleanly" {
     const allocator = std.testing.allocator;
     const frame = try buildBootstrapFrame(allocator, 0xBAD);

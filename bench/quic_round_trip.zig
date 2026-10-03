@@ -49,6 +49,12 @@
 //!
 //! Usage: zig build -Dquic=true bench-quic -- [--mode sequential|pipelined|bulk]
 //!            [--calls N] [--warmup N] [--inflight K] [--payload BYTES] [--json]
+//!            [--transport baseline|native] [--uni-window N] [--bidi-window N]
+//!
+//! Stream windows: `--transport native --mode bulk` sends each call larger
+//! than 64 KiB on its own unidirectional stream, so it measures how the uni
+//! window (`--uni-window`, the streams a peer may have open AT ONCE since
+//! quic v0.24.0) limits large-frame throughput.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -80,7 +86,131 @@ const Config = struct {
     /// a throughput benchmark whose number does not move when the pacer is
     /// switched off is not measuring the pacer.
     no_pacing: bool = false,
+    /// Wire mode for both ends. `native` sends every frame above
+    /// `inline_frame_threshold` (64 KiB by default) on its own one-shot
+    /// unidirectional stream, so `bulk` in native mode measures the
+    /// stream window (`--uni-window`).
+    transport: quic.TransportMode = .baseline,
+    /// `initial_max_streams_uni` / `_bidi` on both ends; null keeps
+    /// `quic.defaultTransportParams()`. Since quic v0.24.0 each is the
+    /// number of streams the peer may have open at once.
+    uni_window: ?u64 = null,
+    bidi_window: ?u64 = null,
+    /// Round-trip time to add, in milliseconds. Non-zero routes the client
+    /// through `DelayRelay`, which holds every datagram for half of it in
+    /// each direction. Loopback has no RTT, so without this a stream window
+    /// (which turns over once per round trip) can never be the bottleneck.
+    rtt_ms: u32 = 0,
 };
+
+/// A loopback UDP relay that delays every datagram by a fixed one-way time,
+/// in both directions, to give the benchmark a round trip. One socket faces
+/// both ends: whatever comes from the server goes to the client, everything
+/// else goes to the server (and names the client). A constant delay keeps
+/// FIFO order, so this adds latency only: no loss, no reordering, no rate
+/// limit. A full queue drops, like a router.
+const DelayRelay = struct {
+    const slot_bytes = 2048;
+    const capacity = 16 * 1024;
+
+    io: std.Io,
+    socket: std.Io.net.Socket,
+    server_addr: std.Io.net.IpAddress,
+    client_addr: ?std.Io.net.IpAddress = null,
+    one_way_ns: u64,
+    stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    slots: []u8,
+    lens: []u16,
+    due_ns: []u64,
+    dests: []std.Io.net.IpAddress,
+    head: usize = 0,
+    len: usize = 0,
+    dropped: u64 = 0,
+
+    fn init(allocator: std.mem.Allocator, io: std.Io, server_addr: std.Io.net.IpAddress, rtt_ms: u32) !DelayRelay {
+        const bind_addr: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
+        const socket = try bind_addr.bind(io, .{ .mode = .dgram, .protocol = .udp });
+        errdefer socket.close(io);
+        // One socket carries both directions at line rate. Give it a deep
+        // kernel buffer (best effort, up to kern.ipc.maxsockbuf) so the
+        // relay itself is not where bursts are lost.
+        const buf_bytes: c_int = 8 * 1024 * 1024;
+        inline for (.{ std.posix.SO.RCVBUF, std.posix.SO.SNDBUF }) |opt| {
+            std.posix.setsockopt(socket.handle, std.posix.SOL.SOCKET, opt, std.mem.asBytes(&buf_bytes)) catch {};
+        }
+        return .{
+            .io = io,
+            .socket = socket,
+            .server_addr = server_addr,
+            .one_way_ns = @as(u64, rtt_ms) * std.time.ns_per_ms / 2,
+            .slots = try allocator.alloc(u8, capacity * slot_bytes),
+            .lens = try allocator.alloc(u16, capacity),
+            .due_ns = try allocator.alloc(u64, capacity),
+            .dests = try allocator.alloc(std.Io.net.IpAddress, capacity),
+        };
+    }
+
+    fn deinit(self: *DelayRelay, allocator: std.mem.Allocator) void {
+        self.socket.close(self.io);
+        allocator.free(self.slots);
+        allocator.free(self.lens);
+        allocator.free(self.due_ns);
+        allocator.free(self.dests);
+    }
+
+    fn address(self: *const DelayRelay) std.Io.net.IpAddress {
+        return self.socket.address;
+    }
+
+    fn sameEndpoint(a: std.Io.net.IpAddress, b: std.Io.net.IpAddress) bool {
+        return a == .ip4 and b == .ip4 and a.ip4.port == b.ip4.port and
+            std.mem.eql(u8, &a.ip4.bytes, &b.ip4.bytes);
+    }
+
+    fn run(self: *DelayRelay) void {
+        var rx: [slot_bytes]u8 = undefined;
+        while (!self.stop.load(.acquire)) {
+            const now = nowNs(self.io);
+            self.flushDue(now);
+            const wait_ns: u64 = if (self.len > 0)
+                @max(self.due_ns[self.head] -| now, 50 * std.time.ns_per_us)
+            else
+                std.time.ns_per_ms;
+            const msg = self.socket.receiveTimeout(self.io, &rx, .{ .duration = .{
+                .raw = std.Io.Duration.fromNanoseconds(@intCast(@min(wait_ns, std.time.ns_per_ms))),
+                .clock = .awake,
+            } }) catch continue;
+            if (msg.data.len > slot_bytes) continue;
+            const dest = if (sameEndpoint(msg.from, self.server_addr)) self.client_addr orelse continue else blk: {
+                self.client_addr = msg.from;
+                break :blk self.server_addr;
+            };
+            if (self.len == capacity) {
+                self.dropped += 1;
+                continue;
+            }
+            const tail = (self.head + self.len) % capacity;
+            @memcpy(self.slots[tail * slot_bytes ..][0..msg.data.len], msg.data);
+            self.lens[tail] = @intCast(msg.data.len);
+            self.due_ns[tail] = nowNs(self.io) + self.one_way_ns;
+            self.dests[tail] = dest;
+            self.len += 1;
+        }
+    }
+
+    fn flushDue(self: *DelayRelay, now: u64) void {
+        while (self.len > 0 and self.due_ns[self.head] <= now) {
+            const i = self.head;
+            self.socket.send(self.io, &self.dests[i], self.slots[i * slot_bytes ..][0..self.lens[i]]) catch {};
+            self.head = (self.head + 1) % capacity;
+            self.len -= 1;
+        }
+    }
+};
+
+fn runRelay(relay: *DelayRelay) void {
+    relay.run();
+}
 
 fn nowNs(io: std.Io) u64 {
     return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
@@ -299,9 +429,20 @@ fn printUsage() void {
         \\  --inflight K outstanding calls for pipelined/bulk (default 16)
         \\  --payload N  call payload bytes; bulk defaults to 65536
         \\  --no-pacing  disable client packet pacing (A/B the congestion config)
+        \\  --transport T  baseline | native wire mode (default baseline)
+        \\  --uni-window N   initial_max_streams_uni on both ends
+        \\  --bidi-window N  initial_max_streams_bidi on both ends
+        \\  --rtt-ms N   add N ms of round trip through a loopback delay relay
         \\  --json       emit machine-readable JSON
         \\
     , .{});
+}
+
+fn transportParams(cfg: *const Config) @TypeOf(quic.defaultTransportParams()) {
+    var params = quic.defaultTransportParams();
+    if (cfg.uni_window) |w| params.initial_max_streams_uni = w;
+    if (cfg.bidi_window) |w| params.initial_max_streams_bidi = w;
+    return params;
 }
 
 fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !?Config {
@@ -325,6 +466,15 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !?Config {
             payload_set = true;
         } else if (std.mem.eql(u8, arg, "--no-pacing")) {
             cfg.no_pacing = true;
+        } else if (std.mem.eql(u8, arg, "--transport")) {
+            const v = iter.next() orelse return error.InvalidArgument;
+            cfg.transport = std.meta.stringToEnum(quic.TransportMode, v) orelse return error.InvalidArgument;
+        } else if (std.mem.eql(u8, arg, "--uni-window")) {
+            cfg.uni_window = try parseU32(iter.next() orelse return error.InvalidArgument);
+        } else if (std.mem.eql(u8, arg, "--bidi-window")) {
+            cfg.bidi_window = try parseU32(iter.next() orelse return error.InvalidArgument);
+        } else if (std.mem.eql(u8, arg, "--rtt-ms")) {
+            cfg.rtt_ms = try parseU32(iter.next() orelse return error.InvalidArgument);
         } else if (std.mem.eql(u8, arg, "--json")) {
             cfg.json = true;
         } else if (std.mem.eql(u8, arg, "--help")) {
@@ -357,20 +507,45 @@ pub fn main(init: std.process.Init) !void {
         return;
     }) orelse return;
 
+    // Native mode queues every outstanding large call as its own data
+    // frame; let the queue hold the whole pipeline so `--inflight` is what
+    // limits concurrency, not the default pending-stream budget.
+    const native_options = quic.NativeOptions{
+        .max_pending_data_streams = @max(quic.default_native_max_pending_data_streams, cfg.inflight),
+    };
+    const params = transportParams(&cfg);
+
     var server_conn = try quic.Connection.initServer(allocator, io, .{
         .listen_addr = .{ .ip4 = .loopback(0) },
         .tls_cert_pem = cert_pem,
         .tls_key_pem = key_pem,
         .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+        .transport_params = params,
+        .mode = cfg.transport,
+        .native = native_options,
     });
     defer server_conn.deinit();
 
+    var relay: ?DelayRelay = if (cfg.rtt_ms > 0)
+        try DelayRelay.init(allocator, io, server_conn.getAddress(), cfg.rtt_ms)
+    else
+        null;
+    defer if (relay) |*r| r.deinit(allocator);
+    const relay_thread: ?std.Thread = if (relay) |*r| try std.Thread.spawn(.{}, runRelay, .{r}) else null;
+    defer if (relay_thread) |t| {
+        relay.?.stop.store(true, .release);
+        t.join();
+    };
+
     var client_conn = try quic.Connection.initClient(allocator, io, .{
-        .remote_addr = server_conn.getAddress(),
+        .remote_addr = if (relay) |*r| r.address() else server_conn.getAddress(),
         .server_name = "localhost",
         .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(5),
         .enable_pacing = !cfg.no_pacing,
+        .transport_params = params,
+        .mode = cfg.transport,
+        .native = native_options,
     });
     defer client_conn.deinit();
 
@@ -416,6 +591,12 @@ pub fn main(init: std.process.Init) !void {
     server_conn.requestClose();
     server_thread.join();
 
+    if (relay) |*r| {
+        // A relay drop is loss the stack had to recover from; a run with
+        // drops measured the relay, not the window.
+        if (r.dropped > 0) std.debug.print("bench-quic: delay relay dropped {d} datagrams (queue full)\n", .{r.dropped});
+    }
+
     if (session.failed or session.recorded == 0) {
         std.debug.print("bench-quic: run failed (recorded={d})\n", .{session.recorded});
         return error.BenchmarkFailed;
@@ -428,8 +609,12 @@ pub fn main(init: std.process.Init) !void {
     var out = std.Io.File.stdout().writer(io, &out_buffer);
     if (cfg.json) {
         try out.interface.print(
-            "{{\"benchmark\":\"quic_round_trip\",\"mode\":\"{s}\",\"calls\":{d},\"warmup\":{d},\"inflight\":{d},\"payload\":{d},\"samples\":{d},\"timed_ns\":{d},\"p50_ns\":{d:.3},\"p99_ns\":{d:.3},\"max_ns\":{d:.3},\"min_ns\":{d:.3},\"mean_ns\":{d:.3},\"calls_per_sec\":{d:.3},\"bytes_per_sec\":{d:.3}}}\n",
+            "{{\"benchmark\":\"quic_round_trip\",\"transport\":\"{s}\",\"uni_window\":{d},\"bidi_window\":{d},\"rtt_ms\":{d},\"mode\":\"{s}\",\"calls\":{d},\"warmup\":{d},\"inflight\":{d},\"payload\":{d},\"samples\":{d},\"timed_ns\":{d},\"p50_ns\":{d:.3},\"p99_ns\":{d:.3},\"max_ns\":{d:.3},\"min_ns\":{d:.3},\"mean_ns\":{d:.3},\"calls_per_sec\":{d:.3},\"bytes_per_sec\":{d:.3}}}\n",
             .{
+                @tagName(cfg.transport),
+                params.initial_max_streams_uni,
+                params.initial_max_streams_bidi,
+                cfg.rtt_ms,
                 @tagName(cfg.mode),
                 cfg.calls,
                 cfg.warmup,
@@ -447,6 +632,7 @@ pub fn main(init: std.process.Init) !void {
             },
         );
     } else {
+        try out.interface.print("transport: {s}  windows: uni {d} / bidi {d}  added rtt: {d} ms\n", .{ @tagName(cfg.transport), params.initial_max_streams_uni, params.initial_max_streams_bidi, cfg.rtt_ms });
         try out.interface.print("mode: {s}  payload: {d}B  samples: {d}\n", .{ @tagName(cfg.mode), cfg.payload, stats.samples });
         try out.interface.print("p50 latency: {d:.0} ns\n", .{stats.p50_ns});
         try out.interface.print("p99 latency: {d:.0} ns\n", .{stats.p99_ns});

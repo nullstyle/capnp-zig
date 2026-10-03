@@ -152,6 +152,33 @@ pub const NewTokenCallback = quic_zig.conn.NewTokenCallback;
 /// readable from the underlying quic connection after the handshake.
 pub const EarlyDataStatus = quic_zig.EarlyDataStatus;
 
+/// Stream windows (quic v0.24.0 and later): `initial_max_streams_bidi` /
+/// `_uni` is how many streams of that type the PEER may have open AT ONCE.
+/// An id comes back once its stream is fully closed (for a one-shot native
+/// data stream, about one round trip after it opens). There is no lifetime
+/// cap.
+///
+/// - `initial_max_streams_uni = 16`. Native mode sends every frame above
+///   `inline_frame_threshold` on its own one-shot uni stream, so this window
+///   is how many large frames can be in flight per direction: about
+///   `16 / RTT` frames per second. (The native control stream is the
+///   client's bidirectional stream 0; it holds no uni slot.) Measured with
+///   `bench-quic --transport native --mode bulk --inflight 64` (64 KiB
+///   frames, ReleaseSafe quic, a loopback delay relay for the RTT):
+///   at 20 ms RTT, 4 -> 10.4 MB/s, 16 -> 33.4 MB/s, while 32 and 64 send
+///   bursts that overflow the endpoints' default UDP receive buffers
+///   (786 KB on macOS) and collapse to 1.5-4.5 MB/s; at 50 ms, 4 -> 3.8
+///   MB/s, 16 -> 10.5-13.2 MB/s. On plain loopback
+///   4 and 16 are equal (~85 MB/s) and 64 is 8-20% slower. 16 also matches
+///   the byte budget: 16 streams x 1 MiB per-stream window = the 16 MiB
+///   connection window. (quic v0.19.0 DOUBLED the old value 4 as streams
+///   ended, so the effective window there was already about 20.)
+/// - `initial_max_streams_bidi = 16`. Both modes use exactly one
+///   bidirectional stream (the client's stream 0), and every other peer
+///   bidirectional stream is refused (`peer_streams.zig`), so this only
+///   bounds how many streams a misbehaving peer can hold open at once.
+///   Measured: bidi 16 vs 100 makes no difference to baseline call rate
+///   or native throughput.
 pub fn defaultTransportParams() quic_zig.tls.TransportParams {
     return .{
         .max_idle_timeout_ms = 30_000,
@@ -160,7 +187,7 @@ pub fn defaultTransportParams() quic_zig.tls.TransportParams {
         .initial_max_stream_data_bidi_remote = 1 << 20,
         .initial_max_stream_data_uni = 1 << 20,
         .initial_max_streams_bidi = 16,
-        .initial_max_streams_uni = 4,
+        .initial_max_streams_uni = 16,
         .active_connection_id_limit = 4,
     };
 }

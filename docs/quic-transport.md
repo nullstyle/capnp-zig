@@ -292,6 +292,20 @@ budgets:
   inbound side also rejects any referenced data RPC frame larger than this
   budget.
 
+QUIC's stream windows bound the same traffic from the other side.
+`transport_params.initial_max_streams_uni` (default 16) is how many
+unidirectional streams the peer may have open at once (quic v0.24.0 and
+later; there is no lifetime cap), so it is how many large frames can be in
+flight in each direction. An id comes back once its stream is fully closed,
+about one round trip after it opened, so a window of `W` carries about
+`W / RTT` large frames per second. When the window is full, the frame stays
+at the head of the outbound queue and is retried after the next pump; this
+never fails a connection, at any stream count. The doc comment on
+`defaultTransportParams` in `src/rpc/transport/quic/options.zig` records the
+measurements behind the default. The
+native control stream is the client's bidirectional stream 0 and holds no
+unidirectional slot.
+
 Streams the protocol never uses are refused, so they cannot hold a place in
 the window: any peer-opened bidirectional stream except the client's stream
 0, and in baseline mode any peer-opened unidirectional stream. The transport
