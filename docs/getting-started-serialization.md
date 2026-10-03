@@ -66,15 +66,30 @@ For a canonical `build.zig` automation pattern (codegen step + generated module 
 
 ## 3. Add capnpc-zig as a Dependency
 
-In your project's `build.zig.zon`, add capnpc-zig:
+Pin a tagged release. `zig fetch --save` downloads the tag's tarball and
+records its `.url` and `.hash` in your `build.zig.zon`:
+
+```bash
+zig fetch --save https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.18.0.tar.gz
+```
+
+That adds an entry like this (the command fills in the hash; do not
+hand-write it):
 
 ```zig
 .dependencies = .{
     .capnpc_zig = .{
-        .path = "../capnpc-zig",  // or use .url + .hash for remote
+        .url = "https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.18.0.tar.gz",
+        .hash = "capnpc_zig-0.18.0-nUduFTdRNwBzlJgTt6x9lUwRGmpWzSVXrMSE-xFj_dND",
     },
 },
 ```
+
+A tag never moves, so the pin is reproducible; bump it deliberately and read
+the CHANGELOG when you do. To build against a local checkout instead, use
+`.path = "../capnp-zig"` in place of `.url` and `.hash`. If a fetch or build
+fails on a hash you did not change, see
+[Consumer build pitfalls](troubleshooting.md#consumer-build-pitfalls).
 
 In your `build.zig`, import the module:
 

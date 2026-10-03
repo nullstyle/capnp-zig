@@ -6,8 +6,9 @@
         // Pinned to a TAG, not a raw commit: tags are immutable release
         // points, so the pin is auditable and reproducible.
         //
-        // v0.19.0 (hash shared with qmsg's pin of the same tarball, so one
-        // process can link both packages against one quic). The jump from
+        // v0.19.0. This hash is NOT shared with qmsg, which pins quic v0.21.2,
+        // so a process linking both packages does not get one shared quic
+        // until the two pins converge on the same tarball. The jump from
         // v0.16.1 crosses three additive releases: 0.17.0 (inbound DATAGRAM
         // overflow sheds instead of closing), 0.18.0 (reuse_port bind
         // options; unused here), and 0.19.0 (handshake-liveness backstop:

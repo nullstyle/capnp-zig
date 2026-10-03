@@ -170,12 +170,14 @@ const version_needles = [_]VersionNeedle{
 /// releases.
 const version_pin_markers = [_][]const u8{
     "capnp-zig.git#v",
+    "capnp-zig/archive/refs/tags/v",
     "capnpc_zig-",
 };
 
 const version_pinned_docs = [_][]const u8{
     "README.md",
     "docs/build-integration.md",
+    "docs/getting-started-serialization.md",
 };
 
 const Context = struct {

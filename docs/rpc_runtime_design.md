@@ -41,10 +41,16 @@ under `src/rpc/transport/tcp/`; Evented-specific transport work should either
 keep them behind that boundary or extract a very small platform shim there,
 without touching peer/capability/promise semantics.
 
-The explicit Evented backend is a supported compile-check path through
-`just check-evented` (`zig build -Dio-backend=evented check`) on targets where
-Zig exposes `std.Io.Evented`. This gate is intended to catch backend-selection
-regressions without requiring a full RPC runtime execution path.
+No evented backend is compiled or executed today. At Zig 0.17.0 no
+`std.Io.Evented` compiles, so `src/io_backend.zig` keeps
+`evented_available = false` and the `.evented` selector returns
+`error.EventedBackendUnsupported` without naming a backend.
+`zig build -Dio-backend=evented check` therefore compiles nothing evented.
+The gate is `just check-evented` (`zig build check-evented-canary`): an
+expected-fail compile of `std.Io.Evented` that stays green only while it fails
+with the known std defect, and goes red when that changes so the flag gets
+re-checked. Backend selection itself is exercised by
+`zig build -Dio-backend=threaded e2e-self`.
 
 ## QUIC Transport
 QUIC is opt-in at the build-module boundary. Default builds expose

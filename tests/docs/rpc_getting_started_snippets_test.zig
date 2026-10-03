@@ -61,7 +61,7 @@ fn startServer(allocator: std.mem.Allocator, io: std.Io) !void {
 }
 
 fn setupBackend(init: std.process.Init) !capnpc.io_backend.Backend {
-    // .process_init reuses init.io; .threaded / .evented construct their own.
+    // .process_init reuses init.io; .threaded builds its own (.evented is unsupported at Zig 0.17.0).
     return capnpc.io_backend.Backend.init(.process_init, init.gpa, init.io);
 }
 

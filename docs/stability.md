@@ -21,12 +21,12 @@ updated as phases land.
 | TCP transport: `TCP_NODELAY` | full | full | blocked upstream (std's AFD sockets accept no winsock setsockopt; AFD option helper not exposed) |
 | Soak harness | full | full | full (nightly lane; success requires positive traffic/chaos counters) |
 | Self-interop e2e (zig↔zig loopback, `zig build e2e-self`) | full | full | full |
-| Cross-implementation e2e (docker reference impls) | full | full | local only (Docker Desktop/WSL2); hosted runners cannot run Linux containers |
+| Cross-implementation e2e (docker reference impls) | full (hosted CI, `Zig e2e interop`: every push to `main` and every PR) | full (local Docker Desktop) | local only (Docker Desktop/WSL2); hosted runners cannot run Linux containers |
 | Deterministic fuzz smoke | full | full | full |
 | Structural fuzz: L3/L4 peer frames, QUIC framers, persistence restore | full | full | full |
-| ThreadSanitizer lane (`test-tsan`, threaded transport suites) | **runs clean**: 11/11 steps, 26/26 tests, no races reported (run 31634824440) | not available (libtsan SIGSEGVs at startup on this Zig pin) | not available |
+| ThreadSanitizer lane (`test-tsan`, threaded transport suites) | **runs clean**: 11/11 steps, 26/26 tests, no races reported (run 31634824440) | not run (the lane is gated to Linux hosts; a 2026-10-03 probe on Darwin 27 at 0.17.0 starts clean and reports a seeded race, but the full lane has never run here) | not available |
 | Coverage-guided fuzzing (`--fuzz`) | full | full | blocked upstream (zig fuzzer is ELF/Mach-O only) |
-| Evented `std.Io` backend | compile-checked only — no sockets (see below) | compile-checked only — no sockets (see below) | blocked upstream (`EventedBackendUnsupported`) |
+| Evented `std.Io` backend | blocked upstream: does not compile at 0.17.0, selector returns `EventedBackendUnsupported` (see below) | blocked upstream: does not compile at 0.17.0, selector returns `EventedBackendUnsupported` (see below) | blocked upstream (`EventedBackendUnsupported`) |
 | QUIC transport | experimental (`-Dquic=true`; four-root evidence runs in Debug + ReleaseSafe, and the full repository is also tested against the QUIC-enabled root) | experimental (four-root Debug + ReleaseSafe evidence; locally proven 64/64 on macOS) | experimental (native Debug + ReleaseSafe no-skip evidence **executes and passes** on `windows-latest`; the full QUIC-root suite is not run there) |
 
 The targeted QUIC evidence gate is intentionally different from testing the
@@ -57,17 +57,21 @@ QUIC connection. The bridge now normalizes both spellings into one
 `truncated` outcome.
 
 That pending claim also rests on a layer below us, so it is worth stating
-precisely what the dependency does and does not prove. In quic-zig v0.10.1
+precisely what the dependency does and does not prove. In quic-zig v0.19.0
 (the pinned tag), `windows-latest` is a tier-1 **blocking** CI leg —
-`advisory: false` in the test matrix — running the full `zig build test`, so
-the protocol engine, wire/frame codecs, conformance suite, and in-memory TLS
-handshakes genuinely execute on Windows rather than merely cross-compiling.
-Exactly three tests are excluded there, and all three are the real-socket loop
-smokes (two entering `runUdpServer`, one entering `runUdpClient`). They carry
-an unconditional `if (builtin.os.tag == .windows) return error.SkipZigTest`
-guard, so they have never run on Windows and have never reported a failure:
-the UDP socket loop is **untested on Windows, not known-broken**. Verified
-against the pinned tag, not taken on report.
+`advisory: false` in `.github/workflows/test.yml` — running the full
+`zig build test`, so the protocol engine, wire/frame codecs, conformance
+suite, and in-memory TLS handshakes genuinely execute on Windows rather than
+merely cross-compiling. quic-zig's own bundled UDP loop (`runUdpServer` /
+`runUdpClient`) does **not** run there: on native Windows it refuses up front
+with `error.WindowsBundledLoopUnsupported` (std has no overlapped-I/O path for
+its timed receive), and its loop smokes pin that refusal as a platform
+contract instead of skipping. Two `reuse_port` smokes still skip on Windows
+unconditionally. capnp-zig does not use the bundled loop; it drives
+connections through its own UDP bridge, so quic-zig's Windows evidence covers
+the protocol engine, not a Windows socket loop. (At v0.10.1 the three loop
+smokes were unconditional Windows skips — "untested, not known-broken".)
+Verified against the pinned tag, not taken on report.
 
 The practical consequence for our own Windows QUIC acceptance is that the
 socket layer is unproven on *both* sides of the boundary. Treat a Windows
@@ -127,19 +131,27 @@ places `capnp.exe` on `PATH`, fails up front if the tool is unavailable, and
 runs the ordinary native suite. This is full native codegen coverage; local
 developers without `capnp` retain the documented optional-test skips.
 
-Note on the **Evented `std.Io` backend**: "compile-checked only" is the whole
-claim, and the limit is upstream, not here. At the pinned toolchain
-(`0.17.0`) `std.Io.Evented` resolves to `std.Io.Dispatch` on macOS and
-`std.Io.Uring` on Linux, and neither compiles: both set an `Io.VTable` field
-(`processReplacePath`) that the VTable dropped. The selector therefore reports
-`error.EventedBackendUnsupported` on every target instead of referencing one.
-Neither carried a working socket vtable even before that — Dispatch
-implements `netClose` alone, Uring only `netBindIp` / `netClose` /
-`netShutdown`, and everything else (`netListenIp`, `netAccept`,
-`netConnectIp`, …) is an `...Unavailable` stub. Every RPC path is
-socket-based, so neither could carry a real connection. `zig build
--Dio-backend=evented check` proves the selector still *builds*; it does not
-prove the backend works, and no lane executes it because none can.
+Note on the **Evented `std.Io` backend**: nothing evented is compiled or
+run, and the limit is upstream, not here. At the pinned toolchain (`0.17.0`)
+`std.Io.Evented` resolves to `std.Io.Dispatch` on macOS and `std.Io.Uring` on
+Linux, and neither compiles: both set `Io.VTable` fields
+(`processReplacePath`, `processSpawnPath`) that the VTable dropped, and leave
+two new ones (`inheritParentDir`, `inheritParentFile`) unset. So
+`src/io_backend.zig` keeps `evented_available = false`, and the selector
+reports `error.EventedBackendUnsupported` on every target instead of
+referencing one. Neither carried a working socket vtable even before that —
+Dispatch implements `netClose` alone, Uring only `netBindIp` / `netClose` /
+`netShutdown`, everything else (`netListenIp`, `netAccept`, `netConnectIp`, …)
+is an `...Unavailable` stub, and Dispatch's `net_read` / `net_write`
+operations are `@panic("TODO ...")`. Every RPC path is socket-based, so
+neither could carry a real connection. `zig build -Dio-backend=evented check`
+compiles nothing evented, so it is not evidence. The CI gate is an
+expected-fail canary, `zig build check-evented-canary` (`just
+check-evented`): it references `std.Io.Evented` and is green only while that
+compile fails with the known `processReplacePath` error, so a toolchain that
+fixes it turns CI red and the flag gets re-checked (Nightly also posts a
+notice). The std fix is in
+[upstream/handoff-zig-fork-evented-processreplacepath.md](upstream/handoff-zig-fork-evented-processreplacepath.md).
 
 ## Stability Levels
 
@@ -219,12 +231,15 @@ integer, so the snapshots used to differ by the platform that generated them.
   `releaseResultCaps` flag on a late `Return` after a cancelling `Finish`, and
   rejection of question-id reuse while an early-Finish tombstone is
   undischarged.
-- **Cross-implementation e2e is local-Docker only.** The Zig↔Zig self-interop
-  e2e (`zig build e2e-self`) runs in hosted CI on every push, but the
-  cross-implementation matrix against the C++, Go, Python, and Rust reference
-  peers runs only on a local Docker host (Docker Desktop / WSL2) — hosted CI
-  runners cannot run the Linux-container reference matrix. Conformance against
-  the reference impls is verified locally before each release, not on every push.
+- **Cross-implementation e2e runs in hosted CI on Linux.** The `Zig e2e
+  interop` job in `ci.yml` runs on `ubuntu-latest` for every push to `main`
+  and every pull request. It runs `just e2e-zig`, the full Docker matrix
+  against the C++, Go, Python, and Rust reference peers (every schema and
+  direction, minus the documented reference-library skips), then the
+  cross-impl L3 hosting gate (`just e2e-l3-vatc`). The Zig↔Zig self-interop
+  e2e (`zig build e2e-self`) also runs on every OS. Hosted macOS and Windows
+  runners cannot run the Linux-container matrix, so there it is local only
+  (Docker Desktop / WSL2).
 
 ### Experimental
 

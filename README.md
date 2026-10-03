@@ -1,6 +1,6 @@
 # capnpc-zig
 
-A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serialization framework and RPC system. Includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime built on `std.Io` with a concurrent read/write transport. Targets Zig 0.17-dev.
+A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serialization framework and RPC system. Includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime built on `std.Io` with a concurrent read/write transport. Targets tagged Zig 0.17.
 
 > **Status (v0.18.0):** serialization, codegen, the `capnpc-zig` plugin, and the
 > **two-party RPC core** are **Stable** on a **frozen, CI-gated** public surface
@@ -363,7 +363,7 @@ For the public-surface alias cleanup, see
 - **Capability-based security**: Each connection maintains export and import tables tracking capabilities by ID with reference counting. The runtime sends `Release` when a refcount reaches zero.
 - **Promise pipelining**: Calls can be pipelined on promised answers before results arrive, reducing round trips.
 - **Structured peer orchestration**: The `Peer` type handles the full lifecycle -- call dispatch, return handling, embargo management, capability forwarding, and third-party handoff.
-- **Backend-agnostic I/O**: Every socket op flows through `std.Io`, so the runtime is polymorphic over the concrete backend. `std.Io.Threaded` and `std.Io.Evented` are selected through the same helper when Zig exposes them for the target.
+- **Socket data I/O through `std.Io`**: connect, accept, read, and write on RPC sockets go through the `std.Io` you pass in, and backends are selected through one helper (below). Not every call does: on POSIX the TCP run loop waits for readiness in a raw `poll(2)` when wake, ticks, or an idle bound are enabled, the QUIC wake door also polls raw, and the wake channels and `TCP_NODELAY` use raw `socketpair`/`read`/`write`/`setsockopt`. Those calls block the OS thread whatever backend is selected. That suits `std.Io.Threaded`, the only backend that carries RPC today.
 
 ### Switchable Io Backend
 
@@ -394,23 +394,29 @@ zig build example-rpc -Dio-backend=threaded       # explicit Threaded
 zig build example-rpc -Dio-backend=evented        # explicit Evented where supported
 ```
 
-Use `just check-evented` (or `zig build -Dio-backend=evented check`) as the
-compile gate for the Evented selector on targets where Zig exposes
-`std.Io.Evented`.
+`zig build -Dio-backend=evented check` compiles nothing evented: the selector
+returns `error.EventedBackendUnsupported` without naming a backend (see
+below). The gate is `just check-evented` (`zig build check-evented-canary`), an
+expected-fail canary that references `std.Io.Evented` and stays green only
+while that compile fails with the known std defect. When it goes red, re-check
+`evented_available` in `src/io_backend.zig`.
 
-**The Evented selector compiles, but it cannot yet carry RPC**, and the reason
+**The Evented selector cannot yet carry RPC**, and the reason
 is upstream rather than here. At the pinned toolchain (`0.17.0`),
 `std.Io.Evented` resolves to `std.Io.Dispatch` on macOS and `std.Io.Uring` on
-Linux, and neither compiles: both set an `Io.VTable` field
-(`processReplacePath`) that the VTable dropped. So `.evented` returns
-`error.EventedBackendUnsupported` on every target instead of referencing one.
-Neither had a working socket vtable even before that: Uring implements only
-`netBindIp` / `netClose` / `netShutdown`, Dispatch only `netClose`, and every
-other entry — including `netListenIp`, `netAccept`, and `netConnectIp` — is
-an `...Unavailable` stub. Since every RPC path is socket-based, neither could
-carry a real connection. Treat this selector as compile-checked plumbing
-awaiting upstream, not as a supported transport; the selector itself lives
-behind `src/io_backend.zig`.
+Linux, and neither compiles: both set `Io.VTable` fields
+(`processReplacePath`, `processSpawnPath`) that the VTable dropped, and leave
+two new ones (`inheritParentDir`, `inheritParentFile`) unset. So `.evented`
+returns `error.EventedBackendUnsupported` on every target instead of
+referencing one. Neither had a working socket vtable even before that: Uring
+implements only `netBindIp` / `netClose` / `netShutdown`, Dispatch only
+`netClose`, and every other entry — including `netListenIp`, `netAccept`, and
+`netConnectIp` — is an `...Unavailable` stub. Since every RPC path is
+socket-based, neither could carry a real connection. Treat this selector as
+plumbing awaiting upstream, not as a supported transport; the selector itself
+lives behind `src/io_backend.zig`, and
+[`docs/upstream/handoff-zig-fork-evented-processreplacepath.md`](docs/upstream/handoff-zig-fork-evented-processreplacepath.md)
+carries the std fix.
 
 ### Running the RPC Example
 
@@ -597,7 +603,7 @@ just clean
 # Check for compilation errors
 just check
 
-# Check Evented Io backend selection where the target supports std.Io.Evented
+# Expected-fail canary: green while std.Io.Evented still fails to compile (Linux/Darwin)
 just check-evented
 
 # Check docs/examples for stale public API names and missing build recipes

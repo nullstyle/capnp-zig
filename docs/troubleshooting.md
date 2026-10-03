@@ -390,3 +390,102 @@ Finish (including queued-child and parameter-cap drain), reentrant
 source/target deinit, source/target transport close without deinit, pre- and
 post-delivery send-failure boundaries, every allocation-failure index, and
 distinct network/source/target allocators.
+
+---
+
+## Consumer Build Pitfalls
+
+These are build-graph problems a downstream package hits before any of its
+code runs. Each one below was reproduced with a scratch consumer on tagged
+Zig 0.17.0 (2026-10-03).
+
+### One module root per binary
+
+capnp-zig ships two module roots over one source tree: `capnpc-zig`
+(`src/lib.zig`, the full surface) and `capnpc-zig-core` (`src/lib_core.zig`,
+serialization and codegen only). With `-Dquic=true` (`.quic = true` as a
+dependency option) the `capnpc-zig` module's root becomes `src/lib_quic.zig`
+instead; the swap is at `build/modules.zig:42`. Zig requires every source file
+to belong to exactly one module, so one compilation that imports two of these
+roots fails:
+
+```
+src/serialization/message.zig:1:1: error: file exists in modules 'capnpc-zig' and 'capnpc-zig0'
+src/serialization/message.zig:1:1: note: files must belong to only one module
+src/lib.zig:8:29: note: file is imported here by the root of module 'capnpc-zig'
+src/lib_core.zig:4:29: note: file is imported here by the root of module 'capnpc-zig0'
+```
+
+`capnpc-zig0` is the compiler's name for the second module, because both roots
+import themselves as `capnpc-zig`. Two common ways to get here:
+
+- Importing both `capnpc-zig` and `capnpc-zig-core` into one binary, directly
+  or through a library module that picked the other one.
+- Instantiating the dependency twice with different `quic` values, for example
+  your `b.dependency("capnpc_zig", .{})` next to a library that asks for
+  `.quic = true`. The notes then name `src/lib.zig` and `src/lib_quic.zig`.
+
+**Fix:** pick one module for the whole binary: `capnpc-zig` if anything uses
+RPC, `capnpc-zig-core` otherwise. Make every `b.dependency("capnpc_zig", ...)`
+in the graph pass the same options (Zig reuses one instance per option set),
+and pass the module down to library modules. A library that wraps capnp-zig
+should forward `quic` from its own build options instead of hard-coding it.
+
+### `hash mismatch ... N-V-__8AA...` on a pin that is correct
+
+```
+build.zig.zon:8:21: error: hash mismatch: manifest declares capnpc_zig-0.18.0-nUduFTdRNwBzlJgTt6x9lUwRGmpWzSVXrMSE-xFj_dND but the fetched package has N-V-__8AADdRNwBwMSFYBflRn85ej_SF0GhjIrwOallQrgFW
+```
+
+A hash that starts with `N-V-` is the form Zig gives a package with no
+`build.zig.zon` (no name, no version). capnp-zig and quic both have one, so a
+named package reported with an `N-V-` hash means the cache entry is bad, not
+your pin.
+
+**Cause (Zig 0.17.0):** a standalone `zig fetch <url>`, run outside a project
+(for example to prime a cache or to read a hash), stores its recompressed
+tarball at `<global cache>/p/<hash>.tar.gz` with the package nested one
+directory too deep. The next `zig build` that needs that hash uses the cached
+tarball, finds no manifest at its root, and computes an `N-V-` hash.
+`zig fetch --save` inside a project, and `zig build` itself, write the cache
+correctly. The fix belongs in Zig's build runner
+(`lib/compiler/Maker/Fetch.zig`); see
+[upstream/handoff-zig-fork-fetch-recompress-root.md](upstream/handoff-zig-fork-fetch-recompress-root.md).
+
+**Confirm against a pristine cache before doubting the pin:**
+
+```sh
+ZIG_GLOBAL_CACHE_DIR="$(mktemp -d)" ZIG_LOCAL_PKG_DIR="$(mktemp -d)" zig build
+```
+
+If that builds, the pin is right and your cache is poisoned. Delete the bad
+entry and the directory the failed fetch left, then let `zig build` fetch
+again:
+
+```sh
+rm -f "$(zig env | sed -n 's/.*\.global_cache_dir = "\(.*\)",/\1/p')/p/<declared hash>.tar.gz"
+rm -rf zig-pkg/N-V-__8AA...   # the exact hash the error printed
+zig build
+```
+
+`zig env` prints the global cache directory (`.global_cache_dir`):
+`$ZIG_GLOBAL_CACHE_DIR` if set, otherwise `~/.cache/zig` on Linux and macOS
+(`$XDG_CACHE_HOME/zig` when that is set) and `%LOCALAPPDATA%\zig` on Windows.
+To read a hash without touching your real cache, run `zig fetch` with a
+throwaway `ZIG_GLOBAL_CACHE_DIR`.
+
+### Where fetched packages live: `zig-pkg/` and `ZIG_LOCAL_PKG_DIR`
+
+Zig 0.17.0 keeps each project's fetched dependency trees in `zig-pkg/` under
+the build root, in addition to the compressed copies in the global cache's
+`p/`. Two overrides exist, both read by the build runner
+(`lib/compiler/Maker.zig`):
+
+- `ZIG_LOCAL_PKG_DIR=<dir>` (listed by `zig env`), or
+- `zig build --pkg-dir <dir>`.
+
+Point them at a fresh directory, together with a fresh `ZIG_GLOBAL_CACHE_DIR`,
+for the pristine check above. Without the pkg-dir override the check is not
+pristine: Zig uses any tree the project's `zig-pkg/` already holds under the
+declared hash without hashing it again. `zig-pkg/` is a build artifact: keep
+it out of version control.
