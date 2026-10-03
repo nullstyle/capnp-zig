@@ -48,6 +48,17 @@ comptime {
     refAllFunctions(message.StructReader); // slcp, bucketlist, prollytree, qmsg (generated + hand-written readers)
     refAllFunctions(message.StructBuilder); // slcp, bucketlist, prollytree, qmsg (generated + hand-written builders)
 
+    // The list values those accessors return have bodies of their own, which
+    // walking StructReader and StructBuilder does not reach.
+    _ = &message.U32ListReader.len; // prollytree (format/capnp.copyOffsets)
+    _ = &message.U32ListReader.get; // prollytree (format/capnp.copyOffsets)
+    _ = &message.U32ListBuilder.set; // prollytree (format/capnp offset writers)
+    const typed = message.typed_list_helpers;
+    _ = &typed.DataListReader.len; // slcp (generated Data lists: validators, votes, values)
+    _ = &typed.DataListReader.get; // slcp (generated Data lists)
+    _ = &typed.DataListBuilder.set; // slcp (generated Data lists: engine/emit.writeValueList)
+    _ = &forceSerializationGenerics; // slcp, bucketlist (generated struct lists)
+
     const canonical = capnpc.canonical;
     _ = &canonical.isCanonical; // slcp
     _ = &canonical.canonicalizeFlat; // slcp
@@ -60,6 +71,41 @@ comptime {
     _ = &Framer.reset; // slcp
     _ = &Framer.deinit; // slcp
 }
+
+/// Never called. Taking its address forces its body through analysis, which
+/// instantiates the generic list helpers the way capnpc-zig's generated
+/// bindings do. `_ = &typed.StructListReader;` alone would not.
+fn forceSerializationGenerics(
+    reader: capnpc.message.StructReader,
+    struct_list: capnpc.message.StructListReader,
+    struct_list_builder: capnpc.message.StructListBuilder,
+) !void {
+    const message = capnpc.message;
+    const typed = message.typed_list_helpers;
+    _ = reader.emptyList(message.PointerListReader); // slcp (generated Data-list getters on a null pointer)
+    const items: typed.StructListReader(GeneratedStruct) = .{ ._list = struct_list };
+    _ = items.len(); // slcp (node/wire, engine/qset), bucketlist (proofs_wire)
+    _ = try items.get(0); // slcp (node/wire, engine/qset), bucketlist (proofs_wire)
+    const out: typed.StructListBuilder(GeneratedStruct) = .{ ._list = struct_list_builder };
+    _ = try out.get(0); // slcp (node/wire), bucketlist (proofs_wire)
+}
+
+/// The shape capnpc-zig generates for a struct, which the typed list helpers
+/// wrap: slcp's QuorumSet and Envelope, bucketlist's Step and ChainLevel.
+const GeneratedStruct = struct {
+    pub const Reader = struct {
+        _reader: capnpc.message.StructReader,
+        pub fn wrap(reader: capnpc.message.StructReader) Reader {
+            return .{ ._reader = reader };
+        }
+    };
+    pub const Builder = struct {
+        _builder: capnpc.message.StructBuilder,
+        pub fn wrap(builder: capnpc.message.StructBuilder) Builder {
+            return .{ ._builder = builder };
+        }
+    };
+};
 
 /// `_ = &` every function declared directly on `T`. A generic method stays
 /// uninstantiated (taking its address does not pick a type), so callers

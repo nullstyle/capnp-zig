@@ -74,9 +74,13 @@ git status --short          # must be empty
       compiles. v0.18.0 shipped a TCP `Transport.read` that did not compile on
       tagged Zig 0.17.0 for this reason. When a downstream starts using an API
       that is not listed, add it before you tag: `_ = &Type.function;` with a
-      comment that names the downstream. A generic function needs a call with
-      concrete arguments inside a never-called function that the root takes
-      with `&`, as `forceQuicGenerics` in `quic.zig` does.
+      comment that names the downstream. Forcing a function does not force the
+      methods of the value it returns. For example, `readU32List` is forced but
+      `U32ListReader.get` is not, so list each method that the downstream
+      calls on a returned value. A generic function needs a call with concrete
+      arguments inside a never-called function that the root takes with `&`,
+      as `forceSerializationGenerics` in `common.zig` and `forceQuicGenerics`
+      in `quic.zig` do.
 
 ## 2. The commit's CI must already be green
 

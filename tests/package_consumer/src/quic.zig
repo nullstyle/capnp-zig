@@ -26,6 +26,7 @@ comptime {
     _ = &quic.Connection.requestClose; // mruby-quic, capnp-qmsg-demo
     _ = &quic.Connection.isClosing; // mruby-quic (dial liveness)
     _ = &quic.Connection.activeQuicConnection; // mruby-quic (dial liveness)
+    _ = &quic.Connection.stepOnce; // mruby-quic (dial pump: stepOnce(.poll)), capnp-qmsg-demo (tests)
     _ = &quic.Connection.deinit; // mruby-quic, capnp-qmsg-demo
 
     _ = &quic.Listener.init; // capnp-qmsg-demo (capnp-only listener)
@@ -85,7 +86,51 @@ comptime {
     _ = &rpc.vat.join.JoinNetwork(Peer).init; // capnp-qmsg-demo (QmsgJoinNetwork)
     _ = &rpc.vat.join.encodeJoinResult; // capnp-qmsg-demo (QmsgJoinNetwork)
     _ = &rpc.vat.join.decodeJoinResult; // capnp-qmsg-demo (QmsgJoinNetwork)
-    _ = &rpc.wire.protocol.MessageBuilder.init; // capnp-qmsg-demo (raw capnp client frames)
+    _ = &rpc.wire.protocol.MessageBuilder.init; // capnp-qmsg-demo (buildBootstrapFrame)
+    _ = &rpc.wire.protocol.MessageBuilder.buildBootstrap; // capnp-qmsg-demo (buildBootstrapFrame)
+    _ = &rpc.wire.protocol.MessageBuilder.finish; // capnp-qmsg-demo (buildBootstrapFrame)
+    _ = &rpc.wire.protocol.MessageBuilder.deinit; // capnp-qmsg-demo (buildBootstrapFrame)
+
+    // Call and Return build callbacks, and reading a Return's payload.
+    _ = &rpc.wire.protocol.CallBuilder.payloadTyped; // mruby-quic (buildOutboundParams)
+    _ = &rpc.wire.protocol.ReturnBuilder.payloadTyped; // mruby-quic (ReplyCtx.build), capnp-qmsg-demo (tests)
+    _ = &rpc.wire.protocol.ReturnBuilder.initCapTableTyped; // mruby-quic (ReplyCtx.build)
+    _ = &rpc.wire.protocol.PayloadBuilder.initContent; // mruby-quic (buildOutboundParams, ReplyCtx.build), capnp-qmsg-demo (tests)
+    _ = &capnpc.message.Message.getRootAnyPointer; // mruby-quic (ReplyCtx.build)
+    _ = &capnpc.message.AnyPointerBuilder.initStruct; // mruby-quic (buildOutboundParams)
+    _ = &capnpc.message.AnyPointerReader.getStruct; // mruby-quic (dialCallReturn), capnp-qmsg-demo (tests)
+    _ = &capnpc.message.AnyPointerReader.getCapability; // mruby-quic (dialBootstrapReturn), capnp-qmsg-demo (tests)
+    _ = &capnpc.message.AnyPointerReader.getData; // capnp-qmsg-demo (QmsgVatNetwork.connectToIntroduced)
+
+    // capnp-qmsg-demo's L3, join and warm-dial tests (src/*_test.zig) wire
+    // detached peers and quic.Server sessions together by hand.
+    _ = &Peer.initDetached; // capnp-qmsg-demo (tests)
+    _ = &Peer.handleFrame; // capnp-qmsg-demo (tests)
+    _ = &Peer.setSendFrameOverride; // capnp-qmsg-demo (tests)
+    _ = &Peer.setHandoffPickupHandler; // capnp-qmsg-demo (warm-dial test)
+    _ = &Peer.addPromiseExport; // capnp-qmsg-demo (warm-dial test)
+    _ = &Peer.resolvePromiseExportToThirdParty; // capnp-qmsg-demo (warm-dial test)
+    _ = &Peer.sendProvide; // capnp-qmsg-demo (L3 tests)
+    _ = &Peer.sendFinishForHost; // capnp-qmsg-demo (join test)
+    _ = &rpc.caps.table.CapTable.hasImport; // capnp-qmsg-demo (tests: Peer.caps)
+    _ = &rpc.wire.protocol.DecodedMessage.init; // capnp-qmsg-demo (L3 test frame routing)
+    _ = &rpc.wire.protocol.DecodedMessage.deinit; // capnp-qmsg-demo (L3 test frame routing)
+    _ = &rpc.wire.protocol.DecodedMessage.asBootstrap; // capnp-qmsg-demo (L3 test frame routing)
+    _ = &rpc.wire.protocol.DecodedMessage.asCall; // capnp-qmsg-demo (L3 test frame routing)
+    _ = &rpc.wire.protocol.DecodedMessage.asReturn; // capnp-qmsg-demo (L3 test frame routing)
+    _ = &rpc.wire.protocol.DecodedMessage.asFinish; // capnp-qmsg-demo (L3 test frame routing)
+    _ = &rpc.wire.protocol.DecodedMessage.asAccept; // capnp-qmsg-demo (L3 test frame routing)
+    _ = &quic.Server.init; // capnp-qmsg-demo (full-stack L3 and warm-dial tests)
+    _ = &quic.Server.run; // capnp-qmsg-demo (tests)
+    _ = &quic.Server.stepOnce; // capnp-qmsg-demo (tests)
+    _ = &quic.Server.getAddress; // capnp-qmsg-demo (tests)
+    _ = &quic.Server.sessionCount; // capnp-qmsg-demo (tests)
+    _ = &quic.Server.sessionAt; // capnp-qmsg-demo (tests)
+    _ = &quic.Server.requestClose; // capnp-qmsg-demo (tests)
+    _ = &quic.Server.deinit; // capnp-qmsg-demo (tests)
+    // Not listed: `Peer.test_hooks` (the join test's
+    // sendJoinExperimentalRetainedResult). It exists only when
+    // `builtin.is_test`, so this executable cannot reference it.
 
     _ = &forceQuicGenerics;
 }
@@ -97,12 +142,15 @@ fn forceQuicGenerics(
     allocator: std.mem.Allocator,
     conn: *quic.Connection,
     seat: *quic.EmbeddedSession,
+    server_session: *quic.ServerSession,
     pending: *quic.prehandshake.Buffer,
 ) !void {
     var dialed = Peer.init(allocator, conn); // mruby-quic (--capnp-dial), capnp-qmsg-demo
     dialed.deinit();
     var seated = Peer.init(allocator, seat); // mruby-quic, capnp-qmsg-demo (Peer over an EmbeddedSession)
     seated.deinit();
+    var served = Peer.init(allocator, server_session); // capnp-qmsg-demo (tests: Peer over quic.Server.sessionAt)
+    served.deinit();
     try pending.replayInto(seat, streamEnd); // mruby-quic, capnp-qmsg-demo (0-RTT replay)
 }
 
