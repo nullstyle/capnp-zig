@@ -4,7 +4,7 @@
 - Full Cap'n Proto RPC protocol compliance (bootstrap, calls, returns, pipelining, capability transfer).
 - Production-ready performance: low overhead, backpressure-aware, minimal allocations.
 - Integration with the existing `src/serialization/message.zig` wire-format layer and codegen.
-- Concurrent read/write I/O over `std.Io` with dedicated writer threads. The runtime is polymorphic over the concrete `std.Io` backend so `std.Io.Threaded`, `std.Io.Evented` where Zig exposes it, and the process-provided default share the same protocol code -- see `src/io_backend.zig`.
+- Concurrent read/write I/O over `std.Io` with dedicated writer threads. The runtime takes the concrete `std.Io` backend as a value, so `std.Io.Threaded` and the process-provided default share the same protocol code -- see `src/io_backend.zig`. `std.Io.Evented` is wired as a selector but carries no RPC: at Zig 0.17.0 it returns `error.EventedBackendUnsupported` on every target (see below).
 
 ## Non-Goals (Initial Phase)
 - TLS or authentication for the TCP transport (assume a trusted transport).

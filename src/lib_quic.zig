@@ -36,8 +36,9 @@ pub const canonical = @import("serialization/canonical.zig");
 pub const rpc = @import("rpc/mod_quic.zig");
 
 /// Switchable `std.Io` backend selection. Centralises the choice between
-/// `std.Io.Threaded`, `std.Io.Evented` when Zig exposes it for the target, and
-/// the process-provided default backend.
+/// `std.Io.Threaded`, `std.Io.Evented`, and the process-provided default
+/// backend. At Zig 0.17.0 the Evented selector returns
+/// `error.EventedBackendUnsupported` on every target.
 pub const io_backend = @import("io_backend.zig");
 
 test {

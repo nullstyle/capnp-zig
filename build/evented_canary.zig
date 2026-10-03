@@ -30,7 +30,7 @@ pub fn register(
         "Expected-fail canary: green only while std.Io.Evented fails to compile with the known std defect",
     );
     if (!exposesEvented(target.result)) {
-        const fail = b.addFail("check-evented-canary needs a target where Zig exposes std.Io.Evented (Linux or Darwin on aarch64/x86_64/riscv64); pass a supported -Dtarget.");
+        const fail = b.addFail("check-evented-canary needs a target where Zig exposes std.Io.Evented (Linux or Darwin on aarch64/x86_64/riscv64); pass a supported -Dtarget such as -Dtarget=x86_64-linux (`just check-evented` does this on Windows).");
         step.dependOn(&fail.step);
         return;
     }

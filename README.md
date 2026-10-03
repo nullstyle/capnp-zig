@@ -384,14 +384,14 @@ pub fn main(init: std.process.Init) !void {
 
 - `.process_init` -- reuse the `std.Io` provided by `std.process.Init`.
 - `.threaded` -- explicitly construct a fresh `std.Io.Threaded` (useful for sizing your own thread pool or running multiple isolated I/O instances).
-- `.evented` -- construct and own `std.Io.Evented` where Zig exposes it; returns `error.EventedBackendUnsupported` only when `std.Io.Evented == void` for the target.
+- `.evented` -- the selector for an owned `std.Io.Evented`. At Zig 0.17.0 no `std.Io.Evented` compiles, so `src/io_backend.zig` keeps `evented_available = false` and this returns `error.EventedBackendUnsupported` on every target (see below).
 
 Bundled RPC executables (`example-rpc`, `e2e-zig-server`, `e2e-zig-client`) read the selection from a build option:
 
 ```bash
 zig build example-rpc -Dio-backend=process_init   # default
 zig build example-rpc -Dio-backend=threaded       # explicit Threaded
-zig build example-rpc -Dio-backend=evented        # explicit Evented where supported
+zig build example-rpc -Dio-backend=evented        # currently fails: EventedBackendUnsupported
 ```
 
 `zig build -Dio-backend=evented check` compiles nothing evented: the selector
@@ -603,7 +603,7 @@ just clean
 # Check for compilation errors
 just check
 
-# Expected-fail canary: green while std.Io.Evented still fails to compile (Linux/Darwin)
+# Expected-fail canary: green while std.Io.Evented still fails to compile (Windows checks Linux)
 just check-evented
 
 # Check docs/examples for stale public API names and missing build recipes

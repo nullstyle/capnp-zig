@@ -7,6 +7,10 @@ set windows-shell := ["sh", "-cu"]
 # recipes warm their compile graph first; every test recipe serializes Maker
 # jobs on Windows. This does not change concurrency inside a test executable.
 test_jobs := if os() == "windows" { "-j1" } else { "" }
+# Windows has no std.Io.Evented, so the evented canary cross-checks the Linux
+# (Uring) backend there. It is a compile-only object, so no Linux libc or
+# runner is needed, and the canary keeps its teeth on every host.
+evented_canary_target := if os() == "windows" { "-Dtarget=x86_64-linux" } else { "" }
 capnp_tool := justfile_directory() + "/tools/capnp_tool.py"
 
 # Build the plugin
@@ -420,10 +424,12 @@ check:
 
 # Expected-fail canary: green only while std.Io.Evented fails to compile at the
 # pinned Zig with the known std defect (src/io_backend.zig keeps
-# evented_available = false). Red means re-check that flag. Linux/Darwin only.
+# evented_available = false). Red means re-check that flag. Linux and Darwin
+# check their native backend; Windows cross-checks Linux (see
+# evented_canary_target), so `just ci` runs it on every host.
 # `-Dio-backend=evented check` compiles nothing evented, so it is not a gate.
 check-evented:
-    zig build check-evented-canary --summary all
+    zig build check-evented-canary {{ evented_canary_target }} --summary all
 
 # Execute the RPC e2e over an explicitly selected Io backend. This is the lane
 # with teeth: `-Dio-backend` is a []const u8 compared at RUNTIME by

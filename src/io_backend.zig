@@ -62,7 +62,8 @@ const EventedState = if (evented_available) struct {
 /// docs/api-snapshot.txt gate built from it — does not vary by platform.
 pub const InitError = error{
     /// Zig's standard library does not provide a usable `std.Io.Evented`
-    /// for this target.
+    /// for this target. At the pinned 0.17.0 this is every target (see
+    /// `evented_available`).
     EventedBackendUnsupported,
     /// `std.Io.Evented` exists for this target but failed to initialize
     /// (kernel support, fd/memory limits, ...).
@@ -83,9 +84,10 @@ pub const Backend = union(Kind) {
     ///   `init.io` from `std.process.Init`).
     /// - For `.threaded`, a fresh `std.Io.Threaded` is constructed with
     ///   default options using `gpa`.
-    /// - For `.evented`, constructs an owned `std.Io.Evented` when available,
-    ///   or returns `error.EventedBackendUnsupported` when Zig exposes
-    ///   `std.Io.Evented` as `void` for the target.
+    /// - For `.evented`, returns `error.EventedBackendUnsupported` on every
+    ///   target at the pinned 0.17.0, because no `std.Io.Evented` compiles
+    ///   there (`evented_available` is `false`). With that flag set, it
+    ///   constructs and owns a `std.Io.Evented` instead.
     pub fn init(
         kind: Kind,
         gpa: std.mem.Allocator,
@@ -112,10 +114,12 @@ pub const Backend = union(Kind) {
         return .{ .threaded = std.Io.Threaded.init(gpa, options) };
     }
 
-    /// Construct a fresh `std.Io.Evented` with default options. The
-    /// platform-specific options type is deliberately not part of the
-    /// public surface — it varies by target (io_uring vs kqueue), which
-    /// would make this API and its snapshot platform-dependent.
+    /// Construct a fresh `std.Io.Evented` with default options. At the
+    /// pinned 0.17.0 this always returns `error.EventedBackendUnsupported`
+    /// (see `evented_available`). The platform-specific options type is
+    /// deliberately not part of the public surface — it varies by target
+    /// (io_uring vs kqueue), which would make this API and its snapshot
+    /// platform-dependent.
     pub fn initEvented(gpa: std.mem.Allocator) InitError!Backend {
         if (comptime !evented_available) {
             return error.EventedBackendUnsupported;

@@ -44,8 +44,9 @@ pub fn setup(b: *std.Build) !Graph {
     // Selects which std.Io backend RPC entry points should construct. See
     // src/io_backend.zig for the full list of accepted spellings; the
     // default `process_init` reuses the std.Io that std.process.Init
-    // already provides. The `evented` selector constructs std.Io.Evented on
-    // targets where Zig exposes it, and fails clearly on unsupported targets.
+    // already provides. The `evented` selector fails with
+    // error.EventedBackendUnsupported on every target at Zig 0.17.0, because
+    // no std.Io.Evented compiles there (evented_available = false).
     const io_backend_kind = b.option(
         []const u8,
         "io-backend",
