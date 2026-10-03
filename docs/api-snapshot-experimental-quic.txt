@@ -3059,6 +3059,7 @@ capnpc-zig.rpc.transport.quic.NativeControlFramer.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.quic.NativeControlFramer.buffer: field array_list.Aligned(u8,null)
 capnpc-zig.rpc.transport.quic.NativeControlFramer.deinit: fn (*rpc.transport.quic.native_framer.ControlFramer) void
 capnpc-zig.rpc.transport.quic.NativeControlFramer.expected_len: field ?usize = null
+capnpc-zig.rpc.transport.quic.NativeControlFramer.freeBytes: fn (*const rpc.transport.quic.native_framer.ControlFramer) usize
 capnpc-zig.rpc.transport.quic.NativeControlFramer.init: fn (mem.Allocator, rpc.transport.quic.native_framer.ControlFramer.Options) rpc.transport.quic.native_framer.ControlFramer
 capnpc-zig.rpc.transport.quic.NativeControlFramer.max_buffered_bytes: field usize
 capnpc-zig.rpc.transport.quic.NativeControlFramer.max_control_frame_bytes: field usize

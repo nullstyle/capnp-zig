@@ -84,8 +84,9 @@ those frames internally.
 
 Native mode preserves Cap'n Proto E-order. Control frames are processed in
 control-stream order. If a `data_rpc` control frame is next but the referenced
-unidirectional data stream has not completed, later control frames stay buffered
-and are not dispatched yet.
+unidirectional data stream has not completed, later control frames are not
+dispatched yet: up to one control frame's worth stays buffered, and the rest
+stays unread in the QUIC stream, held back by flow control.
 
 QUIC DATAGRAM is not used by either mode. Telemetry and sideband data should be
 designed as a transport-general facility, not as a QUIC-only extension.

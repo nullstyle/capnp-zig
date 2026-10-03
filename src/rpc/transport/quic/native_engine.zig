@@ -153,7 +153,9 @@ pub const NativeEngine = struct {
             !conn.handshakeDone() and
             (conn.streamArrivedInEarlyData(quic_options.baseline_stream_id) orelse false))
         {
-            self.readControlStream(owner, conn) catch |err| {
+            // Bounded like every read: once the buffer is full, the rest
+            // of the early flight waits in QUIC until the hold lifts.
+            _ = self.readControlStream(owner, conn) catch |err| {
                 if (isNativeFrameError(err)) {
                     owner.terminate_frame_error(owner.ptr, err);
                     return;
@@ -162,20 +164,30 @@ pub const NativeEngine = struct {
             };
             return;
         }
-        self.readControlStream(owner, conn) catch |err| {
-            if (isNativeFrameError(err)) {
-                owner.terminate_frame_error(owner.ptr, err);
-                return;
-            }
-            return err;
-        };
-        self.processControlFrames(owner, conn, now_us) catch |err| {
-            if (isNativeFrameError(err)) {
-                owner.terminate_frame_error(owner.ptr, err);
-                return;
-            }
-            return err;
-        };
+        // Read no more than the control framer can hold, decode, repeat:
+        // frames the peer queued back to back may need several rounds, and
+        // anything not read yet stays with QUIC flow control. Go round again
+        // while either step made progress: a dispatch frees buffer room for
+        // bytes already waiting in QUIC, which no new datagram may announce.
+        while (true) {
+            const dispatched_before = self.next_in_sequence;
+            const read = self.readControlStream(owner, conn) catch |err| {
+                if (isNativeFrameError(err)) {
+                    owner.terminate_frame_error(owner.ptr, err);
+                    return;
+                }
+                return err;
+            };
+            self.processControlFrames(owner, conn, now_us) catch |err| {
+                if (isNativeFrameError(err)) {
+                    owner.terminate_frame_error(owner.ptr, err);
+                    return;
+                }
+                return err;
+            };
+            if (owner.is_closing(owner.ptr) or owner.deinit_requested(owner.ptr)) return;
+            if (read == 0 and self.next_in_sequence == dispatched_before) return;
+        }
     }
 
     fn ensureControlStream(
@@ -225,19 +237,29 @@ pub const NativeEngine = struct {
         return true;
     }
 
+    /// Read control-stream bytes into the framer, never more than it can
+    /// hold (its budget is one control frame, `max_control_frame_bytes`
+    /// plus the length prefix). Returns how many bytes were read.
     fn readControlStream(
         self: *NativeEngine,
         owner: Owner,
         conn: anytype,
-    ) !void {
+    ) !usize {
+        var total: usize = 0;
         while (!owner.is_closing(owner.ptr)) {
-            const n = conn.streamRead(quic_options.baseline_stream_id, owner.stream_read_buf) catch |err| switch (err) {
-                error.StreamNotFound => return,
+            // Preface bytes are checked and dropped, never buffered.
+            const preface_left = native_framer.preface.len - self.received_preface_len;
+            const room = @min(owner.stream_read_buf.len, self.inbound.freeBytes() +| preface_left);
+            if (room == 0) return total;
+            const n = conn.streamRead(quic_options.baseline_stream_id, owner.stream_read_buf[0..room]) catch |err| switch (err) {
+                error.StreamNotFound => return total,
                 else => return err,
             };
-            if (n == 0) return;
+            if (n == 0) return total;
+            total += n;
             try self.pushControlBytes(owner.stream_read_buf[0..n]);
         }
+        return total;
     }
 
     fn pushControlBytes(self: *NativeEngine, bytes: []const u8) !void {

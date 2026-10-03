@@ -1192,6 +1192,94 @@ test "quic native localhost streams large RPC data payload" {
     try client_state.expectOrder(&expected_order);
 }
 
+test "quic native receiver takes back-to-back control frames larger together than its control buffer" {
+    // The native control framer buffers at most one control frame
+    // (`max_control_frame_bytes` plus its length prefix). The receiver used
+    // to read EVERY readable control-stream byte before decoding any frame,
+    // so frames the sender queued back to back (pipelined inline calls, or
+    // the data-frame announcements of a full stream window) overflowed that
+    // budget and closed the connection with FrameTooLarge. The receiver
+    // must read only what the buffer can hold and leave the rest to QUIC
+    // flow control.
+    const allocator = std.testing.allocator;
+    const native_options = quic.NativeOptions{
+        .inline_frame_threshold = 256,
+        .max_control_frame_bytes = 512,
+        .max_pending_data_streams = 4,
+        .max_pending_data_bytes = 8192,
+    };
+
+    var frame_storage: [6][]const u8 = undefined;
+    var built: usize = 0;
+    defer for (frame_storage[0..built]) |frame| allocator.free(frame);
+    while (built < frame_storage.len) : (built += 1) {
+        frame_storage[built] = try buildCallFrameWithData(allocator, @intCast(0xB000 + built), 96);
+    }
+    const expected_frames: []const []const u8 = &frame_storage;
+    var control_bytes: usize = 0;
+    for (expected_frames) |frame| {
+        try std.testing.expect(frame.len <= native_options.inline_frame_threshold);
+        control_bytes += quic.native.length_prefix_bytes + quic.native.rpc_header_bytes + frame.len;
+    }
+    // Together they need more than one control buffer.
+    try std.testing.expect(control_bytes > quic.native.length_prefix_bytes + native_options.max_control_frame_bytes);
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    });
+    defer server.deinit();
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    });
+    defer client.deinit();
+
+    var server_state = OrderedQuicEndpointState{ .expected = expected_frames };
+    var client_state = OrderedQuicEndpointState{
+        .expected = expected_frames,
+        .close_after_messages = expected_frames.len,
+    };
+    server.start(&server_state, echoOrderedQuicMessage, recordOrderedQuicError, recordOrderedQuicClose);
+    client.start(&client_state, captureOrderedQuicMessage, recordOrderedQuicError, recordOrderedQuicClose);
+
+    // Queued before the loops start, so they leave in one flight.
+    for (expected_frames) |frame| try client.sendFrame(frame);
+
+    var server_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&server});
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        server.requestClose();
+        client_thread.join();
+        server_thread.join();
+    };
+
+    const exchanged = waitForOrderedClientMessagesOrError(&client_state, &server_state, expected_frames.len);
+    client.requestClose();
+    server.requestClose();
+    client_thread.join();
+    server_thread.join();
+    joined = true;
+
+    try std.testing.expectEqual(@as(?anyerror, null), server_state.last_error);
+    try std.testing.expectEqual(@as(?anyerror, null), client_state.last_error);
+    if (!exchanged) return error.QuicLoopbackTimedOut;
+    const expected_order = [_]usize{ 0, 1, 2, 3, 4, 5 };
+    try server_state.expectOrder(&expected_order);
+    try client_state.expectOrder(&expected_order);
+}
+
 test "quic native mode mismatch closes baseline peer cleanly" {
     const allocator = std.testing.allocator;
     const frame = try buildBootstrapFrame(allocator, 0xBAD);

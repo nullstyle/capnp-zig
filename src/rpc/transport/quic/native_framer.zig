@@ -81,6 +81,13 @@ pub const ControlFramer = struct {
         self.expected_len = null;
     }
 
+    /// Bytes `push` accepts before it trips the buffered-bytes budget. A
+    /// reader that never pushes more than this leaves the rest of the
+    /// stream to QUIC flow control instead of failing with FrameTooLarge.
+    pub fn freeBytes(self: *const ControlFramer) usize {
+        return self.max_buffered_bytes -| self.buffer.items.len;
+    }
+
     pub fn popFrame(self: *ControlFramer) !?ControlFrame {
         try self.updateExpected();
         const len = self.expected_len orelse return null;
