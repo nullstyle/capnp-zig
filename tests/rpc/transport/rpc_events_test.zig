@@ -251,10 +251,10 @@ test "parked Accept timeout event carries only its answer id" {
 }
 
 test "DisconnectCause is non-exhaustive, so a newer cause reaches older code as an unnamed value" {
-    // Causes are added as transports learn more (handshake_timeout and
-    // stream_limit_exhausted landed in consecutive releases). An exhaustive
-    // enum turned each addition into a compile break in every consumer
-    // switch; non-exhaustive makes a `_` (or `else`) arm the contract.
+    // Causes are added as transports learn more (handshake_timeout most
+    // recently). An exhaustive enum turned each addition into a compile
+    // break in every consumer switch; non-exhaustive makes a `_` (or
+    // `else`) arm the contract.
     const info = @typeInfo(rpc_events.DisconnectCause).@"enum";
     try std.testing.expect(info.mode == .nonexhaustive);
     try std.testing.expectEqual(u8, info.tag_type);

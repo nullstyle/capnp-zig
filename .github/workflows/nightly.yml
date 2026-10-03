@@ -189,12 +189,14 @@ jobs:
       # produced reset-certified closes AND every healing client healed
       # across every death (min_rebinds), zero give-ups.
       #
-      # --rss-gate report: on the quic v0.19.0 pin this lane's RSS climbs
-      # while the Zig heap stays flat (BoringSSL AEAD contexts leaked per
-      # handshake, fixed upstream in quic 0.21.1), so its RSS verdict is
-      # expected to read FAIL until the quic bump. Report-only here.
+      # --rss-gate enforce: on the quic v0.19.0 pin this lane's RSS climbed
+      # while the Zig heap stayed flat (BoringSSL AEAD contexts leaked per
+      # handshake, fixed upstream in quic 0.21.1). On the v0.24.0 pin the same
+      # soak run for 10 minutes held RSS flat (steady-state -5.3%, peak
+      # 172 MB over ~89,600 handshakes; macOS, 2026-10-03), so the RSS
+      # verdict now gates.
       - name: QUIC self-healing soak (abrupt deaths + healing workers)
-        run: zig build -Dquic=true -Doptimize=ReleaseSafe soak -- --transport quic --abrupt-death-every-ms 2000 --seconds 20 --workers 16 --heal-workers 8 --rss-gate report
+        run: zig build -Dquic=true -Doptimize=ReleaseSafe soak -- --transport quic --abrupt-death-every-ms 2000 --seconds 20 --workers 16 --heal-workers 8 --rss-gate enforce
 
       - name: ReleaseSafe hardening tests
         run: zig build test-release-safe --summary all

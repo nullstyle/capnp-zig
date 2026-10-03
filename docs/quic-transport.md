@@ -43,9 +43,9 @@ Cap'n Proto RPC vat session. The payload above the QUIC transport is still the
 standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
 between peers, not the RPC protocol that `Peer` handles.
 
-The manifest pins the `quic` package at annotated tag `v0.16.1` (commit
-`335cdc6`), which in turn pins
-the published boringssl-zig commit `b47af8ce`. That BoringSSL wrapper links
+The manifest pins the `quic` package at annotated tag `v0.24.0` (commit
+`1d34b32`), which in turn pins
+the published boringssl-zig commit `ff30fe99` (boringssl 0.6.7). That BoringSSL wrapper links
 Windows sockets as `ws2_32` with package-config lookup disabled, removing the
 native-shell and Git Bash `pkg-config.BAT` failure path. Connection and server
 session loops drive `Connection.advance()` before waiting on datagrams and again
@@ -361,15 +361,3 @@ Recommended hardening posture:
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.
 - Mode mismatch is treated as malformed transport input and closes cleanly.
-- **Native mode has a per-connection LIFETIME stream budget.** Each frame
-  larger than `inline_frame_threshold` (64 KiB by default) travels on its own
-  one-shot unidirectional stream, and the underlying QUIC library caps every
-  grant of peer stream credit at a fixed lifetime maximum (4096 at the
-  current pin, read from the library rather than copied). A connection that
-  has opened that many large-frame streams can never open another. It then
-  closes with `rpc.events.DisconnectCause.stream_limit_exhausted` instead of
-  stalling: the cause is certified, nothing is faulty, and a fresh connection
-  gets a fresh budget — redial. Running short of credit BELOW the cap is
-  ordinary flow control and is simply retried. Baseline mode (one
-  bidirectional stream) and small frames on the native control stream are
-  unaffected.

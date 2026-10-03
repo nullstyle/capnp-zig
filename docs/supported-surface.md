@@ -219,7 +219,9 @@ the dials fail. Otherwise it gates. The soak also fails if the TCP server
 under test stops serving before shutdown. The process
 resident set runs through the same steady-state trend check as the Zig heap.
 The RSS check — the one that sees C-side memory such as BoringSSL's under
-QUIC — is report-only in CI for now (`--rss-gate enforce` makes it gate).
+QUIC — gates the nightly QUIC self-healing soak (`--rss-gate enforce`) since
+the quic v0.24.0 pin, which no longer leaks a BoringSSL AEAD context per
+handshake; the TCP soak lanes stay report-only for now.
 In CI the *pipelined throughput* case is enforced; the *sequential latency*
 cases are advisory (a shared runner cannot measure a serialized round-trip
 reliably — see [`stability.md`](stability.md)), and gate on a quiet machine via

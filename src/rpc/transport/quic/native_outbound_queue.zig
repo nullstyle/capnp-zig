@@ -8,13 +8,6 @@ const options = @import("options.zig");
 
 const Role = endpoint_mod.Role;
 
-/// Lifetime cap on locally opened streams of one kind, per connection.
-/// Read from quic rather than copied: quic clamps EVERY grant of peer
-/// stream credit at this value — the initial transport parameter and each
-/// later MAX_STREAMS — so a stream index at or above it can never become
-/// openable, whatever the peer is willing to grant.
-pub const stream_lifetime_cap: u64 = quic_zig.conn.state.max_streams_per_connection;
-
 pub const QueuedKind = enum {
     inline_rpc,
     data_rpc,
@@ -219,18 +212,16 @@ pub const OutboundQueue = struct {
         if (item.stream_id == null) {
             const stream_id = self.next_uni_stream_id;
             _ = conn.openUni(stream_id) catch |err| switch (err) {
-                // Out of PEER stream credit. Below the lifetime cap that is
-                // ordinary flow control: quic has already sent STREAMS_BLOCKED,
-                // a MAX_STREAMS may lift it, so keep the frame and retry.
-                // At or above the cap no grant can ever cover this index
-                // (quic clamps every grant at the cap), so retrying would be
-                // a silent, permanent stall of every large frame — fail
-                // loudly instead and let the owner close with a certified
-                // cause. RFC 9000 §2.1: the low two id bits are the type.
-                error.StreamLimitExceeded => if (stream_id >> 2 >= stream_lifetime_cap)
-                    return error.StreamLifetimeExhausted
-                else
-                    return false,
+                // The peer's stream window is full: it lets us have only
+                // `initial_max_streams_uni` streams open at once, and gives
+                // an id back each time one of ours is fully closed (quic
+                // v0.24.0 and later; there is no lifetime cap). Always
+                // temporary, at any stream index: the id is not consumed,
+                // quic has told the peer (STREAMS_BLOCKED), so keep the
+                // frame at the head of the queue and retry after the next
+                // pump. Failing here would kill a healthy connection that is
+                // only waiting for its window.
+                error.StreamLimitExceeded => return false,
                 else => return err,
             };
             item.stream_id = stream_id;

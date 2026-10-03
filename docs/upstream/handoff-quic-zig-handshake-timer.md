@@ -2,8 +2,8 @@
 
 > **Status: RESOLVED upstream in quic-zig v0.19.0 (checked 2026-10-03).**
 > quic-zig commit `c1cb50e` ("connection: handshake-liveness backstop (dead
-> dials / SYN-flood slots die)") shipped in the v0.19.0 tag, which is the
-> version capnp-zig pins. It adds `handshake_timeout_ms` (defaults 30 s
+> dials / SYN-flood slots die)") shipped in the v0.19.0 tag (capnp-zig pins
+> v0.24.0 since 2026-10-03, which keeps it). It adds `handshake_timeout_ms` (defaults 30 s
 > client / 10 s server) and a `CloseSource.handshake_timeout` variant.
 > capnp-zig maps that variant to `DisconnectCause.handshake_timeout` in
 > `src/rpc/transport/quic/close.zig` (`disconnectCauseFor`) and keeps its

@@ -296,7 +296,6 @@ pub const WarmRedialClient = struct {
             .peer_close,
             .transport_error,
             .handshake_timeout,
-            .stream_limit_exhausted,
             => false,
             // A cause this build does not name proves nothing about the
             // remote's state, so it is treated like `.unknown`.

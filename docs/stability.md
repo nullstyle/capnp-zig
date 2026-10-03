@@ -57,12 +57,12 @@ QUIC connection. The bridge now normalizes both spellings into one
 `truncated` outcome.
 
 That pending claim also rests on a layer below us, so it is worth stating
-precisely what the dependency does and does not prove. In quic-zig v0.19.0
+precisely what the dependency does and does not prove. In quic-zig v0.24.0
 (the pinned tag), `windows-latest` is a tier-1 **blocking** CI leg —
 `advisory: false` in `.github/workflows/test.yml` — running the full
-`zig build test`, so the protocol engine, wire/frame codecs, conformance
-suite, and in-memory TLS handshakes genuinely execute on Windows rather than
-merely cross-compiling. quic-zig's own bundled UDP loop (`runUdpServer` /
+`zig build test` (1748 tests on the v0.24.0 release commit), so the protocol
+engine, wire/frame codecs, conformance suite, and in-memory TLS handshakes
+genuinely execute on Windows rather than merely cross-compiling. quic-zig's own bundled UDP loop (`runUdpServer` /
 `runUdpClient`) does **not** run there: on native Windows it refuses up front
 with `error.WindowsBundledLoopUnsupported` (std has no overlapped-I/O path for
 its timed receive), and its loop smokes pin that refusal as a platform
@@ -71,7 +71,10 @@ unconditionally. capnp-zig does not use the bundled loop; it drives
 connections through its own UDP bridge, so quic-zig's Windows evidence covers
 the protocol engine, not a Windows socket loop. (At v0.10.1 the three loop
 smokes were unconditional Windows skips — "untested, not known-broken".)
-Verified against the pinned tag, not taken on report.
+The bundled-loop refusal was re-read in the v0.24.0 tarball; the CI leg and
+the `reuse_port` skips were re-read on quic-zig's main branch just past the
+tag (the tarball ships neither `.github/` nor `tests/`), and the Windows test
+count comes from the release note.
 
 The practical consequence for our own Windows QUIC acceptance is that the
 socket layer is unproven on *both* sides of the boundary. Treat a Windows

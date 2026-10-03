@@ -124,7 +124,7 @@ pub const Resource = enum {
 /// (TCP today), so absence of plumbing never misreports a cause.
 ///
 /// NON-EXHAUSTIVE on purpose: causes are added as transports learn more
-/// (two landed in consecutive releases), and an exhaustive enum turned every
+/// (`handshake_timeout` most recently), and an exhaustive enum turned every
 /// addition into a compile break in each consumer's switch. Handle `_` (or
 /// use `else`) and treat an unnamed cause like `.unknown`; never `@tagName`
 /// a value you did not construct — use `std.enums.tagName`, which returns
@@ -152,12 +152,6 @@ pub const DisconnectCause = enum(u8) {
     /// is the half-open-exhaustion (QUIC SYN-flood analog) guard firing;
     /// on a client it is a dial that never got answered.
     handshake_timeout,
-    /// The connection used up its LIFETIME budget of locally opened
-    /// streams (quic's per-connection cap) and could never send another
-    /// stream-carried frame. Not a fault on either side: a long-lived
-    /// connection simply ran out. Redial — a fresh connection gets a fresh
-    /// budget.
-    stream_limit_exhausted,
     _,
 };
 

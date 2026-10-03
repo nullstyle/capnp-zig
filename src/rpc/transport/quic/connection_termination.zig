@@ -74,15 +74,6 @@ pub fn State(comptime Connection: type) type {
         }
 
         pub fn internalError(conn: *Connection, err: anyerror) void {
-            // Certify lifetime stream exhaustion BEFORE the close: the
-            // generic local-close mapping would report it as
-            // `.transport_error`, indistinguishable from any other local
-            // fault, and the app could not tell it should simply redial.
-            // First-write-wins, like the handshake guard — a cause already
-            // latched (e.g. a stateless reset seen first) is kept.
-            if (err == error.StreamLifetimeExhausted and conn.close_cause == .unknown) {
-                conn.close_cause = .stream_limit_exhausted;
-            }
             apply(conn, termination.policy(.internal_error, err), err);
         }
 

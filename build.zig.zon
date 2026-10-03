@@ -6,21 +6,22 @@
         // Pinned to a TAG, not a raw commit: tags are immutable release
         // points, so the pin is auditable and reproducible.
         //
-        // v0.19.0. This hash is NOT shared with qmsg, which pins quic v0.21.2,
-        // so a process linking both packages does not get one shared quic
-        // until the two pins converge on the same tarball. The jump from
-        // v0.16.1 crosses three additive releases: 0.17.0 (inbound DATAGRAM
-        // overflow sheds instead of closing), 0.18.0 (reuse_port bind
-        // options; unused here), and 0.19.0 (handshake-liveness backstop:
-        // `handshake_timeout_ms` defaults 30s client / 10s server, new
-        // `CloseSource.handshake_timeout` — mapped in
-        // quic/close.zig `disconnectCauseFor`; the backstop closes the
-        // half-open-slot exhaustion the fanout soak measured on 2026-08-27).
-        // boringssl stays b47af8ce under both pins, so the Windows ws2_32
-        // linking property carries over unchanged.
+        // v0.24.0 (commit 1d34b32). qmsg still pins v0.21.2; the coordinated
+        // release moves it here too, so a process linking both packages can
+        // resolve ONE quic module (both parents must also pass the same
+        // dependency options). The jump from v0.19.0:
+        // 0.21.1 frees the BoringSSL AEAD context leaked per handshake key
+        // derivation (~780 KB per handshake; the QUIC heal soak's RSS went
+        // 5 MB -> 26.6 GB in 10 minutes on v0.19.0), and 0.24.0 (BREAKING)
+        // removes the 4096 lifetime stream cap: `initial_max_streams_*` is
+        // now an open-at-once window and `StreamLimitExceeded` is always
+        // temporary (see quic/options.zig `defaultTransportParams`).
+        // boringssl-zig moves b47af8ce -> ff30fe99 (0.6.7, same BoringSSL
+        // source aef0e2df); it still links Windows ws2_32 with pkg-config
+        // lookup disabled.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.19.0.tar.gz",
-            .hash = "quic-0.19.0-DnSYvfDZMADCQvF3_9ZQ75Kwdz3nJ4CBLSwxWizuCsLI",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.24.0.tar.gz",
+            .hash = "quic-0.24.0-DnSYvUNHNABoGpnSvxo5VEF7RVsZTxddSW3UGp1vCrPw",
             .lazy = true,
         },
     },
