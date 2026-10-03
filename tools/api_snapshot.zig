@@ -27,10 +27,16 @@
 //! type, events, ...) keep evolving post-tag without a false-red gate or an
 //! accidental freeze.
 //!
-//! Builder rule: a Stable function on a builder type (a container whose name
-//! ends in `Builder`) may not render `anyerror`. `api-snapshot` and every
-//! `check-api` variant refuse to run until it spells a named set
-//! (`message.BuildError` / `message.CopyError`); see `stable_builder_anyerror`.
+//! Builder rule: a Stable builder line may not render `anyerror` anywhere:
+//! not in its return set, its parameter types or its field types. Builder
+//! lines are the members of builder types (a container whose name ends in
+//! `Builder`) plus the free-function builder primitives in
+//! `builder_free_functions`. The one tolerated exception is the list reader
+//! makers' `anyerror` fn-pointer types inside reader parameter types
+//! (`reader_maker_renderings`, pending a `ReadError` set). `api-snapshot` and
+//! every `check-api` variant refuse to run until a violating line spells a
+//! named set (`message.BuildError` / `message.CopyError`); see
+//! `enforceBuilderRule`.
 //!
 //! Categorizer contract: `tierFor` DEFAULTS every path to Experimental. A
 //! declaration is Stable ONLY when its path matches an explicit rule in
@@ -568,10 +574,8 @@ fn fieldEntries(
 }
 
 /// A rendered declaration line plus the path that produced it (kept so the
-/// categorizer can route lines after they are collected). `builder_anyerror`
-/// marks a builder member whose rendered return set is `anyerror`; see
-/// `stable_builder_anyerror` below.
-const Entry = struct { path: []const u8, line: []const u8, builder_anyerror: bool = false };
+/// categorizer can route lines after they are collected).
+const Entry = struct { path: []const u8, line: []const u8 };
 
 /// True when some container segment of `path` (any segment but the leaf) is a
 /// builder type: `message.StructBuilder.writePointerList`,
@@ -586,17 +590,51 @@ fn isBuilderMember(comptime path: []const u8) bool {
     return false;
 }
 
-/// True when the function renders `anyerror!T`. Generic functions are skipped:
-/// their inferred set is unresolvable here and they render opaquely anyway.
-fn returnsAnyerror(comptime FnType: type) bool {
-    const fn_info = @typeInfo(FnType).@"fn";
-    if (fn_info.is_generic) return false;
-    const ret = fn_info.return_type orelse return false;
-    return switch (@typeInfo(ret)) {
-        .error_union => |eu| @typeInfo(eu.error_set).error_set.error_names == null,
-        else => false,
-    };
+/// Builder primitives that are not members of a `*Builder` container: free
+/// functions that write message content for generated or wire builders. The
+/// builder rule covers them like builder members. Every path must name a
+/// Stable declaration; the comptime check after `stable_builder_entries`
+/// enforces that, so a rename cannot drop one out of the rule silently.
+const builder_free_functions = [_][]const u8{
+    // Deep copy behind every generated copy setter (`message.CopyError`).
+    "capnpc-zig.message.cloneAnyPointer",
+    "capnpc-zig.message.cloneAnyPointerToBytes",
+    // List codecs behind the generated nested-list views.
+    "capnpc-zig.message.typed_list_helpers.CapabilityListCodec.init",
+    "capnpc-zig.message.typed_list_helpers.CapabilityListCodec.initInSegment",
+    "capnpc-zig.message.typed_list_helpers.DataListCodec.init",
+    "capnpc-zig.message.typed_list_helpers.DataListCodec.initInSegment",
+    "capnpc-zig.message.typed_list_helpers.RawPointerListCodec.init",
+    "capnpc-zig.message.typed_list_helpers.RawPointerListCodec.initInSegment",
+    "capnpc-zig.message.typed_list_helpers.RawStructNestedBuilderCodec.init",
+    "capnpc-zig.message.typed_list_helpers.RawStructNestedBuilderCodec.initInSegment",
+    // CapDescriptor writers the RPC wire builders call.
+    "capnpc-zig.rpc.wire.protocol.CapDescriptor.writeReceiverAnswer",
+    "capnpc-zig.rpc.wire.protocol.CapDescriptor.writeThirdPartyHosted",
+    "capnpc-zig.rpc.wire.protocol.CapDescriptor.writeThirdPartyHostedNull",
+};
+
+fn isBuilderLine(comptime path: []const u8) bool {
+    if (isBuilderMember(path)) return true;
+    for (builder_free_functions) |free_fn| {
+        if (std.mem.eql(u8, path, free_fn)) return true;
+    }
+    return false;
 }
+
+/// Reader-side debt that the builder rule tolerates. The list reader makers are
+/// typed `anyerror`, and `@typeName` spells their fn-pointer types inside every
+/// reader type (`AnyPointerReader`, `PointerListReader`, ...) that a builder
+/// signature takes as a parameter. Narrowing them needs a `ReadError` set, a
+/// separate follow-up. The rule removes exactly these renderings before it
+/// looks for `anyerror`, so `anyerror` anywhere else on a builder line still
+/// fails. Each rendering must still occur on some Stable builder line;
+/// `enforceBuilderRule` reports a stale one, so the exemption goes away with
+/// the debt.
+const reader_maker_renderings = [_][]const u8{
+    "@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes))",
+    "@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))",
+};
 
 fn walk(
     comptime T: type,
@@ -636,11 +674,7 @@ fn walk(
                 entries.* = entries.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": type = " ++ rendered }};
             }
         } else if (@typeInfo(DType) == .@"fn") {
-            entries.* = entries.* ++ [_]Entry{.{
-                .path = decl_path,
-                .line = decl_path ++ ": " ++ renderFnType(DType),
-                .builder_anyerror = isBuilderMember(decl_path) and returnsAnyerror(DType),
-            }};
+            entries.* = entries.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": " ++ renderFnType(DType) }};
         } else {
             entries.* = entries.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": const " ++ @typeName(DType) }};
         }
@@ -853,26 +887,112 @@ const stable_lines: []const []const u8 = blk: {
     break :blk stable;
 };
 
-/// Stable builder members whose signature renders `anyerror!`.
+/// Stable builder lines: members of builder types plus `builder_free_functions`.
 ///
 /// Builders are what generated `initX`/`setX` code calls, and an `anyerror`
 /// anywhere on that path makes the generated signature `anyerror` too: that is
 /// how `writePointerList` and the `anyerror`-typed pointer makers kept four
 /// slcp entry points out of its Stable tier. Builder primitives now spell
-/// `message.BuildError` / `message.CopyError`; this gate keeps a frozen builder
-/// line from regressing to `anyerror` (the snapshot diff alone would show it,
-/// but a reviewer refreezing the file would accept it). Reader and RPC-callback
-/// lines are out of scope: several legitimately carry user-callback errors.
-const stable_builder_anyerror: []const []const u8 = blk: {
+/// `message.BuildError` / `message.CopyError`; `enforceBuilderRule` keeps a
+/// frozen builder line from regressing to `anyerror` (the snapshot diff alone
+/// would show it, but a reviewer refreezing the file would accept it). Reader
+/// and RPC-callback lines are out of scope: several legitimately carry
+/// user-callback errors.
+const stable_builder_entries: []const Entry = blk: {
     @setEvalBranchQuota(20_000_000);
-    var out: []const []const u8 = &.{};
+    var out: []const Entry = &.{};
     for (all_entries) |entry| {
-        if (entry.builder_anyerror and tierIsStable(entry.path)) {
-            out = out ++ [_][]const u8{entry.path};
+        if (tierIsStable(entry.path) and isBuilderLine(entry.path)) {
+            out = out ++ [_]Entry{entry};
         }
     }
     break :blk out;
 };
+
+comptime {
+    @setEvalBranchQuota(20_000_000);
+    var missing: []const u8 = "";
+    for (builder_free_functions) |free_fn| {
+        const found = for (stable_builder_entries) |entry| {
+            if (std.mem.eql(u8, entry.path, free_fn)) break true;
+        } else false;
+        if (!found) missing = missing ++ "\n  " ++ free_fn;
+    }
+    if (missing.len != 0) {
+        @compileError("api_snapshot: builder_free_functions entries that name no Stable declaration — fix the path or remove them:" ++ missing);
+    }
+}
+
+fn isIdentifierByte(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_';
+}
+
+/// True when `text` holds `anyerror` as a whole token (not inside a longer
+/// identifier).
+fn containsAnyerrorToken(text: []const u8) bool {
+    const token = "anyerror";
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, text, start, token)) |idx| {
+        const end = idx + token.len;
+        const starts_token = idx == 0 or !isIdentifierByte(text[idx - 1]);
+        const ends_token = end == text.len or !isIdentifierByte(text[end]);
+        if (starts_token and ends_token) return true;
+        start = end;
+    }
+    return false;
+}
+
+/// The builder rule. Fails when a Stable builder line renders `anyerror`
+/// outside `reader_maker_renderings`, or when one of those renderings no
+/// longer occurs on any Stable builder line (a stale exemption). Both
+/// `--write` and `--check` run it, so the contract cannot be refrozen around
+/// a violation.
+fn enforceBuilderRule(allocator: std.mem.Allocator) !void {
+    var exemption_hits: [reader_maker_renderings.len]usize = @splat(0);
+    var violations: usize = 0;
+    for (stable_builder_entries) |entry| {
+        var line: []const u8 = entry.line;
+        var owned: ?[]u8 = null;
+        defer if (owned) |buf| allocator.free(buf);
+        for (reader_maker_renderings, &exemption_hits) |rendering, *hits| {
+            const count = std.mem.count(u8, line, rendering);
+            if (count == 0) continue;
+            hits.* += count;
+            const stripped = try allocator.alloc(u8, std.mem.replacementSize(u8, line, rendering, ""));
+            _ = std.mem.replace(u8, line, rendering, "", stripped);
+            if (owned) |buf| allocator.free(buf);
+            owned = stripped;
+            line = stripped;
+        }
+        if (!containsAnyerrorToken(line)) continue;
+        if (violations == 0) {
+            std.debug.print(
+                "api-snapshot: STABLE builder line(s) render `anyerror`. Builder primitives and generated\n" ++
+                    "builders must spell a named set (message.BuildError / message.CopyError):\n",
+                .{},
+            );
+        }
+        violations += 1;
+        std.debug.print("  {s}\n", .{entry.path});
+    }
+
+    var stale: usize = 0;
+    for (reader_maker_renderings, exemption_hits) |rendering, hits| {
+        if (hits != 0) continue;
+        if (stale == 0) {
+            std.debug.print(
+                "api-snapshot: reader_maker_renderings entries that no Stable builder line contains any\n" ++
+                    "more. Remove them (the reader makers they excused have changed):\n",
+                .{},
+            );
+        }
+        stale += 1;
+        std.debug.print("  {s}\n", .{rendering});
+    }
+
+    if (violations != 0) return error.StableBuilderAnyerror;
+    if (stale != 0) return error.StaleBuilderRuleExemption;
+}
 
 const experimental_lines: []const []const u8 = blk: {
     @setEvalBranchQuota(20_000_000);
@@ -1107,15 +1227,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Both writing and checking refuse a Stable builder line that renders
     // `anyerror`, so the contract cannot be refrozen around one.
-    if (stable_builder_anyerror.len != 0) {
-        std.debug.print(
-            "api-snapshot: {d} STABLE builder declaration(s) return `anyerror`. Builder primitives and\n" ++
-                "generated builders must spell a named set (message.BuildError / message.CopyError):\n",
-            .{stable_builder_anyerror.len},
-        );
-        for (stable_builder_anyerror) |path| std.debug.print("  {s}\n", .{path});
-        return error.StableBuilderAnyerror;
-    }
+    try enforceBuilderRule(allocator);
 
     const stable_rendered = try renderSnapshot(allocator, stable_lines, stable_header);
     defer allocator.free(stable_rendered);

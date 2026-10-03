@@ -194,8 +194,20 @@ Builders spell two named sets (`src/serialization/message/errors.zig`):
 
 Generated methods that are not plain message writes keep inferred sets:
 `setXServer` (exports through the `Peer`), and the codec-parametric generic
-(`Apply`) and concrete-brand (`brands()`) views. `zig build check-api` rejects
-any Stable builder declaration that renders `anyerror`.
+(`Apply`) and concrete-brand (`brands()`) views.
+
+`zig build check-api` and `zig build api-snapshot` reject a Stable builder line
+that renders `anyerror` anywhere: in its return set, a parameter type or a
+field type. Builder lines are the members of every `*Builder` type, plus the
+free-function builder primitives listed in `builder_free_functions` in
+`tools/api_snapshot.zig`: `message.cloneAnyPointer`, `cloneAnyPointerToBytes`,
+the `typed_list_helpers` list codecs' `init`/`initInSegment`, and the
+`rpc.wire.protocol.CapDescriptor.write*` functions. One known exception
+remains. The list reader makers are still typed `anyerror`, and their
+fn-pointer types appear inside the reader types that some builder methods
+take as parameters (for example `MessageBuilder.buildAccept` and
+`cloneAnyPointer`). The rule removes exactly those renderings before it
+checks; a `ReadError` set for the reader side is a follow-up.
 
 For RPC, the frozen client-facing set is:
 
