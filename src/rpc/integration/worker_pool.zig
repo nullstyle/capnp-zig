@@ -30,6 +30,9 @@ pub const WorkerPool = struct {
     conn_options: Connection.Options,
     peer_limits: peer_mod.PeerLimits,
     join_timeout_ms: ?u64,
+    /// Applied to every accepted `Connection` before `on_accept` runs (see
+    /// `Config.first_frame_timeout_ms`).
+    first_frame_timeout_ms: ?u64,
     active_connections: []?*Connection,
     active_mu: std.Io.Mutex,
     run_active: std.atomic.Value(bool),
@@ -49,7 +52,32 @@ pub const WorkerPool = struct {
         /// Secure default for inbound L4 Join phases. Null is the explicit
         /// compatibility opt-out.
         join_timeout_ms: ?u64 = 30_000,
+        /// Secure default: reap an accepted connection that has not
+        /// delivered one complete frame within this long of its accept
+        /// (`Connection.first_frame_timeout_ms`). Each worker serves one
+        /// connection to completion, so without it `concurrency` clients
+        /// that connect and never speak pin every worker forever, and every
+        /// later client waits in the kernel backlog. A client trickling the
+        /// bytes of a frame it never finishes is reaped too. It is set on
+        /// the connection before `on_accept` runs, so the callback may
+        /// override it per connection (for example, a server that speaks
+        /// first). Null is the explicit opt-out.
+        first_frame_timeout_ms: ?u64 = default_first_frame_timeout_ms,
+        /// Secure default: reap a connection after this long with no
+        /// inbound read and no outbound enqueue (`Connection.idle_timeout_ms`),
+        /// so a client that vanished without a FIN cannot hold its worker
+        /// for good. Applies when `connection_options.idle_timeout_ms` is
+        /// null; an explicit value there wins. Cap'n Proto has no keepalive,
+        /// so clients that sit idle for longer than this get disconnected;
+        /// raise it, or set null (the explicit opt-out), if yours do.
+        idle_timeout_ms: ?u64 = default_idle_timeout_ms,
     };
+
+    /// Default for `Config.first_frame_timeout_ms`. Matches the QUIC
+    /// server's `handshake_timeout_ms` default.
+    pub const default_first_frame_timeout_ms: u64 = 10_000;
+    /// Default for `Config.idle_timeout_ms`.
+    pub const default_idle_timeout_ms: u64 = 300_000;
 
     /// Result returned by `AcceptFn`.
     pub const AcceptDecision = enum {
@@ -106,6 +134,9 @@ pub const WorkerPool = struct {
         if (config.join_timeout_ms != null and connection_options.tick_interval_ms == null) {
             connection_options.tick_interval_ms = 100;
         }
+        if (connection_options.idle_timeout_ms == null) {
+            connection_options.idle_timeout_ms = config.idle_timeout_ms;
+        }
 
         return .{
             .allocator = allocator,
@@ -117,6 +148,7 @@ pub const WorkerPool = struct {
             .conn_options = connection_options,
             .peer_limits = config.peer_limits,
             .join_timeout_ms = config.join_timeout_ms,
+            .first_frame_timeout_ms = config.first_frame_timeout_ms,
             .active_connections = active_connections,
             .active_mu = .init,
             .run_active = std.atomic.Value(bool).init(false),
@@ -324,6 +356,9 @@ pub const WorkerPool = struct {
                 destroyConnection(pool.allocator, conn_ptr);
                 break;
             }
+
+            // Before on_accept, so the callback can override it per connection.
+            conn_ptr.first_frame_timeout_ms = pool.first_frame_timeout_ms;
 
             const peer_ptr = pool.allocator.create(Peer) catch {
                 destroyConnection(pool.allocator, conn_ptr);

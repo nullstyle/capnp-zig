@@ -1540,6 +1540,7 @@ capnpc-zig.rpc.integration.WorkerPool.allocator: field mem.Allocator
 capnpc-zig.rpc.integration.WorkerPool.conn_options: field rpc.transport.tcp.connection.Connection.Options
 capnpc-zig.rpc.integration.WorkerPool.ctx: field *anyopaque
 capnpc-zig.rpc.integration.WorkerPool.fd_closed: field atomic.Value(bool)
+capnpc-zig.rpc.integration.WorkerPool.first_frame_timeout_ms: field ?u64
 capnpc-zig.rpc.integration.WorkerPool.io: field Io
 capnpc-zig.rpc.integration.WorkerPool.join_timeout_ms: field ?u64
 capnpc-zig.rpc.integration.WorkerPool.on_accept: field *const fn (*anyopaque, *rpc.peer.mod.Peer, *rpc.transport.tcp.connection.Connection, u32) anyerror!rpc.integration.worker_pool.WorkerPool.AcceptDecision
@@ -1617,6 +1618,8 @@ capnpc-zig.rpc.integration.worker_pool.WorkerPool.AcceptDecision: enum
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.AcceptFn: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, *rpc.transport.tcp.connection.Connection, u32) anyerror!rpc.integration.worker_pool.WorkerPool.AcceptDecision
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.Config.concurrency: field ?u32 = null
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.Config.connection_options: field rpc.transport.tcp.connection.Connection.Options = <default>
+capnpc-zig.rpc.integration.worker_pool.WorkerPool.Config.first_frame_timeout_ms: field ?u64 = 10000
+capnpc-zig.rpc.integration.worker_pool.WorkerPool.Config.idle_timeout_ms: field ?u64 = 300000
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.Config.join_timeout_ms: field ?u64 = 30000
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.Config.listen_backlog: field u31 = 128
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.Config.peer_limits: field rpc.peer.state.PeerLimits = <default>
@@ -1627,8 +1630,11 @@ capnpc-zig.rpc.integration.worker_pool.WorkerPool.active_mu: field Io.Mutex
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.allocator: field mem.Allocator
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.conn_options: field rpc.transport.tcp.connection.Connection.Options
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.ctx: field *anyopaque
+capnpc-zig.rpc.integration.worker_pool.WorkerPool.default_first_frame_timeout_ms: const u64
+capnpc-zig.rpc.integration.worker_pool.WorkerPool.default_idle_timeout_ms: const u64
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.deinit: fn (*rpc.integration.worker_pool.WorkerPool) void
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.fd_closed: field atomic.Value(bool)
+capnpc-zig.rpc.integration.worker_pool.WorkerPool.first_frame_timeout_ms: field ?u64
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.init: fn (mem.Allocator, Io, Io.net.IpAddress, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, *rpc.transport.tcp.connection.Connection, u32) anyerror!rpc.integration.worker_pool.WorkerPool.AcceptDecision, rpc.integration.worker_pool.WorkerPool.Config) error{AccessDenied,AddressFamilyUnsupported,AddressInUse,AddressUnavailable,Canceled,InvalidConcurrency,NetworkDown,OptionUnsupported,OutOfMemory,ProcessFdQuotaExceeded,ProtocolUnsupportedByAddressFamily,ProtocolUnsupportedBySystem,SocketModeUnsupported,SystemFdQuotaExceeded,SystemResources,Unexpected}!rpc.integration.worker_pool.WorkerPool
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.io: field Io
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.join_timeout_ms: field ?u64
@@ -3820,8 +3826,11 @@ capnpc-zig.rpc.transport.tcp.Connection.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.tcp.Connection.ctx: field ?*anyopaque = null
 capnpc-zig.rpc.transport.tcp.Connection.deinit_requested: field bool = false
 capnpc-zig.rpc.transport.tcp.Connection.deinitialized: field bool = false
+capnpc-zig.rpc.transport.tcp.Connection.first_frame_received: field bool = false
+capnpc-zig.rpc.transport.tcp.Connection.first_frame_timeout_ms: field ?u64 = null
 capnpc-zig.rpc.transport.tcp.Connection.framer: field rpc.wire.framing.Framer
 capnpc-zig.rpc.transport.tcp.Connection.idle_timeout_ms: field ?u64 = null
+capnpc-zig.rpc.transport.tcp.Connection.init_ns: field i64 = 0
 capnpc-zig.rpc.transport.tcp.Connection.io: field Io
 capnpc-zig.rpc.transport.tcp.Connection.last_activity_ns: field i64 = 0
 capnpc-zig.rpc.transport.tcp.Connection.last_error: field ?anyerror = null
@@ -3902,8 +3911,11 @@ capnpc-zig.rpc.transport.tcp.connection.Connection.context: fn (*const rpc.trans
 capnpc-zig.rpc.transport.tcp.connection.Connection.ctx: field ?*anyopaque = null
 capnpc-zig.rpc.transport.tcp.connection.Connection.deinit_requested: field bool = false
 capnpc-zig.rpc.transport.tcp.connection.Connection.deinitialized: field bool = false
+capnpc-zig.rpc.transport.tcp.connection.Connection.first_frame_received: field bool = false
+capnpc-zig.rpc.transport.tcp.connection.Connection.first_frame_timeout_ms: field ?u64 = null
 capnpc-zig.rpc.transport.tcp.connection.Connection.framer: field rpc.wire.framing.Framer
 capnpc-zig.rpc.transport.tcp.connection.Connection.idle_timeout_ms: field ?u64 = null
+capnpc-zig.rpc.transport.tcp.connection.Connection.init_ns: field i64 = 0
 capnpc-zig.rpc.transport.tcp.connection.Connection.io: field Io
 capnpc-zig.rpc.transport.tcp.connection.Connection.isClosing: fn (*const rpc.transport.tcp.connection.Connection) bool
 capnpc-zig.rpc.transport.tcp.connection.Connection.last_activity_ns: field i64 = 0

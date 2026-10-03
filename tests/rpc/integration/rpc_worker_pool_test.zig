@@ -644,3 +644,209 @@ test "WorkerPool: an accepted peer is given a real entropy source" {
     // embargo ids where the spec asks for unguessable ones.
     try std.testing.expect(observer.saw_entropy.load(.acquire));
 }
+
+// -- Liveness: silent clients must not pin every worker ----------------------
+//
+// Each worker serves one connection to completion, so without a first-frame
+// or idle deadline `concurrency` clients that connect and never speak pin the
+// whole pool forever: every later client completes its TCP handshake in the
+// kernel backlog and then waits indefinitely (the TCP analog of the QUIC
+// half-open immortality that `handshake_timeout_ms` closed).
+
+const protocol = capnpc.rpc.wire.protocol;
+const cap_table = capnpc.rpc.caps.table;
+
+const BootstrapServer = struct {
+    accepted: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    handler_ctx: u8 = 0,
+
+    fn onCall(_: *anyopaque, peer: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+        try peer.sendReturnEmptyStruct(call.question_id);
+    }
+
+    fn onAccept(ctx: *anyopaque, peer: *Peer, _: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
+        const self: *BootstrapServer = @ptrCast(@alignCast(ctx));
+        _ = try peer.setBootstrap(.{ .ctx = &self.handler_ctx, .on_call = onCall });
+        peer.start(null, onPeerError, onPeerClose);
+        _ = self.accepted.fetchAdd(1, .acq_rel);
+        return .accept;
+    }
+};
+
+/// A real client that bootstraps and records whether the server answered.
+/// The whole session lifecycle runs on its own thread (sessions are
+/// thread-affine). Its own call deadline bounds the wait, so an unserved
+/// bootstrap fails the test instead of hanging it.
+const BootstrapProbe = struct {
+    address: net.IpAddress,
+    bound_ms: u64,
+    session: *tcp.ClientSession = undefined,
+    served: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    elapsed_ns: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+    setup_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn onBootstrap(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *BootstrapProbe = @ptrCast(@alignCast(ctx));
+        if (ret.tag == .results) self.served.store(true, .release);
+        self.session.close();
+    }
+
+    fn main(self: *BootstrapProbe) void {
+        const io = std.testing.io;
+        const start = nowNs(io);
+        defer self.elapsed_ns.store(nowNs(io) - start, .release);
+        const session = tcp.connect(std.testing.allocator, io, self.address, .{
+            .default_call_timeout_ms = self.bound_ms,
+        }) catch {
+            self.setup_failed.store(true, .release);
+            return;
+        };
+        defer session.deinit();
+        self.session = session;
+        _ = session.peer.sendBootstrap(self, onBootstrap) catch {
+            self.setup_failed.store(true, .release);
+            return;
+        };
+        session.run();
+    }
+};
+
+const SilentPinResult = struct {
+    served: bool,
+    elapsed_ms: i64,
+};
+
+/// Pin every worker of a `concurrency = 2` pool with a silent client, then
+/// measure whether a third, real client's bootstrap is served within
+/// `bound_ms`.
+fn bootstrapPastTwoSilentClients(config: WorkerPool.Config, bound_ms: u64) !SilentPinResult {
+    const io = std.testing.io;
+    var server = BootstrapServer{};
+    var cfg = config;
+    cfg.concurrency = 2;
+    var pool = try WorkerPool.init(std.testing.allocator, io, .{ .ip4 = .loopback(0) }, &server, BootstrapServer.onAccept, cfg);
+    defer pool.deinit();
+    const address = pool.server.socket.address;
+
+    const pool_thread = try spawnPoolThread(&pool);
+    defer {
+        pool.shutdown();
+        pool_thread.join();
+    }
+
+    // Two clients that complete the TCP handshake and never send a byte.
+    var silent: [2]tcp.SocketFd = undefined;
+    var opened: usize = 0;
+    defer for (silent[0..opened]) |fd| tcp.closeFd(io, fd);
+    while (opened < silent.len) : (opened += 1) silent[opened] = try rawTcpConnect(io, address);
+
+    // Both workers must be pinned before the real client arrives, so it is
+    // queued behind them rather than racing them to an idle worker.
+    const pinned_deadline = nowNs(io) + 5 * std.time.ns_per_s;
+    while (server.accepted.load(.acquire) < 2 and nowNs(io) < pinned_deadline) sleepMs(io, 5);
+    try std.testing.expectEqual(@as(u32, 2), server.accepted.load(.acquire));
+
+    var probe = BootstrapProbe{ .address = address, .bound_ms = bound_ms };
+    const probe_thread = try std.Thread.spawn(.{}, BootstrapProbe.main, .{&probe});
+    probe_thread.join();
+    try std.testing.expect(!probe.setup_failed.load(.acquire));
+
+    return .{
+        .served = probe.served.load(.acquire),
+        .elapsed_ms = @divTrunc(probe.elapsed_ns.load(.acquire), std.time.ns_per_ms),
+    };
+}
+
+/// Generous for loaded CI and TSan; a reaped silent client frees its worker
+/// within one first-frame deadline plus a tick.
+const served_bound_ms: u64 = 5_000;
+
+test "WorkerPool: first-frame deadline stops silent clients pinning every worker" {
+    // The default idle bound stays armed; only the first-frame deadline is
+    // shortened, so the test does not wait out the 10s default.
+    const result = try bootstrapPastTwoSilentClients(.{ .first_frame_timeout_ms = 200 }, served_bound_ms);
+    try std.testing.expect(result.served);
+    try std.testing.expect(result.elapsed_ms < served_bound_ms);
+}
+
+test "WorkerPool: idle deadline alone also stops silent clients pinning every worker" {
+    const result = try bootstrapPastTwoSilentClients(.{
+        .first_frame_timeout_ms = null,
+        .idle_timeout_ms = 300,
+    }, served_bound_ms);
+    try std.testing.expect(result.served);
+    try std.testing.expect(result.elapsed_ms < served_bound_ms);
+}
+
+test "WorkerPool: opting out of both deadlines lets silent clients pin every worker" {
+    // The negative control: it keeps the two tests above honest. Without a
+    // deadline the pinned pool never serves the third client, whose own call
+    // deadline ends the wait.
+    const result = try bootstrapPastTwoSilentClients(.{
+        .first_frame_timeout_ms = null,
+        .idle_timeout_ms = null,
+    }, 750);
+    try std.testing.expect(!result.served);
+}
+
+test "WorkerPool: liveness deadlines default secure and explicit null opts out" {
+    const defaults = WorkerPool.Config{};
+    try std.testing.expectEqual(@as(?u64, 10_000), defaults.first_frame_timeout_ms);
+    try std.testing.expectEqual(@as(?u64, 300_000), defaults.idle_timeout_ms);
+    try std.testing.expectEqual(@as(?u64, null), defaults.connection_options.idle_timeout_ms);
+
+    var dummy_ctx: u8 = 0;
+    {
+        var pool = try WorkerPool.init(std.testing.allocator, std.testing.io, .{ .ip4 = .loopback(0) }, &dummy_ctx, onAcceptNoop, .{ .concurrency = 1 });
+        defer pool.deinit();
+        try std.testing.expectEqual(@as(?u64, 10_000), pool.first_frame_timeout_ms);
+        try std.testing.expectEqual(@as(?u64, 300_000), pool.conn_options.idle_timeout_ms);
+    }
+    {
+        var pool = try WorkerPool.init(std.testing.allocator, std.testing.io, .{ .ip4 = .loopback(0) }, &dummy_ctx, onAcceptNoop, .{
+            .concurrency = 1,
+            .first_frame_timeout_ms = null,
+            .idle_timeout_ms = null,
+        });
+        defer pool.deinit();
+        try std.testing.expectEqual(@as(?u64, null), pool.first_frame_timeout_ms);
+        try std.testing.expectEqual(@as(?u64, null), pool.conn_options.idle_timeout_ms);
+    }
+    {
+        // An explicit connection-level idle bound wins over the pool default.
+        var pool = try WorkerPool.init(std.testing.allocator, std.testing.io, .{ .ip4 = .loopback(0) }, &dummy_ctx, onAcceptNoop, .{
+            .concurrency = 1,
+            .connection_options = .{ .idle_timeout_ms = 1_234 },
+        });
+        defer pool.deinit();
+        try std.testing.expectEqual(@as(?u64, 1_234), pool.conn_options.idle_timeout_ms);
+    }
+}
+
+/// Reads the first-frame deadline the pool put on the accepted connection,
+/// as the accept callback sees it.
+const FirstFrameObserver = struct {
+    count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    seen: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+
+    fn onAccept(ctx: *anyopaque, peer: *Peer, conn: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
+        const self: *FirstFrameObserver = @ptrCast(@alignCast(ctx));
+        self.seen.store(conn.first_frame_timeout_ms orelse 0, .release);
+        _ = self.count.fetchAdd(1, .acq_rel);
+        peer.start(null, onPeerError, onPeerClose);
+        return .accept;
+    }
+};
+
+test "WorkerPool: the first-frame deadline is armed before on_accept runs" {
+    var observer = FirstFrameObserver{};
+    var pool = try WorkerPool.init(std.testing.allocator, std.testing.io, .{ .ip4 = .loopback(0) }, &observer, FirstFrameObserver.onAccept, .{ .concurrency = 1 });
+    defer pool.deinit();
+    const pool_thread = try spawnPoolThread(&pool);
+    defer {
+        pool.shutdown();
+        pool_thread.join();
+    }
+    _ = try connectUntilAccepted(std.testing.io, pool.server.socket.address, &observer.count, false);
+    try std.testing.expectEqual(@as(u64, WorkerPool.default_first_frame_timeout_ms), observer.seen.load(.acquire));
+}

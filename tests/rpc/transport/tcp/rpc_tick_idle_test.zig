@@ -217,6 +217,158 @@ test "traffic resets the idle clock" {
 }
 
 // ---------------------------------------------------------------------------
+// First-frame deadline (Connection.first_frame_timeout_ms)
+// ---------------------------------------------------------------------------
+
+const FrameCounter = struct {
+    frames: usize = 0,
+
+    fn onMessage(conn: *Connection, _: []const u8) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(conn.context().?));
+        self.frames += 1;
+    }
+    fn onError(_: *Connection, _: anyerror) void {}
+    fn onClose(_: *Connection) void {}
+};
+
+fn awakeNowNs(io: std.Io) i64 {
+    return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+}
+
+fn sleepAwakeMs(io: std.Io, ms: u64) void {
+    const duration: std.Io.Clock.Duration = .{
+        .raw = .{ .nanoseconds = @as(i96, @intCast(ms)) * std.time.ns_per_ms },
+        .clock = .awake,
+    };
+    duration.sleep(io) catch {};
+}
+
+test "first-frame deadline reaps a silent connection" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const fds = try createSocketPair(io);
+    defer closeFd(io, fds[1]);
+
+    var event_recorder = EventRecorder{};
+    var counter = FrameCounter{};
+    // No idle bound and no tick: the first-frame deadline alone must arm the
+    // default tick and reap.
+    var conn = try Connection.init(allocator, io, fds[0], .{ .observer = event_recorder.observer() });
+    defer conn.deinit();
+    conn.first_frame_timeout_ms = 150;
+    conn.start(&counter, FrameCounter.onMessage, FrameCounter.onError, FrameCounter.onClose);
+
+    // A regression must fail, not hang: past 3s the watchdog closes the
+    // connection itself, which emits no timeout event.
+    const Watchdog = struct {
+        done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+        fn run(self: *@This(), watched: *Connection, watch_io: std.Io) void {
+            var waited_ms: u64 = 0;
+            while (waited_ms < 3_000 and !self.done.load(.acquire)) : (waited_ms += 10) sleepAwakeMs(watch_io, 10);
+            if (!self.done.load(.acquire)) watched.requestClose();
+        }
+    };
+    var watchdog = Watchdog{};
+    const watchdog_thread = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, &conn, io });
+
+    conn.run();
+    // Measured from the connection's own deadline origin (same clock).
+    const elapsed_ns = awakeNowNs(io) - conn.init_ns;
+    watchdog.done.store(true, .release);
+    watchdog_thread.join();
+
+    try std.testing.expect(elapsed_ns >= 150 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.idle_timeouts);
+    try std.testing.expectEqual(@as(usize, 0), counter.frames);
+}
+
+test "first-frame deadline reaps a remote that trickles a frame it never completes" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const fds = try createSocketPair(io);
+    defer closeFd(io, fds[1]);
+
+    const Trickler = struct {
+        stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+        fn run(self: *@This(), fd: tcp.SocketFd, write_io: std.Io) void {
+            // A header promising one 255-word segment, then one body byte
+            // every 20ms: the frame never completes, and a byte always lands
+            // well inside the 100ms tick, so poll never times out and only
+            // the after-read check can see the deadline. Bounded at ~3s so a
+            // regression fails the elapsed assertion instead of hanging.
+            writeBytes(write_io, fd, &[_]u8{ 0, 0, 0, 0, 0xff, 0, 0, 0 });
+            var i: usize = 0;
+            while (i < 150 and !self.stop.load(.acquire)) : (i += 1) {
+                sleepAwakeMs(write_io, 20);
+                writeBytes(write_io, fd, &[_]u8{0});
+            }
+        }
+    };
+
+    var event_recorder = EventRecorder{};
+    var counter = FrameCounter{};
+    var conn = try Connection.init(allocator, io, fds[0], .{
+        .tick_interval_ms = 100,
+        .observer = event_recorder.observer(),
+    });
+    defer conn.deinit();
+    conn.first_frame_timeout_ms = 300;
+    conn.start(&counter, FrameCounter.onMessage, FrameCounter.onError, FrameCounter.onClose);
+
+    var trickler = Trickler{};
+    const feeder = try std.Thread.spawn(.{}, Trickler.run, .{ &trickler, fds[1], io });
+    conn.run();
+    // Measured from the connection's own deadline origin (same clock).
+    const elapsed_ns = awakeNowNs(io) - conn.init_ns;
+    trickler.stop.store(true, .release);
+    feeder.join();
+
+    try std.testing.expect(elapsed_ns >= 300 * std.time.ns_per_ms);
+    try std.testing.expect(elapsed_ns < 2_000 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.idle_timeouts);
+    try std.testing.expectEqual(@as(usize, 0), counter.frames);
+}
+
+test "the first complete frame disarms the first-frame deadline" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const fds = try createSocketPair(io);
+
+    const Speaker = struct {
+        fn run(fd: tcp.SocketFd, write_io: std.Io) void {
+            // One complete frame (one segment of zero words), then silence
+            // well past the deadline, then EOF.
+            writeBytes(write_io, fd, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 });
+            sleepAwakeMs(write_io, 400);
+            closeFd(write_io, fd);
+        }
+    };
+
+    var event_recorder = EventRecorder{};
+    var counter = FrameCounter{};
+    var conn = try Connection.init(allocator, io, fds[0], .{
+        .tick_interval_ms = 10,
+        .observer = event_recorder.observer(),
+    });
+    defer conn.deinit();
+    conn.first_frame_timeout_ms = 100;
+    conn.start(&counter, FrameCounter.onMessage, FrameCounter.onError, FrameCounter.onClose);
+
+    const speaker = try std.Thread.spawn(.{}, Speaker.run, .{ fds[1], io });
+    conn.run();
+    speaker.join();
+
+    // run() ended on the speaker's EOF, not on the first-frame deadline.
+    try std.testing.expectEqual(@as(usize, 1), counter.frames);
+    try std.testing.expectEqual(@as(usize, 0), event_recorder.idle_timeouts);
+}
+
+// ---------------------------------------------------------------------------
 // Deadline reads (Transport.readTimeout)
 // ---------------------------------------------------------------------------
 

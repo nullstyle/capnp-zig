@@ -130,6 +130,26 @@ pub const Connection = struct {
     /// check.
     idle_timeout_ms: ?u64 = null,
 
+    /// Reap the connection when no complete inbound frame has arrived
+    /// within this long of `init` (for an accepted socket, of the accept).
+    /// Unlike `idle_timeout_ms`, outbound traffic does not extend it, and a
+    /// remote that trickles the bytes of a frame it never completes is
+    /// still reaped: the deadline is checked on the tick cadence AND after
+    /// every read. It disarms for good once the first frame is dispatched.
+    /// Reaping emits the `.idle_connection` timeout event. Like
+    /// `idle_timeout_ms`, it gets a 500ms default tick when
+    /// `tick_interval_ms` is null. Default: none. `WorkerPool` arms it by
+    /// default (`WorkerPool.Config.first_frame_timeout_ms`).
+    first_frame_timeout_ms: ?u64 = null,
+
+    /// Monotonic timestamp taken by `init`; the first-frame deadline counts
+    /// from here.
+    init_ns: i64 = 0,
+
+    /// Set once the first complete inbound frame has been popped from the
+    /// framer, which disarms `first_frame_timeout_ms`.
+    first_frame_received: bool = false,
+
     /// Called on the run loop's thread each time the tick interval elapses.
     /// `Peer.attachConnection` wires this to the peer's deadline sweep.
     on_tick: ?*const fn (conn: *Connection) void = null,
@@ -231,6 +251,7 @@ pub const Connection = struct {
         socket: transport_mod.SocketFd,
         options: Options,
     ) InitError!Connection {
+        const now = nowNs(io);
         const conn = Connection{
             .allocator = allocator,
             .io = io,
@@ -247,7 +268,8 @@ pub const Connection = struct {
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
             .tick_interval_ms = options.tick_interval_ms,
             .idle_timeout_ms = options.idle_timeout_ms,
-            .last_activity_ns = nowNs(io),
+            .init_ns = now,
+            .last_activity_ns = now,
         };
         events.emitConnection(conn.observer, .tcp, .unknown, .initialized);
         return conn;
@@ -480,10 +502,7 @@ pub const Connection = struct {
             // readiness primitive: ticks/wake do not fire there). Windows
             // never enters this loop; see runLoopWindows.
             if (comptime builtin.target.os.tag != .freestanding and builtin.target.os.tag != .windows) {
-                // An idle bound without an explicit tick still needs the
-                // loop to wake periodically; default to 500ms checks.
-                const effective_tick_ms: ?u32 = self.tick_interval_ms orelse
-                    (if (self.idle_timeout_ms != null) @as(?u32, 500) else null);
+                const effective_tick_ms = self.effectiveTickMs();
                 if (self.wake_fds != null or effective_tick_ms != null) {
                     var fds_buf: [2]PollFd = undefined;
                     fds_buf[0] = makePollFd(self.transport.fd);
@@ -499,11 +518,7 @@ pub const Connection = struct {
                     const poll_result = pollRetryIntr(fds_buf[0..nfds], timeout_ms);
                     if (poll_result == .timeout) {
                         // Tick: the interval elapsed with no inbound I/O.
-                        if (self.idleDeadlineExceeded()) {
-                            log.debug("idle timeout exceeded, reaping connection", .{});
-                            events.emitTimeout(self.observer, .tcp, .unknown, .idle_connection, null);
-                            break;
-                        }
+                        if (self.reapIfLivenessDeadlineExceeded()) break;
                         if (self.on_tick) |cb| self.invokeTickWakeCallback(cb);
                         if (self.deinit_requested) break;
                         continue;
@@ -560,6 +575,9 @@ pub const Connection = struct {
                 self.transport.shutdown();
                 break;
             }
+            // A trickling remote keeps poll from ever timing out, so the
+            // first-frame deadline is also checked after each read.
+            if (self.reapIfFirstFrameDeadlineExceeded()) break;
         }
     }
 
@@ -590,8 +608,7 @@ pub const Connection = struct {
         };
 
         while (!self.transport.isClosing()) {
-            const effective_tick_ms: ?u32 = self.tick_interval_ms orelse
-                (if (self.idle_timeout_ms != null) @as(?u32, 500) else null);
+            const effective_tick_ms = self.effectiveTickMs();
 
             // Launch a read if none is in flight and no result is pending.
             if (read_future == null) {
@@ -651,11 +668,7 @@ pub const Connection = struct {
             const r = outcome orelse {
                 if (woke) continue;
                 // Tick: the interval elapsed with no read completion.
-                if (self.idleDeadlineExceeded()) {
-                    log.debug("idle timeout exceeded, reaping connection", .{});
-                    events.emitTimeout(self.observer, .tcp, .unknown, .idle_connection, null);
-                    break;
-                }
+                if (self.reapIfLivenessDeadlineExceeded()) break;
                 if (self.on_tick) |cb| self.invokeTickWakeCallback(cb);
                 if (self.deinit_requested) break;
                 continue;
@@ -687,6 +700,7 @@ pub const Connection = struct {
                         self.transport.shutdown();
                         break;
                     }
+                    if (self.reapIfFirstFrameDeadlineExceeded()) break;
                 },
             }
         }
@@ -807,6 +821,7 @@ pub const Connection = struct {
             if (frame == null) break;
             const bytes = frame.?;
             defer self.allocator.free(bytes);
+            self.first_frame_received = true;
             events.emitFrame(self.observer, .tcp, .unknown, .received, bytes.len);
 
             // Design note: message handler errors are treated as non-fatal.
@@ -909,12 +924,50 @@ pub const Connection = struct {
         events.emitConnection(self.observer, .tcp, .unknown, .closing);
     }
 
+    /// The run loop's wait bound. A liveness deadline without an explicit
+    /// tick still needs the loop to wake periodically; default to 500ms.
+    fn effectiveTickMs(self: *const Connection) ?u32 {
+        if (self.tick_interval_ms) |tick_ms| return tick_ms;
+        const first_frame_armed = self.first_frame_timeout_ms != null and !self.first_frame_received;
+        return if (self.idle_timeout_ms != null or first_frame_armed) 500 else null;
+    }
+
+    /// Tick-path check: reap on an expired first-frame or idle deadline.
+    /// Returns true when the run loop must exit.
+    fn reapIfLivenessDeadlineExceeded(self: *Connection) bool {
+        if (self.reapIfFirstFrameDeadlineExceeded()) return true;
+        if (self.idleDeadlineExceeded()) {
+            log.debug("idle timeout exceeded, reaping connection", .{});
+            events.emitTimeout(self.observer, .tcp, .unknown, .idle_connection, null);
+            return true;
+        }
+        return false;
+    }
+
+    /// Returns true (after logging and emitting the timeout event) when the
+    /// run loop must exit because no frame arrived in time.
+    fn reapIfFirstFrameDeadlineExceeded(self: *Connection) bool {
+        if (self.first_frame_received) return false;
+        const timeout_ms = self.first_frame_timeout_ms orelse return false;
+        if (nowNs(self.io) -| self.init_ns < msToNs(timeout_ms)) return false;
+        log.debug("no inbound frame within the first-frame deadline, reaping connection", .{});
+        events.emitTimeout(self.observer, .tcp, .unknown, .idle_connection, null);
+        return true;
+    }
+
     fn idleDeadlineExceeded(self: *const Connection) bool {
         const timeout_ms = self.idle_timeout_ms orelse return false;
         const now = nowNs(self.io);
         return now - self.last_activity_ns >= @as(i64, @intCast(timeout_ms)) * std.time.ns_per_ms;
     }
 };
+
+/// Milliseconds to nanoseconds, saturating at `maxInt(i64)` so a huge
+/// deadline means "never" rather than an overflow.
+fn msToNs(ms: u64) i64 {
+    const ms_i64 = std.math.cast(i64, ms) orelse return std.math.maxInt(i64);
+    return ms_i64 *| std.time.ns_per_ms;
+}
 
 /// Monotonic now in nanoseconds via the connection's `std.Io`.
 fn nowNs(io: std.Io) i64 {
