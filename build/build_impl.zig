@@ -35,6 +35,9 @@ pub fn buildImpl(b: *std.Build) !void {
     const quic_zig_module = graph.quic_zig_module;
     const wasm_host_module = graph.wasm_host_module;
 
+    // Expected-fail canary for std.Io.Evented; self-contained in its own file.
+    @import("./evented_canary.zig").register(b, target, optimize);
+
     // Main executable
     const exe = b.addExecutable(.{
         .name = "capnpc-zig",

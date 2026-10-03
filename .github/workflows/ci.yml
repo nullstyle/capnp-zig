@@ -240,11 +240,20 @@ jobs:
       - name: Execute the RPC e2e over the threaded Io selector
         run: zig build -Dio-backend=threaded e2e-self --summary all
 
-      # Kept as a cross-check that the evented selector still *builds* where Zig
-      # exposes it. Cheap, and it documents the intent of the -Dio-backend
-      # surface even though `check` subsumes it.
-      - name: Check evented backend compilation
-        run: zig build -Dio-backend=evented check --summary all
+      # Expected-fail canary. This step used to run
+      # `zig build -Dio-backend=evented check`, which compiled nothing evented:
+      # src/io_backend.zig has `evented_available = false` because no
+      # std.Io.Evented compiles at Zig 0.17.0 (Uring and Dispatch set the
+      # dropped `Io.VTable.processReplacePath`). The canary compiles a file that
+      # references std.Io.Evented and is green ONLY while that compile fails
+      # with the known error. Red means std changed: if Evented now compiles,
+      # flip `evented_available` and retarget the canary (build/evented_canary.zig);
+      # if it fails differently, update the expected error and the fork handoff
+      # (docs/upstream/handoff-zig-fork-evented-processreplacepath.md).
+      # Ablation: setting `expect_errors = null` in build/evented_canary.zig, or
+      # building against a std patched per that handoff, turns it red.
+      - name: Evented canary (expected compile failure)
+        run: zig build check-evented-canary --summary all
 
   quic-transport:
     name: QUIC targeted transport (${{ matrix.os }})

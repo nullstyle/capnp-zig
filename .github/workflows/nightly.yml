@@ -182,3 +182,16 @@ jobs:
 
       - name: QUIC transport tests
         run: zig build -Dquic=true test-rpc-quic --summary all
+
+      # Heads-up for the owner, never a failure: ci.yml's evented canary is
+      # green only while std.Io.Evented fails to compile with the known std
+      # defect. When it stops failing that way, say so on the run summary so
+      # `evented_available` in src/io_backend.zig gets re-checked.
+      - name: Evented canary notice
+        if: ${{ !cancelled() }}
+        run: |
+          if zig build check-evented-canary --summary none; then
+            echo "std.Io.Evented still fails to compile with the known defect; evented_available stays false."
+          else
+            echo "::notice title=std.Io.Evented canary changed::check-evented-canary no longer sees the expected processReplacePath error. If std.Io.Evented now compiles, flip evented_available in src/io_backend.zig and retarget build/evented_canary.zig; otherwise update its expected error and the fork handoff."
+          fi

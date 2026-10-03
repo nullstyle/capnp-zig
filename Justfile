@@ -418,9 +418,12 @@ fmt-check:
 check:
     zig build check
 
-# Check RPC entry points against the explicit Evented Io backend where supported
+# Expected-fail canary: green only while std.Io.Evented fails to compile at the
+# pinned Zig with the known std defect (src/io_backend.zig keeps
+# evented_available = false). Red means re-check that flag. Linux/Darwin only.
+# `-Dio-backend=evented check` compiles nothing evented, so it is not a gate.
 check-evented:
-    zig build -Dio-backend=evented check --summary all
+    zig build check-evented-canary --summary all
 
 # Execute the RPC e2e over an explicitly selected Io backend. This is the lane
 # with teeth: `-Dio-backend` is a []const u8 compared at RUNTIME by
