@@ -120,8 +120,17 @@ Locally synthesized reasons map to `error.Disconnected` / `error.CallTimedOut`.
 // Before
 switch (response) { .results => |r| ..., .exception => |ex| ..., else => ... }
 // After
-const results = try response.unwrap(); // CallError: RemoteException, Disconnected, CallTimedOut, Canceled, UnexpectedReturn
+const results = response.unwrap() catch |err| { // CallError: RemoteException, Disconnected, CallTimedOut, Canceled, UnexpectedReturn
+    state.err = err;
+    return;
+};
 ```
+
+Catch the `CallError` in the callback rather than returning it with `try`. An
+error the callback returns goes to the peer's `on_error`, and `ClientSession`
+and `ServerSession` close the connection on `on_error`. With `try`, one
+timed-out call (`error.CallTimedOut`) or one remote exception ends the whole
+session.
 
 ### `Client.release()`
 

@@ -288,6 +288,8 @@ fn connectWithTimeouts(
 
 A timed-out question is cancelled with `rpc.peer.deadline_reason`, so its callback fires with an exception `Return` and `unwrap()` yields `error.CallTimedOut`.
 
+Catch that error in the callback, as the examples above do. An error the callback returns (for example from `try response.unwrap()`) goes to the session's `on_error`, the same as for a remote exception, and the session then closes its connection. One timed-out call would end the whole session.
+
 ### Per-call override
 
 `callX` returns the question id; override (or set) the deadline for that one call with `Peer.setQuestionDeadline`:
