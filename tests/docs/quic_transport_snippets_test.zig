@@ -162,18 +162,21 @@ fn loadOrCreateResetKey(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !quic
         else => |e| return e,
     };
     // `sync` above made the bytes durable, not the new name. Sync the
-    // directory that holds it (`file.dir`), or a power loss right after the
-    // first start can drop the file, and the next start mints a new key.
-    try syncDir(io, file.dir);
+    // directory that holds the name, or a power loss right after the first
+    // start can drop the file, and the next start mints a new key. Name it
+    // from `sub_path`: on Linux, `file.dir` can be `dir` itself even when
+    // `sub_path` has directories.
+    try syncDir(io, dir, std.fs.path.dirname(sub_path) orelse ".");
     return key;
 }
 
-/// Flush a directory's entries to disk. Opened as a file because a `Dir`
-/// handle may be path-only (O_PATH on Linux), which cannot be synced.
-/// Windows has no directory sync; NTFS journals the entry itself.
-fn syncDir(io: std.Io, dir: std.Io.Dir) !void {
+/// Flush the entries of the directory at `dir_path` to disk. Opened as a
+/// file because a `Dir` handle may be path-only (O_PATH on Linux), which
+/// cannot be synced. Windows has no directory sync; NTFS journals the
+/// entry itself.
+fn syncDir(io: std.Io, dir: std.Io.Dir, dir_path: []const u8) !void {
     if (@import("builtin").os.tag == .windows) return;
-    const handle = try dir.openFile(io, ".", .{});
+    const handle = try dir.openFile(io, dir_path, .{});
     defer handle.close(io);
     try handle.sync(io);
 }
@@ -208,12 +211,6 @@ test "quic transport guide stateless-reset key recipe returns one key across res
     const other = try loadOrCreateResetKey(io, tmp.dir, "other-server.key");
     try std.testing.expect(!std.mem.eql(u8, &first, &other));
 
-    // A key under a subdirectory: the directory synced is the one holding
-    // the new entry (`file.dir`), not `dir`.
-    try tmp.dir.createDir(io, "keys", .default_dir);
-    const nested = try loadOrCreateResetKey(io, tmp.dir, "keys/stateless-reset.key");
-    try std.testing.expectEqualSlices(u8, &nested, &(try loadOrCreateResetKey(io, tmp.dir, "keys/stateless-reset.key")));
-
     // A damaged file is an error, never a silently regenerated key.
     try tmp.dir.writeFile(io, .{ .sub_path = "short.key", .data = first[0..16] });
     try std.testing.expectError(error.InvalidStatelessResetKeyFile, loadOrCreateResetKey(io, tmp.dir, "short.key"));
@@ -227,6 +224,52 @@ test "quic transport guide stateless-reset key recipe returns one key across res
         .stateless_reset_key = restarted,
     });
     try std.testing.expectEqualSlices(u8, &first, &options.stateless_reset_key.?);
+}
+
+/// `std.testing.io` with `fileSync` wrapped to record the inode of the last
+/// file or directory it synced. Nothing on disk shows which directory a
+/// sync flushed, so a test reads it here.
+const SyncRecorder = struct {
+    var vtable: std.Io.VTable = undefined;
+    var last_synced: ?std.Io.File.INode = null;
+
+    fn io() std.Io {
+        vtable = std.testing.io.vtable.*;
+        vtable.fileSync = fileSync;
+        last_synced = null;
+        return .{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    }
+
+    fn fileSync(userdata: ?*anyopaque, file: std.Io.File) std.Io.File.SyncError!void {
+        try std.testing.io.vtable.fileSync(userdata, file);
+        last_synced = (file.stat(std.testing.io) catch return error.Unexpected).inode;
+    }
+};
+
+test "quic transport guide stateless-reset key recipe syncs the directory that holds the key" {
+    // Windows has no directory sync; the recipe skips it there.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // The recipe's last sync is the directory, after the key file's own.
+    const root_inode = (try tmp.dir.stat(io)).inode;
+    _ = try loadOrCreateResetKey(SyncRecorder.io(), tmp.dir, "stateless-reset.key");
+    try std.testing.expectEqual(root_inode, SyncRecorder.last_synced.?);
+
+    // Under a subdirectory the name lives in `keys/`, so `keys/` is the
+    // directory to sync. On Linux, `createFileAtomic` links through
+    // O_TMPFILE and returns `file.dir == tmp.dir`, so a recipe that synced
+    // `file.dir` fails here. On macOS `file.dir` is `keys/`, so only a Linux
+    // run (CI's test-docs-snippets-quic) catches that regression.
+    try tmp.dir.createDir(io, "keys", .default_dir);
+    var keys_dir = try tmp.dir.openDir(io, "keys", .{});
+    defer keys_dir.close(io);
+    const keys_inode = (try keys_dir.stat(io)).inode;
+    const nested = try loadOrCreateResetKey(SyncRecorder.io(), tmp.dir, "keys/stateless-reset.key");
+    try std.testing.expectEqual(keys_inode, SyncRecorder.last_synced.?);
+    try std.testing.expectEqualSlices(u8, &nested, &(try loadOrCreateResetKey(io, tmp.dir, "keys/stateless-reset.key")));
 }
 
 test "quic transport guide one-call session snippets use the public session surface" {

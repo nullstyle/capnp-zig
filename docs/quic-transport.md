@@ -623,18 +623,21 @@ fn loadOrCreateResetKey(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !quic
         else => |e| return e,
     };
     // `sync` above made the bytes durable, not the new name. Sync the
-    // directory that holds it (`file.dir`), or a power loss right after the
-    // first start can drop the file, and the next start mints a new key.
-    try syncDir(io, file.dir);
+    // directory that holds the name, or a power loss right after the first
+    // start can drop the file, and the next start mints a new key. Name it
+    // from `sub_path`: on Linux, `file.dir` can be `dir` itself even when
+    // `sub_path` has directories.
+    try syncDir(io, dir, std.fs.path.dirname(sub_path) orelse ".");
     return key;
 }
 
-/// Flush a directory's entries to disk. Opened as a file because a `Dir`
-/// handle may be path-only (O_PATH on Linux), which cannot be synced.
-/// Windows has no directory sync; NTFS journals the entry itself.
-fn syncDir(io: std.Io, dir: std.Io.Dir) !void {
+/// Flush the entries of the directory at `dir_path` to disk. Opened as a
+/// file because a `Dir` handle may be path-only (O_PATH on Linux), which
+/// cannot be synced. Windows has no directory sync; NTFS journals the
+/// entry itself.
+fn syncDir(io: std.Io, dir: std.Io.Dir, dir_path: []const u8) !void {
     if (@import("builtin").os.tag == .windows) return;
-    const handle = try dir.openFile(io, ".", .{});
+    const handle = try dir.openFile(io, dir_path, .{});
     defer handle.close(io);
     try handle.sync(io);
 }
@@ -654,10 +657,11 @@ fn readResetKey(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !?quic.Statel
 
 A damaged key file is an error, never a silently regenerated key. The same
 recipe works for `retry_token_key` and `new_token_key`, which are also 32
-bytes. `tests/docs/quic_transport_snippets_test.zig` runs this recipe
-(`zig build docs-smoke` fails if the block above stops matching it), and
-`tests/rpc/transport/quic/rpc_quic_peer_test.zig` crash-restarts a server built
-with the preset and checks that its client certifies `.stateless_reset`.
+bytes. `tests/docs/quic_transport_snippets_test.zig` runs this recipe and
+checks which directory it syncs (`zig build docs-smoke` fails if the block
+above stops matching it), and `tests/rpc/transport/quic/rpc_quic_peer_test.zig`
+crash-restarts a server built with the preset and checks that its client
+certifies `.stateless_reset`.
 
 ### 0-RTT and warm restore
 
