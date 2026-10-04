@@ -559,8 +559,10 @@ when packets of a live connection can reach no other instance that holds the
 key; see "Sharing the key" below. Without the key the server drops those
 packets silently. The client can prove nothing, waits for its idle timeout
 (30 s by default), and closes with `DisconnectCause.idle_timeout`.
-`WarmRedialClient` redials on `.stateless_reset` only, so without the key it
-never heals.
+By default `WarmRedialClient` redials on `.stateless_reset` only, so without
+the key it never heals. `Policy.redial_on_idle_timeout` makes it redial on
+`.idle_timeout` too, but that heals only after the full idle timeout, on a
+close that does not prove the server lost its state.
 
 The key works only if a restarted server holds the **same** 32 bytes as the
 process that crashed. A new key invalidates every token the old process issued.
@@ -594,6 +596,7 @@ layouts:
   loads its own key again. A sibling's reset then carries the wrong token, and
   the client ignores it.
 
+<!-- verbatim: tests/docs/quic_transport_snippets_test.zig -->
 ```zig
 /// Owner read/write only, where the platform has POSIX modes.
 const key_file_permissions: std.Io.File.Permissions =
@@ -619,7 +622,21 @@ fn loadOrCreateResetKey(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !quic
             error.InvalidStatelessResetKeyFile,
         else => |e| return e,
     };
+    // `sync` above made the bytes durable, not the new name. Sync the
+    // directory that holds it (`file.dir`), or a power loss right after the
+    // first start can drop the file, and the next start mints a new key.
+    try syncDir(io, file.dir);
     return key;
+}
+
+/// Flush a directory's entries to disk. Opened as a file because a `Dir`
+/// handle may be path-only (O_PATH on Linux), which cannot be synced.
+/// Windows has no directory sync; NTFS journals the entry itself.
+fn syncDir(io: std.Io, dir: std.Io.Dir) !void {
+    if (@import("builtin").os.tag == .windows) return;
+    const handle = try dir.openFile(io, ".", .{});
+    defer handle.close(io);
+    try handle.sync(io);
 }
 
 fn readResetKey(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !?quic.StatelessResetKey {
@@ -637,7 +654,8 @@ fn readResetKey(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !?quic.Statel
 
 A damaged key file is an error, never a silently regenerated key. The same
 recipe works for `retry_token_key` and `new_token_key`, which are also 32
-bytes. `tests/docs/quic_transport_snippets_test.zig` runs this recipe, and
+bytes. `tests/docs/quic_transport_snippets_test.zig` runs this recipe
+(`zig build docs-smoke` fails if the block above stops matching it), and
 `tests/rpc/transport/quic/rpc_quic_peer_test.zig` crash-restarts a server built
 with the preset and checks that its client certifies `.stateless_reset`.
 
@@ -672,12 +690,25 @@ holds every early frame until the handshake. Also set `new_token_key`: a
 returning client that presents a NEW_TOKEN skips Retry, and a Retry would
 discard its first flight's 0-RTT.
 
+**The opt-in does not make a heal after a crash-restart ride 0-RTT.**
+BoringSSL encrypts session tickets with a key that belongs to the server's
+TLS context (one `SSL_CTX`), and each process makes a new context with a new
+random key when it starts. capnp-zig does not persist or share that key. So a
+restarted server cannot decrypt the tickets that the crashed process issued.
+The first redial after a crash-restart, which is the redial
+`WarmRedialClient` makes on `.stateless_reset`, always takes a full
+handshake: no resumption and no 0-RTT. That handshake issues a new ticket, so
+later redials to the same process can resume and send 0-RTT. The opt-in pays
+off on redials to a server process that is still running, for example after
+an idle timeout or a client network change.
+
 ### Self-healing clients
 
 `rpc.transport.quic.WarmRedialClient` keeps a restored capability alive across
 server crash-restarts. When a connection ends with `.stateless_reset`, it dials
-a new connection (resumed with the latest session ticket), restores the saved
-sturdy ref again, and hands the new capability to `on_rebind`. It redials on
+a new connection (offering the latest session ticket, which a restarted server
+cannot accept; see the 0-RTT caveat above), restores the saved sturdy ref
+again, and hands the new capability to `on_rebind`. It redials on
 `.idle_timeout` only when `Policy.redial_on_idle_timeout` is set.
 
 `Policy.max_redials` (default 3) counts **consecutive** failures, not a

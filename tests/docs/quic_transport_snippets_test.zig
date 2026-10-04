@@ -161,7 +161,21 @@ fn loadOrCreateResetKey(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !quic
             error.InvalidStatelessResetKeyFile,
         else => |e| return e,
     };
+    // `sync` above made the bytes durable, not the new name. Sync the
+    // directory that holds it (`file.dir`), or a power loss right after the
+    // first start can drop the file, and the next start mints a new key.
+    try syncDir(io, file.dir);
     return key;
+}
+
+/// Flush a directory's entries to disk. Opened as a file because a `Dir`
+/// handle may be path-only (O_PATH on Linux), which cannot be synced.
+/// Windows has no directory sync; NTFS journals the entry itself.
+fn syncDir(io: std.Io, dir: std.Io.Dir) !void {
+    if (@import("builtin").os.tag == .windows) return;
+    const handle = try dir.openFile(io, ".", .{});
+    defer handle.close(io);
+    try handle.sync(io);
 }
 
 fn readResetKey(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !?quic.StatelessResetKey {
@@ -193,6 +207,12 @@ test "quic transport guide stateless-reset key recipe returns one key across res
     // A fresh deployment mints a different key.
     const other = try loadOrCreateResetKey(io, tmp.dir, "other-server.key");
     try std.testing.expect(!std.mem.eql(u8, &first, &other));
+
+    // A key under a subdirectory: the directory synced is the one holding
+    // the new entry (`file.dir`), not `dir`.
+    try tmp.dir.createDir(io, "keys", .default_dir);
+    const nested = try loadOrCreateResetKey(io, tmp.dir, "keys/stateless-reset.key");
+    try std.testing.expectEqualSlices(u8, &nested, &(try loadOrCreateResetKey(io, tmp.dir, "keys/stateless-reset.key")));
 
     // A damaged file is an error, never a silently regenerated key.
     try tmp.dir.writeFile(io, .{ .sub_path = "short.key", .data = first[0..16] });
