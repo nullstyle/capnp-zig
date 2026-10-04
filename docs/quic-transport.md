@@ -360,8 +360,10 @@ only in controlled debugging environments.
 
 For internet-facing QUIC servers, start from
 `rpc.transport.quic.withProductionServerHardening()` and then opt into native mode if the
-peer also supports it. The hardening preset enables Retry/NEW_TOKEN and listener
-rate gates while keeping 0-RTT and detailed wire close reasons disabled.
+peer also supports it. The hardening preset enables Retry/NEW_TOKEN, listener
+rate gates and stateless resets, and keeps 0-RTT and detailed wire close
+reasons disabled. Its three keys are `retry_token_key`, `stateless_reset_key`
+(both required) and `new_token_key` (optional).
 
 ```zig
 const options = quic.withProductionServerHardening(.{
@@ -372,6 +374,7 @@ const options = quic.withProductionServerHardening(.{
     .native = .{},
 }, .{
     .retry_token_key = retry_key,
+    .stateless_reset_key = try loadOrCreateResetKey(io, state_dir, "stateless-reset.key"),
     .new_token_key = new_token_key,
 });
 ```
@@ -380,6 +383,8 @@ Recommended hardening posture:
 
 - Provide stable, secret `retry_token_key` material and rotate it with your
   deployment's normal key-rotation process.
+- Provide a persisted `stateless_reset_key` (see below). The preset requires
+  it.
 - Provide `new_token_key` when you want returning clients to avoid Retry after
   address validation has already succeeded.
 - Leave the preset's listener gates enabled, then tune
@@ -399,6 +404,119 @@ Recommended hardening posture:
 - For native mode, keep the default `NativeOptions` first. If large application
   frames are common, prefer raising `max_pending_data_bytes` within your message
   budget over making every frame inline.
+
+### Stateless-reset key
+
+When a server crashes and restarts, its clients still hold connections that the
+new process knows nothing about. With a `stateless_reset_key`, the restarted
+server answers their next packet with a stateless reset (RFC 9000 §10.3). The
+client then closes with `DisconnectCause.stateless_reset`: proof that the
+server lost its state while its host is still reachable. Without the key the
+server drops those packets silently. The client can prove nothing, waits for
+its idle timeout (30 s by default), and closes with
+`DisconnectCause.idle_timeout`. `WarmRedialClient` redials on
+`.stateless_reset` only, so without the key it never heals.
+
+The key works only if a restarted server holds the **same** 32 bytes as the
+process that crashed. A new key invalidates every token the old process issued.
+So generate the key once from a CSPRNG and persist it next to the server's
+other state. Keep it secret: anyone who has it can reset this server's
+connections. Every server behind one address (a load-balanced fleet) needs the
+same key.
+
+```zig
+/// Owner read/write only, where the platform has POSIX modes.
+const key_file_permissions: std.Io.File.Permissions =
+    if (@hasDecl(std.Io.File.Permissions, "fromMode")) .fromMode(0o600) else .default_file;
+
+/// Load this server's stateless-reset key, creating it on the first start.
+/// Every later start, including a restart after a crash, reads back the
+/// same 32 bytes.
+fn loadOrCreateResetKey(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !quic.StatelessResetKey {
+    if (try readResetKey(io, dir, sub_path)) |key| return key;
+
+    var key: quic.StatelessResetKey = undefined;
+    try io.randomSecure(&key);
+    // Write a temporary file, then link it into place: a crash cannot leave
+    // a short key file, and when two first starts race, the loser reads
+    // the winner's key.
+    var file = try dir.createFileAtomic(io, sub_path, .{ .permissions = key_file_permissions });
+    defer file.deinit(io);
+    try file.file.writeStreamingAll(io, &key);
+    try file.file.sync(io);
+    file.link(io) catch |err| switch (err) {
+        error.PathAlreadyExists => return (try readResetKey(io, dir, sub_path)) orelse
+            error.InvalidStatelessResetKeyFile,
+        else => |e| return e,
+    };
+    return key;
+}
+
+fn readResetKey(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !?quic.StatelessResetKey {
+    var key: quic.StatelessResetKey = undefined;
+    var buf: [key.len + 1]u8 = undefined;
+    const bytes = dir.readFile(io, sub_path, &buf) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => |e| return e,
+    };
+    if (bytes.len != key.len) return error.InvalidStatelessResetKeyFile;
+    @memcpy(&key, bytes);
+    return key;
+}
+```
+
+A damaged key file is an error, never a silently regenerated key. The same
+recipe works for `retry_token_key` and `new_token_key`, which are also 32
+bytes. `tests/docs/quic_transport_snippets_test.zig` runs this recipe, and
+`tests/rpc/transport/quic/rpc_quic_peer_test.zig` crash-restarts a server built
+with the preset and checks that its client certifies `.stateless_reset`.
+
+### 0-RTT and warm restore
+
+The preset refuses 0-RTT by default (`ServerProductionHardening.early_data =
+.disabled`). A client that resumes with a session ticket still connects: its
+early frames are sent again at 1-RTT, which costs one round trip and loses no
+data.
+
+To let a warm restore answer without that round trip, opt in with
+`.early_data = .restore_only`:
+
+```zig
+const options = quic.withProductionServerHardening(base_options, .{
+    .retry_token_key = retry_key,
+    .stateless_reset_key = reset_key,
+    .new_token_key = new_token_key,
+    .early_data = .restore_only,
+});
+```
+
+This sets `ServerOptions.early_data = .without_replay_protection` and
+`ServerOptions.early_dispatch = .restore_only` together; the preset never sets
+one without the other. 0-RTT data can be replayed by an attacker, and there is
+no replay tracker here. So the server executes only the idempotent restore
+prefix (Bootstrap frames and calls on the Restorer interface) before the
+handshake completes. Every other frame, and everything behind it, waits for
+the handshake, which a replay can never complete. Your Restorer must therefore
+be idempotent, as the vat restore convention already requires. Native mode
+holds every early frame until the handshake. Also set `new_token_key`: a
+returning client that presents a NEW_TOKEN skips Retry, and a Retry would
+discard its first flight's 0-RTT.
+
+### Self-healing clients
+
+`rpc.transport.quic.WarmRedialClient` keeps a restored capability alive across
+server crash-restarts. When a connection ends with `.stateless_reset`, it dials
+a new connection (resumed with the latest session ticket), restores the saved
+sturdy ref again, and hands the new capability to `on_rebind`. It redials on
+`.idle_timeout` only when `Policy.redial_on_idle_timeout` is set.
+
+`Policy.max_redials` (default 3) counts **consecutive** failures, not a
+lifetime total. Each redial spends one. A generation that rebinds and then
+stays up for `Policy.min_healthy_ms` (default 10 s) resets the count to zero.
+So a long-lived client heals every crash that a healthy period separates from
+the last one, and a server that dies in every generation (a crash loop) still
+makes the client give up after `max_redials` redials. `Outcome.redials` is the
+streak at exit; `Outcome.total_redials` counts every redial.
 
 ## Current Limits
 

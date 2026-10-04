@@ -94,6 +94,7 @@ test "quic transport guide native mode snippets use the public options surface" 
 test "quic transport guide server fanout and hardening snippets avoid network setup" {
     const retry_key: quic.ServerRetryTokenKey = @splat(0x33);
     const new_token_key: quic.ServerNewTokenKey = @splat(0x44);
+    const reset_key: quic.StatelessResetKey = @splat(0x55);
 
     const fanout_options = quic.ServerOptions{
         .listen_addr = loopbackAddr(7001),
@@ -109,10 +110,12 @@ test "quic transport guide server fanout and hardening snippets avoid network se
 
     const hardened_options = quic.withProductionServerHardening(fanout_options, .{
         .retry_token_key = retry_key,
+        .stateless_reset_key = reset_key,
         .new_token_key = new_token_key,
     });
 
     try std.testing.expectEqual(retry_key, hardened_options.retry_token_key.?);
+    try std.testing.expectEqual(reset_key, hardened_options.stateless_reset_key.?);
     try std.testing.expectEqual(new_token_key, hardened_options.new_token_key.?);
     // Production hardening pins every bandwidth/flood ceiling to an EXPLICIT
     // cap rather than `.default`, because `.default` for the listener and
@@ -129,4 +132,79 @@ test "quic transport guide server fanout and hardening snippets avoid network se
     try std.testing.expectEqual(@as(u32, 4), server_config.max_concurrent_connections);
     try std.testing.expectEqual(retry_key, server_config.retry_token_key.?);
     try std.testing.expectEqual(new_token_key, server_config.new_token_key.?);
+}
+
+// docs/quic-transport.md, "Production Defaults": the stateless-reset key
+// recipe, verbatim.
+
+/// Owner read/write only, where the platform has POSIX modes.
+const key_file_permissions: std.Io.File.Permissions =
+    if (@hasDecl(std.Io.File.Permissions, "fromMode")) .fromMode(0o600) else .default_file;
+
+/// Load this server's stateless-reset key, creating it on the first start.
+/// Every later start, including a restart after a crash, reads back the
+/// same 32 bytes.
+fn loadOrCreateResetKey(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !quic.StatelessResetKey {
+    if (try readResetKey(io, dir, sub_path)) |key| return key;
+
+    var key: quic.StatelessResetKey = undefined;
+    try io.randomSecure(&key);
+    // Write a temporary file, then link it into place: a crash cannot leave
+    // a short key file, and when two first starts race, the loser reads
+    // the winner's key.
+    var file = try dir.createFileAtomic(io, sub_path, .{ .permissions = key_file_permissions });
+    defer file.deinit(io);
+    try file.file.writeStreamingAll(io, &key);
+    try file.file.sync(io);
+    file.link(io) catch |err| switch (err) {
+        error.PathAlreadyExists => return (try readResetKey(io, dir, sub_path)) orelse
+            error.InvalidStatelessResetKeyFile,
+        else => |e| return e,
+    };
+    return key;
+}
+
+fn readResetKey(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !?quic.StatelessResetKey {
+    var key: quic.StatelessResetKey = undefined;
+    var buf: [key.len + 1]u8 = undefined;
+    const bytes = dir.readFile(io, sub_path, &buf) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => |e| return e,
+    };
+    if (bytes.len != key.len) return error.InvalidStatelessResetKeyFile;
+    @memcpy(&key, bytes);
+    return key;
+}
+
+test "quic transport guide stateless-reset key recipe returns one key across restarts" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // First start: no file yet, so the recipe mints and persists a key.
+    const first = try loadOrCreateResetKey(io, tmp.dir, "stateless-reset.key");
+    // A restart reads the SAME bytes back: that is what lets the restarted
+    // server answer the old process's connections with valid resets.
+    const restarted = try loadOrCreateResetKey(io, tmp.dir, "stateless-reset.key");
+    try std.testing.expectEqualSlices(u8, &first, &restarted);
+    var on_disk: [64]u8 = undefined;
+    try std.testing.expectEqualSlices(u8, &first, try tmp.dir.readFile(io, "stateless-reset.key", &on_disk));
+
+    // A fresh deployment mints a different key.
+    const other = try loadOrCreateResetKey(io, tmp.dir, "other-server.key");
+    try std.testing.expect(!std.mem.eql(u8, &first, &other));
+
+    // A damaged file is an error, never a silently regenerated key.
+    try tmp.dir.writeFile(io, .{ .sub_path = "short.key", .data = first[0..16] });
+    try std.testing.expectError(error.InvalidStatelessResetKeyFile, loadOrCreateResetKey(io, tmp.dir, "short.key"));
+
+    const options = quic.withProductionServerHardening(.{
+        .listen_addr = loopbackAddr(7002),
+        .tls_cert_pem = server_cert_pem,
+        .tls_key_pem = server_key_pem,
+    }, .{
+        .retry_token_key = @splat(0x33),
+        .stateless_reset_key = restarted,
+    });
+    try std.testing.expectEqualSlices(u8, &first, &options.stateless_reset_key.?);
 }

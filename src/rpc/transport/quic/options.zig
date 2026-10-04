@@ -359,7 +359,9 @@ pub const ServerOptions = struct {
     /// with resets (counted by `Server.statelessResetsSent`). PERSIST
     /// this key across restarts — a fresh key invalidates every
     /// previously issued token, and connections that survived the
-    /// restart lose their death certificate.
+    /// restart lose their death certificate. Null (no resets) is the
+    /// default only for raw options; `withProductionServerHardening`
+    /// requires a key.
     stateless_reset_key: ?quic_zig.conn.stateless_reset.Key = null,
     /// Per-source Initial-flood limiter. `.default` applies quic-zig's
     /// recommended cap (32/window) — note this is a BEHAVIOUR CHANGE from the
@@ -378,11 +380,12 @@ pub const ServerOptions = struct {
     /// the handshake completes (meaningful only with
     /// `early_data = .without_replay_protection`; `.with_anti_replay`
     /// dispatches immediately — the tracker guarantees single use).
-    /// `.hold_until_handshake` (default, and the hardened posture) buffers
-    /// everything; `.restore_only` executes the idempotent prefix
-    /// (Bootstrap + Restorer calls) early so a warm restore answers
-    /// without waiting for the handshake. Baseline mode only; native mode
-    /// always holds.
+    /// `.hold_until_handshake` (default) buffers everything;
+    /// `.restore_only` executes the idempotent prefix (Bootstrap +
+    /// Restorer calls) early so a warm restore answers without waiting for
+    /// the handshake. Baseline mode only; native mode always holds. The
+    /// hardened preset sets this together with `early_data` (see
+    /// `ProductionEarlyData`).
     early_dispatch: early_dispatch_mod.Mode = .hold_until_handshake,
     /// Sweep out sessions whose handshake has not completed within this
     /// window (certified cause `DisconnectCause.handshake_timeout`).
@@ -430,9 +433,46 @@ pub const ServerOptions = struct {
     observer: ?events.Observer = null,
 };
 
+/// 0-RTT posture of the hardened preset (`ServerProductionHardening
+/// .early_data`). Each value sets BOTH `ServerOptions.early_data` and
+/// `ServerOptions.early_dispatch`, so the preset can never pair replayable
+/// early data with immediate dispatch of arbitrary calls.
+pub const ProductionEarlyData = enum {
+    /// Refuse 0-RTT (the default). A resumed client's staged frames are
+    /// requeued at 1-RTT: a stale or refused ticket costs one round trip,
+    /// never data. Sets `early_data = .disabled` and `early_dispatch =
+    /// .hold_until_handshake`.
+    disabled,
+    /// Opt in to warm restore. Accept 0-RTT WITHOUT a replay tracker
+    /// (`EarlyData.without_replay_protection`), and execute only the
+    /// idempotent restore prefix (Bootstrap frames and Restorer calls)
+    /// before the handshake completes (`EarlyDispatchMode.restore_only`).
+    /// Every other early frame, and everything behind it, waits for the
+    /// handshake, which a replayed first flight can never complete. A replay
+    /// can therefore re-run only the restore itself, so the application's
+    /// Restorer MUST be idempotent (the vat restore convention already
+    /// requires this). Native mode holds every early frame until the
+    /// handshake.
+    restore_only,
+};
+
 pub const ServerProductionHardening = struct {
     retry_token_key: ServerRetryTokenKey,
+    /// Stateless-reset key (RFC 9000 §10.3). Required: without it the
+    /// server never sends a stateless reset, so after a crash-restart its
+    /// clients cannot prove the old connection is gone. They see
+    /// `DisconnectCause.idle_timeout` instead of `.stateless_reset`, and
+    /// `WarmRedialClient` (which redials on `.stateless_reset` by default)
+    /// never heals them. Generate it once from a CSPRNG and PERSIST it: a
+    /// restarted server must hold the same bytes, because a new key
+    /// invalidates every token the old process issued. Keep it secret: anyone
+    /// who has it can reset this server's connections. See "Production
+    /// Defaults" in docs/quic-transport.md for a recipe.
+    stateless_reset_key: StatelessResetKey,
     new_token_key: ?ServerNewTokenKey = null,
+    /// 0-RTT posture. `.disabled` by default; `.restore_only` is the
+    /// explicit warm-restore opt-in. See `ProductionEarlyData`.
+    early_data: ProductionEarlyData = .disabled,
     initial_source_rate_limit: RateLimit = .{ .limit = default_quic_initial_source_rate_cap },
     vn_source_rate_limit: RateLimit = .default,
     listener_datagram_rate_limit: RateLimit = .{ .limit = 100_000 },
@@ -442,12 +482,18 @@ pub const ServerProductionHardening = struct {
     log_source_rate_limit: RateLimit = .default,
 };
 
+/// Apply the production preset to `options`. Every field the preset names
+/// OVERRIDES the base value, including `stateless_reset_key`, the 0-RTT
+/// pair (`early_data` + `early_dispatch`, from
+/// `ServerProductionHardening.early_data`), and
+/// `reveal_close_reason_on_wire` (always false).
 pub fn withProductionServerHardening(
     options: ServerOptions,
     hardening: ServerProductionHardening,
 ) ServerOptions {
     var out = options;
     out.retry_token_key = hardening.retry_token_key;
+    out.stateless_reset_key = hardening.stateless_reset_key;
     out.new_token_key = hardening.new_token_key;
     out.initial_source_rate_limit = hardening.initial_source_rate_limit;
     out.vn_source_rate_limit = hardening.vn_source_rate_limit;
@@ -456,7 +502,16 @@ pub fn withProductionServerHardening(
     out.source_byte_rate_limit = hardening.source_byte_rate_limit;
     out.max_connection_memory = hardening.max_connection_memory;
     out.log_source_rate_limit = hardening.log_source_rate_limit;
-    out.early_data = .disabled;
+    switch (hardening.early_data) {
+        .disabled => {
+            out.early_data = .disabled;
+            out.early_dispatch = .hold_until_handshake;
+        },
+        .restore_only => {
+            out.early_data = .without_replay_protection;
+            out.early_dispatch = .restore_only;
+        },
+    }
     out.reveal_close_reason_on_wire = false;
     return out;
 }

@@ -1362,14 +1362,31 @@ test "Peer over QUIC carries a typed peer-close cause to cancelled questions and
     try std.testing.expectEqual(rpc_events.DisconnectCause.local_close, server_conn.closeCause());
 }
 
-test "Peer over QUIC proves a crash-restart via DisconnectCause.stateless_reset" {
-    const allocator = std.testing.allocator;
+/// What a client certified after its server crashed and restarted, read at
+/// every point the cause is observable.
+const CrashRestartCertificate = struct {
+    failed: bool,
+    closes: u32,
+    disconnected_reason_seen: bool,
+    cause_at_cancel: ?rpc_events.DisconnectCause,
+    cause_at_close: ?rpc_events.DisconnectCause,
+    peer_cause: rpc_events.DisconnectCause,
+    conn_cause: rpc_events.DisconnectCause,
+    /// `statelessResetsSent()` on the restarted server.
+    resets_sent: u64,
+};
 
-    // One reset key shared across the "crash": server B derives the same
-    // per-CID tokens server A advertised, which is what makes A's death
-    // provable to a client that never saw a CONNECTION_CLOSE.
-    const reset_key: [32]u8 = @splat(0x42);
-
+/// Bootstrap a client against a server built from `server_options`, crash
+/// that server with no close ceremony, restart it on the same port from the
+/// same options (so with the same `stateless_reset_key`, if any), call into
+/// it, and wait up to `wait_ms` for the client to close. `server_options`
+/// must listen on an ephemeral port.
+fn crashRestartCertificate(
+    allocator: std.mem.Allocator,
+    server_options: quic.ServerOptions,
+    client_transport_params: @TypeOf(quic.defaultTransportParams()),
+    wait_ms: u64,
+) !CrashRestartCertificate {
     // `Server.deinit` fires each live session's close callback, so the
     // server must be torn down while its bound peer is still alive. Plain
     // defers run LIFO and would do the opposite on every error arm (the
@@ -1393,13 +1410,7 @@ test "Peer over QUIC proves a crash-restart via DisconnectCause.stateless_reset"
     var a = AVat{};
     defer a.crash();
 
-    a.server = try quic.Server.init(allocator, std.testing.io, .{
-        .listen_addr = loopback.testListenAddr(),
-        .tls_cert_pem = loopback.loopback_cert_pem,
-        .tls_key_pem = loopback.loopback_key_pem,
-        .max_concurrent_connections = 1,
-        .stateless_reset_key = reset_key,
-    });
+    a.server = try quic.Server.init(allocator, std.testing.io, server_options);
     const a_server = &a.server.?;
     const a_port = a_server.getAddress().getPort();
 
@@ -1408,6 +1419,7 @@ test "Peer over QUIC proves a crash-restart via DisconnectCause.stateless_reset"
         .server_name = "localhost",
         .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+        .transport_params = client_transport_params,
     });
     defer client_conn.deinit();
 
@@ -1443,14 +1455,9 @@ test "Peer over QUIC proves a crash-restart via DisconnectCause.stateless_reset"
     // believes the connection is alive.
     a.crash();
 
-    // RESTART: same port, same reset key, empty connection table.
-    const b_options = quic.ServerOptions{
-        .listen_addr = try std.Io.net.IpAddress.parse("127.0.0.1", a_port),
-        .tls_cert_pem = loopback.loopback_cert_pem,
-        .tls_key_pem = loopback.loopback_key_pem,
-        .max_concurrent_connections = 1,
-        .stateless_reset_key = reset_key,
-    };
+    // RESTART: same port, same options, empty connection table.
+    var b_options = server_options;
+    b_options.listen_addr = try std.Io.net.IpAddress.parse("127.0.0.1", a_port);
     // A's port went back to the kernel's ephemeral pool when it died, and
     // sibling test binaries bind port 0 continuously; a brief retry keeps a
     // lost race from reading as a death-certificate failure.
@@ -1466,13 +1473,13 @@ test "Peer over QUIC proves a crash-restart via DisconnectCause.stateless_reset"
     };
     defer b_server.deinit();
 
-    // The client calls into the void: B cannot route the DCID, answers
-    // with a stateless reset, and the client's installed token turns that
-    // into a proven crash-restart certificate.
+    // The client calls into the void: B cannot route the DCID. With the
+    // shared reset key it answers with a stateless reset, and the client's
+    // installed token turns that into a proven crash-restart certificate.
     _ = try client_peer.sendCallResolved(target, 0x5155_4943, 7, &client_state, CauseClient.buildCall, CauseClient.onCallReturn);
 
     waited_ms = 0;
-    while (waited_ms < loopback.loopback_timeout_ms and client_state.closes == 0) : (waited_ms += 1) {
+    while (waited_ms < wait_ms and client_state.closes == 0) : (waited_ms += 1) {
         _ = try b_server.stepOnce(.poll);
         if (!client_conn.isClosing()) {
             _ = try client_conn.stepOnce(.poll);
@@ -1483,18 +1490,109 @@ test "Peer over QUIC proves a crash-restart via DisconnectCause.stateless_reset"
         loopback.sleepMs(1);
     }
 
-    try std.testing.expect(!client_state.failed);
-    try std.testing.expectEqual(@as(u32, 1), client_state.closes);
+    return .{
+        .failed = client_state.failed,
+        .closes = client_state.closes,
+        .disconnected_reason_seen = client_state.disconnected_reason_seen,
+        .cause_at_cancel = client_state.cause_at_cancel,
+        .cause_at_close = client_state.cause_at_close,
+        .peer_cause = client_peer.lastDisconnectCause(),
+        .conn_cause = client_conn.closeCause(),
+        .resets_sent = b_server.statelessResetsSent(),
+    };
+}
+
+test "Peer over QUIC proves a crash-restart via DisconnectCause.stateless_reset" {
+    // One reset key shared across the "crash": server B derives the same
+    // per-CID tokens server A advertised, which is what makes A's death
+    // provable to a client that never saw a CONNECTION_CLOSE.
+    const reset_key: [32]u8 = @splat(0x42);
+    const cert = try crashRestartCertificate(std.testing.allocator, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .max_concurrent_connections = 1,
+        .stateless_reset_key = reset_key,
+    }, quic.defaultTransportParams(), loopback.loopback_timeout_ms);
+
+    try std.testing.expect(!cert.failed);
+    try std.testing.expectEqual(@as(u32, 1), cert.closes);
     // The question cancelled by the reset carries the unchanged reason
     // text, with the proof readable in its callback and in on_close.
-    try std.testing.expect(client_state.disconnected_reason_seen);
-    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, client_state.cause_at_cancel orelse return error.NoCancelCause);
-    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, client_state.cause_at_close orelse return error.NoCloseCause);
-    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, client_peer.lastDisconnectCause());
-    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, client_conn.closeCause());
+    try std.testing.expect(cert.disconnected_reason_seen);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, cert.cause_at_cancel orelse return error.NoCancelCause);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, cert.cause_at_close orelse return error.NoCloseCause);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, cert.peer_cause);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, cert.conn_cause);
     // And the restarted endpoint counted the reset it sent — the churn
     // observability signal.
-    try std.testing.expect(b_server.statelessResetsSent() >= 1);
+    try std.testing.expect(cert.resets_sent >= 1);
+}
+
+// ---------------------------------------------------------------------------
+// The hardened preset (withProductionServerHardening) must carry the death
+// certificate too: a server built the documented way is the one production
+// runs, and without a reset key its clients only ever see idle_timeout.
+// ---------------------------------------------------------------------------
+
+/// Fixed keys for the hardened-preset tests. Production generates each once
+/// and persists it (docs/quic-transport.md, "Production Defaults"): the
+/// restarted server must hold the SAME bytes, which these constants model.
+const hardened_retry_key: quic.ServerRetryTokenKey = @splat(0x61);
+const hardened_new_token_key: quic.ServerNewTokenKey = @splat(0x62);
+const hardened_reset_key: quic.StatelessResetKey = @splat(0x63);
+
+/// Client idle timeout for the hardened crash-restart tests. Short, so a
+/// server that sends no stateless reset (the ablation) ends in a certified
+/// `.idle_timeout` inside the test's wait instead of after the 30 s default.
+/// The reset arrives within milliseconds of the first post-crash send, so it
+/// wins this race by three orders of magnitude.
+const hardened_client_idle_timeout_ms: u64 = 2_000;
+/// Post-crash wait for the hardened tests: covers the idle timeout above
+/// (plus its 3 x PTO floor) so the ablation reports its cause, not a hang.
+const hardened_wait_ms: u64 = 3 * loopback.loopback_timeout_ms;
+
+fn hardenedClientTransportParams() @TypeOf(quic.defaultTransportParams()) {
+    var params = quic.defaultTransportParams();
+    params.max_idle_timeout_ms = hardened_client_idle_timeout_ms;
+    return params;
+}
+
+/// A server built the documented way: base options through
+/// `withProductionServerHardening`, Retry and NEW_TOKEN included.
+fn hardenedServerOptions(listen_addr: std.Io.net.IpAddress) quic.ServerOptions {
+    return quic.withProductionServerHardening(.{
+        .listen_addr = listen_addr,
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .max_concurrent_connections = 2,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+    }, .{
+        .retry_token_key = hardened_retry_key,
+        .stateless_reset_key = hardened_reset_key,
+        .new_token_key = hardened_new_token_key,
+    });
+}
+
+test "withProductionServerHardening server proves a crash-restart via DisconnectCause.stateless_reset" {
+    const cert = try crashRestartCertificate(
+        std.testing.allocator,
+        hardenedServerOptions(loopback.testListenAddr()),
+        hardenedClientTransportParams(),
+        hardened_wait_ms,
+    );
+
+    try std.testing.expect(!cert.failed);
+    // The decisive assertion. A preset without a reset key certifies
+    // `.idle_timeout` here: the restarted server drops the stale-CID
+    // datagrams silently, and the client can prove nothing.
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, cert.peer_cause);
+    try std.testing.expectEqual(@as(u32, 1), cert.closes);
+    try std.testing.expect(cert.disconnected_reason_seen);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, cert.cause_at_cancel orelse return error.NoCancelCause);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, cert.cause_at_close orelse return error.NoCloseCause);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, cert.conn_cause);
+    try std.testing.expect(cert.resets_sent >= 1);
 }
 
 test "QUIC fanout session local close certifies .local_close to its bound peer" {
@@ -1632,10 +1730,20 @@ const RedialAppState = struct {
     rebinds: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     echo_ok: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     gave_up: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Written on the run thread BEFORE the `gave_up` release-store; read it
+    /// through `giveUpCause`, which acquires that flag first.
+    give_up_cause: ?rpc_events.DisconnectCause = null,
     // Run-thread-only within a generation; rewritten by each rebind.
     last_peer: ?*Peer = null,
     last_cap: ?cap_table.ResolvedCap = null,
     outcome: ?quic.WarmRedialClient.Outcome = null,
+
+    /// The cause the client certified when it gave up, or null while it has
+    /// not given up.
+    fn giveUpCause(self: *const RedialAppState) ?rpc_events.DisconnectCause {
+        if (!self.gave_up.load(.acquire)) return null;
+        return self.give_up_cause;
+    }
 
     fn onRebind(ctx: ?*anyopaque, peer: *Peer, cap: cap_table.ResolvedCap) void {
         const self: *RedialAppState = @ptrCast(@alignCast(ctx.?));
@@ -1661,7 +1769,7 @@ const RedialAppState = struct {
 
     fn onGiveUp(ctx: ?*anyopaque, cause: rpc_events.DisconnectCause) void {
         const self: *RedialAppState = @ptrCast(@alignCast(ctx.?));
-        _ = cause;
+        self.give_up_cause = cause;
         self.gave_up.store(true, .release);
     }
 
@@ -1671,13 +1779,17 @@ const RedialAppState = struct {
 };
 
 fn restartVatOnPort(vat: *RedialVat, allocator: std.mem.Allocator, port: u16, reset_key: [32]u8) !void {
-    const options = quic.ServerOptions{
+    try restartVatWith(vat, allocator, .{
         .listen_addr = try std.Io.net.IpAddress.parse("127.0.0.1", port),
         .tls_cert_pem = loopback.loopback_cert_pem,
         .tls_key_pem = loopback.loopback_key_pem,
         .max_concurrent_connections = 2,
         .stateless_reset_key = reset_key,
-    };
+    });
+}
+
+/// Restart `vat` from `options`, which must name the crashed server's port.
+fn restartVatWith(vat: *RedialVat, allocator: std.mem.Allocator, options: quic.ServerOptions) !void {
     var attempt: u32 = 0;
     vat.server = blk: {
         while (true) : (attempt += 1) {
@@ -1767,6 +1879,7 @@ test "WarmRedialClient auto-heals a restored capability across a crash-restart" 
     const outcome = app.outcome orelse return error.NoOutcome;
     try std.testing.expectEqual(@as(u32, 2), outcome.generations);
     try std.testing.expectEqual(@as(u32, 1), outcome.redials);
+    try std.testing.expectEqual(@as(u32, 1), outcome.total_redials);
     try std.testing.expectEqual(@as(u32, 2), outcome.rebinds);
 }
 
@@ -1833,6 +1946,240 @@ test "WarmRedialClient with a zero redial budget does NOT heal (ablation)" {
     const outcome = app.outcome orelse return error.NoOutcome;
     try std.testing.expectEqual(@as(u32, 1), outcome.generations);
     try std.testing.expectEqual(@as(u32, 0), outcome.redials);
+    try std.testing.expectEqual(@as(u32, 0), outcome.total_redials);
     try std.testing.expectEqual(@as(u32, 1), outcome.rebinds);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, outcome.last_cause);
+}
+
+test "WarmRedialClient heals across a crash-restart of a withProductionServerHardening server" {
+    const allocator = std.testing.allocator;
+
+    var vat = RedialVat{};
+    defer vat.crash();
+    vat.server = try quic.Server.init(allocator, std.testing.io, hardenedServerOptions(loopback.testListenAddr()));
+    const port = vat.server.?.getAddress().getPort();
+
+    var app = RedialAppState{};
+    var client = try quic.WarmRedialClient.init(
+        allocator,
+        std.testing.io,
+        .{
+            .remote_addr = vat.server.?.getAddress(),
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+            .transport_params = hardenedClientTransportParams(),
+        },
+        RedialEcho.sturdy_ref,
+        // Default cause policy: only `.stateless_reset` redials, so the
+        // rebind below is itself the client's certificate.
+        .{ .max_redials = 3, .backoff_ms = 10 },
+        &app,
+        RedialAppState.onRebind,
+        RedialAppState.onGiveUp,
+    );
+    defer client.deinit();
+    var thread = try std.Thread.spawn(.{}, RedialAppState.runClient, .{ &app, &client });
+    var joined = false;
+    defer if (!joined) {
+        client.requestStop();
+        thread.join();
+    };
+
+    // Phase 1: cold dial (through Retry), pipelined restore, first echo.
+    var waited: u64 = 0;
+    while (waited < loopback.loopback_timeout_ms and app.echo_ok.load(.acquire) == 0) : (waited += 1) {
+        _ = try vat.server.?.stepOnce(.poll);
+        try vat.bindIfNeeded(allocator);
+        loopback.sleepMs(1);
+    }
+    try std.testing.expect(app.echo_ok.load(.acquire) > 0);
+    try std.testing.expectEqual(@as(u32, 1), app.rebinds.load(.acquire));
+    const echo_before_crash = app.echo_ok.load(.acquire);
+
+    // CRASH + RESTART from the same hardened options (same persisted keys).
+    vat.crash();
+    try restartVatWith(&vat, allocator, hardenedServerOptions(try std.Io.net.IpAddress.parse("127.0.0.1", port)));
+
+    waited = 0;
+    while (waited < hardened_wait_ms and !app.gave_up.load(.acquire) and
+        (app.rebinds.load(.acquire) < 2 or app.echo_ok.load(.acquire) <= echo_before_crash)) : (waited += 1)
+    {
+        _ = try vat.server.?.stepOnce(.poll);
+        try vat.bindIfNeeded(allocator);
+        loopback.sleepMs(1);
+    }
+    // A preset without a reset key fails here: the client certifies
+    // `.idle_timeout`, which the default policy does not redial on.
+    try std.testing.expectEqual(@as(?rpc_events.DisconnectCause, null), app.giveUpCause());
+    try std.testing.expectEqual(@as(u32, 2), app.rebinds.load(.acquire));
+    try std.testing.expect(app.echo_ok.load(.acquire) > echo_before_crash);
+    try std.testing.expect(vat.server.?.statelessResetsSent() >= 1);
+
+    client.requestStop();
+    thread.join();
+    joined = true;
+
+    const outcome = app.outcome orelse return error.NoOutcome;
+    try std.testing.expectEqual(@as(u32, 2), outcome.generations);
+    try std.testing.expectEqual(@as(u32, 2), outcome.rebinds);
+}
+
+test "WarmRedialClient budget counts consecutive failures: resets between healthy generations never exhaust it" {
+    const allocator = std.testing.allocator;
+    const reset_key: [32]u8 = @splat(0x52);
+    // One crash more than the budget: a LIFETIME budget gives up on it.
+    const max_redials: u32 = 3;
+    const crashes: u32 = max_redials + 1;
+    // Each generation serves echo traffic for `hold_ms` after its rebind
+    // before the next crash, well past the threshold that makes it healthy.
+    const min_healthy_ms: u64 = 100;
+    const hold_ms: u64 = 3 * min_healthy_ms;
+
+    var vat = RedialVat{};
+    defer vat.crash();
+    vat.server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .max_concurrent_connections = 2,
+        .stateless_reset_key = reset_key,
+    });
+    const port = vat.server.?.getAddress().getPort();
+
+    var app = RedialAppState{};
+    var client = try quic.WarmRedialClient.init(
+        allocator,
+        std.testing.io,
+        .{
+            .remote_addr = vat.server.?.getAddress(),
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+        },
+        RedialEcho.sturdy_ref,
+        .{ .max_redials = max_redials, .backoff_ms = 10, .min_healthy_ms = min_healthy_ms },
+        &app,
+        RedialAppState.onRebind,
+        RedialAppState.onGiveUp,
+    );
+    defer client.deinit();
+    var thread = try std.Thread.spawn(.{}, RedialAppState.runClient, .{ &app, &client });
+    var joined = false;
+    defer if (!joined) {
+        client.requestStop();
+        thread.join();
+    };
+
+    var crash: u32 = 0;
+    while (true) : (crash += 1) {
+        // This generation (the initial dial, then one per crash) must
+        // rebind and carry a healed echo.
+        const echo_floor = app.echo_ok.load(.acquire);
+        var waited: u64 = 0;
+        while (waited < loopback.loopback_timeout_ms and !app.gave_up.load(.acquire) and
+            (app.rebinds.load(.acquire) < crash + 1 or app.echo_ok.load(.acquire) <= echo_floor)) : (waited += 1)
+        {
+            _ = try vat.server.?.stepOnce(.poll);
+            try vat.bindIfNeeded(allocator);
+            loopback.sleepMs(1);
+        }
+        try std.testing.expectEqual(@as(?rpc_events.DisconnectCause, null), app.giveUpCause());
+        try std.testing.expectEqual(crash + 1, app.rebinds.load(.acquire));
+        try std.testing.expect(app.echo_ok.load(.acquire) > echo_floor);
+        if (crash == crashes) break;
+
+        // Stay healthy: keep serving for at least `hold_ms` (each pass
+        // sleeps at least 1 ms, so this is a lower bound on wall time).
+        var held: u64 = 0;
+        while (held < hold_ms) : (held += 1) {
+            _ = try vat.server.?.stepOnce(.poll);
+            loopback.sleepMs(1);
+        }
+        vat.crash();
+        try restartVatOnPort(&vat, allocator, port, reset_key);
+    }
+
+    client.requestStop();
+    thread.join();
+    joined = true;
+
+    const outcome = app.outcome orelse return error.NoOutcome;
+    try std.testing.expectEqual(crashes + 1, outcome.generations);
+    try std.testing.expectEqual(crashes + 1, outcome.rebinds);
+    try std.testing.expectEqual(crashes, outcome.total_redials);
+    // Every crash followed a healthy generation, so the streak never grew
+    // past the redial that the latest crash spent (0 if the final
+    // generation also outlived the threshold before the stop).
+    try std.testing.expect(outcome.redials <= 1);
+}
+
+test "WarmRedialClient budget still gives up on a server that dies right after every rebind" {
+    const allocator = std.testing.allocator;
+    const reset_key: [32]u8 = @splat(0x53);
+    const max_redials: u32 = 3;
+
+    var vat = RedialVat{};
+    defer vat.crash();
+    vat.server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .max_concurrent_connections = 2,
+        .stateless_reset_key = reset_key,
+    });
+    const port = vat.server.?.getAddress().getPort();
+
+    var app = RedialAppState{};
+    var client = try quic.WarmRedialClient.init(
+        allocator,
+        std.testing.io,
+        .{
+            .remote_addr = vat.server.?.getAddress(),
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+        },
+        RedialEcho.sturdy_ref,
+        // Every generation rebinds, then dies at once: none can live for a
+        // minute, so none counts as healthy and none refunds the budget.
+        .{ .max_redials = max_redials, .backoff_ms = 10, .min_healthy_ms = 60_000 },
+        &app,
+        RedialAppState.onRebind,
+        RedialAppState.onGiveUp,
+    );
+    defer client.deinit();
+    var thread = try std.Thread.spawn(.{}, RedialAppState.runClient, .{ &app, &client });
+    var joined = false;
+    defer if (!joined) {
+        client.requestStop();
+        thread.join();
+    };
+
+    var crashes: u32 = 0;
+    var waited: u64 = 0;
+    const wait_bound = (max_redials + 2) * loopback.loopback_timeout_ms;
+    while (waited < wait_bound and !app.gave_up.load(.acquire)) : (waited += 1) {
+        _ = try vat.server.?.stepOnce(.poll);
+        try vat.bindIfNeeded(allocator);
+        if (app.rebinds.load(.acquire) > crashes) {
+            // This generation just rebound: kill it now.
+            vat.crash();
+            try restartVatOnPort(&vat, allocator, port, reset_key);
+            crashes += 1;
+        }
+        loopback.sleepMs(1);
+    }
+    try std.testing.expect(app.gave_up.load(.acquire));
+    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, app.giveUpCause() orelse return error.NoGiveUpCause);
+    thread.join();
+    joined = true;
+
+    const outcome = app.outcome orelse return error.NoOutcome;
+    try std.testing.expectEqual(max_redials + 1, crashes);
+    try std.testing.expectEqual(max_redials + 1, outcome.generations);
+    try std.testing.expectEqual(max_redials + 1, outcome.rebinds);
+    try std.testing.expectEqual(max_redials, outcome.redials);
+    try std.testing.expectEqual(max_redials, outcome.total_redials);
     try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, outcome.last_cause);
 }

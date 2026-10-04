@@ -20,7 +20,14 @@
 //!   layer sends nothing else in early data.
 //! - Only `.stateless_reset` redials by default: it is the one cause that
 //!   PROVES crash-restart. `.idle_timeout` says nothing about liveness and
-//!   is opt-in via policy.
+//!   is opt-in via policy. A server only sends stateless resets when it has
+//!   a `stateless_reset_key`, which `withProductionServerHardening`
+//!   requires.
+//! - The redial budget counts CONSECUTIVE failures, not a lifetime total.
+//!   A generation that rebinds and then stays up for `min_healthy_ms`
+//!   resets the streak, so a long-lived client heals every crash that a
+//!   healthy period separates from the last one. A server that dies in
+//!   every generation still exhausts `max_redials`.
 //!
 //! Experimental, like the persistence convention it rides.
 
@@ -40,14 +47,31 @@ const Peer = peer_mod.Peer;
 const log = std.log.scoped(.rpc_quic_redial);
 
 pub const WarmRedialClient = struct {
+    /// Default `Policy.min_healthy_ms`: 10 s. A crash-looping server
+    /// (restart, accept, restore, die) cannot look healthy for that long,
+    /// and a server that then runs normally clears the streak quickly.
+    pub const default_min_healthy_ms: u64 = 10_000;
+
     pub const Policy = struct {
-        /// Redials attempted after the initial dial before giving up.
+        /// CONSECUTIVE failed generations tolerated before giving up. Each
+        /// redial (after a dead generation or a failed dial) spends one; a
+        /// healthy generation (see `min_healthy_ms`) resets the count to
+        /// zero. This is not a lifetime budget: a long-lived client heals
+        /// any number of crashes, as long as each comes after a healthy
+        /// period.
         max_redials: u32 = 3,
         /// Fixed pause before each redial (lets the restarted server bind).
         backoff_ms: u64 = 50,
         /// Opt-in: also redial on idle timeout. Off by default — an idle
         /// timeout carries no proof the server crashed OR survived.
         redial_on_idle_timeout: bool = false,
+        /// How long a generation must stay up AFTER its rebind (measured
+        /// on the awake clock until its connection ends) to count as
+        /// healthy. A healthy generation resets `redials` to zero. A
+        /// generation that never rebinds is never healthy. 0 makes every
+        /// rebind healthy; `std.math.maxInt(u64)` makes none healthy, which
+        /// turns `max_redials` back into a lifetime budget.
+        min_healthy_ms: u64 = default_min_healthy_ms,
     };
 
     /// Fires on the generation's run thread once the sturdy ref has been
@@ -61,7 +85,11 @@ pub const WarmRedialClient = struct {
 
     pub const Outcome = struct {
         generations: u32,
+        /// Consecutive redials since the last healthy generation, at exit
+        /// (the budget counter compared against `Policy.max_redials`).
         redials: u32,
+        /// Every redial over the client's lifetime.
+        total_redials: u32,
         rebinds: u32,
         last_cause: rpc_events.DisconnectCause,
     };
@@ -87,9 +115,15 @@ pub const WarmRedialClient = struct {
 
     // Run-thread bookkeeping.
     generations: u32 = 0,
+    /// Consecutive redials since the last healthy generation.
     redials: u32 = 0,
+    /// Lifetime redial count (never reset).
+    total_redials: u32 = 0,
     rebinds: u32 = 0,
     restore_failed: bool = false,
+    /// Awake-clock time of the current generation's rebind; null until it
+    /// rebinds.
+    rebound_at_ns: ?u64 = null,
 
     /// `sturdy_ref` is copied; the caller keeps ownership of the argument.
     pub fn init(
@@ -167,8 +201,8 @@ pub const WarmRedialClient = struct {
 
     /// Blocking generation loop on the calling thread (the thread also
     /// becomes every generation's owner thread). Returns when stopped, when
-    /// the redial budget is exhausted, or when a non-redialable cause ends
-    /// a generation.
+    /// `max_redials` consecutive redials have failed, or when a
+    /// non-redialable cause ends a generation.
     pub fn run(self: *WarmRedialClient) !Outcome {
         var last_cause: rpc_events.DisconnectCause = .unknown;
         while (true) {
@@ -177,11 +211,10 @@ pub const WarmRedialClient = struct {
                 // generation does; the restarted server may need a beat.
                 log.debug("generation setup failed: {}", .{err});
                 if (self.stopRequested()) break;
-                if (self.redials >= self.policy.max_redials) {
+                if (!self.spendRedial()) {
                     if (self.on_give_up) |cb| cb(self.cb_ctx, last_cause);
                     return err;
                 }
-                self.redials += 1;
                 sleepMs(self.io, self.policy.backoff_ms);
                 continue;
             };
@@ -190,19 +223,38 @@ pub const WarmRedialClient = struct {
                 if (self.on_give_up) |cb| cb(self.cb_ctx, last_cause);
                 break;
             }
-            if (self.redials >= self.policy.max_redials) {
+            if (!self.spendRedial()) {
                 if (self.on_give_up) |cb| cb(self.cb_ctx, last_cause);
                 break;
             }
-            self.redials += 1;
             sleepMs(self.io, self.policy.backoff_ms);
         }
         return .{
             .generations = self.generations,
             .redials = self.redials,
+            .total_redials = self.total_redials,
             .rebinds = self.rebinds,
             .last_cause = last_cause,
         };
+    }
+
+    /// Take one redial from the consecutive-failure budget; false when it
+    /// is exhausted.
+    fn spendRedial(self: *WarmRedialClient) bool {
+        if (self.redials >= self.policy.max_redials) return false;
+        self.redials += 1;
+        self.total_redials +|= 1;
+        return true;
+    }
+
+    /// Called once the generation's connection has ended: a generation that
+    /// rebound and then stayed up for `min_healthy_ms` ends the failure
+    /// streak.
+    fn settleGenerationHealth(self: *WarmRedialClient) void {
+        const rebound_at = self.rebound_at_ns orelse return;
+        self.rebound_at_ns = null;
+        const up_ns = nowNs(self.io) -| rebound_at;
+        if (up_ns >= self.policy.min_healthy_ms *| std.time.ns_per_ms) self.redials = 0;
     }
 
     /// One connection generation: dial (resumed when a ticket exists),
@@ -266,9 +318,11 @@ pub const WarmRedialClient = struct {
         _ = try peer.sendRestorePipelined(bootstrap_qid, self.sturdy_ref, self, onRestoreResponse);
 
         self.generations += 1;
+        self.rebound_at_ns = null;
         conn.run();
 
         last_cause.* = peer.lastDisconnectCause();
+        self.settleGenerationHealth();
 
         _ = peer.takeAttachedConnection(*Connection);
         peer.deinit();
@@ -346,6 +400,7 @@ pub const WarmRedialClient = struct {
         switch (response) {
             .cap => |cap| {
                 self.rebinds += 1;
+                self.rebound_at_ns = nowNs(self.io);
                 self.on_rebind(self.cb_ctx, peer, cap);
             },
             .exception => |ex| {
@@ -359,6 +414,10 @@ pub const WarmRedialClient = struct {
         }
     }
 };
+
+fn nowNs(io: std.Io) u64 {
+    return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+}
 
 fn sleepMs(io: std.Io, ms: u64) void {
     const duration: std.Io.Clock.Duration = .{

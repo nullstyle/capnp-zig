@@ -426,20 +426,28 @@ test "quic server options propagate quic_zig hardening controls" {
 test "quic production hardening preset enables retry and rate gates" {
     const retry_key: quic.ServerRetryTokenKey = @splat(0x33);
     const new_token_key: quic.ServerNewTokenKey = @splat(0x44);
+    const reset_key: quic.StatelessResetKey = @splat(0x55);
 
     const options = quic.withProductionServerHardening(.{
         .listen_addr = testListenAddr(),
         .tls_cert_pem = "cert",
         .tls_key_pem = "key",
         .early_data = .without_replay_protection,
+        .early_dispatch = .restore_only,
         .reveal_close_reason_on_wire = true,
+        // The preset's key wins over one already in the base options.
+        .stateless_reset_key = @splat(0x66),
     }, .{
         .retry_token_key = retry_key,
+        .stateless_reset_key = reset_key,
         .new_token_key = new_token_key,
     });
 
     try std.testing.expectEqual(retry_key, options.retry_token_key.?);
     try std.testing.expectEqual(new_token_key, options.new_token_key.?);
+    // The death certificate is part of the preset: without a reset key a
+    // restarted server's clients can only ever certify `.idle_timeout`.
+    try std.testing.expectEqual(reset_key, options.stateless_reset_key.?);
     try std.testing.expectEqual(
         @as(?u64, quic.default_quic_initial_source_rate_cap),
         options.initial_source_rate_limit.resolve(0),
@@ -447,14 +455,18 @@ test "quic production hardening preset enables retry and rate gates" {
     try std.testing.expect(options.listener_datagram_rate_limit.resolve(0).? > 0);
     try std.testing.expect(options.listener_byte_rate_limit.resolve(0).? > 0);
     try std.testing.expect(options.source_byte_rate_limit.resolve(0).? > 0);
-    // Hardening OVERRIDES an opt-in 0-RTT posture back to disabled: the preset
-    // is the conservative one, and replay-exposed 0-RTT is never part of it.
+    // Hardening OVERRIDES a base 0-RTT posture back to disabled (and the
+    // dispatch mode back to hold) unless the preset itself opts in: the
+    // default is the conservative one.
     try std.testing.expect(options.early_data == .disabled);
+    try std.testing.expectEqual(quic.early_dispatch.Mode.hold_until_handshake, options.early_dispatch);
     try std.testing.expect(!options.reveal_close_reason_on_wire);
 
     const config = try quic.serverConfigFromOptions(std.testing.allocator, options);
     try std.testing.expectEqual(retry_key, config.retry_token_key.?);
+    try std.testing.expectEqual(reset_key, config.stateless_reset_key.?);
     try std.testing.expectEqual(new_token_key, config.new_token_key.?);
+    try std.testing.expect(config.early_data == .disabled);
     try std.testing.expectEqual(
         options.initial_source_rate_limit.resolve(0),
         config.initial_source_rate_limit.resolve(0),
@@ -467,6 +479,47 @@ test "quic production hardening preset enables retry and rate gates" {
         options.listener_byte_rate_limit.resolve(0),
         config.listener_byte_rate_limit.resolve(0),
     );
+}
+
+test "quic production hardening preset pairs its 0-RTT opt-in with restore-only dispatch" {
+    const base = quic.ServerOptions{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+        // A base posture the opt-in must replace, not merge with.
+        .early_data = .disabled,
+        .early_dispatch = .hold_until_handshake,
+    };
+    const options = quic.withProductionServerHardening(base, .{
+        .retry_token_key = @splat(0x33),
+        .stateless_reset_key = @splat(0x55),
+        .early_data = .restore_only,
+    });
+
+    // The opt-in accepts replayable 0-RTT ONLY together with the dispatch
+    // mode that lets nothing but the idempotent restore prefix execute
+    // before the handshake.
+    try std.testing.expect(options.early_data == .without_replay_protection);
+    try std.testing.expectEqual(quic.early_dispatch.Mode.restore_only, options.early_dispatch);
+    try std.testing.expect(!options.reveal_close_reason_on_wire);
+
+    const config = try quic.serverConfigFromOptions(std.testing.allocator, options);
+    try std.testing.expect(config.early_data == .without_replay_protection);
+
+    // The default stays off, whatever the base asked for.
+    var replay_exposed = base;
+    replay_exposed.early_data = .without_replay_protection;
+    replay_exposed.early_dispatch = .restore_only;
+    const default_options = quic.withProductionServerHardening(replay_exposed, .{
+        .retry_token_key = @splat(0x33),
+        .stateless_reset_key = @splat(0x55),
+    });
+    try std.testing.expectEqual(quic.ProductionEarlyData.disabled, (quic.ServerProductionHardening{
+        .retry_token_key = @splat(0x33),
+        .stateless_reset_key = @splat(0x55),
+    }).early_data);
+    try std.testing.expect(default_options.early_data == .disabled);
+    try std.testing.expectEqual(quic.early_dispatch.Mode.hold_until_handshake, default_options.early_dispatch);
 }
 
 test "quic length-delimited framer handles fragmented and coalesced payloads" {
@@ -2281,6 +2334,178 @@ test "quic warm restore: stale ticket is rejected but the staged frame still arr
     // Rejection recovery held: 0-RTT was refused, the frame arrived anyway.
     const q2 = client2.endpoint.activeQuicConnection() orelse return error.QuicConnectionGone;
     try std.testing.expectEqual(quic.EarlyDataStatus.rejected, q2.earlyDataStatus());
+}
+
+/// Captures the FIRST NEW_TOKEN the server issues, with the same
+/// release/acquire contract as `ResumptionSink`.
+const NewTokenSink = struct {
+    bytes: [256]u8 = undefined,
+    len: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+
+    fn capture(user_data: ?*anyopaque, token: []const u8) void {
+        const self: *NewTokenSink = @ptrCast(@alignCast(user_data.?));
+        if (self.len.load(.acquire) != 0) return;
+        if (token.len == 0 or token.len > self.bytes.len) return;
+        @memcpy(self.bytes[0..token.len], token);
+        self.len.store(token.len, .release);
+    }
+
+    fn slice(self: *const NewTokenSink) []const u8 {
+        return self.bytes[0..self.len.load(.acquire)];
+    }
+};
+
+/// Dial a `withProductionServerHardening(.., hardening)` fanout server
+/// twice. Dial 1 earns a session ticket and a NEW_TOKEN through the
+/// preset's Retry gate. Dial 2 presents both (the NEW_TOKEN skips Retry,
+/// which would discard a first flight's 0-RTT) and enqueues its frame before
+/// its loop starts. Returns dial 2's 0-RTT outcome once that frame has come
+/// back.
+fn hardenedResumedDialEarlyData(hardening: quic.ServerProductionHardening) !quic.EarlyDataStatus {
+    const allocator = std.testing.allocator;
+    const frame_first = try buildBootstrapFrame(allocator, 0x0EEE);
+    defer allocator.free(frame_first);
+    const frame_restore = try buildBootstrapFrame(allocator, 0x0FFF);
+    defer allocator.free(frame_restore);
+
+    // One server, two sequential sessions: the ticket only decrypts under
+    // the TLS context that minted it.
+    var server = try quic.Server.init(allocator, std.testing.io, quic.withProductionServerHardening(.{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = 2,
+    }, hardening));
+    defer server.deinit();
+    const server_addr = server.getAddress();
+
+    var ticket = ResumptionSink{};
+    var token = NewTokenSink{};
+
+    // ---- Dial 1: earn the ticket and the NEW_TOKEN. ----
+    {
+        var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+            .remote_addr = server_addr,
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .new_session_callback = ResumptionSink.capture,
+            .new_session_user_data = &ticket,
+            .new_token_callback = NewTokenSink.capture,
+            .new_token_user_data = &token,
+        });
+        defer client.deinit();
+
+        var client_state = QuicEndpointState{};
+        client.start(&client_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
+        var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+        var joined = false;
+        defer if (!joined) {
+            client.requestClose();
+            client_thread.join();
+        };
+
+        try driveUntilSessions(&server, 1);
+        var server_state = QuicEndpointState{};
+        server.sessionAt(0).?.start(&server_state, echoQuicServerMessage, recordQuicServerError, recordQuicServerClose);
+        try client.sendFrame(frame_first);
+        try driveUntilEchoAndTicket(&server, &client_state, &server_state, &ticket);
+        var waited_ms: u64 = 0;
+        while (waited_ms < loopback.loopback_timeout_ms and token.len.load(.acquire) == 0) : (waited_ms += loopback.loopback_poll_ms) {
+            _ = try server.stepOnce(.wait);
+            loopback.sleepMs(loopback.loopback_poll_ms);
+        }
+
+        client.requestClose();
+        client_thread.join();
+        joined = true;
+    }
+    try std.testing.expect(ticket.len.load(.acquire) > 0);
+    try std.testing.expect(token.len.load(.acquire) > 0);
+
+    // Reap the first session so the resumed dial lands at index 0.
+    {
+        var waited_ms: u64 = 0;
+        while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+            _ = try server.stepOnce(.wait);
+            if (server.sessionCount() == 0) break;
+            loopback.sleepMs(loopback.loopback_poll_ms);
+        }
+        try std.testing.expectEqual(@as(usize, 0), server.sessionCount());
+    }
+
+    // ---- Dial 2: resume with the ticket and the NEW_TOKEN. ----
+    var client2 = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .resumption_state = ticket.slice(),
+        .new_token = token.slice(),
+    });
+    defer client2.deinit();
+
+    var client2_state = QuicEndpointState{};
+    client2.start(&client2_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
+    try client2.sendFrame(frame_restore);
+
+    var client2_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client2});
+    var joined2 = false;
+    defer if (!joined2) {
+        client2.requestClose();
+        client2_thread.join();
+    };
+
+    try driveUntilSessions(&server, 1);
+    var server2_state = QuicEndpointState{};
+    server.sessionAt(0).?.start(&server2_state, echoQuicServerMessage, recordQuicServerError, recordQuicServerClose);
+    // Frames that arrived before the callbacks were bound wait in the
+    // session engine; one service pass dispatches them.
+    try server.stepSession(0);
+
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        _ = try server.stepOnce(.wait);
+        if (client2_state.messages.load(.acquire) > 0) break;
+        if (client2_state.errors.load(.acquire) > 0 or server2_state.errors.load(.acquire) > 0) {
+            return error.QuicLoopbackUnexpectedError;
+        }
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+
+    client2.requestClose();
+    server.requestClose();
+    client2_thread.join();
+    joined2 = true;
+
+    // Accepted or refused, the staged frame arrives exactly once.
+    try std.testing.expectEqual(@as(usize, 1), client2_state.messages.load(.acquire));
+    try std.testing.expectEqualSlices(u8, frame_restore, client2_state.receivedSlice());
+    const q2 = client2.endpoint.activeQuicConnection() orelse return error.QuicConnectionGone;
+    return q2.earlyDataStatus();
+}
+
+test "quic hardened preset accepts warm-restore 0-RTT only through its restore_only opt-in" {
+    const retry_key: quic.ServerRetryTokenKey = @splat(0x71);
+    const reset_key: quic.StatelessResetKey = @splat(0x72);
+    const new_token_key: quic.ServerNewTokenKey = @splat(0x73);
+
+    // The opt-in: the resumed dial's frame rides ACCEPTED 0-RTT through the
+    // preset's Retry gate (the NEW_TOKEN validates the address).
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, try hardenedResumedDialEarlyData(.{
+        .retry_token_key = retry_key,
+        .stateless_reset_key = reset_key,
+        .new_token_key = new_token_key,
+        .early_data = .restore_only,
+    }));
+    // The default: the same resumed dial is refused 0-RTT, and its staged
+    // frame still arrives at 1-RTT.
+    try std.testing.expectEqual(quic.EarlyDataStatus.rejected, try hardenedResumedDialEarlyData(.{
+        .retry_token_key = retry_key,
+        .stateless_reset_key = reset_key,
+        .new_token_key = new_token_key,
+    }));
 }
 
 // ---------------------------------------------------------------------------

@@ -3078,6 +3078,9 @@ capnpc-zig.rpc.transport.quic.NativeOptions.max_pending_data_streams: field usiz
 capnpc-zig.rpc.transport.quic.NativeOptions: struct
 capnpc-zig.rpc.transport.quic.NewSessionCallback: type = *const fn (?*anyopaque, []const u8) void
 capnpc-zig.rpc.transport.quic.NewTokenCallback: type = *const fn (?*anyopaque, []const u8) void
+capnpc-zig.rpc.transport.quic.ProductionEarlyData.disabled: enumerant = 0
+capnpc-zig.rpc.transport.quic.ProductionEarlyData.restore_only: enumerant = 1
+capnpc-zig.rpc.transport.quic.ProductionEarlyData: enum
 capnpc-zig.rpc.transport.quic.RateLimit.default: variant void
 capnpc-zig.rpc.transport.quic.RateLimit.disabled: variant void
 capnpc-zig.rpc.transport.quic.RateLimit.limit: variant u64
@@ -3269,6 +3272,7 @@ capnpc-zig.rpc.transport.quic.ServerOptions.udp_socket_send_buffer_bytes: field 
 capnpc-zig.rpc.transport.quic.ServerOptions.udp_tx_buffer_size: field usize = 1500
 capnpc-zig.rpc.transport.quic.ServerOptions.vn_source_rate_limit: field Server.Config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerOptions: struct
+capnpc-zig.rpc.transport.quic.ServerProductionHardening.early_data: field rpc.transport.quic.options.ProductionEarlyData = .disabled
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.initial_source_rate_limit: field Server.Config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.listener_byte_rate_limit: field Server.Config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.listener_datagram_rate_limit: field Server.Config.RateLimit = <default>
@@ -3277,6 +3281,7 @@ capnpc-zig.rpc.transport.quic.ServerProductionHardening.max_connection_memory: f
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.new_token_key: field ?[32]u8 = null
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.retry_token_key: field [32]u8
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.source_byte_rate_limit: field Server.Config.RateLimit = <default>
+capnpc-zig.rpc.transport.quic.ServerProductionHardening.stateless_reset_key: field [32]u8
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.vn_source_rate_limit: field Server.Config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerProductionHardening: struct
 capnpc-zig.rpc.transport.quic.ServerQlogCallback: type = *const fn (?*anyopaque, Connection.qlog.QlogEvent) void
@@ -3338,12 +3343,14 @@ capnpc-zig.rpc.transport.quic.WarmRedialClient.on_give_up: field ?*const fn (?*a
 capnpc-zig.rpc.transport.quic.WarmRedialClient.on_rebind: field *const fn (?*anyopaque, *rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap) void
 capnpc-zig.rpc.transport.quic.WarmRedialClient.policy: field rpc.transport.quic.warm_redial.WarmRedialClient.Policy
 capnpc-zig.rpc.transport.quic.WarmRedialClient.rebinds: field u32 = 0
+capnpc-zig.rpc.transport.quic.WarmRedialClient.rebound_at_ns: field ?u64 = null
 capnpc-zig.rpc.transport.quic.WarmRedialClient.redials: field u32 = 0
 capnpc-zig.rpc.transport.quic.WarmRedialClient.restore_failed: field bool = false
 capnpc-zig.rpc.transport.quic.WarmRedialClient.stop_requested: field bool = false
 capnpc-zig.rpc.transport.quic.WarmRedialClient.sturdy_ref: field []u8
 capnpc-zig.rpc.transport.quic.WarmRedialClient.ticket: field ?[]u8 = null
 capnpc-zig.rpc.transport.quic.WarmRedialClient.token: field ?[]u8 = null
+capnpc-zig.rpc.transport.quic.WarmRedialClient.total_redials: field u32 = 0
 capnpc-zig.rpc.transport.quic.WarmRedialClient: struct
 capnpc-zig.rpc.transport.quic.alpn: const *const [11:0]u8
 capnpc-zig.rpc.transport.quic.baseline_stream_id: const u64
@@ -3750,9 +3757,11 @@ capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.generations: 
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.last_cause: field rpc.events.DisconnectCause
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.rebinds: field u32
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.redials: field u32
+capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.total_redials: field u32
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome: struct
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Policy.backoff_ms: field u64 = 50
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Policy.max_redials: field u32 = 3
+capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Policy.min_healthy_ms: field u64 = 10000
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Policy.redial_on_idle_timeout: field bool = false
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Policy: struct
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.RebindFn: type = *const fn (?*anyopaque, *rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap) void
@@ -3760,6 +3769,7 @@ capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.allocator: field mem.
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.base: field rpc.transport.quic.options.ClientOptions
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.cb_ctx: field ?*anyopaque
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.current_conn: field ?*rpc.transport.quic.connection.Connection = null
+capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.default_min_healthy_ms: const u64
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.deinit: fn (*rpc.transport.quic.warm_redial.WarmRedialClient) void
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.exportWarmState: fn (*rpc.transport.quic.warm_redial.WarmRedialClient, mem.Allocator) error{OutOfMemory}!?[]u8
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.generations: field u32 = 0
@@ -3770,6 +3780,7 @@ capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.on_give_up: field ?*c
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.on_rebind: field *const fn (?*anyopaque, *rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap) void
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.policy: field rpc.transport.quic.warm_redial.WarmRedialClient.Policy
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.rebinds: field u32 = 0
+capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.rebound_at_ns: field ?u64 = null
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.redials: field u32 = 0
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.requestStop: fn (*rpc.transport.quic.warm_redial.WarmRedialClient) void
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.restore_failed: field bool = false
@@ -3779,6 +3790,7 @@ capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.stop_requested: field
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.sturdy_ref: field []u8
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.ticket: field ?[]u8 = null
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.token: field ?[]u8 = null
+capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.total_redials: field u32 = 0
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient: struct
 capnpc-zig.rpc.transport.quic.warm_redial: struct
 capnpc-zig.rpc.transport.quic.warm_state.DecodeError: type = error{InvalidWarmState}

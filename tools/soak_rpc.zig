@@ -2042,7 +2042,9 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
         for (heal_apps, heal_clients) |*app, *client| {
             if (app.outcome) |o| {
                 heal_rebinds += o.rebinds;
-                heal_redials += o.redials;
+                // `redials` is the consecutive-failure streak, which a
+                // healthy generation resets; the report wants every redial.
+                heal_redials += o.total_redials;
                 heal_min_rebinds = @min(heal_min_rebinds, o.rebinds);
             } else {
                 heal_min_rebinds = 0;
