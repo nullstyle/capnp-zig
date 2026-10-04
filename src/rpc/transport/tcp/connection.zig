@@ -271,7 +271,7 @@ pub const Connection = struct {
             .init_ns = now,
             .last_activity_ns = now,
         };
-        events.emitConnection(conn.observer, .tcp, .unknown, .initialized);
+        events.emitConnection(conn.observer, conn.transport.source, .unknown, .initialized);
         return conn;
     }
 
@@ -415,7 +415,7 @@ pub const Connection = struct {
         self.on_message = on_message;
         self.on_error = on_error;
         self.on_close = on_close;
-        events.emitConnection(self.observer, .tcp, .unknown, .started);
+        events.emitConnection(self.observer, self.transport.source, .unknown, .started);
     }
 
     pub fn context(self: *const Connection) ?*anyopaque {
@@ -791,7 +791,7 @@ pub const Connection = struct {
         if (push_result) |_| {} else |err| {
             log.debug("framer push failed: {}", .{err});
             self.framer.reset();
-            events.emitProtocolError(self.observer, .tcp, .unknown, err, null);
+            events.emitProtocolError(self.observer, self.transport.source, .unknown, err, null);
             self.invokeTerminalError(err);
             return false;
         }
@@ -806,7 +806,7 @@ pub const Connection = struct {
                 if (err == error.OutOfMemory) {
                     log.debug("popFrame OOM, closing connection", .{});
                     self.framer.reset();
-                    events.emitProtocolError(self.observer, .tcp, .unknown, err, null);
+                    events.emitProtocolError(self.observer, self.transport.source, .unknown, err, null);
                     self.invokeTerminalError(err);
                     return false;
                 }
@@ -814,7 +814,7 @@ pub const Connection = struct {
                 // byte stream — reset the framer and null the callbacks.
                 log.debug("framing error, connection unrecoverable: {}", .{err});
                 self.framer.reset();
-                events.emitProtocolError(self.observer, .tcp, .unknown, err, null);
+                events.emitProtocolError(self.observer, self.transport.source, .unknown, err, null);
                 self.invokeTerminalError(err);
                 return false;
             };
@@ -822,7 +822,7 @@ pub const Connection = struct {
             const bytes = frame.?;
             defer self.allocator.free(bytes);
             self.first_frame_received = true;
-            events.emitFrame(self.observer, .tcp, .unknown, .received, bytes.len);
+            events.emitFrame(self.observer, self.transport.source, .unknown, .received, bytes.len);
 
             // Design note: message handler errors are treated as non-fatal.
             // Unlike framing errors (which corrupt the byte stream and make
@@ -911,8 +911,8 @@ pub const Connection = struct {
         // (the loop) thread; emit it before the terminal events so observers
         // see closing → close → closed in order.
         if (self.close_requested.load(.acquire)) self.emitClosingOnce();
-        events.emitClose(self.observer, .tcp, .unknown, self.last_error);
-        events.emitConnection(self.observer, .tcp, .unknown, .closed);
+        events.emitClose(self.observer, self.transport.source, .unknown, self.last_error);
+        events.emitConnection(self.observer, self.transport.source, .unknown, .closed);
     }
 
     /// Emit the `.closing` connection phase at most once. Owner/loop-thread
@@ -921,7 +921,7 @@ pub const Connection = struct {
     fn emitClosingOnce(self: *Connection) void {
         if (self.closing_emitted) return;
         self.closing_emitted = true;
-        events.emitConnection(self.observer, .tcp, .unknown, .closing);
+        events.emitConnection(self.observer, self.transport.source, .unknown, .closing);
     }
 
     /// The run loop's wait bound. A liveness deadline without an explicit
@@ -938,7 +938,7 @@ pub const Connection = struct {
         if (self.reapIfFirstFrameDeadlineExceeded()) return true;
         if (self.idleDeadlineExceeded()) {
             log.debug("idle timeout exceeded, reaping connection", .{});
-            events.emitTimeout(self.observer, .tcp, .unknown, .idle_connection, null);
+            events.emitTimeout(self.observer, self.transport.source, .unknown, .idle_connection, null);
             return true;
         }
         return false;
@@ -951,7 +951,7 @@ pub const Connection = struct {
         const timeout_ms = self.first_frame_timeout_ms orelse return false;
         if (nowNs(self.io) -| self.init_ns < msToNs(timeout_ms)) return false;
         log.debug("no inbound frame within the first-frame deadline, reaping connection", .{});
-        events.emitTimeout(self.observer, .tcp, .unknown, .idle_connection, null);
+        events.emitTimeout(self.observer, self.transport.source, .unknown, .idle_connection, null);
         return true;
     }
 

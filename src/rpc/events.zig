@@ -47,13 +47,23 @@ pub const Observer = struct {
     }
 };
 
-pub const Source = enum {
+/// The component that emitted an event.
+///
+/// NON-EXHAUSTIVE, like `DisconnectCause`: sources are added as the runtime
+/// gains transports (`.unix` most recently). A `switch` over a `Source` needs
+/// an `else` (or `_`) prong. Format an unknown value with `std.enums.tagName`,
+/// which returns null for an unnamed value, never with `@tagName`.
+pub const Source = enum(u8) {
     tcp,
     quic_baseline,
     quic_native,
     peer,
     host_peer,
     worker_pool,
+    /// A stream transport (`tcp.Transport`, `tcp.Connection`) on an AF_UNIX
+    /// socket. Each such connection reports `.unix` instead of `.tcp`.
+    unix,
+    _,
 };
 
 pub const Role = enum {
@@ -77,7 +87,12 @@ pub const FrameStage = enum {
     received,
 };
 
-pub const Resource = enum {
+/// The bounded resource a backpressure, rejection or pressure event is about.
+///
+/// NON-EXHAUSTIVE, like `Source` and `DisconnectCause`: resources are added
+/// as the runtime bounds more state (`.attached_fds` most recently). A
+/// `switch` over a `Resource` needs an `else` (or `_`) prong.
+pub const Resource = enum(u8) {
     frame_bytes,
     write_queue_items,
     write_queue_bytes,
@@ -114,6 +129,17 @@ pub const Resource = enum {
     /// endpoint and every session on it keep running — because UDP is
     /// unauthenticated and any host can send one.
     udp_datagram_bytes,
+    /// File descriptors a peer attached (SCM_RIGHTS) to bytes on an AF_UNIX
+    /// stream connection. A transport that accepts none (drain mode) hands
+    /// each to the closer thread and emits a `.resource_rejection` per read
+    /// that carried any: `attempted` = the fds received, `limit` = 0, `err` =
+    /// `error.AttachedFdsRejected`. The same resource reports the kernel
+    /// dropping fds (`error.AttachedFdsTruncated`, or the fd-table errors
+    /// `error.ProcessFdQuotaExceeded` / `error.SystemFdQuotaExceeded`) and a
+    /// closer queue past its bound (`error.FdCloseQueueFull`: `attempted` =
+    /// fds pending, `limit` = the bound; the connection is closed).
+    attached_fds,
+    _,
 };
 
 /// Transport-agnostic typed close cause — the "death certificate" a

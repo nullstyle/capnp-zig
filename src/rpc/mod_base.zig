@@ -62,6 +62,14 @@ pub fn Transport(comptime quic_impl: type, comptime include_tcp: bool) type {
             pub const createLoopbackSocketPair = runtime.createLoopbackSocketPair;
             pub const ipAddressToSockaddr = runtime.ipAddressToSockaddr;
         } else struct {};
+
+        /// AF_UNIX support (Experimental, Linux and Darwin). `fd_io` is the
+        /// raw read that takes peer-attached fds, and its process-wide
+        /// closer thread; every `tcp.Transport` on an AF_UNIX socket reads
+        /// through it. Like `tcp`, only the full roots carry it.
+        pub const unix = if (include_tcp) struct {
+            pub const fd_io = @import("./transport/unix/fd_io.zig");
+        } else struct {};
     };
 }
 

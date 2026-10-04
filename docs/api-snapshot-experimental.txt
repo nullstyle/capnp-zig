@@ -423,6 +423,7 @@ capnpc-zig.rpc.events.ProtocolErrorEvent.role: field rpc.events.Role = .unknown
 capnpc-zig.rpc.events.ProtocolErrorEvent.source: field rpc.events.Source
 capnpc-zig.rpc.events.ProtocolErrorEvent: struct
 capnpc-zig.rpc.events.Resource.active_inbound_questions: enumerant = 14
+capnpc-zig.rpc.events.Resource.attached_fds: enumerant = 26
 capnpc-zig.rpc.events.Resource.frame_bytes: enumerant = 0
 capnpc-zig.rpc.events.Resource.host_call_bytes: enumerant = 10
 capnpc-zig.rpc.events.Resource.host_call_frames: enumerant = 9
@@ -465,6 +466,7 @@ capnpc-zig.rpc.events.Source.peer: enumerant = 3
 capnpc-zig.rpc.events.Source.quic_baseline: enumerant = 1
 capnpc-zig.rpc.events.Source.quic_native: enumerant = 2
 capnpc-zig.rpc.events.Source.tcp: enumerant = 0
+capnpc-zig.rpc.events.Source.unix: enumerant = 6
 capnpc-zig.rpc.events.Source.worker_pool: enumerant = 5
 capnpc-zig.rpc.events.Source: enum
 capnpc-zig.rpc.events.TimeoutEvent.answer_id: field ?u32 = null
@@ -3124,12 +3126,14 @@ capnpc-zig.rpc.transport.tcp.SockAddrStorage: union
 capnpc-zig.rpc.transport.tcp.SocketFd.handle: field i32
 capnpc-zig.rpc.transport.tcp.Transport.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.Transport.close_requested: field atomic.Value(bool) = <default>
+capnpc-zig.rpc.transport.tcp.Transport.drain: field ?*rpc.transport.tcp.stream_transport.FdDrain = null
 capnpc-zig.rpc.transport.tcp.Transport.fd: field i32
 capnpc-zig.rpc.transport.tcp.Transport.fd_closed: field atomic.Value(bool) = <default>
 capnpc-zig.rpc.transport.tcp.Transport.fd_mu: field atomic.Mutex = .unlocked
 capnpc-zig.rpc.transport.tcp.Transport.io: field Io
 capnpc-zig.rpc.transport.tcp.Transport.observer: field ?rpc.events.Observer = null
 capnpc-zig.rpc.transport.tcp.Transport.read_buf: field []u8
+capnpc-zig.rpc.transport.tcp.Transport.source: field rpc.events.Source = .tcp
 capnpc-zig.rpc.transport.tcp.Transport.write_queue: field rpc.transport.tcp.stream_transport.Transport.WriteQueue = <default>
 capnpc-zig.rpc.transport.tcp.Transport.writer_thread: field ?Thread = null
 capnpc-zig.rpc.transport.tcp.Transport: struct
@@ -3245,6 +3249,7 @@ capnpc-zig.rpc.transport.tcp.stream.Transport.close_requested: field atomic.Valu
 capnpc-zig.rpc.transport.tcp.stream.Transport.default_max_queued_bytes: const usize
 capnpc-zig.rpc.transport.tcp.stream.Transport.default_max_queued_items: const usize
 capnpc-zig.rpc.transport.tcp.stream.Transport.deinit: fn (*rpc.transport.tcp.stream_transport.Transport) void
+capnpc-zig.rpc.transport.tcp.stream.Transport.drain: field ?*rpc.transport.tcp.stream_transport.FdDrain = null
 capnpc-zig.rpc.transport.tcp.stream.Transport.enqueueWrite: fn (*rpc.transport.tcp.stream_transport.Transport, []const u8) error{BrokenPipe,OutOfMemory,WriteQueueBytesExceeded,WriteQueueFull}!void
 capnpc-zig.rpc.transport.tcp.stream.Transport.fd: field i32
 capnpc-zig.rpc.transport.tcp.stream.Transport.fd_closed: field atomic.Value(bool) = <default>
@@ -3259,6 +3264,7 @@ capnpc-zig.rpc.transport.tcp.stream.Transport.read: fn (*rpc.transport.tcp.strea
 capnpc-zig.rpc.transport.tcp.stream.Transport.readTimeout: fn (*rpc.transport.tcp.stream_transport.Transport, Io.Timeout) error{AccessDenied,Canceled,ConcurrencyUnavailable,ConnectionResetByPeer,ConnectionTimedOut,NetworkDown,SocketUnconnected,SystemResources,Timeout,Unexpected}!usize
 capnpc-zig.rpc.transport.tcp.stream.Transport.read_buf: field []u8
 capnpc-zig.rpc.transport.tcp.stream.Transport.shutdown: fn (*rpc.transport.tcp.stream_transport.Transport) void
+capnpc-zig.rpc.transport.tcp.stream.Transport.source: field rpc.events.Source = .tcp
 capnpc-zig.rpc.transport.tcp.stream.Transport.startWriter: fn (*rpc.transport.tcp.stream_transport.Transport) error{LockedMemoryLimitExceeded,OutOfMemory,SystemResources,ThreadQuotaExceeded,Unexpected}!void
 capnpc-zig.rpc.transport.tcp.stream.Transport.stopWriter: fn (*rpc.transport.tcp.stream_transport.Transport) void
 capnpc-zig.rpc.transport.tcp.stream.Transport.write: fn (*rpc.transport.tcp.stream_transport.Transport, []const u8) error{AddressFamilyUnsupported,Canceled,ConnectionRefused,ConnectionResetByPeer,ConnectionTimedOut,FastOpenAlreadyInProgress,HostUnreachable,NetworkDown,NetworkUnreachable,SocketNotBound,SocketUnconnected,SystemResources,Unexpected}!void
@@ -3267,6 +3273,41 @@ capnpc-zig.rpc.transport.tcp.stream.Transport.writer_thread: field ?Thread = nul
 capnpc-zig.rpc.transport.tcp.stream.Transport: struct
 capnpc-zig.rpc.transport.tcp.stream: struct
 capnpc-zig.rpc.transport.tcp: struct
+capnpc-zig.rpc.transport.unix.fd_io.Fd: type = i32
+capnpc-zig.rpc.transport.unix.fd_io.Received.control_truncated: field bool
+capnpc-zig.rpc.transport.unix.fd_io.Received.data_len: field usize
+capnpc-zig.rpc.transport.unix.fd_io.Received.fd_count: field usize
+capnpc-zig.rpc.transport.unix.fd_io.Received: struct
+capnpc-zig.rpc.transport.unix.fd_io.RecvError: type = error{ConnectionResetByPeer,ConnectionTimedOut,ProcessFdQuotaExceeded,SocketUnconnected,SystemFdQuotaExceeded,SystemResources,Unexpected,UnixSocketsUnsupported}
+capnpc-zig.rpc.transport.unix.fd_io.closer.Admission.limit: field usize
+capnpc-zig.rpc.transport.unix.fd_io.closer.Admission.over_limit: field bool
+capnpc-zig.rpc.transport.unix.fd_io.closer.Admission.pending: field usize
+capnpc-zig.rpc.transport.unix.fd_io.closer.Admission: struct
+capnpc-zig.rpc.transport.unix.fd_io.closer.Fd: type = i32
+capnpc-zig.rpc.transport.unix.fd_io.closer.Reservation.slots: field usize = 0
+capnpc-zig.rpc.transport.unix.fd_io.closer.Reservation: struct
+capnpc-zig.rpc.transport.unix.fd_io.closer.ReserveError: type = error{OutOfMemory,UnixSocketsUnsupported}
+capnpc-zig.rpc.transport.unix.fd_io.closer.StartError: type = error{LockedMemoryLimitExceeded,OutOfMemory,SystemResources,ThreadQuotaExceeded,Unexpected,UnixSocketsUnsupported}
+capnpc-zig.rpc.transport.unix.fd_io.closer.ensureStarted: fn () error{LockedMemoryLimitExceeded,OutOfMemory,SystemResources,ThreadQuotaExceeded,Unexpected,UnixSocketsUnsupported}!void
+capnpc-zig.rpc.transport.unix.fd_io.closer.fallback_queue_limit: const usize
+capnpc-zig.rpc.transport.unix.fd_io.closer.handOff: fn (?*rpc.transport.unix.fd_closer.Reservation, []const i32) rpc.transport.unix.fd_closer.Admission
+capnpc-zig.rpc.transport.unix.fd_io.closer.handOffShutdown: fn (?*rpc.transport.unix.fd_closer.Reservation, i32) void
+capnpc-zig.rpc.transport.unix.fd_io.closer.max_counted_fd_limit: const usize
+capnpc-zig.rpc.transport.unix.fd_io.closer.min_queue_limit: const usize
+capnpc-zig.rpc.transport.unix.fd_io.closer.pending: fn () usize
+capnpc-zig.rpc.transport.unix.fd_io.closer.queueLimit: fn () usize
+capnpc-zig.rpc.transport.unix.fd_io.closer.release: fn (*rpc.transport.unix.fd_closer.Reservation) void
+capnpc-zig.rpc.transport.unix.fd_io.closer.reserve: fn (*rpc.transport.unix.fd_closer.Reservation, usize) error{OutOfMemory,UnixSocketsUnsupported}!void
+capnpc-zig.rpc.transport.unix.fd_io.closer.setQueueLimit: fn (usize) usize
+capnpc-zig.rpc.transport.unix.fd_io.closer.supported: const bool
+capnpc-zig.rpc.transport.unix.fd_io.closer: struct
+capnpc-zig.rpc.transport.unix.fd_io.controlSpace: fn (usize) usize
+capnpc-zig.rpc.transport.unix.fd_io.max_fds_per_read: const usize
+capnpc-zig.rpc.transport.unix.fd_io.parseRights: fn ([]const u8, []i32) usize
+capnpc-zig.rpc.transport.unix.fd_io.recvWithFds: fn (i32, []u8, []u8, []i32) error{ConnectionResetByPeer,ConnectionTimedOut,ProcessFdQuotaExceeded,SocketUnconnected,SystemFdQuotaExceeded,SystemResources,Unexpected,UnixSocketsUnsupported}!rpc.transport.unix.fd_io.Received
+capnpc-zig.rpc.transport.unix.fd_io.supported: const bool
+capnpc-zig.rpc.transport.unix.fd_io: struct
+capnpc-zig.rpc.transport.unix: struct
 capnpc-zig.rpc.transport: struct
 capnpc-zig.rpc.vat.host.Vat: fn (comptime type) type
 capnpc-zig.rpc.vat.host: struct

@@ -136,6 +136,10 @@ test-rpc-promises:
 test-rpc-transport:
     zig build {{ test_jobs }} test-rpc-transport --summary all
 
+# Run the AF_UNIX transport suites (regressions, fd drain, lingering close)
+test-rpc-unix:
+    zig build {{ test_jobs }} test-rpc-unix --summary all
+
 # Run RPC peer semantics tests
 test-rpc-peer:
     zig build {{ test_jobs }} test-rpc-peer --summary all

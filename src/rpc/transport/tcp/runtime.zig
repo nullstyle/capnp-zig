@@ -160,7 +160,7 @@ pub const Listener = struct {
             .{ .handle = fd },
             self.conn_options,
         );
-        events.emitConnection(self.conn_options.observer, .tcp, .server, .accepted);
+        events.emitConnection(self.conn_options.observer, conn_ptr.transport.source, .server, .accepted);
         return conn_ptr;
     }
 };

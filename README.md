@@ -365,7 +365,7 @@ For the public-surface alias cleanup, see
 - **Capability-based security**: Each connection maintains export and import tables tracking capabilities by ID with reference counting. The runtime sends `Release` when a refcount reaches zero.
 - **Promise pipelining**: Calls can be pipelined on promised answers before results arrive, reducing round trips.
 - **Structured peer orchestration**: The `Peer` type handles the full lifecycle -- call dispatch, return handling, embargo management, capability forwarding, and third-party handoff.
-- **Socket data I/O through `std.Io`**: connect, accept, read, and write on RPC sockets go through the `std.Io` you pass in, and backends are selected through one helper (below). Not every call does: on POSIX the TCP run loop waits for readiness in a raw `poll(2)` when wake, ticks, or an idle bound are enabled, the QUIC wake door also polls raw, and the wake channels and `TCP_NODELAY` use raw `socketpair`/`read`/`write`/`getsockname`/`setsockopt`. Those calls block the OS thread whatever backend is selected. That suits `std.Io.Threaded`, the only backend that carries RPC today.
+- **Socket data I/O through `std.Io`**: connect, accept, read, and write on RPC sockets go through the `std.Io` you pass in, and backends are selected through one helper (below). Not every call does: on POSIX the TCP run loop waits for readiness in a raw `poll(2)` when wake, ticks, or an idle bound are enabled, the QUIC wake door also polls raw, and the wake channels and `TCP_NODELAY` use raw `socketpair`/`read`/`write`/`getsockname`/`setsockopt`. On an AF_UNIX socket (Linux and macOS) reads are a raw `recvmsg` that takes any fds the peer attached, and a process-wide closer thread closes those fds with a raw `close`. Those calls block the OS thread whatever backend is selected. That suits `std.Io.Threaded`, the only backend that carries RPC today.
 
 ### Switchable Io Backend
 
@@ -511,6 +511,7 @@ zig build test-rpc-wire       # Framing/protocol
 zig build test-rpc-caps       # Capability tables
 zig build test-rpc-promises   # Promises/pipelining
 zig build test-rpc-transport  # TCP/Unix/raw-frame transport
+zig build test-rpc-unix       # AF_UNIX suites (fd drain, lingering close)
 zig build test-rpc-peer       # Peer semantics
 zig build test-rpc-integration # HostPeer/WorkerPool integration
 zig build -Dquic=true test-rpc-quic # Optional QUIC transport

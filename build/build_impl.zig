@@ -840,6 +840,15 @@ pub fn buildImpl(b: *std.Build) !void {
     // (every TCP path must still set it). POSIX-only: the suite compiles
     // everywhere and skips on Windows.
     const run_rpc_unix_regression_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_regression_test.zig", target, optimize, lib_module);
+    // Drain mode (sprint item 6): every fd a peer attaches on an AF_UNIX
+    // connection is closed, off the reader and teardown threads. Linux and
+    // macOS run them; other targets compile them and skip.
+    const run_rpc_unix_fd_drain_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_drain_test.zig", target, optimize, lib_module);
+    const run_rpc_unix_linger_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_linger_test.zig", target, optimize, lib_module);
+    const test_rpc_unix_step = b.step("test-rpc-unix", "Run the AF_UNIX transport suites (regressions, fd drain, lingering close)");
+    test_rpc_unix_step.dependOn(run_rpc_unix_regression_tests);
+    test_rpc_unix_step.dependOn(run_rpc_unix_fd_drain_tests);
+    test_rpc_unix_step.dependOn(run_rpc_unix_linger_tests);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, qm)
     else
@@ -1318,6 +1327,8 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_transport_step.dependOn(run_rpc_client_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_server_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_regression_tests);
+    test_rpc_transport_step.dependOn(run_rpc_unix_fd_drain_tests);
+    test_rpc_transport_step.dependOn(run_rpc_unix_linger_tests);
     test_rpc_transport_step.dependOn(run_rpc_raw_frame_security_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_kernel_semantics_tests);
 
@@ -1608,6 +1619,11 @@ pub fn buildImpl(b: *std.Build) !void {
             // Single-threaded apart from one writer thread, but it is the
             // only lane that runs FD-0 against glibc's `cmsghdr` layout.
             "tests/rpc/transport/unix/unix_kernel_semantics_test.zig",
+            // Drain mode hands received fds from the reader thread to the
+            // process-wide closer thread; TSan also runs it against glibc's
+            // cmsghdr layout.
+            "tests/rpc/transport/unix/rpc_unix_fd_drain_test.zig",
+            "tests/rpc/transport/unix/rpc_unix_linger_test.zig",
         };
         for (tsan_suites) |suite_path| {
             const t = b.addTest(.{

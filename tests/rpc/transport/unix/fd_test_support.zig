@@ -1,0 +1,359 @@
+//! Raw-syscall helpers shared by the AF_UNIX fd suites
+//! (`rpc_unix_fd_drain_test.zig`, `rpc_unix_linger_test.zig`).
+//!
+//! The "peer" in these suites is a raw socket that attaches fds with
+//! `sendmsg`, the way a hostile local process would. Everything here calls
+//! `posix.system` directly: Linux without libc, Linux with glibc (the TSan
+//! lane) and macOS libc.
+
+const std = @import("std");
+const builtin = @import("builtin");
+const capnpc = @import("capnpc-zig");
+
+pub const posix = std.posix;
+pub const sys = posix.system;
+const cmsg = std.Io.net.cmsg;
+const cmsg_align = std.Io.net.cmsg_align;
+const testing = std.testing;
+
+pub const is_linux = builtin.os.tag == .linux;
+pub const is_macos = builtin.os.tag == .macos;
+/// The kernels these suites pin. Every other target skips (Windows has no
+/// SCM_RIGHTS), but every target compiles the files.
+pub const supported = is_linux or is_macos;
+
+pub const Fd = posix.fd_t;
+pub const events = capnpc.rpc.events;
+pub const fd_io = capnpc.rpc.transport.unix.fd_io;
+
+fn ival(rc: anytype) isize {
+    return switch (@typeInfo(@TypeOf(rc)).int.signedness) {
+        .signed => @intCast(rc),
+        .unsigned => @bitCast(rc),
+    };
+}
+
+/// The non-negative result of a syscall, or the errno number printed and a
+/// failure.
+pub fn check(rc: anytype, what: []const u8) error{SyscallFailed}!usize {
+    const err = posix.errno(rc);
+    if (err != .SUCCESS) {
+        std.debug.print("{s} failed with errno {d}\n", .{ what, @backingInt(err) });
+        return error.SyscallFailed;
+    }
+    return @intCast(ival(rc));
+}
+
+pub fn closeFd(fd: Fd) void {
+    _ = sys.close(fd);
+}
+
+pub fn socketPair() ![2]Fd {
+    var fds: [2]Fd = undefined;
+    _ = try check(sys.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds), "socketpair");
+    return fds;
+}
+
+pub fn pipePair() ![2]Fd {
+    var fds: [2]Fd = undefined;
+    _ = try check(sys.pipe(&fds), "pipe");
+    return fds;
+}
+
+fn fdFlags(fd: Fd) ?usize {
+    const rc = if (is_linux and !builtin.link_libc)
+        sys.fcntl(fd, posix.F.GETFD, 0)
+    else
+        sys.fcntl(fd, posix.F.GETFD);
+    if (posix.errno(rc) != .SUCCESS) return null;
+    return @intCast(ival(rc));
+}
+
+pub fn isOpen(fd: Fd) bool {
+    return fdFlags(fd) != null;
+}
+
+pub fn setNonBlocking(fd: Fd, on: bool) !void {
+    const nonblock: usize = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
+    const get = if (is_linux and !builtin.link_libc)
+        sys.fcntl(fd, posix.F.GETFL, 0)
+    else
+        sys.fcntl(fd, posix.F.GETFL);
+    const old = try check(get, "fcntl(F_GETFL)");
+    const new = if (on) old | nonblock else old & ~nonblock;
+    const set = if (is_linux and !builtin.link_libc)
+        sys.fcntl(fd, posix.F.SETFL, new)
+    else
+        sys.fcntl(fd, posix.F.SETFL, @as(c_int, @intCast(new)));
+    _ = try check(set, "fcntl(F_SETFL)");
+}
+
+/// True when every write end of the pipe whose read end is `read_end` is
+/// closed: the read end polls ready within `timeout_ms` and reads EOF. The
+/// pipe must hold no unread data.
+pub fn pipeWritersClosed(read_end: Fd, timeout_ms: i32) bool {
+    var pfd = [1]posix.pollfd{.{ .fd = read_end, .events = posix.POLL.IN, .revents = 0 }};
+    const rc = sys.poll(&pfd, 1, timeout_ms);
+    if (posix.errno(rc) != .SUCCESS or ival(rc) <= 0) return false;
+    var byte: [1]u8 = undefined;
+    const n = sys.read(read_end, &byte, 1);
+    return posix.errno(n) == .SUCCESS and ival(n) == 0;
+}
+
+/// How long a positive check waits for an fd the closer must close.
+pub const closed_wait_ms: i32 = 2000;
+/// How long a negative check waits for a pipe writer that must stay open.
+pub const still_open_wait_ms: i32 = 50;
+
+pub fn nowNs() i96 {
+    return std.Io.Clock.awake.now(testing.io).nanoseconds;
+}
+
+pub fn msSince(start_ns: i96) i64 {
+    return @intCast(@divFloor(nowNs() - start_ns, std.time.ns_per_ms));
+}
+
+pub fn sleepMs(ms: i64) void {
+    std.Io.sleep(testing.io, .fromMilliseconds(ms), .awake) catch {};
+}
+
+const max_send_fds = 300;
+
+fn buildRights(buf: []align(cmsg_align) u8, fds: []const Fd) []align(cmsg_align) u8 {
+    const data_len = fds.len * @sizeOf(Fd);
+    const total = cmsg.space(data_len);
+    @memset(buf[0..total], 0);
+    const header: *align(cmsg_align) posix.cmsghdr = @ptrCast(buf.ptr);
+    header.len = @intCast(cmsg.len(@intCast(data_len)));
+    header.level = posix.SOL.SOCKET;
+    header.type = posix.SCM.RIGHTS;
+    @memcpy(cmsg.data(header)[0..data_len], std.mem.sliceAsBytes(fds));
+    return buf[0..total];
+}
+
+/// One raw `sendmsg`; a non-empty `fds` goes out as one SCM_RIGHTS cmsg.
+fn sendOnce(sock: Fd, bytes: []const u8, fds: []const Fd) !usize {
+    var control_buf: [cmsg.space(max_send_fds * @sizeOf(Fd))]u8 align(cmsg_align) = undefined;
+    const control: []const u8 = if (fds.len == 0) &.{} else buildRights(&control_buf, fds);
+    var iov = [1]posix.iovec_const{.{ .base = bytes.ptr, .len = bytes.len }};
+    const msg: posix.msghdr_const = .{
+        .name = null,
+        .namelen = 0,
+        .iov = &iov,
+        .iovlen = 1,
+        .control = if (control.len == 0) null else control.ptr,
+        .controllen = @intCast(control.len),
+        .flags = 0,
+    };
+    while (true) {
+        const rc = sys.sendmsg(sock, &msg, 0);
+        switch (posix.errno(rc)) {
+            .SUCCESS => return @intCast(ival(rc)),
+            .INTR => continue,
+            else => |err| {
+                std.debug.print("sendmsg failed with errno {d}\n", .{@backingInt(err)});
+                return error.SyscallFailed;
+            },
+        }
+    }
+}
+
+/// Sends all of `bytes` from the raw peer socket, with `fds` attached to the
+/// first chunk only.
+pub fn sendWithFds(sock: Fd, bytes: []const u8, fds: []const Fd) !void {
+    var offset: usize = 0;
+    var first = true;
+    while (offset < bytes.len) {
+        offset += try sendOnce(sock, bytes[offset..], if (first) fds else &.{});
+        first = false;
+    }
+}
+
+/// A valid one-segment Cap'n Proto frame whose root holds `value`. The
+/// caller frees it with `allocator`.
+pub fn buildFrame(allocator: std.mem.Allocator, value: u32) ![]const u8 {
+    var builder = capnpc.message.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var root = try builder.allocateStruct(1, 0);
+    root.writeU32(0, value);
+    return builder.toBytes();
+}
+
+/// `count` pipes. The test keeps the read ends to watch for EOF and sends
+/// the write ends.
+pub const Pipes = struct {
+    read_ends: [16]Fd = undefined,
+    write_ends: [16]Fd = undefined,
+    count: usize = 0,
+
+    pub fn open(count: usize) !Pipes {
+        var self: Pipes = .{};
+        errdefer self.closeAll();
+        while (self.count < count) {
+            const p = try pipePair();
+            self.read_ends[self.count] = p[0];
+            self.write_ends[self.count] = p[1];
+            self.count += 1;
+        }
+        return self;
+    }
+
+    pub fn writers(self: *const Pipes) []const Fd {
+        return self.write_ends[0..self.count];
+    }
+
+    /// Close the test's own copies of the write ends, after sending them.
+    /// From then on only the receiver's copies keep each pipe open.
+    pub fn closeWriters(self: *Pipes) void {
+        for (self.write_ends[0..self.count]) |*w| {
+            if (w.* >= 0) closeFd(w.*);
+            w.* = -1;
+        }
+    }
+
+    pub fn closeAll(self: *Pipes) void {
+        self.closeWriters();
+        for (self.read_ends[0..self.count]) |r| closeFd(r);
+        self.count = 0;
+    }
+
+    /// Fails unless every pipe sees EOF within `closed_wait_ms`: the
+    /// receiver closed every write end it got.
+    pub fn expectAllWritersClosed(self: *const Pipes) !void {
+        for (self.read_ends[0..self.count], 0..) |r, i| {
+            if (!pipeWritersClosed(r, closed_wait_ms)) {
+                std.debug.print("pipe {d}: a write end the peer attached is still open\n", .{i});
+                return error.AttachedFdStillOpen;
+            }
+        }
+    }
+};
+
+/// Which fds below `max_scanned_fd` are open. Fds are allocated lowest
+/// first, and these suites hold a few dozen at most.
+pub const max_scanned_fd = 2048;
+
+pub const FdSnapshot = struct {
+    open: std.StaticBitSet(max_scanned_fd),
+
+    pub fn take() FdSnapshot {
+        var snapshot: FdSnapshot = .{ .open = .empty };
+        var fd: usize = 0;
+        while (fd < max_scanned_fd) : (fd += 1) {
+            if (isOpen(@intCast(fd))) snapshot.open.set(fd);
+        }
+        return snapshot;
+    }
+
+    /// The fds open in `after` that were closed in `before`. Returns the
+    /// count; the first `out.len` land in `out`.
+    pub fn added(after: FdSnapshot, before: FdSnapshot, out: []Fd) usize {
+        var count: usize = 0;
+        var it = after.open.iterator(.{});
+        while (it.next()) |fd| {
+            if (before.open.isSet(fd)) continue;
+            if (count < out.len) out[count] = @intCast(fd);
+            count += 1;
+        }
+        return count;
+    }
+
+    pub fn highest(snapshot: FdSnapshot) usize {
+        return snapshot.open.findLastSet() orelse 0;
+    }
+};
+
+/// Waits (up to `closed_wait_ms`, for the closer thread) until the fd table
+/// is exactly `before` again; prints the difference and fails otherwise.
+pub fn expectBackAtBaseline(before: FdSnapshot) !void {
+    const start = nowNs();
+    while (true) {
+        const after = FdSnapshot.take();
+        var leaked: [16]Fd = undefined;
+        const n_leaked = after.added(before, &leaked);
+        var lost: [16]Fd = undefined;
+        const n_lost = before.added(after, &lost);
+        if (n_leaked == 0 and n_lost == 0) return;
+        if (msSince(start) >= closed_wait_ms) {
+            std.debug.print("fd table not back at baseline: {d} new fd(s) {any}, {d} closed fd(s) {any}\n", .{
+                n_leaked, leaked[0..@min(n_leaked, leaked.len)], n_lost, lost[0..@min(n_lost, lost.len)],
+            });
+            return error.FdTableNotAtBaseline;
+        }
+        sleepMs(10);
+    }
+}
+
+/// Waits until the closer thread has closed everything handed to it.
+pub fn waitCloserIdle(timeout_ms: i64) !void {
+    const start = nowNs();
+    while (fd_io.closer.pending() != 0) {
+        if (msSince(start) >= timeout_ms) {
+            std.debug.print("fd closer still has {d} fd(s) pending after {d} ms\n", .{ fd_io.closer.pending(), timeout_ms });
+            return error.CloserStillBusy;
+        }
+        sleepMs(10);
+    }
+}
+
+/// Records the events a transport emits. Observer callbacks run on the
+/// connection's loop thread, which is the test thread in these suites.
+pub const Recorder = struct {
+    attached_fds: [32]events.ResourceRejectionEvent = undefined,
+    attached_count: usize = 0,
+    connection_sources: [16]events.Source = undefined,
+    connection_count: usize = 0,
+    close_err: ?anyerror = null,
+    closed: bool = false,
+
+    pub fn observer(self: *Recorder) events.Observer {
+        return events.Observer.init(self, onEvent);
+    }
+
+    fn onEvent(ctx: *anyopaque, event: events.Event) void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        switch (event) {
+            .resource_rejection => |r| if (r.resource == .attached_fds and self.attached_count < self.attached_fds.len) {
+                self.attached_fds[self.attached_count] = r;
+                self.attached_count += 1;
+            },
+            .connection => |c| if (self.connection_count < self.connection_sources.len) {
+                self.connection_sources[self.connection_count] = c.source;
+                self.connection_count += 1;
+            },
+            .close => |c| {
+                self.closed = true;
+                self.close_err = c.err;
+            },
+            else => {},
+        }
+    }
+
+    /// The `.attached_fds` rejections whose `err` is `err`.
+    pub fn countErr(self: *const Recorder, err: anyerror) usize {
+        var n: usize = 0;
+        for (self.attached_fds[0..self.attached_count]) |r| {
+            if (r.err == err) n += 1;
+        }
+        return n;
+    }
+
+    /// Total `attempted` over the `.attached_fds` rejections whose `err` is
+    /// `err`.
+    pub fn attemptedFor(self: *const Recorder, err: anyerror) usize {
+        var n: usize = 0;
+        for (self.attached_fds[0..self.attached_count]) |r| {
+            if (r.err == err) n += r.attempted orelse 0;
+        }
+        return n;
+    }
+};
+
+/// The frames a `Connection` delivered.
+pub const Inbox = struct {
+    frames: usize = 0,
+    first_frame_ns: ?i96 = null,
+    errors: usize = 0,
+    last_error: ?anyerror = null,
+    close_after_frames: ?usize = null,
+};
