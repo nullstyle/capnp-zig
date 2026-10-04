@@ -48,6 +48,18 @@ pub const Server = struct {
     pub const StepResult = scheduler.StepResult;
     pub const Session = ServerSession;
 
+    /// Accept hook; see `setOnSessionAccepted` for the full contract.
+    /// Returning an error rejects the session: the server closes it.
+    pub const SessionAcceptedFn = *const fn (
+        ctx: ?*anyopaque,
+        server: *Server,
+        session: *ServerSession,
+    ) anyerror!void;
+
+    /// Hook invoked by `runWithAfterStep` on the loop thread after every
+    /// step. See that function for why the point matters.
+    pub const AfterStepFn = *const fn (ctx: ?*anyopaque) void;
+
     allocator: std.mem.Allocator,
     io: std.Io,
     listener: listener_mod.Listener,
@@ -81,6 +93,11 @@ pub const Server = struct {
     /// When true, the loop-thread affinity checks also run in release builds
     /// (always on in Debug). Mirrors the connection field.
     runtime_thread_checks: bool = false,
+
+    /// Accept hook and its context. Set both through `setOnSessionAccepted`.
+    /// Loop-thread only.
+    on_session_accepted: ?SessionAcceptedFn = null,
+    on_session_accepted_ctx: ?*anyopaque = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -174,6 +191,51 @@ pub const Server = struct {
         self.assertLoopThread();
         const index = self.findSessionIndexById(id) orelse return null;
         return self.sessions.items[index];
+    }
+
+    /// Install the accept hook, or clear it with a null `callback`. This is
+    /// the event form of polling `sessionCount()`/`sessionAt()` for new
+    /// sessions, and the place to attach a `Peer` to each one.
+    ///
+    /// Contract:
+    /// - It fires exactly once for every `ServerSession` this server adopts,
+    ///   on the loop thread (the thread that drives `stepOnce`/`run`), inside
+    ///   the step that adopted the session.
+    /// - When it fires, the session is already in the session list, so
+    ///   `sessionCount()` and `sessionById()` see it. The step has not yet
+    ///   serviced the session, so callbacks attached here (for example by
+    ///   `Peer.init` plus `Peer.start`) see its first inbound frame.
+    /// - A session is adopted when the listener creates a QUIC connection for
+    ///   a fresh Initial, BEFORE the handshake completes. The handshake can
+    ///   still fail; the half-open guard (`handshake_timeout_ms`) then closes
+    ///   the session, and its close callback fires as usual. Anyone who can
+    ///   reach the UDP port can cause adoptions, up to
+    ///   `max_concurrent_connections` at a time and subject to the listener
+    ///   rate gates, so keep per-session work here bounded.
+    /// - The `*ServerSession` stays valid until the server reaps it, which
+    ///   happens after its close callback has fired.
+    /// - The hook may attach and start a `Peer`, call `start`, `sendFrame` or
+    ///   `requestClose` on the session, and read server counters. It must
+    ///   not step, run or deinit the server.
+    /// - Returning an error rejects the session: the server logs it and
+    ///   closes the session normally in the same step. If the hook attached
+    ///   callbacks before failing, their `on_close` still fires exactly once.
+    ///   The handshake has not completed at this point, and quic-zig sends
+    ///   that close only under 1-RTT keys the client does not have yet, so
+    ///   the client learns of the refusal from its own handshake timeout,
+    ///   exactly as for a dial the server's flood gates drop.
+    /// - Sessions adopted before the hook is installed are not replayed, so
+    ///   install it before the first step.
+    ///
+    /// Loop-thread only (or before the first step).
+    pub fn setOnSessionAccepted(
+        self: *Server,
+        ctx: ?*anyopaque,
+        callback: ?SessionAcceptedFn,
+    ) void {
+        self.assertLoopThread();
+        self.on_session_accepted_ctx = ctx;
+        self.on_session_accepted = callback;
     }
 
     /// Receive and feed at most one datagram.
@@ -326,12 +388,33 @@ pub const Server = struct {
     }
 
     pub fn run(self: *Server) void {
+        self.runWithAfterStep(null, null);
+    }
+
+    /// `run`, plus `after_step(ctx)` on the loop thread after every step, in
+    /// both the serving phase and the shutdown drain, and once more before
+    /// returning.
+    ///
+    /// Session close callbacks fire INSIDE a step, and a session whose close
+    /// callback has fired can still be stepped while its QUIC connection
+    /// drains (an internal error there still reaches its error callback).
+    /// So state those callbacks borrow, such as an attached `Peer`, must
+    /// outlive the session itself: free it from here once
+    /// `sessionById(id)` returns null. `PeerServer` frees its per-session
+    /// peers this way.
+    pub fn runWithAfterStep(
+        self: *Server,
+        ctx: ?*anyopaque,
+        after_step: ?AfterStepFn,
+    ) void {
+        defer if (after_step) |hook| hook(ctx);
         while (!self.isClosing()) {
             _ = self.stepOnce(.wait) catch |err| {
                 log.debug("QUIC server step failed: {}", .{err});
                 self.close();
                 break;
             };
+            if (after_step) |hook| hook(ctx);
         }
 
         while (self.sessionCount() > 0 or self.quicConnectionCount() > 0) {
@@ -339,6 +422,7 @@ pub const Server = struct {
                 log.debug("QUIC server shutdown step failed: {}", .{err});
                 break;
             };
+            if (after_step) |hook| hook(ctx);
             if (self.sessionCount() == 0 and self.quicConnectionCount() == 0) break;
             std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(1), .awake) catch break;
         }
@@ -524,6 +608,15 @@ pub const Server = struct {
     }
 
     fn adoptAcceptedSessions(self: *Server) !usize {
+        // Everything appended below is new. Notify in a `defer` so a session
+        // adopted before a later allocation fails still gets its hook: the
+        // next pass skips any slot it already tracks, so a hook skipped here
+        // would never fire for that session.
+        const first_new = self.sessions.items.len;
+        defer {
+            self.refreshSessionOrdinals();
+            self.notifySessionsAccepted(first_new);
+        }
         var adopted: usize = 0;
         const slots = self.listener.server.iterator();
         for (slots, 0..) |slot, ordinal| {
@@ -543,8 +636,24 @@ pub const Server = struct {
             try self.sessions.append(self.allocator, new_session);
             adopted += 1;
         }
-        self.refreshSessionOrdinals();
         return adopted;
+    }
+
+    /// Fire the accept hook for every session at or past `first_new`.
+    /// Adoption only appends, and only the loop thread mutates the list (the
+    /// hook may not step the server), so the sessions past `first_new` are
+    /// exactly the ones this adoption pass created.
+    fn notifySessionsAccepted(self: *Server, first_new: usize) void {
+        var index = first_new;
+        while (index < self.sessions.items.len) : (index += 1) {
+            // Re-read per session: a hook may clear itself.
+            const hook = self.on_session_accepted orelse return;
+            const session = self.sessions.items[index];
+            hook(self.on_session_accepted_ctx, self, session) catch |err| {
+                log.debug("QUIC server accept hook rejected session {d}: {}", .{ session.id, err });
+                session.closeOnLoop();
+            };
+        }
     }
 
     fn refreshSessionOrdinals(self: *Server) void {

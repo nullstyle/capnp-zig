@@ -208,3 +208,49 @@ test "quic transport guide stateless-reset key recipe returns one key across res
     });
     try std.testing.expectEqualSlices(u8, &first, &options.stateless_reset_key.?);
 }
+
+test "quic transport guide one-call session snippets use the public session surface" {
+    comptime {
+        if (!quic.enabled) @compileError("QUIC transport snippets require -Dquic=true");
+        // Every name the "One-call sessions" section and its example use.
+        _ = &quic.connect;
+        _ = &quic.serve;
+        _ = &quic.ClientSession.fromPeer;
+        _ = &quic.ClientSession.run;
+        _ = &quic.ClientSession.close;
+        _ = &quic.ClientSession.requestStop;
+        _ = &quic.ClientSession.closeCause;
+        _ = &quic.ClientSession.deinit;
+        _ = &quic.PeerServer.getAddress;
+        _ = &quic.PeerServer.run;
+        _ = &quic.PeerServer.requestStop;
+        _ = &quic.PeerServer.deinit;
+        _ = &quic.PeerServer.Session.fromPeer;
+        _ = &quic.PeerServer.Session.close;
+        _ = &quic.PeerServer.Session.closeCause;
+        _ = &quic.Server.setOnSessionAccepted;
+        _ = &quic.Server.runWithAfterStep;
+    }
+
+    const Hooks = struct {
+        fn onAccept(_: ?*anyopaque, _: *quic.PeerServer.Session) anyerror!void {}
+    };
+
+    const connect_options = quic.ConnectOptions{
+        .conn = .{
+            .remote_addr = loopbackAddr(7002),
+            .server_name = "localhost",
+            .ca_pem = server_cert_pem,
+        },
+    };
+    const serve_options = quic.ServeOptions{ .on_accept = Hooks.onAccept };
+
+    // The guide promises the TCP sessions' secure defaults on both sides.
+    try std.testing.expectEqual(@as(?u64, 30_000), connect_options.default_call_timeout_ms);
+    try std.testing.expectEqual(@as(?u64, 5_000), connect_options.shutdown_drain_timeout_ms);
+    try std.testing.expectEqual(@as(?u64, 30_000), connect_options.join_timeout_ms);
+    try std.testing.expect(!connect_options.conn.insecure_skip_verify);
+    try std.testing.expectEqual(@as(?u64, 30_000), serve_options.default_call_timeout_ms);
+    try std.testing.expectEqual(@as(?u64, 5_000), serve_options.shutdown_drain_timeout_ms);
+    try std.testing.expectEqual(@as(?u64, 30_000), serve_options.join_timeout_ms);
+}

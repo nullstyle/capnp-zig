@@ -339,6 +339,35 @@ fn driveFanoutStep(
     loopback.sleepMs(1);
 }
 
+/// Attaches a server `Peer` to each fanout session from the server's accept
+/// hook, the event form of scanning `sessionAt()` for new sessions.
+const FanoutAcceptor = struct {
+    allocator: std.mem.Allocator,
+    states: *[2]ServerState,
+    peers: *[2]Peer,
+    sessions: [2]*quic.ServerSession = undefined,
+    count: usize = 0,
+
+    fn onAccepted(ctx: ?*anyopaque, _: *quic.Server, session: *quic.ServerSession) anyerror!void {
+        const self: *FanoutAcceptor = @ptrCast(@alignCast(ctx.?));
+        if (self.count >= self.peers.len) return error.UnexpectedFanoutSession;
+        const index = self.count;
+        self.peers[index] = Peer.init(self.allocator, session);
+        const peer = &self.peers[index];
+        errdefer {
+            _ = peer.takeAttachedConnection(*quic.ServerSession);
+            peer.deinit();
+        }
+        _ = try peer.setBootstrap(.{
+            .ctx = &self.states[index],
+            .on_call = ServerState.onCall,
+        });
+        peer.start(&self.states[index], ServerState.peerError, ServerState.peerClose);
+        self.sessions[index] = session;
+        self.count += 1;
+    }
+};
+
 fn runFanout(close_first: bool) !FanoutResult {
     const allocator = std.testing.allocator;
     var server = try quic.Server.init(allocator, std.testing.io, .{
@@ -378,9 +407,15 @@ fn runFanout(close_first: bool) !FanoutResult {
 
     var server_states = [2]ServerState{ .{}, .{} };
     var server_peers: [2]Peer = undefined;
-    var server_peer_count: usize = 0;
-    defer for (server_peers[0..server_peer_count]) |*peer| peer.deinit();
-    var first_session_address: usize = 0;
+    // Server peers are attached by the accept hook, inside the step that
+    // adopts each session, so this loop never scans `sessionAt()`.
+    var acceptor = FanoutAcceptor{
+        .allocator = allocator,
+        .states = &server_states,
+        .peers = &server_peers,
+    };
+    defer for (server_peers[0..acceptor.count]) |*peer| peer.deinit();
+    server.setOnSessionAccepted(&acceptor, FanoutAcceptor.onAccepted);
     var first_address_stable = false;
 
     // Establish both sessions and complete each initial Bootstrap -> Call ->
@@ -389,37 +424,22 @@ fn runFanout(close_first: bool) !FanoutResult {
     var waited_ms: u64 = 0;
     while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += 1) {
         try driveFanoutStep(&server, &clients, &client_close_finalized);
-        while (server_peer_count < server.sessionCount()) {
-            const session = server.sessionAt(server_peer_count) orelse return error.MissingFanoutSession;
-            if (server_peer_count == 0) {
-                first_session_address = @intFromPtr(session);
-            }
-            server_peers[server_peer_count] = Peer.init(allocator, session);
-            const peer = &server_peers[server_peer_count];
-            _ = try peer.setBootstrap(.{
-                .ctx = &server_states[server_peer_count],
-                .on_call = ServerState.onCall,
-            });
-            peer.start(
-                &server_states[server_peer_count],
-                ServerState.peerError,
-                ServerState.peerClose,
-            );
-            server_peer_count += 1;
+
+        // The first session must keep the address its Peer borrowed after a
+        // second session is adopted and the list grows.
+        if (acceptor.count == 2 and !first_address_stable) {
+            const first = acceptor.sessions[0];
+            first_address_stable = server.sessionById(first.id) == first;
         }
 
-        if (server_peer_count == 2 and !first_address_stable) {
-            const still_first = server.sessionAt(0) orelse return error.MissingFirstFanoutSession;
-            first_address_stable = @intFromPtr(still_first) == first_session_address;
-        }
-
-        if (server_peer_count == 2 and
+        if (acceptor.count == 2 and
             client_states[0].call_returns.load(.acquire) >= 1 and
             client_states[1].call_returns.load(.acquire) >= 1)
         {
             break;
         }
     }
+    const server_peer_count = acceptor.count;
     if (server_peer_count != 2 or
         client_states[0].call_returns.load(.acquire) < 1 or
         client_states[1].call_returns.load(.acquire) < 1)
@@ -433,7 +453,7 @@ fn runFanout(close_first: bool) !FanoutResult {
     var post_reap_send_rejected = false;
 
     if (close_first) {
-        const victim_session = server.sessionAt(0) orelse return error.MissingFirstFanoutSession;
+        const victim_session = acceptor.sessions[0];
         victim_session.requestClose();
 
         // Wait for the victim's remote Peer close callback and for the server
@@ -545,6 +565,190 @@ test "Peer over QUIC fanout close isolation preserves the sibling session" {
     try std.testing.expect(result.sibling_fresh_call_returned);
     try std.testing.expect(result.victim_server_peer_detached);
     try std.testing.expect(result.post_reap_send_rejected);
+}
+
+// ---------------------------------------------------------------------------
+// One-call sessions: `quic.serve` (PeerServer) and `quic.connect`
+// (ClientSession), the QUIC twins of the TCP ServerSession/ClientSession.
+// No test code here touches a raw Connection, ServerSession, or sessionAt().
+// ---------------------------------------------------------------------------
+
+const ServedState = struct {
+    loop_thread: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    // Written on the server's run() thread; read after it is joined.
+    accepts: usize = 0,
+    calls: usize = 0,
+    closes: usize = 0,
+    errors: usize = 0,
+    off_loop_thread: usize = 0,
+    wrong_session: usize = 0,
+
+    fn onAccept(ctx: ?*anyopaque, session: *quic.PeerServer.Session) anyerror!void {
+        const self: *ServedState = @ptrCast(@alignCast(ctx.?));
+        self.accepts += 1;
+        if (std.Thread.getCurrentId() != self.loop_thread.load(.acquire)) self.off_loop_thread += 1;
+        session.user_data = self;
+        _ = try session.peer.setBootstrap(.{ .ctx = self, .on_call = onCall });
+    }
+
+    fn onCall(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        call: protocol.Call,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *ServedState = @ptrCast(@alignCast(ctx_ptr));
+        // Generated handlers only get a `*Peer`; `fromPeer` recovers the
+        // owning session.
+        const session = quic.PeerServer.Session.fromPeer(peer);
+        if (session.user_data != @as(?*anyopaque, self) or session.isClosed()) self.wrong_session += 1;
+        self.calls += 1;
+        try peer.sendReturnEmptyStruct(call.question_id);
+    }
+
+    fn onError(ctx: ?*anyopaque, _: *quic.PeerServer.Session, _: anyerror) void {
+        const self: *ServedState = @ptrCast(@alignCast(ctx.?));
+        self.errors += 1;
+    }
+
+    fn onClose(ctx: ?*anyopaque, session: *quic.PeerServer.Session) void {
+        const self: *ServedState = @ptrCast(@alignCast(ctx.?));
+        if (!session.isClosed()) self.wrong_session += 1;
+        self.closes += 1;
+    }
+};
+
+fn runServed(server: *quic.PeerServer, state: *ServedState) void {
+    state.loop_thread.store(std.Thread.getCurrentId(), .release);
+    server.run();
+}
+
+const SessionClientState = struct {
+    returned: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    closes: usize = 0,
+    failure: ?anyerror = null,
+    cause: capnpc.rpc.events.DisconnectCause = .unknown,
+
+    fn onBootstrap(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        ret: protocol.Return,
+        caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        if (ret.tag != .results) return error.ExpectedBootstrapResults;
+        const results = ret.results orelse return error.MissingBootstrapResults;
+        const target = try caps.resolveCapability(try results.content.getCapability());
+        _ = try peer.sendCallResolved(target, 0x5155_4943, 7, ctx_ptr, buildEmptyCall, onReturn);
+    }
+
+    fn buildEmptyCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+        _ = try call.initCapTableTyped(0);
+    }
+
+    fn onReturn(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        ret: protocol.Return,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *SessionClientState = @ptrCast(@alignCast(ctx_ptr));
+        // Done either way: a graceful close makes `run()` return.
+        defer quic.ClientSession.fromPeer(peer).close();
+        if (ret.tag != .results) return error.ExpectedCallResults;
+        self.returned.store(true, .release);
+    }
+
+    fn onClose(ctx: ?*anyopaque, _: *quic.ClientSession) void {
+        const self: *SessionClientState = @ptrCast(@alignCast(ctx.?));
+        self.closes += 1;
+    }
+};
+
+fn runSessionClient(state: *SessionClientState, server_addr: std.Io.net.IpAddress) void {
+    const session = quic.connect(std.testing.allocator, std.testing.io, .{
+        .conn = .{
+            .remote_addr = server_addr,
+            .server_name = "localhost",
+            // Verified, not skipped: the one-call path keeps TLS honest.
+            .ca_pem = loopback.loopback_cert_pem,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            // Bound a broken run instead of hanging on the 30 s defaults.
+            .handshake_timeout_ms = 10_000,
+        },
+        .default_call_timeout_ms = 10_000,
+        .ctx = state,
+        .on_close = SessionClientState.onClose,
+    }) catch |err| {
+        state.failure = err;
+        return;
+    };
+    defer session.deinit();
+    _ = session.peer.sendBootstrap(state, SessionClientState.onBootstrap) catch |err| {
+        state.failure = err;
+        return;
+    };
+    session.run();
+    state.cause = session.closeCause();
+}
+
+test "QUIC serve and connect run one round trip per client with no hand-rolled session loop" {
+    const allocator = std.testing.allocator;
+    const client_count = 3;
+
+    var served = ServedState{};
+    const server = try quic.serve(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = client_count,
+    }, .{
+        .ctx = &served,
+        .on_accept = ServedState.onAccept,
+        .on_error = ServedState.onError,
+        .on_close = ServedState.onClose,
+    });
+    // `deinit` runs on this thread after the run() thread is joined.
+    defer server.deinit();
+
+    var server_thread = try std.Thread.spawn(.{}, runServed, .{ server, &served });
+    var server_joined = false;
+    defer if (!server_joined) {
+        server.requestStop();
+        server_thread.join();
+    };
+
+    var client_states: [client_count]SessionClientState = @splat(.{});
+    var client_threads: [client_count]std.Thread = undefined;
+    var spawned: usize = 0;
+    defer for (client_threads[0..spawned]) |thread| thread.join();
+    for (&client_threads, &client_states) |*thread, *state| {
+        thread.* = try std.Thread.spawn(.{}, runSessionClient, .{ state, server.getAddress() });
+        spawned += 1;
+    }
+    // Each client closes itself after its Return, so joining is the wait.
+    for (client_threads[0..spawned]) |thread| thread.join();
+    spawned = 0;
+
+    server.requestStop();
+    server_thread.join();
+    server_joined = true;
+
+    for (&client_states) |*state| {
+        if (state.failure) |err| return err;
+        try std.testing.expect(state.returned.load(.acquire));
+        try std.testing.expectEqual(@as(usize, 1), state.closes);
+        try std.testing.expectEqual(capnpc.rpc.events.DisconnectCause.local_close, state.cause);
+    }
+    try std.testing.expectEqual(@as(usize, client_count), served.accepts);
+    try std.testing.expectEqual(@as(usize, client_count), served.calls);
+    try std.testing.expectEqual(@as(usize, client_count), served.closes);
+    try std.testing.expectEqual(@as(usize, 0), served.errors);
+    try std.testing.expectEqual(@as(usize, 0), served.wrong_session);
+    try std.testing.expectEqual(@as(usize, 0), served.off_loop_thread);
+    // run() returned only after every session drained, and its last
+    // after-step pass freed every peer.
+    try std.testing.expectEqual(@as(usize, 0), server.sessionCount());
 }
 
 // ---------------------------------------------------------------------------

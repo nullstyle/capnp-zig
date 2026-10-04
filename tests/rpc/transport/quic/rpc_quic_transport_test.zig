@@ -997,6 +997,259 @@ test "quic fanout server run loop terminates on cross-thread requestClose" {
     try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
 }
 
+/// Records every `Server.setOnSessionAccepted` invocation and attaches an
+/// echo transport to each session from inside the hook, so no test code ever
+/// scans `sessionAt()`.
+const AcceptHookRecorder = struct {
+    const capacity = 32;
+
+    server_states: *[capacity]QuicEndpointState,
+    /// Thread id of the thread that drives `Server.run()`, published by that
+    /// thread before its first step.
+    loop_thread: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    accepted: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    // Written on the loop thread only; read after it is joined.
+    off_loop_thread: usize = 0,
+    not_yet_listed: usize = 0,
+    duplicate_ids: usize = 0,
+    overflow: usize = 0,
+    ids: [capacity]u64 = undefined,
+
+    fn onAccepted(ctx: ?*anyopaque, server: *quic.Server, session: *quic.ServerSession) anyerror!void {
+        const self: *AcceptHookRecorder = @ptrCast(@alignCast(ctx.?));
+        const current: u64 = std.Thread.getCurrentId();
+        if (current != self.loop_thread.load(.acquire)) self.off_loop_thread += 1;
+        // The contract: the session is already listed when the hook fires.
+        if (server.sessionById(session.id) != session) self.not_yet_listed += 1;
+
+        const index = self.accepted.load(.acquire);
+        for (self.ids[0..@min(index, capacity)]) |id| {
+            if (id == session.id) self.duplicate_ids += 1;
+        }
+        if (index >= capacity) {
+            self.overflow += 1;
+            _ = self.accepted.fetchAdd(1, .acq_rel);
+            return error.UnexpectedExtraSession;
+        }
+        self.ids[index] = session.id;
+        // Attach before the step services the session: the echo below only
+        // works if this callback sees the session's very first frame.
+        session.start(
+            &self.server_states[index],
+            echoQuicServerMessage,
+            recordQuicServerError,
+            recordQuicServerClose,
+        );
+        _ = self.accepted.fetchAdd(1, .acq_rel);
+    }
+};
+
+fn runRecordedQuicServer(server: *quic.Server, recorder: *AcceptHookRecorder) void {
+    recorder.loop_thread.store(std.Thread.getCurrentId(), .release);
+    server.run();
+}
+
+test "quic Server on_session_accepted fires exactly once per session on the loop thread under 32 concurrent dials" {
+    const allocator = std.testing.allocator;
+    const dials = AcceptHookRecorder.capacity;
+
+    const server_states = try allocator.create([dials]QuicEndpointState);
+    defer allocator.destroy(server_states);
+    for (server_states) |*state| state.* = .{};
+    const client_states = try allocator.create([dials]QuicEndpointState);
+    defer allocator.destroy(client_states);
+    for (client_states) |*state| state.* = .{};
+
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = dials,
+        // 32 fresh Initials from one loopback address inside one window sit
+        // exactly at the default per-source cap; this test is about the
+        // accept hook, not the flood gate.
+        .initial_source_rate_limit = .{ .limit = 1024 },
+    });
+    defer server.deinit();
+
+    var recorder = AcceptHookRecorder{ .server_states = server_states };
+    server.setOnSessionAccepted(&recorder, AcceptHookRecorder.onAccepted);
+
+    const frame = try buildBootstrapFrame(allocator, 7);
+    defer allocator.free(frame);
+
+    var clients: [dials]quic.Connection = undefined;
+    var clients_initialized: usize = 0;
+    defer for (clients[0..clients_initialized]) |*client| client.deinit();
+    for (&clients, 0..) |*client, index| {
+        client.* = try quic.Connection.initClient(allocator, std.testing.io, .{
+            .remote_addr = server.getAddress(),
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        });
+        clients_initialized += 1;
+        // `captureQuicMessage` closes the client once its echo arrives.
+        client.start(&client_states[index], captureQuicMessage, recordQuicError, recordQuicClose);
+        try client.sendFrame(frame);
+    }
+
+    var server_thread = try std.Thread.spawn(.{}, runRecordedQuicServer, .{ &server, &recorder });
+    var client_threads: [dials]std.Thread = undefined;
+    var client_threads_spawned: usize = 0;
+    var joined = false;
+    defer if (!joined) {
+        for (clients[0..clients_initialized]) |*client| client.requestClose();
+        for (client_threads[0..client_threads_spawned]) |thread| thread.join();
+        server.requestClose();
+        server_thread.join();
+    };
+    for (&client_threads, 0..) |*thread, index| {
+        thread.* = try std.Thread.spawn(.{}, runQuicConnection, .{&clients[index]});
+        client_threads_spawned += 1;
+    }
+
+    // Every client is echoed only through callbacks the hook attached, so a
+    // full set of echoes is also proof the hook ran before any frame was
+    // serviced. Generous budget: 32 TLS handshakes in Debug on CI runners.
+    var echoed: usize = 0;
+    var waited_ms: u64 = 0;
+    while (waited_ms < 10 * loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        echoed = 0;
+        var failed = false;
+        for (client_states) |*state| {
+            if (state.messages.load(.acquire) > 0) echoed += 1;
+            if (state.errors.load(.acquire) > 0) failed = true;
+        }
+        if (echoed == dials or failed) break;
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+
+    for (&clients) |*client| client.requestClose();
+    for (client_threads) |thread| thread.join();
+    // Keep serving through the clients' closes and the reap of every session,
+    // then stop: a re-adoption of a closing or reaped slot would show up as an
+    // extra hook call below.
+    server.requestClose();
+    server_thread.join();
+    joined = true;
+
+    try std.testing.expectEqual(@as(usize, dials), echoed);
+    try std.testing.expectEqual(@as(usize, dials), recorder.accepted.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), recorder.overflow);
+    try std.testing.expectEqual(@as(usize, 0), recorder.duplicate_ids);
+    try std.testing.expectEqual(@as(usize, 0), recorder.not_yet_listed);
+    // The hook ran on the thread that drives `run()`, and that thread is not
+    // this one, so the check above could have failed.
+    try std.testing.expectEqual(@as(usize, 0), recorder.off_loop_thread);
+    const test_thread: u64 = std.Thread.getCurrentId();
+    try std.testing.expect(recorder.loop_thread.load(.acquire) != test_thread);
+    for (server_states, client_states) |*server_state, *client_state| {
+        try std.testing.expectEqual(@as(usize, 1), server_state.messages.load(.acquire));
+        try std.testing.expectEqual(@as(usize, 0), server_state.errors.load(.acquire));
+        try std.testing.expectEqual(@as(usize, 1), server_state.closes.load(.acquire));
+        try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    }
+}
+
+test "quic Server on_session_accepted rejecting a session closes it and keeps serving" {
+    const allocator = std.testing.allocator;
+
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = 2,
+    });
+    defer server.deinit();
+
+    // Refuses the first session, echoes on every later one.
+    const Gate = struct {
+        calls: usize = 0,
+        refused_id: ?u64 = null,
+        echo_state: *QuicEndpointState,
+
+        fn onAccepted(ctx: ?*anyopaque, _: *quic.Server, session: *quic.ServerSession) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            self.calls += 1;
+            if (self.calls == 1) {
+                self.refused_id = session.id;
+                return error.SessionRefusedByTest;
+            }
+            session.start(self.echo_state, echoQuicServerMessage, recordQuicServerError, recordQuicServerClose);
+        }
+    };
+    var echo_state = QuicEndpointState{};
+    var gate = Gate{ .echo_state = &echo_state };
+    server.setOnSessionAccepted(&gate, Gate.onAccepted);
+
+    const frame = try buildBootstrapFrame(allocator, 9);
+    defer allocator.free(frame);
+
+    // Single-threaded: both endpoints step on this thread.
+    var refused = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .handshake_timeout_ms = 300,
+    });
+    defer refused.deinit();
+    var refused_state = QuicEndpointState{};
+    refused.start(&refused_state, captureQuicMessage, recordQuicError, recordQuicClose);
+    try refused.sendFrame(frame);
+
+    var waited_ms: u64 = 0;
+    while (!refused.isClosing() and waited_ms < loopback.loopback_timeout_ms) : (waited_ms += 1) {
+        _ = try server.stepOnce(.poll);
+        _ = try refused.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    try std.testing.expect(refused.isClosing());
+    refused.run();
+    try std.testing.expectEqual(@as(usize, 1), gate.calls);
+    // The refused session is closing on the server, and nothing reached it.
+    const refused_session = server.sessionById(gate.refused_id.?) orelse return error.RefusedSessionMissing;
+    try std.testing.expect(refused_session.isClosing());
+    try std.testing.expectEqual(@as(usize, 0), refused_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), refused_state.closes.load(.acquire));
+    // Tripwire for a documented transport limit: the server's close went out
+    // under 1-RTT keys the client did not have yet, so the client only learns
+    // of the refusal from its own handshake timeout, as for a dial the
+    // server's flood gates drop. If this becomes `.peer_close`, quic-zig now
+    // sends a pre-confirmation close the client can read (RFC 9000 10.2.3);
+    // update `Server.setOnSessionAccepted` and docs/quic-transport.md.
+    try std.testing.expectEqual(events.DisconnectCause.handshake_timeout, refused.closeCause());
+
+    // The refusal was per session: the next dial is accepted and echoed.
+    var accepted = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+    });
+    defer accepted.deinit();
+    var accepted_state = QuicEndpointState{};
+    accepted.start(&accepted_state, captureQuicMessage, recordQuicError, recordQuicClose);
+    try accepted.sendFrame(frame);
+
+    waited_ms = 0;
+    while (!accepted.isClosing() and waited_ms < loopback.loopback_timeout_ms) : (waited_ms += 1) {
+        _ = try server.stepOnce(.poll);
+        _ = try accepted.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    accepted.requestClose();
+    accepted.run();
+    try std.testing.expectEqual(@as(usize, 2), gate.calls);
+    try std.testing.expectEqual(@as(usize, 1), accepted_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), accepted_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), echo_state.messages.load(.acquire));
+    try std.testing.expect(!server.isClosing());
+}
+
 test "quic fanout server fires on_close for a live session on deinit" {
     const allocator = std.testing.allocator;
 

@@ -10,6 +10,9 @@
 //!   drive each `ServerSession` independently.
 //! * `Listener` plus `Session`/`AcceptedSession` is the lower-level boundary for
 //!   tests and bespoke embedding.
+//!
+//! Above the transport, `connect` (`ClientSession`) and `serve` (`PeerServer`)
+//! bundle a transport with its `Peer`, the QUIC twins of the TCP sessions.
 
 const builtin = @import("builtin");
 const quic_zig = @import("quic");
@@ -18,6 +21,7 @@ const quic_zig = @import("quic");
 /// the `quic` module directly.
 pub const quic_app = quic_zig.app;
 const adapter = @import("quic_zig_adapter.zig");
+const client_session = @import("client_session.zig");
 pub const close = @import("close.zig");
 const conn = @import("connection.zig");
 const connection_testing = @import("connection_testing.zig");
@@ -30,6 +34,7 @@ const native_framer = @import("native_framer.zig");
 const non_windows_receive = @import("non_windows_receive.zig");
 pub const listener = @import("listener.zig");
 const options = @import("options.zig");
+const peer_server = @import("peer_server.zig");
 const scheduler_mod = @import("scheduler.zig");
 const udp_receive_bridge = @import("udp_receive_bridge.zig");
 const server_mod = @import("server.zig");
@@ -74,6 +79,16 @@ pub const Server = server_mod.Server;
 /// Per-accepted-session RPC transport owned by `Server`.
 pub const ServerSession = server_mod.ServerSession;
 pub const ServerReceiveResult = server_mod.ReceiveResult;
+/// One-call client: QUIC `Connection` + `Peer`, the twin of
+/// `rpc.transport.tcp.ClientSession`. Experimental.
+pub const ClientSession = client_session.ClientSession;
+pub const ConnectOptions = client_session.ConnectOptions;
+pub const connect = client_session.ClientSession.connect;
+/// One-call server: fanout `Server` + one `Peer` per accepted session, the
+/// many-session twin of `rpc.transport.tcp.ServerSession`. Experimental.
+pub const PeerServer = peer_server.PeerServer;
+pub const ServeOptions = peer_server.ServeOptions;
+pub const serve = peer_server.PeerServer.init;
 pub const scheduler = scheduler_mod;
 pub const StepMode = scheduler_mod.StepMode;
 pub const StepResult = scheduler_mod.StepResult;

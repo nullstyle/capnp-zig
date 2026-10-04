@@ -2863,6 +2863,8 @@ capnpc-zig.rpc.transport.quic.AcceptedSessionDriver.current: fn (*const rpc.tran
 capnpc-zig.rpc.transport.quic.AcceptedSessionDriver.isAttached: fn (*const rpc.transport.quic_disabled.AcceptedSessionDriver) bool
 capnpc-zig.rpc.transport.quic.AcceptedSessionDriver: struct
 capnpc-zig.rpc.transport.quic.ClientEndpoint: struct
+capnpc-zig.rpc.transport.quic.ClientSession.connect: fn (anytype, anytype, anytype) noreturn
+capnpc-zig.rpc.transport.quic.ClientSession: struct
 capnpc-zig.rpc.transport.quic.Connection.initClient: fn (anytype, anytype, anytype) noreturn
 capnpc-zig.rpc.transport.quic.Connection.initServer: fn (anytype, anytype, anytype) noreturn
 capnpc-zig.rpc.transport.quic.Connection: struct
@@ -2917,6 +2919,8 @@ capnpc-zig.rpc.transport.quic.NativeOptions.max_control_frame_bytes: field usize
 capnpc-zig.rpc.transport.quic.NativeOptions.max_pending_data_bytes: field usize = 67108864
 capnpc-zig.rpc.transport.quic.NativeOptions.max_pending_data_streams: field usize = 16
 capnpc-zig.rpc.transport.quic.NativeOptions: struct
+capnpc-zig.rpc.transport.quic.PeerServer.init: fn (anytype, anytype, anytype, anytype) noreturn
+capnpc-zig.rpc.transport.quic.PeerServer: struct
 capnpc-zig.rpc.transport.quic.Role.client: enumerant = 0
 capnpc-zig.rpc.transport.quic.Role.server: enumerant = 1
 capnpc-zig.rpc.transport.quic.Role: enum
@@ -2932,6 +2936,7 @@ capnpc-zig.rpc.transport.quic.TransportMode: enum
 capnpc-zig.rpc.transport.quic.alpn: const *const [11:0]u8
 capnpc-zig.rpc.transport.quic.baseline_stream_id: const u64
 capnpc-zig.rpc.transport.quic.compatibility_max_concurrent_sessions: const u32
+capnpc-zig.rpc.transport.quic.connect: fn (anytype, anytype, anytype) noreturn
 capnpc-zig.rpc.transport.quic.default_native_inline_frame_threshold: const usize
 capnpc-zig.rpc.transport.quic.default_native_max_control_frame_bytes: const usize
 capnpc-zig.rpc.transport.quic.default_native_max_pending_data_bytes: const usize
@@ -2974,6 +2979,7 @@ capnpc-zig.rpc.transport.quic.native.rpc_header_bytes: const usize
 capnpc-zig.rpc.transport.quic.native.version: const u16
 capnpc-zig.rpc.transport.quic.native: struct
 capnpc-zig.rpc.transport.quic.requireEnabled: fn () void
+capnpc-zig.rpc.transport.quic.serve: fn (anytype, anytype, anytype, anytype) noreturn
 capnpc-zig.rpc.transport.quic.supported_max_concurrent_sessions: const u32
 capnpc-zig.rpc.transport.quic.unavailable_message: const *const [99:0]u8
 capnpc-zig.rpc.transport.quic.wake.Handle.consumeRequested: fn (*rpc.transport.quic.wake.Handle) bool

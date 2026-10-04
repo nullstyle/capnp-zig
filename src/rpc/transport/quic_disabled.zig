@@ -74,6 +74,20 @@ pub const Server = struct {
     }
 };
 
+pub const ClientSession = struct {
+    pub fn connect(_: anytype, _: anytype, _: anytype) noreturn {
+        @compileError(unavailable_message);
+    }
+};
+pub const connect = ClientSession.connect;
+
+pub const PeerServer = struct {
+    pub fn init(_: anytype, _: anytype, _: anytype, _: anytype) noreturn {
+        @compileError(unavailable_message);
+    }
+};
+pub const serve = PeerServer.init;
+
 pub const TransportMode = enum {
     baseline,
     native,
