@@ -7,6 +7,246 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **An AF_UNIX connection kept every file descriptor a local peer attached
+  (macOS), and a lingering one could stall the connection (Linux and
+  macOS).** A peer can attach open files to the bytes it sends on an AF_UNIX
+  socket (SCM_RIGHTS). The stream transport read with a plain `read`, which
+  does not make them go away:
+  - macOS installed every attached fd in the receiving process's fd table,
+    and nothing ever closed it. A peer could fill the fd table (EMFILE for
+    the whole process) and keep files and sockets alive.
+  - Linux closed the fds inside the read, on the reader thread. The final
+    close of a TCP socket with `SO_LINGER {1, 3}` and unsent data blocked
+    that thread for the linger time (measured: the frame it rode on
+    dispatched after 3029 ms), and every frame behind it waited too.
+  - Both: tearing down a connection while fd-carrying messages were still
+    unread did those final closes on the tearing-down thread, inside the
+    socket's `close` (Linux, 3019 ms) or already inside `shutdown(SHUT_RD)`
+    (macOS, 3002 ms).
+  - **Who is exposed:** applications that run capnp-zig RPC over an AF_UNIX
+    stream socket, through v0.19.1: `tcp.Connection`, `tcp.Transport`
+    (including callers that drive it directly), `tcp.Listener.initFd` with
+    `accept`/`acceptFd`, `tcp.ServerSession.accept`, and `tcp.ClientSession`
+    on such a socket. TCP and QUIC connections are not affected.
+  - **What an attacker needs:** the ability to connect to the application's
+    Unix socket (or to be its peer), and one `sendmsg`. No handshake or
+    credentials beyond that.
+  - **Fix:** on Linux and macOS a `tcp.Transport` on an AF_UNIX socket now
+    runs in drain mode.
+    - A read waits until the socket is readable, then does one `recvmsg` with
+      a 512-slot control buffer (`rpc.transport.unix.fd_io.recvWithFds`, with
+      its own clamped `cmsg` parser).
+    - Received fds are made close-on-exec and handed to a process-wide closer
+      thread (the `.received` lane of `fd_io.closer`), never closed on the
+      reader or Peer thread.
+    - That lane is bounded (`RLIMIT_NOFILE / 4`). Once it holds that many
+      fds, a read that finds data takes nothing; a read whose fds push it
+      past the bound is the connection's last. Both close the connection with
+      `error.SystemResources` after a `.resource_rejection` event
+      (`resource = .attached_fds`, `err = FdCloseQueueFull`).
+    - A transport's own socket close goes to a second closer thread (the
+      `.socket` lane), and on macOS so does the read half of `shutdown`. A
+      received fd whose close blocks therefore never holds another
+      connection's socket open or delays its shutdown. On Linux a socket
+      whose receive queue is empty after `shutdown(SHUT_RD)` is closed inline.
+    - EMFILE is reported and the read retried once; a second EMFILE closes
+      the connection.
+  - **Residuals (documented in `fd_io`):**
+    - EMFILE: the kernel itself closes attached fds inside the `recvmsg` that
+      hits it, on the reader thread (Linux: the fds that did not fit; macOS:
+      all of that message's fds, measured 2000 ms for a 2 s linger). A
+      lingering fd among them blocks that reader. At the macOS default soft
+      limit of 256, one message (up to 254 fds) can reach EMFILE: raise
+      `RLIMIT_NOFILE`.
+    - A peer that can make a close block stalls the closer thread that runs
+      it. A lingering TCP socket blocks without end on Linux and up to about
+      327 s on macOS, and the peer can chain them. On the `.received` lane,
+      once the bound is reached, every AF_UNIX connection that receives data
+      is closed until the lane drains: that denies service on the Unix
+      sockets, but cannot fill the fd table. On the `.socket` lane (a
+      connection torn down with such an fd still unread), later socket closes
+      wait, each holding one fd. On macOS a blocked reader notices `shutdown`
+      on a 250 ms poll tick instead of at once.
+    - Linux kernels before 6.8 run the AF_UNIX fd garbage collector inside
+      socket close, so a peer's unreachable in-flight fds can be closed
+      inside the transport's inline close.
+    - macOS has no `MSG_CMSG_CLOEXEC`, so a concurrent `fork`+`exec` can
+      inherit a received fd before `fcntl` marks it.
+    - After `fork` the child has no closer threads.
+    - Windows has no AF_UNIX transport in capnp-zig.
+
+### Breaking
+
+- **`rpc.events.Source` and `rpc.events.Resource` are now non-exhaustive
+  (`enum(u8) { ..., _ }`) and gain `Source.unix` and `Resource.attached_fds`
+  (Experimental).** New sources and resources keep arriving as the runtime
+  gains transports and bounds, and an exhaustive enum turned each one into a
+  compile break in every consumer `switch` that listed the values;
+  `DisconnectCause` set the precedent in v0.19.0. Named values and their
+  order are unchanged; the new values come last.
+  - **Migration:** a `switch` on a `Source` or a `Resource` must handle
+    unnamed values: add an `else` (or `_`) arm. Do not `@tagName` a value you
+    did not construct; use `std.enums.tagName`, which returns `null` for an
+    unnamed value. `std.enums.EnumArray`/`EnumSet`/`EnumMap` keyed by either
+    enum now span all 256 backing values: iterate `std.enums.values(...)`
+    instead. The consumers we checked (capnp-qmsg-demo, mruby-quic, qmsg,
+    qmesh, prollytree) switch on neither enum.
+
+### Added
+
+- **Unix-domain sockets: `rpc.transport.unix.listen` and
+  `rpc.transport.unix.connect` (Experimental; Linux and macOS,
+  `error.UnixSocketsUnsupported` on every other target).** They run Cap'n
+  Proto RPC over a socket file on the existing TCP stack. `listen` returns a
+  `tcp.Listener`, so `ServerSession.accept` and `Listener.accept` serve it
+  unchanged. `connect` returns a `*tcp.ClientSession`, wired exactly like
+  `tcp.connect`.
+  - `listen` refuses paths that do not fit `sun_path` (`NameTooLong`: 104
+    bytes on macOS, 108 on Linux) and abstract names
+    (`AbstractNameUnsupported`).
+  - It holds `<path>.lock` with `flock` for the listener's life, so a second
+    listener gets `AddressInUse`. It replaces a stale socket file only with
+    `.reclaim_stale = true`, never through a connect probe and never if the
+    file is not a socket.
+  - It sets `socket_mode` (default 0600) before `listen`, with a (dev, ino)
+    check. `Listener.close` unlinks only its own socket file and then
+    releases the lock. Keep the socket in a private (0700) directory.
+  - `ConnectOptions.connect_timeout_ms` (default 30 s) bounds the wait for a
+    full backlog on Linux; macOS refuses at once.
+  - New `tcp.Listener.unixPath()`. `zig build example-rpc-unix` runs
+    `examples/rpc_pingpong_unix.zig`.
+- **`rpc.transport.unix.fd_io` (Experimental; Linux and Darwin, stubs that
+  return `error.UnixSocketsUnsupported` elsewhere).** It contains
+  `recvWithFds` (one `recvmsg` that takes attached fds; EINTR and EAGAIN are
+  handled inside), `parseRights` (the clamped SCM_RIGHTS parser),
+  `controlSpace`, `max_fds_per_read`, and `closer`: the two process-wide
+  closer threads (`Lane`: `.received` for fds peers attach, bounded;
+  `.socket` for the transport's own socket closes and macOS shutdowns), with
+  `ensureStarted`, `reserve`/`release`, `handOff`, `handOffSocketClose`,
+  `handOffShutdown`, `admission`, `pending`, `pendingIn`, `queueLimit` and
+  `setQueueLimit`. Every new function that can fail has a named error set.
+  Only the full roots carry the `unix` namespace.
+- **`tcp.Transport.source` and `tcp.Transport.drain` fields
+  (Experimental).**
+- **A freeze gate for generated code.** `zig build check-generated-shape`
+  runs the plugin on 26 committed CodeGeneratorRequests
+  (`tests/generated_shape/requests/`) in the full, compact and
+  `--no-reflection` profiles. It renders every generated declaration into
+  `docs/generated-shape.txt` (Stable, frozen; 7214 lines) or
+  `docs/generated-shape-experimental.txt` (6102 lines; it must match the
+  tree). `check-api` cannot see generated code, so a renamed `callXFromY`, a
+  getter that lost `error.WrongUnionMember` (da60cb6) or a changed
+  `interface_id` all passed it.
+  - **The Stable families:** Reader/Builder
+    `get`/`set`/`init`/`has`/`clear`/`which`/`wrap`; enums and constants with
+    their values (`interface_id`, method `ordinal`, `is_streaming`);
+    `Client` `init`/`release`/`fromBootstrap`/`callX`; `PipelinedClient`
+    calls; `Server` and the `VTable` fields; `Response` with `unwrap`; and the
+    `Handler`/`Callback`/`BuildFn` typedefs.
+  - **Members that name an Experimental type stay Experimental:**
+    `capnpSchema`, `callXWithOptions`, `callXPipelined`, the `x_deferred`
+    VTable fields and streaming `Response`.
+  - CI runs the gate in the Hardening job on Linux, macOS and Windows.
+  - Generated signatures spell the runtime's error sets, so a runtime
+    error-set change moves generated-shape lines too.
+  - See "What is frozen in generated code" in `docs/generated-api.md`.
+- **`just check-release-drift <prev-tag> [X.Y.Z]`, a release hook.** It diffs
+  the five surface snapshots against the previous release tag:
+  `docs/api-snapshot.txt` and `docs/generated-shape.txt` (Stable) and the
+  three experimental files.
+  - It reads each top-level bullet under `### Breaking` as one entry. An
+    entry whose bold title says `Experimental` (for example
+    `(Experimental)`) is an Experimental entry; any other entry is a Stable
+    entry.
+  - It fails when a Stable file removes or changes a line and the release's
+    CHANGELOG section has no Stable `### Breaking` entry. A section with only
+    Experimental entries does not declare a Stable break.
+  - It fails when any of the five files changed under a patch bump.
+  - It warns when an experimental file loses lines and no Breaking entry is
+    tagged Experimental, and when any Breaking entry has no Migration
+    paragraph.
+  - When Stable lines go under a Stable entry, it lists them, so the
+    releaser can check that the entries cover them.
+  - `release-preflight` and `release-tag` both run it. Replayed over every
+    past release, it fails only v0.3.0, the release that split the snapshot
+    into the Stable and Experimental files.
+- **The API-snapshot walker is now a reusable module**
+  (`tools/snapshot_render.zig`, build module `snapshot-render`). The comptime
+  declaration walker, the line renderers, the Stable/Experimental tier
+  matcher, the dead-rule check and the closure check moved out of
+  `tools/api_snapshot.zig`. A `Config` table drives the module: the root,
+  the depth limit, the tier rules and overrides, a `descend` predicate and
+  `render_const_values`. The module imports only `std`, so another package
+  can snapshot its own surface with it. `render_const_values` (off by
+  default) also renders the value of a scalar const. The three
+  `docs/api-snapshot*.txt` files do not change. `zig build
+  test-snapshot-render` runs the module's own tests.
+- **FD-0, a kernel-semantics suite for SCM_RIGHTS over AF_UNIX**
+  (`tests/rpc/transport/unix/unix_kernel_semantics_test.zig`; `zig build
+  test-rpc-unix-kernel`; it also runs in `test-rpc-unix`,
+  `test-rpc-transport`, `test` and the TSan lane). It pins, per OS, the Linux
+  and macOS behaviours that the Unix transport and fd passing depend on:
+  CLOEXEC on received fds, exact-boundary fd attribution, the bulk-read
+  anchor, the macOS leaks with no control buffer and with a truncated one,
+  the per-sendmsg limit (253 on Linux, 254 on macOS), EMFILE handling, and
+  the blocking final close of a received lingering socket. It also checks
+  fixed cmsg bytes for four ABIs against std's layout at compile time,
+  including big-endian powerpc64. Test-only.
+- **`zig build test-rpc-unix` / `just test-rpc-unix`:** the AF_UNIX suites
+  (regressions, fd drain, lingering close, listen/connect, FD-0). They are
+  also part of `test-rpc-transport`; the drain and linger suites also run in
+  the Linux TSan lane.
+
+### Changed
+
+- **A stream connection on an AF_UNIX socket reports `events.Source.unix`**
+  in its connection, frame, backpressure, pressure and close events, instead
+  of `.tcp`. TCP connections still report `.tcp`.
+- **`just release-preflight` takes an optional version (`just
+  release-preflight X.Y.Z`).** The drift hook then judges the bump you are
+  about to cut before the version sweep. `preflight` passes the version
+  through.
+
+### Fixed
+
+- **Accepting on an AF_UNIX listener no longer panics a Debug build on
+  macOS.** `Listener.accept` and `Listener.acceptFd` (and so the Stable
+  `ServerSession.accept`) always tried `TCP_NODELAY` on the accepted socket.
+  On an AF_UNIX socket handed to `Listener.initFd`, macOS fails that with
+  errno 102 (EOPNOTSUPP). std's darwin errno enum does not name 102, and the
+  debug log line formatted the errno by tag name, so with debug logging on
+  the process panicked with "invalid enum value". `setTcpNoDelay` now skips
+  any socket that `getsockname` does not report as IPv4 or IPv6, and logs a
+  failure as a raw errno number. No API or error-set change.
+- **Generated RPC interface code no longer fails to compile when the schema
+  declares a file-level `flag`** (for example `annotation flag`). Call-return
+  code captured its settled flag as `|flag|`, which shadowed the
+  declaration. The capture is now `@"settled flag"`, which no schema name can
+  match. Regenerating bindings changes only that capture name.
+
+### Documentation
+
+- `RELEASING.md` and `docs/supported-surface.md` now list exactly which
+  generated code is frozen. `supported-surface.md` no longer calls
+  "generated interface code" frozen as a whole: only the Stable families
+  are. `RELEASING.md` asks for a Migration paragraph in each Breaking entry,
+  `(Experimental)` in the bold title of an Experimental-only entry, and one
+  entry for each tier when a change breaks both.
+- `docs/supported-surface.md`, `docs/stability.md` and
+  `docs/generated-api.md` no longer call reflection or the generated mutable
+  APIs "unreleased" (both shipped in v0.19.0), and no longer say the
+  experimental API snapshots are "ungated"; CI checks them strictly.
+- Two zig-fork handoffs (docs only, not filed upstream):
+  `docs/upstream/handoff-zig-fork-unix-address.md` (`UnixAddress.max_len`
+  against Darwin's 104-byte `sun_path`, the extra trailing NUL on abstract
+  names, `Socket.createPair` with no AF_UNIX option, Darwin errno 102 with
+  no name) and `docs/upstream/handoff-zig-fork-scm-rights.md`
+  (`cmsg.Iterator` dropping truncated headers, `recvmsg` EMFILE reported as
+  `error.Unexpected`, `sendmsg` EBADF/EINVAL through `errnoBug`, received
+  fds close-on-exec on Linux only).
+
 ## [0.19.1] - 2026-10-04
 
 A security release: upgrade from v0.19.0. One unauthenticated UDP datagram

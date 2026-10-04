@@ -895,6 +895,7 @@ pub fn buildImpl(b: *std.Build) !void {
     // and fd passing depend on. Raw syscalls only; skips off Linux/macOS.
     const run_rpc_unix_kernel_semantics_tests = addLibTest(b, "tests/rpc/transport/unix/unix_kernel_semantics_test.zig", target, optimize, lib_module);
     b.step("test-rpc-unix-kernel", "Run the FD-0 kernel-semantics suite (SCM_RIGHTS over AF_UNIX, Linux and macOS)").dependOn(run_rpc_unix_kernel_semantics_tests);
+    test_rpc_unix_step.dependOn(run_rpc_unix_kernel_semantics_tests);
     const run_rpc_peer_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_test.zig", target, optimize, lib_module);
     const run_rpc_peer_from_peer_zig_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_from_peer_zig_test.zig", target, optimize, lib_module);
     const run_rpc_quic_vat_network_tests = addLibTest(b, "tests/rpc/peer/rpc_quic_vat_network_test.zig", target, optimize, lib_module);
