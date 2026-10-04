@@ -264,7 +264,10 @@ drives `Server` directly, and `serve` is built on it. The contract:
 every step. A session's close callback fires inside a step, while its
 connection can still be stepped during draining, so state that the session's
 callbacks borrow must be freed from `after_step` once `sessionById(id)`
-returns null. `PeerServer` frees its peers this way.
+returns null. `after_step` runs after every step and `sessionById` is a
+linear scan, so check only sessions whose close callback has fired; no other
+session can be gone. `PeerServer` frees its peers this way, and does no
+check at all while no closed session is waiting.
 
 ## Concurrency Model
 

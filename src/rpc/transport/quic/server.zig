@@ -400,8 +400,11 @@ pub const Server = struct {
     /// drains (an internal error there still reaches its error callback).
     /// So state those callbacks borrow, such as an attached `Peer`, must
     /// outlive the session itself: free it from here once
-    /// `sessionById(id)` returns null. `PeerServer` frees its per-session
-    /// peers this way.
+    /// `sessionById(id)` returns null. The hook runs after every step and
+    /// `sessionById` is a linear scan, so check only sessions whose close
+    /// callback has fired (no other session can be gone). `PeerServer`
+    /// frees its per-session peers this way, and skips the check entirely
+    /// while no closed session is waiting.
     pub fn runWithAfterStep(
         self: *Server,
         ctx: ?*anyopaque,

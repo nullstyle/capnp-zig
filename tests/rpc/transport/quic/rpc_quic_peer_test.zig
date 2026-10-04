@@ -582,6 +582,10 @@ const ServedState = struct {
     errors: usize = 0,
     off_loop_thread: usize = 0,
     wrong_session: usize = 0,
+    /// `reapPassCount()` when the first session closed. No session had
+    /// closed before then, so no session could be gone, and any pass before
+    /// that point was a wasted O(sessions) sweep on every step.
+    reap_passes_at_first_close: ?u64 = null,
 
     fn onAccept(ctx: ?*anyopaque, session: *quic.PeerServer.Session) anyerror!void {
         const self: *ServedState = @ptrCast(@alignCast(ctx.?));
@@ -614,6 +618,9 @@ const ServedState = struct {
     fn onClose(ctx: ?*anyopaque, session: *quic.PeerServer.Session) void {
         const self: *ServedState = @ptrCast(@alignCast(ctx.?));
         if (!session.isClosed()) self.wrong_session += 1;
+        if (self.reap_passes_at_first_close == null) {
+            self.reap_passes_at_first_close = session.owner.reapPassCount();
+        }
         self.closes += 1;
     }
 };
@@ -691,9 +698,8 @@ fn runSessionClient(state: *SessionClientState, server_addr: std.Io.net.IpAddres
     state.cause = session.closeCause();
 }
 
-test "QUIC serve and connect run one round trip per client with no hand-rolled session loop" {
+fn runServedRoundTrips(comptime client_count: usize) !void {
     const allocator = std.testing.allocator;
-    const client_count = 3;
 
     var served = ServedState{};
     const server = try quic.serve(allocator, std.testing.io, .{
@@ -749,6 +755,24 @@ test "QUIC serve and connect run one round trip per client with no hand-rolled s
     // run() returned only after every session drained, and its last
     // after-step pass freed every peer.
     try std.testing.expectEqual(@as(usize, 0), server.sessionCount());
+    // The reap looks for freed transports only once a session has closed:
+    // while every session was live it never ran, though the loop stepped
+    // through every handshake and call by then.
+    try std.testing.expectEqual(@as(?u64, 0), served.reap_passes_at_first_close);
+    try std.testing.expect(server.reapPassCount() > 0);
+    // Every close was counted down as it was reaped, so the server is back
+    // on the no-scan path rather than sweeping on every later step.
+    try std.testing.expectEqual(@as(usize, 0), server.closed_pending);
+}
+
+test "QUIC serve and connect run one round trip per client with no hand-rolled session loop" {
+    try runServedRoundTrips(3);
+}
+
+test "QUIC serve reaps many closing sessions and skips the reap while all are live" {
+    // More sessions, closing close together, so a reap pass can find
+    // several closed sessions still draining while others are live.
+    try runServedRoundTrips(16);
 }
 
 // ---------------------------------------------------------------------------

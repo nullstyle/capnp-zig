@@ -142,9 +142,21 @@ pub const PeerServer = struct {
     /// step it or replace its accept hook.
     server: Server,
     options: ServeOptions,
-    /// Every session whose peer is still allocated, including sessions that
-    /// closed during the current step (freed right after it).
+    /// Every session whose peer is still allocated, including closed
+    /// sessions whose transport is still draining (freed after the step in
+    /// which the server destroys it).
     sessions: std.ArrayList(*Session) = .empty,
+    /// Internal, loop-thread only. Listed sessions whose close callback has
+    /// fired (`transport == null`), so whose transport the server may have
+    /// destroyed. While it is zero no session can be gone, and the
+    /// after-step reap returns at once.
+    closed_pending: usize = 0,
+    /// Internal reap scratch: the ids the server still lists, rebuilt on
+    /// each reap pass. Capacity is kept, so passes stop allocating once it
+    /// has grown to the peak session count.
+    live_ids: std.AutoHashMapUnmanaged(u64, void) = .empty,
+    /// Internal; read it through `reapPassCount`.
+    reap_passes: u64 = 0,
 
     /// Bind the listener and install the per-session wiring. Nothing is
     /// accepted until `run()`. Set `server_options.max_concurrent_connections`
@@ -180,6 +192,15 @@ pub const PeerServer = struct {
         return self.sessions.items.len;
     }
 
+    /// Reap passes run so far. A pass looks for closed sessions whose
+    /// transport the server has destroyed, and runs only after a step that
+    /// ends with a closed session still allocated, so the count does not
+    /// move while every session is live. `run()` thread only, or after
+    /// `run()` returned.
+    pub fn reapPassCount(self: *const PeerServer) u64 {
+        return self.reap_passes;
+    }
+
     /// Blocking loop. Returns after `requestStop()` once every session has
     /// closed and drained, or after a fatal endpoint error.
     pub fn run(self: *PeerServer) void {
@@ -205,6 +226,7 @@ pub const PeerServer = struct {
         self.server.deinit();
         for (self.sessions.items) |session| self.destroySession(session);
         self.sessions.deinit(gpa);
+        self.live_ids.deinit(gpa);
         gpa.destroy(self);
     }
 
@@ -271,16 +293,47 @@ pub const PeerServer = struct {
     /// Free every session whose transport the server has destroyed. Not at
     /// close-callback time: a closing transport is still stepped while its
     /// QUIC connection drains, and can still reach its peer then.
+    ///
+    /// This runs after every step, so it must not cost O(sessions) per step,
+    /// let alone O(sessions^2) through `sessionById` (a linear scan). The
+    /// server destroys a transport only after firing its close callback,
+    /// which sets `transport = null` and counts the session in
+    /// `closed_pending`, so with that count at zero nothing can be gone.
+    /// Otherwise one pass collects the server's live ids into a set: O(server
+    /// sessions + our sessions) however many closed at once.
     fn reapClosedSessions(self: *PeerServer) void {
+        if (self.closed_pending == 0) return;
+        self.reap_passes += 1;
+        // On OOM fall back to per-session lookups: slower, but it still
+        // frees the peers, which is what relieves the memory pressure.
+        var live: ?*const std.AutoHashMapUnmanaged(u64, void) = &self.live_ids;
+        self.collectLiveIds() catch {
+            live = null;
+        };
         var index: usize = 0;
         while (index < self.sessions.items.len) {
             const session = self.sessions.items[index];
-            if (self.server.sessionById(session.id) != null) {
+            const transport_alive = if (live) |ids|
+                ids.contains(session.id)
+            else
+                session.transport != null or self.server.sessionById(session.id) != null;
+            if (transport_alive) {
                 index += 1;
                 continue;
             }
             _ = self.sessions.swapRemove(index);
+            if (session.transport == null) self.closed_pending -= 1;
             self.destroySession(session);
+        }
+    }
+
+    fn collectLiveIds(self: *PeerServer) std.mem.Allocator.Error!void {
+        self.live_ids.clearRetainingCapacity();
+        const count = self.server.sessionCount();
+        try self.live_ids.ensureTotalCapacity(self.allocator, @intCast(count));
+        for (0..count) |index| {
+            const transport = self.server.sessionAt(index) orelse break;
+            self.live_ids.putAssumeCapacity(transport.id, {});
         }
     }
 
@@ -306,7 +359,12 @@ pub const PeerServer = struct {
     fn onPeerClose(ctx: ?*anyopaque, _: *Peer) void {
         const raw = ctx orelse return;
         const session: *Session = @ptrCast(@alignCast(raw));
-        session.transport = null;
+        // The peer reports a transport close once; the guard keeps the
+        // pending count exact even if that ever changed.
+        if (session.transport != null) {
+            session.transport = null;
+            session.owner.closed_pending += 1;
+        }
         const opts = session.owner.options;
         if (opts.on_close) |cb| cb(opts.ctx, session);
     }

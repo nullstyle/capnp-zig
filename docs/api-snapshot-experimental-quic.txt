@@ -3121,11 +3121,15 @@ capnpc-zig.rpc.transport.quic.PeerServer.Session.transport: field ?*rpc.transpor
 capnpc-zig.rpc.transport.quic.PeerServer.Session.user_data: field ?*anyopaque = null
 capnpc-zig.rpc.transport.quic.PeerServer.Session: struct
 capnpc-zig.rpc.transport.quic.PeerServer.allocator: field mem.Allocator
+capnpc-zig.rpc.transport.quic.PeerServer.closed_pending: field usize = 0
 capnpc-zig.rpc.transport.quic.PeerServer.deinit: fn (*rpc.transport.quic.peer_server.PeerServer) void
 capnpc-zig.rpc.transport.quic.PeerServer.getAddress: fn (*const rpc.transport.quic.peer_server.PeerServer) Io.net.IpAddress
 capnpc-zig.rpc.transport.quic.PeerServer.init: fn (mem.Allocator, Io, rpc.transport.quic.options.ServerOptions, rpc.transport.quic.peer_server.ServeOptions) error{AccessDenied,AddressFamilyUnsupported,AddressInUse,AddressUnavailable,AllowEarlyDataCallbackInstallFailed,AlpnInvalid,AlpnSetFailed,AlpnTooLong,Canceled,ClientRandomUnavailable,ConnectionClosed,DefaultVerifyPathsFailed,EarlyDataRejected,HandshakeFailed,InvalidConfig,InvalidPem,KeyMismatch,KeylogSetupFailed,LoadCADirFailed,LoadCAFileFailed,NativeControlFrameLimitExceedsWireLimit,NativeControlFrameLimitTooSmall,NativeDataStreamDeadlineRequired,NativeInlineFrameExceedsControlFrameLimit,NativePendingDataByteLimitRequired,NativePendingDataStreamLimitRequired,NetworkDown,NotClientContext,NotServerContext,OptionUnsupported,OutOfMemory,ProcessFdQuotaExceeded,ProtocolUnsupportedByAddressFamily,ProtocolUnsupportedBySystem,QuicEarlyDataContextFailed,QuicProvideDataFailed,QuicSetupFailed,QuicTransportParamsFailed,RandFailed,ReadFailed,SessionParseFailed,SessionSerializeFailed,SetSessionFailed,SocketModeUnsupported,SslAllocFailed,SslCtxAllocFailed,SslSetFdFailed,SslSetHostnameFailed,SyscallError,SystemFdQuotaExceeded,SystemResources,Unexpected,UseCertFailed,UsePrivateKeyFailed,WantRead,WantWrite,WriteFailed}!*rpc.transport.quic.peer_server.PeerServer
 capnpc-zig.rpc.transport.quic.PeerServer.io: field Io
+capnpc-zig.rpc.transport.quic.PeerServer.live_ids: field hash_map.Custom(u64,void,hash_map.AutoContext(u64),80) = <default>
 capnpc-zig.rpc.transport.quic.PeerServer.options: field rpc.transport.quic.peer_server.ServeOptions
+capnpc-zig.rpc.transport.quic.PeerServer.reapPassCount: fn (*const rpc.transport.quic.peer_server.PeerServer) u64
+capnpc-zig.rpc.transport.quic.PeerServer.reap_passes: field u64 = 0
 capnpc-zig.rpc.transport.quic.PeerServer.requestStop: fn (*rpc.transport.quic.peer_server.PeerServer) void
 capnpc-zig.rpc.transport.quic.PeerServer.run: fn (*rpc.transport.quic.peer_server.PeerServer) void
 capnpc-zig.rpc.transport.quic.PeerServer.server: field rpc.transport.quic.server.Server
