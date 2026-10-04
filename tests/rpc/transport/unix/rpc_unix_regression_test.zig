@@ -21,6 +21,10 @@ const sys = posix.system;
 // below raises it to `.debug` inside its own body; without that, the bug is
 // invisible to the suite.
 //
+// The fix skips TCP_NODELAY on any socket that is not IPv4 or IPv6. The
+// second half of this file pins the other side of that skip: every TCP path
+// still sets the option.
+//
 // Unix-domain sockets are POSIX-only in this sprint; Windows skips.
 
 const unix_supported = builtin.target.os.tag != .windows and builtin.target.os.tag != .wasi;
@@ -133,6 +137,88 @@ test "a Unix accept never attempts TCP_NODELAY (nothing is logged for it at debu
         std.debug.print("unexpected TCP_NODELAY attempt on an AF_UNIX socket; captured stderr:\n{s}\n", .{captured});
         return error.TcpNoDelayAttemptedOnUnixSocket;
     }
+}
+
+// ---------------------------------------------------------------------------
+// The other side of the skip: IP sockets must still get TCP_NODELAY.
+//
+// The non-IP skip sits on every TCP accept and connect path
+// (`ClientSession.connect`, `Listener.accept`, `Listener.acceptFd`,
+// `createLoopbackSocketPair`). If it ever misread the family, Nagle would
+// come back on every TCP connection and nothing else would notice: data
+// still flows, only small writes get held for a delayed ACK. The sockaddr
+// layouts differ (Darwin: a length byte, then an 8-bit family; Linux: a
+// 16-bit family), and a later edit could narrow the check to IPv4. So read
+// the option back with getsockopt on every path, for IPv4 and IPv6.
+//
+// setTcpNoDelay is a no-op on Windows (raw AFD handles), so these skip there.
+// ---------------------------------------------------------------------------
+
+const nodelay_supported = builtin.target.os.tag != .windows and builtin.target.os.tag != .wasi;
+
+fn expectNoDelay(socket: tcp.SocketFd) !void {
+    var value: c_int = 0;
+    var len: posix.socklen_t = @sizeOf(c_int);
+    const rc = sys.getsockopt(socket.handle, posix.IPPROTO.TCP, posix.TCP.NODELAY, @ptrCast(&value), &len);
+    if (posix.errno(rc) != .SUCCESS) return error.GetSockOptFailed;
+    if (value == 0) return error.TcpNoDelayNotSet;
+}
+
+/// Open a TCP listener on `bind`, then check TCP_NODELAY on the client fd
+/// from `ClientSession.connect` and on the server fds from
+/// `Listener.acceptFd` (the `ServerSession.accept` path) and
+/// `Listener.accept`.
+fn expectNoDelayOnEveryTcpPath(gpa: std.mem.Allocator, io: std.Io, bind: net.IpAddress) !void {
+    var listener = try tcp.Listener.init(gpa, io, bind, .{});
+    defer listener.close();
+    const address = listener.server.socket.address;
+
+    // The kernel completes both connects against the backlog, so one thread
+    // can connect and then accept. Accepts come out in connect order.
+    const session = try tcp.ClientSession.connect(gpa, io, address, .{});
+    defer session.deinit();
+    const raw_client = try net.IpAddress.connect(&address, io, .{ .mode = .stream, .protocol = .tcp });
+    defer tcp.closeFd(io, .{ .handle = raw_client.socket.handle });
+
+    try expectNoDelay(.{ .handle = session.conn.transport.fd });
+
+    const accepted_fd = try listener.acceptFd();
+    defer tcp.closeFd(io, accepted_fd);
+    try expectNoDelay(accepted_fd);
+
+    const conn = try listener.accept();
+    defer {
+        conn.deinit();
+        gpa.destroy(conn);
+    }
+    try expectNoDelay(.{ .handle = conn.transport.fd });
+}
+
+test "IPv4: connect, acceptFd and accept still set TCP_NODELAY (the non-IP skip must not fire)" {
+    if (comptime !nodelay_supported) return error.SkipZigTest;
+    try expectNoDelayOnEveryTcpPath(std.testing.allocator, std.testing.io, .{ .ip4 = .loopback(0) });
+}
+
+test "IPv6: connect, acceptFd and accept still set TCP_NODELAY (the non-IP skip must not fire)" {
+    if (comptime !nodelay_supported) return error.SkipZigTest;
+    // Probe first, so that a host without IPv6 loopback (some containers)
+    // skips instead of failing. The real check below reports every error.
+    var probe = tcp.Listener.init(std.testing.allocator, std.testing.io, .{ .ip6 = .loopback(0) }, .{}) catch |err| switch (err) {
+        error.AddressFamilyUnsupported, error.AddressUnavailable => return error.SkipZigTest,
+        else => return err,
+    };
+    probe.close();
+    try expectNoDelayOnEveryTcpPath(std.testing.allocator, std.testing.io, .{ .ip6 = .loopback(0) });
+}
+
+test "createLoopbackSocketPair still sets TCP_NODELAY on both ends (the tick/idle suites rely on it)" {
+    if (comptime !nodelay_supported) return error.SkipZigTest;
+    const io = std.testing.io;
+    const pair = try tcp.createLoopbackSocketPair(io);
+    defer tcp.closeFd(io, pair[0]);
+    defer tcp.closeFd(io, pair[1]);
+    try expectNoDelay(pair[0]);
+    try expectNoDelay(pair[1]);
 }
 
 /// Redirects fd 2 into a pipe so a test can read what the log function

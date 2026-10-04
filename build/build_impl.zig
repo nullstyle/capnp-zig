@@ -836,8 +836,9 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_rpc_cross_thread_stress_tests = addLibTest(b, "tests/rpc/transport/rpc_cross_thread_stress_test.zig", target, optimize, lib_module);
     const run_rpc_client_session_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_client_session_test.zig", target, optimize, lib_module);
     const run_rpc_server_session_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_server_session_test.zig", target, optimize, lib_module);
-    // AF_UNIX regressions. POSIX-only: the suite compiles everywhere and
-    // skips on Windows.
+    // AF_UNIX regressions, plus the IP side of the non-IP TCP_NODELAY skip
+    // (every TCP path must still set it). POSIX-only: the suite compiles
+    // everywhere and skips on Windows.
     const run_rpc_unix_regression_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_regression_test.zig", target, optimize, lib_module);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, qm)
