@@ -340,13 +340,15 @@ test "the first complete frame disarms the first-frame deadline" {
     const fds = try createSocketPair(io);
 
     // One complete frame (one segment of zero words), written before the
-    // run loop starts so a slow thread start on a loaded runner cannot let
-    // the 100ms deadline fire first. The speaker then stays silent well past
-    // the deadline, then sends EOF.
+    // run loop starts. The deadline is a full second, not 100ms: on Windows
+    // the read runs as an io.concurrent task, and on a loaded CI runner that
+    // task can start more than 100ms late, so a tick reaped the connection
+    // with the frame already queued (seen on windows-latest). The speaker
+    // then stays silent well past the deadline, then sends EOF.
     writeBytes(io, fds[1], &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 });
     const Speaker = struct {
         fn run(fd: tcp.SocketFd, write_io: std.Io) void {
-            sleepAwakeMs(write_io, 400);
+            sleepAwakeMs(write_io, 2_500);
             closeFd(write_io, fd);
         }
     };
@@ -358,7 +360,7 @@ test "the first complete frame disarms the first-frame deadline" {
         .observer = event_recorder.observer(),
     });
     defer conn.deinit();
-    conn.first_frame_timeout_ms = 100;
+    conn.first_frame_timeout_ms = 1_000;
     conn.start(&counter, FrameCounter.onMessage, FrameCounter.onError, FrameCounter.onClose);
 
     const speaker = try std.Thread.spawn(.{}, Speaker.run, .{ fds[1], io });
