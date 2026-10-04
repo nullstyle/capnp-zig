@@ -1220,7 +1220,8 @@ pub const Generator = struct {
     fn normalizeShapeSelf(self: *Generator, node: *const schema.Node, source: []const u8) ![]const u8 {
         const owner = try self.qualifiedTypeName(node.id);
         defer self.allocator.free(owner);
-        const prefix = try std.fmt.allocPrint(self.allocator, "_capnp_file.{s}", .{owner});
+        // Match the spelling every emitter writes behind the file anchor.
+        const prefix = try types.fileRootPath(self.allocator, owner);
         defer self.allocator.free(prefix);
         const terminated = try self.allocator.dupeSentinel(u8, source, 0);
         defer self.allocator.free(terminated);

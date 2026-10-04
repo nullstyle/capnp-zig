@@ -42,6 +42,67 @@ pub fn escapeZigFieldName(allocator: std.mem.Allocator, name: []const u8) ![]con
     return allocator.dupe(u8, name);
 }
 
+/// The generated file's own namespace (`const _capnp_file = @This();`).
+pub const file_root = "_capnp_file";
+
+/// Anchor a qualified type path (`[module.][Parent.….]Simple`, as a
+/// declaration reference) at the generated file namespace. Behind
+/// `_capnp_file.` the path's first segment becomes a field access, where zig
+/// fmt unquotes a primitive name, so an import alias declared as `@"type"`
+/// (from `type.capnp`) is spelled `_capnp_file.type`. Keywords and
+/// digit-leading names stay quoted. A path that is already anchored is
+/// returned unchanged. Every emitter that prefixes `_capnp_file.` goes through
+/// here so the output stays zig fmt clean.
+pub fn fileRootPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (std.mem.startsWith(u8, path, file_root ++ ".")) return allocator.dupe(u8, path);
+    if (std.mem.startsWith(u8, path, "@\"")) {
+        if (std.mem.indexOfScalarPos(u8, path, 2, '"')) |close| {
+            const name = path[2..close];
+            if (isPlainIdentifier(name)) {
+                const segment = try escapeZigFieldName(allocator, name);
+                defer allocator.free(segment);
+                return std.fmt.allocPrint(allocator, file_root ++ ".{s}{s}", .{ segment, path[close + 1 ..] });
+            }
+        }
+    }
+    return std.fmt.allocPrint(allocator, file_root ++ ".{s}", .{path});
+}
+
+/// True when `name` is made only of identifier characters, so its quoted form
+/// carries no escape sequence and its bare form is one identifier token.
+fn isPlainIdentifier(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
+    }
+    return true;
+}
+
+test "fileRootPath re-escapes the first segment for field position" {
+    const alloc = std.testing.allocator;
+    const cases = [_][2][]const u8{
+        .{ "Thing", "_capnp_file.Thing" },
+        .{ "Outer.Inner", "_capnp_file.Outer.Inner" },
+        .{ "geo.Point", "_capnp_file.geo.Point" },
+        // Primitive import aliases lose their quotes behind the anchor.
+        .{ "@\"type\".Thing", "_capnp_file.type.Thing" },
+        .{ "@\"u8\".Outer.Inner", "_capnp_file.u8.Outer.Inner" },
+        .{ "@\"void\".Thing", "_capnp_file.void.Thing" },
+        .{ "@\"true\".Thing", "_capnp_file.true.Thing" },
+        // Keywords and digit-leading names need their quotes everywhere.
+        .{ "@\"error\".Thing", "_capnp_file.@\"error\".Thing" },
+        .{ "@\"test\".Thing", "_capnp_file.@\"test\".Thing" },
+        .{ "@\"2d\".Point", "_capnp_file.@\"2d\".Point" },
+        // Already anchored.
+        .{ "_capnp_file.Thing", "_capnp_file.Thing" },
+    };
+    for (cases) |case| {
+        const got = try fileRootPath(alloc, case[0]);
+        defer alloc.free(got);
+        try std.testing.expectEqualStrings(case[1], got);
+    }
+}
+
 test "escapeZigFieldName quotes keywords but not primitive names" {
     const alloc = std.testing.allocator;
     for ([_][]const u8{ "error", "struct", "test" }) |word| {

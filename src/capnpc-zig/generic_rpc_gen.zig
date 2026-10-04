@@ -69,7 +69,7 @@ pub fn Emitter(comptime G: type) type {
         fn rootName(self: *G, id: schema.Id) ![]const u8 {
             const name = try self.qualifiedTypeName(id);
             defer self.allocator.free(name);
-            return if (std.mem.startsWith(u8, name, "_capnp_file.")) self.allocator.dupe(u8, name) else std.fmt.allocPrint(self.allocator, "_capnp_file.{s}", .{name});
+            return types.fileRootPath(self.allocator, name);
         }
         fn appliedName(self: *G, context: *const schema.Node, target: *const schema.Node, brand: schema.Brand) ![]const u8 {
             const raw = try rootName(self, target.id);

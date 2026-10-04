@@ -710,6 +710,7 @@ fn runCrossFileBrandHarnessProfile(
     for (request.requested_files) |file| {
         const generated = try generator.generateFile(file);
         defer allocator.free(generated);
+        try zig_fmt.expectFmtClean(allocator, file.filename, generated);
         const output_name = if (std.mem.endsWith(u8, file.filename, "brand_cross_file.capnp"))
             "generated.zig"
         else
@@ -753,11 +754,21 @@ test "cross-file executable brands run in full and compact profiles" {
 
 /// Compile several schemas as one request, write each requested file's
 /// binding beside the harness as `<stem>.zig` (the name generated imports use
-/// for it), then `zig test` the harness against the real runtime.
+/// for it), assert each binding is zig fmt clean as generated, then `zig test`
+/// the harness against the real runtime.
 fn runMultiFileHarness(
     allocator: std.mem.Allocator,
     schema_paths: []const []const u8,
     harness_source: []const u8,
+) !void {
+    return runMultiFileHarnessProfile(allocator, schema_paths, harness_source, .full);
+}
+
+fn runMultiFileHarnessProfile(
+    allocator: std.mem.Allocator,
+    schema_paths: []const []const u8,
+    harness_source: []const u8,
+    profile: capnpc.codegen.Generator.ApiProfile,
 ) !void {
     const io = std.testing.io;
     var capnp_argv = std.ArrayList([]const u8).empty;
@@ -774,11 +785,13 @@ fn runMultiFileHarness(
 
     var generator = try capnpc.codegen.Generator.init(allocator, request.nodes);
     defer generator.deinit();
+    generator.setApiProfile(profile);
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     for (request.requested_files) |file| {
         const generated = try generator.generateFile(file);
         defer allocator.free(generated);
+        try zig_fmt.expectFmtClean(allocator, file.filename, generated);
         const output_name = try std.fmt.allocPrint(allocator, "{s}.zig", .{std.fs.path.stem(file.filename)});
         defer allocator.free(output_name);
         try writeFile(tmp.dir, output_name, generated);
@@ -850,6 +863,66 @@ test "Codegen guard locals cannot collide with schema-named file-scope declarati
         \\}
         \\
     );
+}
+
+// Importing `type.capnp` gives the binding a file-scope alias declared as
+// `pub const @"type"`. Typed applications anchor imported types at the file
+// namespace, and behind `_capnp_file.` the alias is a field access, where zig
+// fmt unquotes a primitive name. The emitter once wrote
+// `_capnp_file.@"type".Thing`: valid Zig, but not fmt clean, so a consumer's
+// fmt gate and gen-check could not both pass. runMultiFileHarnessProfile
+// asserts the raw output is fmt clean; the harness proves the unquoted path
+// still names the import.
+test "Codegen anchors an import alias named after a Zig primitive fmt clean" {
+    inline for (.{ capnpc.codegen.Generator.ApiProfile.full, .compact }) |profile| {
+        try runMultiFileHarnessProfile(std.testing.allocator, &.{
+            "tests/test_schemas/primitive_import_alias.capnp",
+            "tests/test_schemas/type.capnp",
+        },
+            \\const std = @import("std");
+            \\const capnpc = @import("capnpc-zig");
+            \\const message = capnpc.message;
+            \\const generated = @import("primitive_import_alias.zig");
+            \\const imported = @import("type.zig");
+            \\
+            \\const TypedHolder = generated.Holder.Apply(.{});
+            \\const TypedService = generated.Service.Apply(.{});
+            \\
+            \\test "an import alias named after a primitive resolves behind the file anchor" {
+            \\    try std.testing.expect(generated.@"type" == imported);
+            \\    try std.testing.expect(TypedService.Ping == imported.Svc.Apply(.{}).Ping);
+            \\    std.testing.refAllDecls(TypedHolder.Reader);
+            \\    std.testing.refAllDecls(TypedService);
+            \\
+            \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+            \\    defer builder.deinit();
+            \\    // Holder is 0 data words and 6 pointers; the compact profile has no
+            \\    // Builder.init, so allocate the root directly.
+            \\    const typed = TypedHolder.Builder.wrap(try builder.allocateStruct(0, 6));
+            \\    var thing = try typed.initThing();
+            \\    try thing.setX(7);
+            \\    var inner = try typed.initInner();
+            \\    try inner.setY(513);
+            \\    var things = try typed.initThings(2);
+            \\    var second = try things.get(1);
+            \\    try second.setX(9);
+            \\    var box = try typed.initBox();
+            \\    var boxed = try box.initValue();
+            \\    try boxed.setX(11);
+            \\
+            \\    const bytes = try builder.toBytes();
+            \\    defer std.testing.allocator.free(bytes);
+            \\    var msg = try message.Message.init(std.testing.allocator, bytes, .{});
+            \\    defer msg.deinit();
+            \\    const reader = TypedHolder.Reader.wrap(try msg.getRootStruct());
+            \\    try std.testing.expectEqual(@as(u8, 7), try (try reader.getThing()).getX());
+            \\    try std.testing.expectEqual(@as(u16, 513), try (try reader.getInner()).getY());
+            \\    try std.testing.expectEqual(@as(u8, 9), try (try (try reader.getThings()).get(1)).getX());
+            \\    try std.testing.expectEqual(@as(u8, 11), try (try (try reader.getBox()).getValue()).getX());
+            \\}
+            \\
+        , profile);
+    }
 }
 
 fn runGeneratedHarness(

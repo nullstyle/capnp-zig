@@ -804,7 +804,7 @@ pub const StructGenerator = struct {
                 return try self.allocator.dupe(u8, name);
             }
         }
-        return try std.fmt.allocPrint(self.allocator, "_capnp_file.{s}", .{name});
+        return try types.fileRootPath(self.allocator, name);
     }
 
     fn brandEnumTypeName(self: *StructGenerator, id: schema.Id) !?[]const u8 {
@@ -815,7 +815,7 @@ pub const StructGenerator = struct {
                 return try self.allocator.dupe(u8, name);
             }
         }
-        return try std.fmt.allocPrint(self.allocator, "_capnp_file.{s}", .{name});
+        return try types.fileRootPath(self.allocator, name);
     }
 
     fn hasDirectConcreteBrandSlot(self: *StructGenerator, struct_info: schema.StructNode) !bool {
@@ -3599,9 +3599,9 @@ pub const StructGenerator = struct {
     fn builderOwnerTypeName(self: *StructGenerator) ![]const u8 {
         const owner = self.brand_owner orelse return error.InvalidStructNode;
         const name = try self.qualifiedTypeName(owner, owner.id);
-        if (self.parent_path_fn == null or std.mem.startsWith(u8, name, "_capnp_file.")) return name;
+        if (self.parent_path_fn == null or std.mem.startsWith(u8, name, types.file_root ++ ".")) return name;
         defer self.allocator.free(name);
-        return std.fmt.allocPrint(self.allocator, "_capnp_file.{s}", .{name});
+        return types.fileRootPath(self.allocator, name);
     }
 
     fn generateBuilderReadMethods(self: *StructGenerator, info: schema.StructNode, writer: anytype) !void {
@@ -4226,7 +4226,9 @@ pub const StructGenerator = struct {
         if (module) |m| {
             try out.appendSlice(self.allocator, m);
         } else if (qualify_at_file_root) {
-            try out.appendSlice(self.allocator, "_capnp_file");
+            // Only same-file paths reach here, so the first segment is a
+            // schema type name that never needs quotes (see fileRootPath).
+            try out.appendSlice(self.allocator, types.file_root);
         }
         if (parent) |p| {
             if (out.items.len > 0) try out.append(self.allocator, '.');
