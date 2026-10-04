@@ -99,9 +99,10 @@ pub const Listener = struct {
     }
 
     /// Accept a single connection and return only its socket, with Nagle
-    /// disabled — the caller owns wiring it into a `Connection`. Used by
-    /// `ServerSession`, which embeds the `Connection` by value rather than
-    /// taking the heap `*Connection` `accept()` produces.
+    /// disabled when it is an IP socket — the caller owns wiring it into a
+    /// `Connection`. Used by `ServerSession`, which embeds the `Connection`
+    /// by value rather than taking the heap `*Connection` `accept()`
+    /// produces.
     pub fn acceptFd(self: *Listener) !SocketFd {
         if (self.close_requested.load(.acquire)) return error.ListenerClosed;
         const stream = try self.server.accept(self.io);
@@ -167,6 +168,10 @@ pub const Listener = struct {
 /// Disable Nagle on a connected TCP socket. Loopback control channels and
 /// RPC frames are latency-sensitive; with Nagle on, delayed ACKs can hold
 /// small writes for ~40-200ms, which breaks tick/idle timing.
+///
+/// Best-effort and never fails. It is a no-op on a socket that is not an
+/// IP socket (for example an AF_UNIX socket handed to `Listener.initFd`),
+/// because TCP_NODELAY does not exist there.
 // Takes the SocketFd wrapper (not net.Socket.Handle): the raw handle type
 // varies by target (i32 vs *anyopaque), which would break the
 // platform-identical api-snapshot invariant for a pub decl.
@@ -179,6 +184,10 @@ pub fn setTcpNoDelay(socket: SocketFd) void {
         // phase 4).
         return;
     }
+    // A Listener built with `initFd` may wrap an AF_UNIX socket, so the
+    // accepted fd is not necessarily TCP. The attempt could only fail there
+    // (EOPNOTSUPP), so skip it.
+    if (isNonIpSocket(socket)) return;
     // Best-effort, via the raw syscall: the socket came off accept() on a
     // live network, so the peer can reset it between accept and here —
     // macOS then fails setsockopt with EINVAL (observed steadily in the
@@ -197,8 +206,31 @@ pub fn setTcpNoDelay(socket: SocketFd) void {
     );
     switch (std.posix.errno(rc)) {
         .SUCCESS => {},
-        else => |err| log.debug("failed to set TCP_NODELAY: {t}", .{err}),
+        // Log the raw number, never the tag name: `std.posix.E` is
+        // non-exhaustive and does not name every errno a kernel returns
+        // (macOS 102, EOPNOTSUPP, has no tag), and formatting an unnamed
+        // value with `{t}` panics a Debug build.
+        else => |err| log.debug("failed to set TCP_NODELAY: errno {d}", .{@backingInt(err)}),
     }
+}
+
+/// True only when `getsockname` reports a family other than IPv4 or IPv6.
+/// When the family cannot be read (the call fails, or returns too few
+/// bytes), this returns false and the caller makes its best-effort attempt
+/// anyway. The failure is never propagated: `setTcpNoDelay` returns void,
+/// so `Listener.acceptFd`'s error set (which feeds the frozen
+/// `ServerSession.accept`) stays as it is.
+fn isNonIpSocket(socket: SocketFd) bool {
+    var addr: std.posix.sockaddr.storage = undefined;
+    var len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.storage);
+    const rc = std.posix.system.getsockname(socket.handle, @ptrCast(&addr), &len);
+    if (std.posix.errno(rc) != .SUCCESS) return false;
+    const family_end = @offsetOf(std.posix.sockaddr.storage, "family") + @sizeOf(std.posix.sa_family_t);
+    if (len < family_end) return false;
+    return switch (addr.family) {
+        std.posix.AF.INET, std.posix.AF.INET6 => false,
+        else => true,
+    };
 }
 
 // ---------------------------------------------------------------------------

@@ -132,7 +132,7 @@ test-rpc-caps:
 test-rpc-promises:
     zig build {{ test_jobs }} test-rpc-promises --summary all
 
-# Run RPC TCP/raw-frame transport tests
+# Run RPC TCP/Unix/raw-frame transport tests
 test-rpc-transport:
     zig build {{ test_jobs }} test-rpc-transport --summary all
 
