@@ -692,8 +692,9 @@ handshake completes. Every other frame, and everything behind it, waits for
 the handshake, which a replay can never complete. Your Restorer must therefore
 be idempotent, as the vat restore convention already requires. Native mode
 holds every early frame until the handshake. Also set `new_token_key`: a
-returning client that presents a valid NEW_TOKEN skips Retry, and a Retry
-costs the early restore. A NEW_TOKEN is valid only from the IP address and
+returning client that presents a valid NEW_TOKEN skips Retry. Today a Retry
+costs the early restore, because the quic-zig client does not send its 0-RTT
+data again after a Retry. A NEW_TOKEN is valid only from the IP address and
 port that it was issued to; see "Retry and NEW_TOKEN: an open gap" below.
 
 **The opt-in alone does not make a heal after a crash-restart ride 0-RTT.**
@@ -785,8 +786,8 @@ and the key found there is rotated every 2 days.
   derived from the other would also leak with it.
 - Persist `new_token_key` with it, and load both on every start. With Retry
   on (the preset always sets `retry_token_key`), only a valid NEW_TOKEN lets
-  a returning client skip Retry, and a Retry costs the early restore. A new
-  `new_token_key` at each boot invalidates every NEW_TOKEN, so every
+  a returning client skip Retry, and today a Retry costs the early restore. A
+  new `new_token_key` at each boot invalidates every NEW_TOKEN, so every
   restarted client gets a Retry. Today this rule is necessary but not
   sufficient; see "Retry and NEW_TOKEN: an open gap" below.
 - Install the key again after any TLS-context reload. capnp-zig never
@@ -851,13 +852,23 @@ never completes a handshake.
 
 **Retry and NEW_TOKEN: an open gap.** BoringSSL's verdict
 (`EarlyDataStatus.accepted`) does not prove that the restore ran early.
-When the server sends a Retry, it drops the client's first-flight 0-RTT
-packets, because no connection exists for them yet. BoringSSL still accepts
-early data in the handshake after the Retry, so the client reports
-`.accepted`, but the restore reaches the server only after the handshake,
-and the round trip that 0-RTT exists for is lost. Under the preset, a heal
-after a crash-restart gets a Retry even with both keys persisted, for two
-reasons:
+After a Retry, the restore runs late, because of what the quic-zig v0.25.0
+client does:
+
+- The server answers the client's first flight with a Retry. It drops the
+  0-RTT packets in that flight, because no connection exists for them yet.
+- RFC 9000 (section 17.2.5.3) lets a client send 0-RTT packets again after a
+  Retry, to the connection ID that the Retry gives. The quic-zig client does
+  not. It sends its ClientHello again with the Retry token, but it keeps the
+  dropped 0-RTT packets as in flight. It sets no probe timer for them until
+  the handshake is confirmed (RFC 9002, section 6.2.1), so it sends the
+  restore again only after the handshake, as 1-RTT.
+
+BoringSSL still accepts early data in the handshake after the Retry, so the
+client reports `.accepted`. But the restore runs only after the server's
+handshake completes, and the round trip that 0-RTT exists for is lost.
+Under the preset, a heal after a crash-restart gets a Retry even with both
+keys persisted, for two reasons:
 
 - quic-zig binds a NEW_TOKEN to the client's IP address and port. A
   capnp-zig client binds a new ephemeral port for every dial unless
@@ -869,14 +880,36 @@ reasons:
   predecessor as not yet valid until its own uptime passes the
   predecessor's uptime when it issued the token.
 
-So, today, the key gives an early restore after a crash-restart only on a
-server without Retry (no `retry_token_key`, which the preset requires).
-Under the preset it saves the certificate exchange, but not the round trip.
-The port rule also applies to a redial to a server process that is still
-running: under the preset, its restore runs early only when the client
-redials from the address and port that earned its NEW_TOKEN. Closing the gap
-needs a NEW_TOKEN clock that survives a restart, and either a client that
-keeps its port or a NEW_TOKEN that binds only the IP address.
+So, today, a heal after a crash-restart runs its restore early in two cases
+only. The server runs without Retry (no `retry_token_key`, which the preset
+requires). Or both keys are persisted, the client redials from the port
+that earned its NEW_TOKEN, and the restarted server has run longer than its
+predecessor had when it issued that token. Under the preset the key saves
+the certificate exchange, but usually not the round trip. The port rule
+also applies to a redial to a server process that is still running: under
+the preset, its restore runs early only when the client redials from the
+address and port that earned its NEW_TOKEN.
+
+Closing the gap needs one of these changes:
+
+- The client sends its 0-RTT data again after a Retry. Then a Retry costs
+  one more round trip, but the restore still runs before the handshake
+  completes, whatever the client's port, the token clock or the
+  `new_token_key`. A scratch probe gave the quic-zig v0.25.0 client this
+  behavior: on a Retry, it queued its in-flight 0-RTT data to be sent again
+  as 0-RTT. The unchanged v0.25.0 server accepted the new 0-RTT packets,
+  which arrive with the Initial that carries the Retry token, and it ran the
+  restore before its handshake completed. This held after a restart with
+  the same ticket key, from a new port, and also with a new
+  `new_token_key`.
+- The client skips the Retry. This needs a NEW_TOKEN clock that survives a
+  restart, and either a client that keeps its port or a NEW_TOKEN that binds
+  only the IP address. This also saves the round trip of the Retry, but only
+  for a client whose NEW_TOKEN is still valid.
+
+Only the first change makes an early restore after a crash-restart depend
+on the ticket key alone. Neither change is in quic-zig v0.25.0 or in
+capnp-zig yet.
 
 ### Self-healing clients
 
