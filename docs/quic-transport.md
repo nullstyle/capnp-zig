@@ -947,7 +947,8 @@ Closing the gap needs one of these changes:
 
 Only the first change makes an early restore after a crash-restart depend
 on the ticket key alone. Neither change is in quic-zig v0.25.0 or in
-capnp-zig yet. The QUIC transport suite pins today's behavior
+capnp-zig yet; `docs/upstream/handoff-quic-zig-ticket-keys.md` asks
+quic-zig for the first one. The QUIC transport suite pins today's behavior
 ("a new new_token_key after a crash-restart costs the early restore"): a
 client that sends 0-RTT again after a Retry turns that test red, which is
 the signal to update this section.

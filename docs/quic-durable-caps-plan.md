@@ -1,11 +1,13 @@
 # QUIC durable capabilities — substrate map and prototype plan
 
-Status (refreshed 2026-10-03): the ladder's first three rungs are in the RPC
+Status (refreshed 2026-10-04): the ladder's first three rungs are in the RPC
 runtime, all Experimental. Warm restore works in both halves, the stateless
 reset reaches the peer as a typed death certificate, and `WarmRedialClient`
 heals a restored capability across a server crash-restart. The hardened server
 preset now carries the reset key, and the redial budget counts consecutive
-failures, refunded only by a generation whose server proves it stayed alive. "Ledger" below lists what landed (each commit checked with
+failures, refunded only by a generation whose server proves it stayed alive.
+A server that persists its session-ticket key lets that heal resume with
+accepted 0-RTT. "Ledger" below lists what landed (each commit checked with
 `git log`), and "Open rungs" lists what is left, with file:line anchors. The
 sections after them are the original 2026-08-20 plan and its running notes,
 kept for the design reasoning. Where they describe a gap as open, the ledger
@@ -16,7 +18,7 @@ connection-ID machinery as the transport substrate for Cap'n Proto durable
 capabilities, aimed at an eventual QUIC netlayer (a concrete `VatNetwork`)
 for this repo.
 
-## Ledger (done, verified 2026-10-03)
+## Ledger (done, verified 2026-10-04)
 
 | Rung | Commit | What landed |
 |---|---|---|
@@ -36,19 +38,14 @@ for this repo.
 | Embedded 0-RTT parity | `dece43c` | `EmbeddedSession` gets the same replay-hold posture. |
 | Lifetime stream cap removed | `bf9a2e7`, `15b86ae` | quic v0.24: stream limits are an open-at-once window; `stream_limit_exhausted` is gone. |
 | Hardened preset carries the death certificate; consecutive redial budget | this sprint (item 8) | `ServerProductionHardening.stateless_reset_key` is required; `.early_data = .restore_only` is the explicit 0-RTT opt-in (sets `.without_replay_protection` + `.restore_only` together); `WarmRedialClient.Policy.min_healthy_ms` (10 s) resets `redials` only when an authenticated packet from the server arrives that long after the rebind (`Connection.lastAuthenticatedReceiveNs`), so detection latency (a rare caller's late reset, an idle timeout) never counts as health. Crash-restart e2e against the preset; crash-loop e2es with late detection and with idle generations still give up. |
+| **Persisted session-ticket key** (was open rung 1) | sprint 2026-10-04 (item 16) | `ServerOptions.session_ticket_key` / `ServerProductionHardening.session_ticket_key` (48 bytes, opt-in) is installed by `Listener.init` on quic-zig's TLS context through `boringssl.raw` and read back; `session_ticket_lifetime_s`; `quic.loadTicketKeyFile` (exactly 48 bytes, POSIX refuses group/other access); refusals (all-zero key, key + anti-replay, key + Retry without `new_token_key`; `serverConfigFromOptions` refuses any key); `early_data_application_context` binds the transport mode and `early_dispatch`; `WarmRedialClient.Outcome.zero_rtt_generations`. E2e: a crash-restart with the same key gives `.accepted`, five restarts give `.rejected`, and the hardened heal's second generation is `.accepted` with the key and `.rejected` without. The upstream asks are in `docs/upstream/handoff-quic-zig-ticket-keys.md`. What a key still does not buy is open rung 12. |
 
-## Open rungs (as of 2026-10-03)
+## Open rungs (as of 2026-10-04)
 
-1. **Session-ticket keys do not survive a restart.** BoringSSL mints tickets
-   under a per-`SSL_CTX` key, so after a crash-restart the redial's ticket is
-   always rejected: the heal works, but it pays a full handshake and never
-   rides 0-RTT. `ServerOptions` has no ticket-key field
-   (`src/rpc/transport/quic/options.zig:327`); quic-zig leaves ticket keys to
-   the embedder (`Server.replaceTlsContext`, "Resumption note"). Needs a
-   persisted ticket key, like the reset key, and then an e2e that a
-   crash-restart redial is ACCEPTED 0-RTT.
+1. *Closed 2026-10-04: moved to the ledger ("Persisted session-ticket
+   key"). The numbers below are kept so references to them stay valid.*
 2. **Provision dials vs the hardened preset's Retry.** The preset requires
-   `retry_token_key` (`src/rpc/transport/quic/options.zig:460`), and a Retry
+   `retry_token_key` (`src/rpc/transport/quic/options.zig:506`), and a Retry
    replaces a dictated initial DCID on the wire, so a VatC behind the preset
    misses every provision (`ServerSession.initialDcid`,
    `src/rpc/transport/quic/server.zig:880-882`). Needs a no-Retry carve-out
@@ -71,12 +68,12 @@ for this repo.
    `rotateLiveSlotCids`-driven migration and preferred-address dialing.
 7. **Redial backoff is fixed.** Every client of a crashed server redials
    after the same `Policy.backoff_ms` (50 ms,
-   `src/rpc/transport/quic/warm_redial.zig:70`): a thundering herd at fleet
+   `src/rpc/transport/quic/warm_redial.zig:74`): a thundering herd at fleet
    scale. Needs jitter, and probably exponential growth within a failure
    streak.
 8. **Anti-replay at scale.** The hardened preset offers 0-RTT only as
    `.restore_only` without a tracker (`ProductionEarlyData`,
-   `src/rpc/transport/quic/options.zig:440`), because quic-zig's
+   `src/rpc/transport/quic/options.zig:486`), because quic-zig's
    `AntiReplayTracker` is single-process. A fleet-wide tracker would allow
    `.with_anti_replay` and early dispatch of more than the restore prefix.
 9. **The soak does not run the hardened preset.** The abrupt-death soak
@@ -86,7 +83,7 @@ for this repo.
    proven only by the e2e in `tests/rpc/transport/quic/rpc_quic_peer_test.zig`.
 10. **Idle generations never prove health.** A generation is healthy only when
     an authenticated packet from the server arrives `min_healthy_ms` after the
-    rebind (`src/rpc/transport/quic/warm_redial.zig:276`,
+    rebind (`src/rpc/transport/quic/warm_redial.zig:296`,
     `src/rpc/transport/quic/connection.zig:251`). A client with no traffic
     therefore spends a redial on every death, and with
     `redial_on_idle_timeout` on every idle timeout. QUIC has no keep-alive
@@ -97,11 +94,26 @@ for this repo.
     §21.11: instances that share a static reset key must receive every packet
     of a connection at the instance that holds its state, or a sibling resets
     a live connection and the client certifies a false `.stateless_reset`.
-    `ServerOptions` (`src/rpc/transport/quic/options.zig:327`) does not
+    `ServerOptions` (`src/rpc/transport/quic/options.zig:341`) does not
     forward quic-zig's QUIC-LB connection-ID encoding (`Server.Config.quic_lb`),
     so today a fleet behind one address needs a key per instance
     (docs/quic-transport.md, "Sharing the key") or a load balancer that tracks
     connection IDs itself.
+12. **A Retry still costs the early restore.** With the ticket key, BoringSSL
+    accepts a crash-restart heal's 0-RTT, but under the hardened preset the
+    heal usually gets a Retry, and the quic-zig v0.25.0 client then sends its
+    early data again only after the handshake, at 1-RTT (docs/quic-transport.md,
+    "Retry and NEW_TOKEN: an open gap"). Two things cause the Retry: a
+    capnp-zig dial binds a new port, and a NEW_TOKEN is bound to the IP and
+    port; and the listener's token clock counts from `Listener.init`, so a
+    restarted process treats its predecessor's tokens as not yet valid until
+    its uptime passes their issue time. The client-side fix (send 0-RTT again
+    after a Retry, RFC 9000 17.2.5.3) is asked of quic-zig in
+    `docs/upstream/handoff-quic-zig-ticket-keys.md`. A restart-safe token clock
+    is capnp-zig's own. The test "session ticket key: a new new_token_key after
+    a crash-restart costs the early restore"
+    (`tests/rpc/transport/quic/rpc_quic_transport_test.zig`) pins today's
+    behavior.
 
 ## The design in one paragraph
 
