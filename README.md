@@ -525,7 +525,9 @@ zig build docs-smoke         # Docs/examples public API smoke checks
 zig build test-docs-snippets # Compile documentation snippet fixtures
 zig build -Dquic=true test-docs-snippets-quic # Optional QUIC docs snippets
 zig build package-preflight # Filtered-package default/core/QUIC consumers
-just release-preflight      # Complete local release preflight
+zig build check-generated-shape # Frozen shape of generated code (docs/generated-shape.txt)
+just check-release-drift vA.B.C X.Y.Z # Snapshot drift since tag vA.B.C, judged for release X.Y.Z
+just release-preflight X.Y.Z # Complete local release preflight
 just e2e                    # Cross-language interop harness
 zig build e2e-l4-zig        # Experimental Zig↔Zig Join attacker/recovery flow
 ```

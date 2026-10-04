@@ -17,25 +17,30 @@ version (`zig fetch --save …#v0.19.1`) and read the CHANGELOG before bumping.
 - **Stable** (serialization + codegen + the two-party RPC core): the Stable
   surface is **frozen and CI-gated**. It is pinned by
   [`docs/api-snapshot.txt`](api-snapshot.txt) — the categorized Stable-only
-  contract — and `zig build check-api` fails on any unreviewed drift. Breaking
-  changes are avoided within 0.3.x and called out in the CHANGELOG when
-  unavoidable.
+  contract — and `zig build check-api` fails on any unreviewed drift. The
+  Stable families of *generated* code are pinned the same way by
+  [`docs/generated-shape.txt`](generated-shape.txt) and
+  `zig build check-generated-shape` (see
+  [What is frozen in generated code](generated-api.md#what-is-frozen-in-generated-code)).
+  Breaking changes are avoided within 0.3.x and called out in the CHANGELOG
+  when unavoidable; `just check-release-drift` fails a release that changes a
+  Stable line without a `### Breaking` entry.
 - **Experimental** (retained outbound-answer lifetimes, L3/L4 three-party
   origination, reflected-cap resolve, QUIC, persistence vat-restore, events,
   `io_backend`, binary schema reflection, the demoted transport/ctor variants): may break at any 0.x
   minor bump. Functional and tested, but the API
   is not frozen; its surface evolves in
-  [`docs/api-snapshot-experimental.txt`](api-snapshot-experimental.txt) (ungated).
+  [`docs/api-snapshot-experimental.txt`](api-snapshot-experimental.txt).
   The QUIC-enabled surface is recorded separately in
   [`docs/api-snapshot-experimental-quic.txt`](api-snapshot-experimental-quic.txt),
   because `check-api` runs without `-Dquic=true` and otherwise sees only the
   disabled stub. `zig build -Dquic=true check-api-quic` maintains it and gates
   one real invariant: enabling QUIC must leave the FROZEN
-  `api-snapshot.txt` byte-identical. Neither experimental snapshot is
-  diff-checked in CI: their contents are not byte-stable across platforms
-  (`std.Thread.Id` is `u64` on macOS and `u32` on Linux, so every thread-id
-  field renders differently), which is precisely why only the Stable file can
-  be a contract.
+  `api-snapshot.txt` byte-identical. CI also checks both experimental
+  snapshots strictly (`check-api-experimental`, and
+  `-Dquic=true check-api-experimental-quic` on Linux): the committed files must
+  match the tree. A change to them is not a break by itself, but it is never
+  silent, and it needs a minor bump.
 
 ## Modules — which to import
 
@@ -59,14 +64,17 @@ earlier docs that mention only one name are being reconciled to point here.
 | Schema types + parsing (`schema`, `request`) | **Stable** |
 | Code generation (`codegen`, the `capnpc-zig` plugin) | **Stable** |
 | Reader convenience (`reader`) | **Stable** |
-| Binary schema reflection and dynamic data access (`reflection`), generated `capnpSchema`, `Generator.setSchemaRequest` / `setEmitReflection` | **Experimental** (unreleased) |
-| RPC two-party core — frozen entry points (`rpc.wire.protocol` / `.framing`, `rpc.caps.table`, narrowed `Connection`, `ClientSession`, `ServerSession.accept`, the canonical two-party `Peer` surface + `CallError` / callback typedefs / `PeerLimits`, generated interface code) | **Stable** (frozen, CI-gated) |
+| Binary schema reflection and dynamic data access (`reflection`), generated `capnpSchema`, `Generator.setSchemaRequest` / `setEmitReflection` | **Experimental** |
+| RPC two-party core — frozen entry points (`rpc.wire.protocol` / `.framing`, `rpc.caps.table`, narrowed `Connection`, `ClientSession`, `ServerSession.accept`, the canonical two-party `Peer` surface + `CallError` / callback typedefs / `PeerLimits`) | **Stable** (frozen, CI-gated) |
+| Generated code, the Stable families: Reader/Builder `get`/`set`/`init`/`has`/`clear`/`which`/`wrap`; enums (incl. `WhichTag`, `Method`) and constants with their values (incl. `interface_id`, `ordinal`); `Client` `init`/`release`/`fromBootstrap`/`callX`; `PipelinedClient` `callX`; `Server`, `VTable` fields; `Response`/`BootstrapResponse` with `unwrap`; the `Handler`/`Callback`/`BootstrapCallback`/`BuildFn` typedefs ([`generated-shape.txt`](generated-shape.txt)) | **Stable** (frozen, CI-gated) |
+| Generated code outside those families, and family members that name an Experimental type: `capnpSchema`, `callXWithOptions`, `callXPipelined`, `x_deferred` VTable fields, streaming `Response`, `StreamClient`, `brands()`, `Apply()`, `asReader()` ([`generated-shape-experimental.txt`](generated-shape-experimental.txt); [details](generated-api.md#what-is-frozen-in-generated-code)) | **Experimental** |
 | RPC retained outbound-answer lifetimes (`CallOptions` / generated `*WithOptions` / explicit Finish), L3 three-party origination, L4 Join runtime pilot/readiness, reflected-cap resolve (`resolvePromiseExportToImport`), `ServerSession`-as-a-type, `VatNetwork`, `JoinNetwork`, QUIC, persistence vat-restore, events, `io_backend`, demoted ctor/transport variants | **Experimental** |
 | WASM host ABI (`src/wasm`) | **Experimental** |
 
 The frozen Stable RPC surface is exactly the categorized set in
 [`api-snapshot.txt`](api-snapshot.txt); the Experimental RPC surface is tracked
-(ungated) in [`api-snapshot-experimental.txt`](api-snapshot-experimental.txt).
+(not frozen, but CI-checked for staleness) in
+[`api-snapshot-experimental.txt`](api-snapshot-experimental.txt).
 See [`stability.md`](stability.md) for the full matrix and per-platform status.
 
 ## Schema-language support
@@ -93,9 +101,10 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
 
 **Caveats worth pinning to memory:**
 
-- **Unreleased generated mutable APIs.** Ordinary Builders gain field getters,
-  typed struct/list copy setters, clearing, union inspection, and validated
-  `asReader(&ReaderStorage)` views. The reader storage and builder must outlive
+- **Generated mutable APIs (since v0.19.0).** Ordinary Builders have field
+  getters, typed struct/list copy setters, clearing, union inspection, and
+  validated `asReader(&ReaderStorage)` views (`asReader` and `ReaderStorage`
+  are Experimental). The reader storage and builder must outlive
   readers; any builder mutation or storage rebinding invalidates them. Generated
   Text/Text-list getters validate UTF-8 and NUL terminators. See
   [generated-api.md](generated-api.md) for examples, copy/evolution rules, and
@@ -147,7 +156,7 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
   where only arguments apply); exhaustion fails with
   `CodegenBudgetExceeded` before partial output is accepted.
 
-## Reflection contract (unreleased, Experimental)
+## Reflection contract (Experimental)
 
 The new `reflection` module and generated `capnpSchema` references are
 Experimental. They do not freeze the generator's internal fields or the new

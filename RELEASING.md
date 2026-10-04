@@ -25,21 +25,42 @@ bump **before** editing anything.
 | Change | Bump |
 |---|---|
 | Any change to a declaration in `docs/api-snapshot.txt` (the frozen Stable surface) | **minor** |
-| Any change to the *shape of generated code* — accessor signatures, fallibility, emitted type names | **minor** |
-| Breaking change to an Experimental surface (`docs/api-snapshot-experimental.txt`) | **minor** |
+| Any change to the *shape of generated code*: `docs/generated-shape.txt` (frozen) or `docs/generated-shape-experimental.txt` | **minor** |
+| Breaking change to an Experimental surface (`docs/api-snapshot-experimental.txt`, `docs/api-snapshot-experimental-quic.txt`) | **minor** |
 | New functionality: additive declarations on ANY tier (Stable or Experimental) | **minor** |
 | Bug fixes, docs, internal refactors | **patch** |
 
-The generated-code row is the one that is easy to get wrong: `zig build
+`just check-release-drift <prev-tag> [X.Y.Z]` applies this table to the five
+snapshot files. It diffs them against the previous release tag, and it fails
+when:
+
+- a Stable file (`docs/api-snapshot.txt` or `docs/generated-shape.txt`)
+  removes or changes a line, and the release's CHANGELOG section has no
+  `### Breaking` entry;
+- any of the five files changed, and the bump is a patch.
+
+It warns when an experimental file loses lines and no Breaking entry names
+anything Experimental. A file that did not exist at the previous tag counts as
+all additions. `release-preflight` and `release-tag` both run it, against the
+newest `v*` tag; the rules are in `tools/release_drift.zig`.
+
+Generated code used to be the row that was easy to get wrong. `zig build
 check-api` snapshots *library* declarations only, so a change to what the
-plugin **emits** passes the freeze gate green. `da60cb6` (group-typed union
-member getters becoming fallible) is the worked example — it is a compile break
-for every downstream consumer with a group inside a union, and the gate could
-not see it. Until the freeze gate covers generated shape, classify codegen
-output changes by reading the diff to `tests/golden/` and running
-`just check-generated`. That gate regenerates the RPC and e2e bindings,
-addressbook, ping-pong, kvstore, the WASM binding, and the checked-in V1/V2
-schema-evolution fixtures; all of their diffs are part of the review surface.
+plugin **emits** passed it green. `da60cb6` (group-typed union member getters
+becoming fallible) is the worked example: a compile break for every downstream
+consumer with a group inside a union. Now `zig build check-generated-shape`
+(the CI Hardening job, on all three OSes) renders the generated code for a
+committed corpus of schemas into `docs/generated-shape.txt` and
+`docs/generated-shape-experimental.txt`, so a change like that moves a frozen
+line. [What is frozen in generated code](docs/generated-api.md#what-is-frozen-in-generated-code)
+lists the Stable families. Generated signatures spell the runtime's error
+sets, so a runtime error-set change moves generated-shape lines too.
+
+The gate sees signatures, names and wire constants, not behavior. Still read
+the diff to `tests/golden/` and run `just check-generated`. That recipe
+regenerates the RPC and e2e bindings, addressbook, ping-pong, kvstore, the
+WASM binding, the checked-in V1/V2 schema-evolution fixtures and the
+generated-shape corpus; all of their diffs are part of the review surface.
 
 A minor bump with any breaking content needs a `### Breaking` heading in the
 CHANGELOG with a **Migration** paragraph. Do not file breaking changes under
@@ -103,8 +124,15 @@ gh api "repos/:owner/:repo/actions/runs?head_sha=$(git rev-parse HEAD)" \
 Run the heavy local gates too; they cover lanes hosted CI does not:
 
 ```bash
-just release-preflight
+just release-preflight X.Y.Z
 ```
+
+`release-preflight` first runs `check-release-drift` against the newest `v*`
+tag with the version you pass, so a bump that under-declares the snapshot
+drift fails before the long gates start. Without a version it reads
+`build.zig.zon`; before the version sweep that is still the previous
+release's version, so the hook only checks `[Unreleased]` and prints the bump
+the drift needs.
 
 `release-preflight` includes `package-preflight`. Do not use
 `--skip-quic` here; that switch exists only for constrained local diagnosis.
@@ -166,6 +194,16 @@ gh run watch                       # the release commit must go green too
 ```
 
 - [ ] The release commit's own CI is green before the tag is created.
+
+```bash
+just release-tag X.Y.Z "<one-line theme>"
+```
+
+`release-tag` refuses a dirty tree, a `build.zig.zon` that does not say
+X.Y.Z, a failing `check-release-drift` (the CHANGELOG now has its
+`## [X.Y.Z]` section, so the hook reads that one), a failing docs-smoke, and a
+commit without a green CI run. Then it creates and pushes the annotated tag,
+the same as:
 
 ```bash
 git tag -a vX.Y.Z -m "vX.Y.Z — <one-line theme>"

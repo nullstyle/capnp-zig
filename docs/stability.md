@@ -176,6 +176,7 @@ notice). The std fix is in
 | Schema Validation | `src/serialization/schema_validation.zig` | Validates and canonicalizes schema graphs. Additive `*WithBrand` entry points enforce a concrete root brand; legacy entry points use an empty root brand while still honoring concrete nested metadata. |
 | Code Generation | `src/capnpc-zig/generator.zig`, `src/capnpc-zig/struct_gen.zig`, `src/capnpc-zig/types.zig` | Generates idiomatic Zig Reader/Builder types, including additive `nestedLists()`, constrained-AnyPointer `pointerKinds()`, and finite concrete `brands()` views while preserving every erased/raw field accessor. A shared bounded resolver handles arbitrary nested lists (including generic-struct terminals), cross-file applications, lexical inheritance, exact arity, and parameter indexes; `CodegenBudget.max_brand_specializations` bounds emitted applications. Pointer defaults recursively materialize before Builder mutation. The existing erased RPC API remains frozen; new typed `Apply()` applications are Experimental. |
 | Reader Convenience | `src/serialization/reader.zig` | Segment-aware message reader with packed support. |
+| Generated code shape | `docs/generated-shape.txt`, `tools/generated_shape.zig` | The shape of the code the plugin emits, frozen for the Stable families: Reader/Builder `get`/`set`/`init`/`has`/`clear`/`which`/`wrap`, enums and constants with their values (`interface_id`, method `ordinal`, `is_streaming`), `Client` `init`/`release`/`fromBootstrap`/`callX`, `PipelinedClient` calls, `Server` and `VTable` fields, `Response.unwrap`, and the handler/callback typedefs. `zig build check-generated-shape` renders a committed corpus of 26 schemas in the full, compact and `--no-reflection` profiles and fails on drift (CI Hardening job, Linux/macOS/Windows). Family members that name an Experimental type (`capnpSchema`, `callXWithOptions`, `callXPipelined`, `x_deferred`, streaming `Response`) and everything else the plugin emits are Experimental, in `docs/generated-shape-experimental.txt` (strict staleness check). See [generated-api.md](generated-api.md#what-is-frozen-in-generated-code). |
 | Codegen ABI | `src/codegen_abi.zig` | `capnpc.codegen_abi.{version, oldest_supported, release}`. Every generated file looks these up by name to reject plugin/runtime skew with one compile error, so the names and types are frozen; the values change only on a reviewed ABI bump. |
 | Canonicalization (schema-free) | `src/serialization/canonical.zig` | The spec's canonical form: `canonicalize` / `canonicalizeFlat` / `isCanonical` plus the builder-direct `canonicalizeFlatFromBuilder` / `canonicalizeFromBuilder`. Line-cited port of the C++ reference; byte behavior pinned by acceptance-suite ports and `capnp convert binary:canonical` differential tests. Promoted from Experimental deliberately: downstream consensus consumers use `canonicalizeFlat` bytes as signing preimages, so byte drift is a network fork, not an API break. |
 
@@ -257,7 +258,7 @@ integer, so the snapshots used to differ by the platform that generated them.
 
 ### Experimental
 
-Binary schema reflection is an unreleased addition. The `reflection` module,
+Binary schema reflection shipped in 0.19.0. The `reflection` module,
 generated `capnpSchema` references, and `Generator.setSchemaRequest` /
 `setEmitReflection` are Experimental and remain outside the Stable snapshot.
 Existing Stable generator signatures are unchanged. See
@@ -376,7 +377,10 @@ capnpc-zig follows [Semantic Versioning 2.0.0](https://semver.org/).
 - Within the 0.x series, **minor** bumps may include breaking changes to
   experimental modules. Stable modules will remain compatible within a minor
   version where possible, with breaking changes clearly documented in the
-  changelog.
+  changelog. `just check-release-drift` (run by `release-preflight` and
+  `release-tag`) enforces this on the five surface snapshots: a removed or
+  changed Stable line needs a `### Breaking` entry, and any snapshot change
+  rules out a patch release.
 - Once the project reaches **1.0.0**, the stability levels above will be
   enforced strictly:
   - Breaking changes to **Stable** modules require a major version bump.

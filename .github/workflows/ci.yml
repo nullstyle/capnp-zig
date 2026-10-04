@@ -468,7 +468,9 @@ jobs:
   hardening:
     name: Hardening gate (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Slowest healthy run measured across the matrix: 4m (windows).
+    # Slowest healthy run measured across the matrix: 4m (windows), before
+    # the generated-shape gate joined it (21 s cold on an M-series Mac;
+    # re-measure the Windows leg on its first run).
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -491,6 +493,18 @@ jobs:
 
       - name: Run hardening gate
         run: zig build hardening
+
+      - name: Generated-shape gate (frozen generated code)
+        # docs/generated-shape.txt freezes the shape of the code the plugin
+        # generates for a committed corpus of schemas (the Stable families
+        # in docs/generated-api.md); docs/generated-shape-experimental.txt
+        # must be current.
+        # It runs the host plugin on committed requests, so no schema
+        # compiler is needed. All three OSes: a render that differs on one
+        # of them is a gate bug to fix (platform_type_aliases), not a skip.
+        # It lives here, not in the Test job, because Windows Test has the
+        # least headroom.
+        run: zig build check-generated-shape --summary all
 
       - name: Run deterministic fuzz/smoke tests
         run: zig build test-fuzz-smoke --summary all

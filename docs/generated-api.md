@@ -1,9 +1,11 @@
 # Generated readers, builders, and generic views
 
-The APIs below are unreleased additions. Use matching generator and runtime
+The APIs below shipped in v0.19.0. Use matching generator and runtime
 revisions. The generated `brands()` and `Apply()` views and runtime support in
 `capnpc.generated_helpers` and `capnpc.generic` are Experimental. They extend the existing generated
 APIs. This guide describes the supported operations and their ownership rules.
+[What is frozen in generated code](#what-is-frozen-in-generated-code) says
+which generated declarations are a frozen contract.
 
 ## Build, inspect, and read a message
 
@@ -222,3 +224,84 @@ retains or pins the source capability as required. The caller owns the returned
 proxy-ID list and must clean up unreferenced proxies if delivery is abandoned.
 The automatic redirected-result flow performs that ownership bookkeeping,
 including invocation, pipelining, release, and allocation-failure cleanup.
+
+## What is frozen in generated code
+
+The plugin's output has its own freeze gate, apart from the library's
+`docs/api-snapshot.txt`. `zig build check-generated-shape` runs the plugin on a
+committed corpus of 26 CodeGeneratorRequests (`tests/generated_shape/requests/`)
+in three profiles: full with reflection, compact, and `--no-reflection`. It
+walks every public declaration of the generated files and renders each as one
+line, `<profile>.<file>.<path>: <signature>`, into one of two files:
+
+- `docs/generated-shape.txt` is **Stable and frozen**. A removed or changed
+  line breaks code that consumers generate. It needs a `### Breaking` CHANGELOG
+  entry with a Migration paragraph, and a minor bump.
+- `docs/generated-shape-experimental.txt` is Experimental. It must match the
+  tree, but its lines can change in any minor release.
+
+CI runs the gate on Linux, macOS and Windows. At release time,
+`just check-release-drift` classifies the drift in both files (see
+[RELEASING.md](../RELEASING.md)). The gate also fails when a corpus entry's
+generated code does not compile, and it names the entry.
+
+### The Stable families
+
+A generated declaration is Experimental unless one of these families covers
+it:
+
+- Reader: `get*`, `has*`, `which`, `init` and `wrap`.
+- Builder: `get*`, `set*`, `init*`, `has*`, `clear*`, `which` and `wrap`.
+- Enums (schema enums, `WhichTag` and `Method`) and their enumerants.
+- Constants, with their values: scalar, Text and Data schema constants, and the
+  wire constants `interface_id`, method `ordinal` and `is_streaming`. A struct,
+  list or AnyPointer constant pins its name and its `get()` signature. Its value
+  bytes are private, so the gate cannot see them.
+- `Client`: `init`, `release`, `fromBootstrap` and `call*`.
+- `PipelinedClient`: `call*`.
+- `Server` and its fields, the `VTable` fields, and the `Method` enum.
+- `Response` and `BootstrapResponse`: the union, its variants and `unwrap`.
+- The `Handler`, `Callback`, `BootstrapCallback` and `BuildFn` typedefs.
+
+A container that declares a Stable member (a struct, its `Reader`, an
+interface's `Client`) is Stable too.
+
+Generated signatures spell the runtime's types and error sets. A Stable line
+names only runtime declarations that are Stable in `docs/api-snapshot.txt`,
+and generated types whose own line is Stable. So a change to a Stable runtime
+error set, such as `message.BuildError`, moves Stable generated lines too.
+
+### What stays Experimental
+
+Everything no family covers stays Experimental, and so do the family members
+whose signature names an Experimental type:
+
+- `capnpSchema` (it names `reflection.SchemaRef`);
+- `callXWithOptions` on `Client` and `PipelinedClient` (`rpc.peer.CallOptions`);
+- the deferred-handler `VTable` fields, `x_deferred` (the generated
+  `ReturnSender`);
+- a streaming method's `Response` variants and `unwrap`
+  (`rpc.generated.stream.StreamResult`);
+- `callXPipelined`, which returns the generated `XPipeline`.
+
+Other Experimental generated surface includes `StreamClient`, `brands()` and
+the `Brands` views, `Apply()` and its instances, `asReader()`, `whichOrdinal()`,
+`enumOrdinals()`, `pointerKinds()`, `CAPNP_SCHEMA_REQUEST`,
+`CAPNP_SCHEMA_MANIFEST_JSON` and annotation metadata. Public implementation
+detail is not frozen either: `CallContext`, `callBuild`, `pointer_indexes` and
+the `_reader` / `_builder` fields.
+
+### What the gate cannot see
+
+- **Behavior.** The gate pins names, signatures and wire constants. A body
+  change that keeps a signature is green. `just check-generated` and the
+  golden files in `tests/golden/` cover generated bodies.
+- **Schemas outside the corpus.** The gate sees only the declarations that the
+  corpus schemas produce. A generated feature that no corpus schema exercises,
+  for example `nestedLists()`, is not pinned.
+- **Generic signatures.** A signature with an `anytype` parameter pins only its
+  arity, and a generic function's inferred error set stays opaque.
+
+`zig build generated-shape` rewrites both files. `zig build generated-shape --
+--dump <file>` lists every line with its tier and kind. The tier rules and the
+census of features the corpus must cover are in `tools/generated_shape.zig`.

@@ -245,6 +245,7 @@ ci:
     zig build hardening
     zig build check-api
     zig build api-closure
+    zig build check-generated-shape
     zig build {{ test_jobs }} test-fuzz-smoke --summary all
     zig build {{ test_jobs }} test-resource-budgets --summary all
     zig build {{ test_jobs }} test-oom --summary all
@@ -335,12 +336,17 @@ check-generated: gen
     # A consumer that runs the pinned plugin gets these exact bytes, so the
     # generator itself must emit zig fmt's layout (src/capnpc-zig/layout.zig).
     zig fmt --check {{ generated_paths }} || { echo "ERROR: capnpc-zig output above is not zig fmt clean — fix the emitter in src/capnpc-zig/, not the generated file"; exit 1; }
-    # docs/api-snapshot-experimental.txt is deliberately NOT diffed here. It is
-    # regenerated on every run by design ("drift here is expected and NEVER fails
-    # the gate"), and it records target-dependent detail: `OwnerThreadId.value` is
-    # `std.Thread.Id`, which renders u64 on macOS and u32 on Linux, so a committed
-    # copy can never match on every OS. The Stable file MUST be target-stable and
-    # stays in the diff — `zig build check-api` enforces that on all three tiers.
+    # Of the five surface snapshots, only the Stable docs/api-snapshot.txt is
+    # in this diff (`gen` rewrites it, and the experimental one, through
+    # `zig build api-snapshot`). The others are not stale-by-design; each has
+    # its own strict CI gate:
+    #   docs/api-snapshot-experimental.txt       `zig build check-api-experimental`
+    #   docs/api-snapshot-experimental-quic.txt  `zig build -Dquic=true check-api-experimental-quic`
+    #   docs/generated-shape*.txt                `zig build check-generated-shape`
+    # The experimental API snapshots render the same on Linux and macOS
+    # (stored thread ids are widened to u64), not on Windows. `gen` writes
+    # the generated-shape corpus (tests/generated_shape/requests, diffed
+    # below) but not the shape files: only `zig build generated-shape` does.
     git diff --exit-code -- {{ generated_paths }} tests/package_consumer/codegen/schema/addressbook.request.bin tests/generated_shape/requests docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
 
 # Assert the Zig on PATH is the one mise.toml pins — the same check
