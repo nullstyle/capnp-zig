@@ -232,7 +232,10 @@ fn decodeRights(control: []const u8, layout: Layout, out: []i32) usize {
     while (offset + header_len <= control.len) {
         const header = control[offset..];
         const cmsg_len: usize = switch (layout.len_width) {
-            8 => @intCast(std.mem.readInt(u64, header[0..8], layout.endian)),
+            // A 64-bit length can exceed a 32-bit usize. Saturate: it means
+            // "to the end of the buffer", which the clamp below handles.
+            // A cast would panic and a truncation would read a short length.
+            8 => std.math.cast(usize, std.mem.readInt(u64, header[0..8], layout.endian)) orelse std.math.maxInt(usize),
             else => std.mem.readInt(u32, header[0..4], layout.endian),
         };
         if (cmsg_len < header_len) break;
@@ -613,6 +616,28 @@ test "FD-0 fixed cmsg bytes decode to the same fd numbers in each ABI's byte ord
     var out: [8]i32 = undefined;
     const n = decodeRights(darwin.bytes[0 .. darwin.layout.headerLen() + 4], darwin.layout, &out);
     try testing.expectEqualSlices(i32, fixture_fds[0..1], out[0..n]);
+}
+
+test "FD-0 a hostile 64-bit cmsg_len clamps to the bytes present on every host" {
+    // Pure computation: every target runs it, 32-bit hosts included. A
+    // `cmsg_len` past the end claims every byte to the end of the buffer (the
+    // 4 pad bytes read as a fourth fd) and stops the walk before `offset` can
+    // overflow. On a 32-bit host both values exceed usize: the first must
+    // saturate, not panic in a cast; the second must not truncate to 28 and
+    // stop at 3 fds.
+    const fixture = fixtures[0];
+    const clamped = fixture_fds ++ [_]i32{0};
+    for ([_]u64{ std.math.maxInt(u64), (1 << 32) + 0x1c }) |hostile| {
+        var bytes: [32]u8 = undefined;
+        @memcpy(&bytes, fixture.bytes);
+        std.mem.writeInt(u64, bytes[0..8], hostile, fixture.layout.endian);
+        var out: [8]i32 = undefined;
+        const n = decodeRights(&bytes, fixture.layout, &out);
+        testing.expectEqualSlices(i32, &clamped, out[0..n]) catch |err| {
+            std.debug.print("FD-0: cmsg_len 0x{x} decoded to {any}\n", .{ hostile, out[0..n] });
+            return err;
+        };
+    }
 }
 
 test "FD-0 std builds exactly the native fixed cmsg bytes" {
