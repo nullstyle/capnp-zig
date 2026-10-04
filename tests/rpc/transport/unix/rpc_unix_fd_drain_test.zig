@@ -354,6 +354,27 @@ test "fd_io.parseRights clamps a truncated header and walks every SCM_RIGHTS mes
     const exact_len = cmsg.len(0) + sent.len * @sizeOf(fd_io.Fd);
     try testing.expectEqual(@as(usize, 3), fd_io.parseRights(buf[0..exact_len], &out));
     try testing.expectEqualSlices(fd_io.Fd, &sent, out[0..3]);
+
+    // An unaligned cmsg_len that is in range while its aligned step is not:
+    // header + 1 in a header + 2 byte buffer. The walk must stop, not step
+    // past the end (that underflowed the bytes-left count and panicked).
+    const header_size = @sizeOf(posix.cmsghdr);
+    var odd_buf: [64]u8 align(8) = @splat(0);
+    var odd = std.mem.zeroes(posix.cmsghdr);
+    odd.len = @intCast(header_size + 1);
+    odd.level = posix.SOL.SOCKET;
+    odd.type = posix.SCM.RIGHTS;
+    @memcpy(odd_buf[0..header_size], std.mem.asBytes(&odd));
+    try testing.expectEqual(@as(usize, 0), fd_io.parseRights(odd_buf[0 .. header_size + 2], &out));
+    // Every buffer length from one header up to two aligned headers, with
+    // every unaligned length that still fits: no length walks off the end.
+    for (header_size..2 * cmsg.len(0) + 1) |control_len| {
+        for (header_size..control_len) |claimed| {
+            odd.len = @intCast(claimed);
+            @memcpy(odd_buf[0..header_size], std.mem.asBytes(&odd));
+            _ = fd_io.parseRights(odd_buf[0..control_len], &out);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

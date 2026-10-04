@@ -3279,22 +3279,30 @@ capnpc-zig.rpc.transport.unix.fd_io.Received.data_len: field usize
 capnpc-zig.rpc.transport.unix.fd_io.Received.fd_count: field usize
 capnpc-zig.rpc.transport.unix.fd_io.Received: struct
 capnpc-zig.rpc.transport.unix.fd_io.RecvError: type = error{ConnectionResetByPeer,ConnectionTimedOut,ProcessFdQuotaExceeded,SocketUnconnected,SystemFdQuotaExceeded,SystemResources,Unexpected,UnixSocketsUnsupported}
+capnpc-zig.rpc.transport.unix.fd_io.closer.Admission.full: fn (rpc.transport.unix.fd_closer.Admission) bool
 capnpc-zig.rpc.transport.unix.fd_io.closer.Admission.limit: field usize
 capnpc-zig.rpc.transport.unix.fd_io.closer.Admission.over_limit: field bool
 capnpc-zig.rpc.transport.unix.fd_io.closer.Admission.pending: field usize
 capnpc-zig.rpc.transport.unix.fd_io.closer.Admission: struct
 capnpc-zig.rpc.transport.unix.fd_io.closer.Fd: type = i32
+capnpc-zig.rpc.transport.unix.fd_io.closer.Lane.received: enumerant = 0
+capnpc-zig.rpc.transport.unix.fd_io.closer.Lane.socket: enumerant = 1
+capnpc-zig.rpc.transport.unix.fd_io.closer.Lane: enum
+capnpc-zig.rpc.transport.unix.fd_io.closer.Reservation.lane: field rpc.transport.unix.fd_closer.Lane = .received
 capnpc-zig.rpc.transport.unix.fd_io.closer.Reservation.slots: field usize = 0
 capnpc-zig.rpc.transport.unix.fd_io.closer.Reservation: struct
 capnpc-zig.rpc.transport.unix.fd_io.closer.ReserveError: type = error{OutOfMemory,UnixSocketsUnsupported}
 capnpc-zig.rpc.transport.unix.fd_io.closer.StartError: type = error{LockedMemoryLimitExceeded,OutOfMemory,SystemResources,ThreadQuotaExceeded,Unexpected,UnixSocketsUnsupported}
+capnpc-zig.rpc.transport.unix.fd_io.closer.admission: fn () rpc.transport.unix.fd_closer.Admission
 capnpc-zig.rpc.transport.unix.fd_io.closer.ensureStarted: fn () error{LockedMemoryLimitExceeded,OutOfMemory,SystemResources,ThreadQuotaExceeded,Unexpected,UnixSocketsUnsupported}!void
 capnpc-zig.rpc.transport.unix.fd_io.closer.fallback_queue_limit: const usize
 capnpc-zig.rpc.transport.unix.fd_io.closer.handOff: fn (?*rpc.transport.unix.fd_closer.Reservation, []const i32) rpc.transport.unix.fd_closer.Admission
 capnpc-zig.rpc.transport.unix.fd_io.closer.handOffShutdown: fn (?*rpc.transport.unix.fd_closer.Reservation, i32) void
+capnpc-zig.rpc.transport.unix.fd_io.closer.handOffSocketClose: fn (?*rpc.transport.unix.fd_closer.Reservation, i32) void
 capnpc-zig.rpc.transport.unix.fd_io.closer.max_counted_fd_limit: const usize
 capnpc-zig.rpc.transport.unix.fd_io.closer.min_queue_limit: const usize
 capnpc-zig.rpc.transport.unix.fd_io.closer.pending: fn () usize
+capnpc-zig.rpc.transport.unix.fd_io.closer.pendingIn: fn (rpc.transport.unix.fd_closer.Lane) usize
 capnpc-zig.rpc.transport.unix.fd_io.closer.queueLimit: fn () usize
 capnpc-zig.rpc.transport.unix.fd_io.closer.release: fn (*rpc.transport.unix.fd_closer.Reservation) void
 capnpc-zig.rpc.transport.unix.fd_io.closer.reserve: fn (*rpc.transport.unix.fd_closer.Reservation, usize) error{OutOfMemory,UnixSocketsUnsupported}!void

@@ -284,7 +284,7 @@ pub fn expectBackAtBaseline(before: FdSnapshot) !void {
     }
 }
 
-/// Waits until the closer thread has closed everything handed to it.
+/// Waits until the closer threads have done everything handed to them.
 pub fn waitCloserIdle(timeout_ms: i64) !void {
     const start = nowNs();
     while (fd_io.closer.pending() != 0) {
@@ -295,6 +295,68 @@ pub fn waitCloserIdle(timeout_ms: i64) !void {
         sleepMs(10);
     }
 }
+
+/// Waits until one closer lane has done everything handed to it.
+pub fn waitLaneIdle(lane: fd_io.closer.Lane, timeout_ms: i64) !void {
+    const start = nowNs();
+    while (fd_io.closer.pendingIn(lane) != 0) {
+        if (msSince(start) >= timeout_ms) {
+            std.debug.print("fd closer lane {t} still has {d} job(s) pending after {d} ms\n", .{ lane, fd_io.closer.pendingIn(lane), timeout_ms });
+            return error.CloserStillBusy;
+        }
+        sleepMs(10);
+    }
+}
+
+/// True once `fd` is closed, within `timeout_ms`. Only for an fd number
+/// nothing else in the process can reuse in the meantime.
+pub fn waitClosed(fd: Fd, timeout_ms: i64) bool {
+    const start = nowNs();
+    while (isOpen(fd)) {
+        if (msSince(start) >= timeout_ms) return false;
+        sleepMs(5);
+    }
+    return true;
+}
+
+/// A thread blocked in one `Transport.read`, for tests that must see a
+/// reader wake (or not). Pinned: start it in place.
+pub const BlockedReader = struct {
+    thread: std.Thread = undefined,
+    done: std.atomic.Value(bool) = .init(false),
+    result: ?(capnpc.rpc.transport.tcp.Transport.ReadError!usize) = null,
+    joined: bool = true,
+
+    pub fn start(self: *BlockedReader, transport: *capnpc.rpc.transport.tcp.Transport) !void {
+        self.* = .{};
+        self.thread = try std.Thread.spawn(.{}, run, .{ self, transport });
+        self.joined = false;
+    }
+
+    fn run(self: *BlockedReader, transport: *capnpc.rpc.transport.tcp.Transport) void {
+        self.result = transport.read();
+        self.done.store(true, .release);
+    }
+
+    /// True once the read returned, within `timeout_ms`.
+    pub fn waitDone(self: *BlockedReader, timeout_ms: i64) bool {
+        const waited_from = nowNs();
+        while (!self.done.load(.acquire)) {
+            if (msSince(waited_from) >= timeout_ms) return false;
+            sleepMs(5);
+        }
+        return true;
+    }
+
+    /// Joins the thread. A read still blocked is ended first by shutting
+    /// down the write half of `peer`: the reader then sees end of stream.
+    pub fn finish(self: *BlockedReader, peer: Fd) void {
+        if (self.joined) return;
+        if (!self.done.load(.acquire)) _ = sys.shutdown(peer, posix.SHUT.WR);
+        self.thread.join();
+        self.joined = true;
+    }
+};
 
 /// Records the events a transport emits. Observer callbacks run on the
 /// connection's loop thread, which is the test thread in these suites.

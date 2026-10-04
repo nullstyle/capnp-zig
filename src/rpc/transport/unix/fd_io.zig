@@ -21,13 +21,21 @@
 //!
 //! So the transport reads every AF_UNIX connection with `recvWithFds` and a
 //! control buffer of `max_fds_per_read` slots, and hands every fd it gets to
-//! the closer thread (`closer`). macOS delivers at most one send's fds (254)
-//! per `recvmsg`, so 512 slots never truncate there.
+//! the closer (`closer`, its `.received` lane). macOS delivers at most one
+//! send's fds (254) per `recvmsg`, so 512 slots never truncate there.
 //!
 //! ## What is left
 //!
-//! - Linux EMFILE: the kernel installs the fds that fit, sets MSG_CTRUNC and
-//!   closes the rest inside `recvmsg`, on the reading thread.
+//! - EMFILE (process fd table full), both kernels: the kernel itself closes
+//!   attached fds inside the `recvmsg` that hits it, on the reading thread,
+//!   and a close that blocks (a lingering socket) blocks that reader for as
+//!   long. Linux installs the fds that fit, sets MSG_CTRUNC and closes the
+//!   rest. macOS fails the call with EMFILE and closes all of that message's
+//!   fds inside it (measured: 2000 ms for a 2 s linger); the transport reports
+//!   the drop and retries once, and the retry returns the data. A second
+//!   EMFILE closes the connection. One message carries up to 254 fds, so at
+//!   the macOS default soft limit (256) a single message can reach EMFILE:
+//!   raise `RLIMIT_NOFILE` well above 254 plus the fds the process uses.
 //! - macOS with a control buffer smaller than one send's fds (only callers of
 //!   `recvWithFds` that pass a small buffer; the transport never does): the
 //!   fds that did not fit stay installed and nothing can close them. The leak
@@ -35,21 +43,42 @@
 //! - macOS has no `MSG_CMSG_CLOEXEC`. `recvWithFds` sets FD_CLOEXEC right
 //!   after `recvmsg`; a `fork` + `exec` on another thread in between inherits
 //!   the fds.
-//! - A close that blocks for long (a tty, a FUSE or NFS file) stops the
-//!   closer thread. Meanwhile received fds queue up, and a connection whose
-//!   fds push the queue past its bound is closed (see `closer`).
-//! - After `fork`, the child has no closer thread: a transport used in the
+//! - A received fd whose close blocks (a lingering TCP socket, a tty, a FUSE
+//!   or NFS file) stops the closer's `.received` lane for as long as it
+//!   blocks: on Linux without end while the socket's far end keeps its
+//!   window shut, on macOS up to the linger time (near 327 s at most), and a
+//!   peer can chain them. The lane keeps its bound (see `closer`): once it is
+//!   full, every AF_UNIX read that finds data reads nothing and closes its
+//!   connection. A peer that can stall a close can deny service on every
+//!   AF_UNIX connection that receives data meanwhile, but cannot fill the
+//!   fd table. TCP and QUIC connections, and AF_UNIX socket closes and
+//!   shutdowns (the `.socket` lane), do not wait for it.
+//! - A transport's own socket: the kernel closes the fds still in flight on
+//!   it inside its final close, and on macOS inside `shutdown(SHUT_RD)`.
+//!   Linux closes the socket inline when nothing can be in flight (an empty
+//!   receive queue after `shutdown(SHUT_RD)`); every other such close, and on
+//!   macOS every one plus the read half of every `shutdown`, runs on the
+//!   closer's `.socket` lane. A peer that leaves a blocking fd unread on its
+//!   own connection when that connection is torn down stops that lane for
+//!   as long as the close blocks. The socket closes queued behind it each
+//!   hold one fd until then: on Linux only connections torn down with unread
+//!   data, on macOS every AF_UNIX connection closed meanwhile. On macOS a
+//!   reader whose `shutdown` waits there notices on its 250 ms poll tick.
+//! - Older Linux kernels (before 6.8, by our reading of the kernel source)
+//!   run the AF_UNIX fd garbage collector inside socket close. There the
+//!   final close of a peer's unreachable in-flight fds can happen inside any
+//!   AF_UNIX close on the calling thread, the transport's inline one
+//!   included.
+//! - After `fork`, the child has no closer threads: a transport used in the
 //!   child queues fds that nothing closes.
-//! - macOS EMFILE: the kernel drops the fds of the message (they are lost to
-//!   the receiver, not leaked); the transport reports the drop and retries
-//!   the read once. A second EMFILE closes the connection.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 const log = std.log.scoped(.rpc_fd_io);
 
-/// The process-wide thread that closes received fds.
+/// The process-wide threads that close received fds and the transport's
+/// own sockets.
 pub const closer = @import("fd_closer.zig");
 
 /// True where fd reads are compiled in: Linux and Darwin.
@@ -69,8 +98,8 @@ pub const RecvError = error{
     ConnectionTimedOut,
     SocketUnconnected,
     SystemResources,
-    /// EMFILE. On macOS the kernel installed nothing; a retry returns the
-    /// data, and the kernel drops the fds.
+    /// EMFILE. On macOS the kernel installed nothing and has already closed
+    /// the message's fds inside this failed call; a retry returns the data.
     ProcessFdQuotaExceeded,
     /// ENFILE: the system-wide fd table is full.
     SystemFdQuotaExceeded,
@@ -181,10 +210,14 @@ pub fn parseRights(control: []const u8, fds_out: []Fd) usize {
                 count += 1;
             }
         }
-        // A header that runs to (or past) the end is the last one. Checking
-        // first keeps a hostile `cmsg_len` from overflowing `offset`.
+        // A header whose aligned length runs to (or past) the end is the
+        // last one. Checking the aligned step against the bytes left keeps a
+        // hostile `cmsg_len` from moving `offset` past `control.len` (an
+        // unaligned length can be in range while its aligned step is not).
         if (cmsg_len >= control.len - offset) break;
-        offset += std.mem.alignForward(usize, cmsg_len, std.Io.net.cmsg_align);
+        const step = std.mem.alignForward(usize, cmsg_len, std.Io.net.cmsg_align);
+        if (step >= control.len - offset) break;
+        offset += step;
     }
     return count;
 }

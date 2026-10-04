@@ -49,23 +49,28 @@ pub const SocketFd = struct {
 ///
 /// On Linux and macOS, `initWithOptions` reads the socket family once (with
 /// `getsockname`). On an AF_UNIX socket, and on any socket whose family it
-/// cannot read, the transport runs in drain mode: every read is a `recvmsg`
+/// cannot read, the transport runs in drain mode: a read waits until the
+/// socket is readable, checks the closer's bound, then does one `recvmsg`
 /// with a control buffer (`rpc.transport.unix.fd_io.recvWithFds`), and every
-/// file descriptor the peer attached goes to the process-wide closer thread
-/// (`fd_io.closer`), never closed on the reading thread. Each read that
-/// brought fds emits a `.resource_rejection` event (`resource =
-/// .attached_fds`), and the transport reports `events.Source.unix`.
+/// file descriptor the peer attached goes to the process-wide closer
+/// (`fd_io.closer`, its `.received` lane), never closed on the reading
+/// thread. Each read that brought fds emits a `.resource_rejection` event
+/// (`resource = .attached_fds`), and the transport reports
+/// `events.Source.unix`.
 ///
 /// Fds still riding on unread messages are closed by the kernel inside the
 /// final close of this socket, and on macOS already inside
-/// `shutdown(SHUT_RD)`. So `deinit` hands the socket close to the closer
-/// thread, and on macOS `shutdown` does its read half there too (the write
-/// half stays inline). Neither ever waits for a close that blocks.
+/// `shutdown(SHUT_RD)`. So `deinit` closes the socket inline only on Linux
+/// and only when its receive queue is empty after `shutdown(SHUT_RD)`;
+/// otherwise the close goes to the closer's `.socket` lane, and on macOS
+/// `shutdown` does its read half there too (the write half stays inline).
+/// Neither ever waits for a close that blocks.
 ///
-/// See `fd_io` for why: without drain mode, macOS installs and leaks every fd
-/// a local peer sends, and Linux can stall the reader on a lingering socket.
-/// TCP sockets read exactly as before, and so does a handle that is not a
-/// socket at all (only a test's fake `Io` passes one).
+/// See `fd_io` for why, and for what is left: without drain mode, macOS
+/// installs and leaks every fd a local peer sends, and Linux can stall the
+/// reader on a lingering socket. TCP sockets read exactly as before, and so
+/// does a handle that is not a socket at all (only a test's fake `Io` passes
+/// one).
 pub const Transport = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -291,8 +296,9 @@ pub const Transport = struct {
     }
 
     /// Release the read buffer. Stops the writer thread and closes the
-    /// socket if not already closed. In drain mode the close happens on the
-    /// closer thread (see the type doc), so this never blocks on it.
+    /// socket if not already closed. In drain mode a close that might
+    /// dispose of unread fds happens on the closer (see the type doc), so
+    /// this never blocks on it.
     pub fn deinit(self: *Transport) void {
         self.stopWriter();
         self.lockFd();
@@ -308,13 +314,15 @@ pub const Transport = struct {
         self.allocator.free(self.read_buf);
     }
 
-    /// The final close of the socket. In drain mode it goes to the closer
-    /// thread: the kernel closes any fds still riding on unread messages
-    /// inside this close, and one of them may block.
+    /// The final close of the socket. The kernel closes any fds still
+    /// riding on unread messages inside this close, and one of them may
+    /// block, so in drain mode it runs inline only when nothing can be in
+    /// flight (Linux, see `FdDrain.closeSocket`) and otherwise on the
+    /// closer's `.socket` lane.
     fn closeSocket(self: *Transport) void {
         if (comptime fd_io.supported) {
             if (self.drain) |drain| {
-                drain.closeSocket(self.fd);
+                drain.closeSocket(self.io, self.fd);
                 return;
             }
         }
@@ -324,14 +332,15 @@ pub const Transport = struct {
     /// Blocking read into the internal buffer. Returns the number of bytes
     /// read, or 0 on EOF or if the transport is closed.
     ///
-    /// In drain mode (AF_UNIX) this is one `recvmsg` with a control buffer,
-    /// and every attached fd goes to the closer thread. Two conditions there
-    /// close the connection with `error.SystemResources`, each after a
-    /// `.resource_rejection` event that names the cause in `err`: the process
-    /// fd table stayed full for a read and its one retry
-    /// (`error.ProcessFdQuotaExceeded` or `error.SystemFdQuotaExceeded`), or
-    /// this read's fds pushed the closer queue past its bound
-    /// (`error.FdCloseQueueFull`).
+    /// In drain mode (AF_UNIX) this waits until the socket is readable,
+    /// then does one `recvmsg` with a control buffer, and every attached fd
+    /// goes to the closer. Three conditions there close the connection with
+    /// `error.SystemResources`, each after a `.resource_rejection` event that
+    /// names the cause in `err`: the closer already held as many fds as its
+    /// bound when data arrived (nothing is read; `error.FdCloseQueueFull`),
+    /// this read's fds pushed it past its bound (`error.FdCloseQueueFull`),
+    /// or the process fd table stayed full for a read and its one retry
+    /// (`error.ProcessFdQuotaExceeded` or `error.SystemFdQuotaExceeded`).
     pub fn read(self: *Transport) ReadError!usize {
         if (self.close_requested.load(.acquire)) return 0;
         if (comptime fd_io.supported) {
@@ -351,6 +360,21 @@ pub const Transport = struct {
         // Top the reservation back up, so handing this read's fds to the
         // closer cannot allocate (or fail) while this thread holds them.
         fd_io.closer.reserve(&drain.read_reservation, FdDrain.read_slots) catch return error.SystemResources;
+
+        // Wait for data first, then check the closer's bound, then take the
+        // fds. A reader parked inside a blocking recvmsg would take the next
+        // message's fds however full the closer is by then: an idle
+        // connection would carry a check made when it went idle.
+        if (!try self.waitDrainReadable()) return 0;
+        const before = fd_io.closer.admission();
+        if (before.full()) {
+            // The closer is behind (a close that blocks). Read nothing: any
+            // fds on the waiting message stay in flight in the kernel,
+            // outside this process's fd table, until this socket's close
+            // disposes of them (on the closer's socket lane).
+            self.emitAttachedFds(before.pending, before.limit, error.FdCloseQueueFull);
+            return error.SystemResources;
+        }
 
         var fd_quota_retried = false;
         while (true) {
@@ -388,6 +412,28 @@ pub const Transport = struct {
 
     fn emitAttachedFds(self: *const Transport, attempted: ?usize, limit: ?usize, err: anyerror) void {
         events.emitResourceRejection(self.observer, self.source, .unknown, .attached_fds, attempted, limit, err);
+    }
+
+    /// Drain mode: block until the socket is readable (or hung up). Returns
+    /// false once the transport is closing. Where the read half of
+    /// `shutdown` runs on the closer (`FdDrain.shutdown_off_thread`), the
+    /// wait wakes every `FdDrain.wake_tick_ms` to look for a close request,
+    /// so a reader notices `shutdown` even while that closer lane is stuck.
+    fn waitDrainReadable(self: *Transport) ReadError!bool {
+        var fds = [1]std.posix.pollfd{.{ .fd = self.fd, .events = std.posix.POLL.IN, .revents = 0 }};
+        while (true) {
+            if (self.close_requested.load(.acquire)) return false;
+            const rc = std.posix.system.poll(&fds, 1, FdDrain.wake_tick_ms);
+            switch (std.posix.errno(rc)) {
+                .SUCCESS => if (rc != 0) return true,
+                .INTR => {},
+                .NOMEM => return error.SystemResources,
+                else => |err| {
+                    log.debug("poll failed: errno {d}", .{@backingInt(err)});
+                    return error.Unexpected;
+                },
+            }
+        }
     }
 
     /// Error set for `readTimeout`: a read plus the deadline's own outcome.
@@ -553,9 +599,10 @@ pub const Transport = struct {
     /// the file descriptor. This unblocks any thread currently blocked in
     /// `read()` or `write()` on this socket. Safe to call from any thread.
     ///
-    /// In drain mode on macOS the read half runs on the fd closer thread
-    /// (see the type doc), so a blocked reader wakes when that thread gets
-    /// to it: at once unless it is stuck in a blocking close.
+    /// In drain mode on macOS the read half runs on the closer's `.socket`
+    /// lane (see the type doc). A blocked reader wakes when that lane gets
+    /// to it, at once unless it is stuck in a blocking close; then the
+    /// reader notices on its next poll tick (250 ms).
     ///
     /// Also closes the write queue so the writer thread will exit.
     /// The owning thread should subsequently call `deinit()`.
@@ -605,12 +652,13 @@ const FdDrain = struct {
     fds: [fd_io.max_fds_per_read]fd_io.Fd = undefined,
     /// Closer-queue capacity held for this transport, one reservation per
     /// thread that may use it, so a hand-off never allocates: one read's
-    /// worth of fds (the reader thread; topped up before each read), the
-    /// socket shutdown (`Transport.shutdown`, from any thread, once) and the
-    /// socket close (`deinit`, once).
-    read_reservation: fd_io.closer.Reservation = .{},
-    shutdown_reservation: fd_io.closer.Reservation = .{},
-    close_reservation: fd_io.closer.Reservation = .{},
+    /// worth of fds in the `.received` lane (the reader thread; topped up
+    /// before each read), and in the `.socket` lane the socket shutdown
+    /// (`Transport.shutdown`, from any thread, once) and the socket close
+    /// (`deinit`, once).
+    read_reservation: fd_io.closer.Reservation = .{ .lane = .received },
+    shutdown_reservation: fd_io.closer.Reservation = .{ .lane = .socket },
+    close_reservation: fd_io.closer.Reservation = .{ .lane = .socket },
 
     const control_bytes = fd_io.controlSpace(fd_io.max_fds_per_read);
     const read_slots = fd_io.max_fds_per_read;
@@ -623,6 +671,23 @@ const FdDrain = struct {
     /// in `shutdown` (measured: 0 ms), and an inline shutdown wakes a
     /// blocked reader at once.
     const shutdown_off_thread = builtin.target.os.tag.isDarwin();
+
+    /// How often a drain-mode reader waiting for data looks for a close
+    /// request (`Transport.waitDrainReadable`). Only where the read half of
+    /// `shutdown` runs off-thread: that job can wait behind a `.socket` job
+    /// that blocks, and the tick bounds how late the reader notices. -1
+    /// (no tick) elsewhere: an inline shutdown wakes the reader at once.
+    const wake_tick_ms: i32 = if (shutdown_off_thread) 250 else -1;
+
+    /// Linux only: after `shutdown(SHUT_RD)` a peer can queue nothing more
+    /// on an AF_UNIX stream socket (its send fails with EPIPE), and fds
+    /// never travel without data bytes there (a zero-byte send queues
+    /// nothing), so a receive queue that is empty then (`SIOCINQ` 0) holds no
+    /// fds to dispose of, and the final close cannot block. Darwin cannot
+    /// freeze the queue that way: its `shutdown(SHUT_RD)` disposes of the
+    /// queued fds inline, and without it the peer's next send can land
+    /// between an emptiness check and the close.
+    const close_inline_when_empty = builtin.target.os.tag == .linux;
 
     fn create(allocator: std.mem.Allocator) error{OutOfMemory}!*FdDrain {
         const drain = try allocator.create(FdDrain);
@@ -652,9 +717,35 @@ const FdDrain = struct {
         }
     }
 
-    fn closeSocket(self: *FdDrain, socket: fd_io.Fd) void {
-        const fds = [1]fd_io.Fd{socket};
-        _ = fd_io.closer.handOff(&self.close_reservation, &fds);
+    /// The final close of the transport's socket. Inline only when nothing
+    /// can be in flight on it (`close_inline_when_empty`); otherwise on the
+    /// closer's `.socket` lane, away from the fds peers attached, so a
+    /// received fd whose close blocks never holds this socket open.
+    fn closeSocket(self: *FdDrain, io: std.Io, socket: net.Socket.Handle) void {
+        if (comptime close_inline_when_empty) {
+            if (receiveQueueSettledEmpty(socket)) {
+                ioClose(io, socket);
+                return;
+            }
+        }
+        fd_io.closer.handOffSocketClose(&self.close_reservation, socket);
+    }
+
+    /// See `close_inline_when_empty`. Any failure answers false (the close
+    /// then goes to the closer).
+    fn receiveQueueSettledEmpty(socket: net.Socket.Handle) bool {
+        const posix = std.posix;
+        switch (posix.errno(posix.system.shutdown(socket, posix.SHUT.RD))) {
+            // ENOTCONN: no peer, so nothing can arrive either.
+            .SUCCESS, .NOTCONN => {},
+            else => return false,
+        }
+        var unread: c_int = 0;
+        const rc = if (builtin.link_libc)
+            std.c.ioctl(socket, posix.T.FIONREAD, &unread)
+        else
+            std.os.linux.ioctl(socket, posix.T.FIONREAD, @intFromPtr(&unread));
+        return posix.errno(rc) == .SUCCESS and unread == 0;
     }
 
     fn releaseAll(self: *FdDrain) void {
