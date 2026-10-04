@@ -196,7 +196,7 @@ integer, so the snapshots used to differ by the platform that generated them.
 | Module | Path | Frozen surface |
 |---|---|---|
 | RPC Protocol | `src/rpc/wire/protocol.zig` | Wire readers/builders for RPC messages (Call, Return, Resolve, Disembargo, …). |
-| RPC Framing | `src/rpc/wire/framing.zig` | Segment-framed message reassembly from byte streams. |
+| RPC Framing | `src/rpc/wire/framing.zig` | Segment-framed message reassembly from byte streams: `push` / `popFrame` / `bufferedBytes` / `reset`. The `Framer.buffer` field is framer state: after 0.18.0, `buffer.items` starts with a prefix `popFrame` already returned, and only `buffer.items[consumed..]` is unread. Code that changes `buffer` directly must also set `consumed`. |
 | RPC Capability Table | `src/rpc/caps/table.zig` | Export/import tracking for capabilities. |
 | RPC Connection (narrowed) | `src/rpc/transport/tcp/connection.zig` | The narrowed public `Connection` surface: `init` (post-F3 canonical shape, opaque socket handle), `Options.default()`, `enableWake`, lifecycle. Demoted `attachTransport*`/`initDetached*` variants remain Experimental. |
 | TCP `ClientSession` | `src/rpc/transport/tcp/*` | `ClientSession.connect` / `connectHost` — the one-call client lifecycle (`run`/`close`/`requestStop`/`deinit`). |

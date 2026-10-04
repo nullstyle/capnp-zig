@@ -16,8 +16,12 @@
 //!     the buffer from holding more than the unread bytes plus the new data,
 //!     the same memory bound the framers had before the cursor existed.
 //!
-//! Nothing outside the framers should read `buffer.items` directly; the
-//! unread bytes are `unread(...)`.
+//! The cursor is visible: each framer's `buffer` is a pub field, and
+//! `buffer.items` holds the consumed prefix ahead of the unread bytes.
+//! Before the cursor, `buffer.items` was exactly the unread bytes, so this
+//! changed the meaning of the frozen TCP `Framer.buffer`. Code outside the
+//! framers should use their methods; code that changes `buffer` directly
+//! must also set `consumed`.
 
 const std = @import("std");
 
@@ -27,8 +31,10 @@ pub fn unread(buffer: *const std.ArrayList(u8), consumed: usize) []u8 {
 }
 
 /// Append `data`, compacting the consumed prefix first when that avoids a
-/// reallocation. On error.OutOfMemory the unread bytes are unchanged (they
-/// may have been compacted to the front, which no caller can observe).
+/// reallocation. On error.OutOfMemory the unread bytes are unchanged, but
+/// they may have moved to the front of `buffer` with `consumed` reset to 0:
+/// `unread(...)` and the framers' methods cannot tell the difference, while
+/// code that reads `buffer.items` or `consumed` directly can.
 pub fn append(
     buffer: *std.ArrayList(u8),
     consumed: *usize,

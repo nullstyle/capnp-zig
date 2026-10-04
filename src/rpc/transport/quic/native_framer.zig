@@ -50,8 +50,11 @@ pub const ControlFramer = struct {
     };
 
     allocator: std.mem.Allocator,
-    /// Inbound bytes; `buffer.items[consumed..]` are unread (see
-    /// `rpc/wire/read_cursor.zig`).
+    /// Inbound bytes; framer state, not consumer API. `buffer.items` starts
+    /// with an already-returned prefix and only `buffer.items[consumed..]`
+    /// is unread (see `rpc/wire/read_cursor.zig`). Discard with `reset`;
+    /// code that changes `buffer` directly must also set `consumed` (0 after
+    /// emptying or replacing the list).
     buffer: std.ArrayList(u8),
     expected_len: ?usize = null,
     max_control_frame_bytes: usize,

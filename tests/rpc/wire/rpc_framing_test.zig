@@ -493,3 +493,33 @@ test "Framer reset discards the consumed prefix" {
     try expectResetDiscardsConsumedPrefix(.length_delimited);
     try expectResetDiscardsConsumedPrefix(.native_control);
 }
+
+/// The documented field contract (see `Framer.buffer`): while a consumed
+/// prefix is still in the buffer, `buffer.items[consumed..]` is exactly the
+/// unread bytes, which is what `buffer.items` alone held before the cursor.
+/// Consumers that read leftover bytes from the field are told to use it.
+fn expectUnreadBytesAreCursorTail(comptime kind: StreamKind) !void {
+    const allocator = std.testing.allocator;
+    const stream = try buildFrameStream(allocator, kind, 12);
+    defer stream.deinit(allocator);
+
+    var framer = initFramer(kind, allocator, null);
+    defer framer.deinit();
+
+    // Frames 0..2 plus half of frame 3, then pop frame 0. It is the
+    // shortest, so the cursor is not past half and the prefix stays.
+    const pushed = stream.ends[2] + (stream.ends[3] - stream.ends[2]) / 2;
+    try framer.push(stream.bytes[0..pushed]);
+    const first = (try popPayload(kind, &framer, allocator)) orelse return error.MissingFrame;
+    allocator.free(first);
+
+    try std.testing.expectEqual(stream.ends[0], framer.consumed);
+    try std.testing.expectEqualSlices(u8, stream.bytes[stream.ends[0]..pushed], framer.buffer.items[framer.consumed..]);
+    try std.testing.expectEqual(pushed - stream.ends[0], unreadBytes(kind, &framer));
+}
+
+test "Framer unread bytes are buffer.items[consumed..]" {
+    try expectUnreadBytesAreCursorTail(.capnp);
+    try expectUnreadBytesAreCursorTail(.length_delimited);
+    try expectUnreadBytesAreCursorTail(.native_control);
+}

@@ -15,15 +15,24 @@ pub const Framer = struct {
     };
 
     allocator: std.mem.Allocator,
-    /// Inbound bytes. `buffer.items[consumed..]` are unread; the prefix
-    /// before `consumed` was already returned by `popFrame` and is
-    /// reclaimed lazily (see `rpc/wire/read_cursor.zig`). Use
-    /// `bufferedBytes` for the unread count.
+    /// Inbound bytes. This is framer state, not consumer API: the supported
+    /// contract is `push` / `popFrame` / `bufferedBytes` / `reset`.
+    ///
+    /// `buffer.items` is NOT just the unread bytes (it was in 0.18.0).
+    /// It starts with a prefix that `popFrame` already returned, which is
+    /// reclaimed lazily (see `rpc/wire/read_cursor.zig`); the unread bytes
+    /// are `buffer.items[consumed..]`. Count them with `bufferedBytes` and
+    /// discard them with `reset`. Code that changes `buffer` directly must
+    /// also set `consumed` so that `buffer.items[consumed..]` is exactly the
+    /// unread bytes (0 after emptying or replacing the list). A cursor past
+    /// the end makes `push`, `popFrame` and `bufferedBytes` panic in safe
+    /// builds and is undefined behavior in ReleaseFast.
     buffer: std.ArrayList(u8),
     expected_total: ?usize = null,
     max_buffered_bytes: usize = default_max_buffered_bytes,
-    /// Read cursor into `buffer`. Implementation state, held out of the
-    /// frozen API (an Experimental override in tools/api_snapshot.zig).
+    /// Read cursor into `buffer`: `buffer.items[0..consumed]` was already
+    /// returned by `popFrame`. Implementation state, held out of the frozen
+    /// API (an Experimental override in tools/api_snapshot.zig).
     consumed: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator) Framer {
