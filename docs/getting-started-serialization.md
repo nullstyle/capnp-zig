@@ -72,7 +72,7 @@ hand-write it):
 .dependencies = .{
     .capnpc_zig = .{
         .url = "https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.19.0.tar.gz",
-        .hash = "capnpc_zig-0.19.0-...",
+        .hash = "capnpc_zig-0.19.0-nUduFWLTQQAsgb3qilUHJzAhPiQBHKsT8SPphkT3ZK5-",
     },
 },
 ```

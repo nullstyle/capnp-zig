@@ -21,7 +21,7 @@ described under `### Added`. The checklist below covers all of them.
 | Component | Version | Pin |
 |---|---|---|
 | Zig | `0.17.0` (tagged) | `mise.toml`: `zig = "0.17.0"`; `build.zig.zon`: `.minimum_zig_version = "0.17.0"` |
-| capnp-zig | `v0.19.0` | `capnpc_zig-0.19.0-<hash recorded after the tag>` |
+| capnp-zig | `v0.19.0` | `capnpc_zig-0.19.0-nUduFWLTQQAsgb3qilUHJzAhPiQBHKsT8SPphkT3ZK5-` |
 | quic-zig | `v0.24.1` (tag at `4564995`) | `quic-0.24.1-DnSYvRqMNADDwuJG9qlOxfaaUIGacBiERjfZ5DINt3RH` |
 | boringssl-zig | `0.6.7` (`ff30fe99`), through quic | none (quic pins it) |
 
@@ -34,7 +34,7 @@ zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.19.0
 ```zig
 .capnpc_zig = .{
     .url = "git+https://github.com/nullstyle/capnp-zig.git#v0.19.0",
-    .hash = "capnpc_zig-0.19.0-<hash recorded after the tag>",
+    .hash = "capnpc_zig-0.19.0-nUduFWLTQQAsgb3qilUHJzAhPiQBHKsT8SPphkT3ZK5-",
 },
 ```
 
