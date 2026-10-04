@@ -544,7 +544,7 @@ pub const Persistent = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initSealFor(self: *@This()) message.BuildError!message.AnyPointerBuilder {
+            pub fn initSealFor(self: *@This()) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
@@ -696,7 +696,7 @@ pub const Persistent = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initSturdyRef(self: *@This()) message.BuildError!message.AnyPointerBuilder {
+            pub fn initSturdyRef(self: *@This()) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 

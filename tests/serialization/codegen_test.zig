@@ -1038,6 +1038,10 @@ test "Codegen: void list and pointer helper builders" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initEmptyList(self: *Builder, element_count: u32) message.BuildError!message.VoidListBuilder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "writeVoidList(0, element_count)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn clearService(self: *Builder) !void"));
+    // initX of an interface or AnyPointer slot only returns a handle to the
+    // slot, so it keeps its inferred set instead of spelling BuildError.
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initService(self: *Builder) !message.AnyPointerBuilder"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initPayload(self: *Builder) !message.AnyPointerBuilder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setServiceCapability(self: *Builder, cap: message.Capability) message.BuildError!void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setPayloadNull(self: *Builder) !void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setPayloadText(self: *Builder, value: []const u8) message.BuildError!void"));

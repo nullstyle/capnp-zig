@@ -11,9 +11,10 @@
 /// `MessageBuilder`: allocation, bounds checks, and wire-encoding limits.
 ///
 /// Generated mutators that can allocate or write a pointer return exactly this
-/// set: `initX`, the Text/Data `setX` and the capability setters. Scalar
-/// `setX`, `clearX` and `setXNull` never allocate and keep their narrower
-/// inferred sets.
+/// set: `initX` of a struct or list field, the Text/Data `setX` and the
+/// capability setters. Scalar `setX`, `clearX`, `setXNull` and the `initX` of
+/// an AnyPointer, AnyStruct, AnyList or interface field (which only returns a
+/// handle to the slot) never allocate and keep their narrower inferred sets.
 ///
 /// The pointer makers that `StructBuilder`, `PointerListBuilder` and
 /// `AnyPointerBuilder` call through are typed with it, so a builder path that

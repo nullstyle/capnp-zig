@@ -405,6 +405,44 @@ const brand_pointer_harness =
     \\    try std.testing.expectEqual(@as(u32, 0), (try any_list.getPointerList()).len());
     \\}
     \\
+    \\fn errorSetOf(comptime F: type) type {
+    \\    return @typeInfo(@typeInfo(F).@"fn".return_type.?).error_union.error_set;
+    \\}
+    \\
+    \\fn hasExactly(comptime E: type, comptime names: []const []const u8) bool {
+    \\    const got = @typeInfo(E).error_set.error_names orelse return false;
+    \\    if (got.len != names.len) return false;
+    \\    for (names) |name| {
+    \\        const found = for (got) |g| {
+    \\            if (std.mem.eql(u8, g, name)) break true;
+    \\        } else false;
+    \\        if (!found) return false;
+    \\    }
+    \\    return true;
+    \\}
+    \\
+    \\test "slot-handle initX keeps the pointer-slot errors instead of message.BuildError" {
+    \\    // initX of an AnyPointer, AnyStruct or AnyList slot, raw or through the
+    \\    // pointerKinds() view, only wraps the slot the message already holds.
+    \\    // The allocation happens later, on the returned handle.
+    \\    const PointerKinds = @typeInfo(@TypeOf(generated.Fidelity.Builder.pointerKinds)).@"fn".return_type.?;
+    \\    const cases = .{
+    \\        @TypeOf(generated.Fidelity.Builder.initAny),
+    \\        @TypeOf(generated.Fidelity.Builder.initAnyStruct),
+    \\        @TypeOf(generated.Fidelity.Builder.initAnyList),
+    \\        @TypeOf(generated.Fidelity.Builder.initUnionList), // union member
+    \\        @TypeOf(generated.Fidelity.Grouped.Builder.initGroupList), // group
+    \\        @TypeOf(PointerKinds.initAnyStruct),
+    \\        @TypeOf(PointerKinds.initAnyList),
+    \\        @TypeOf(PointerKinds.initUnionList), // union member: the discriminant write cannot fail
+    \\    };
+    \\    inline for (cases) |F| {
+    \\        try std.testing.expect(comptime hasExactly(errorSetOf(F), &.{ "OutOfBounds", "PointerIndexOutOfBounds" }));
+    \\    }
+    \\    // Writing a capability pointer is a pointer write: it spells BuildError.
+    \\    try std.testing.expect(errorSetOf(@TypeOf(PointerKinds.setCapability)) == message.BuildError);
+    \\}
+    \\
     \\test "constrained views reject a non-null wrong pointer kind" {
     \\    var builder = message.MessageBuilder.init(std.testing.allocator);
     \\    defer builder.deinit();

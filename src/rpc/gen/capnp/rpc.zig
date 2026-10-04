@@ -1334,7 +1334,7 @@ pub const Message = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initObsoleteSave(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+        pub fn initObsoleteSave(self: *Builder) !message.AnyPointerBuilder {
             self._builder.writeU16(0, 7);
             return try self._builder.getAnyPointer(0);
         }
@@ -1375,7 +1375,7 @@ pub const Message = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initObsoleteDelete(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+        pub fn initObsoleteDelete(self: *Builder) !message.AnyPointerBuilder {
             self._builder.writeU16(0, 9);
             return try self._builder.getAnyPointer(0);
         }
@@ -1845,7 +1845,7 @@ pub const Bootstrap = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initDeprecatedObjectId(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+        pub fn initDeprecatedObjectId(self: *Builder) !message.AnyPointerBuilder {
             return try self._builder.getAnyPointer(0);
         }
 
@@ -1986,7 +1986,7 @@ pub const Call = struct {
                 return !self._builder.isPointerNull(2);
             }
 
-            pub fn initThirdParty(self: *@This()) message.BuildError!message.AnyPointerBuilder {
+            pub fn initThirdParty(self: *@This()) !message.AnyPointerBuilder {
                 self._builder.writeU16(6, 2);
                 return try self._builder.getAnyPointer(2);
             }
@@ -2640,7 +2640,7 @@ pub const Return = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initAwaitFromThirdParty(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+        pub fn initAwaitFromThirdParty(self: *Builder) !message.AnyPointerBuilder {
             self._builder.writeU16(6, 5);
             return try self._builder.getAnyPointer(0);
         }
@@ -3621,7 +3621,7 @@ pub const Provide = struct {
             return !self._builder.isPointerNull(1);
         }
 
-        pub fn initRecipient(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+        pub fn initRecipient(self: *Builder) !message.AnyPointerBuilder {
             return try self._builder.getAnyPointer(1);
         }
 
@@ -3842,7 +3842,7 @@ pub const Accept = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initProvision(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+        pub fn initProvision(self: *Builder) !message.AnyPointerBuilder {
             return try self._builder.getAnyPointer(0);
         }
 
@@ -3946,7 +3946,7 @@ pub const ThirdPartyAnswer = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initCompletion(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+        pub fn initCompletion(self: *Builder) !message.AnyPointerBuilder {
             return try self._builder.getAnyPointer(0);
         }
 
@@ -4084,7 +4084,7 @@ pub const Join = struct {
             return !self._builder.isPointerNull(1);
         }
 
-        pub fn initKeyPart(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+        pub fn initKeyPart(self: *Builder) !message.AnyPointerBuilder {
             return try self._builder.getAnyPointer(1);
         }
 
@@ -4483,7 +4483,7 @@ pub const Payload = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initContent(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+        pub fn initContent(self: *Builder) !message.AnyPointerBuilder {
             return try self._builder.getAnyPointer(0);
         }
 
@@ -5153,7 +5153,7 @@ pub const ThirdPartyCapDescriptor = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initId(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+        pub fn initId(self: *Builder) !message.AnyPointerBuilder {
             return try self._builder.getAnyPointer(0);
         }
 

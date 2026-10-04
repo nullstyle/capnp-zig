@@ -92,11 +92,14 @@ restores the schema default; clearing a union field also selects that arm.
 `WrongUnionMember`. Use `enumOrdinals()` when forwarding unknown enum ordinals.
 
 Builder mutators that can allocate spell their error sets so a consumer can pin
-them. `initXxx`, the Text and Data `setXxx` and the capability setters return
-`message.BuildError`; copy setters, which also read their source, return
-`message.CopyError` (a superset). Scalar `setXxx`, `clearXxx` and `setXxxNull`
-never allocate and keep their precise inferred sets: a scalar setter's set is
-empty, and nulling a pointer can only report a bad pointer slot.
+them. `initXxx` of a struct or list field, the Text and Data `setXxx` and the
+capability setters return `message.BuildError`; copy setters, which also read
+their source, return `message.CopyError` (a superset). Scalar `setXxx`,
+`clearXxx`, `setXxxNull` and the `initXxx` of an AnyPointer, AnyStruct, AnyList
+or interface field never allocate and keep their precise inferred sets: a
+scalar setter's set is empty, nulling a pointer can only report a bad pointer
+slot, and `initXxx` of such a field only returns a handle to the slot (the
+allocation happens later, through the handle).
 `setXxxServer` and the generic `Apply`/`brands()` views keep inferred sets.
 Both named sets are listed in
 [supported-surface.md](supported-surface.md#error-contract).

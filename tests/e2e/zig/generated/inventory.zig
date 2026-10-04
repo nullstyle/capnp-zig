@@ -8612,7 +8612,7 @@ pub const InventoryService = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initSession(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+            pub fn initSession(self: *Builder) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 

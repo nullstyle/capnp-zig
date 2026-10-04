@@ -13,17 +13,21 @@ const ArrayListWriter = @import("generator.zig").ArrayListWriter;
 /// runtime primitive's errors do, and widens to `anyerror` as soon as one
 /// routes through an `anyerror` function pointer.
 ///
-/// Only mutators that can allocate or write a pointer spell a named set:
-/// `initX`, the pointer-valued `setX` (text, data, `setXText`/`setXData`) and
-/// the capability setters return `message.BuildError`; copy setters also read
-/// their source (`message.CopyError`).
+/// Only mutators that can allocate or write a pointer spell a named set: the
+/// `initX` of a struct or list slot, the pointer-valued `setX` (text, data,
+/// `setXText`/`setXData`) and the capability setters return
+/// `message.BuildError`; copy setters also read their source
+/// (`message.CopyError`).
 ///
-/// Scalar setters, `clearX` and `setXNull` never allocate: they write
-/// fixed-size data, or null a pointer the message already holds. They keep
-/// the inferred `!T` (`no_alloc_error_union`), whose set is the precise one
-/// the body produces (`error{}` for a scalar), so an infallible setter does
-/// not widen to the whole `BuildError`. RPC helpers that export a server, and
-/// the codec-parametric generic/brand views, keep inferred sets as well.
+/// Scalar setters, `clearX`, `setXNull` and the `initX` of an AnyPointer,
+/// AnyStruct, AnyList or interface slot never allocate: they write fixed-size
+/// data, null a pointer the message already holds, or return a handle to the
+/// slot (the allocation happens later, through the handle). They keep the
+/// inferred `!T` (`no_alloc_error_union`), whose set is the precise one the
+/// body produces (`error{}` for a scalar), so a mutator that cannot allocate
+/// does not widen to the whole `BuildError`. RPC helpers that export a
+/// server, and the codec-parametric generic/brand views, keep inferred sets
+/// as well.
 const build_error_union = "message.BuildError!";
 const copy_error_union = "message.CopyError!";
 const no_alloc_error_union = "!";
@@ -1978,9 +1982,11 @@ pub const StructGenerator = struct {
             try writer.print("{s}return try {s}.wrap(slot_builder);\n", .{ body_indent, builder_type });
             try writer.print("{s}}}\n\n", .{member_indent});
 
+            // initX wraps the slot without writing a pointer; setX writes a
+            // capability pointer.
             switch (kind) {
-                .@"struct" => try writer.print("{s}pub fn init{s}(self: @This()) " ++ build_error_union ++ "message.AnyStructBuilder {{\n", .{ member_indent, cap_name }),
-                .list => try writer.print("{s}pub fn init{s}(self: @This()) " ++ build_error_union ++ "message.AnyListBuilder {{\n", .{ member_indent, cap_name }),
+                .@"struct" => try writer.print("{s}pub fn init{s}(self: @This()) " ++ no_alloc_error_union ++ "message.AnyStructBuilder {{\n", .{ member_indent, cap_name }),
+                .list => try writer.print("{s}pub fn init{s}(self: @This()) " ++ no_alloc_error_union ++ "message.AnyListBuilder {{\n", .{ member_indent, cap_name }),
                 .capability => try writer.print("{s}pub fn set{s}(self: @This(), value: message.Capability) " ++ build_error_union ++ "void {{\n", .{ member_indent, cap_name }),
             }
             try self.writeOrdinalUnionDiscriminant(field, struct_info, body_indent, writer);
@@ -3349,14 +3355,16 @@ pub const StructGenerator = struct {
                 return;
             },
             .any_pointer => {
-                try writer.print("            pub fn init{s}(self: *@This()) " ++ build_error_union ++ "message.AnyPointerBuilder {{\n", .{cap_name});
+                // Returns a handle to the slot; it writes no pointer.
+                try writer.print("            pub fn init{s}(self: *@This()) " ++ no_alloc_error_union ++ "message.AnyPointerBuilder {{\n", .{cap_name});
                 try self.writeUnionDiscriminant(field, parent_struct_info, writer);
                 try writer.print("                return try self._builder.getAnyPointer({});\n", .{slot.offset});
                 try writer.writeAll("            }\n\n");
                 return;
             },
             .interface => {
-                try writer.print("            pub fn init{s}(self: *@This()) " ++ build_error_union ++ "message.AnyPointerBuilder {{\n", .{cap_name});
+                // Returns a handle to the slot; it writes no pointer.
+                try writer.print("            pub fn init{s}(self: *@This()) " ++ no_alloc_error_union ++ "message.AnyPointerBuilder {{\n", .{cap_name});
                 try self.writeUnionDiscriminant(field, parent_struct_info, writer);
                 try writer.print("                return try self._builder.getAnyPointer({});\n", .{slot.offset});
                 try writer.writeAll("            }\n\n");
@@ -4471,8 +4479,10 @@ pub const StructGenerator = struct {
         writer: anytype,
     ) !void {
         // Retain the established raw initialization escape hatch. Typed getX
-        // and value setters below enforce the declared pointer kind.
-        try writer.print("        pub fn init{s}(self: *{s}) " ++ build_error_union ++ "message.AnyPointerBuilder {{\n", .{ cap_name, self.builder_ref });
+        // and value setters below enforce the declared pointer kind. It
+        // returns a handle to the slot and writes no pointer, so like
+        // setXNull it never allocates.
+        try writer.print("        pub fn init{s}(self: *{s}) " ++ no_alloc_error_union ++ "message.AnyPointerBuilder {{\n", .{ cap_name, self.builder_ref });
         try self.writeUnionDiscriminant(field, parent_struct_info, writer);
         try writer.print("            return try self._builder.getAnyPointer({});\n", .{slot_offset});
         try writer.writeAll("        }\n\n");

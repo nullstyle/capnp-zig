@@ -54,3 +54,44 @@ test "nested and group pipeline getters send exact pointer paths" {
     capture.expected = &.{0};
     _ = try direct.getService().callPing(&capture, null, Capture.result);
 }
+
+fn errorSetOf(comptime F: type) type {
+    return @typeInfo(@typeInfo(F).@"fn".return_type.?).error_union.error_set;
+}
+
+fn hasExactly(comptime E: type, comptime names: []const []const u8) bool {
+    const got = @typeInfo(E).error_set.error_names orelse return false;
+    if (got.len != names.len) return false;
+    for (names) |name| {
+        const found = for (got) |g| {
+            if (std.mem.eql(u8, g, name)) break true;
+        } else false;
+        if (!found) return false;
+    }
+    return true;
+}
+
+test "interface initX returns a slot handle without spelling message.BuildError" {
+    // initX of an interface slot only wraps the slot the message already
+    // holds, whether the field sits on the struct, in a union, in a group or
+    // in a group that is a union member.
+    const cases = .{
+        @TypeOf(generated.Holder.Builder.initService),
+        @TypeOf(generated.Holder.Builder.initUnsafe),
+        @TypeOf(generated.Holder.Details.Builder.initNested),
+        @TypeOf(generated.Holder.Selected.Builder.initTarget),
+    };
+    inline for (cases) |F| {
+        try std.testing.expect(comptime hasExactly(errorSetOf(F), &.{ "OutOfBounds", "PointerIndexOutOfBounds" }));
+    }
+    // Writing the capability pointer is a pointer write: it spells BuildError.
+    const writes = .{
+        @TypeOf(generated.Holder.Builder.setServiceCapability),
+        @TypeOf(generated.Holder.Builder.setServiceClient),
+        @TypeOf(generated.Holder.Details.Builder.setNestedCapability),
+        @TypeOf(generated.Holder.Details.Builder.setNestedClient),
+    };
+    inline for (writes) |F| {
+        try std.testing.expect(errorSetOf(F) == capnpc.message.BuildError);
+    }
+}

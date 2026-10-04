@@ -12,9 +12,11 @@ const element_list = @import("message/element_list.zig");
 const errors = @import("message/errors.zig");
 
 /// Every error a builder primitive can return while writing into a
-/// `MessageBuilder`. Generated mutators that can allocate (`initX`, the
-/// Text/Data `setX`, the capability setters) return exactly this set; scalar
-/// setters, `clearX` and `setXNull` keep narrower sets. See `message/errors.zig`.
+/// `MessageBuilder`. Generated mutators that can allocate (`initX` of a struct
+/// or list field, the Text/Data `setX`, the capability setters) return exactly
+/// this set; scalar setters, `clearX`, `setXNull` and the `initX` that only
+/// returns an AnyPointer/interface slot handle keep narrower sets. See
+/// `message/errors.zig`.
 pub const BuildError = errors.BuildError;
 
 /// `BuildError` plus the errors raised while reading the source of a deep

@@ -8,14 +8,17 @@
 //! (examples/kvstore/gen/kvstore.zig) and on the generated rpc.capnp bindings
 //! that the Stable `rpc.wire.protocol` builders wrap, by type identity:
 //!
-//!  - `initX`, the text/data/capability setters: exactly `message.BuildError`;
+//!  - `initX` of a struct, list or group-typed slot, and the text/data/
+//!    capability setters: exactly `message.BuildError`;
 //!  - copy setters (`setX` from a Reader): exactly `message.CopyError`;
 //!  - scalar setters: an empty error set, as before the named sets existed;
-//!  - `clearX` and `setXNull`: never the whole `BuildError`, only the
-//!    pointer-slot errors their body can produce.
+//!  - `clearX`, `setXNull`, and the `initX` of an AnyPointer or interface slot
+//!    (which only returns a handle to the slot the message already holds):
+//!    never the whole `BuildError`, only the pointer-slot errors their body
+//!    can produce.
 //!
 //! Each regression turns them red: the plugin stops spelling a set, spells it
-//! on a setter that cannot allocate, or a builder primitive regresses to
+//! on a mutator that cannot allocate, or a builder primitive regresses to
 //! `anyerror` (the generated body no longer coerces into the spelled set and
 //! this file fails to compile).
 
@@ -115,7 +118,7 @@ test "kvstore copy setters return message.CopyError" {
     }
 }
 
-test "scalar setters and clearX keep the error sets they had before the named sets" {
+test "scalar setters, clearX and slot-handle initX keep the error sets they had before the named sets" {
     // Scalar setters write fixed-size data into space the message already
     // holds: no error at all, including union members (whose discriminant
     // write cannot fail), Void members and enums.
@@ -148,12 +151,28 @@ test "scalar setters and clearX keep the error sets they had before the named se
     inline for (null_cases) |FnType| {
         try std.testing.expect(comptime sameErrors(ErrorSetOf(FnType), pointer_slot_errors));
     }
+
+    // The `initX` of an AnyPointer or interface slot returns a handle to the
+    // slot; it writes no pointer. The Stable rpc.wire.protocol builders wrap
+    // these: spelling BuildError on them widened PayloadBuilder.initContent
+    // from two errors to twelve, and CallBuilder.setSendResultsToThirdPartyNull
+    // from three to twelve.
+    const slot_handle_errors = error{ OutOfBounds, PointerIndexOutOfBounds };
+    const handle_cases = .{
+        @TypeOf(rpc_capnp.Payload.Builder.initContent),
+        @TypeOf(rpc_capnp.Call.SendResultsTo.Builder.initThirdParty), // group union member
+        @TypeOf(kvstore.KvStore.SubscribeParams.Builder.initNotifier), // interface
+    };
+    inline for (handle_cases) |FnType| {
+        try std.testing.expect(comptime sameErrors(ErrorSetOf(FnType), slot_handle_errors));
+    }
 }
 
 /// What a generated mutator may return, decided from its name and the type of
 /// the value it writes.
 const Contract = enum {
-    /// `initX`, text/data setters, capability setters: exactly BuildError.
+    /// `initX` of a struct/list/group slot, text/data setters, capability
+    /// setters: exactly BuildError.
     build,
     /// `setX` from a Reader: exactly CopyError.
     copy,
@@ -161,6 +180,9 @@ const Contract = enum {
     scalar,
     /// `clearX` and `setXNull`: a strict subset of BuildError.
     no_alloc,
+    /// `initX` of an AnyPointer or interface slot, which returns a handle to
+    /// the slot without writing a pointer: a strict subset of BuildError.
+    handle,
 };
 
 fn isMutatorName(comptime name: []const u8) bool {
@@ -178,8 +200,18 @@ fn isScalar(comptime T: type) bool {
     };
 }
 
+/// The handle types an `initX` returns for an AnyPointer, AnyStruct, AnyList
+/// or interface slot. Wrapping the slot allocates nothing; the caller's later
+/// `init`/`set` on the handle is what allocates.
+fn isSlotHandle(comptime T: type) bool {
+    return T == message.AnyPointerBuilder or T == message.AnyStructBuilder or T == message.AnyListBuilder;
+}
+
 fn contractOf(comptime name: []const u8, comptime FnType: type) Contract {
-    if (std.mem.startsWith(u8, name, "init")) return .build;
+    if (std.mem.startsWith(u8, name, "init")) {
+        const ret = @typeInfo(FnType).@"fn".return_type.?;
+        return if (isSlotHandle(@typeInfo(ret).error_union.payload)) .handle else .build;
+    }
     if (std.mem.startsWith(u8, name, "clear") or std.mem.endsWith(u8, name, "Null")) return .no_alloc;
     const param_types = @typeInfo(FnType).@"fn".param_types;
     const Value = param_types[param_types.len - 1].?;
@@ -195,7 +227,7 @@ fn honors(comptime contract: Contract, comptime E: type) bool {
         .build => E == message.BuildError,
         .copy => E == message.CopyError,
         .scalar => errorNames(E).len == 0,
-        .no_alloc => isSubsetOf(E, message.BuildError) and
+        .no_alloc, .handle => isSubsetOf(E, message.BuildError) and
             errorNames(E).len < errorNames(message.BuildError).len,
     };
 }
@@ -205,6 +237,7 @@ const Tally = struct {
     copy: usize = 0,
     scalar: usize = 0,
     no_alloc: usize = 0,
+    handle: usize = 0,
     broken: usize = 0,
 };
 
@@ -245,11 +278,12 @@ test "every generated kvstore Builder mutator honors its error-set contract" {
     tallyMutators(kvstore, false, 0, &tally);
     try std.testing.expectEqual(@as(usize, 0), tally.broken);
     // Guard against a vacuous pass if the walk stops finding Builders
-    // (32 / 17 / 31 / 59 when this was written).
+    // (31 / 17 / 31 / 59 / 1 when this was written).
     try std.testing.expect(tally.build >= 30);
     try std.testing.expect(tally.copy >= 15);
     try std.testing.expect(tally.scalar >= 30);
     try std.testing.expect(tally.no_alloc >= 50);
+    try std.testing.expect(tally.handle >= 1);
 }
 
 test "every generated rpc.capnp Builder mutator honors its error-set contract" {
@@ -257,9 +291,10 @@ test "every generated rpc.capnp Builder mutator honors its error-set contract" {
     var tally: Tally = .{};
     tallyMutators(rpc_capnp, false, 0, &tally);
     try std.testing.expectEqual(@as(usize, 0), tally.broken);
-    // 74 / 39 / 42 / 97 when this was written.
-    try std.testing.expect(tally.build >= 70);
+    // 63 / 39 / 42 / 97 / 11 when this was written.
+    try std.testing.expect(tally.build >= 60);
     try std.testing.expect(tally.copy >= 35);
     try std.testing.expect(tally.scalar >= 40);
     try std.testing.expect(tally.no_alloc >= 90);
+    try std.testing.expect(tally.handle >= 10);
 }

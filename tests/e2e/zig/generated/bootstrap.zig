@@ -3946,7 +3946,7 @@ pub const Bootstrap = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initService(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+            pub fn initService(self: *Builder) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
@@ -4128,7 +4128,7 @@ pub const Bootstrap = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initService(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+            pub fn initService(self: *Builder) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
@@ -4310,7 +4310,7 @@ pub const Bootstrap = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initService(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+            pub fn initService(self: *Builder) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
@@ -4492,7 +4492,7 @@ pub const Bootstrap = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initService(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+            pub fn initService(self: *Builder) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 

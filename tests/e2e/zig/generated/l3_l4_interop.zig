@@ -3328,7 +3328,7 @@ pub const JoinResult = struct {
             return !self._builder.isPointerNull(0);
         }
 
-        pub fn initCap(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+        pub fn initCap(self: *Builder) !message.AnyPointerBuilder {
             return try self._builder.getAnyPointer(0);
         }
 

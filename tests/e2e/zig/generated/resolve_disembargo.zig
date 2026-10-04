@@ -4333,7 +4333,7 @@ pub const Reflector = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initTarget(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+            pub fn initTarget(self: *Builder) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
@@ -4475,7 +4475,7 @@ pub const Reflector = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initPromise(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+            pub fn initPromise(self: *Builder) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
@@ -4697,7 +4697,7 @@ pub const Reflector = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initCb(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+            pub fn initCb(self: *Builder) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 

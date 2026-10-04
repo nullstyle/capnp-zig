@@ -4324,7 +4324,7 @@ pub const KvStore = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initNotifier(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+            pub fn initNotifier(self: *Builder) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 

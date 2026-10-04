@@ -1383,7 +1383,7 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(5);
         }
 
-        pub fn initAny(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+        pub fn initAny(self: *Builder) !message.AnyPointerBuilder {
             return try self._builder.getAnyPointer(5);
         }
 
@@ -1407,7 +1407,7 @@ pub const Evolution = struct {
             return !self._builder.isPointerNull(6);
         }
 
-        pub fn initService(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+        pub fn initService(self: *Builder) !message.AnyPointerBuilder {
             return try self._builder.getAnyPointer(6);
         }
 

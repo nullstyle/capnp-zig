@@ -6954,7 +6954,7 @@ pub const ChatService = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initRoom(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+            pub fn initRoom(self: *Builder) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
@@ -7349,7 +7349,7 @@ pub const ChatService = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initRoom(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+            pub fn initRoom(self: *Builder) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 

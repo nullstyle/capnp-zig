@@ -182,8 +182,9 @@ Builders spell two named sets (`src/serialization/message/errors.zig`):
 - `message.BuildError` — every error a builder primitive can return while
   writing into a `MessageBuilder` (allocation, bounds, wire-encoding limits).
   The generated mutators that can allocate or write a pointer return exactly
-  this set: `initX`, the Text and Data `setX` (and `setXText`, `setXData`),
-  `setXCapability` and `setXClient`, on struct, group and view Builders. So do
+  this set: `initX` of a struct or list field, the Text and Data `setX` (and
+  `setXText`, `setXData`), `setXCapability` and `setXClient`, on struct, group
+  and view Builders. So do
   `StructBuilder.writePointerList*`, `writeStructList*` and `writeTextList*`.
   The pointer makers the builders call through are typed with it, so a path
   that starts returning a new error fails to compile rather than widening a
@@ -200,7 +201,12 @@ infallible setter stays infallible:
   an empty error set;
 - `clearX` and `setXNull` return at most the pointer-slot errors
   (`InvalidSegmentId`, `OutOfBounds`, `PointerIndexOutOfBounds`), and nothing
-  when they clear only data fields.
+  when they clear only data fields;
+- `initX` of an AnyPointer, AnyStruct, AnyList or interface field (raw, in a
+  group, or through the `pointerKinds()` view) returns a handle to the slot
+  without writing a pointer, so it reports only `OutOfBounds` and
+  `PointerIndexOutOfBounds`. The `init`/`set` called on that handle is what
+  allocates, and it returns `BuildError`.
 
 Generated methods that are not plain message writes keep inferred sets as
 well: `setXServer` (exports through the `Peer`), and the codec-parametric

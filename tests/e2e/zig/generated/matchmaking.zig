@@ -7703,7 +7703,7 @@ pub const MatchmakingService = struct {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initController(self: *Builder) message.BuildError!message.AnyPointerBuilder {
+            pub fn initController(self: *Builder) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
