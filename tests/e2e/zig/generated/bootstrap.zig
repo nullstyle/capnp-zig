@@ -2922,7 +2922,7 @@ pub const Bootstrap = struct {
 
         pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            if (ctx.settled_flag) |flag| flag.* = true;
+            if (ctx.settled_flag) |@"settled flag"| @"settled flag".* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -3080,7 +3080,7 @@ pub const Bootstrap = struct {
 
         pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            if (ctx.settled_flag) |flag| flag.* = true;
+            if (ctx.settled_flag) |@"settled flag"| @"settled flag".* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -3238,7 +3238,7 @@ pub const Bootstrap = struct {
 
         pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            if (ctx.settled_flag) |flag| flag.* = true;
+            if (ctx.settled_flag) |@"settled flag"| @"settled flag".* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -3396,7 +3396,7 @@ pub const Bootstrap = struct {
 
         pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            if (ctx.settled_flag) |flag| flag.* = true;
+            if (ctx.settled_flag) |@"settled flag"| @"settled flag".* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {

@@ -865,6 +865,26 @@ test "Codegen guard locals cannot collide with schema-named file-scope declarati
     );
 }
 
+// Same class as the guard locals above, inside interface code: generated
+// call-return code captured the call's settled flag as `|flag|`, so a schema
+// with a file-scope `flag` (an annotation in tests/test_schemas/annotations
+// .capnp too) and any interface did not compile. Taking each function's
+// address makes the compiler analyze its body.
+test "Codegen call-return captures cannot collide with a schema-named flag" {
+    try runGeneratedHarness(std.testing.allocator, "tests/test_schemas/settled_flag_names.capnp",
+        \\const std = @import("std");
+        \\const generated = @import("generated.zig");
+        \\
+        \\test "call-return code compiles beside a file-scope flag" {
+        \\    try std.testing.expect(@hasDecl(generated, "flag"));
+        \\    _ = &generated.Pinger.Ping.callReturn;
+        \\    _ = &generated.Pinger.Push.streamCallReturn;
+        \\    _ = &generated.Pinger.Push.StreamCallContext.deinitCtx;
+        \\}
+        \\
+    );
+}
+
 // Importing `type.capnp` gives the binding a file-scope alias declared as
 // `pub const @"type"`. Typed applications anchor imported types at the file
 // namespace, and behind `_capnp_file.` the alias is a field access, where zig

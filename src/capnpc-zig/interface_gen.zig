@@ -508,7 +508,10 @@ pub fn Interface(comptime G: type) type {
 
             try writer.writeAll("        pub fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
             try writer.writeAll("            const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));\n");
-            try writer.writeAll("            if (ctx.settled_flag) |flag| flag.* = true;\n");
+            // The capture name has a space, so no schema declaration can
+            // share it: a file-level `annotation flag` once made `|flag|`
+            // a "capture shadows declaration" compile error.
+            try writer.writeAll("            if (ctx.settled_flag) |@\"settled flag\"| @\"settled flag\".* = true;\n");
             try writer.writeAll("            defer peer.allocator.destroy(ctx);\n");
             try writer.writeAll("            var response: Response = undefined;\n");
             try writer.writeAll("            switch (ret.tag) {\n");
@@ -565,7 +568,7 @@ pub fn Interface(comptime G: type) type {
                 try writer.writeAll("            settled_flag: ?*bool = null,\n\n");
                 try writer.writeAll("            pub fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {\n");
                 try writer.writeAll("                const dead: *StreamCallContext = @ptrCast(@alignCast(ctx_ptr));\n");
-                try writer.writeAll("                if (dead.settled_flag) |flag| flag.* = true;\n");
+                try writer.writeAll("                if (dead.settled_flag) |@\"settled flag\"| @\"settled flag\".* = true;\n");
                 try writer.writeAll("                var reservation = dead.reservation;\n");
                 try writer.writeAll("                ctx_allocator.destroy(dead);\n");
                 try writer.writeAll("                reservation.settle(error.StreamingCallFailed);\n");
@@ -587,7 +590,7 @@ pub fn Interface(comptime G: type) type {
 
                 try writer.writeAll("        pub fn streamCallReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
                 try writer.writeAll("            const ctx: *StreamCallContext = @ptrCast(@alignCast(ctx_ptr));\n");
-                try writer.writeAll("            if (ctx.settled_flag) |flag| flag.* = true;\n");
+                try writer.writeAll("            if (ctx.settled_flag) |@\"settled flag\"| @\"settled flag\".* = true;\n");
                 try writer.writeAll("            var reservation = ctx.reservation;\n");
                 try writer.writeAll("            peer.allocator.destroy(ctx);\n");
                 try writer.writeAll("            _ = caps;\n");
