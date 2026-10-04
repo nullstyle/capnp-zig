@@ -3193,13 +3193,22 @@ test "Listener.init refuses a ticket lifetime outside 1 s to 2 days" {
     }
 }
 
+const IssuedTicket = struct {
+    /// The ticket's lifetime as the client stored it, in seconds.
+    lifetime_s: u32,
+    /// Wall time from before the server started to after the client stored
+    /// the ticket, rounded up to whole seconds.
+    elapsed_s: u32,
+};
+
 /// The lifetime of the session ticket a server built from `lifetime_s`
 /// issues to one dial, as the client stored it.
-fn issuedTicketLifetime(lifetime_s: ?u32) !u32 {
+fn issuedTicketLifetime(lifetime_s: ?u32) !IssuedTicket {
     const allocator = std.testing.allocator;
     const frame = try buildBootstrapFrame(allocator, 0x0A1A);
     defer allocator.free(frame);
 
+    const started_ns = std.Io.Clock.awake.now(std.testing.io).nanoseconds;
     var server = try quic.Server.init(allocator, std.testing.io, .{
         .listen_addr = testListenAddr(),
         .tls_cert_pem = loopback_cert_pem,
@@ -3236,16 +3245,33 @@ fn issuedTicketLifetime(lifetime_s: ?u32) !u32 {
     try client.sendFrame(frame);
     try driveUntilEchoAndTicket(&server, &client_state, &server_state, &ticket);
 
+    // The client stored the ticket before the sink saw it.
+    const elapsed_ns = std.Io.Clock.awake.now(std.testing.io).nanoseconds - started_ns;
     client.requestClose();
     client_thread.join();
     joined = true;
-    return try quic.testing.ticketLifetimeSeconds(ticket.slice());
+    return .{
+        .lifetime_s = try quic.testing.ticketLifetimeSeconds(ticket.slice()),
+        .elapsed_s = @intCast(@divFloor(elapsed_ns + std.time.ns_per_s - 1, std.time.ns_per_s)),
+    };
+}
+
+/// BoringSSL counts a session's lifetime in whole wall-clock seconds and
+/// takes off the seconds that pass between the start of the session and the
+/// ticket: on the server when it issues the ticket, and on the client when it
+/// stores it. So a ticket loses 0 to `elapsed_s` seconds, depending on where
+/// the second boundaries fall (a TLS 1.3 client does not keep the lifetime
+/// the server put on the wire).
+fn expectTicketLifetime(expected_s: u32, issued: IssuedTicket) !void {
+    errdefer std.debug.print("ticket lifetime {d} s, {d} s elapsed, expected {d} s\n", .{ issued.lifetime_s, issued.elapsed_s, expected_s });
+    try std.testing.expect(issued.lifetime_s <= expected_s);
+    try std.testing.expect(issued.lifetime_s + issued.elapsed_s >= expected_s);
 }
 
 test "session_ticket_lifetime_s sets the lifetime of the tickets a server issues" {
-    try std.testing.expectEqual(@as(u32, 600), try issuedTicketLifetime(600));
+    try expectTicketLifetime(600, try issuedTicketLifetime(600));
     // Unset: BoringSSL's 2 days.
-    try std.testing.expectEqual(quic.max_session_ticket_lifetime_s, try issuedTicketLifetime(null));
+    try expectTicketLifetime(quic.max_session_ticket_lifetime_s, try issuedTicketLifetime(null));
 }
 
 /// Write `bytes` to `sub_path` in `dir` and, where files have POSIX mode

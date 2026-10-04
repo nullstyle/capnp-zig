@@ -3437,6 +3437,7 @@ capnpc-zig.rpc.transport.quic.WarmRedialClient.rebinds: field u32 = 0
 capnpc-zig.rpc.transport.quic.WarmRedialClient.rebound_at_ns: field ?u64 = null
 capnpc-zig.rpc.transport.quic.WarmRedialClient.redials: field u32 = 0
 capnpc-zig.rpc.transport.quic.WarmRedialClient.restore_failed: field bool = false
+capnpc-zig.rpc.transport.quic.WarmRedialClient.retried_generations: field u32 = 0
 capnpc-zig.rpc.transport.quic.WarmRedialClient.stop_requested: field bool = false
 capnpc-zig.rpc.transport.quic.WarmRedialClient.sturdy_ref: field []u8
 capnpc-zig.rpc.transport.quic.WarmRedialClient.ticket: field ?[]u8 = null
@@ -3854,6 +3855,7 @@ capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.generations: 
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.last_cause: field rpc.events.DisconnectCause
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.rebinds: field u32
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.redials: field u32
+capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.retried_generations: field u32 = 0
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.total_redials: field u32
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.zero_rtt_generations: field u32 = 0
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome: struct
@@ -3882,6 +3884,7 @@ capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.rebound_at_ns: field 
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.redials: field u32 = 0
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.requestStop: fn (*rpc.transport.quic.warm_redial.WarmRedialClient) void
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.restore_failed: field bool = false
+capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.retried_generations: field u32 = 0
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.run: fn (*rpc.transport.quic.warm_redial.WarmRedialClient) anyerror!rpc.transport.quic.warm_redial.WarmRedialClient.Outcome
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.seedWarmState: fn (*rpc.transport.quic.warm_redial.WarmRedialClient, []const u8) error{InvalidWarmState,OutOfMemory}!void
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.stop_requested: field bool = false

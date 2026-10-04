@@ -720,9 +720,15 @@ same key on every start decrypts the tickets that its crashed predecessor
 issued, so the heal resumes, and with `.early_data = .restore_only`
 BoringSSL accepts its 0-RTT data (under the preset, read "Retry and
 NEW_TOKEN: an open gap" below first). `WarmRedialClient.Outcome
-.zero_rtt_generations` counts the generations whose dial got that verdict.
-The key is opt-in: it defaults to null, in the preset too. Set it only when
-a 0-RTT heal is worth what a stolen key costs.
+.zero_rtt_generations` counts the generations whose first flight, with its
+Restore, rode 0-RTT: the verdict was `.accepted` and the dial got no Retry.
+`Outcome.retried_generations` counts the generations whose dial got a
+Retry; today such a dial restores only after the handshake, even when the
+verdict is `.accepted`, so it never counts as 0-RTT. Under the preset a heal
+after a crash-restart almost always gets a Retry, so expect
+`zero_rtt_generations` to stay 0 there until that gap closes. The key is
+opt-in: it defaults to null, in the preset too. Set it only when a 0-RTT
+heal is worth what a stolen key costs.
 
 The security trade-off below was reviewed before the code (item 16 of
 `docs/sprint-plan-2026-10-04.md`). Wire the key into the preset like this,
@@ -951,7 +957,13 @@ capnp-zig yet; `docs/upstream/handoff-quic-zig-ticket-keys.md` asks
 quic-zig for the first one. The QUIC transport suite pins today's behavior
 ("a new new_token_key after a crash-restart costs the early restore"): a
 client that sends 0-RTT again after a Retry turns that test red, which is
-the signal to update this section.
+the signal to update this section and to count such a dial in
+`WarmRedialClient.Outcome.zero_rtt_generations`.
+
+To see which case a client is in, compare the two counters:
+`WarmRedialClient.Outcome.zero_rtt_generations` counts only the
+generations whose restore rode 0-RTT, and `retried_generations` counts the
+generations that paid a Retry instead.
 
 ### Self-healing clients
 

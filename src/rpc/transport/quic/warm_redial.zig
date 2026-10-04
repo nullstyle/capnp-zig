@@ -114,14 +114,22 @@ pub const WarmRedialClient = struct {
         /// Every redial over the client's lifetime.
         total_redials: u32,
         rebinds: u32,
-        /// Generations whose dial the server accepted 0-RTT for (the
-        /// client's TLS verdict, `EarlyDataStatus.accepted`). After a
-        /// crash-restart this counts only when the server loads the same
-        /// `session_ticket_key`. The verdict does not prove the restore ran
-        /// before the handshake: after a Retry, the quic-zig v0.25.0 client
-        /// sends its early data again only at 1-RTT ("Retry and NEW_TOKEN:
-        /// an open gap" in docs/quic-transport.md).
+        /// Generations whose first flight, the Bootstrap and Restore
+        /// frames included, rode 0-RTT: the server accepted the dial's
+        /// early data (`EarlyDataStatus.accepted`) and the dial got no
+        /// Retry. After a crash-restart this needs a server that loads the
+        /// same `session_ticket_key`. A dial that gets a Retry counts in
+        /// `retried_generations` instead, even when the verdict is
+        /// `.accepted`, because the quic-zig v0.25.0 client sends its early
+        /// data again only at 1-RTT after a Retry ("Retry and NEW_TOKEN: an
+        /// open gap" in docs/quic-transport.md).
         zero_rtt_generations: u32 = 0,
+        /// Generations whose dial got a Retry from the server. Each one
+        /// cost one more round trip, and on quic-zig v0.25.0 its restore ran
+        /// only after the handshake. Under the hardened preset, a dial
+        /// without a valid NEW_TOKEN gets a Retry; a NEW_TOKEN is valid only
+        /// from the address and port that earned it.
+        retried_generations: u32 = 0,
         last_cause: rpc_events.DisconnectCause,
     };
 
@@ -151,8 +159,10 @@ pub const WarmRedialClient = struct {
     /// Lifetime redial count (never reset).
     total_redials: u32 = 0,
     rebinds: u32 = 0,
-    /// Generations whose dial reported `EarlyDataStatus.accepted`.
+    /// Generations whose first flight rode accepted 0-RTT (no Retry).
     zero_rtt_generations: u32 = 0,
+    /// Generations whose dial got a Retry.
+    retried_generations: u32 = 0,
     restore_failed: bool = false,
     /// Awake-clock time (ns) of the current generation's rebind; null
     /// until it rebinds.
@@ -268,6 +278,7 @@ pub const WarmRedialClient = struct {
             .total_redials = self.total_redials,
             .rebinds = self.rebinds,
             .zero_rtt_generations = self.zero_rtt_generations,
+            .retried_generations = self.retried_generations,
             .last_cause = last_cause,
         };
     }
@@ -365,7 +376,18 @@ pub const WarmRedialClient = struct {
         // The quic connection outlives `run()` until `conn.deinit()`, and
         // its verdict is final once the handshake completed.
         if (conn.activeQuicConnection()) |quic_conn| {
-            if (quic_conn.earlyDataStatus() == .accepted) self.zero_rtt_generations +|= 1;
+            // Coupling: quic-zig v0.25.0 has no accessor for "this client
+            // accepted a Retry", so this reads its `Connection.retry_accepted`
+            // field; a rename fails the build here. After a Retry the server
+            // has dropped the first flight's 0-RTT packets, and this client
+            // sends that data again only at 1-RTT, so BoringSSL's `.accepted`
+            // verdict alone does not mean the restore rode 0-RTT. When
+            // quic-zig sends 0-RTT again after a Retry, the transport test
+            // "a new new_token_key after a crash-restart costs the early
+            // restore" goes red: count such dials here then.
+            const retried = quic_conn.retry_accepted;
+            if (retried) self.retried_generations +|= 1;
+            if (!retried and quic_conn.earlyDataStatus() == .accepted) self.zero_rtt_generations +|= 1;
         }
 
         _ = peer.takeAttachedConnection(*Connection);

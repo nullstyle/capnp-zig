@@ -152,6 +152,14 @@ Linux. capnp-zig's test "session ticket key: a new new_token_key after a
 crash-restart costs the early restore" pins today's late delivery, and
 will go red when the client changes.
 
+A small related ask: a public accessor such as
+`Connection.retryAccepted() bool` on the client. Because `.accepted` does
+not mean the early data rode 0-RTT, capnp-zig's `WarmRedialClient` counts a
+generation as 0-RTT only when its dial accepted no Retry, and counts the
+others in `Outcome.retried_generations`. v0.25.0 has no accessor, so
+capnp-zig reads the `Connection.retry_accepted` field
+(`src/rpc/transport/quic/warm_redial.zig`); a rename breaks its build.
+
 ## Not asked here
 
 The NEW_TOKEN validity window is checked against the `now_us` that the
