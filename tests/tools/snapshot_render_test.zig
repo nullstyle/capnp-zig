@@ -36,6 +36,10 @@ const fx = struct {
     pub const long_label: [render.max_const_string_bytes + 1]u8 = @splat('x');
     pub const defaults: Options = .{};
     pub const Handler = *const fn (u32) error{ Zeta, Alpha }!void;
+    // `@typeName` already sorts an explicit error set, so only a typedef of a
+    // fn with an INFERRED set shows that `renderTypedef` expands the set.
+    pub const InferredFn = @TypeOf(inferred);
+    pub const InferredHandler = *const InferredFn;
     pub const std_root = std;
     pub const builtin_root = @import("builtin");
 
@@ -50,9 +54,6 @@ const fx = struct {
         }
         pub fn peek() u32 {
             return 0;
-        }
-        pub fn selfRef(self: *Api) void {
-            _ = self;
         }
         pub const Inner = struct {
             pub fn deep() void {}
@@ -151,9 +152,12 @@ test "the walker renders containers, fields, variants, enumerants, typedefs and 
     try expectLine(e, "fx.Kind: enum");
     try expectLine(e, "fx.Kind.alpha: enumerant = 1");
     try expectLine(e, "fx.Kind.beta: enumerant = 2");
-    // Error sets are expanded and sorted, for fns and fn-pointer typedefs.
+    // Error sets are expanded and sorted, for fns, fn typedefs and
+    // fn-pointer typedefs.
     try expectLine(e, "fx.Handler: type = *const fn (u32) error{Alpha,Zeta}!void");
     try expectLine(e, "fx.inferred: fn (u8) error{Alpha,Zeta}!void");
+    try expectLine(e, "fx.InferredFn: type = fn (u8) error{Alpha,Zeta}!void");
+    try expectLine(e, "fx.InferredHandler: type = *const fn (u8) error{Alpha,Zeta}!void");
     try expectLine(e, "fx.Api.open: fn (" ++ @typeName(fx.Options) ++ ") error{Busy,Closed}!void");
     try expectLine(e, "fx.Api.peek: fn () u32");
 }
@@ -224,26 +228,151 @@ test "tiers: Stable only by rule, and an override wins over a Stable prefix" {
     try testing.expectEqualStrings("", tiered.dead_rules);
 }
 
-/// Takes the violations as a runtime slice, so an empty list fails here as a
-/// test failure rather than as a compile error on a comptime index.
-fn expectOneViolation(violations: []const render.Violation, decl: []const u8, offender: []const u8, role: []const u8) !void {
-    try testing.expectEqual(@as(usize, 1), violations.len);
-    try testing.expectEqualStrings(decl, violations[0].decl);
-    try testing.expectEqualStrings(offender, violations[0].offender);
-    try testing.expectEqualStrings(role, violations[0].role);
+/// The closure check's fixture: one declaration per branch of the check.
+/// Under `closure` below, `cx.Api` is Stable by prefix and two `cx.Hidden`
+/// methods are Stable by exact rule. `Config`, `Handle` and `Hidden` itself
+/// are Experimental. The two shared types sit at a Stable and an
+/// Experimental path each, in opposite walk orders.
+const cx = struct {
+    /// Reached first at an Experimental path, then at `cx.Api.EarlyAlias`.
+    pub const SharedEarly = struct {};
+    pub const Config = struct {};
+    pub const Handle = struct {};
+
+    pub const Api = struct {
+        pub const EarlyAlias = SharedEarly;
+        /// Reached first at this Stable path, then at `cx.LateAlias`.
+        pub const SharedLate = struct {};
+
+        /// Violation: an Experimental parameter.
+        pub fn open(config: Config) void {
+            _ = config;
+        }
+        /// Violation: an Experimental return type, behind `!` and `*`.
+        pub fn handle() error{Closed}!*Handle {
+            return error.Closed;
+        }
+        /// Generic: skipped, although its concrete parameter and return
+        /// type are Experimental.
+        pub fn write(writer: anytype, config: Config) Config {
+            _ = writer;
+            return config;
+        }
+        /// Both types are Stable, because a Stable path reaches each.
+        pub fn share(early: SharedEarly, late: SharedLate) void {
+            _ = early;
+            _ = late;
+        }
+    };
+
+    pub const Hidden = struct {
+        /// Stable (exact rule): its own Experimental type is exempt.
+        pub fn secret(self: *Hidden) void {
+            _ = self;
+        }
+        /// Stable (exact rule): its own Experimental type is exempt.
+        pub fn init() Hidden {
+            return .{};
+        }
+        /// Experimental: not checked.
+        pub fn tweak(config: Config) Handle {
+            _ = config;
+            return .{};
+        }
+    };
+
+    pub const LateAlias = Api.SharedLate;
+};
+
+const closure = render.Snapshot(.{
+    .root = cx,
+    .root_path = "cx",
+    .max_depth = 4,
+    .stable_rules = &.{
+        render.prefix("cx.Api"),
+        render.exact("cx.Hidden.secret"),
+        render.exact("cx.Hidden.init"),
+    },
+});
+
+/// Takes the violations as a runtime slice, so a miss fails here as a test
+/// failure rather than as a compile error on a comptime index.
+fn hasViolation(violations: []const render.Violation, decl: []const u8, offender: []const u8, role: []const u8) bool {
+    for (violations) |v| {
+        if (std.mem.eql(u8, v.decl, decl) and
+            std.mem.eql(u8, v.offender, offender) and
+            std.mem.eql(u8, v.role, role)) return true;
+    }
+    return false;
 }
 
-test "closure: a Stable fn that names an Experimental type is a violation" {
-    // `open` takes the Experimental `Options`. `selfRef` takes its own
-    // enclosing type, and `peek` is overridden to Experimental: neither
-    // counts.
-    try expectOneViolation(tiered.closure_violations, "fx.Api.open", @typeName(fx.Options), "parameter");
+fn expectViolation(violations: []const render.Violation, decl: []const u8, offender: []const u8, role: []const u8) !void {
+    if (hasViolation(violations, decl, offender, role)) return;
+    std.debug.print("missing violation: {s} names {s} ({s})\n", .{ decl, offender, role });
+    return error.TestExpectedViolation;
+}
+
+fn expectNoViolation(violations: []const render.Violation, decl: []const u8) !void {
+    for (violations) |v| {
+        if (!std.mem.eql(u8, v.decl, decl)) continue;
+        std.debug.print("unexpected violation: {s} names {s} ({s})\n", .{ v.decl, v.offender, v.role });
+        return error.TestUnexpectedViolation;
+    }
+}
+
+test "closure fixture: the tiers the closure tests rely on" {
+    try testing.expectEqualStrings("", closure.dead_rules);
+    try testing.expect(comptime closure.tierIsStable("cx.Hidden.secret"));
+    try testing.expect(comptime closure.tierIsStable("cx.Hidden.init"));
+    try testing.expect(comptime !closure.tierIsStable("cx.Hidden.tweak"));
+    try testing.expectEqual(@as(?bool, true), comptime closure.tierOfType(cx.Api));
+    try testing.expectEqual(@as(?bool, false), comptime closure.tierOfType(cx.Hidden));
+    try testing.expectEqual(@as(?bool, false), comptime closure.tierOfType(cx.Config));
+    try testing.expectEqual(@as(?bool, false), comptime closure.tierOfType(*const cx.Handle));
+    try testing.expectEqual(@as(?bool, null), comptime closure.tierOfType(u32));
+}
+
+test "closure: a Stable fn that takes an Experimental type is a violation" {
+    try expectViolation(closure.closure_violations, "cx.Api.open", @typeName(cx.Config), "parameter");
+}
+
+test "closure: a Stable fn that returns an Experimental type is a violation" {
+    try expectViolation(closure.closure_violations, "cx.Api.handle", @typeName(cx.Handle), "return");
+}
+
+test "closure: a method that takes or returns its own enclosing type is exempt" {
+    try expectNoViolation(closure.closure_violations, "cx.Hidden.secret");
+    try expectNoViolation(closure.closure_violations, "cx.Hidden.init");
+}
+
+test "closure: an Experimental fn is not checked" {
+    try expectNoViolation(closure.closure_violations, "cx.Hidden.tweak");
+}
+
+test "closure: a generic fn is skipped" {
+    try expectNoViolation(closure.closure_violations, "cx.Api.write");
+}
+
+test "closure: any Stable path that reaches a type makes it Stable" {
+    try testing.expectEqual(@as(?bool, true), comptime closure.tierOfType(cx.SharedEarly));
+    try testing.expectEqual(@as(?bool, true), comptime closure.tierOfType(cx.Api.SharedLate));
+    try expectNoViolation(closure.closure_violations, "cx.Api.share");
+}
+
+test "closure: exactly the expected violations, and none once their types are Stable" {
+    try testing.expectEqual(@as(usize, 2), closure.closure_violations.len);
 
     const closed = render.Snapshot(.{
-        .root = fx,
-        .root_path = "fx",
+        .root = cx,
+        .root_path = "cx",
         .max_depth = 4,
-        .stable_rules = &.{ render.prefix("fx.Api"), render.prefix("fx.Options") },
+        .stable_rules = &.{
+            render.prefix("cx.Api"),
+            render.exact("cx.Hidden.secret"),
+            render.exact("cx.Hidden.init"),
+            render.prefix("cx.Config"),
+            render.prefix("cx.Handle"),
+        },
     });
     try testing.expectEqual(@as(usize, 0), closed.closure_violations.len);
 }

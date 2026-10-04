@@ -637,7 +637,8 @@ pub fn Snapshot(comptime config: Config) type {
         /// Every Stable function whose parameter or return type is an
         /// Experimental type of the walked surface, in walk order. Generic
         /// functions are skipped: an `anytype` parameter has no type to
-        /// check until instantiation.
+        /// check until instantiation. A method's own enclosing type never
+        /// counts, and a type that any Stable path reaches is Stable.
         pub const closure_violations: []const Violation = blk: {
             @setEvalBranchQuota(40_000_000);
             var seen: []const type = &.{};
