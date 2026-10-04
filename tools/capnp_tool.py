@@ -139,7 +139,8 @@ def installed_package(root):
     pin = tool_pin(root)
     package = package_path(root, pin)
     if not package.exists():
-        raise ValueError("WASM compiler is not installed; run mise run bootstrap:capnp")
+        raise ValueError("WASM compiler is not installed; run this script's bootstrap command "
+                         "(mise run bootstrap:capnp in a capnp-zig checkout)")
     return verify_package(package, pin)
 
 
