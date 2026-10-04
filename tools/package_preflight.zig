@@ -501,10 +501,9 @@ fn verifyPackagedPlugin(ctx: *const Context, plugin_abs: []const u8) !void {
         "enum_evolution_v1.zig",
     });
     defer ctx.allocator.free(actual_path);
-    // Checked-in generator artifacts are normalized by `just fmt` after the
-    // plugin runs. Apply that same repository contract before byte comparison;
-    // raw generator output intentionally is not the golden byte surface.
-    try runDiscard(ctx, &.{ "zig", "fmt", actual_path }, .inherit, null);
+    // Compared as written, with no formatting pass: the checked-in artifact
+    // is raw plugin output, which is zig fmt clean, and a consumer running the
+    // packaged plugin must get exactly those bytes.
     const actual = try std.Io.Dir.cwd().readFileAlloc(ctx.io, actual_path, ctx.allocator, .limited(max_fixture_file));
     defer ctx.allocator.free(actual);
     const expected = try std.Io.Dir.cwd().readFileAlloc(

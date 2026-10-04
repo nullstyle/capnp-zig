@@ -201,6 +201,10 @@ generated files byte-exact in Git (for example `src/gen/** -text` in
 line as changed. package-preflight runs `gen`, then `gen-check` (which must
 pass), then edits the copy and runs `gen-check` again (which must fail).
 
+The plugin's output is already `zig fmt` clean, so a committed copy can sit
+under your `zig fmt --check` gate unchanged. Do not reformat it: `gen-check`
+compares the plugin's bytes as written.
+
 ### Running the pinned plugin outside the build
 
 A script that drives `capnp compile` itself can still use the pinned plugin:
@@ -264,7 +268,7 @@ tests what the manifest actually exposes, without publishing anything. It:
 - proves default/core consumers do not fetch the lazy QUIC dependency and the
   QUIC consumer does;
 - builds the packaged compiler plugin, runs it on a checked schema, and compares
-  normalized output with the checked-in generated artifact; and
+  its raw output byte for byte with the checked-in generated artifact; and
 - verifies the checkout status is byte-for-byte unchanged before returning.
 
 The gate requires `git`, `tar`, Zig, and the pinned schema compiler

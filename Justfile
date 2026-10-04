@@ -283,27 +283,31 @@ gen:
     # These revisions share a file ID, so capnp must compile them in separate
     # requests even though their generated modules are checked together.
     uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/enum_evolution_v1.capnp
-    zig fmt zig-out/check-generated/tests/test_schemas/enum_evolution_v1.zig
     cp zig-out/check-generated/tests/test_schemas/enum_evolution_v1.zig tests/serialization/generated/schema_evolution_v1.zig
     uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/enum_evolution_v2.capnp
-    zig fmt zig-out/check-generated/tests/test_schemas/enum_evolution_v2.zig
     cp zig-out/check-generated/tests/test_schemas/enum_evolution_v2.zig tests/serialization/generated/schema_evolution_v2.zig
     uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/nested_lists_runtime.capnp
-    zig fmt zig-out/check-generated/tests/test_schemas/nested_lists_runtime.zig
     cp zig-out/check-generated/tests/test_schemas/nested_lists_runtime.zig tests/serialization/generated/nested_lists_runtime.zig
     CAPNPC_ZIG_UPDATE_GOLDENS=1 zig build {{ test_jobs }} test-codegen
     zig build api-snapshot
-    just fmt
 
-# Fail if regeneration changes any committed binding or the Stable API surface.
+# Every path `gen` writes plugin output to. The output is committed exactly as
+# the plugin wrote it, with no formatting pass.
+generated_paths := "src/rpc/gen tests/e2e/zig/generated tests/golden examples/addressbook.zig examples/pingpong.zig examples/kvstore/gen/kvstore.zig src/wasm/generated/example.zig tests/serialization/generated"
+
+# Fail if regeneration changes any committed binding or the Stable API surface,
+# or if the plugin's raw output is not zig fmt clean.
 check-generated: gen
+    # A consumer that runs the pinned plugin gets these exact bytes, so the
+    # generator itself must emit zig fmt's layout (src/capnpc-zig/layout.zig).
+    zig fmt --check {{ generated_paths }} || { echo "ERROR: capnpc-zig output above is not zig fmt clean — fix the emitter in src/capnpc-zig/, not the generated file"; exit 1; }
     # docs/api-snapshot-experimental.txt is deliberately NOT diffed here. It is
     # regenerated on every run by design ("drift here is expected and NEVER fails
     # the gate"), and it records target-dependent detail: `OwnerThreadId.value` is
     # `std.Thread.Id`, which renders u64 on macOS and u32 on Linux, so a committed
     # copy can never match on every OS. The Stable file MUST be target-stable and
     # stays in the diff — `zig build check-api` enforces that on all three tiers.
-    git diff --exit-code -- src/rpc/gen tests/e2e/zig/generated tests/golden examples/addressbook.zig examples/pingpong.zig examples/kvstore/gen/kvstore.zig src/wasm/generated/example.zig tests/serialization/generated tests/package_consumer/codegen/schema/addressbook.request.bin docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
+    git diff --exit-code -- {{ generated_paths }} tests/package_consumer/codegen/schema/addressbook.request.bin docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
 
 # Assert the Zig on PATH is the one mise.toml pins — the same check
 # .github/actions/setup-zig makes, so a local gate proves the same thing CI's
@@ -423,13 +427,15 @@ install-path: release
 clean:
     rm -rf zig-out .zig-cache
 
-# Format code
+# Format code. Generated bindings are included: the plugin emits zig fmt's
+# layout, so formatting them is a no-op (`check-generated` enforces that).
+# Only kvstore's third-party package trees are excluded.
 fmt:
-    zig fmt --exclude examples/kvstore/gen --exclude examples/kvstore/zig-pkg --exclude examples/kvstore/vendor --exclude tests/e2e/zig/generated --exclude tests/golden --exclude src/rpc/gen src/ tests/ bench/ tools/ examples/
+    zig fmt --exclude examples/kvstore/zig-pkg --exclude examples/kvstore/vendor src/ tests/ bench/ tools/ examples/
 
 # Check formatting with the same paths CI uses
 fmt-check:
-    zig fmt --check --exclude examples/kvstore/gen --exclude examples/kvstore/zig-pkg --exclude examples/kvstore/vendor --exclude tests/e2e/zig/generated --exclude tests/golden --exclude src/rpc/gen src/ tests/ bench/ tools/ examples/
+    zig fmt --check --exclude examples/kvstore/zig-pkg --exclude examples/kvstore/vendor src/ tests/ bench/ tools/ examples/
 
 # Check for errors without building
 check:

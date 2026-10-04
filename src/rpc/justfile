@@ -5,7 +5,6 @@ gen-rpc:
     uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- ./capnp/rpc.capnp
     uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- ./capnp/persistent.capnp
     uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- ./capnp/stream.capnp
-    zig fmt gen/capnp/rpc.zig gen/capnp/persistent.zig gen/capnp/stream.zig
 
 gen: gen-rpc
 
