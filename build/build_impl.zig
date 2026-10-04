@@ -988,6 +988,31 @@ pub fn buildImpl(b: *std.Build) !void {
     helpers.registered_test_compile_steps.append(b.allocator, &wire_fuzz.step) catch @panic("OOM");
     b.step("test-fuzz-wire-evolution", "Fuzz equivalent near/far encodings and mutation (add --fuzz=10K)").dependOn(&b.addRunArtifact(wire_fuzz).step);
 
+    // The comptime walker, line renderers, tier matcher and closure check that
+    // the snapshot gates share. It gets NO imports on purpose: it must stay
+    // independent of capnpc-zig so another package can point it at its own
+    // surface, and an `@import("capnpc-zig")` in it fails to compile here.
+    const snapshot_render_module = b.createModule(.{
+        .root_source_file = b.path("tools/snapshot_render.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // Its own tests run against fixture namespaces, with no capnpc-zig
+    // import either, so they also prove the module stands alone.
+    const snapshot_render_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/tools/snapshot_render_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "snapshot-render", .module = snapshot_render_module },
+            },
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &snapshot_render_tests.step) catch @panic("OOM");
+    const test_snapshot_render_step = b.step("test-snapshot-render", "Run the snapshot walker/renderer's own tests (tools/snapshot_render.zig)");
+    test_snapshot_render_step.dependOn(&b.addRunArtifact(snapshot_render_tests).step);
+
     // Public API snapshot gate. `check-api` diffs the live pub-decl surface
     // against docs/api-snapshot.txt; `api-snapshot` regenerates the file.
     const api_snapshot_tool = b.addExecutable(.{
@@ -998,6 +1023,7 @@ pub fn buildImpl(b: *std.Build) !void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "snapshot-render", .module = snapshot_render_module },
             },
         }),
     });
@@ -1601,6 +1627,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_step.dependOn(test_oom_step);
     test_step.dependOn(test_soak_harness_step);
     test_step.dependOn(run_package_preflight_tests);
+    test_step.dependOn(test_snapshot_render_step);
 
     // Configure these after the suites are complete. Windows can warm their
     // exact compile prerequisites in parallel, then run the unchanged suites
