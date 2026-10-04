@@ -458,6 +458,13 @@ jobs:
         # usize) until this step was widened.
         run: zig build check-test-compile -Dtarget=${{ matrix.target }} --summary all
 
+      - name: Compile with -Dquic=true for ${{ matrix.target }}
+        # 32-bit only: it is where QUIC code and tests broke unseen (64-bit
+        # atomics in the soak tool and the QUIC loop-thread tests, a usize
+        # literal past u32) while every -Dquic job ran on 64-bit hosts.
+        if: matrix.target == 'x86-linux-gnu'
+        run: zig build -Dquic=true check-compile check-test-compile -Dtarget=${{ matrix.target }} --summary all
+
   hardening:
     name: Hardening gate (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

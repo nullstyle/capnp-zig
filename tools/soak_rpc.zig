@@ -1216,9 +1216,11 @@ const QuicServerHarness = struct {
     // .unroutable_dcid; resets_sent snapshots the server counter at drain.
     // The harness always sets a reset key, so resets_sent==0 here means no
     // stale-CID traffic arrived — NOT a keyless-config artifact. The
-    // unroutable_* pair is the signal that holds either way.
-    unroutable_seen: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    unroutable_reset_queued: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    // unroutable_* pair is the signal that holds either way. usize, like the
+    // other soak counters: 32-bit targets (x86-linux-gnu in CI) have no
+    // 64-bit atomics.
+    unroutable_seen: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    unroutable_reset_queued: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     resets_sent: u64 = 0,
     // Abrupt-death mode state (loop-thread except where noted).
     io: std.Io = undefined,

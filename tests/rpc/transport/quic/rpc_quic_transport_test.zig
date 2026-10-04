@@ -1005,8 +1005,9 @@ const AcceptHookRecorder = struct {
 
     server_states: *[capacity]QuicEndpointState,
     /// Thread id of the thread that drives `Server.run()`, published by that
-    /// thread before its first step.
-    loop_thread: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    /// thread before its first step. `Thread.Id`, not u64: it is u32 on
+    /// Linux and Windows, and 32-bit targets have no 64-bit atomics.
+    loop_thread: std.atomic.Value(std.Thread.Id) = std.atomic.Value(std.Thread.Id).init(0),
     accepted: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     // Written on the loop thread only; read after it is joined.
     off_loop_thread: usize = 0,
@@ -2227,16 +2228,20 @@ test "quic native options reject unusable budgets with specific errors" {
         },
     }));
 
-    try std.testing.expectError(error.NativeControlFrameLimitExceedsWireLimit, quic.serverConfigFromOptions(std.testing.allocator, .{
-        .listen_addr = testListenAddr(),
-        .tls_cert_pem = "cert",
-        .tls_key_pem = "key",
-        .mode = .native,
-        .native = .{
-            .inline_frame_threshold = 0,
-            .max_control_frame_bytes = @as(usize, std.math.maxInt(u32)) + 1,
-        },
-    }));
+    // A limit past the u32 wire length only exists where usize is wider; on
+    // 32-bit targets the value cannot be written, so the case cannot arise.
+    if (comptime std.math.maxInt(usize) > std.math.maxInt(u32)) {
+        try std.testing.expectError(error.NativeControlFrameLimitExceedsWireLimit, quic.serverConfigFromOptions(std.testing.allocator, .{
+            .listen_addr = testListenAddr(),
+            .tls_cert_pem = "cert",
+            .tls_key_pem = "key",
+            .mode = .native,
+            .native = .{
+                .inline_frame_threshold = 0,
+                .max_control_frame_bytes = @as(usize, std.math.maxInt(u32)) + 1,
+            },
+        }));
+    }
 
     try std.testing.expectError(error.NativeInlineFrameExceedsControlFrameLimit, quic.Connection.initClient(std.testing.allocator, std.testing.io, .{
         .remote_addr = .{ .ip4 = .{

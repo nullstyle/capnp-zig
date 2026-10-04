@@ -574,7 +574,9 @@ test "Peer over QUIC fanout close isolation preserves the sibling session" {
 // ---------------------------------------------------------------------------
 
 const ServedState = struct {
-    loop_thread: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    // `Thread.Id`, not u64: it is u32 on Linux and Windows, and 32-bit
+    // targets have no 64-bit atomics.
+    loop_thread: std.atomic.Value(std.Thread.Id) = std.atomic.Value(std.Thread.Id).init(0),
     // Written on the server's run() thread; read after it is joined.
     accepts: usize = 0,
     calls: usize = 0,
