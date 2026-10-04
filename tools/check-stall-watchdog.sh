@@ -25,9 +25,13 @@ case "$(uname -s)" in
     # The actual native branch must resolve an MSYS PID and report its owned
     # command tree. The finite silent child then resumes and exits with 27:
     # a diagnostic must neither kill it nor replace its eventual exit status.
+    # The child stays silent for 40 s, not 12: the snapshot starts a cold
+    # powershell.exe and runs Get-CimInstance (10 s timeout), which together
+    # outlasted a 12 s pause once on a loaded windows-latest runner (CI run
+    # 37181505741: "wrapped command exited before the process snapshot").
     command_status=0
     STALL_SECS=1 bash tools/stall_watchdog.sh bash -c \
-      'echo watchdog-diagnostic-child; sleep 12; echo watchdog-child-resumed; exit 27' \
+      'echo watchdog-diagnostic-child; sleep 40; echo watchdog-child-resumed; exit 27' \
       > "$work/diagnostic.log" 2>&1 || command_status=$?
     cat "$work/diagnostic.log"
     if [[ "$command_status" != 27 ]]; then
