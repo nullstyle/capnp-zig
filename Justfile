@@ -288,8 +288,42 @@ gen:
     cp zig-out/check-generated/tests/test_schemas/enum_evolution_v2.zig tests/serialization/generated/schema_evolution_v2.zig
     uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/nested_lists_runtime.capnp
     cp zig-out/check-generated/tests/test_schemas/nested_lists_runtime.zig tests/serialization/generated/nested_lists_runtime.zig
+    just gen-shape-requests
     CAPNPC_ZIG_UPDATE_GOLDENS=1 zig build {{ test_jobs }} test-codegen
     zig build api-snapshot
+
+# Write the generated-shape corpus: one CodeGeneratorRequest per row of
+# `requests` in build/generated_shape.zig (keep the two lists in step; the
+# gate fails on a request it does not know). `zig build generated-shape`
+# runs the plugin on them, so it needs no schema compiler. This recipe does
+# not touch docs/generated-shape*.txt; only `zig build generated-shape` does.
+gen-shape-requests:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=tests/generated_shape/requests
+    mkdir -p "$out"
+    rm -f "$out"/*.request.bin
+    req() {
+      local name="$1" prefix="$2"
+      shift 2
+      uv run --no-project --python 3.13 "{{ capnp_tool }}" compiler -- compile -o- "--src-prefix=$prefix" "$@" > "$out/$name.request.bin"
+    }
+    t=tests/test_schemas
+    req addressbook examples examples/addressbook.capnp
+    req kvstore examples/kvstore examples/kvstore/kvstore.capnp
+    req pingpong examples examples/pingpong.capnp
+    req persistent src/rpc/capnp src/rpc/capnp/persistent.capnp
+    req rpc_inherited_paths "$t" "$t/rpc_inherited_paths.capnp" "$t/rpc_inherited_external.capnp"
+    req generic_rpc "$t" "$t/generic_rpc.capnp" "$t/generic_rpc_external.capnp"
+    req runtime_guard_names "$t" "$t/runtime_guard_names.capnp" "$t/runtime_abi.capnp"
+    req brand_cross_file "$t" "$t/brand_cross_file.capnp" "$t/brand_imported.capnp"
+    for schema in inherited_method_collision streaming rpc_pipeline_paths nested_interfaces \
+      enum_evolution_v1 union_member_guard_runtime defaults nested_collisions \
+      nested_interface_collisions zig_field_names edge_codegen brand_application_edge_cases \
+      brand_list_specialization brand_pointer_fidelity generic_collections generic_recursive \
+      rpc_nested annotations; do
+      req "$schema" "$t" "$t/$schema.capnp"
+    done
 
 # Every path `gen` writes plugin output to. The output is committed exactly as
 # the plugin wrote it, with no formatting pass.
@@ -307,7 +341,7 @@ check-generated: gen
     # `std.Thread.Id`, which renders u64 on macOS and u32 on Linux, so a committed
     # copy can never match on every OS. The Stable file MUST be target-stable and
     # stays in the diff — `zig build check-api` enforces that on all three tiers.
-    git diff --exit-code -- {{ generated_paths }} tests/package_consumer/codegen/schema/addressbook.request.bin docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
+    git diff --exit-code -- {{ generated_paths }} tests/package_consumer/codegen/schema/addressbook.request.bin tests/generated_shape/requests docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
 
 # Assert the Zig on PATH is the one mise.toml pins — the same check
 # .github/actions/setup-zig makes, so a local gate proves the same thing CI's

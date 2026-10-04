@@ -409,3 +409,91 @@ test "renderSnapshot sorts normalized lines under the header" {
     defer gpa.free(text);
     try testing.expectEqualStrings("# h\na__struct_*: struct\nb: const u8\n", text);
 }
+
+/// A re-export declared before the type it names: without `alias_target`,
+/// the walk reaches `Thing` first through `Box.Again` and renders its members
+/// there.
+const ax = struct {
+    pub const Box = struct {
+        pub const Again = Thing;
+    };
+    pub const Thing = struct {
+        count: u32 = 1,
+        pub fn get() u32 {
+            return 1;
+        }
+    };
+};
+
+fn axAliasTarget(comptime T: type, comptime path: []const u8) ?[]const u8 {
+    if (T == ax.Thing and !std.mem.eql(u8, path, "ax.Thing")) return "ax.Thing";
+    return null;
+}
+
+const ax_plain = render.Snapshot(.{ .root = ax, .root_path = "ax", .max_depth = 4 });
+const ax_aliased = render.Snapshot(.{ .root = ax, .root_path = "ax", .max_depth = 4, .alias_target = axAliasTarget });
+
+test "alias_target renders a re-export as an alias and walks the type where it is declared" {
+    // Control: the first path the walk reaches gets the members.
+    try expectLine(ax_plain.entries, "ax.Box.Again: struct");
+    try expectLine(ax_plain.entries, "ax.Box.Again.get: fn () u32");
+    try expectLine(ax_plain.entries, "ax.Box.Again.count: field u32 = 1");
+    // Field lines repeat at every path; declarations are walked once.
+    try expectNoLine(ax_plain.entries, "ax.Thing.get: fn () u32");
+
+    const e = ax_aliased.entries;
+    try expectLine(e, "ax.Box.Again: alias ax.Thing");
+    try expectNoLine(e, "ax.Box.Again: struct");
+    try testing.expect(!hasPathPrefix(e, "ax.Box.Again."));
+    try expectLine(e, "ax.Thing: struct");
+    try expectLine(e, "ax.Thing.get: fn () u32");
+    try expectLine(e, "ax.Thing.count: field u32 = 1");
+}
+
+fn hasContainer(names: []const render.ContainerName, path: []const u8, type_name: []const u8) bool {
+    for (names) |name| {
+        if (std.mem.eql(u8, name.path, path) and std.mem.eql(u8, name.type_name, type_name)) return true;
+    }
+    return false;
+}
+
+fn hasContainerPath(names: []const render.ContainerName, path: []const u8) bool {
+    for (names) |name| {
+        if (std.mem.eql(u8, name.path, path)) return true;
+    }
+    return false;
+}
+
+test "container_names lists each container line with its type name, and no alias" {
+    const plain = ax_plain.container_names;
+    try testing.expect(hasContainer(plain, "ax.Box", @typeName(ax.Box)));
+    // One type at two paths is listed at both.
+    try testing.expect(hasContainer(plain, "ax.Box.Again", @typeName(ax.Thing)));
+    try testing.expect(hasContainer(plain, "ax.Thing", @typeName(ax.Thing)));
+    try testing.expectEqual(@as(usize, 3), plain.len);
+
+    const aliased = ax_aliased.container_names;
+    try testing.expect(hasContainer(aliased, "ax.Thing", @typeName(ax.Thing)));
+    try testing.expect(!hasContainerPath(aliased, "ax.Box.Again"));
+    try testing.expectEqual(@as(usize, 2), aliased.len);
+}
+
+/// Containers at the depth limit that declare nothing: `.fail` must not fire
+/// on them, because nothing below them is lost. (A container WITH
+/// declarations at the limit is a compile error, which a test cannot
+/// observe; the generated-shape gate's depth ablation shows it.)
+const dx = struct {
+    pub const Leaf = struct { x: u32 = 0 };
+    pub const Mid = struct {
+        pub const Deep = struct { y: u8 = 0 };
+        pub fn mid() void {}
+    };
+};
+
+test "on_depth_limit = .fail compiles when only declaration-free containers sit at the limit" {
+    const failing = render.Snapshot(.{ .root = dx, .root_path = "dx", .max_depth = 2, .on_depth_limit = .fail });
+    try expectLine(failing.entries, "dx.Mid.Deep: struct");
+    try expectLine(failing.entries, "dx.Mid.Deep.y: field u8 = 0");
+    try expectLine(failing.entries, "dx.Mid.mid: fn () void");
+    try testing.expectEqual(@as(usize, 3), failing.container_names.len);
+}

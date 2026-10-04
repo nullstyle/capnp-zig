@@ -1149,6 +1149,17 @@ pub fn buildImpl(b: *std.Build) !void {
         check_api_experimental_quic_step.dependOn(&run_api_snapshot_check_quic_strict.step);
     }
 
+    // Generated-shape gate: the shape of the code the plugin generates for a
+    // fixed corpus of committed requests (docs/generated-shape*.txt). The
+    // plugin runs on the host, like the build-integration snippet above.
+    @import("./generated_shape.zig").add(b, .{
+        .target = target,
+        .optimize = optimize,
+        .lib_module = lib_module,
+        .snapshot_render_module = snapshot_render_module,
+        .plugin = docs_codegen_plugin,
+    });
+
     const test_codegen_step = b.step("test-codegen", "Run code generation tests");
     test_codegen_step.dependOn(run_codegen_tests);
     test_codegen_step.dependOn(run_codegen_defaults_tests);

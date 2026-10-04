@@ -126,7 +126,25 @@ pub const Config = struct {
     /// change. A generated-shape snapshot sets it, so a changed interface
     /// id, method ordinal or schema constant moves a line.
     render_const_values: bool = false,
+    /// What the walk does when it reaches a container with declarations at
+    /// `max_depth`. `.stop` leaves the container at its own line and field
+    /// lines (the library snapshots). `.fail` is a compile error that names
+    /// the path, for a gate whose surface must be walked completely.
+    on_depth_limit: DepthLimit = .stop,
+    /// When set, it is called for every container declaration before the
+    /// walk renders it, with the container and the declaration's path. A
+    /// non-null result marks the declaration as an alias: it renders as
+    /// `<path>: alias <result>`, with no field lines, and the walk does not
+    /// descend into it. Null renders and walks the container in place.
+    ///
+    /// A generated-shape snapshot uses this to walk each generated type at
+    /// one path only (where it is declared), so a re-export such as
+    /// `pub const Params = PingParams;` pins its target instead of a second
+    /// copy of the target's members.
+    alias_target: ?fn (comptime type, comptime []const u8) ?[]const u8 = null,
 };
+
+pub const DepthLimit = enum { stop, fail };
 
 /// The default `Config.descend`: walk into everything `foreignType` does not
 /// name as std or builtin (re-exports that are not ours).
@@ -419,6 +437,9 @@ pub const TypeTier = struct { ty: type, stable: bool };
 /// A Stable function whose signature names an Experimental type.
 pub const Violation = struct { decl: []const u8, offender: []const u8, role: []const u8 };
 
+/// A container line's path and the `@typeName` of the container there.
+pub const ContainerName = struct { path: []const u8, type_name: []const u8 };
+
 /// The snapshot of the surface `config` describes. Every result is a
 /// comptime constant, computed on first use.
 pub fn Snapshot(comptime config: Config) type {
@@ -430,6 +451,27 @@ pub fn Snapshot(comptime config: Config) type {
             return matchesRule(path, config.stable_rules);
         }
 
+        /// The alias target `config.alias_target` gives a container
+        /// declaration, or null when it renders in place.
+        fn aliasOf(comptime D: type, comptime decl_path: []const u8) ?[]const u8 {
+            const hook = config.alias_target orelse return null;
+            return hook(D, decl_path);
+        }
+
+        /// False when the walk must not enter `T` at `depth`. With
+        /// `on_depth_limit = .fail`, reaching an unwalked container that has
+        /// declarations at the limit is a compile error.
+        fn withinDepth(comptime T: type, comptime path: []const u8, comptime depth: usize, comptime seen: []const type) bool {
+            if (depth < config.max_depth) return true;
+            if (config.on_depth_limit == .fail and !contains(seen, T) and std.meta.declarations(T).len != 0) {
+                @compileError(std.fmt.comptimePrint(
+                    "snapshot walk reached max_depth ({d}) at {s}, which has declarations; raise max_depth",
+                    .{ config.max_depth, path },
+                ));
+            }
+            return false;
+        }
+
         fn walk(
             comptime T: type,
             comptime path: []const u8,
@@ -437,7 +479,7 @@ pub fn Snapshot(comptime config: Config) type {
             comptime seen: *[]const type,
             comptime entries_out: *[]const Entry,
         ) void {
-            if (depth >= config.max_depth) return;
+            if (!withinDepth(T, path, depth, seen.*)) return;
             if (contains(seen.*, T)) return;
             seen.* = seen.* ++ [_]type{T};
 
@@ -448,6 +490,10 @@ pub fn Snapshot(comptime config: Config) type {
 
                 if (DType == type) {
                     if (isContainer(D)) {
+                        if (aliasOf(D, decl_path)) |target| {
+                            entries_out.* = entries_out.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": alias " ++ target }};
+                            continue;
+                        }
                         entries_out.* = entries_out.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": " ++ containerKind(D) }};
                         if (config.descend(D)) {
                             fieldEntries(D, decl_path, entries_out);
@@ -536,7 +582,7 @@ pub fn Snapshot(comptime config: Config) type {
             comptime seen: *[]const type,
             comptime out: *[]const TypeTier,
         ) void {
-            if (depth >= config.max_depth) return;
+            if (!withinDepth(T, path, depth, seen.*)) return;
             if (contains(seen.*, T)) return;
             seen.* = seen.* ++ [_]type{T};
 
@@ -546,9 +592,45 @@ pub fn Snapshot(comptime config: Config) type {
                 if (@TypeOf(D) != type) continue;
                 if (!isContainer(D)) continue;
                 out.* = out.* ++ [_]TypeTier{.{ .ty = D, .stable = tierIsStable(decl_path) }};
+                if (aliasOf(D, decl_path) != null) continue;
                 if (config.descend(D)) collectTypes(D, decl_path, depth + 1, seen, out);
             }
         }
+
+        fn collectContainers(
+            comptime T: type,
+            comptime path: []const u8,
+            comptime depth: usize,
+            comptime seen: *[]const type,
+            comptime out: *[]const ContainerName,
+        ) void {
+            if (!withinDepth(T, path, depth, seen.*)) return;
+            if (contains(seen.*, T)) return;
+            seen.* = seen.* ++ [_]type{T};
+
+            for (std.meta.declarations(T)) |decl_name| {
+                const decl_path = path ++ "." ++ decl_name;
+                const D = @field(T, decl_name);
+                if (@TypeOf(D) != type) continue;
+                if (!isContainer(D)) continue;
+                if (aliasOf(D, decl_path) != null) continue;
+                out.* = out.* ++ [_]ContainerName{.{ .path = decl_path, .type_name = @typeName(D) }};
+                if (config.descend(D)) collectContainers(D, decl_path, depth + 1, seen, out);
+            }
+        }
+
+        /// Every container line the walk renders (aliases excluded), with
+        /// the container's `@typeName`, in walk order. A type re-exported at
+        /// several paths appears once per path. A gate uses this to map the
+        /// type names inside rendered signatures back to snapshot paths
+        /// without forcing the full render (`entries`).
+        pub const container_names: []const ContainerName = blk: {
+            @setEvalBranchQuota(40_000_000);
+            var seen: []const type = &.{};
+            var out: []const ContainerName = &.{};
+            collectContainers(config.root, config.root_path, 0, &seen, &out);
+            break :blk out;
+        };
 
         /// Every container type the walk reached, with its tier.
         pub const type_tiers: []const TypeTier = blk: {
@@ -583,7 +665,7 @@ pub fn Snapshot(comptime config: Config) type {
             comptime seen: *[]const type,
             comptime out: *[]const Violation,
         ) void {
-            if (depth >= config.max_depth) return;
+            if (!withinDepth(T, path, depth, seen.*)) return;
             if (contains(seen.*, T)) return;
             seen.* = seen.* ++ [_]type{T};
 
@@ -593,7 +675,7 @@ pub fn Snapshot(comptime config: Config) type {
                 const DType = @TypeOf(D);
 
                 if (DType == type) {
-                    if (isContainer(D) and config.descend(D)) {
+                    if (isContainer(D) and aliasOf(D, decl_path) == null and config.descend(D)) {
                         collectClosure(D, decl_path, depth + 1, seen, out);
                     }
                     continue;
