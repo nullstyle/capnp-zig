@@ -2540,8 +2540,14 @@ test "WarmRedialClient budget gives up when every generation idles out after its
     const max_redials: u32 = 3;
     // Scaled stand-in for the defaults (10 s health threshold, 30 s idle
     // timeout): the idle timeout is three times the threshold, so a budget
-    // that counts idle time as health refunds every generation.
-    const min_healthy_ms: u64 = 200;
+    // that counts idle time as health refunds every generation. 600 ms, not
+    // 200: `settle_ms` (half of it) must let the dying incarnation ACK
+    // everything in flight, and on a loaded windows-latest runner 100 ms was
+    // not enough. A packet still unacknowledged at the crash is retransmitted
+    // into the restarted incarnation, which answers with a stateless reset,
+    // so the generation ends in `.stateless_reset` instead of the idle
+    // timeout under test (CI run 37172642153).
+    const min_healthy_ms: u64 = 600;
     var params = quic.defaultTransportParams();
     params.max_idle_timeout_ms = 3 * min_healthy_ms;
     const result = try runCrashLoop(std.testing.allocator, .{
