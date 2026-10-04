@@ -99,7 +99,7 @@ two differ.
 > (see the `--output-dir=` note below). Until the next tag, depend on a
 > capnp-zig checkout with `.path`, or `zig fetch --save` a commit of `main`.
 
-<!-- verbatim: tests/package_consumer/codegen/build.zig -->
+<!-- verbatim-file: tests/package_consumer/codegen/build.zig -->
 ```zig
 const std = @import("std");
 

@@ -141,7 +141,7 @@ const required_doc_needles = [_]RequiredNeedle{
     // revision, and with reflection on by default a mismatch is a compile
     // break, so both consumer entry points say so and show executed code.
     .{ .path = "docs/build-integration.md", .needle = "never a PATH binary", .reason = "build guide must steer codegen to the pinned dep.artifact plugin" },
-    .{ .path = "docs/build-integration.md", .needle = verbatim_marker ++ codegen_consumer_build ++ verbatim_marker_end, .reason = "build guide's build.zig must be the package-preflight codegen consumer's" },
+    .{ .path = "docs/build-integration.md", .needle = verbatim_file_marker ++ codegen_consumer_build ++ verbatim_marker_end, .reason = "build guide's canonical build.zig must be the whole package-preflight codegen consumer build.zig" },
     .{ .path = "docs/getting-started-serialization.md", .needle = "never a PATH binary", .reason = "serialization guide must steer codegen to the pinned dep.artifact plugin" },
     .{ .path = "docs/getting-started-serialization.md", .needle = verbatim_marker ++ codegen_consumer_build ++ verbatim_marker_end, .reason = "serialization guide's codegen snippet must come from the package-preflight codegen consumer" },
 };
@@ -157,6 +157,13 @@ const required_doc_needles = [_]RequiredNeedle{
 /// spaces there. A doc snippet tied this way cannot drift from code that runs.
 const verbatim_marker = "<!-- verbatim: ";
 const verbatim_marker_end = " -->";
+/// Like `verbatim_marker`, but the block must be the WHOLE file: every line,
+/// in order, nothing dedented, nothing left out. Use it where the doc says
+/// the block is the file, as build-integration.md does for the canonical
+/// `build.zig`; an excerpt would let the file grow steps the doc never shows.
+/// Line endings are compared after CRLF normalization, so a Windows checkout
+/// with `core.autocrlf` still matches.
+const verbatim_file_marker = "<!-- verbatim-file: ";
 /// package-preflight builds and runs this consumer from the filtered archive.
 const codegen_consumer_build = "tests/package_consumer/codegen/build.zig";
 
@@ -488,14 +495,18 @@ fn verifyVerbatimBlocksIn(ctx: *Context, doc_path: []const u8) !void {
     var i: usize = 0;
     while (i < lines.len) : (i += 1) {
         const marker_line = std.mem.trim(u8, lines[i], " \t");
-        if (!std.mem.startsWith(u8, marker_line, verbatim_marker)) continue;
+        const whole_file = std.mem.startsWith(u8, marker_line, verbatim_file_marker);
+        if (!whole_file and !std.mem.startsWith(u8, marker_line, verbatim_marker)) continue;
+        const marker = if (whole_file) verbatim_file_marker else verbatim_marker;
         ctx.checks += 1;
         const marker_no = i + 1;
-        if (!std.mem.endsWith(u8, marker_line, verbatim_marker_end)) {
+        if (!std.mem.endsWith(u8, marker_line, verbatim_marker_end) or
+            marker_line.len < marker.len + verbatim_marker_end.len)
+        {
             ctx.fail("{s}:{d}: unterminated verbatim marker", .{ doc_path, marker_no });
             continue;
         }
-        const source_path = marker_line[verbatim_marker.len .. marker_line.len - verbatim_marker_end.len];
+        const source_path = marker_line[marker.len .. marker_line.len - verbatim_marker_end.len];
         if (i + 1 >= lines.len or !std.mem.startsWith(u8, lines[i + 1], "```")) {
             ctx.fail("{s}:{d}: verbatim marker must sit directly above a fenced block", .{ doc_path, marker_no });
             continue;
@@ -516,10 +527,24 @@ fn verifyVerbatimBlocksIn(ctx: *Context, doc_path: []const u8) !void {
         defer ctx.allocator.free(source);
         const source_lines = try splitLines(ctx.allocator, source);
         defer ctx.allocator.free(source_lines);
-        if (!blockAppearsIn(lines[block_start..block_end], source_lines)) {
+        if (whole_file) {
+            if (!blockEqualsFile(lines[block_start..block_end], source_lines)) {
+                ctx.fail("{s}:{d}: fenced block is not the whole of {s}; copy the entire file", .{ doc_path, marker_no, source_path });
+            }
+        } else if (!blockAppearsIn(lines[block_start..block_end], source_lines)) {
             ctx.fail("{s}:{d}: fenced block is not a verbatim excerpt of {s}; copy it from that file", .{ doc_path, marker_no, source_path });
         }
     }
+}
+
+/// True when `block` is every line of `file`, in order and unindented. Both
+/// come from `splitLines`, so CR before LF is already gone on both sides.
+fn blockEqualsFile(block: []const []const u8, file: []const []const u8) bool {
+    if (block.len != file.len) return false;
+    for (block, file) |want, have| {
+        if (!std.mem.eql(u8, want, have)) return false;
+    }
+    return true;
 }
 
 fn verifyVerbatimBlocks(ctx: *Context) !void {
@@ -552,6 +577,27 @@ test "blockAppearsIn matches whole files and dedented excerpts only" {
         "run.setStdIn(.{ .lazy_path = request });",
     }, &file));
     try std.testing.expect(!blockAppearsIn(&.{ "", "" }, &file));
+}
+
+test "blockEqualsFile accepts only the whole file, CRLF or LF" {
+    const allocator = std.testing.allocator;
+    const lf = "pub fn build(b: *std.Build) void {\n    _ = b;\n\n}\n";
+    const crlf = "pub fn build(b: *std.Build) void {\r\n    _ = b;\r\n\r\n}\r\n";
+    const file = try splitLines(allocator, lf);
+    defer allocator.free(file);
+    const file_crlf = try splitLines(allocator, crlf);
+    defer allocator.free(file_crlf);
+
+    const block = [_][]const u8{ "pub fn build(b: *std.Build) void {", "    _ = b;", "", "}" };
+    try std.testing.expect(blockEqualsFile(&block, file));
+    try std.testing.expect(blockEqualsFile(&block, file_crlf));
+    // An excerpt passes the excerpt check but not this one.
+    try std.testing.expect(blockAppearsIn(block[0..2], file));
+    try std.testing.expect(!blockEqualsFile(block[0..2], file));
+    // An edited line, a dedented file, or an extra trailing line all fail.
+    try std.testing.expect(!blockEqualsFile(&.{ "pub fn build(b: *std.Build) void {", "    _ = a;", "", "}" }, file));
+    try std.testing.expect(!blockEqualsFile(&.{ "pub fn build(b: *std.Build) void {", "_ = b;", "", "}" }, file));
+    try std.testing.expect(!blockEqualsFile(&.{ "pub fn build(b: *std.Build) void {", "    _ = b;", "", "}", "" }, file));
 }
 
 test "unreleasedMarkerProblem flags caveats the manifest has moved past" {
