@@ -126,11 +126,13 @@ const results = response.unwrap() catch |err| { // CallError: RemoteException, D
 };
 ```
 
-Catch the `CallError` in the callback rather than returning it with `try`. An
-error the callback returns goes to the peer's `on_error`, and `ClientSession`
-and `ServerSession` close the connection on `on_error`. With `try`, one
-timed-out call (`error.CallTimedOut`) or one remote exception ends the whole
-session.
+Catching the `CallError` keeps its handling in the callback, which is good
+practice. Returning it with `try` is also allowed; where it goes depends on how
+the Return arrived. For a Return from the remote (for example
+`error.RemoteException`), the error goes to the peer's `on_error`, and
+`ClientSession` and `ServerSession` close the connection on `on_error`. For a
+call that timed out (`error.CallTimedOut`), the error is reported as a
+`.cancel_failure` observer event (`rpc.events`), and the session keeps running.
 
 ### `Client.release()`
 

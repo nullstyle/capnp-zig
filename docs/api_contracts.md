@@ -84,17 +84,23 @@ Internal helper behavior may change, but exported type semantics and error class
 
 ## Deadline-Cancel Failure Contract
 
-- When the deadline sweep in `checkDeadlines()` cancels a question, a non-OOM
-  error from that question's callback goes to `on_error`. A failure of the
-  cancellation itself (OOM) also goes to `on_error`. The shutdown drain bound
-  does the same. A wire Return's failing callback already took this route.
-  An explicit `cancelQuestion()` and teardown (`deinit`, transport close) only
+- When the deadline sweep in `checkDeadlines()` cancels a question (its own
+  deadline, or the shutdown drain bound), a non-OOM error from that question's
+  callback is reported as an Experimental `.cancel_failure` observer event
+  (`rpc.events.CancelFailureEvent`: the deadline kind, the question id and the
+  error) and a debug log line. A failure of the cancellation itself (OOM) is
+  reported the same way. Neither goes to `on_error`.
+- So the Stable `ClientSession` and `ServerSession`, which close their
+  transport on `on_error`, keep running. A callback that returns `unwrap()`'s
+  `error.CallTimedOut` (the `try response.unwrap()` idiom) does not end the
+  session, and later calls work. Catching the error in the callback is still
+  a good way to handle the timeout there, but it is not needed to keep the
+  session open.
+- An explicit `cancelQuestion()` and teardown (`deinit`, transport close) only
   log these failures.
-- This applies to the Stable `ClientSession` and `ServerSession`, which close
-  their transport on `on_error`. A callback that returns `unwrap()`'s
-  `error.CallTimedOut` (the `try response.unwrap()` idiom) therefore ends the
-  session, as a returned `error.RemoteException` already did. A callback that
-  catches the error keeps the session open.
+- A wire Return is different: an error its callback returns (for example
+  `unwrap()`'s `error.RemoteException`) goes to `on_error`, so the Stable
+  sessions close.
 
 ## Error Taxonomy
 Errors are grouped by class for caller policy decisions:
