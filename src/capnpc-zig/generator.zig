@@ -8,6 +8,7 @@ const interface_gen = @import("interface_gen.zig");
 const validation_ns = @import("name_validation.zig");
 const types = @import("types.zig");
 const reflection_metadata = @import("reflection_metadata.zig");
+const zig_layout = @import("layout.zig");
 const codegen_abi = @import("../codegen_abi.zig");
 pub const TypeGenerator = types.TypeGenerator;
 
@@ -328,6 +329,9 @@ pub const Generator = struct {
         try writer.writeByte('\n');
 
         try writer.writeAll(body.items);
+        // The last declaration's separating blank line would leave the file
+        // ending in two newlines; zig fmt ends a file with one.
+        zig_layout.endMembers(writer);
 
         return output.toOwnedSlice(self.allocator);
     }
@@ -1078,7 +1082,7 @@ pub const Generator = struct {
         defer self.allocator.free(zig_name);
         const method_field = try self.lowerFirst(zig_name);
         defer self.allocator.free(method_field);
-        return types.escapeZigKeyword(self.allocator, method_field);
+        return types.escapeZigFieldName(self.allocator, method_field);
     }
 
     pub fn defaultPointerBytes(self: *Generator, value: ?schema.Value) ?[]const u8 {
@@ -1253,7 +1257,7 @@ pub const Generator = struct {
         for (enum_info.enumerants, 0..) |enumerant, ordinal| {
             const zig_name = try self.toZigIdentifier(enumerant.name);
             defer self.allocator.free(zig_name);
-            const escaped_name = try types.escapeZigKeyword(self.allocator, zig_name);
+            const escaped_name = try types.escapeZigFieldName(self.allocator, zig_name);
             defer self.allocator.free(escaped_name);
             try writer.print("    {s} = {},\n", .{ escaped_name, ordinal });
         }
@@ -1976,7 +1980,7 @@ pub const Generator = struct {
             } else null,
             .@"enum" => if (value == .@"enum") blk: {
                 const enum_val = value.@"enum";
-                break :blk try std.fmt.allocPrint(self.allocator, "@enumFromInt(@as(u16, {d}))", .{enum_val});
+                break :blk try std.fmt.allocPrint(self.allocator, "@fromBackingInt(@as(u16, {d}))", .{enum_val});
             } else null,
             else => null,
         };
@@ -2063,13 +2067,20 @@ pub const Generator = struct {
         }
     }
 
+    /// One line with no trailing comma, which zig fmt keeps as written even
+    /// nested in another literal; it pads the braces around two or more
+    /// elements only.
     fn writeAnnotationList(self: *Generator, writer: anytype, annotations: []const schema.AnnotationUse) !void {
         try writer.writeAll("&[_]schema.AnnotationUse{");
-        for (annotations) |annotation| {
+        const padded = annotations.len > 1;
+        if (padded) try writer.writeByte(' ');
+        for (annotations, 0..) |annotation, index| {
+            if (index != 0) try writer.writeAll(", ");
             try writer.print(".{{ .id = 0x{X}, .value = ", .{annotation.id});
             try self.writeValueLiteral(writer, annotation.value);
-            try writer.writeAll(" },");
+            try writer.writeAll(" }");
         }
+        if (padded) try writer.writeByte(' ');
         try writer.writeAll("}");
     }
 
@@ -2134,7 +2145,7 @@ pub const Generator = struct {
         try writer.writeAll("    const _bytes = ");
         try self.writeByteArrayInitializer(writer, bytes);
         try writer.writeAll(";\n");
-        try writer.writeAll("    const _segments = [_][]const u8{ _bytes[0..] };\n");
+        try writer.writeAll("    const _segments = [_][]const u8{_bytes[0..]};\n");
         try writer.writeAll(
             "    const _message = message.Message{ .allocator = std.heap.page_allocator, .segments = _segments[0..], .backing_data = null, .segments_owned = false };\n\n",
         );
@@ -2242,22 +2253,14 @@ pub const Generator = struct {
         return try self.qualifiedTypeName(id);
     }
 
-    fn writeByteArray(self: *Generator, writer: anytype, prefix: []const u8, data: []const u8, suffix: []const u8) !void {
-        _ = self;
-        try writer.writeAll(prefix);
-        for (data, 0..) |byte, i| {
-            if (i != 0) try writer.writeAll(", ");
-            try writer.print("0x{X:0>2}", .{byte});
-        }
-        try writer.writeAll(suffix);
-    }
-
     fn writeByteArrayInitializer(self: *Generator, writer: anytype, data: []const u8) !void {
-        return self.writeByteArray(writer, "[_]u8{", data, "}");
+        _ = self;
+        return zig_layout.writeByteArray(writer, "[_]u8{", data);
     }
 
     fn writeByteArrayLiteral(self: *Generator, writer: anytype, data: []const u8) !void {
-        return self.writeByteArray(writer, "&[_]u8{", data, "}");
+        _ = self;
+        return zig_layout.writeByteArray(writer, "&[_]u8{", data);
     }
 };
 
@@ -3712,7 +3715,7 @@ test "Generator.writeByteArrayLiteral formats bytes" {
     const writer = ArrayListWriter{ .list = &buf, .allocator = alloc };
 
     try gen.writeByteArrayLiteral(writer, &[_]u8{ 0x00, 0xFF, 0x42 });
-    try std.testing.expectEqualStrings("&[_]u8{0x00, 0xFF, 0x42}", buf.items);
+    try std.testing.expectEqualStrings("&[_]u8{ 0x00, 0xFF, 0x42 }", buf.items);
 }
 
 test "Generator.writeByteArrayLiteral handles empty data" {

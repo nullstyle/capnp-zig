@@ -2,6 +2,7 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const request_reader = capnpc.request;
 const capnp_cli = @import("support/capnp_cli.zig");
+const zig_fmt = @import("support/zig_fmt.zig");
 
 fn expectContains(haystack: []const u8, needle: []const u8) !void {
     if (std.mem.indexOf(u8, haystack, needle) == null) {
@@ -12,42 +13,6 @@ fn expectContains(haystack: []const u8, needle: []const u8) !void {
 fn expectNotContains(haystack: []const u8, needle: []const u8) !void {
     if (std.mem.indexOf(u8, haystack, needle) != null) {
         return error.UnexpectedOutput;
-    }
-}
-
-fn writeFile(dir: std.Io.Dir, name: []const u8, data: []const u8) !void {
-    const io = std.testing.io;
-    var file = try dir.createFile(io, name, .{});
-    defer file.close(io);
-    try file.writeStreamingAll(io, data);
-}
-
-fn expectGeneratedOutputParsesAsZig(allocator: std.mem.Allocator, output: []const u8) !void {
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try writeFile(tmp.dir, "generated.zig", output);
-    const generated_path = try tmp.dir.realPathFileAlloc(io, "generated.zig", allocator);
-    defer allocator.free(generated_path);
-
-    const zig_result = std.process.run(allocator, io, .{
-        .argv = &[_][]const u8{
-            "zig",
-            "fmt",
-            generated_path,
-        },
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
-    };
-    defer allocator.free(zig_result.stdout);
-    defer allocator.free(zig_result.stderr);
-
-    if (!(zig_result.term == .exited and zig_result.term.exited == 0)) {
-        std.debug.print("zig fmt stdout:\n{s}\n", .{zig_result.stdout});
-        std.debug.print("zig fmt stderr:\n{s}\n", .{zig_result.stderr});
-        return error.GeneratedOutputFailedZigParse;
     }
 }
 
@@ -94,5 +59,5 @@ test "Codegen annotation uses" {
     try expectContains(output, ".bool = true");
     try expectNotContains(output, "$");
 
-    try expectGeneratedOutputParsesAsZig(allocator, output);
+    try zig_fmt.expectFmtClean(allocator, file.filename, output);
 }

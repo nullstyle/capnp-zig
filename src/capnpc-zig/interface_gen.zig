@@ -22,6 +22,7 @@ const std = @import("std");
 const schema = @import("../serialization/schema.zig");
 const types = @import("types.zig");
 const reflection_metadata = @import("reflection_metadata.zig");
+const zig_layout = @import("layout.zig");
 
 pub fn Interface(comptime G: type) type {
     return struct {
@@ -72,11 +73,11 @@ pub fn Interface(comptime G: type) type {
             for (interface_info.methods, 0..) |method, ordinal| {
                 const zig_name = try self.toZigIdentifier(method.name);
                 defer self.allocator.free(zig_name);
-                const escaped_name = try types.escapeZigKeyword(self.allocator, zig_name);
+                const escaped_name = try types.escapeZigFieldName(self.allocator, zig_name);
                 defer self.allocator.free(escaped_name);
                 try writer.print("        {s} = {},\n", .{ escaped_name, ordinal });
             }
-            try writer.writeAll("    };\n\n");
+            try zig_layout.closeBlock(writer, "    ", "};\n\n");
 
             for (interface_info.methods, 0..) |method, ordinal| {
                 try Self.generateMethodStruct(self, node, method, ordinal, qual, writer);
@@ -122,7 +123,7 @@ pub fn Interface(comptime G: type) type {
             try writer.print("            return {s}bootstrap(peer, user_ctx, callback);\n", .{qual});
             try writer.writeAll("        }\n\n");
 
-            try writer.writeAll("    };\n\n");
+            try zig_layout.closeBlock(writer, "    ", "};\n\n");
 
             // --- StreamClient (only when interface or ancestors have streaming methods) ---
             const has_streaming_methods = self.hasStreamingMethods(node, ancestors);
@@ -158,7 +159,7 @@ pub fn Interface(comptime G: type) type {
                 }
             }
 
-            try writer.writeAll("    };\n\n");
+            try zig_layout.closeBlock(writer, "    ", "};\n\n");
 
             // --- Bootstrap ---
             try writer.writeAll("    pub const BootstrapResponse = union(enum) {\n");
@@ -195,7 +196,7 @@ pub fn Interface(comptime G: type) type {
             try writer.writeAll("                .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,\n");
             try writer.writeAll("            };\n");
             try writer.writeAll("        }\n");
-            try writer.writeAll("    };\n");
+            try zig_layout.closeBlock(writer, "    ", "};\n");
             try writer.print("    pub const BootstrapCallback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: {s}BootstrapResponse) anyerror!void;\n\n", .{qual});
 
             try writer.writeAll("    const BootstrapContext = struct {\n");
@@ -205,7 +206,7 @@ pub fn Interface(comptime G: type) type {
             try writer.print("            const dead: *{s}BootstrapContext = @ptrCast(@alignCast(ctx_ptr));\n", .{qual});
             try writer.writeAll("            ctx_allocator.destroy(dead);\n");
             try writer.writeAll("        }\n");
-            try writer.writeAll("    };\n\n");
+            try zig_layout.closeBlock(writer, "    ", "};\n\n");
 
             try writer.writeAll("    fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
             try writer.print("        const ctx: *{s}BootstrapContext = @ptrCast(@alignCast(ctx_ptr));\n", .{qual});
@@ -251,7 +252,7 @@ pub fn Interface(comptime G: type) type {
             try writer.writeAll("    pub const Server = struct {\n");
             try writer.writeAll("        ctx: *anyopaque,\n");
             try writer.print("        vtable: {s}VTable,\n", .{qual});
-            try writer.writeAll("    };\n\n");
+            try zig_layout.closeBlock(writer, "    ", "};\n\n");
 
             try writer.writeAll("    pub const VTable = struct {\n");
             // Own method fields
@@ -264,7 +265,7 @@ pub fn Interface(comptime G: type) type {
                     try Self.generateVTableField(self, method, ancestor.name, qual, writer);
                 }
             }
-            try writer.writeAll("    };\n\n");
+            try zig_layout.closeBlock(writer, "    ", "};\n\n");
 
             try writer.print("    pub fn exportServer(peer: *rpc.peer.Peer, server: *{s}Server) !u32 {{\n", .{qual});
             try writer.print("        return peer.addExport(.{{ .ctx = server, .on_call = {s}onCall }});\n", .{qual});
@@ -320,11 +321,11 @@ pub fn Interface(comptime G: type) type {
                         defer self.allocator.free(member_name);
                         const method_field = try self.lowerFirst(member_name);
                         defer self.allocator.free(method_field);
-                        const escaped_field = try types.escapeZigKeyword(self.allocator, method_field);
+                        const escaped_field = try types.escapeZigFieldName(self.allocator, method_field);
                         defer self.allocator.free(escaped_field);
                         const deferred_field = try std.fmt.allocPrint(self.allocator, "{s}_deferred", .{method_field});
                         defer self.allocator.free(deferred_field);
-                        const escaped_deferred_field = try types.escapeZigKeyword(self.allocator, deferred_field);
+                        const escaped_deferred_field = try types.escapeZigFieldName(self.allocator, deferred_field);
                         defer self.allocator.free(escaped_deferred_field);
                         if (method.isStreaming()) {
                             try writer.print("                {s}.{s}.ordinal => try {s}.{s}.handleCallDeferred(server.vtable.{s}, server.vtable.{s}, server, server.ctx, peer, call, caps),\n", .{
@@ -370,7 +371,7 @@ pub fn Interface(comptime G: type) type {
                 try G.writeReindented(writer, c, 4);
             }
 
-            try writer.writeAll("};\n\n");
+            try zig_layout.closeBlock(writer, "", "};\n\n");
         }
 
         /// Generate a single method struct inside an interface.
@@ -383,7 +384,7 @@ pub fn Interface(comptime G: type) type {
             defer self.allocator.free(escaped_zig_name);
             const method_field = try self.lowerFirst(zig_name);
             defer self.allocator.free(method_field);
-            const escaped_method_field = try types.escapeZigKeyword(self.allocator, method_field);
+            const escaped_method_field = try types.escapeZigFieldName(self.allocator, method_field);
             defer self.allocator.free(escaped_method_field);
             const param_name = try self.resolveMethodStructName(iface_node, method.param_struct_type);
             defer self.allocator.free(param_name);
@@ -408,7 +409,7 @@ pub fn Interface(comptime G: type) type {
                 try writer.writeAll("            peer: *rpc.peer.Peer,\n            server_ctx: *anyopaque,\n            question_id: u32,\n            token: u64,\n");
                 try writer.writeAll("            pub fn send(self: StreamReturnSender) !void {\n                try self.peer.completeStreamingCall(self.server_ctx, self.question_id, self.token, null);\n            }\n");
                 try writer.writeAll("            pub fn sendException(self: StreamReturnSender, reason: []const u8) !void {\n                try self.peer.completeStreamingCall(self.server_ctx, self.question_id, self.token, reason);\n            }\n");
-                try writer.writeAll("        };\n");
+                try zig_layout.closeBlock(writer, "        ", "};\n");
             } else {
                 try writer.writeAll("        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;\n");
                 try writer.writeAll("        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;\n");
@@ -448,7 +449,7 @@ pub fn Interface(comptime G: type) type {
             try writer.writeAll("                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,\n");
             try writer.writeAll("                };\n");
             try writer.writeAll("            }\n");
-            try writer.writeAll("        };\n");
+            try zig_layout.closeBlock(writer, "        ", "};\n");
             try writer.writeAll("        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;\n\n");
 
             try writer.writeAll("        // Public so generated descendants in other modules can reuse the call machinery.\n");
@@ -467,7 +468,7 @@ pub fn Interface(comptime G: type) type {
             try writer.writeAll("                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));\n");
             try writer.writeAll("                ctx_allocator.destroy(dead);\n");
             try writer.writeAll("            }\n");
-            try writer.writeAll("        };\n\n");
+            try zig_layout.closeBlock(writer, "        ", "};\n\n");
 
             if (!is_streaming) {
                 try writer.writeAll("        const DirectReturnContext = struct {\n");
@@ -476,7 +477,7 @@ pub fn Interface(comptime G: type) type {
                 try writer.writeAll("            peer: *rpc.peer.Peer,\n");
                 try writer.writeAll("            params: Params.Reader,\n");
                 try writer.writeAll("            caps: *const rpc.caps.table.InboundCapTable,\n");
-                try writer.writeAll("        };\n\n");
+                try zig_layout.closeBlock(writer, "        ", "};\n\n");
 
                 try writer.writeAll("        pub const ReturnSender = struct {\n");
                 try writer.writeAll("            peer: *rpc.peer.Peer,\n");
@@ -487,7 +488,7 @@ pub fn Interface(comptime G: type) type {
                 try writer.writeAll("            pub fn sendException(self: ReturnSender, reason: []const u8) !void {\n");
                 try writer.writeAll("                try self.peer.sendReturnException(self.question_id, reason);\n");
                 try writer.writeAll("            }\n");
-                try writer.writeAll("        };\n\n");
+                try zig_layout.closeBlock(writer, "        ", "};\n\n");
             }
 
             try writer.writeAll("        pub fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {\n");
@@ -551,7 +552,7 @@ pub fn Interface(comptime G: type) type {
                 try writer.print("        fn handleCall(server: *{s}Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {{\n", .{qual});
                 const deferred_field = try std.fmt.allocPrint(self.allocator, "{s}_deferred", .{method_field});
                 defer self.allocator.free(deferred_field);
-                const escaped_deferred_field = try types.escapeZigKeyword(self.allocator, deferred_field);
+                const escaped_deferred_field = try types.escapeZigFieldName(self.allocator, deferred_field);
                 defer self.allocator.free(escaped_deferred_field);
                 try writer.print("            try handleCallDeferred(server.vtable.{s}, server.vtable.{s}, server, server.ctx, peer, call, caps);\n", .{ escaped_method_field, escaped_deferred_field });
                 try writer.writeAll("        }\n\n");
@@ -569,7 +570,7 @@ pub fn Interface(comptime G: type) type {
                 try writer.writeAll("                ctx_allocator.destroy(dead);\n");
                 try writer.writeAll("                reservation.settle(error.StreamingCallFailed);\n");
                 try writer.writeAll("            }\n");
-                try writer.writeAll("        };\n\n");
+                try zig_layout.closeBlock(writer, "        ", "};\n\n");
 
                 try writer.writeAll("        pub fn streamCallBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {\n");
                 try writer.writeAll("            const ctx: *StreamCallContext = @ptrCast(@alignCast(ctx_ptr));\n");
@@ -616,7 +617,7 @@ pub fn Interface(comptime G: type) type {
                 try writer.print("        fn handleCall(server: *{s}Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {{\n", .{qual});
                 const deferred_field = try std.fmt.allocPrint(self.allocator, "{s}_deferred", .{method_field});
                 defer self.allocator.free(deferred_field);
-                const escaped_deferred_field = try types.escapeZigKeyword(self.allocator, deferred_field);
+                const escaped_deferred_field = try types.escapeZigFieldName(self.allocator, deferred_field);
                 defer self.allocator.free(escaped_deferred_field);
                 try writer.print("            try handleCallDirect(server.vtable.{s}, server.vtable.{s}, server.ctx, peer, call, caps);\n", .{ escaped_method_field, escaped_deferred_field });
                 try writer.writeAll("        }\n\n");
@@ -638,7 +639,7 @@ pub fn Interface(comptime G: type) type {
                 try writer.writeAll("        }\n");
             }
 
-            try writer.writeAll("    };\n\n");
+            try zig_layout.closeBlock(writer, "    ", "};\n\n");
         }
 
         /// Generate a VTable field for a method. If `ancestor_name` is set, uses the
@@ -651,11 +652,11 @@ pub fn Interface(comptime G: type) type {
             defer self.allocator.free(member_name);
             const method_field = try self.lowerFirst(member_name);
             defer self.allocator.free(method_field);
-            const escaped_field = try types.escapeZigKeyword(self.allocator, method_field);
+            const escaped_field = try types.escapeZigFieldName(self.allocator, method_field);
             defer self.allocator.free(escaped_field);
             const deferred_field = try std.fmt.allocPrint(self.allocator, "{s}_deferred", .{method_field});
             defer self.allocator.free(deferred_field);
-            const escaped_deferred_field = try types.escapeZigKeyword(self.allocator, deferred_field);
+            const escaped_deferred_field = try types.escapeZigFieldName(self.allocator, deferred_field);
             defer self.allocator.free(escaped_deferred_field);
             if (ancestor_name) |aname| {
                 if (method.isStreaming()) {
@@ -796,7 +797,7 @@ pub fn Interface(comptime G: type) type {
             try writer.writeAll("            self.stream.whenReady(encoded_bytes, ctx, callback);\n");
             try writer.writeAll("        }\n");
 
-            try writer.writeAll("    };\n\n");
+            try zig_layout.closeBlock(writer, "    ", "};\n\n");
         }
 
         /// Generate a single StreamClient call method. Streaming methods become
@@ -914,9 +915,9 @@ pub fn Interface(comptime G: type) type {
                 try writer.print("        pub const _Pipeline_{x} = struct {{\n", .{node.id});
                 try writer.writeAll("            peer: *rpc.peer.Peer,\n            question_id: u32,\n            pointer_indexes: [64]u16 = undefined,\n            pointer_count: u8 = 0,\n\n");
                 try Self.generatePipelineGetters(self, node, false, "            ", writer);
-                try writer.writeAll("        };\n\n");
+                try zig_layout.closeBlock(writer, "        ", "};\n\n");
             }
-            try writer.writeAll("    };\n\n");
+            try zig_layout.closeBlock(writer, "    ", "};\n\n");
         }
 
         fn generatePipelineGetters(self: *G, node: *const schema.Node, root: bool, indent: []const u8, writer: anytype) !void {

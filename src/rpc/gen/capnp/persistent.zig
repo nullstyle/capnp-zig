@@ -803,13 +803,7 @@ pub const Persistent = struct {
             const _Applied = @This();
             pub const Raw = _capnp_file.Persistent;
             pub const interface_id = Raw.interface_id;
-            pub const Save = capnpc.generic.Method(Raw.Save, _capnp_file.Persistent.SaveParams.Apply(.{
-                .SturdyRef = @field(_bindings, "SturdyRef"),
-                .Owner = @field(_bindings, "Owner"),
-            }), _capnp_file.Persistent.SaveResults.Apply(.{
-                .SturdyRef = @field(_bindings, "SturdyRef"),
-                .Owner = @field(_bindings, "Owner"),
-            }));
+            pub const Save = capnpc.generic.Method(Raw.Save, _capnp_file.Persistent.SaveParams.Apply(.{ .SturdyRef = @field(_bindings, "SturdyRef"), .Owner = @field(_bindings, "Owner") }), _capnp_file.Persistent.SaveResults.Apply(.{ .SturdyRef = @field(_bindings, "SturdyRef"), .Owner = @field(_bindings, "Owner") }));
             pub const Client = struct {
                 raw: Raw.Client,
                 pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() {

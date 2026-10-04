@@ -2830,7 +2830,6 @@ pub const VatId = struct {
             if (self._reader.isPointerNull(0)) return "";
             return try self._reader.readTextStrict(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -2873,7 +2872,6 @@ pub const VatId = struct {
         pub fn setHost(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeText(0, value);
         }
-
     };
 };
 
@@ -2913,7 +2911,6 @@ pub const ThirdPartyToContact = struct {
             if (self._reader.isPointerNull(1)) return "";
             return try self._reader.readTextStrict(1);
         }
-
     };
 
     pub const Builder = struct {
@@ -2990,7 +2987,6 @@ pub const ThirdPartyToContact = struct {
         pub fn setSentBy(self: *Builder, value: []const u8) message.BuildError!void {
             try self._builder.writeText(1, value);
         }
-
     };
 };
 
@@ -3012,7 +3008,6 @@ pub const ThirdPartyToAwait = struct {
         pub fn getToken(self: Reader) !u64 {
             return self._reader.readU64(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -3047,7 +3042,6 @@ pub const ThirdPartyToAwait = struct {
         pub fn setToken(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
-
     };
 };
 
@@ -3069,7 +3063,6 @@ pub const ThirdPartyCompletion = struct {
         pub fn getToken(self: Reader) !u64 {
             return self._reader.readU64(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -3104,7 +3097,6 @@ pub const ThirdPartyCompletion = struct {
         pub fn setToken(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
-
     };
 };
 
@@ -3134,7 +3126,6 @@ pub const JoinKeyPart = struct {
         pub fn getPartNum(self: Reader) !u16 {
             return self._reader.readU16(6);
         }
-
     };
 
     pub const Builder = struct {
@@ -3195,7 +3186,6 @@ pub const JoinKeyPart = struct {
         pub fn setPartNum(self: *Builder, value: u16) !void {
             self._builder.writeU16(6, @bitCast(value));
         }
-
     };
 };
 
@@ -3220,7 +3210,6 @@ pub const JoinResult = struct {
             pub fn getCap(self: @This()) !message.Capability {
                 return try self._reader.readCapability(0);
             }
-
         };
 
         pub fn pointerKinds(self: @This()) PointerKinds {
@@ -3242,7 +3231,6 @@ pub const JoinResult = struct {
         pub fn getCap(self: Reader) !message.AnyPointerReader {
             return try self._reader.readAnyPointer(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -3270,7 +3258,6 @@ pub const JoinResult = struct {
                 const slot_builder = try self._builder.getAnyPointer(0);
                 return slot_builder.setCapability(value);
             }
-
         };
 
         pub fn pointerKinds(self: @This()) PointerKinds {
@@ -3351,7 +3338,6 @@ pub const JoinResult = struct {
         pub fn setCapCapability(self: *Builder, cap: message.Capability) message.BuildError!void {
             try (try self._builder.getAnyPointer(0)).setCapability(cap);
         }
-
     };
 };
 
@@ -3556,7 +3542,6 @@ pub const Number = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const PipelinedClient = struct {
@@ -3587,7 +3572,6 @@ pub const Number = struct {
             self.peer.setQuestionDeinitCtx(question_id, GetNumber.CallContext.deinitCtx);
             return question_id;
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -3717,7 +3701,6 @@ pub const Number = struct {
             pub fn wrap(reader: message.StructReader) Reader {
                 return .{ ._reader = reader };
             }
-
         };
 
         pub const Builder = struct {
@@ -3739,7 +3722,6 @@ pub const Number = struct {
                 try storage.message_view.validate(.{});
                 return .{ ._reader = try storage.reader(self._builder) };
             }
-
         };
     };
 
@@ -3761,7 +3743,6 @@ pub const Number = struct {
             pub fn getN(self: Reader) !u32 {
                 return self._reader.readU32(0);
             }
-
         };
 
         pub const Builder = struct {
@@ -3796,7 +3777,6 @@ pub const Number = struct {
             pub fn setN(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
-
         };
     };
 
@@ -3805,41 +3785,50 @@ pub const Number = struct {
         return @This()._Apply();
     }
     fn _Apply() type {
-        const _bindings = .{ };
+        const _bindings = .{};
         _ = &_bindings;
         return struct {
-        const _Applied = @This();
-        pub const Raw = _capnp_file.Number;
-        pub const interface_id = Raw.interface_id;
-        pub const GetNumber = capnpc.generic.Method(Raw.GetNumber, _capnp_file.Number.GetNumberParams, _capnp_file.Number.GetNumberResults);
-        pub const Client = struct {
-            raw: Raw.Client,
-            pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() { return .{ .raw = Raw.Client.init(peer, cap_id) }; }
-            pub fn release(self: @This()) void { self.raw.release(); }
-            pub fn callGetNumber(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetNumber.BuildFn, comptime callback: _Applied.GetNumber.Callback) !u32 {
-                const Adapter = _Applied.GetNumber.ClientAdapter(build, callback);
-                return self.raw.callGetNumber(ctx, if (build != null) Adapter.build else null, Adapter.callback);
-            }
-        };
-        pub const PipelinedClient = struct {
-            raw: Raw.PipelinedClient,
-            pub fn callGetNumber(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetNumber.BuildFn, comptime callback: _Applied.GetNumber.Callback) !u32 {
-                const Adapter = _Applied.GetNumber.ClientAdapter(build, callback);
-                return self.raw.callGetNumber(ctx, if (build != null) Adapter.build else null, Adapter.callback);
-            }
-        };
-        pub fn ServerAdapter(comptime handlers: anytype) type {
-            _ = &handlers;
-            return struct {
-                raw: Raw.Server,
-                pub fn init(ctx: *anyopaque) @This() { return .{ .raw = .{ .ctx = ctx, .vtable = .{
-                    .getNumber = if (@hasField(@TypeOf(handlers), "getNumber")) _Applied.GetNumber.ServerAdapter(handlers.getNumber).handle else unsupportedGetNumber,
-                } } }; }
-                pub fn exportServer(self: *@This(), peer: *rpc.peer.Peer) !u32 { return Raw.exportServer(peer, &self.raw); }
-                fn unsupportedGetNumber(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.GetNumber.Params.Reader, _: *Raw.GetNumber.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void { return error.Unimplemented; }
+            const _Applied = @This();
+            pub const Raw = _capnp_file.Number;
+            pub const interface_id = Raw.interface_id;
+            pub const GetNumber = capnpc.generic.Method(Raw.GetNumber, _capnp_file.Number.GetNumberParams, _capnp_file.Number.GetNumberResults);
+            pub const Client = struct {
+                raw: Raw.Client,
+                pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() {
+                    return .{ .raw = Raw.Client.init(peer, cap_id) };
+                }
+                pub fn release(self: @This()) void {
+                    self.raw.release();
+                }
+                pub fn callGetNumber(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetNumber.BuildFn, comptime callback: _Applied.GetNumber.Callback) !u32 {
+                    const Adapter = _Applied.GetNumber.ClientAdapter(build, callback);
+                    return self.raw.callGetNumber(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                }
             };
-        }
+            pub const PipelinedClient = struct {
+                raw: Raw.PipelinedClient,
+                pub fn callGetNumber(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetNumber.BuildFn, comptime callback: _Applied.GetNumber.Callback) !u32 {
+                    const Adapter = _Applied.GetNumber.ClientAdapter(build, callback);
+                    return self.raw.callGetNumber(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                }
+            };
+            pub fn ServerAdapter(comptime handlers: anytype) type {
+                _ = &handlers;
+                return struct {
+                    raw: Raw.Server,
+                    pub fn init(ctx: *anyopaque) @This() {
+                        return .{ .raw = .{ .ctx = ctx, .vtable = .{
+                            .getNumber = if (@hasField(@TypeOf(handlers), "getNumber")) _Applied.GetNumber.ServerAdapter(handlers.getNumber).handle else unsupportedGetNumber,
+                        } } };
+                    }
+                    pub fn exportServer(self: *@This(), peer: *rpc.peer.Peer) !u32 {
+                        return Raw.exportServer(peer, &self.raw);
+                    }
+                    fn unsupportedGetNumber(_: *anyopaque, _: *rpc.peer.Peer, _: Raw.GetNumber.Params.Reader, _: *Raw.GetNumber.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void {
+                        return error.Unimplemented;
+                    }
+                };
+            }
         };
     }
 };
-

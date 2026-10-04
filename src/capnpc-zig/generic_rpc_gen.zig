@@ -78,7 +78,10 @@ pub fn Emitter(comptime G: type) type {
             var args = std.ArrayList(u8).empty;
             defer args.deinit(self.allocator);
             const w = @import("generator.zig").ArrayListWriter{ .list = &args, .allocator = self.allocator, .max_bytes = self.codegen_budget.max_output_bytes };
+            // The literal stays on one line without a trailing comma, which is
+            // the shape zig fmt keeps however deeply applications nest.
             try w.print("{s}.Apply(.{{", .{raw});
+            var count: usize = 0;
             var scope: ?*const schema.Node = target;
             var depth: usize = 0;
             while (scope) |s| {
@@ -87,7 +90,8 @@ pub fn Emitter(comptime G: type) type {
                 for (s.parameters, 0..) |parameter, index| {
                     if (s.id == target.id) if (methodFor(self, target)) |method| {
                         if (index < method.implicit_parameters.len) {
-                            try w.print(" .{s} = @field(_method_bindings, \"{s}\"),", .{ parameter.name, parameter.name });
+                            try w.print("{s} .{s} = @field(_method_bindings, \"{s}\")", .{ if (count == 0) "" else ",", parameter.name, parameter.name });
+                            count += 1;
                             continue;
                         }
                     };
@@ -99,11 +103,12 @@ pub fn Emitter(comptime G: type) type {
                     };
                     const codec = if (expression) |e| try expressionCodec(self, context, e) else try std.fmt.allocPrint(self.allocator, "@field(_bindings, \"{s}\")", .{parameter.name});
                     defer self.allocator.free(codec);
-                    try w.print(" .{s} = {s},", .{ parameter.name, codec });
+                    try w.print("{s} .{s} = {s}", .{ if (count == 0) "" else ",", parameter.name, codec });
+                    count += 1;
                 }
                 scope = owner(self, s);
             }
-            try w.writeAll(" })");
+            try w.writeAll(if (count == 0) "})" else " })");
             return args.toOwnedSlice(self.allocator);
         }
         fn expressionCodec(self: *G, node: *const schema.Node, expression: schema.TypeExpression) (std.mem.Allocator.Error || error{ InvalidStructNode, CodegenBudgetExceeded })![]const u8 {
@@ -159,9 +164,14 @@ pub fn Emitter(comptime G: type) type {
                 if (index != 0) try writer.writeAll(", ");
                 try writer.print("comptime _Parameter{}: type", .{index});
             }
-            try writer.writeAll(") type {\n    const _bindings = .{");
-            for (parameters.items, 0..) |parameter, index| try writer.print(" .{s} = _Parameter{},", .{ parameter.name, index });
-            try writer.writeAll(" };\n    _ = &_bindings;\n");
+            if (parameters.items.len == 0) {
+                try writer.writeAll(") type {\n    const _bindings = .{};\n");
+            } else {
+                try writer.writeAll(") type {\n    const _bindings = .{\n");
+                for (parameters.items, 0..) |parameter, index| try writer.print("        .{s} = _Parameter{},\n", .{ parameter.name, index });
+                try writer.writeAll("    };\n");
+            }
+            try writer.writeAll("    _ = &_bindings;\n");
             for (parameters.items, 0..) |_, index| try writer.print("    capnpc.generic.requirePointer(_Parameter{});\n", .{index});
             try writer.writeAll("    return struct {\n");
         }
@@ -178,16 +188,42 @@ pub fn Emitter(comptime G: type) type {
             const raw = try rootName(self, node.id);
             defer self.allocator.free(raw);
             try applyBegin(self, node, writer);
-            try writer.print("    const _Data = @This();\n    pub const Raw = {s};\n", .{raw});
+            // The returned struct's body sits two levels deep: inside `_Apply`
+            // and inside `return struct {`.
+            try writer.print("        const _Data = @This();\n        pub const Raw = {s};\n", .{raw});
             for (info.fields, 0..) |field, index| if (field.slot) |slot| {
                 if (!pointer(slot.type) or !resolvableType(self, slot.type)) continue;
                 const codec = try expressionCodec(self, node, .{ .type = slot.type, .metadata = slot.type_metadata });
                 defer self.allocator.free(codec);
-                try writer.print("    const _Field{} = {s};\n    comptime {{ capnpc.generic.requirePointer(_Field{}); }}\n", .{ index, codec, index });
+                try writer.print(
+                    \\        const _Field{} = {s};
+                    \\        comptime {{
+                    \\            capnpc.generic.requirePointer(_Field{});
+                    \\        }}
+                    \\
+                , .{ index, codec, index });
             };
             inline for (.{ false, true }) |builder| {
-                try writer.print("    pub const {s} = struct {{\n        inner: message.{s},\n        pub fn wrap(inner: message.{s}) @This() {{ return .{{ .inner = inner }}; }}\n        pub fn raw(self: @This()) Raw.{s} {{ return Raw.{s}.wrap(self.inner); }}\n", .{ if (builder) "Builder" else "Reader", if (builder) "StructBuilder" else "StructReader", if (builder) "StructBuilder" else "StructReader", if (builder) "Builder" else "Reader", if (builder) "Builder" else "Reader" });
-                if (builder) try writer.writeAll("        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }\n");
+                const view = if (builder) "Builder" else "Reader";
+                const inner = if (builder) "StructBuilder" else "StructReader";
+                try writer.print(
+                    \\        pub const {s} = struct {{
+                    \\            inner: message.{s},
+                    \\            pub fn wrap(inner: message.{s}) @This() {{
+                    \\                return .{{ .inner = inner }};
+                    \\            }}
+                    \\            pub fn raw(self: @This()) Raw.{s} {{
+                    \\                return Raw.{s}.wrap(self.inner);
+                    \\            }}
+                    \\
+                , .{ view, inner, inner, view, view });
+                if (builder) try writer.writeAll(
+                    \\            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                    \\                try storage.bind(self.inner.builder);
+                    \\                return _Data.Reader.wrap(try storage.reader(self.inner));
+                    \\            }
+                    \\
+                );
                 for (info.fields, 0..) |field, index| {
                     const slot = field.slot orelse continue;
                     // Incomplete schema graphs retain the original erased
@@ -196,35 +232,53 @@ pub fn Emitter(comptime G: type) type {
                     const name = try types.identToZigTypeName(self.allocator, field.name);
                     defer self.allocator.free(name);
                     if (pointer(slot.type)) {
-                        try writer.print("        pub fn get{s}(self: @This()) !_Field{}.{s} {{\n", .{ name, index, if (builder) "Builder" else "Reader" });
-                        if (builder) try writer.writeAll("            var raw_value = self.raw();\n            _ = &raw_value;\n") else try writer.writeAll("            const raw_value = self.raw();\n");
+                        try writer.print("            pub fn get{s}(self: @This()) !_Field{}.{s} {{\n", .{ name, index, view });
+                        if (builder) try writer.writeAll("                var raw_value = self.raw();\n                _ = &raw_value;\n") else try writer.writeAll("                const raw_value = self.raw();\n");
                         if (slot.type == .text or slot.type == .data or slot.type == .interface) {
-                            try writer.print("            return raw_value.get{s}();\n        }}\n", .{name});
+                            try writer.print("                return raw_value.get{s}();\n            }}\n", .{name});
                         } else if (slot.type == .any_pointer) {
-                            try writer.print("            return _Field{}.{s}(try raw_value.get{s}());\n        }}\n", .{ index, if (builder) "get" else "read", name });
+                            try writer.print("                return _Field{}.{s}(try raw_value.get{s}());\n            }}\n", .{ index, if (builder) "get" else "read", name });
                         } else {
-                            try writer.print("            return _Field{}.wrapRaw{s}(try raw_value.get{s}());\n        }}\n", .{ index, if (builder) "Builder" else "Reader", name });
+                            try writer.print("                return _Field{}.wrapRaw{s}(try raw_value.get{s}());\n            }}\n", .{ index, view, name });
                         }
                         if (builder) {
-                            try writer.print("        pub fn set{s}(self: @This(), value: _Field{}.Reader) !void {{\n", .{ name, index });
+                            try writer.print("            pub fn set{s}(self: @This(), value: _Field{}.Reader) !void {{\n", .{ name, index });
                             const raw_pointer = slot.type == .any_pointer and (slot.type_metadata != .any_pointer or slot.type_metadata.any_pointer == .unconstrained);
                             if (raw_pointer) {
-                                try writer.print("            var raw_value = self.raw();\n            try raw_value.set{s}(value);\n", .{name});
+                                try writer.print("                var raw_value = self.raw();\n                try raw_value.set{s}(value);\n", .{name});
                             } else {
-                                try writer.print("            try _Field{}.set(try self.inner.getAnyPointer({}), value);\n", .{ index, slot.offset });
-                                if (field.discriminant_value != 0xffff) try writer.print("            try self.inner.writeU16Strict({}, {});\n", .{ info.discriminant_offset * 2, field.discriminant_value });
+                                try writer.print("                try _Field{}.set(try self.inner.getAnyPointer({}), value);\n", .{ index, slot.offset });
+                                if (field.discriminant_value != 0xffff) try writer.print("                try self.inner.writeU16Strict({}, {});\n", .{ info.discriminant_offset * 2, field.discriminant_value });
                             }
-                            try writer.writeAll("        }\n");
-                            try writer.print("        pub const init{s} = capnpc.generic.Initializer(_Field{}, _Data.Builder, {}, {}, {}).call;\n", .{ name, index, slot.offset, info.discriminant_offset * 2, field.discriminant_value });
+                            try writer.writeAll("            }\n");
+                            try writer.print("            pub const init{s} = capnpc.generic.Initializer(_Field{}, _Data.Builder, {}, {}, {}).call;\n", .{ name, index, slot.offset, info.discriminant_offset * 2, field.discriminant_value });
                         }
                     } else {
-                        try writer.print("        pub fn get{s}(self: @This()) @typeInfo(@TypeOf(Raw.{s}.get{s})).@\"fn\".return_type.? {{ return self.raw().get{s}(); }}\n", .{ name, if (builder) "Builder" else "Reader", name, name });
-                        if (builder) try writer.print("        pub fn set{s}(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.set{s})).@\"fn\".param_types[1].?) !void {{ var raw_value = self.raw(); try raw_value.set{s}(value); }}\n", .{ name, name, name });
+                        try writer.print(
+                            \\            pub fn get{s}(self: @This()) @typeInfo(@TypeOf(Raw.{s}.get{s})).@"fn".return_type.? {{
+                            \\                return self.raw().get{s}();
+                            \\            }}
+                            \\
+                        , .{ name, view, name, name });
+                        if (builder) try writer.print(
+                            \\            pub fn set{s}(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.set{s})).@"fn".param_types[1].?) !void {{
+                            \\                var raw_value = self.raw();
+                            \\                try raw_value.set{s}(value);
+                            \\            }}
+                            \\
+                        , .{ name, name, name });
                     }
                 }
-                try writer.writeAll("    };\n");
+                try writer.writeAll("        };\n");
             }
-            try writer.writeAll("    pub const Pipeline = struct {\n        peer: *capnpc.rpc.peer.Peer,\n        question_id: u32,\n        pointer_indexes: [64]u16 = undefined,\n        pointer_count: u8 = 0,\n");
+            try writer.writeAll(
+                \\        pub const Pipeline = struct {
+                \\            peer: *capnpc.rpc.peer.Peer,
+                \\            question_id: u32,
+                \\            pointer_indexes: [64]u16 = undefined,
+                \\            pointer_count: u8 = 0,
+                \\
+            );
             for (info.fields, 0..) |field, index| {
                 const slot = field.slot orelse continue;
                 if (!resolvableType(self, slot.type)) continue;
@@ -232,9 +286,18 @@ pub fn Emitter(comptime G: type) type {
                 if (slot.type != .any_pointer and slot.type != .@"struct" and slot.type != .interface) continue;
                 const name = try types.identToZigTypeName(self.allocator, field.name);
                 defer self.allocator.free(name);
-                try writer.print("        pub fn get{s}(self: @This()) !_Field{}.Pipeline {{\n            if (self.pointer_count >= 64) return error.PipelineDepthLimit;\n            var path = self;\n            path.pointer_indexes[path.pointer_count] = {};\n            path.pointer_count += 1;\n            return _Field{}.pipeline(path);\n        }}\n", .{ name, index, slot.offset, index });
+                try writer.print(
+                    \\            pub fn get{s}(self: @This()) !_Field{}.Pipeline {{
+                    \\                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    \\                var path = self;
+                    \\                path.pointer_indexes[path.pointer_count] = {};
+                    \\                path.pointer_count += 1;
+                    \\                return _Field{}.pipeline(path);
+                    \\            }}
+                    \\
+                , .{ name, index, slot.offset, index });
             }
-            try writer.writeAll("    };\n");
+            try writer.writeAll("        };\n");
             try writer.writeAll("    };\n}\n");
         }
         fn resolvedCodec(self: *G, context: *const schema.Node, resolver: *const resolution.Resolver, cursor: resolution.Cursor) (std.mem.Allocator.Error || error{ InvalidStructNode, CodegenBudgetExceeded })![]const u8 {
@@ -257,6 +320,7 @@ pub fn Emitter(comptime G: type) type {
             defer text.deinit(self.allocator);
             const writer = @import("generator.zig").ArrayListWriter{ .list = &text, .allocator = self.allocator, .max_bytes = self.codegen_budget.max_output_bytes };
             try writer.print("{s}.Apply(.{{", .{raw});
+            var count: usize = 0;
             var scope: ?*const schema.Node = target;
             var depth: usize = 0;
             while (scope) |value| {
@@ -266,11 +330,12 @@ pub fn Emitter(comptime G: type) type {
                     const expression = schema.TypeExpression{ .type = .any_pointer, .metadata = .{ .any_pointer = .{ .parameter = .{ .scope_id = value.id, .parameter_index = @intCast(index) } } } };
                     const codec = try resolvedCodec(self, context, resolver, resolver.cursor(expression));
                     defer self.allocator.free(codec);
-                    try writer.print(" .{s} = {s},", .{ parameter.name, codec });
+                    try writer.print("{s} .{s} = {s}", .{ if (count == 0) "" else ",", parameter.name, codec });
+                    count += 1;
                 }
                 scope = owner(self, value);
             }
-            try writer.writeAll(" })");
+            try writer.writeAll(if (count == 0) "})" else " })");
             return text.toOwnedSlice(self.allocator);
         }
         const MethodEntry = struct { method: schema.Method, name: []const u8, raw_name: []const u8, typed_name: ?[]const u8 = null, ambiguous: bool = false };
@@ -315,14 +380,14 @@ pub fn Emitter(comptime G: type) type {
                 try methods.append(self.allocator, .{ .method = method, .name = name, .raw_name = raw_name });
             }
             try applyBegin(self, node, writer);
-            try writer.writeAll("    const _Applied = @This();\n");
-            try writer.print("    pub const Raw = {s};\n    pub const interface_id = Raw.interface_id;\n", .{raw});
+            try writer.writeAll("        const _Applied = @This();\n");
+            try writer.print("        pub const Raw = {s};\n        pub const interface_id = Raw.interface_id;\n", .{raw});
             for (branded_ancestors, 0..) |*ancestor, index| {
                 const name = try resolvedName(self, node, ancestor.target, &ancestor.resolver);
                 defer self.allocator.free(name);
                 const qualified = try self.qualifiedTypeName(ancestor.target.id);
                 defer self.allocator.free(qualified);
-                try writer.print("    const _Ancestor{} = {s};\n", .{ index, name });
+                try writer.print("        const _Ancestor{} = {s};\n", .{ index, name });
                 for ((ancestor.target.interface_node orelse return error.InvalidInterfaceNode).methods) |method| {
                     const member = try self.allocInterfaceMemberName(method.name, qualified);
                     errdefer self.allocator.free(member);
@@ -347,7 +412,7 @@ pub fn Emitter(comptime G: type) type {
                 if (entry.ambiguous) continue;
                 const method = entry.method;
                 if (entry.typed_name) |name| {
-                    try writer.print("    pub const {s} = {s};\n", .{ entry.name, name });
+                    try writer.print("        pub const {s} = {s};\n", .{ entry.name, name });
                     continue;
                 }
                 const old_method_context = self.generic_method_context;
@@ -360,17 +425,32 @@ pub fn Emitter(comptime G: type) type {
                 const results = try appliedName(self, rn, rn, method.result_brand);
                 defer self.allocator.free(results);
                 if (method.implicit_parameters.len > 0) {
-                    try writer.print("    pub const {s} = struct {{ pub fn Apply(comptime _method_bindings: anytype) type {{ return capnpc.generic.Method({s}, {s}, {s}); }} }};\n", .{ entry.name, entry.raw_name, params, results });
-                } else try writer.print("    pub const {s} = capnpc.generic.Method({s}, {s}, {s});\n", .{ entry.name, entry.raw_name, params, results });
+                    try writer.print(
+                        \\        pub const {s} = struct {{
+                        \\            pub fn Apply(comptime _method_bindings: anytype) type {{
+                        \\                return capnpc.generic.Method({s}, {s}, {s});
+                        \\            }}
+                        \\        }};
+                        \\
+                    , .{ entry.name, entry.raw_name, params, results });
+                } else try writer.print("        pub const {s} = capnpc.generic.Method({s}, {s}, {s});\n", .{ entry.name, entry.raw_name, params, results });
             }
             inline for (.{ false, true }) |pipelined| {
                 const cname = if (pipelined) "PipelinedClient" else "Client";
-                try writer.print("    pub const {s} = struct {{\n        raw: Raw.{s},\n", .{ cname, cname });
-                if (!pipelined) try writer.writeAll("        pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() { return .{ .raw = Raw.Client.init(peer, cap_id) }; }\n        pub fn release(self: @This()) void { self.raw.release(); }\n");
+                try writer.print("        pub const {s} = struct {{\n            raw: Raw.{s},\n", .{ cname, cname });
+                if (!pipelined) try writer.writeAll(
+                    \\            pub fn init(peer: *rpc.peer.Peer, cap_id: u32) @This() {
+                    \\                return .{ .raw = Raw.Client.init(peer, cap_id) };
+                    \\            }
+                    \\            pub fn release(self: @This()) void {
+                    \\                self.raw.release();
+                    \\            }
+                    \\
+                );
                 if (!pipelined and branded_ancestors.len > 0) {
-                    try writer.writeAll("        pub fn asAncestor(self: @This(), comptime Ancestor: type) Ancestor.Client {\n            if (comptime !(false");
+                    try writer.writeAll("            pub fn asAncestor(self: @This(), comptime Ancestor: type) Ancestor.Client {\n                if (comptime !(false");
                     for (branded_ancestors, 0..) |_, index| try writer.print(" or Ancestor == _Ancestor{}", .{index});
-                    try writer.writeAll(")) @compileError(\"requested type is not an ancestor application\");\n            return Ancestor.Client.init(self.raw.peer, self.raw.cap_id);\n        }\n");
+                    try writer.writeAll(")) @compileError(\"requested type is not an ancestor application\");\n                return Ancestor.Client.init(self.raw.peer, self.raw.cap_id);\n            }\n");
                 }
                 for (methods.items) |entry| {
                     if (entry.ambiguous) continue;
@@ -379,31 +459,65 @@ pub fn Emitter(comptime G: type) type {
                     else
                         try std.fmt.allocPrint(self.allocator, "_Applied.{s}", .{entry.name});
                     defer self.allocator.free(method_type);
-                    try writer.print("        pub fn call{s}(self: @This(), {s}ctx: *anyopaque, comptime build: ?{s}.BuildFn, comptime callback: {s}.Callback) !u32 {{\n            const Adapter = {s}.ClientAdapter(build, callback);\n            return self.raw.call{s}(ctx, if (build != null) Adapter.build else null, Adapter.callback);\n        }}\n", .{ entry.name, if (entry.method.implicit_parameters.len > 0) "comptime _method_bindings: anytype, " else "", method_type, method_type, method_type, entry.name });
+                    try writer.print(
+                        \\            pub fn call{s}(self: @This(), {s}ctx: *anyopaque, comptime build: ?{s}.BuildFn, comptime callback: {s}.Callback) !u32 {{
+                        \\                const Adapter = {s}.ClientAdapter(build, callback);
+                        \\                return self.raw.call{s}(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                        \\            }}
+                        \\
+                    , .{ entry.name, if (entry.method.implicit_parameters.len > 0) "comptime _method_bindings: anytype, " else "", method_type, method_type, method_type, entry.name });
                     const result_node = self.getNode(entry.method.result_struct_type) orelse return error.InvalidStructNode;
-                    if (!pipelined and needsData(self, result_node)) try writer.print("        pub fn call{s}Pipelined(self: @This(), {s}ctx: *anyopaque, comptime build: ?{s}.BuildFn, comptime callback: {s}.Callback) !{s}.Results.Pipeline {{\n            const qid = try self.call{s}({s}ctx, build, callback);\n            return .{{ .peer = self.raw.peer, .question_id = qid }};\n        }}\n", .{ entry.name, if (entry.method.implicit_parameters.len > 0) "comptime _method_bindings: anytype, " else "", method_type, method_type, method_type, entry.name, if (entry.method.implicit_parameters.len > 0) "_method_bindings, " else "" });
+                    if (!pipelined and needsData(self, result_node)) try writer.print(
+                        \\            pub fn call{s}Pipelined(self: @This(), {s}ctx: *anyopaque, comptime build: ?{s}.BuildFn, comptime callback: {s}.Callback) !{s}.Results.Pipeline {{
+                        \\                const qid = try self.call{s}({s}ctx, build, callback);
+                        \\                return .{{ .peer = self.raw.peer, .question_id = qid }};
+                        \\            }}
+                        \\
+                    , .{ entry.name, if (entry.method.implicit_parameters.len > 0) "comptime _method_bindings: anytype, " else "", method_type, method_type, method_type, entry.name, if (entry.method.implicit_parameters.len > 0) "_method_bindings, " else "" });
                 }
-                try writer.writeAll("    };\n");
+                try writer.writeAll("        };\n");
             }
-            try writer.writeAll("    pub fn ServerAdapter(comptime handlers: anytype) type {\n        _ = &handlers;\n        return struct {\n            raw: Raw.Server,\n            pub fn init(ctx: *anyopaque) @This() { return .{ .raw = .{ .ctx = ctx, .vtable = .{\n");
-            for (methods.items, 0..) |entry, index| {
-                if (duplicateMethod(methods.items[0..index], entry.name)) continue;
-                const field = try self.lowerFirst(entry.name);
-                defer self.allocator.free(field);
-                const escaped_field = try types.escapeZigKeyword(self.allocator, field);
-                defer self.allocator.free(escaped_field);
-                if (entry.ambiguous or entry.method.implicit_parameters.len > 0) {
-                    try writer.print("                .{s} = if (@hasField(@TypeOf(handlers), \"{s}\")) handlers.{s} else unsupported{s},\n", .{ escaped_field, field, escaped_field, entry.name });
-                } else try writer.print("                .{s} = if (@hasField(@TypeOf(handlers), \"{s}\")) _Applied.{s}.ServerAdapter(handlers.{s}).handle else unsupported{s},\n", .{ escaped_field, field, entry.name, escaped_field, entry.name });
+            try writer.writeAll(
+                \\        pub fn ServerAdapter(comptime handlers: anytype) type {
+                \\            _ = &handlers;
+                \\            return struct {
+                \\                raw: Raw.Server,
+                \\                pub fn init(ctx: *anyopaque) @This() {
+                \\
+            );
+            // zig fmt keeps this literal's vtable one entry per line, and
+            // collapses an interface with no methods to `.{}`.
+            if (methods.items.len == 0) {
+                try writer.writeAll("                    return .{ .raw = .{ .ctx = ctx, .vtable = .{} } };\n");
+            } else {
+                try writer.writeAll("                    return .{ .raw = .{ .ctx = ctx, .vtable = .{\n");
+                for (methods.items, 0..) |entry, index| {
+                    if (duplicateMethod(methods.items[0..index], entry.name)) continue;
+                    const field = try self.lowerFirst(entry.name);
+                    defer self.allocator.free(field);
+                    const escaped_field = try types.escapeZigFieldName(self.allocator, field);
+                    defer self.allocator.free(escaped_field);
+                    if (entry.ambiguous or entry.method.implicit_parameters.len > 0) {
+                        try writer.print("                        .{s} = if (@hasField(@TypeOf(handlers), \"{s}\")) handlers.{s} else unsupported{s},\n", .{ escaped_field, field, escaped_field, entry.name });
+                    } else try writer.print("                        .{s} = if (@hasField(@TypeOf(handlers), \"{s}\")) _Applied.{s}.ServerAdapter(handlers.{s}).handle else unsupported{s},\n", .{ escaped_field, field, entry.name, escaped_field, entry.name });
+                }
+                try writer.writeAll("                    } } };\n");
             }
-            try writer.writeAll("            } } }; }\n            pub fn exportServer(self: *@This(), peer: *rpc.peer.Peer) !u32 { return Raw.exportServer(peer, &self.raw); }\n");
+            try writer.writeAll(
+                \\                }
+                \\                pub fn exportServer(self: *@This(), peer: *rpc.peer.Peer) !u32 {
+                \\                    return Raw.exportServer(peer, &self.raw);
+                \\                }
+                \\
+            );
             for (methods.items, 0..) |entry, index| {
                 if (duplicateMethod(methods.items[0..index], entry.name)) continue;
                 if (entry.method.isStreaming()) {
-                    try writer.print("            fn unsupported{s}(_: *anyopaque, _: *rpc.peer.Peer, _: {s}.Params.Reader, _: *const rpc.caps.table.InboundCapTable) anyerror!void {{ return error.Unimplemented; }}\n", .{ entry.name, entry.raw_name });
-                } else try writer.print("            fn unsupported{s}(_: *anyopaque, _: *rpc.peer.Peer, _: {s}.Params.Reader, _: *{s}.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void {{ return error.Unimplemented; }}\n", .{ entry.name, entry.raw_name, entry.raw_name });
+                    try writer.print("                fn unsupported{s}(_: *anyopaque, _: *rpc.peer.Peer, _: {s}.Params.Reader, _: *const rpc.caps.table.InboundCapTable) anyerror!void {{\n", .{ entry.name, entry.raw_name });
+                } else try writer.print("                fn unsupported{s}(_: *anyopaque, _: *rpc.peer.Peer, _: {s}.Params.Reader, _: *{s}.Results.Builder, _: *const rpc.caps.table.InboundCapTable) anyerror!void {{\n", .{ entry.name, entry.raw_name, entry.raw_name });
+                try writer.writeAll("                    return error.Unimplemented;\n                }\n");
             }
-            try writer.writeAll("        };\n    }\n    };\n}\n");
+            try writer.writeAll("            };\n        }\n    };\n}\n");
         }
     };
 }

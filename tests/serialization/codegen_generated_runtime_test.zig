@@ -2,6 +2,7 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const request_reader = capnpc.request;
 const capnp_cli = @import("support/capnp_cli.zig");
+const zig_fmt = @import("support/zig_fmt.zig");
 
 fn writeFile(dir: std.Io.Dir, name: []const u8, data: []const u8) !void {
     const io = std.testing.io;
@@ -886,6 +887,7 @@ fn runGeneratedHarnessProfile(
     generator.setApiProfile(profile);
     const generated = try generator.generateFile(request.requested_files[0]);
     defer allocator.free(generated);
+    try zig_fmt.expectFmtClean(allocator, schema_path, generated);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1872,6 +1874,47 @@ test "Codegen union member getters check the discriminant" {
         \\    try std.testing.expectEqual(@as(f64, 5.0), try reader.getSquare());
         \\    // A non-union field is always readable.
         \\    _ = try reader.getArea();
+        \\}
+        \\
+    );
+}
+
+test "Codegen primitive and keyword schema names compile as field names" {
+    const allocator = std.testing.allocator;
+
+    // runGeneratedHarness also asserts the output is zig fmt clean, which is
+    // what pins these names bare (`.void`) or quoted (`.@"error"`).
+    try runGeneratedHarness(allocator, "tests/test_schemas/zig_field_names.capnp",
+        \\const std = @import("std");
+        \\const capnpc = @import("capnpc-zig");
+        \\const message = capnpc.message;
+        \\const generated = @import("generated.zig");
+        \\
+        \\test "primitive and keyword names in field positions" {
+        \\    try std.testing.expectEqual(@as(u16, 0), @backingInt(generated.Kind.Void));
+        \\    try std.testing.expectEqual(@as(u16, 1), @backingInt(generated.Kind.Type));
+        \\    try std.testing.expectEqual(@as(u16, 3), @backingInt(generated.Kind.Error));
+        \\    try std.testing.expect(@hasField(generated.Probe.VTable, "void"));
+        \\    try std.testing.expect(@hasField(generated.Probe.VTable, "type"));
+        \\
+        \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+        \\    defer builder.deinit();
+        \\    var root = try generated.Slot.Builder.init(&builder);
+        \\    try root.setKind(.Type);
+        \\    try root.setBool(true);
+        \\    try std.testing.expectEqual(generated.Slot.WhichTag.bool, try root.which());
+        \\    try root.setError("boom");
+        \\
+        \\    const bytes = try builder.toBytes();
+        \\    defer std.testing.allocator.free(bytes);
+        \\    var msg = try message.Message.init(std.testing.allocator, bytes, .{});
+        \\    defer msg.deinit();
+        \\    const reader = try generated.Slot.Reader.init(&msg);
+        \\    try std.testing.expectEqual(generated.Kind.Type, try reader.getKind());
+        \\    try std.testing.expectEqual(generated.Slot.WhichTag.@"error", try reader.which());
+        \\    try std.testing.expectEqualStrings("boom", try reader.getError());
+        \\    try std.testing.expectError(error.WrongUnionMember, reader.getBool());
+        \\    try std.testing.expectError(error.WrongUnionMember, reader.getVoid());
         \\}
         \\
     );

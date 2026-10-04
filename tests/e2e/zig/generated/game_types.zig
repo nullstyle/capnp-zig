@@ -2824,7 +2824,6 @@ pub const PlayerId = struct {
         pub fn getId(self: Reader) !u64 {
             return self._reader.readU64(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -2859,7 +2858,6 @@ pub const PlayerId = struct {
         pub fn setId(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
-
     };
 };
 
@@ -2889,7 +2887,6 @@ pub const Position = struct {
         pub fn getZ(self: Reader) !f32 {
             return @bitCast(self._reader.readU32(8));
         }
-
     };
 
     pub const Builder = struct {
@@ -2950,7 +2947,6 @@ pub const Position = struct {
         pub fn setZ(self: *Builder, value: f32) !void {
             self._builder.writeU32(8, @bitCast(value));
         }
-
     };
 };
 
@@ -2980,7 +2976,6 @@ pub const Vector3 = struct {
         pub fn getZ(self: Reader) !f32 {
             return @bitCast(self._reader.readU32(8));
         }
-
     };
 
     pub const Builder = struct {
@@ -3041,7 +3036,6 @@ pub const Vector3 = struct {
         pub fn setZ(self: *Builder, value: f32) !void {
             self._builder.writeU32(8, @bitCast(value));
         }
-
     };
 };
 
@@ -3080,7 +3074,6 @@ pub const ItemId = struct {
         pub fn getId(self: Reader) !u64 {
             return self._reader.readU64(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -3115,7 +3108,6 @@ pub const ItemId = struct {
         pub fn setId(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
-
     };
 };
 
@@ -3143,7 +3135,6 @@ pub const Item = struct {
             pub fn getRarity(self: @This()) !u16 {
                 return self._reader.readU16(0);
             }
-
         };
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
@@ -3193,7 +3184,6 @@ pub const Item = struct {
             const raw = try self._reader.readStructList(2);
             return StructListReader(Attribute){ ._list = raw };
         }
-
     };
 
     pub const Builder = struct {
@@ -3220,7 +3210,6 @@ pub const Item = struct {
             pub fn setRarity(self: @This(), value: u16) !void {
                 self._builder.writeU16(0, value);
             }
-
         };
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
@@ -3324,7 +3313,7 @@ pub const Item = struct {
         }
 
         pub fn setRarity(self: *Builder, value: Rarity) !void {
-            return self.enumOrdinals().setRarity(@as(u16, @intFromEnum(value)));
+            return self.enumOrdinals().setRarity(@as(u16, @backingInt(value)));
         }
 
         pub fn setLevel(self: *Builder, value: u16) !void {
@@ -3344,96 +3333,133 @@ pub const Item = struct {
             const raw = try self._builder.writeStructList(2, element_count, 1, 1);
             return StructListBuilder(Attribute){ ._list = raw };
         }
-
     };
     pub fn Apply(comptime bindings: anytype) type {
         _ = &bindings;
         return @This()._Apply();
     }
     fn _Apply() type {
-        const _bindings = .{ };
+        const _bindings = .{};
         _ = &_bindings;
         return struct {
-        const _Data = @This();
-        pub const Raw = _capnp_file.Item;
-        const _Field0 = capnpc.generic.Struct(_capnp_file.ItemId, 1, 0);
-        comptime { capnpc.generic.requirePointer(_Field0); }
-        const _Field1 = capnpc.generic.Text;
-        comptime { capnpc.generic.requirePointer(_Field1); }
-        const _Field5 = capnpc.generic.List(capnpc.generic.Struct(_capnp_file.Attribute, 1, 1));
-        comptime { capnpc.generic.requirePointer(_Field5); }
-        pub const Reader = struct {
-            inner: message.StructReader,
-            pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
-            pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
-            pub fn getId(self: @This()) !_Field0.Reader {
-                const raw_value = self.raw();
-                return _Field0.wrapRawReader(try raw_value.getId());
+            const _Data = @This();
+            pub const Raw = _capnp_file.Item;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.ItemId, 1, 0);
+            comptime {
+                capnpc.generic.requirePointer(_Field0);
             }
-            pub fn getName(self: @This()) !_Field1.Reader {
-                const raw_value = self.raw();
-                return raw_value.getName();
+            const _Field1 = capnpc.generic.Text;
+            comptime {
+                capnpc.generic.requirePointer(_Field1);
             }
-            pub fn getRarity(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getRarity)).@"fn".return_type.? { return self.raw().getRarity(); }
-            pub fn getLevel(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getLevel)).@"fn".return_type.? { return self.raw().getLevel(); }
-            pub fn getStackSize(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getStackSize)).@"fn".return_type.? { return self.raw().getStackSize(); }
-            pub fn getAttributes(self: @This()) !_Field5.Reader {
-                const raw_value = self.raw();
-                return _Field5.wrapRawReader(try raw_value.getAttributes());
+            const _Field5 = capnpc.generic.List(capnpc.generic.Struct(_capnp_file.Attribute, 1, 1));
+            comptime {
+                capnpc.generic.requirePointer(_Field5);
             }
-        };
-        pub const Builder = struct {
-            inner: message.StructBuilder,
-            pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
-            pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
-            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
-            pub fn getId(self: @This()) !_Field0.Builder {
-                var raw_value = self.raw();
-                _ = &raw_value;
-                return _Field0.wrapRawBuilder(try raw_value.getId());
-            }
-            pub fn setId(self: @This(), value: _Field0.Reader) !void {
-                try _Field0.set(try self.inner.getAnyPointer(0), value);
-            }
-            pub const initId = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
-            pub fn getName(self: @This()) !_Field1.Builder {
-                var raw_value = self.raw();
-                _ = &raw_value;
-                return raw_value.getName();
-            }
-            pub fn setName(self: @This(), value: _Field1.Reader) !void {
-                try _Field1.set(try self.inner.getAnyPointer(1), value);
-            }
-            pub const initName = capnpc.generic.Initializer(_Field1, _Data.Builder, 1, 0, 65535).call;
-            pub fn getRarity(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getRarity)).@"fn".return_type.? { return self.raw().getRarity(); }
-            pub fn setRarity(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setRarity)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setRarity(value); }
-            pub fn getLevel(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getLevel)).@"fn".return_type.? { return self.raw().getLevel(); }
-            pub fn setLevel(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setLevel)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setLevel(value); }
-            pub fn getStackSize(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getStackSize)).@"fn".return_type.? { return self.raw().getStackSize(); }
-            pub fn setStackSize(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setStackSize)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setStackSize(value); }
-            pub fn getAttributes(self: @This()) !_Field5.Builder {
-                var raw_value = self.raw();
-                _ = &raw_value;
-                return _Field5.wrapRawBuilder(try raw_value.getAttributes());
-            }
-            pub fn setAttributes(self: @This(), value: _Field5.Reader) !void {
-                try _Field5.set(try self.inner.getAnyPointer(2), value);
-            }
-            pub const initAttributes = capnpc.generic.Initializer(_Field5, _Data.Builder, 2, 0, 65535).call;
-        };
-        pub const Pipeline = struct {
-            peer: *capnpc.rpc.peer.Peer,
-            question_id: u32,
-            pointer_indexes: [64]u16 = undefined,
-            pointer_count: u8 = 0,
-            pub fn getId(self: @This()) !_Field0.Pipeline {
-                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
-                var path = self;
-                path.pointer_indexes[path.pointer_count] = 0;
-                path.pointer_count += 1;
-                return _Field0.pipeline(path);
-            }
-        };
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Reader {
+                    return Raw.Reader.wrap(self.inner);
+                }
+                pub fn getId(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getId());
+                }
+                pub fn getName(self: @This()) !_Field1.Reader {
+                    const raw_value = self.raw();
+                    return raw_value.getName();
+                }
+                pub fn getRarity(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getRarity)).@"fn".return_type.? {
+                    return self.raw().getRarity();
+                }
+                pub fn getLevel(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getLevel)).@"fn".return_type.? {
+                    return self.raw().getLevel();
+                }
+                pub fn getStackSize(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getStackSize)).@"fn".return_type.? {
+                    return self.raw().getStackSize();
+                }
+                pub fn getAttributes(self: @This()) !_Field5.Reader {
+                    const raw_value = self.raw();
+                    return _Field5.wrapRawReader(try raw_value.getAttributes());
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Builder {
+                    return Raw.Builder.wrap(self.inner);
+                }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                    try storage.bind(self.inner.builder);
+                    return _Data.Reader.wrap(try storage.reader(self.inner));
+                }
+                pub fn getId(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getId());
+                }
+                pub fn setId(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initId = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+                pub fn getName(self: @This()) !_Field1.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return raw_value.getName();
+                }
+                pub fn setName(self: @This(), value: _Field1.Reader) !void {
+                    try _Field1.set(try self.inner.getAnyPointer(1), value);
+                }
+                pub const initName = capnpc.generic.Initializer(_Field1, _Data.Builder, 1, 0, 65535).call;
+                pub fn getRarity(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getRarity)).@"fn".return_type.? {
+                    return self.raw().getRarity();
+                }
+                pub fn setRarity(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setRarity)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setRarity(value);
+                }
+                pub fn getLevel(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getLevel)).@"fn".return_type.? {
+                    return self.raw().getLevel();
+                }
+                pub fn setLevel(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setLevel)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setLevel(value);
+                }
+                pub fn getStackSize(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getStackSize)).@"fn".return_type.? {
+                    return self.raw().getStackSize();
+                }
+                pub fn setStackSize(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setStackSize)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setStackSize(value);
+                }
+                pub fn getAttributes(self: @This()) !_Field5.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field5.wrapRawBuilder(try raw_value.getAttributes());
+                }
+                pub fn setAttributes(self: @This(), value: _Field5.Reader) !void {
+                    try _Field5.set(try self.inner.getAnyPointer(2), value);
+                }
+                pub const initAttributes = capnpc.generic.Initializer(_Field5, _Data.Builder, 2, 0, 65535).call;
+            };
+            pub const Pipeline = struct {
+                peer: *capnpc.rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getId(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
         };
     }
 };
@@ -3465,7 +3491,6 @@ pub const Attribute = struct {
         pub fn getValue(self: Reader) !i32 {
             return @bitCast(self._reader.readU32(0));
         }
-
     };
 
     pub const Builder = struct {
@@ -3521,7 +3546,6 @@ pub const Attribute = struct {
         pub fn setValue(self: *Builder, value: i32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
-
     };
 };
 
@@ -3543,7 +3567,6 @@ pub const Timestamp = struct {
         pub fn getUnixMillis(self: Reader) !i64 {
             return @bitCast(self._reader.readU64(0));
         }
-
     };
 
     pub const Builder = struct {
@@ -3578,7 +3601,6 @@ pub const Timestamp = struct {
         pub fn setUnixMillis(self: *Builder, value: i64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
-
     };
 };
 
@@ -3603,7 +3625,6 @@ pub const PlayerInfo = struct {
             pub fn getFaction(self: @This()) !u16 {
                 return self._reader.readU16(0);
             }
-
         };
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
@@ -3637,7 +3658,6 @@ pub const PlayerInfo = struct {
         pub fn getLevel(self: Reader) !u16 {
             return self._reader.readU16(2);
         }
-
     };
 
     pub const Builder = struct {
@@ -3664,7 +3684,6 @@ pub const PlayerInfo = struct {
             pub fn setFaction(self: @This(), value: u16) !void {
                 self._builder.writeU16(0, value);
             }
-
         };
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
@@ -3742,84 +3761,112 @@ pub const PlayerInfo = struct {
         }
 
         pub fn setFaction(self: *Builder, value: Faction) !void {
-            return self.enumOrdinals().setFaction(@as(u16, @intFromEnum(value)));
+            return self.enumOrdinals().setFaction(@as(u16, @backingInt(value)));
         }
 
         pub fn setLevel(self: *Builder, value: u16) !void {
             self._builder.writeU16(2, @bitCast(value));
         }
-
     };
     pub fn Apply(comptime bindings: anytype) type {
         _ = &bindings;
         return @This()._Apply();
     }
     fn _Apply() type {
-        const _bindings = .{ };
+        const _bindings = .{};
         _ = &_bindings;
         return struct {
-        const _Data = @This();
-        pub const Raw = _capnp_file.PlayerInfo;
-        const _Field0 = capnpc.generic.Struct(_capnp_file.PlayerId, 1, 0);
-        comptime { capnpc.generic.requirePointer(_Field0); }
-        const _Field1 = capnpc.generic.Text;
-        comptime { capnpc.generic.requirePointer(_Field1); }
-        pub const Reader = struct {
-            inner: message.StructReader,
-            pub fn wrap(inner: message.StructReader) @This() { return .{ .inner = inner }; }
-            pub fn raw(self: @This()) Raw.Reader { return Raw.Reader.wrap(self.inner); }
-            pub fn getId(self: @This()) !_Field0.Reader {
-                const raw_value = self.raw();
-                return _Field0.wrapRawReader(try raw_value.getId());
+            const _Data = @This();
+            pub const Raw = _capnp_file.PlayerInfo;
+            const _Field0 = capnpc.generic.Struct(_capnp_file.PlayerId, 1, 0);
+            comptime {
+                capnpc.generic.requirePointer(_Field0);
             }
-            pub fn getName(self: @This()) !_Field1.Reader {
-                const raw_value = self.raw();
-                return raw_value.getName();
+            const _Field1 = capnpc.generic.Text;
+            comptime {
+                capnpc.generic.requirePointer(_Field1);
             }
-            pub fn getFaction(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getFaction)).@"fn".return_type.? { return self.raw().getFaction(); }
-            pub fn getLevel(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getLevel)).@"fn".return_type.? { return self.raw().getLevel(); }
-        };
-        pub const Builder = struct {
-            inner: message.StructBuilder,
-            pub fn wrap(inner: message.StructBuilder) @This() { return .{ .inner = inner }; }
-            pub fn raw(self: @This()) Raw.Builder { return Raw.Builder.wrap(self.inner); }
-            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader { try storage.bind(self.inner.builder); return _Data.Reader.wrap(try storage.reader(self.inner)); }
-            pub fn getId(self: @This()) !_Field0.Builder {
-                var raw_value = self.raw();
-                _ = &raw_value;
-                return _Field0.wrapRawBuilder(try raw_value.getId());
-            }
-            pub fn setId(self: @This(), value: _Field0.Reader) !void {
-                try _Field0.set(try self.inner.getAnyPointer(0), value);
-            }
-            pub const initId = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
-            pub fn getName(self: @This()) !_Field1.Builder {
-                var raw_value = self.raw();
-                _ = &raw_value;
-                return raw_value.getName();
-            }
-            pub fn setName(self: @This(), value: _Field1.Reader) !void {
-                try _Field1.set(try self.inner.getAnyPointer(1), value);
-            }
-            pub const initName = capnpc.generic.Initializer(_Field1, _Data.Builder, 1, 0, 65535).call;
-            pub fn getFaction(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getFaction)).@"fn".return_type.? { return self.raw().getFaction(); }
-            pub fn setFaction(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setFaction)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setFaction(value); }
-            pub fn getLevel(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getLevel)).@"fn".return_type.? { return self.raw().getLevel(); }
-            pub fn setLevel(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setLevel)).@"fn".param_types[1].?) !void { var raw_value = self.raw(); try raw_value.setLevel(value); }
-        };
-        pub const Pipeline = struct {
-            peer: *capnpc.rpc.peer.Peer,
-            question_id: u32,
-            pointer_indexes: [64]u16 = undefined,
-            pointer_count: u8 = 0,
-            pub fn getId(self: @This()) !_Field0.Pipeline {
-                if (self.pointer_count >= 64) return error.PipelineDepthLimit;
-                var path = self;
-                path.pointer_indexes[path.pointer_count] = 0;
-                path.pointer_count += 1;
-                return _Field0.pipeline(path);
-            }
-        };
+            pub const Reader = struct {
+                inner: message.StructReader,
+                pub fn wrap(inner: message.StructReader) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Reader {
+                    return Raw.Reader.wrap(self.inner);
+                }
+                pub fn getId(self: @This()) !_Field0.Reader {
+                    const raw_value = self.raw();
+                    return _Field0.wrapRawReader(try raw_value.getId());
+                }
+                pub fn getName(self: @This()) !_Field1.Reader {
+                    const raw_value = self.raw();
+                    return raw_value.getName();
+                }
+                pub fn getFaction(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getFaction)).@"fn".return_type.? {
+                    return self.raw().getFaction();
+                }
+                pub fn getLevel(self: @This()) @typeInfo(@TypeOf(Raw.Reader.getLevel)).@"fn".return_type.? {
+                    return self.raw().getLevel();
+                }
+            };
+            pub const Builder = struct {
+                inner: message.StructBuilder,
+                pub fn wrap(inner: message.StructBuilder) @This() {
+                    return .{ .inner = inner };
+                }
+                pub fn raw(self: @This()) Raw.Builder {
+                    return Raw.Builder.wrap(self.inner);
+                }
+                pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_Data.Reader {
+                    try storage.bind(self.inner.builder);
+                    return _Data.Reader.wrap(try storage.reader(self.inner));
+                }
+                pub fn getId(self: @This()) !_Field0.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return _Field0.wrapRawBuilder(try raw_value.getId());
+                }
+                pub fn setId(self: @This(), value: _Field0.Reader) !void {
+                    try _Field0.set(try self.inner.getAnyPointer(0), value);
+                }
+                pub const initId = capnpc.generic.Initializer(_Field0, _Data.Builder, 0, 0, 65535).call;
+                pub fn getName(self: @This()) !_Field1.Builder {
+                    var raw_value = self.raw();
+                    _ = &raw_value;
+                    return raw_value.getName();
+                }
+                pub fn setName(self: @This(), value: _Field1.Reader) !void {
+                    try _Field1.set(try self.inner.getAnyPointer(1), value);
+                }
+                pub const initName = capnpc.generic.Initializer(_Field1, _Data.Builder, 1, 0, 65535).call;
+                pub fn getFaction(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getFaction)).@"fn".return_type.? {
+                    return self.raw().getFaction();
+                }
+                pub fn setFaction(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setFaction)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setFaction(value);
+                }
+                pub fn getLevel(self: @This()) @typeInfo(@TypeOf(Raw.Builder.getLevel)).@"fn".return_type.? {
+                    return self.raw().getLevel();
+                }
+                pub fn setLevel(self: @This(), value: @typeInfo(@TypeOf(Raw.Builder.setLevel)).@"fn".param_types[1].?) !void {
+                    var raw_value = self.raw();
+                    try raw_value.setLevel(value);
+                }
+            };
+            pub const Pipeline = struct {
+                peer: *capnpc.rpc.peer.Peer,
+                question_id: u32,
+                pointer_indexes: [64]u16 = undefined,
+                pointer_count: u8 = 0,
+                pub fn getId(self: @This()) !_Field0.Pipeline {
+                    if (self.pointer_count >= 64) return error.PipelineDepthLimit;
+                    var path = self;
+                    path.pointer_indexes[path.pointer_count] = 0;
+                    path.pointer_count += 1;
+                    return _Field0.pipeline(path);
+                }
+            };
         };
     }
 };
@@ -3833,4 +3880,3 @@ pub const StatusCode = enum(u16) {
     ResourceExhausted = 5,
     pub const capnpSchema = capnpc.reflection.SchemaRef{ .id = 0xc27788acb6746259, .encoded_request = _capnp_file.CAPNP_SCHEMA_REQUEST };
 };
-

@@ -851,7 +851,7 @@ test "Codegen: typed enum/struct consts use normalized declaration names" {
 
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const MyEnum = enum(u16)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const MyStruct = struct"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const enumConst: MyEnum = @enumFromInt(@as(u16, 0));"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const enumConst: MyEnum = @fromBackingInt(@as(u16, 0));"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const structConst = struct {"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn get() !MyStruct.Reader {"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return MyStruct.Reader{ ._reader = value };"));
@@ -1892,7 +1892,7 @@ test "Codegen: zero numeric and enum defaults skip xor paths" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU32(0, @bitCast(value));"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const ordinal = try self.enumOrdinals().getState();"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(State, ordinal) orelse return error.InvalidEnumValue;"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self.enumOrdinals().setState(@as(u16, @intFromEnum(value)));"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self.enumOrdinals().setState(@as(u16, @backingInt(value)));"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getState(self: @This()) !u16"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self._reader.readU16(2);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setState(self: @This(), value: u16) !void"));
@@ -2137,7 +2137,7 @@ test "Codegen: declaration identifiers are normalized and escaped consistently" 
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const MyEnum = enum(u16)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getStatus(self: Reader) !MyEnum"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const MyService = struct"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const @\"usingnamespace\": u32 = @as(u32, 7);"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const usingnamespace: u32 = @as(u32, 7);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const snakeCaseConst: u32 = @as(u32, 9);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const annotationValue = struct"));
 

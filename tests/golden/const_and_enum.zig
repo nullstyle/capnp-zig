@@ -27,4 +27,3 @@ pub const Status = enum(u16) {
     Inactive = 1,
     Pending = 2,
 };
-

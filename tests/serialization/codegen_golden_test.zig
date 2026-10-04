@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const schema = @import("capnpc-zig").schema;
 const Generator = @import("capnpc-zig").codegen.Generator;
+const zig_fmt = @import("support/zig_fmt.zig");
 
 fn shouldUpdateGoldens() !bool {
     var environ = try std.process.Environ.createMap(std.testing.environ, testing.allocator);
@@ -16,6 +17,9 @@ fn shouldUpdateGoldens() !bool {
 /// explicit update flag to rewrite every snapshot before diffing the directory.
 fn expectGolden(actual: []const u8, golden_path: []const u8) !void {
     const io = std.testing.io;
+    // Checked before any snapshot is written, so a formatting slip in the
+    // emitter cannot be captured as the new golden.
+    try zig_fmt.expectFmtClean(testing.allocator, golden_path, actual);
     if (try shouldUpdateGoldens()) {
         const file = try std.Io.Dir.cwd().createFile(io, golden_path, .{});
         defer file.close(io);

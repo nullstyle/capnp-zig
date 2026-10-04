@@ -48,7 +48,6 @@ pub const Shape = struct {
             pub fn getHeight(self: @This()) !f32 {
                 return @bitCast(self._reader.readU32(8));
             }
-
         };
 
         pub const Builder = struct {
@@ -58,30 +57,30 @@ pub const Shape = struct {
                 return .{ ._builder = builder };
             }
 
-        /// Borrows storage at a stable address; any builder mutation invalidates the reader.
-        pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Shape.Rectangle.Reader {
-            try storage.bind(self._builder.builder);
-            try storage.message_view.validate(.{});
-            return .{ ._reader = try storage.reader(self._builder) };
-        }
+            /// Borrows storage at a stable address; any builder mutation invalidates the reader.
+            pub fn asReader(self: @This(), storage: *capnpc.generated_helpers.ReaderStorage) !_capnp_file.Shape.Rectangle.Reader {
+                try storage.bind(self._builder.builder);
+                try storage.message_view.validate(.{});
+                return .{ ._reader = try storage.reader(self._builder) };
+            }
 
-        pub fn clearWidth(self: *@This()) !void {
-            self._builder.writeU32(4, 0);
-        }
+            pub fn clearWidth(self: *@This()) !void {
+                self._builder.writeU32(4, 0);
+            }
 
-        pub fn getWidth(self: @This()) !f32 {
-            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
-            return @bitCast(field_reader.readU32(4));
-        }
+            pub fn getWidth(self: @This()) !f32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return @bitCast(field_reader.readU32(4));
+            }
 
-        pub fn clearHeight(self: *@This()) !void {
-            self._builder.writeU32(8, 0);
-        }
+            pub fn clearHeight(self: *@This()) !void {
+                self._builder.writeU32(8, 0);
+            }
 
-        pub fn getHeight(self: @This()) !f32 {
-            const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
-            return @bitCast(field_reader.readU32(8));
-        }
+            pub fn getHeight(self: @This()) !f32 {
+                const field_reader = capnpc.generated_helpers.scalarReader(self._builder);
+                return @bitCast(field_reader.readU32(8));
+            }
 
             pub fn setWidth(self: *@This(), value: f32) !void {
                 self._builder.writeU32(4, @bitCast(value));
@@ -90,7 +89,6 @@ pub const Shape = struct {
             pub fn setHeight(self: *@This(), value: f32) !void {
                 self._builder.writeU32(8, @bitCast(value));
             }
-
         };
     };
 
@@ -112,7 +110,6 @@ pub const Shape = struct {
             pub fn getColor(self: @This()) !u16 {
                 return self._reader.readU16(0);
             }
-
         };
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
@@ -141,7 +138,6 @@ pub const Shape = struct {
             if ((try self.which()) != .rectangle) return error.WrongUnionMember;
             return .{ ._reader = self._reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -167,7 +163,6 @@ pub const Shape = struct {
             pub fn setColor(self: @This(), value: u16) !void {
                 self._builder.writeU16(0, value);
             }
-
         };
 
         pub fn enumOrdinals(self: @This()) EnumOrdinals {
@@ -221,7 +216,7 @@ pub const Shape = struct {
         }
 
         pub fn setColor(self: *Builder, value: Color) !void {
-            return self.enumOrdinals().setColor(@as(u16, @intFromEnum(value)));
+            return self.enumOrdinals().setColor(@as(u16, @backingInt(value)));
         }
 
         pub fn setCircle(self: *Builder, value: f64) !void {
@@ -235,7 +230,5 @@ pub const Shape = struct {
             self._builder.writeU16(2, 1);
             return .{ ._builder = self._builder };
         }
-
     };
 };
-

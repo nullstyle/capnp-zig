@@ -1,6 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const capnp_cli = @import("support/capnp_cli.zig");
+const zig_fmt = @import("support/zig_fmt.zig");
 
 const codegen = capnpc.codegen;
 const message = capnpc.message;
@@ -916,6 +917,7 @@ fn compileUpstreamSchemaProfile(
     for (request.requested_files) |file| {
         const generated = try generator.generateFile(file);
         defer allocator.free(generated);
+        try zig_fmt.expectFmtClean(allocator, file.filename, generated);
         const filename = try generatedFilename(allocator, file.filename);
         defer allocator.free(filename);
         if (std.fs.path.dirname(filename)) |parent| try tmp.dir.createDirPath(io, parent);

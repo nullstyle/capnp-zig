@@ -2,26 +2,11 @@ const std = @import("std");
 const schema = @import("../serialization/schema.zig");
 
 /// Zig keywords that must be escaped with @"..." when used as identifiers.
-pub const zig_keywords = std.StaticStringMap(void).initComptime(.{
-    .{ "addrspace", {} }, .{ "align", {} },       .{ "allowzero", {} },
-    .{ "and", {} },       .{ "anyframe", {} },    .{ "anytype", {} },
-    .{ "asm", {} },       .{ "async", {} },       .{ "await", {} },
-    .{ "break", {} },     .{ "callconv", {} },    .{ "catch", {} },
-    .{ "comptime", {} },  .{ "const", {} },       .{ "continue", {} },
-    .{ "defer", {} },     .{ "else", {} },        .{ "enum", {} },
-    .{ "errdefer", {} },  .{ "error", {} },       .{ "export", {} },
-    .{ "extern", {} },    .{ "fn", {} },          .{ "for", {} },
-    .{ "if", {} },        .{ "inline", {} },      .{ "linksection", {} },
-    .{ "noalias", {} },   .{ "nosuspend", {} },   .{ "noinline", {} },
-    .{ "opaque", {} },    .{ "or", {} },          .{ "orelse", {} },
-    .{ "packed", {} },    .{ "pub", {} },         .{ "resume", {} },
-    .{ "return", {} },    .{ "struct", {} },      .{ "suspend", {} },
-    .{ "switch", {} },    .{ "test", {} },        .{ "threadlocal", {} },
-    .{ "try", {} },       .{ "type", {} },        .{ "undefined", {} },
-    .{ "union", {} },     .{ "unreachable", {} }, .{ "usingnamespace", {} },
-    .{ "var", {} },       .{ "volatile", {} },    .{ "while", {} },
-    .{ "true", {} },      .{ "false", {} },       .{ "null", {} },
-});
+/// This is the toolchain's own list: a word Zig no longer reserves
+/// (`usingnamespace`, `async`, `await`) is left bare, as zig fmt renders it.
+/// Primitive names (`type`, `true`, `undefined`, ...) are covered separately
+/// by `std.zig.primitives`.
+pub const zig_keywords = std.zig.Token.keywords;
 
 /// Return true if `name` cannot be used as a bare Zig identifier and must be
 /// wrapped in `@"..."`. This covers Zig keywords, primitive type/value names
@@ -44,6 +29,33 @@ pub fn escapeZigKeyword(allocator: std.mem.Allocator, name: []const u8) ![]const
         return std.fmt.allocPrint(allocator, "@\"{s}\"", .{name});
     }
     return allocator.dupe(u8, name);
+}
+
+/// Escape a name in a position where Zig reads a field name: a container or
+/// enum field, a field access, an enum literal, or a struct-literal field.
+/// There a primitive name such as `void` or `type` cannot shadow anything,
+/// and zig fmt removes its quotes, so only keywords and digit-leading names
+/// are quoted. Declaration names go through `escapeZigKeyword` instead.
+pub fn escapeZigFieldName(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    const needs_escape = name.len != 0 and (std.ascii.isDigit(name[0]) or zig_keywords.has(name));
+    if (needs_escape) return std.fmt.allocPrint(allocator, "@\"{s}\"", .{name});
+    return allocator.dupe(u8, name);
+}
+
+test "escapeZigFieldName quotes keywords but not primitive names" {
+    const alloc = std.testing.allocator;
+    for ([_][]const u8{ "error", "struct", "test" }) |word| {
+        const escaped = try escapeZigFieldName(alloc, word);
+        defer alloc.free(escaped);
+        const expected = try std.fmt.allocPrint(alloc, "@\"{s}\"", .{word});
+        defer alloc.free(expected);
+        try std.testing.expectEqualStrings(expected, escaped);
+    }
+    for ([_][]const u8{ "void", "type", "u8", "null", "bool" }) |word| {
+        const escaped = try escapeZigFieldName(alloc, word);
+        defer alloc.free(escaped);
+        try std.testing.expectEqualStrings(word, escaped);
+    }
 }
 
 fn normalizeIdentifier(allocator: std.mem.Allocator, name: []const u8, capitalize_first: bool) ![]u8 {
@@ -242,10 +254,13 @@ pub const TypeGenerator = struct {
     }
 };
 
-test "escapeZigKeyword escapes usingnamespace" {
-    const escaped = try escapeZigKeyword(std.testing.allocator, "usingnamespace");
-    defer std.testing.allocator.free(escaped);
-    try std.testing.expectEqualStrings("@\"usingnamespace\"", escaped);
+test "escapeZigKeyword leaves words Zig no longer reserves bare" {
+    // zig fmt unquotes these, so quoting them would make output fmt-unclean.
+    for ([_][]const u8{ "usingnamespace", "async", "await" }) |word| {
+        const escaped = try escapeZigKeyword(std.testing.allocator, word);
+        defer std.testing.allocator.free(escaped);
+        try std.testing.expectEqualStrings(word, escaped);
+    }
 }
 
 test "escapeZigKeyword escapes common keywords" {
@@ -389,9 +404,9 @@ test "normalizeAndEscapeValueIdentifier normalizes and escapes" {
     defer std.testing.allocator.free(normalized);
     try std.testing.expectEqualStrings("myValue", normalized);
 
-    const escaped = try normalizeAndEscapeValueIdentifier(std.testing.allocator, "usingnamespace");
+    const escaped = try normalizeAndEscapeValueIdentifier(std.testing.allocator, "threadlocal");
     defer std.testing.allocator.free(escaped);
-    try std.testing.expectEqualStrings("@\"usingnamespace\"", escaped);
+    try std.testing.expectEqualStrings("@\"threadlocal\"", escaped);
 }
 
 test "normalizeAndEscapeTypeIdentifier normalizes and escapes" {
