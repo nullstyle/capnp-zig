@@ -216,3 +216,46 @@ jobs:
           else
             echo "::notice title=std.Io.Evented canary changed::check-evented-canary no longer sees the expected processReplacePath error. If std.Io.Evented now compiles, flip evented_available in src/io_backend.zig and retarget build/evented_canary.zig; otherwise update its expected error and the fork handoff."
           fi
+
+  # The QUIC twin of ci.yml's bench-check, which is TCP-only. Before this job
+  # bench-check-quic ran in no workflow at all. Its own job, so a regression
+  # reads as a benchmark failure rather than a red extended-gates. The
+  # allocation cases gate; the wall-clock cases are advisory until they are
+  # baselined from these runs (see the note in bench/baselines-quic.json).
+  bench-quic:
+    name: QUIC benchmark regression check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.17
+
+      - uses: ./.github/actions/setup-zig
+
+      - name: Restore Zig package cache
+        uses: actions/cache@v5
+        with:
+          path: .zig-global-cache/p
+          key: zig-packages-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
+
+      - name: Prefetch dependency tree
+        run: |
+          for attempt in 1 2 3; do
+            if zig build --fetch=all; then
+              exit 0
+            fi
+            echo "::warning::dependency fetch attempt ${attempt} failed"
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 20))
+            fi
+          done
+          echo "dependency fetch failed after 3 attempts"
+          exit 1
+
+      - name: Run QUIC benchmark regression checks
+        run: zig build -Dquic=true -Doptimize=ReleaseFast bench-check-quic

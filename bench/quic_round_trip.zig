@@ -45,7 +45,15 @@
 //!   bulk       — large payloads, `--payload N` bytes each (bytes/sec)
 //!
 //! `--json` prints the machine-readable line `tools/bench_check.zig` gates on
-//! (metrics: p50_ns, p99_ns, max_ns, calls_per_sec, bytes_per_sec).
+//! (metrics: p50_ns, p99_ns, max_ns, calls_per_sec, bytes_per_sec,
+//! alloc_count_per_call, alloc_bytes_per_call).
+//!
+//! Allocations are counted over the timed window on both ends (each end's
+//! Connection and Peer get their own thread-safe counting allocator, so
+//! anything quic-zig allocates through it is counted too) and reported per
+//! timed call. Measured 2026-10-03 on macOS and Linux: sequential is exact
+//! (31.000), pipelined and bulk move under 1% with batching. bench-check
+//! gates them hard.
 //!
 //! Usage: zig build -Dquic=true bench-quic -- [--mode sequential|pipelined|bulk]
 //!            [--calls N] [--warmup N] [--inflight K] [--payload BYTES] [--json]
@@ -73,6 +81,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
 const quic_zig = @import("quic");
+const alloc_counter = @import("alloc_counter.zig");
 
 const rpc = capnpc.rpc;
 const protocol = rpc.wire.protocol;
@@ -307,6 +316,15 @@ const Session = struct {
     /// Payload bytes issued inside the timed window, for bytes/sec.
     timed_payload_bytes: u64 = 0,
 
+    /// Allocation counters for each end, sampled at the timed window's
+    /// bounds alongside the timestamps above.
+    client_allocs: *const alloc_counter.SharedCountingAllocator,
+    server_allocs: *const alloc_counter.SharedCountingAllocator,
+    client_allocs_start: alloc_counter.Snapshot = undefined,
+    server_allocs_start: alloc_counter.Snapshot = undefined,
+    client_window: alloc_counter.WindowAllocs = .{},
+    server_window: alloc_counter.WindowAllocs = .{},
+
     fn totalCalls(self: *const Session) u32 {
         return self.cfg.warmup + self.cfg.calls;
     }
@@ -359,6 +377,8 @@ const Session = struct {
         const ceiling = self.maxInflight();
         while (self.issued < self.totalCalls() and (self.issued - self.completed) < ceiling) {
             if (self.issued == self.cfg.warmup) {
+                self.client_allocs_start = self.client_allocs.snapshot();
+                self.server_allocs_start = self.server_allocs.snapshot();
                 self.timed_start_ns = nowNs(self.io);
             }
             const slot = self.issued % ceiling;
@@ -406,6 +426,8 @@ const Session = struct {
 
         if (self.completed >= self.totalCalls()) {
             self.timed_end_ns = nowNs(self.io);
+            self.client_window = .between(self.client_allocs_start, self.client_allocs.snapshot());
+            self.server_window = .between(self.server_allocs_start, self.server_allocs.snapshot());
             self.conn.close();
             return;
         }
@@ -567,7 +589,15 @@ pub fn main(init: std.process.Init) !void {
     const recv_buffer: ?usize = if (cfg.udp_buffer) |b| (if (b == 0) null else b) else quic.default_udp_socket_recv_buffer_bytes;
     const send_buffer: ?usize = if (cfg.udp_buffer) |b| (if (b == 0) null else b) else quic.default_udp_socket_send_buffer_bytes;
 
-    var server_conn = try quic.Connection.initServer(allocator, io, .{
+    // Each end's Connection and Peer allocate through their own counter;
+    // the relay and the harness buffers stay on the raw allocator so they
+    // never enter the counts.
+    var server_counter = alloc_counter.SharedCountingAllocator.init(allocator);
+    var client_counter = alloc_counter.SharedCountingAllocator.init(allocator);
+    const server_allocator = server_counter.allocator();
+    const client_allocator = client_counter.allocator();
+
+    var server_conn = try quic.Connection.initServer(server_allocator, io, .{
         .listen_addr = .{ .ip4 = .loopback(0) },
         .tls_cert_pem = cert_pem,
         .tls_key_pem = key_pem,
@@ -591,7 +621,7 @@ pub fn main(init: std.process.Init) !void {
         t.join();
     };
 
-    var client_conn = try quic.Connection.initClient(allocator, io, .{
+    var client_conn = try quic.Connection.initClient(client_allocator, io, .{
         .remote_addr = if (relay) |*r| r.address() else server_conn.getAddress(),
         .server_name = "localhost",
         .insecure_skip_verify = true,
@@ -605,7 +635,7 @@ pub fn main(init: std.process.Init) !void {
     });
     defer client_conn.deinit();
 
-    var server_peer = Peer.init(allocator, &server_conn);
+    var server_peer = Peer.init(server_allocator, &server_conn);
     defer server_peer.deinit();
     server_peer.disableThreadAffinity();
     _ = try server_peer.setBootstrap(.{
@@ -626,7 +656,7 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(payload_buf);
     for (payload_buf, 0..) |*b, i| b.* = @truncate(i);
 
-    var client_peer = Peer.init(allocator, &client_conn);
+    var client_peer = Peer.init(client_allocator, &client_conn);
     defer client_peer.deinit();
     client_peer.disableThreadAffinity();
 
@@ -637,6 +667,8 @@ pub fn main(init: std.process.Init) !void {
         .samples = samples,
         .send_ts = send_ts,
         .payload_buf = payload_buf,
+        .client_allocs = &client_counter,
+        .server_allocs = &server_counter,
     };
 
     client_peer.start(&session, Session.onPeerError, Session.onPeerClose);
@@ -675,12 +707,14 @@ pub fn main(init: std.process.Init) !void {
 
     const timed_ns = session.timed_end_ns -| session.timed_start_ns;
     const stats = computeStats(samples[0..session.recorded], timed_ns, session.timed_payload_bytes);
+    const window = session.client_window.plus(session.server_window);
+    const timed_calls: usize = session.recorded;
 
-    var out_buffer: [1024]u8 = undefined;
+    var out_buffer: [1536]u8 = undefined;
     var out = std.Io.File.stdout().writer(io, &out_buffer);
     if (cfg.json) {
         try out.interface.print(
-            "{{\"benchmark\":\"quic_round_trip\",\"transport\":\"{s}\",\"uni_window\":{d},\"bidi_window\":{d},\"rtt_ms\":{d},\"mode\":\"{s}\",\"calls\":{d},\"warmup\":{d},\"inflight\":{d},\"payload\":{d},\"samples\":{d},\"timed_ns\":{d},\"p50_ns\":{d:.3},\"p99_ns\":{d:.3},\"max_ns\":{d:.3},\"min_ns\":{d:.3},\"mean_ns\":{d:.3},\"calls_per_sec\":{d:.3},\"bytes_per_sec\":{d:.3}}}\n",
+            "{{\"benchmark\":\"quic_round_trip\",\"transport\":\"{s}\",\"uni_window\":{d},\"bidi_window\":{d},\"rtt_ms\":{d},\"mode\":\"{s}\",\"calls\":{d},\"warmup\":{d},\"inflight\":{d},\"payload\":{d},\"samples\":{d},\"timed_ns\":{d},\"p50_ns\":{d:.3},\"p99_ns\":{d:.3},\"max_ns\":{d:.3},\"min_ns\":{d:.3},\"mean_ns\":{d:.3},\"calls_per_sec\":{d:.3},\"bytes_per_sec\":{d:.3},\"alloc_count\":{d},\"alloc_bytes\":{d},\"alloc_count_per_call\":{d:.3},\"alloc_bytes_per_call\":{d:.3},\"client_alloc_count_per_call\":{d:.3},\"server_alloc_count_per_call\":{d:.3}}}\n",
             .{
                 @tagName(cfg.transport),
                 params.initial_max_streams_uni,
@@ -700,6 +734,12 @@ pub fn main(init: std.process.Init) !void {
                 stats.mean_ns,
                 stats.calls_per_sec,
                 stats.bytes_per_sec,
+                window.alloc_count,
+                window.alloc_bytes,
+                window.countPer(timed_calls),
+                window.bytesPer(timed_calls),
+                session.client_window.countPer(timed_calls),
+                session.server_window.countPer(timed_calls),
             },
         );
     } else {
@@ -714,6 +754,12 @@ pub fn main(init: std.process.Init) !void {
                 stats.bytes_per_sec / (1024.0 * 1024.0),
             });
         }
+        try out.interface.print("allocs/call: {d:.3} (client {d:.3}, server {d:.3})\n", .{
+            window.countPer(timed_calls),
+            session.client_window.countPer(timed_calls),
+            session.server_window.countPer(timed_calls),
+        });
+        try out.interface.print("alloc bytes/call: {d:.1}\n", .{window.bytesPer(timed_calls)});
     }
     try out.interface.flush();
 }

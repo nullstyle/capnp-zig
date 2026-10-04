@@ -1,5 +1,6 @@
 {
   "max_regression_pct": 30.0,
+  "note": "Wall-clock baselines (ns_per_iter, p50/p99, calls_per_sec) come from CI ubuntu-latest: worst of 5 green runs on main, 2026-07-29 (6460319). A laptop runs these 3-5x faster, so re-take them from CI, never locally. Allocation baselines do not depend on the machine. The bench-rpc ones were taken 2026-10-03 on Zig 0.17.0 in ReleaseFast, as the maximum per-call value over macOS arm64 (idle, and under a load average above 40), Linux arm64 and Linux x86_64 (container) runs. Pipelined counts rise about 0.5% under heavy load, and sequential ones by under 1%. The bands catch one extra allocation per call on either end. Client and server counts are gated separately, because +1 allocation is only 3% of the ~33-allocation total.",
   "cases": [
     {
       "name": "ping_pong_default",
@@ -350,6 +351,70 @@
       "baseline": 39997.43,
       "max_regression_pct": 35.0,
       "higher_is_better": true
+    },
+    {
+      "name": "rpc_round_trip_seq_allocs",
+      "binary": "./zig-out/bin/bench-rpc",
+      "args": ["--mode", "sequential", "--calls", "10000", "--warmup", "2000", "--json"],
+      "metric": "alloc_count_per_call",
+      "baseline": 33.25,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "rpc_round_trip_seq_client_allocs",
+      "binary": "./zig-out/bin/bench-rpc",
+      "args": ["--mode", "sequential", "--calls", "10000", "--warmup", "2000", "--json"],
+      "metric": "client_alloc_count_per_call",
+      "baseline": 15.25,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "rpc_round_trip_seq_server_allocs",
+      "binary": "./zig-out/bin/bench-rpc",
+      "args": ["--mode", "sequential", "--calls", "10000", "--warmup", "2000", "--json"],
+      "metric": "server_alloc_count_per_call",
+      "baseline": 18.0,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "rpc_round_trip_seq_alloc_bytes",
+      "binary": "./zig-out/bin/bench-rpc",
+      "args": ["--mode", "sequential", "--calls", "10000", "--warmup", "2000", "--json"],
+      "metric": "alloc_bytes_per_call",
+      "baseline": 7505.0,
+      "max_regression_pct": 5.0
+    },
+    {
+      "name": "rpc_round_trip_pipelined_allocs",
+      "binary": "./zig-out/bin/bench-rpc",
+      "args": ["--mode", "pipelined", "--calls", "20000", "--warmup", "2000", "--inflight", "32", "--json"],
+      "metric": "alloc_count_per_call",
+      "baseline": 31.8,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "rpc_round_trip_pipelined_client_allocs",
+      "binary": "./zig-out/bin/bench-rpc",
+      "args": ["--mode", "pipelined", "--calls", "20000", "--warmup", "2000", "--inflight", "32", "--json"],
+      "metric": "client_alloc_count_per_call",
+      "baseline": 14.35,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "rpc_round_trip_pipelined_server_allocs",
+      "binary": "./zig-out/bin/bench-rpc",
+      "args": ["--mode", "pipelined", "--calls", "20000", "--warmup", "2000", "--inflight", "32", "--json"],
+      "metric": "server_alloc_count_per_call",
+      "baseline": 17.5,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "rpc_round_trip_pipelined_alloc_bytes",
+      "binary": "./zig-out/bin/bench-rpc",
+      "args": ["--mode", "pipelined", "--calls", "20000", "--warmup", "2000", "--inflight", "32", "--json"],
+      "metric": "alloc_bytes_per_call",
+      "baseline": 7335.0,
+      "max_regression_pct": 5.0
     }
   ]
 }

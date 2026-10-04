@@ -225,7 +225,9 @@ handshake; the TCP soak lanes stay report-only for now.
 In CI the *pipelined throughput* case is enforced; the *sequential latency*
 cases are advisory (a shared runner cannot measure a serialized round-trip
 reliably — see [`stability.md`](stability.md)), and gate on a quiet machine via
-`bench-check -- --enforce-advisory`.
+`bench-check -- --enforce-advisory`. Allocations per call, counted separately
+on the client and the server, gate in both modes. The Nightly workflow gates
+the same counts over QUIC (`bench-check-quic`).
 Answer-lifecycle regressions also cover synchronous transports where `Finish`
 re-enters during a results — or Bootstrap — `Return` send: parked
 promised-answer calls replay before the recorded answer is immediately cleaned

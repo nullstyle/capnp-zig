@@ -229,6 +229,15 @@ integer, so the snapshots used to differ by the platform that generated them.
   Treat the allocation metrics as the deterministic signal and the wall-clock
   cases as coarse.
 
+  `bench-rpc` also counts allocations per call over its timed window, on the
+  client and the server separately, and those counts gate hard in CI. A round
+  trip makes about 33 allocations, so one extra is only 3% of the total. The
+  per-side counts carry 3% bands over the highest value observed on macOS and
+  Linux, which is enough to catch one extra allocation per call on either
+  end. `bench-check-quic` gates the same counts for QUIC in the Nightly
+  workflow. Its wall-clock cases stay advisory until they are baselined from
+  that job.
+
   Answer-lifecycle regressions additionally cover
   synchronous reentrant `Finish` during results and Bootstrap `Return`
   delivery (queued promised-answer replay before immediate cleanup), the

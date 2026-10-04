@@ -163,6 +163,11 @@ test-rpc-quic-evidence optimize="Debug":
 bench-check:
     zig build -Doptimize=ReleaseFast bench-check
 
+# Run QUIC benchmark regression checks (capnp code ReleaseFast; quic-zig and
+# BoringSSL build ReleaseSafe, the only release mode quic-zig offers)
+bench-check-quic:
+    zig build -Dquic=true -Doptimize=ReleaseFast bench-check-quic
+
 # Run the RPC soak harness (chaos + deadline sessions over loopback TCP)
 soak seconds="5" workers="4":
     zig build soak -- --seconds {{ seconds }} --workers {{ workers }}

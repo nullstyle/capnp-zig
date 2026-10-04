@@ -11,9 +11,15 @@
 //! Reports p50 / p99 / max latency (ns) and calls/sec for the timed window,
 //! after a warmup phase that is excluded from the statistics.
 //!
+//! Allocation activity is counted over the same timed window on both ends
+//! (client and server each get their own thread-safe counting allocator)
+//! and reported per timed call: `alloc_count_per_call` and
+//! `alloc_bytes_per_call`. Unlike the latency numbers these are nearly
+//! deterministic, so bench-check gates them hard on every machine.
+//!
 //! Emitting `--json` prints a machine-readable line consumed by
 //! tools/bench_check.zig for regression gating (metrics: p50_ns, p99_ns,
-//! max_ns, calls_per_sec).
+//! max_ns, calls_per_sec, alloc_count_per_call, alloc_bytes_per_call).
 //!
 //! Usage: zig build bench-rpc -- [--mode sequential|pipelined] [--calls N]
 //!                               [--warmup N] [--inflight K] [--json]
@@ -21,6 +27,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
+const alloc_counter = @import("alloc_counter.zig");
 
 const rpc = capnpc.rpc;
 const protocol = rpc.wire.protocol;
@@ -104,6 +111,15 @@ const Session = struct {
     timed_start_ns: u64 = 0,
     timed_end_ns: u64 = 0,
 
+    // Allocation counters for each end, sampled at the timed window's
+    // bounds alongside the timestamps above.
+    client_allocs: *const alloc_counter.SharedCountingAllocator,
+    server_allocs: *const alloc_counter.SharedCountingAllocator,
+    client_allocs_start: alloc_counter.Snapshot = undefined,
+    server_allocs_start: alloc_counter.Snapshot = undefined,
+    client_window: alloc_counter.WindowAllocs = .{},
+    server_window: alloc_counter.WindowAllocs = .{},
+
     fn totalCalls(self: *const Session) u32 {
         return self.cfg.warmup + self.cfg.calls;
     }
@@ -152,6 +168,8 @@ const Session = struct {
         while (self.issued < self.totalCalls() and (self.issued - self.completed) < ceiling) {
             // The first post-warmup issue opens the timed window.
             if (self.issued == self.cfg.warmup) {
+                self.client_allocs_start = self.client_allocs.snapshot();
+                self.server_allocs_start = self.server_allocs.snapshot();
                 self.timed_start_ns = nowNs(self.io);
             }
             const slot = self.issued % ceiling;
@@ -200,6 +218,8 @@ const Session = struct {
 
         if (self.completed >= self.totalCalls()) {
             self.timed_end_ns = nowNs(self.io);
+            self.client_window = .between(self.client_allocs_start, self.client_allocs.snapshot());
+            self.server_window = .between(self.server_allocs_start, self.server_allocs.snapshot());
             self.conn.close();
             return;
         }
@@ -340,9 +360,18 @@ pub fn main(init: std.process.Init) !void {
         return;
     }) orelse return;
 
+    // Every allocation the RPC stack makes goes through one of these: the
+    // server's (the WorkerPool and everything it creates per connection)
+    // and the client's (its Connection and Peer). Harness-owned buffers
+    // stay on the raw allocator so they never enter the counts.
+    var server_counter = alloc_counter.SharedCountingAllocator.init(allocator);
+    var client_counter = alloc_counter.SharedCountingAllocator.init(allocator);
+    const server_allocator = server_counter.allocator();
+    const client_allocator = client_counter.allocator();
+
     // -- Stand up the loopback echo server --------------------------------
     var pool = try WorkerPool.init(
-        allocator,
+        server_allocator,
         io,
         .{ .ip4 = .loopback(0) },
         undefined,
@@ -363,14 +392,14 @@ pub fn main(init: std.process.Init) !void {
     // bench measures the kernel's coalescing timer instead of the RPC stack.
     rpc.transport.tcp.runtime.setTcpNoDelay(.{ .handle = fd });
 
-    const conn = try allocator.create(Connection);
-    conn.* = try Connection.init(allocator, io, .{ .handle = fd }, .{
+    const conn = try client_allocator.create(Connection);
+    conn.* = try Connection.init(client_allocator, io, .{ .handle = fd }, .{
         .tick_interval_ms = 5,
         .idle_timeout_ms = 30_000,
     });
 
-    const peer = try allocator.create(Peer);
-    peer.* = Peer.init(allocator, conn);
+    const peer = try client_allocator.create(Peer);
+    peer.* = Peer.init(client_allocator, conn);
     peer.setClockIo(io);
 
     const samples = try allocator.alloc(u64, cfg.calls);
@@ -388,6 +417,8 @@ pub fn main(init: std.process.Init) !void {
         .cfg = &cfg,
         .samples = samples,
         .send_ts = send_ts,
+        .client_allocs = &client_counter,
+        .server_allocs = &server_counter,
     };
 
     peer.start(null, Session.onPeerError, Session.onPeerClose);
@@ -398,9 +429,9 @@ pub fn main(init: std.process.Init) !void {
 
     _ = peer.takeAttachedConnection(*Connection);
     peer.deinit();
-    allocator.destroy(peer);
+    client_allocator.destroy(peer);
     conn.deinit();
-    allocator.destroy(conn);
+    client_allocator.destroy(conn);
 
     // -- Drain the server -------------------------------------------------
     pool.shutdownGraceful(2_000);
@@ -418,12 +449,14 @@ pub fn main(init: std.process.Init) !void {
 
     const timed_ns = session.timed_end_ns -| session.timed_start_ns;
     const stats = computeStats(session.samples[0..session.recorded], timed_ns);
+    const window = session.client_window.plus(session.server_window);
+    const timed_calls: usize = session.recorded;
 
     if (cfg.json) {
-        var out_buffer: [1024]u8 = undefined;
+        var out_buffer: [1536]u8 = undefined;
         var out = std.Io.File.stdout().writer(io, &out_buffer);
         try out.interface.print(
-            "{{\"benchmark\":\"rpc_round_trip\",\"mode\":\"{s}\",\"calls\":{d},\"warmup\":{d},\"inflight\":{d},\"samples\":{d},\"timed_ns\":{d},\"p50_ns\":{d:.3},\"p99_ns\":{d:.3},\"max_ns\":{d:.3},\"min_ns\":{d:.3},\"mean_ns\":{d:.3},\"calls_per_sec\":{d:.3}}}\n",
+            "{{\"benchmark\":\"rpc_round_trip\",\"mode\":\"{s}\",\"calls\":{d},\"warmup\":{d},\"inflight\":{d},\"samples\":{d},\"timed_ns\":{d},\"p50_ns\":{d:.3},\"p99_ns\":{d:.3},\"max_ns\":{d:.3},\"min_ns\":{d:.3},\"mean_ns\":{d:.3},\"calls_per_sec\":{d:.3},\"alloc_count\":{d},\"alloc_bytes\":{d},\"alloc_count_per_call\":{d:.3},\"alloc_bytes_per_call\":{d:.3},\"client_alloc_count_per_call\":{d:.3},\"server_alloc_count_per_call\":{d:.3}}}\n",
             .{
                 @tagName(cfg.mode),
                 cfg.calls,
@@ -437,6 +470,12 @@ pub fn main(init: std.process.Init) !void {
                 stats.min_ns,
                 stats.mean_ns,
                 stats.calls_per_sec,
+                window.alloc_count,
+                window.alloc_bytes,
+                window.countPer(timed_calls),
+                window.bytesPer(timed_calls),
+                session.client_window.countPer(timed_calls),
+                session.server_window.countPer(timed_calls),
             },
         );
         try out.interface.flush();
@@ -456,5 +495,11 @@ pub fn main(init: std.process.Init) !void {
     try out.interface.print("min latency: {d:.0} ns\n", .{stats.min_ns});
     try out.interface.print("mean latency: {d:.0} ns\n", .{stats.mean_ns});
     try out.interface.print("calls/sec: {d:.1}\n", .{stats.calls_per_sec});
+    try out.interface.print("allocs/call: {d:.3} (client {d:.3}, server {d:.3})\n", .{
+        window.countPer(timed_calls),
+        session.client_window.countPer(timed_calls),
+        session.server_window.countPer(timed_calls),
+    });
+    try out.interface.print("alloc bytes/call: {d:.1}\n", .{window.bytesPer(timed_calls)});
     try out.interface.flush();
 }

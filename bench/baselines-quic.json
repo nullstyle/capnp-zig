@@ -1,12 +1,13 @@
 {
   "max_regression_pct": 50.0,
+  "note": "Re-taken 2026-10-03 on the current tree: quic v0.24.1, capnp code ReleaseFast, quic-zig and BoringSSL ReleaseSafe. Every QUIC number before 6ba1613 had quic-zig built in Debug, which made it 2-7x slower. Wall-clock cases are the worst of 7 runs on a macOS arm64 laptop (load average about 6). They are ADVISORY: no CI runner has measured them, and a laptop is several times faster than ubuntu-latest. Re-take them as the worst of 5 green Nightly bench-quic runs, then drop `advisory`. Allocation cases do not depend on the machine. They are the maximum per-call value over macOS arm64, Linux arm64 and Linux x86_64 (container) runs, and they gate. Sequential counts are exact (31.000) everywhere; pipelined and bulk counts vary by under 1%.",
   "cases": [
     {
       "name": "quic_round_trip_seq_p50",
       "binary": "./zig-out/bin/bench-quic",
       "args": ["--mode", "sequential", "--calls", "500", "--warmup", "100", "--json"],
       "metric": "p50_ns",
-      "baseline": 136250.0,
+      "baseline": 62792.0,
       "max_regression_pct": 60.0,
       "advisory": true
     },
@@ -15,7 +16,7 @@
       "binary": "./zig-out/bin/bench-quic",
       "args": ["--mode", "sequential", "--calls", "500", "--warmup", "100", "--json"],
       "metric": "p99_ns",
-      "baseline": 182042.0,
+      "baseline": 83750.0,
       "max_regression_pct": 75.0,
       "advisory": true
     },
@@ -24,27 +25,126 @@
       "binary": "./zig-out/bin/bench-quic",
       "args": ["--mode", "sequential", "--calls", "500", "--warmup", "100", "--json"],
       "metric": "calls_per_sec",
-      "baseline": 7188.0,
+      "baseline": 15431.0,
       "max_regression_pct": 40.0,
-      "higher_is_better": true
+      "higher_is_better": true,
+      "advisory": true
+    },
+    {
+      "name": "quic_round_trip_seq_allocs",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "sequential", "--calls", "500", "--warmup", "100", "--json"],
+      "metric": "alloc_count_per_call",
+      "baseline": 31.0,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "quic_round_trip_seq_client_allocs",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "sequential", "--calls", "500", "--warmup", "100", "--json"],
+      "metric": "client_alloc_count_per_call",
+      "baseline": 14.0,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "quic_round_trip_seq_server_allocs",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "sequential", "--calls", "500", "--warmup", "100", "--json"],
+      "metric": "server_alloc_count_per_call",
+      "baseline": 17.0,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "quic_round_trip_seq_alloc_bytes",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "sequential", "--calls", "500", "--warmup", "100", "--json"],
+      "metric": "alloc_bytes_per_call",
+      "baseline": 7192.0,
+      "max_regression_pct": 5.0
     },
     {
       "name": "quic_round_trip_pipelined_calls_per_sec",
       "binary": "./zig-out/bin/bench-quic",
       "args": ["--mode", "pipelined", "--calls", "500", "--warmup", "100", "--inflight", "16", "--json"],
       "metric": "calls_per_sec",
-      "baseline": 35670.0,
+      "baseline": 175788.0,
       "max_regression_pct": 40.0,
-      "higher_is_better": true
+      "higher_is_better": true,
+      "advisory": true
+    },
+    {
+      "name": "quic_round_trip_pipelined_allocs",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "pipelined", "--calls", "500", "--warmup", "100", "--inflight", "16", "--json"],
+      "metric": "alloc_count_per_call",
+      "baseline": 31.85,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "quic_round_trip_pipelined_client_allocs",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "pipelined", "--calls", "500", "--warmup", "100", "--inflight", "16", "--json"],
+      "metric": "client_alloc_count_per_call",
+      "baseline": 14.25,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "quic_round_trip_pipelined_server_allocs",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "pipelined", "--calls", "500", "--warmup", "100", "--inflight", "16", "--json"],
+      "metric": "server_alloc_count_per_call",
+      "baseline": 17.6,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "quic_round_trip_pipelined_alloc_bytes",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "pipelined", "--calls", "500", "--warmup", "100", "--inflight", "16", "--json"],
+      "metric": "alloc_bytes_per_call",
+      "baseline": 7330.0,
+      "max_regression_pct": 5.0
     },
     {
       "name": "quic_bulk_bytes_per_sec",
       "binary": "./zig-out/bin/bench-quic",
       "args": ["--mode", "bulk", "--calls", "300", "--warmup", "50", "--payload", "65536", "--json"],
       "metric": "bytes_per_sec",
-      "baseline": 11441000.0,
+      "baseline": 86550211.0,
       "max_regression_pct": 40.0,
-      "higher_is_better": true
+      "higher_is_better": true,
+      "advisory": true
+    },
+    {
+      "name": "quic_bulk_allocs",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "bulk", "--calls", "300", "--warmup", "50", "--payload", "65536", "--json"],
+      "metric": "alloc_count_per_call",
+      "baseline": 32.65,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "quic_bulk_client_allocs",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "bulk", "--calls", "300", "--warmup", "50", "--payload", "65536", "--json"],
+      "metric": "client_alloc_count_per_call",
+      "baseline": 14.41,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "quic_bulk_server_allocs",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "bulk", "--calls", "300", "--warmup", "50", "--payload", "65536", "--json"],
+      "metric": "server_alloc_count_per_call",
+      "baseline": 18.24,
+      "max_regression_pct": 3.0
+    },
+    {
+      "name": "quic_bulk_alloc_bytes",
+      "binary": "./zig-out/bin/bench-quic",
+      "args": ["--mode", "bulk", "--calls", "300", "--warmup", "50", "--payload", "65536", "--json"],
+      "metric": "alloc_bytes_per_call",
+      "baseline": 338600.0,
+      "max_regression_pct": 5.0
     }
   ]
 }

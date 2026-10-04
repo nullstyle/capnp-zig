@@ -97,6 +97,8 @@ const allowlist = [_]Allow{
     .{ .path = "src/io_backend.zig", .kind = .unchecked_unreachable, .needle = "if (comptime !evented_available) unreachable;", .reason = "Backend.init rejects unsupported Evented targets; this is reachable only through manual union construction" },
     .{ .path = ".github/workflows/ci.yml", .kind = .unsafe_optimize, .needle = "zig build -Doptimize=ReleaseFast bench-check", .reason = "benchmark-only job intentionally runs optimized code for stable timing" },
     .{ .path = "Justfile", .kind = .unsafe_optimize, .needle = "zig build -Doptimize=ReleaseFast bench-check", .reason = "benchmark-only local recipe intentionally runs optimized code for stable timing" },
+    .{ .path = "Justfile", .kind = .unsafe_optimize, .needle = "zig build -Dquic=true -Doptimize=ReleaseFast bench-check-quic", .reason = "QUIC benchmark-only local recipe, same policy as bench-check; quic-zig itself still builds ReleaseSafe" },
+    .{ .path = ".github/workflows/nightly.yml", .kind = .unsafe_optimize, .needle = "zig build -Dquic=true -Doptimize=ReleaseFast bench-check-quic", .reason = "QUIC benchmark-only nightly job, same policy as ci.yml's bench-check; runs no shipped artifact" },
     .{ .path = ".github/workflows/ci.yml", .kind = .unsafe_optimize, .needle = "Run teardown-heavy RPC suites under ReleaseFast", .reason = "memory-safety lane: ReleaseFast is the only mode that leaves freed memory unpoisoned, so a use-after-free reached from a destructor is observable there and nowhere else -- it caught the HostPeer.deinit ordering bug that Debug and ReleaseSafe both passed. Runs no shipped artifact and gates no release; accepts that `unreachable` is UB in this mode, which is why the lane is scoped to RPC teardown suites rather than the whole tree" },
     .{ .path = "build/build_impl.zig", .kind = .unsafe_optimize, .needle = "const release_fast_optimize: std.builtin.OptimizeMode = .ReleaseFast;", .reason = "reviewed compile mode for the bounded teardown and schema-ownership memory-safety lane; it builds no shipped artifact and exists specifically to expose unpoisoned use-after-free behavior" },
 
@@ -160,6 +162,9 @@ const build_policy_files = [_][]const u8{
     "build/build_impl.zig",
     "Justfile",
     ".github/workflows/ci.yml",
+    // Scanned since it gained an optimized benchmark job; before that it
+    // held only Debug/ReleaseSafe lanes and nobody checked that it stayed so.
+    ".github/workflows/nightly.yml",
 };
 
 const Context = struct {

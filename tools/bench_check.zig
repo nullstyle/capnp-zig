@@ -19,10 +19,15 @@ const Case = struct {
     // when out of band) so a real regression remains visible, and they stay
     // enforceable on a quiet machine via `--enforce-advisory`.
     advisory: bool = false,
+    // Free text the checker ignores: where and how this baseline was taken.
+    // A number whose provenance is unknown cannot be re-taken comparably.
+    note: ?[]const u8 = null,
 };
 
 const Baselines = struct {
     max_regression_pct: f64 = 30.0,
+    // Free text the checker ignores; see `Case.note`.
+    note: ?[]const u8 = null,
     cases: []const Case,
 };
 
@@ -87,17 +92,39 @@ fn metricFromJson(root: std.json.Value, metric: []const u8) !f64 {
     };
 }
 
-fn runCase(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    case: Case,
-    default_max_regression_pct: f64,
-    override_max_regression_pct: ?f64,
-    // True when a miss actually fails the gate. Only affects the printed
-    // label, so an out-of-band advisory case under --enforce-advisory reads
-    // [FAIL] (which is what it does) rather than [WARN].
-    gates: bool,
-) !bool {
+/// One benchmark invocation's result. Several cases usually read different
+/// metrics from the same command line (p50, p99, calls/sec, allocations), so
+/// each distinct command runs ONCE per bench-check and every case sharing it
+/// reads the same JSON. Before this, each case re-ran its binary: the RPC
+/// sequential bench ran three times to produce three numbers from one line.
+const Run = struct {
+    binary: []const u8,
+    args: []const []const u8,
+    outcome: Outcome,
+
+    const Outcome = union(enum) {
+        ok: std.json.Parsed(std.json.Value),
+        /// Exited non-zero; its output was printed when it ran.
+        command_failed,
+        /// Could not spawn it, or its stdout was not JSON.
+        harness_error: anyerror,
+    };
+
+    fn matches(self: *const Run, case: Case) bool {
+        if (!std.mem.eql(u8, self.binary, case.binary)) return false;
+        if (self.args.len != case.args.len) return false;
+        for (self.args, case.args) |a, b| {
+            if (!std.mem.eql(u8, a, b)) return false;
+        }
+        return true;
+    }
+};
+
+fn runBenchmark(allocator: std.mem.Allocator, io: std.Io, case: Case) Run.Outcome {
+    return runBenchmarkInner(allocator, io, case) catch |err| .{ .harness_error = err };
+}
+
+fn runBenchmarkInner(allocator: std.mem.Allocator, io: std.Io, case: Case) !Run.Outcome {
     const argv = try allocator.alloc([]const u8, case.args.len + 1);
     defer allocator.free(argv);
     argv[0] = case.binary;
@@ -112,15 +139,30 @@ fn runCase(
     defer allocator.free(result.stderr);
 
     if (!(result.term == .exited and result.term.exited == 0)) {
-        std.debug.print("[FAIL] {s}: benchmark command failed\n", .{case.name});
+        // Printed once per command; each case reading it reports its own [FAIL].
+        std.debug.print("{s}: benchmark command failed ({any})\n", .{ case.binary, result.term });
         if (result.stdout.len > 0) std.debug.print("stdout:\n{s}\n", .{result.stdout});
         if (result.stderr.len > 0) std.debug.print("stderr:\n{s}\n", .{result.stderr});
-        return false;
+        return .command_failed;
     }
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
-    defer parsed.deinit();
-    const actual = try metricFromJson(parsed.value, case.metric);
+    // alloc_always: the parsed value outlives `result.stdout`.
+    return .{ .ok = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{
+        .allocate = .alloc_always,
+    }) };
+}
+
+fn checkCase(
+    root: std.json.Value,
+    case: Case,
+    default_max_regression_pct: f64,
+    override_max_regression_pct: ?f64,
+    // True when a miss actually fails the gate. Only affects the printed
+    // label, so an out-of-band advisory case under --enforce-advisory reads
+    // [FAIL] (which is what it does) rather than [WARN].
+    gates: bool,
+) !bool {
+    const actual = try metricFromJson(root, case.metric);
 
     const max_pct = override_max_regression_pct orelse case.max_regression_pct orelse default_max_regression_pct;
     if (case.higher_is_better) {
@@ -190,16 +232,48 @@ pub fn main(init: std.process.Init) !void {
         return error.NoBenchmarkCases;
     }
 
+    var runs: std.ArrayList(Run) = .empty;
+    defer {
+        for (runs.items) |*run| switch (run.outcome) {
+            .ok => |*json| json.deinit(),
+            .command_failed, .harness_error => {},
+        };
+        runs.deinit(allocator);
+    }
+
     var failures: usize = 0;
     var advisories: usize = 0;
     for (baselines.cases) |case| {
         // An advisory case never fails the gate unless --enforce-advisory.
-        // A harness error (could not run / could not parse) always fails,
-        // advisory or not: that is a broken benchmark, not a noisy metric.
+        // A harness error (could not run / exited non-zero / could not
+        // parse) always fails, advisory or not: that is a broken benchmark,
+        // not a noisy metric.
         const gates = !case.advisory or opts.enforce_advisory;
-        const pass = runCase(
-            allocator,
-            io,
+        const run: *const Run = for (runs.items) |*run| {
+            if (run.matches(case)) break run;
+        } else blk: {
+            try runs.append(allocator, .{
+                .binary = case.binary,
+                .args = case.args,
+                .outcome = runBenchmark(allocator, io, case),
+            });
+            break :blk &runs.items[runs.items.len - 1];
+        };
+        const root = switch (run.outcome) {
+            .ok => |json| json.value,
+            .command_failed => {
+                failures += 1;
+                std.debug.print("[FAIL] {s}: benchmark command failed\n", .{case.name});
+                continue;
+            },
+            .harness_error => |err| {
+                failures += 1;
+                std.debug.print("[FAIL] {s}: {s}\n", .{ case.name, @errorName(err) });
+                continue;
+            },
+        };
+        const pass = checkCase(
+            root,
             case,
             baselines.max_regression_pct,
             opts.max_regression_pct_override,
