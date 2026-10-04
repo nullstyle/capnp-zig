@@ -1,11 +1,16 @@
-# Upgrading to capnp-zig v0.19.0
+# Upgrading to capnp-zig v0.19.x
+
+> **Use v0.19.1, not v0.19.0.** v0.19.1 moves QUIC to quic-zig v0.25.0, which
+> fixes a denial of service: one unauthenticated datagram could end any
+> capnp-zig QUIC connection, client or server (CHANGELOG `0.19.1`, Security).
+> The rest of this guide applies to both.
 
 This guide is for projects that depend on capnp-zig. v0.19.0 is one release
 that bundles three moves:
 
 - the tagged Zig 0.17.0 toolchain;
 - quic-zig v0.19.0 -> v0.24.1 (no lifetime stream cap; stream limits are a
-  window);
+  window), then v0.25.0 in v0.19.1 for the security fix;
 - the sprint in [sprint-plan-2026-10-03.md](sprint-plan-2026-10-03.md):
   named builder error sets, the pinnable plugin, the codegen skew guard,
   QUIC sessions at TCP parity, and liveness fixes.
@@ -21,39 +26,40 @@ described under `### Added`. The checklist below covers all of them.
 | Component | Version | Pin |
 |---|---|---|
 | Zig | `0.17.0` (tagged) | `mise.toml`: `zig = "0.17.0"`; `build.zig.zon`: `.minimum_zig_version = "0.17.0"` |
-| capnp-zig | `v0.19.0` | `capnpc_zig-0.19.0-nUduFWLTQQAsgb3qilUHJzAhPiQBHKsT8SPphkT3ZK5-` |
-| quic-zig | `v0.24.1` (tag at `4564995`) | `quic-0.24.1-DnSYvRqMNADDwuJG9qlOxfaaUIGacBiERjfZ5DINt3RH` |
+| capnp-zig | `v0.19.1` | `capnpc_zig-0.19.1-...` (recorded after the tag) |
+| quic-zig | `v0.25.0` (tag at `67f0fea`) | `quic-0.25.0-DnSYvcRANgAnmiJVo3UPd3XOuezmr8Ia1mXeqXgow4vw` |
 | boringssl-zig | `0.6.7` (`ff30fe99`), through quic | none (quic pins it) |
 
 capnp-zig pin (let `zig fetch --save` write the hash):
 
 ```sh
-zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.19.0
+zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.19.1
 ```
 
 ```zig
 .capnpc_zig = .{
-    .url = "git+https://github.com/nullstyle/capnp-zig.git#v0.19.0",
-    .hash = "capnpc_zig-0.19.0-nUduFWLTQQAsgb3qilUHJzAhPiQBHKsT8SPphkT3ZK5-",
+    .url = "git+https://github.com/nullstyle/capnp-zig.git#v0.19.1",
+    .hash = "capnpc_zig-0.19.1-...",
 },
 ```
 
 `zig fetch --save` can record the URL with the resolved commit
 (`...git?ref=v0.19.0#<commit>`). That is the same pin. The tarball form
-(`https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.19.0.tar.gz`)
+(`https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.19.1.tar.gz`)
 also works. Both forms gave the same hash for v0.18.0.
 
 quic pin, for builds that also depend on quic directly:
 
 ```zig
 .quic = .{
-    .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.24.1.tar.gz",
-    .hash = "quic-0.24.1-DnSYvRqMNADDwuJG9qlOxfaaUIGacBiERjfZ5DINt3RH",
+    .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.25.0.tar.gz",
+    .hash = "quic-0.25.0-DnSYvcRANgAnmiJVo3UPd3XOuezmr8Ia1mXeqXgow4vw",
 },
 ```
 
-Stay on quic `v0.24.1`. capnp-zig v0.19.0 pins it and is tested only
-against it.
+Stay on quic `v0.25.0`. capnp-zig v0.19.1 pins it and is tested only
+against it. Never pin anything older: every quic tag before v0.25.0 has the
+unauthenticated-datagram fault.
 
 ### The one-quic-module rule
 
@@ -132,8 +138,8 @@ Do the items that apply. Each item names the change and what to do.
      `@memcpy` where the slices can overlap, such as in-place queue
      compaction (`items[head..]` into `items[0..len]`): `@memcpy` on
      overlapping slices panics in safe builds.
-2. **Bump the pin** to `v0.19.0` (above). If you build QUIC, bump quic to
-   `v0.24.1` in the same commit and follow the one-quic-module rule.
+2. **Bump the pin** to `v0.19.1` (above). If you build QUIC, bump quic to
+   `v0.25.0` in the same commit and follow the one-quic-module rule.
 3. **Regenerate bindings with the plugin from your pin.** Never use a
    `capnpc-zig` binary from `PATH`. The canonical recipe is in
    [build-integration.md](build-integration.md): build

@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-10-04
+
+A security release: upgrade from v0.19.0. One unauthenticated UDP datagram
+could end any capnp-zig QUIC connection; moving to quic-zig v0.25.0 fixes
+it. TCP is not affected. There are no API changes.
+
+### Security
+
+- **One unauthenticated UDP datagram could end any capnp-zig QUIC
+  connection, client or server (Experimental QUIC transport; fixed by moving
+  to quic-zig v0.25.0).** quic-zig v0.24.1 and every earlier tag returned an
+  error from `Connection.handle` for a packet that never authenticated.
+  Examples: a datagram too short for the header-protection sample, a Length
+  field larger than the datagram, a connection-ID length over 20, a datagram
+  cut short. quic-zig's `Server.feed` closed the connection on that error.
+  capnp-zig's own client loop did the same: `handleDatagram` does `try
+  conn.handle(...)`, the step fails and `run()` terminates.
+  - **Who is exposed:** every capnp-zig QUIC client and server through
+    v0.19.0. Clients certify `DisconnectCause.transport_error`; a server
+    session certifies `transport_error`, and its client sees `peer_close`.
+  - **What an attacker needs:** no keys and no handshake. They must know or
+    observe one connection ID of the connection (it is sent in clear in
+    every packet). They must also be able to send to the endpoint as if from
+    the peer's address: an on-path or spoofing sender for a client, and for
+    a server any host that can reach its UDP port. 12 bytes is enough: a
+    short-header first byte, the connection ID, and 3 more bytes. Per quic-
+    zig, a datagram cut short by a small receive buffer, or one changed bit
+    in a length field, had the same effect.
+  - **Fix:** quic-zig v0.25.0 (tag commit 67f0fea; the fix is 7209b55) drops
+    every packet that fails before it authenticates, and the connection
+    stays open. `handle` now returns only fatal errors, so capnp-zig's `try
+    conn.handle(...)` is correct unchanged.
+  - **Tests:** five regression tests (`unauthenticated datagram: ...` in
+    `tests/rpc/transport/quic/rpc_quic_peer_test.zig`) send each kind of
+    datagram from the peer's address to a live RPC connection. Each requires
+    no close and one more Call/Return on the same connection.
+  - **Migration:** upgrade to v0.19.1. If you pin quic-zig yourself, use
+    v0.25.0 or later.
+
+### Changed
+
+- **QUIC pins quic-zig v0.25.0 (was v0.24.1; Experimental).** Same build
+  options; no quic API was removed or renamed, and capnp-zig's API
+  snapshots are byte-identical. Behavior that changes with no code change
+  (from quic-zig's notes):
+  - `poll` no longer returns `error.TooManyInFlight` (the error stays in the
+    set): more than 4096 packets in flight on a path is back-pressure until
+    an ACK, not a connection-ending error.
+  - Handshakes recover from loss at the pace of the round trip, not a 1 s
+    timer, so lossy handshakes send more datagrams, earlier. With no loss
+    nothing changes.
+  - A client sends no Initial packet after its first Handshake packet, and a
+    server none after it has read one (RFC 9001 section 4.9.1).
+  - A coalesced packet that cannot be opened no longer takes the rest of its
+    datagram with it (RFC 9000 section 12.2).
+  - Not changed: native-mode bursts into small (416 KiB) UDP socket buffers
+    are still real loss; keep the 4 MiB socket buffer request (the default).
+
 ## [0.19.0] - 2026-10-03
 
 This release moves capnp-zig to tagged Zig 0.17.0 and QUIC to quic-zig
@@ -4523,7 +4581,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.19.1...HEAD
+[0.19.1]: https://github.com/nullstyle/capnp-zig/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/nullstyle/capnp-zig/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/nullstyle/capnp-zig/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/nullstyle/capnp-zig/compare/v0.16.0...v0.17.0

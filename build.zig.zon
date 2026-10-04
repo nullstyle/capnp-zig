@@ -1,6 +1,6 @@
 .{
     .name = .capnpc_zig,
-    .version = "0.19.0",
+    .version = "0.19.1",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         // Pinned to a TAG, not a raw commit: tags are immutable release
