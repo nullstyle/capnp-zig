@@ -155,6 +155,11 @@ pub const DisconnectCause = enum(u8) {
     _,
 };
 
+/// One observer event. New variants are added as the runtime learns to
+/// report more (`.cancel_failure` most recently), and a Zig tagged union
+/// cannot be non-exhaustive. So a `switch` over an `Event` should keep an
+/// `else` arm: a switch that lists every variant stops compiling when a
+/// variant is added.
 pub const Event = union(enum) {
     connection: ConnectionEvent,
     frame: FrameEvent,
