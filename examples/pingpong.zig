@@ -579,7 +579,7 @@ pub const PingPong = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearCount(self: *@This()) message.BuildError!void {
+            pub fn clearCount(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -588,7 +588,7 @@ pub const PingPong = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn setCount(self: *Builder, value: u32) message.BuildError!void {
+            pub fn setCount(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
         };
@@ -634,7 +634,7 @@ pub const PingPong = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearCount(self: *@This()) message.BuildError!void {
+            pub fn clearCount(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -643,7 +643,7 @@ pub const PingPong = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn setCount(self: *Builder, value: u32) message.BuildError!void {
+            pub fn setCount(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
         };

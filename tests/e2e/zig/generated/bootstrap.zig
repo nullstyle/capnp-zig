@@ -3950,7 +3950,7 @@ pub const Bootstrap = struct {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearService(self: *Builder) message.BuildError!void {
+            pub fn clearService(self: *Builder) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4132,7 +4132,7 @@ pub const Bootstrap = struct {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearService(self: *Builder) message.BuildError!void {
+            pub fn clearService(self: *Builder) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4314,7 +4314,7 @@ pub const Bootstrap = struct {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearService(self: *Builder) message.BuildError!void {
+            pub fn clearService(self: *Builder) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4496,7 +4496,7 @@ pub const Bootstrap = struct {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearService(self: *Builder) message.BuildError!void {
+            pub fn clearService(self: *Builder) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 

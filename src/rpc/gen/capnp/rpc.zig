@@ -986,7 +986,7 @@ pub const Message = struct {
             return std.enums.fromInt(_capnp_file.Message.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearUnimplemented(self: *@This()) message.BuildError!void {
+        pub fn clearUnimplemented(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 0);
         }
@@ -1004,7 +1004,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 0);
         }
 
-        pub fn clearAbort(self: *@This()) message.BuildError!void {
+        pub fn clearAbort(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 1);
         }
@@ -1022,7 +1022,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 1);
         }
 
-        pub fn clearCall(self: *@This()) message.BuildError!void {
+        pub fn clearCall(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 2);
         }
@@ -1040,7 +1040,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 2);
         }
 
-        pub fn clearReturn(self: *@This()) message.BuildError!void {
+        pub fn clearReturn(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 3);
         }
@@ -1058,7 +1058,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 3);
         }
 
-        pub fn clearFinish(self: *@This()) message.BuildError!void {
+        pub fn clearFinish(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 4);
         }
@@ -1076,7 +1076,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 4);
         }
 
-        pub fn clearResolve(self: *@This()) message.BuildError!void {
+        pub fn clearResolve(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 5);
         }
@@ -1094,7 +1094,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 5);
         }
 
-        pub fn clearRelease(self: *@This()) message.BuildError!void {
+        pub fn clearRelease(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 6);
         }
@@ -1112,7 +1112,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 6);
         }
 
-        pub fn clearObsoleteSave(self: *@This()) message.BuildError!void {
+        pub fn clearObsoleteSave(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 7);
         }
@@ -1128,7 +1128,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 7);
         }
 
-        pub fn clearBootstrap(self: *@This()) message.BuildError!void {
+        pub fn clearBootstrap(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 8);
         }
@@ -1146,7 +1146,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 8);
         }
 
-        pub fn clearObsoleteDelete(self: *@This()) message.BuildError!void {
+        pub fn clearObsoleteDelete(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 9);
         }
@@ -1162,7 +1162,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 9);
         }
 
-        pub fn clearProvide(self: *@This()) message.BuildError!void {
+        pub fn clearProvide(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 10);
         }
@@ -1180,7 +1180,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 10);
         }
 
-        pub fn clearAccept(self: *@This()) message.BuildError!void {
+        pub fn clearAccept(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 11);
         }
@@ -1198,7 +1198,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 11);
         }
 
-        pub fn clearJoin(self: *@This()) message.BuildError!void {
+        pub fn clearJoin(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 12);
         }
@@ -1216,7 +1216,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 12);
         }
 
-        pub fn clearDisembargo(self: *@This()) message.BuildError!void {
+        pub fn clearDisembargo(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 13);
         }
@@ -1234,7 +1234,7 @@ pub const Message = struct {
             self._builder.writeU16(0, 13);
         }
 
-        pub fn clearThirdPartyAnswer(self: *@This()) message.BuildError!void {
+        pub fn clearThirdPartyAnswer(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 14);
         }
@@ -1339,7 +1339,7 @@ pub const Message = struct {
             return try self._builder.getAnyPointer(0);
         }
 
-        pub fn setObsoleteSaveNull(self: *Builder) message.BuildError!void {
+        pub fn setObsoleteSaveNull(self: *Builder) !void {
             self._builder.writeU16(0, 7);
             try (try self._builder.getAnyPointer(0)).setNull();
         }
@@ -1380,7 +1380,7 @@ pub const Message = struct {
             return try self._builder.getAnyPointer(0);
         }
 
-        pub fn setObsoleteDeleteNull(self: *Builder) message.BuildError!void {
+        pub fn setObsoleteDeleteNull(self: *Builder) !void {
             self._builder.writeU16(0, 9);
             try (try self._builder.getAnyPointer(0)).setNull();
         }
@@ -1815,7 +1815,7 @@ pub const Bootstrap = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearQuestionId(self: *@This()) message.BuildError!void {
+        pub fn clearQuestionId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -1824,7 +1824,7 @@ pub const Bootstrap = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearDeprecatedObjectId(self: *@This()) message.BuildError!void {
+        pub fn clearDeprecatedObjectId(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -1837,7 +1837,7 @@ pub const Bootstrap = struct {
             try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(0), value);
         }
 
-        pub fn setQuestionId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setQuestionId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
@@ -1849,7 +1849,7 @@ pub const Bootstrap = struct {
             return try self._builder.getAnyPointer(0);
         }
 
-        pub fn setDeprecatedObjectIdNull(self: *Builder) message.BuildError!void {
+        pub fn setDeprecatedObjectIdNull(self: *Builder) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -1937,7 +1937,7 @@ pub const Call = struct {
                 return std.enums.fromInt(_capnp_file.Call.SendResultsTo.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
             }
 
-            pub fn clearCaller(self: *@This()) message.BuildError!void {
+            pub fn clearCaller(self: *@This()) !void {
                 self._builder.writeU16(6, 0);
             }
 
@@ -1946,7 +1946,7 @@ pub const Call = struct {
                 return {};
             }
 
-            pub fn clearYourself(self: *@This()) message.BuildError!void {
+            pub fn clearYourself(self: *@This()) !void {
                 self._builder.writeU16(6, 1);
             }
 
@@ -1955,7 +1955,7 @@ pub const Call = struct {
                 return {};
             }
 
-            pub fn clearThirdParty(self: *@This()) message.BuildError!void {
+            pub fn clearThirdParty(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(2)).setNull();
                 self._builder.writeU16(6, 2);
             }
@@ -1971,12 +1971,12 @@ pub const Call = struct {
                 self._builder.writeU16(6, 2);
             }
 
-            pub fn setCaller(self: *@This(), value: void) message.BuildError!void {
+            pub fn setCaller(self: *@This(), value: void) !void {
                 self._builder.writeU16(6, 0);
                 _ = value;
             }
 
-            pub fn setYourself(self: *@This(), value: void) message.BuildError!void {
+            pub fn setYourself(self: *@This(), value: void) !void {
                 self._builder.writeU16(6, 1);
                 _ = value;
             }
@@ -2075,7 +2075,7 @@ pub const Call = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearQuestionId(self: *@This()) message.BuildError!void {
+        pub fn clearQuestionId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -2084,7 +2084,7 @@ pub const Call = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearTarget(self: *@This()) message.BuildError!void {
+        pub fn clearTarget(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -2099,7 +2099,7 @@ pub const Call = struct {
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearInterfaceId(self: *@This()) message.BuildError!void {
+        pub fn clearInterfaceId(self: *@This()) !void {
             self._builder.writeU64(8, 0);
         }
 
@@ -2108,7 +2108,7 @@ pub const Call = struct {
             return field_reader.readU64(8);
         }
 
-        pub fn clearMethodId(self: *@This()) message.BuildError!void {
+        pub fn clearMethodId(self: *@This()) !void {
             self._builder.writeU16(4, 0);
         }
 
@@ -2117,7 +2117,7 @@ pub const Call = struct {
             return field_reader.readU16(4);
         }
 
-        pub fn clearParams(self: *@This()) message.BuildError!void {
+        pub fn clearParams(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -2132,12 +2132,12 @@ pub const Call = struct {
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearSendResultsTo(self: *@This()) message.BuildError!void {
+        pub fn clearSendResultsTo(self: *@This()) !void {
             try (try self._builder.getAnyPointer(2)).setNull();
             self._builder.writeU16(6, 0);
         }
 
-        pub fn clearAllowThirdPartyTailCall(self: *@This()) message.BuildError!void {
+        pub fn clearAllowThirdPartyTailCall(self: *@This()) !void {
             self._builder.writeBool(16, 0, false);
         }
 
@@ -2146,7 +2146,7 @@ pub const Call = struct {
             return field_reader.readBool(16, 0) != false;
         }
 
-        pub fn clearNoPromisePipelining(self: *@This()) message.BuildError!void {
+        pub fn clearNoPromisePipelining(self: *@This()) !void {
             self._builder.writeBool(16, 1, false);
         }
 
@@ -2155,7 +2155,7 @@ pub const Call = struct {
             return field_reader.readBool(16, 1) != false;
         }
 
-        pub fn clearOnlyPromisePipeline(self: *@This()) message.BuildError!void {
+        pub fn clearOnlyPromisePipeline(self: *@This()) !void {
             self._builder.writeBool(16, 2, false);
         }
 
@@ -2164,7 +2164,7 @@ pub const Call = struct {
             return field_reader.readBool(16, 2) != false;
         }
 
-        pub fn setQuestionId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setQuestionId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
@@ -2177,11 +2177,11 @@ pub const Call = struct {
             return MessageTarget.Builder{ ._builder = builder };
         }
 
-        pub fn setInterfaceId(self: *Builder, value: u64) message.BuildError!void {
+        pub fn setInterfaceId(self: *Builder, value: u64) !void {
             self._builder.writeU64(8, @bitCast(value));
         }
 
-        pub fn setMethodId(self: *Builder, value: u16) message.BuildError!void {
+        pub fn setMethodId(self: *Builder, value: u16) !void {
             self._builder.writeU16(4, @bitCast(value));
         }
 
@@ -2198,15 +2198,15 @@ pub const Call = struct {
             return .{ ._builder = self._builder };
         }
 
-        pub fn setAllowThirdPartyTailCall(self: *Builder, value: bool) message.BuildError!void {
+        pub fn setAllowThirdPartyTailCall(self: *Builder, value: bool) !void {
             self._builder.writeBool(16, 0, value != false);
         }
 
-        pub fn setNoPromisePipelining(self: *Builder, value: bool) message.BuildError!void {
+        pub fn setNoPromisePipelining(self: *Builder, value: bool) !void {
             self._builder.writeBool(16, 1, value != false);
         }
 
-        pub fn setOnlyPromisePipeline(self: *Builder, value: bool) message.BuildError!void {
+        pub fn setOnlyPromisePipeline(self: *Builder, value: bool) !void {
             self._builder.writeBool(16, 2, value != false);
         }
     };
@@ -2482,7 +2482,7 @@ pub const Return = struct {
             return std.enums.fromInt(_capnp_file.Return.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearAnswerId(self: *@This()) message.BuildError!void {
+        pub fn clearAnswerId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -2491,7 +2491,7 @@ pub const Return = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearReleaseParamCaps(self: *@This()) message.BuildError!void {
+        pub fn clearReleaseParamCaps(self: *@This()) !void {
             self._builder.writeBool(4, 0, false);
         }
 
@@ -2500,7 +2500,7 @@ pub const Return = struct {
             return field_reader.readBool(4, 0) != true;
         }
 
-        pub fn clearResults(self: *@This()) message.BuildError!void {
+        pub fn clearResults(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(6, 0);
         }
@@ -2518,7 +2518,7 @@ pub const Return = struct {
             self._builder.writeU16(6, 0);
         }
 
-        pub fn clearException(self: *@This()) message.BuildError!void {
+        pub fn clearException(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(6, 1);
         }
@@ -2536,7 +2536,7 @@ pub const Return = struct {
             self._builder.writeU16(6, 1);
         }
 
-        pub fn clearCanceled(self: *@This()) message.BuildError!void {
+        pub fn clearCanceled(self: *@This()) !void {
             self._builder.writeU16(6, 2);
         }
 
@@ -2545,7 +2545,7 @@ pub const Return = struct {
             return {};
         }
 
-        pub fn clearResultsSentElsewhere(self: *@This()) message.BuildError!void {
+        pub fn clearResultsSentElsewhere(self: *@This()) !void {
             self._builder.writeU16(6, 3);
         }
 
@@ -2554,7 +2554,7 @@ pub const Return = struct {
             return {};
         }
 
-        pub fn clearTakeFromOtherQuestion(self: *@This()) message.BuildError!void {
+        pub fn clearTakeFromOtherQuestion(self: *@This()) !void {
             self._builder.writeU32(8, 0);
             self._builder.writeU16(6, 4);
         }
@@ -2565,7 +2565,7 @@ pub const Return = struct {
             return field_reader.readU32(8);
         }
 
-        pub fn clearAwaitFromThirdParty(self: *@This()) message.BuildError!void {
+        pub fn clearAwaitFromThirdParty(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(6, 5);
         }
@@ -2581,7 +2581,7 @@ pub const Return = struct {
             self._builder.writeU16(6, 5);
         }
 
-        pub fn clearNoFinishNeeded(self: *@This()) message.BuildError!void {
+        pub fn clearNoFinishNeeded(self: *@This()) !void {
             self._builder.writeBool(4, 1, false);
         }
 
@@ -2590,11 +2590,11 @@ pub const Return = struct {
             return field_reader.readBool(4, 1) != false;
         }
 
-        pub fn setAnswerId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setAnswerId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
-        pub fn setReleaseParamCaps(self: *Builder, value: bool) message.BuildError!void {
+        pub fn setReleaseParamCaps(self: *Builder, value: bool) !void {
             self._builder.writeBool(4, 0, value != true);
         }
 
@@ -2620,17 +2620,17 @@ pub const Return = struct {
             return Exception.Builder{ ._builder = builder };
         }
 
-        pub fn setCanceled(self: *Builder, value: void) message.BuildError!void {
+        pub fn setCanceled(self: *Builder, value: void) !void {
             self._builder.writeU16(6, 2);
             _ = value;
         }
 
-        pub fn setResultsSentElsewhere(self: *Builder, value: void) message.BuildError!void {
+        pub fn setResultsSentElsewhere(self: *Builder, value: void) !void {
             self._builder.writeU16(6, 3);
             _ = value;
         }
 
-        pub fn setTakeFromOtherQuestion(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setTakeFromOtherQuestion(self: *Builder, value: u32) !void {
             self._builder.writeU16(6, 4);
             self._builder.writeU32(8, @bitCast(value));
         }
@@ -2645,7 +2645,7 @@ pub const Return = struct {
             return try self._builder.getAnyPointer(0);
         }
 
-        pub fn setAwaitFromThirdPartyNull(self: *Builder) message.BuildError!void {
+        pub fn setAwaitFromThirdPartyNull(self: *Builder) !void {
             self._builder.writeU16(6, 5);
             try (try self._builder.getAnyPointer(0)).setNull();
         }
@@ -2665,7 +2665,7 @@ pub const Return = struct {
             try (try self._builder.getAnyPointer(0)).setCapability(cap);
         }
 
-        pub fn setNoFinishNeeded(self: *Builder, value: bool) message.BuildError!void {
+        pub fn setNoFinishNeeded(self: *Builder, value: bool) !void {
             self._builder.writeBool(4, 1, value != false);
         }
     };
@@ -2873,7 +2873,7 @@ pub const Finish = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearQuestionId(self: *@This()) message.BuildError!void {
+        pub fn clearQuestionId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -2882,7 +2882,7 @@ pub const Finish = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearReleaseResultCaps(self: *@This()) message.BuildError!void {
+        pub fn clearReleaseResultCaps(self: *@This()) !void {
             self._builder.writeBool(4, 0, false);
         }
 
@@ -2891,7 +2891,7 @@ pub const Finish = struct {
             return field_reader.readBool(4, 0) != true;
         }
 
-        pub fn clearRequireEarlyCancellationWorkaround(self: *@This()) message.BuildError!void {
+        pub fn clearRequireEarlyCancellationWorkaround(self: *@This()) !void {
             self._builder.writeBool(4, 1, false);
         }
 
@@ -2900,15 +2900,15 @@ pub const Finish = struct {
             return field_reader.readBool(4, 1) != true;
         }
 
-        pub fn setQuestionId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setQuestionId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
-        pub fn setReleaseResultCaps(self: *Builder, value: bool) message.BuildError!void {
+        pub fn setReleaseResultCaps(self: *Builder, value: bool) !void {
             self._builder.writeBool(4, 0, value != true);
         }
 
-        pub fn setRequireEarlyCancellationWorkaround(self: *Builder, value: bool) message.BuildError!void {
+        pub fn setRequireEarlyCancellationWorkaround(self: *Builder, value: bool) !void {
             self._builder.writeBool(4, 1, value != true);
         }
     };
@@ -2999,7 +2999,7 @@ pub const Resolve = struct {
             return std.enums.fromInt(_capnp_file.Resolve.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearPromiseId(self: *@This()) message.BuildError!void {
+        pub fn clearPromiseId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -3008,7 +3008,7 @@ pub const Resolve = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearCap(self: *@This()) message.BuildError!void {
+        pub fn clearCap(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(4, 0);
         }
@@ -3026,7 +3026,7 @@ pub const Resolve = struct {
             self._builder.writeU16(4, 0);
         }
 
-        pub fn clearException(self: *@This()) message.BuildError!void {
+        pub fn clearException(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(4, 1);
         }
@@ -3044,7 +3044,7 @@ pub const Resolve = struct {
             self._builder.writeU16(4, 1);
         }
 
-        pub fn setPromiseId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setPromiseId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
@@ -3202,7 +3202,7 @@ pub const Release = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearId(self: *@This()) message.BuildError!void {
+        pub fn clearId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -3211,7 +3211,7 @@ pub const Release = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearReferenceCount(self: *@This()) message.BuildError!void {
+        pub fn clearReferenceCount(self: *@This()) !void {
             self._builder.writeU32(4, 0);
         }
 
@@ -3220,11 +3220,11 @@ pub const Release = struct {
             return field_reader.readU32(4);
         }
 
-        pub fn setId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
-        pub fn setReferenceCount(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setReferenceCount(self: *Builder, value: u32) !void {
             self._builder.writeU32(4, @bitCast(value));
         }
     };
@@ -3301,7 +3301,7 @@ pub const Disembargo = struct {
                 return std.enums.fromInt(_capnp_file.Disembargo.Context.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
             }
 
-            pub fn clearSenderLoopback(self: *@This()) message.BuildError!void {
+            pub fn clearSenderLoopback(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
                 self._builder.writeU16(4, 0);
             }
@@ -3312,7 +3312,7 @@ pub const Disembargo = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn clearReceiverLoopback(self: *@This()) message.BuildError!void {
+            pub fn clearReceiverLoopback(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
                 self._builder.writeU16(4, 1);
             }
@@ -3323,7 +3323,7 @@ pub const Disembargo = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn clearAccept(self: *@This()) message.BuildError!void {
+            pub fn clearAccept(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(1)).setNull();
                 self._builder.writeU16(4, 2);
             }
@@ -3338,12 +3338,12 @@ pub const Disembargo = struct {
                 return try field_reader.readData(1);
             }
 
-            pub fn setSenderLoopback(self: *@This(), value: u32) message.BuildError!void {
+            pub fn setSenderLoopback(self: *@This(), value: u32) !void {
                 self._builder.writeU16(4, 0);
                 self._builder.writeU32(0, @bitCast(value));
             }
 
-            pub fn setReceiverLoopback(self: *@This(), value: u32) message.BuildError!void {
+            pub fn setReceiverLoopback(self: *@This(), value: u32) !void {
                 self._builder.writeU16(4, 1);
                 self._builder.writeU32(0, @bitCast(value));
             }
@@ -3408,7 +3408,7 @@ pub const Disembargo = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearTarget(self: *@This()) message.BuildError!void {
+        pub fn clearTarget(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3423,7 +3423,7 @@ pub const Disembargo = struct {
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearContext(self: *@This()) message.BuildError!void {
+        pub fn clearContext(self: *@This()) !void {
             self._builder.writeU32(0, 0);
             self._builder.writeU32(0, 0);
             try (try self._builder.getAnyPointer(1)).setNull();
@@ -3567,7 +3567,7 @@ pub const Provide = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearQuestionId(self: *@This()) message.BuildError!void {
+        pub fn clearQuestionId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -3576,7 +3576,7 @@ pub const Provide = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearTarget(self: *@This()) message.BuildError!void {
+        pub fn clearTarget(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3591,7 +3591,7 @@ pub const Provide = struct {
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearRecipient(self: *@This()) message.BuildError!void {
+        pub fn clearRecipient(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -3604,7 +3604,7 @@ pub const Provide = struct {
             try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(1), value);
         }
 
-        pub fn setQuestionId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setQuestionId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
@@ -3625,7 +3625,7 @@ pub const Provide = struct {
             return try self._builder.getAnyPointer(1);
         }
 
-        pub fn setRecipientNull(self: *Builder) message.BuildError!void {
+        pub fn setRecipientNull(self: *Builder) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -3799,7 +3799,7 @@ pub const Accept = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearQuestionId(self: *@This()) message.BuildError!void {
+        pub fn clearQuestionId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -3808,7 +3808,7 @@ pub const Accept = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearProvision(self: *@This()) message.BuildError!void {
+        pub fn clearProvision(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3821,7 +3821,7 @@ pub const Accept = struct {
             try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(0), value);
         }
 
-        pub fn clearEmbargo(self: *@This()) message.BuildError!void {
+        pub fn clearEmbargo(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -3834,7 +3834,7 @@ pub const Accept = struct {
             return try field_reader.readData(1);
         }
 
-        pub fn setQuestionId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setQuestionId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
@@ -3846,7 +3846,7 @@ pub const Accept = struct {
             return try self._builder.getAnyPointer(0);
         }
 
-        pub fn setProvisionNull(self: *Builder) message.BuildError!void {
+        pub fn setProvisionNull(self: *Builder) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3920,7 +3920,7 @@ pub const ThirdPartyAnswer = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearCompletion(self: *@This()) message.BuildError!void {
+        pub fn clearCompletion(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3933,7 +3933,7 @@ pub const ThirdPartyAnswer = struct {
             try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(0), value);
         }
 
-        pub fn clearAnswerId(self: *@This()) message.BuildError!void {
+        pub fn clearAnswerId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -3950,7 +3950,7 @@ pub const ThirdPartyAnswer = struct {
             return try self._builder.getAnyPointer(0);
         }
 
-        pub fn setCompletionNull(self: *Builder) message.BuildError!void {
+        pub fn setCompletionNull(self: *Builder) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3966,7 +3966,7 @@ pub const ThirdPartyAnswer = struct {
             try (try self._builder.getAnyPointer(0)).setCapability(cap);
         }
 
-        pub fn setAnswerId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setAnswerId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
     };
@@ -4030,7 +4030,7 @@ pub const Join = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearQuestionId(self: *@This()) message.BuildError!void {
+        pub fn clearQuestionId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -4039,7 +4039,7 @@ pub const Join = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearTarget(self: *@This()) message.BuildError!void {
+        pub fn clearTarget(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -4054,7 +4054,7 @@ pub const Join = struct {
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearKeyPart(self: *@This()) message.BuildError!void {
+        pub fn clearKeyPart(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -4067,7 +4067,7 @@ pub const Join = struct {
             try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(1), value);
         }
 
-        pub fn setQuestionId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setQuestionId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
@@ -4088,7 +4088,7 @@ pub const Join = struct {
             return try self._builder.getAnyPointer(1);
         }
 
-        pub fn setKeyPartNull(self: *Builder) message.BuildError!void {
+        pub fn setKeyPartNull(self: *Builder) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -4279,7 +4279,7 @@ pub const MessageTarget = struct {
             return std.enums.fromInt(_capnp_file.MessageTarget.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearImportedCap(self: *@This()) message.BuildError!void {
+        pub fn clearImportedCap(self: *@This()) !void {
             self._builder.writeU32(0, 0);
             self._builder.writeU16(4, 0);
         }
@@ -4290,7 +4290,7 @@ pub const MessageTarget = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearPromisedAnswer(self: *@This()) message.BuildError!void {
+        pub fn clearPromisedAnswer(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(4, 1);
         }
@@ -4308,7 +4308,7 @@ pub const MessageTarget = struct {
             self._builder.writeU16(4, 1);
         }
 
-        pub fn setImportedCap(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setImportedCap(self: *Builder, value: u32) !void {
             self._builder.writeU16(4, 0);
             self._builder.writeU32(0, @bitCast(value));
         }
@@ -4451,7 +4451,7 @@ pub const Payload = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearContent(self: *@This()) message.BuildError!void {
+        pub fn clearContent(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -4464,7 +4464,7 @@ pub const Payload = struct {
             try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(0), value);
         }
 
-        pub fn clearCapTable(self: *@This()) message.BuildError!void {
+        pub fn clearCapTable(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -4487,7 +4487,7 @@ pub const Payload = struct {
             return try self._builder.getAnyPointer(0);
         }
 
-        pub fn setContentNull(self: *Builder) message.BuildError!void {
+        pub fn setContentNull(self: *Builder) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -4625,7 +4625,7 @@ pub const CapDescriptor = struct {
             return std.enums.fromInt(_capnp_file.CapDescriptor.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearNone(self: *@This()) message.BuildError!void {
+        pub fn clearNone(self: *@This()) !void {
             self._builder.writeU16(0, 0);
         }
 
@@ -4634,7 +4634,7 @@ pub const CapDescriptor = struct {
             return {};
         }
 
-        pub fn clearSenderHosted(self: *@This()) message.BuildError!void {
+        pub fn clearSenderHosted(self: *@This()) !void {
             self._builder.writeU32(4, 0);
             self._builder.writeU16(0, 1);
         }
@@ -4645,7 +4645,7 @@ pub const CapDescriptor = struct {
             return field_reader.readU32(4);
         }
 
-        pub fn clearSenderPromise(self: *@This()) message.BuildError!void {
+        pub fn clearSenderPromise(self: *@This()) !void {
             self._builder.writeU32(4, 0);
             self._builder.writeU16(0, 2);
         }
@@ -4656,7 +4656,7 @@ pub const CapDescriptor = struct {
             return field_reader.readU32(4);
         }
 
-        pub fn clearReceiverHosted(self: *@This()) message.BuildError!void {
+        pub fn clearReceiverHosted(self: *@This()) !void {
             self._builder.writeU32(4, 0);
             self._builder.writeU16(0, 3);
         }
@@ -4667,7 +4667,7 @@ pub const CapDescriptor = struct {
             return field_reader.readU32(4);
         }
 
-        pub fn clearReceiverAnswer(self: *@This()) message.BuildError!void {
+        pub fn clearReceiverAnswer(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 4);
         }
@@ -4685,7 +4685,7 @@ pub const CapDescriptor = struct {
             self._builder.writeU16(0, 4);
         }
 
-        pub fn clearThirdPartyHosted(self: *@This()) message.BuildError!void {
+        pub fn clearThirdPartyHosted(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
             self._builder.writeU16(0, 5);
         }
@@ -4703,7 +4703,7 @@ pub const CapDescriptor = struct {
             self._builder.writeU16(0, 5);
         }
 
-        pub fn clearAttachedFd(self: *@This()) message.BuildError!void {
+        pub fn clearAttachedFd(self: *@This()) !void {
             self._builder.writeU8(2, 0);
         }
 
@@ -4714,22 +4714,22 @@ pub const CapDescriptor = struct {
             return value;
         }
 
-        pub fn setNone(self: *Builder, value: void) message.BuildError!void {
+        pub fn setNone(self: *Builder, value: void) !void {
             self._builder.writeU16(0, 0);
             _ = value;
         }
 
-        pub fn setSenderHosted(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setSenderHosted(self: *Builder, value: u32) !void {
             self._builder.writeU16(0, 1);
             self._builder.writeU32(4, @bitCast(value));
         }
 
-        pub fn setSenderPromise(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setSenderPromise(self: *Builder, value: u32) !void {
             self._builder.writeU16(0, 2);
             self._builder.writeU32(4, @bitCast(value));
         }
 
-        pub fn setReceiverHosted(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setReceiverHosted(self: *Builder, value: u32) !void {
             self._builder.writeU16(0, 3);
             self._builder.writeU32(4, @bitCast(value));
         }
@@ -4756,7 +4756,7 @@ pub const CapDescriptor = struct {
             return ThirdPartyCapDescriptor.Builder{ ._builder = builder };
         }
 
-        pub fn setAttachedFd(self: *Builder, value: u8) message.BuildError!void {
+        pub fn setAttachedFd(self: *Builder, value: u8) !void {
             const stored = @as(u8, @bitCast(value)) ^ @as(u8, 255);
             self._builder.writeU8(2, stored);
         }
@@ -4942,7 +4942,7 @@ pub const PromisedAnswer = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearQuestionId(self: *@This()) message.BuildError!void {
+        pub fn clearQuestionId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -4951,7 +4951,7 @@ pub const PromisedAnswer = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearTransform(self: *@This()) message.BuildError!void {
+        pub fn clearTransform(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -4966,7 +4966,7 @@ pub const PromisedAnswer = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn setQuestionId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setQuestionId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
@@ -5046,7 +5046,7 @@ pub const PromisedAnswer = struct {
                 return std.enums.fromInt(_capnp_file.PromisedAnswer.Op.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
             }
 
-            pub fn clearNoop(self: *@This()) message.BuildError!void {
+            pub fn clearNoop(self: *@This()) !void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -5055,7 +5055,7 @@ pub const PromisedAnswer = struct {
                 return {};
             }
 
-            pub fn clearGetPointerField(self: *@This()) message.BuildError!void {
+            pub fn clearGetPointerField(self: *@This()) !void {
                 self._builder.writeU16(2, 0);
                 self._builder.writeU16(0, 1);
             }
@@ -5066,12 +5066,12 @@ pub const PromisedAnswer = struct {
                 return field_reader.readU16(2);
             }
 
-            pub fn setNoop(self: *@This(), value: void) message.BuildError!void {
+            pub fn setNoop(self: *@This(), value: void) !void {
                 self._builder.writeU16(0, 0);
                 _ = value;
             }
 
-            pub fn setGetPointerField(self: *@This(), value: u16) message.BuildError!void {
+            pub fn setGetPointerField(self: *@This(), value: u16) !void {
                 self._builder.writeU16(0, 1);
                 self._builder.writeU16(2, @bitCast(value));
             }
@@ -5127,7 +5127,7 @@ pub const ThirdPartyCapDescriptor = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearId(self: *@This()) message.BuildError!void {
+        pub fn clearId(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -5140,7 +5140,7 @@ pub const ThirdPartyCapDescriptor = struct {
             try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(0), value);
         }
 
-        pub fn clearVineId(self: *@This()) message.BuildError!void {
+        pub fn clearVineId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -5157,7 +5157,7 @@ pub const ThirdPartyCapDescriptor = struct {
             return try self._builder.getAnyPointer(0);
         }
 
-        pub fn setIdNull(self: *Builder) message.BuildError!void {
+        pub fn setIdNull(self: *Builder) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -5173,7 +5173,7 @@ pub const ThirdPartyCapDescriptor = struct {
             try (try self._builder.getAnyPointer(0)).setCapability(cap);
         }
 
-        pub fn setVineId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setVineId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
     };
@@ -5272,7 +5272,7 @@ pub const Exception = struct {
                 return raw.readU16(4);
             }
 
-            pub fn setType(self: @This(), value: u16) message.BuildError!void {
+            pub fn setType(self: @This(), value: u16) !void {
                 self._builder.writeU16(4, value);
             }
         };
@@ -5288,7 +5288,7 @@ pub const Exception = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearReason(self: *@This()) message.BuildError!void {
+        pub fn clearReason(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -5301,7 +5301,7 @@ pub const Exception = struct {
             return try field_reader.readTextStrict(0);
         }
 
-        pub fn clearObsoleteIsCallersFault(self: *@This()) message.BuildError!void {
+        pub fn clearObsoleteIsCallersFault(self: *@This()) !void {
             self._builder.writeBool(0, 0, false);
         }
 
@@ -5310,7 +5310,7 @@ pub const Exception = struct {
             return field_reader.readBool(0, 0) != false;
         }
 
-        pub fn clearObsoleteDurability(self: *@This()) message.BuildError!void {
+        pub fn clearObsoleteDurability(self: *@This()) !void {
             self._builder.writeU16(2, 0);
         }
 
@@ -5319,7 +5319,7 @@ pub const Exception = struct {
             return field_reader.readU16(2);
         }
 
-        pub fn clearType(self: *@This()) message.BuildError!void {
+        pub fn clearType(self: *@This()) !void {
             self._builder.writeU16(4, 0);
         }
 
@@ -5328,7 +5328,7 @@ pub const Exception = struct {
             return std.enums.fromInt(Exception.Type, ordinal) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearTrace(self: *@This()) message.BuildError!void {
+        pub fn clearTrace(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -5341,7 +5341,7 @@ pub const Exception = struct {
             return try field_reader.readTextStrict(1);
         }
 
-        pub fn clearDetails(self: *@This()) message.BuildError!void {
+        pub fn clearDetails(self: *@This()) !void {
             try (try self._builder.getAnyPointer(2)).setNull();
         }
 
@@ -5364,15 +5364,15 @@ pub const Exception = struct {
             try self._builder.writeText(0, value);
         }
 
-        pub fn setObsoleteIsCallersFault(self: *Builder, value: bool) message.BuildError!void {
+        pub fn setObsoleteIsCallersFault(self: *Builder, value: bool) !void {
             self._builder.writeBool(0, 0, value != false);
         }
 
-        pub fn setObsoleteDurability(self: *Builder, value: u16) message.BuildError!void {
+        pub fn setObsoleteDurability(self: *Builder, value: u16) !void {
             self._builder.writeU16(2, @bitCast(value));
         }
 
-        pub fn setType(self: *Builder, value: Exception.Type) message.BuildError!void {
+        pub fn setType(self: *Builder, value: Exception.Type) !void {
             return self.enumOrdinals().setType(@as(u16, @backingInt(value)));
         }
 
@@ -5450,7 +5450,7 @@ pub const Exception = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearDetailId(self: *@This()) message.BuildError!void {
+            pub fn clearDetailId(self: *@This()) !void {
                 self._builder.writeU64(0, 0);
             }
 
@@ -5459,7 +5459,7 @@ pub const Exception = struct {
                 return field_reader.readU64(0);
             }
 
-            pub fn clearData(self: *@This()) message.BuildError!void {
+            pub fn clearData(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -5472,7 +5472,7 @@ pub const Exception = struct {
                 return try field_reader.readData(0);
             }
 
-            pub fn setDetailId(self: *@This(), value: u64) message.BuildError!void {
+            pub fn setDetailId(self: *@This(), value: u64) !void {
                 self._builder.writeU64(0, @bitCast(value));
             }
 

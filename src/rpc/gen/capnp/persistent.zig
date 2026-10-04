@@ -527,7 +527,7 @@ pub const Persistent = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearSealFor(self: *@This()) message.BuildError!void {
+            pub fn clearSealFor(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -548,7 +548,7 @@ pub const Persistent = struct {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn setSealForNull(self: *@This()) message.BuildError!void {
+            pub fn setSealForNull(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -679,7 +679,7 @@ pub const Persistent = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearSturdyRef(self: *@This()) message.BuildError!void {
+            pub fn clearSturdyRef(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -700,7 +700,7 @@ pub const Persistent = struct {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn setSturdyRefNull(self: *@This()) message.BuildError!void {
+            pub fn setSturdyRefNull(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 

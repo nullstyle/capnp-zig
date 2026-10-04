@@ -2849,7 +2849,7 @@ pub const RoomId = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearId(self: *@This()) message.BuildError!void {
+        pub fn clearId(self: *@This()) !void {
             self._builder.writeU64(0, 0);
         }
 
@@ -2858,7 +2858,7 @@ pub const RoomId = struct {
             return field_reader.readU64(0);
         }
 
-        pub fn setId(self: *Builder, value: u64) message.BuildError!void {
+        pub fn setId(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
 
@@ -2943,7 +2943,7 @@ pub const ChatMessage = struct {
             return std.enums.fromInt(_capnp_file.ChatMessage.Kind.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearNormal(self: *@This()) message.BuildError!void {
+        pub fn clearNormal(self: *@This()) !void {
             self._builder.writeU16(0, 0);
         }
 
@@ -2952,7 +2952,7 @@ pub const ChatMessage = struct {
             return {};
         }
 
-        pub fn clearEmote(self: *@This()) message.BuildError!void {
+        pub fn clearEmote(self: *@This()) !void {
             self._builder.writeU16(0, 1);
         }
 
@@ -2961,7 +2961,7 @@ pub const ChatMessage = struct {
             return {};
         }
 
-        pub fn clearSystem(self: *@This()) message.BuildError!void {
+        pub fn clearSystem(self: *@This()) !void {
             self._builder.writeU16(0, 2);
         }
 
@@ -2970,7 +2970,7 @@ pub const ChatMessage = struct {
             return {};
         }
 
-        pub fn clearWhisper(self: *@This()) message.BuildError!void {
+        pub fn clearWhisper(self: *@This()) !void {
             try (try self._builder.getAnyPointer(3)).setNull();
             self._builder.writeU16(0, 3);
         }
@@ -2988,17 +2988,17 @@ pub const ChatMessage = struct {
             self._builder.writeU16(0, 3);
         }
 
-            pub fn setNormal(self: *@This(), value: void) message.BuildError!void {
+            pub fn setNormal(self: *@This(), value: void) !void {
             self._builder.writeU16(0, 0);
                 _ = value;
             }
 
-            pub fn setEmote(self: *@This(), value: void) message.BuildError!void {
+            pub fn setEmote(self: *@This(), value: void) !void {
             self._builder.writeU16(0, 1);
                 _ = value;
             }
 
-            pub fn setSystem(self: *@This(), value: void) message.BuildError!void {
+            pub fn setSystem(self: *@This(), value: void) !void {
             self._builder.writeU16(0, 2);
                 _ = value;
             }
@@ -3085,7 +3085,7 @@ pub const ChatMessage = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearSender(self: *@This()) message.BuildError!void {
+        pub fn clearSender(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3100,7 +3100,7 @@ pub const ChatMessage = struct {
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearContent(self: *@This()) message.BuildError!void {
+        pub fn clearContent(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -3113,7 +3113,7 @@ pub const ChatMessage = struct {
             return try field_reader.readTextStrict(1);
         }
 
-        pub fn clearTimestamp(self: *@This()) message.BuildError!void {
+        pub fn clearTimestamp(self: *@This()) !void {
             try (try self._builder.getAnyPointer(2)).setNull();
         }
 
@@ -3128,7 +3128,7 @@ pub const ChatMessage = struct {
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearKind(self: *@This()) message.BuildError!void {
+        pub fn clearKind(self: *@This()) !void {
             try (try self._builder.getAnyPointer(3)).setNull();
             self._builder.writeU16(0, 0);
         }
@@ -3323,7 +3323,7 @@ pub const RoomInfo = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearId(self: *@This()) message.BuildError!void {
+        pub fn clearId(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3338,7 +3338,7 @@ pub const RoomInfo = struct {
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearName(self: *@This()) message.BuildError!void {
+        pub fn clearName(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -3351,7 +3351,7 @@ pub const RoomInfo = struct {
             return try field_reader.readTextStrict(1);
         }
 
-        pub fn clearMemberCount(self: *@This()) message.BuildError!void {
+        pub fn clearMemberCount(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -3360,7 +3360,7 @@ pub const RoomInfo = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearTopic(self: *@This()) message.BuildError!void {
+        pub fn clearTopic(self: *@This()) !void {
             try (try self._builder.getAnyPointer(2)).setNull();
         }
 
@@ -3390,7 +3390,7 @@ pub const RoomInfo = struct {
             try self._builder.writeText(1, value);
         }
 
-        pub fn setMemberCount(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setMemberCount(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
@@ -4691,7 +4691,7 @@ pub const ChatRoom = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearContent(self: *@This()) message.BuildError!void {
+            pub fn clearContent(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4781,7 +4781,7 @@ pub const ChatRoom = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
+                pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -4798,7 +4798,7 @@ pub const ChatRoom = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearMessage(self: *@This()) message.BuildError!void {
+            pub fn clearMessage(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4813,7 +4813,7 @@ pub const ChatRoom = struct {
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearStatus(self: *@This()) message.BuildError!void {
+            pub fn clearStatus(self: *@This()) !void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -4831,7 +4831,7 @@ pub const ChatRoom = struct {
                 return ChatMessage.Builder{ ._builder = builder };
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -4938,7 +4938,7 @@ pub const ChatRoom = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearContent(self: *@This()) message.BuildError!void {
+            pub fn clearContent(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -5028,7 +5028,7 @@ pub const ChatRoom = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
+                pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -5045,7 +5045,7 @@ pub const ChatRoom = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearMessage(self: *@This()) message.BuildError!void {
+            pub fn clearMessage(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -5060,7 +5060,7 @@ pub const ChatRoom = struct {
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearStatus(self: *@This()) message.BuildError!void {
+            pub fn clearStatus(self: *@This()) !void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -5078,7 +5078,7 @@ pub const ChatRoom = struct {
                 return ChatMessage.Builder{ ._builder = builder };
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -5180,7 +5180,7 @@ pub const ChatRoom = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearLimit(self: *@This()) message.BuildError!void {
+            pub fn clearLimit(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -5189,7 +5189,7 @@ pub const ChatRoom = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn setLimit(self: *Builder, value: u32) message.BuildError!void {
+            pub fn setLimit(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
@@ -5246,7 +5246,7 @@ pub const ChatRoom = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearMessages(self: *@This()) message.BuildError!void {
+            pub fn clearMessages(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -5360,7 +5360,7 @@ pub const ChatRoom = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearInfo(self: *@This()) message.BuildError!void {
+            pub fn clearInfo(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -5534,7 +5534,7 @@ pub const ChatRoom = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
+                pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -5551,7 +5551,7 @@ pub const ChatRoom = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearStatus(self: *@This()) message.BuildError!void {
+            pub fn clearStatus(self: *@This()) !void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -5560,7 +5560,7 @@ pub const ChatRoom = struct {
                 return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -6774,7 +6774,7 @@ pub const ChatService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearName(self: *@This()) message.BuildError!void {
+            pub fn clearName(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -6787,7 +6787,7 @@ pub const ChatService = struct {
                 return try field_reader.readTextStrict(0);
             }
 
-            pub fn clearTopic(self: *@This()) message.BuildError!void {
+            pub fn clearTopic(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(1)).setNull();
             }
 
@@ -6904,7 +6904,7 @@ pub const ChatService = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
+                pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -6926,7 +6926,7 @@ pub const ChatService = struct {
                 return try pointer.getCapability();
             }
 
-            pub fn clearInfo(self: *@This()) message.BuildError!void {
+            pub fn clearInfo(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(1)).setNull();
             }
 
@@ -6941,7 +6941,7 @@ pub const ChatService = struct {
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearStatus(self: *@This()) message.BuildError!void {
+            pub fn clearStatus(self: *@This()) !void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -6958,7 +6958,7 @@ pub const ChatService = struct {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearRoom(self: *Builder) message.BuildError!void {
+            pub fn clearRoom(self: *Builder) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -6986,7 +6986,7 @@ pub const ChatService = struct {
                 return RoomInfo.Builder{ ._builder = builder };
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -7125,7 +7125,7 @@ pub const ChatService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearName(self: *@This()) message.BuildError!void {
+            pub fn clearName(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -7138,7 +7138,7 @@ pub const ChatService = struct {
                 return try field_reader.readTextStrict(0);
             }
 
-            pub fn clearPlayer(self: *@This()) message.BuildError!void {
+            pub fn clearPlayer(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(1)).setNull();
             }
 
@@ -7314,7 +7314,7 @@ pub const ChatService = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
+                pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -7336,7 +7336,7 @@ pub const ChatService = struct {
                 return try pointer.getCapability();
             }
 
-            pub fn clearStatus(self: *@This()) message.BuildError!void {
+            pub fn clearStatus(self: *@This()) !void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -7353,7 +7353,7 @@ pub const ChatService = struct {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearRoom(self: *Builder) message.BuildError!void {
+            pub fn clearRoom(self: *Builder) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -7372,7 +7372,7 @@ pub const ChatService = struct {
                 try any.setCapability(.{ .id = client.cap_id });
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
@@ -7523,7 +7523,7 @@ pub const ChatService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearRooms(self: *@This()) message.BuildError!void {
+            pub fn clearRooms(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -7616,7 +7616,7 @@ pub const ChatService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearFrom(self: *@This()) message.BuildError!void {
+            pub fn clearFrom(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -7631,7 +7631,7 @@ pub const ChatService = struct {
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearTo(self: *@This()) message.BuildError!void {
+            pub fn clearTo(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(1)).setNull();
             }
 
@@ -7646,7 +7646,7 @@ pub const ChatService = struct {
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearContent(self: *@This()) message.BuildError!void {
+            pub fn clearContent(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(2)).setNull();
             }
 
@@ -7842,7 +7842,7 @@ pub const ChatService = struct {
                     return raw.readU16(0);
                 }
 
-                pub fn setStatus(self: @This(), value: u16) message.BuildError!void {
+                pub fn setStatus(self: @This(), value: u16) !void {
                     self._builder.writeU16(0, value);
                 }
 
@@ -7859,7 +7859,7 @@ pub const ChatService = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearMessage(self: *@This()) message.BuildError!void {
+            pub fn clearMessage(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -7874,7 +7874,7 @@ pub const ChatService = struct {
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearStatus(self: *@This()) message.BuildError!void {
+            pub fn clearStatus(self: *@This()) !void {
                 self._builder.writeU16(0, 0);
             }
 
@@ -7892,7 +7892,7 @@ pub const ChatService = struct {
                 return ChatMessage.Builder{ ._builder = builder };
             }
 
-            pub fn setStatus(self: *Builder, value: game_types.StatusCode) message.BuildError!void {
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
                 return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 

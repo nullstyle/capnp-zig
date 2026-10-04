@@ -2853,7 +2853,7 @@ pub const VatId = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearHost(self: *@This()) message.BuildError!void {
+        pub fn clearHost(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -2936,7 +2936,7 @@ pub const ThirdPartyToContact = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearHost(self: *@This()) message.BuildError!void {
+        pub fn clearHost(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -2949,7 +2949,7 @@ pub const ThirdPartyToContact = struct {
             return try field_reader.readTextStrict(0);
         }
 
-        pub fn clearToken(self: *@This()) message.BuildError!void {
+        pub fn clearToken(self: *@This()) !void {
             self._builder.writeU64(0, 0);
         }
 
@@ -2958,7 +2958,7 @@ pub const ThirdPartyToContact = struct {
             return field_reader.readU64(0);
         }
 
-        pub fn clearSentBy(self: *@This()) message.BuildError!void {
+        pub fn clearSentBy(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -2979,7 +2979,7 @@ pub const ThirdPartyToContact = struct {
             try self._builder.writeText(0, value);
         }
 
-        pub fn setToken(self: *Builder, value: u64) message.BuildError!void {
+        pub fn setToken(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
 
@@ -3035,7 +3035,7 @@ pub const ThirdPartyToAwait = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearToken(self: *@This()) message.BuildError!void {
+        pub fn clearToken(self: *@This()) !void {
             self._builder.writeU64(0, 0);
         }
 
@@ -3044,7 +3044,7 @@ pub const ThirdPartyToAwait = struct {
             return field_reader.readU64(0);
         }
 
-        pub fn setToken(self: *Builder, value: u64) message.BuildError!void {
+        pub fn setToken(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
 
@@ -3092,7 +3092,7 @@ pub const ThirdPartyCompletion = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearToken(self: *@This()) message.BuildError!void {
+        pub fn clearToken(self: *@This()) !void {
             self._builder.writeU64(0, 0);
         }
 
@@ -3101,7 +3101,7 @@ pub const ThirdPartyCompletion = struct {
             return field_reader.readU64(0);
         }
 
-        pub fn setToken(self: *Builder, value: u64) message.BuildError!void {
+        pub fn setToken(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
 
@@ -3157,7 +3157,7 @@ pub const JoinKeyPart = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearJoinId(self: *@This()) message.BuildError!void {
+        pub fn clearJoinId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -3166,7 +3166,7 @@ pub const JoinKeyPart = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearPartCount(self: *@This()) message.BuildError!void {
+        pub fn clearPartCount(self: *@This()) !void {
             self._builder.writeU16(4, 0);
         }
 
@@ -3175,7 +3175,7 @@ pub const JoinKeyPart = struct {
             return field_reader.readU16(4);
         }
 
-        pub fn clearPartNum(self: *@This()) message.BuildError!void {
+        pub fn clearPartNum(self: *@This()) !void {
             self._builder.writeU16(6, 0);
         }
 
@@ -3184,15 +3184,15 @@ pub const JoinKeyPart = struct {
             return field_reader.readU16(6);
         }
 
-        pub fn setJoinId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setJoinId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
-        pub fn setPartCount(self: *Builder, value: u16) message.BuildError!void {
+        pub fn setPartCount(self: *Builder, value: u16) !void {
             self._builder.writeU16(4, @bitCast(value));
         }
 
-        pub fn setPartNum(self: *Builder, value: u16) message.BuildError!void {
+        pub fn setPartNum(self: *Builder, value: u16) !void {
             self._builder.writeU16(6, @bitCast(value));
         }
 
@@ -3284,7 +3284,7 @@ pub const JoinResult = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearJoinId(self: *@This()) message.BuildError!void {
+        pub fn clearJoinId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -3293,7 +3293,7 @@ pub const JoinResult = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearSucceeded(self: *@This()) message.BuildError!void {
+        pub fn clearSucceeded(self: *@This()) !void {
             self._builder.writeBool(4, 0, false);
         }
 
@@ -3302,7 +3302,7 @@ pub const JoinResult = struct {
             return field_reader.readBool(4, 0) != false;
         }
 
-        pub fn clearCap(self: *@This()) message.BuildError!void {
+        pub fn clearCap(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3316,11 +3316,11 @@ pub const JoinResult = struct {
             try capnpc.generated_helpers.setPointer(try self._builder.getAnyPointer(0), value);
         }
 
-        pub fn setJoinId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setJoinId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
-        pub fn setSucceeded(self: *Builder, value: bool) message.BuildError!void {
+        pub fn setSucceeded(self: *Builder, value: bool) !void {
             self._builder.writeBool(4, 0, value != false);
         }
 
@@ -3332,7 +3332,7 @@ pub const JoinResult = struct {
             return try self._builder.getAnyPointer(0);
         }
 
-        pub fn setCapNull(self: *Builder) message.BuildError!void {
+        pub fn setCapNull(self: *Builder) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3784,7 +3784,7 @@ pub const Number = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearN(self: *@This()) message.BuildError!void {
+            pub fn clearN(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -3793,7 +3793,7 @@ pub const Number = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn setN(self: *Builder, value: u32) message.BuildError!void {
+            pub fn setN(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 

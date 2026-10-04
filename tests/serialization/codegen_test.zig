@@ -1037,9 +1037,9 @@ test "Codegen: void list and pointer helper builders" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "readCapability(1)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initEmptyList(self: *Builder, element_count: u32) message.BuildError!message.VoidListBuilder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "writeVoidList(0, element_count)"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn clearService(self: *Builder) message.BuildError!void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn clearService(self: *Builder) !void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setServiceCapability(self: *Builder, cap: message.Capability) message.BuildError!void"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setPayloadNull(self: *Builder) message.BuildError!void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setPayloadNull(self: *Builder) !void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setPayloadText(self: *Builder, value: []const u8) message.BuildError!void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setPayloadData(self: *Builder, value: []const u8) message.BuildError!void"));
 }
@@ -1161,13 +1161,13 @@ test "Codegen: unresolved enum uses u16 setter value path" {
     const output = try gen.generateFile(requested_file);
     defer testing.allocator.free(output);
 
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setStatus(self: *Builder, value: u16) message.BuildError!void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setStatus(self: *Builder, value: u16) !void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self.enumOrdinals().setStatus(@as(u16, value));"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if ((try self.which()) != .status) return error.WrongUnionMember;"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 2, "pub const EnumOrdinals = struct"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getStatus(self: @This()) !u16"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if (self._reader.readUnionDiscriminant(2) != 0) return error.WrongUnionMember;"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setStatus(self: @This(), value: u16) message.BuildError!void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setStatus(self: @This(), value: u16) !void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(2, 0);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn enumOrdinals(self: @This()) EnumOrdinals"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn whichOrdinal(self: Reader) u16"));
@@ -1891,7 +1891,7 @@ test "Codegen: zero numeric and enum defaults skip xor paths" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self.enumOrdinals().setState(@as(u16, @intFromEnum(value)));"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getState(self: @This()) !u16"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self._reader.readU16(2);"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setState(self: @This(), value: u16) message.BuildError!void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setState(self: @This(), value: u16) !void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(2, value);"));
 
     try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "^ @as(u32, 0)"));

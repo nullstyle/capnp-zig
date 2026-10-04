@@ -65,7 +65,7 @@ pub const Shape = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearWidth(self: *@This()) message.BuildError!void {
+        pub fn clearWidth(self: *@This()) !void {
             self._builder.writeU32(4, 0);
         }
 
@@ -74,7 +74,7 @@ pub const Shape = struct {
             return @bitCast(field_reader.readU32(4));
         }
 
-        pub fn clearHeight(self: *@This()) message.BuildError!void {
+        pub fn clearHeight(self: *@This()) !void {
             self._builder.writeU32(8, 0);
         }
 
@@ -83,11 +83,11 @@ pub const Shape = struct {
             return @bitCast(field_reader.readU32(8));
         }
 
-            pub fn setWidth(self: *@This(), value: f32) message.BuildError!void {
+            pub fn setWidth(self: *@This(), value: f32) !void {
                 self._builder.writeU32(4, @bitCast(value));
             }
 
-            pub fn setHeight(self: *@This(), value: f32) message.BuildError!void {
+            pub fn setHeight(self: *@This(), value: f32) !void {
                 self._builder.writeU32(8, @bitCast(value));
             }
 
@@ -164,7 +164,7 @@ pub const Shape = struct {
                 return raw.readU16(0);
             }
 
-            pub fn setColor(self: @This(), value: u16) message.BuildError!void {
+            pub fn setColor(self: @This(), value: u16) !void {
                 self._builder.writeU16(0, value);
             }
 
@@ -189,7 +189,7 @@ pub const Shape = struct {
             return std.enums.fromInt(_capnp_file.Shape.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearColor(self: *@This()) message.BuildError!void {
+        pub fn clearColor(self: *@This()) !void {
             self._builder.writeU16(0, 0);
         }
 
@@ -198,7 +198,7 @@ pub const Shape = struct {
             return std.enums.fromInt(Color, ordinal) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearCircle(self: *@This()) message.BuildError!void {
+        pub fn clearCircle(self: *@This()) !void {
             self._builder.writeU64(8, 0);
             self._builder.writeU16(2, 0);
         }
@@ -209,7 +209,7 @@ pub const Shape = struct {
             return @bitCast(field_reader.readU64(8));
         }
 
-        pub fn clearRectangle(self: *@This()) message.BuildError!void {
+        pub fn clearRectangle(self: *@This()) !void {
             self._builder.writeU32(4, 0);
             self._builder.writeU32(8, 0);
             self._builder.writeU16(2, 1);
@@ -220,11 +220,11 @@ pub const Shape = struct {
             return Rectangle.Builder.wrap(self._builder);
         }
 
-        pub fn setColor(self: *Builder, value: Color) message.BuildError!void {
+        pub fn setColor(self: *Builder, value: Color) !void {
             return self.enumOrdinals().setColor(@as(u16, @intFromEnum(value)));
         }
 
-        pub fn setCircle(self: *Builder, value: f64) message.BuildError!void {
+        pub fn setCircle(self: *Builder, value: f64) !void {
             self._builder.writeU16(2, 0);
             self._builder.writeU64(8, @bitCast(value));
         }

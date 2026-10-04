@@ -2847,7 +2847,7 @@ pub const PlayerId = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearId(self: *@This()) message.BuildError!void {
+        pub fn clearId(self: *@This()) !void {
             self._builder.writeU64(0, 0);
         }
 
@@ -2856,7 +2856,7 @@ pub const PlayerId = struct {
             return field_reader.readU64(0);
         }
 
-        pub fn setId(self: *Builder, value: u64) message.BuildError!void {
+        pub fn setId(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
 
@@ -2912,7 +2912,7 @@ pub const Position = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearX(self: *@This()) message.BuildError!void {
+        pub fn clearX(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -2921,7 +2921,7 @@ pub const Position = struct {
             return @bitCast(field_reader.readU32(0));
         }
 
-        pub fn clearY(self: *@This()) message.BuildError!void {
+        pub fn clearY(self: *@This()) !void {
             self._builder.writeU32(4, 0);
         }
 
@@ -2930,7 +2930,7 @@ pub const Position = struct {
             return @bitCast(field_reader.readU32(4));
         }
 
-        pub fn clearZ(self: *@This()) message.BuildError!void {
+        pub fn clearZ(self: *@This()) !void {
             self._builder.writeU32(8, 0);
         }
 
@@ -2939,15 +2939,15 @@ pub const Position = struct {
             return @bitCast(field_reader.readU32(8));
         }
 
-        pub fn setX(self: *Builder, value: f32) message.BuildError!void {
+        pub fn setX(self: *Builder, value: f32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
-        pub fn setY(self: *Builder, value: f32) message.BuildError!void {
+        pub fn setY(self: *Builder, value: f32) !void {
             self._builder.writeU32(4, @bitCast(value));
         }
 
-        pub fn setZ(self: *Builder, value: f32) message.BuildError!void {
+        pub fn setZ(self: *Builder, value: f32) !void {
             self._builder.writeU32(8, @bitCast(value));
         }
 
@@ -3003,7 +3003,7 @@ pub const Vector3 = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearX(self: *@This()) message.BuildError!void {
+        pub fn clearX(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -3012,7 +3012,7 @@ pub const Vector3 = struct {
             return @bitCast(field_reader.readU32(0));
         }
 
-        pub fn clearY(self: *@This()) message.BuildError!void {
+        pub fn clearY(self: *@This()) !void {
             self._builder.writeU32(4, 0);
         }
 
@@ -3021,7 +3021,7 @@ pub const Vector3 = struct {
             return @bitCast(field_reader.readU32(4));
         }
 
-        pub fn clearZ(self: *@This()) message.BuildError!void {
+        pub fn clearZ(self: *@This()) !void {
             self._builder.writeU32(8, 0);
         }
 
@@ -3030,15 +3030,15 @@ pub const Vector3 = struct {
             return @bitCast(field_reader.readU32(8));
         }
 
-        pub fn setX(self: *Builder, value: f32) message.BuildError!void {
+        pub fn setX(self: *Builder, value: f32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
-        pub fn setY(self: *Builder, value: f32) message.BuildError!void {
+        pub fn setY(self: *Builder, value: f32) !void {
             self._builder.writeU32(4, @bitCast(value));
         }
 
-        pub fn setZ(self: *Builder, value: f32) message.BuildError!void {
+        pub fn setZ(self: *Builder, value: f32) !void {
             self._builder.writeU32(8, @bitCast(value));
         }
 
@@ -3103,7 +3103,7 @@ pub const ItemId = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearId(self: *@This()) message.BuildError!void {
+        pub fn clearId(self: *@This()) !void {
             self._builder.writeU64(0, 0);
         }
 
@@ -3112,7 +3112,7 @@ pub const ItemId = struct {
             return field_reader.readU64(0);
         }
 
-        pub fn setId(self: *Builder, value: u64) message.BuildError!void {
+        pub fn setId(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
 
@@ -3217,7 +3217,7 @@ pub const Item = struct {
                 return raw.readU16(0);
             }
 
-            pub fn setRarity(self: @This(), value: u16) message.BuildError!void {
+            pub fn setRarity(self: @This(), value: u16) !void {
                 self._builder.writeU16(0, value);
             }
 
@@ -3234,7 +3234,7 @@ pub const Item = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearId(self: *@This()) message.BuildError!void {
+        pub fn clearId(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3249,7 +3249,7 @@ pub const Item = struct {
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearName(self: *@This()) message.BuildError!void {
+        pub fn clearName(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -3262,7 +3262,7 @@ pub const Item = struct {
             return try field_reader.readTextStrict(1);
         }
 
-        pub fn clearRarity(self: *@This()) message.BuildError!void {
+        pub fn clearRarity(self: *@This()) !void {
             self._builder.writeU16(0, 0);
         }
 
@@ -3271,7 +3271,7 @@ pub const Item = struct {
             return std.enums.fromInt(Rarity, ordinal) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearLevel(self: *@This()) message.BuildError!void {
+        pub fn clearLevel(self: *@This()) !void {
             self._builder.writeU16(2, 0);
         }
 
@@ -3280,7 +3280,7 @@ pub const Item = struct {
             return field_reader.readU16(2);
         }
 
-        pub fn clearStackSize(self: *@This()) message.BuildError!void {
+        pub fn clearStackSize(self: *@This()) !void {
             self._builder.writeU32(4, 0);
         }
 
@@ -3291,7 +3291,7 @@ pub const Item = struct {
             return value;
         }
 
-        pub fn clearAttributes(self: *@This()) message.BuildError!void {
+        pub fn clearAttributes(self: *@This()) !void {
             try (try self._builder.getAnyPointer(2)).setNull();
         }
 
@@ -3323,15 +3323,15 @@ pub const Item = struct {
             try self._builder.writeText(1, value);
         }
 
-        pub fn setRarity(self: *Builder, value: Rarity) message.BuildError!void {
+        pub fn setRarity(self: *Builder, value: Rarity) !void {
             return self.enumOrdinals().setRarity(@as(u16, @intFromEnum(value)));
         }
 
-        pub fn setLevel(self: *Builder, value: u16) message.BuildError!void {
+        pub fn setLevel(self: *Builder, value: u16) !void {
             self._builder.writeU16(2, @bitCast(value));
         }
 
-        pub fn setStackSize(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setStackSize(self: *Builder, value: u32) !void {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 1);
             self._builder.writeU32(4, stored);
         }
@@ -3488,7 +3488,7 @@ pub const Attribute = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearName(self: *@This()) message.BuildError!void {
+        pub fn clearName(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3501,7 +3501,7 @@ pub const Attribute = struct {
             return try field_reader.readTextStrict(0);
         }
 
-        pub fn clearValue(self: *@This()) message.BuildError!void {
+        pub fn clearValue(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -3518,7 +3518,7 @@ pub const Attribute = struct {
             try self._builder.writeText(0, value);
         }
 
-        pub fn setValue(self: *Builder, value: i32) message.BuildError!void {
+        pub fn setValue(self: *Builder, value: i32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
@@ -3566,7 +3566,7 @@ pub const Timestamp = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearUnixMillis(self: *@This()) message.BuildError!void {
+        pub fn clearUnixMillis(self: *@This()) !void {
             self._builder.writeU64(0, 0);
         }
 
@@ -3575,7 +3575,7 @@ pub const Timestamp = struct {
             return @bitCast(field_reader.readU64(0));
         }
 
-        pub fn setUnixMillis(self: *Builder, value: i64) message.BuildError!void {
+        pub fn setUnixMillis(self: *Builder, value: i64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
 
@@ -3661,7 +3661,7 @@ pub const PlayerInfo = struct {
                 return raw.readU16(0);
             }
 
-            pub fn setFaction(self: @This(), value: u16) message.BuildError!void {
+            pub fn setFaction(self: @This(), value: u16) !void {
                 self._builder.writeU16(0, value);
             }
 
@@ -3678,7 +3678,7 @@ pub const PlayerInfo = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearId(self: *@This()) message.BuildError!void {
+        pub fn clearId(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -3693,7 +3693,7 @@ pub const PlayerInfo = struct {
             try capnpc.generated_helpers.setStruct(pointer, value._reader);
         }
 
-        pub fn clearName(self: *@This()) message.BuildError!void {
+        pub fn clearName(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -3706,7 +3706,7 @@ pub const PlayerInfo = struct {
             return try field_reader.readTextStrict(1);
         }
 
-        pub fn clearFaction(self: *@This()) message.BuildError!void {
+        pub fn clearFaction(self: *@This()) !void {
             self._builder.writeU16(0, 0);
         }
 
@@ -3715,7 +3715,7 @@ pub const PlayerInfo = struct {
             return std.enums.fromInt(Faction, ordinal) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearLevel(self: *@This()) message.BuildError!void {
+        pub fn clearLevel(self: *@This()) !void {
             self._builder.writeU16(2, 0);
         }
 
@@ -3741,11 +3741,11 @@ pub const PlayerInfo = struct {
             try self._builder.writeText(1, value);
         }
 
-        pub fn setFaction(self: *Builder, value: Faction) message.BuildError!void {
+        pub fn setFaction(self: *Builder, value: Faction) !void {
             return self.enumOrdinals().setFaction(@as(u16, @intFromEnum(value)));
         }
 
-        pub fn setLevel(self: *Builder, value: u16) message.BuildError!void {
+        pub fn setLevel(self: *Builder, value: u16) !void {
             self._builder.writeU16(2, @bitCast(value));
         }
 

@@ -181,20 +181,30 @@ Builders spell two named sets (`src/serialization/message/errors.zig`):
 
 - `message.BuildError` — every error a builder primitive can return while
   writing into a `MessageBuilder` (allocation, bounds, wire-encoding limits).
-  Generated `initX`, value `setX` (including `setXCapability`, `setXClient`,
-  `setXText`, `setXData` and `setXNull`) and `clearX` methods on struct, group and view
-  Builders return exactly this set, as do `StructBuilder.writePointerList*`,
-  `writeStructList*` and `writeTextList*`. The pointer makers the builders call
-  through are typed with it, so a path that starts returning a new error fails
-  to compile rather than widening a signature to `anyerror`.
+  The generated mutators that can allocate or write a pointer return exactly
+  this set: `initX`, the Text and Data `setX` (and `setXText`, `setXData`),
+  `setXCapability` and `setXClient`, on struct, group and view Builders. So do
+  `StructBuilder.writePointerList*`, `writeStructList*` and `writeTextList*`.
+  The pointer makers the builders call through are typed with it, so a path
+  that starts returning a new error fails to compile rather than widening a
+  signature to `anyerror`.
 - `message.CopyError` — `BuildError` plus the errors raised while reading the
   source of a deep copy. `message.cloneAnyPointer` and the generated copy
   setters (`setX(value: T.Reader)`, `setX(value: SomeListReader)`,
   `setX(value: message.AnyPointerReader)`) return exactly this set.
 
-Generated methods that are not plain message writes keep inferred sets:
-`setXServer` (exports through the `Peer`), and the codec-parametric generic
-(`Apply`) and concrete-brand (`brands()`) views.
+Generated mutators that never allocate keep their precise inferred sets, so an
+infallible setter stays infallible:
+
+- scalar `setX` (Void, Bool, integers, floats, enums, and `EnumOrdinals`) has
+  an empty error set;
+- `clearX` and `setXNull` return at most the pointer-slot errors
+  (`InvalidSegmentId`, `OutOfBounds`, `PointerIndexOutOfBounds`), and nothing
+  when they clear only data fields.
+
+Generated methods that are not plain message writes keep inferred sets as
+well: `setXServer` (exports through the `Peer`), and the codec-parametric
+generic (`Apply`) and concrete-brand (`brands()`) views.
 
 `zig build check-api` and `zig build api-snapshot` reject a Stable builder line
 that renders `anyerror` anywhere: in its return set, a parameter type or a

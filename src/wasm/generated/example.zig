@@ -155,7 +155,7 @@ pub const Person = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearName(self: *@This()) message.BuildError!void {
+        pub fn clearName(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -168,7 +168,7 @@ pub const Person = struct {
             return try field_reader.readTextStrict(0);
         }
 
-        pub fn clearAge(self: *@This()) message.BuildError!void {
+        pub fn clearAge(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -177,7 +177,7 @@ pub const Person = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearEmail(self: *@This()) message.BuildError!void {
+        pub fn clearEmail(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -198,7 +198,7 @@ pub const Person = struct {
             try self._builder.writeText(0, value);
         }
 
-        pub fn setAge(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setAge(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
@@ -270,7 +270,7 @@ pub const Address = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearStreet(self: *@This()) message.BuildError!void {
+        pub fn clearStreet(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -283,7 +283,7 @@ pub const Address = struct {
             return try field_reader.readTextStrict(0);
         }
 
-        pub fn clearCity(self: *@This()) message.BuildError!void {
+        pub fn clearCity(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -296,7 +296,7 @@ pub const Address = struct {
             return try field_reader.readTextStrict(1);
         }
 
-        pub fn clearZipCode(self: *@This()) message.BuildError!void {
+        pub fn clearZipCode(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -321,7 +321,7 @@ pub const Address = struct {
             try self._builder.writeText(1, value);
         }
 
-        pub fn setZipCode(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setZipCode(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
     };

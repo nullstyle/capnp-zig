@@ -11,12 +11,31 @@ const ArrayListWriter = @import("generator.zig").ArrayListWriter;
 /// Error-set prefixes spelled on generated Builder mutators. A spelled set is
 /// what a consumer can pin: an inferred `!T` silently changes whenever a
 /// runtime primitive's errors do, and widens to `anyerror` as soon as one
-/// routes through an `anyerror` function pointer. `initX`, value `setX` and
-/// `clearX` only write into the message (`message.BuildError`); copy setters
-/// also read their source (`message.CopyError`). RPC helpers that export a
-/// server, and the codec-parametric generic/brand views, keep inferred sets.
+/// routes through an `anyerror` function pointer.
+///
+/// Only mutators that can allocate or write a pointer spell a named set:
+/// `initX`, the pointer-valued `setX` (text, data, `setXText`/`setXData`) and
+/// the capability setters return `message.BuildError`; copy setters also read
+/// their source (`message.CopyError`).
+///
+/// Scalar setters, `clearX` and `setXNull` never allocate: they write
+/// fixed-size data, or null a pointer the message already holds. They keep
+/// the inferred `!T` (`no_alloc_error_union`), whose set is the precise one
+/// the body produces (`error{}` for a scalar), so an infallible setter does
+/// not widen to the whole `BuildError`. RPC helpers that export a server, and
+/// the codec-parametric generic/brand views, keep inferred sets as well.
 const build_error_union = "message.BuildError!";
 const copy_error_union = "message.CopyError!";
+const no_alloc_error_union = "!";
+
+/// The error-union prefix of a value `setX` for `slot_type`: text and data
+/// copy bytes into a new allocation; every other value type is a scalar.
+fn valueSetterErrorUnion(slot_type: schema.Type) []const u8 {
+    return switch (slot_type) {
+        .text, .data => build_error_union,
+        else => no_alloc_error_union,
+    };
+}
 
 /// Generates Zig source code for a single Cap'n Proto struct node, emitting
 /// a `Reader` type (zero-copy field accessors) and a `Builder` type (field
@@ -2314,7 +2333,7 @@ pub const StructGenerator = struct {
             try writer.writeAll(getter_code);
             try writer.print("{s}}}\n\n", .{member_indent});
 
-            try writer.print("{s}pub fn set{s}(self: @This(), value: u16) " ++ build_error_union ++ "void {{\n", .{ member_indent, cap_name });
+            try writer.print("{s}pub fn set{s}(self: @This(), value: u16) " ++ no_alloc_error_union ++ "void {{\n", .{ member_indent, cap_name });
             try self.writeOrdinalUnionDiscriminant(field, struct_info, body_indent, writer);
             try self.writeEnumOrdinalSetterBody(slot, body_indent, writer);
             try writer.print("{s}}}\n\n", .{member_indent});
@@ -3373,7 +3392,7 @@ pub const StructGenerator = struct {
         const zig_type = try self.writerTypeString(slot.type);
         defer self.allocator.free(zig_type);
 
-        try writer.print("            pub fn set{s}(self: *@This(), value: {s}) " ++ build_error_union ++ "void {{\n", .{ cap_name, zig_type });
+        try writer.print("            pub fn set{s}(self: *@This(), value: {s}) {s}void {{\n", .{ cap_name, zig_type, valueSetterErrorUnion(slot.type) });
         if (slot.type != .@"enum") {
             try self.writeUnionDiscriminant(field, parent_struct_info, writer);
         }
@@ -3733,7 +3752,7 @@ pub const StructGenerator = struct {
         defer self.allocator.free(name);
         const cap_name = try self.capitalizeFirst(name);
         defer self.allocator.free(cap_name);
-        try writer.print("        pub fn clear{s}(self: *@This()) " ++ build_error_union ++ "void {{\n", .{cap_name});
+        try writer.print("        pub fn clear{s}(self: *@This()) " ++ no_alloc_error_union ++ "void {{\n", .{cap_name});
         if (field.slot) |slot| if (slot.type == .void and field.discriminant_value == 0xffff) try writer.writeAll("            _ = self;\n");
         try self.writeFieldZero(field, writer);
         try self.writeUnionDiscriminant(field, info, writer);
@@ -3951,10 +3970,11 @@ pub const StructGenerator = struct {
         const zig_type = try self.writerTypeString(slot.type);
         defer self.allocator.free(zig_type);
 
-        try writer.print("        pub fn set{s}(self: *{s}, value: {s}) " ++ build_error_union ++ "void {{\n", .{
+        try writer.print("        pub fn set{s}(self: *{s}, value: {s}) {s}void {{\n", .{
             cap_name,
             self.builder_ref,
             zig_type,
+            valueSetterErrorUnion(slot.type),
         });
 
         // Write union discriminant if this is a union field
@@ -4456,9 +4476,10 @@ pub const StructGenerator = struct {
         try self.writeUnionDiscriminant(field, parent_struct_info, writer);
         try writer.print("            return try self._builder.getAnyPointer({});\n", .{slot_offset});
         try writer.writeAll("        }\n\n");
+        // Nulling a pointer the message already holds never allocates.
         if (is_interface) {
-            try writer.print("        pub fn clear{s}(self: *{s}) " ++ build_error_union ++ "void {{\n", .{ cap_name, self.builder_ref });
-        } else try writer.print("        pub fn set{s}Null(self: *{s}) " ++ build_error_union ++ "void {{\n", .{ cap_name, self.builder_ref });
+            try writer.print("        pub fn clear{s}(self: *{s}) " ++ no_alloc_error_union ++ "void {{\n", .{ cap_name, self.builder_ref });
+        } else try writer.print("        pub fn set{s}Null(self: *{s}) " ++ no_alloc_error_union ++ "void {{\n", .{ cap_name, self.builder_ref });
         try self.writeUnionDiscriminant(field, parent_struct_info, writer);
         try writer.print("            try (try self._builder.getAnyPointer({})).setNull();\n", .{slot_offset});
         try writer.writeAll("        }\n\n");

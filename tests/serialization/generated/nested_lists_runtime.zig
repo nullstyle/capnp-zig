@@ -475,7 +475,7 @@ pub const Child = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearValue(self: *@This()) message.BuildError!void {
+        pub fn clearValue(self: *@This()) !void {
             self._builder.writeU16(0, 0);
         }
 
@@ -484,7 +484,7 @@ pub const Child = struct {
             return field_reader.readU16(0);
         }
 
-        pub fn setValue(self: *Builder, value: u16) message.BuildError!void {
+        pub fn setValue(self: *Builder, value: u16) !void {
             self._builder.writeU16(0, @bitCast(value));
         }
     };
@@ -563,7 +563,7 @@ pub const NestedListDemo = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearGroupRows(self: *@This()) message.BuildError!void {
+            pub fn clearGroupRows(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(8)).setNull();
             }
 
@@ -1118,7 +1118,7 @@ pub const NestedListDemo = struct {
             return std.enums.fromInt(_capnp_file.NestedListDemo.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearNumbers(self: *@This()) message.BuildError!void {
+        pub fn clearNumbers(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -1132,7 +1132,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearDeepText(self: *@This()) message.BuildError!void {
+        pub fn clearDeepText(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -1146,7 +1146,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearRecords(self: *@This()) message.BuildError!void {
+        pub fn clearRecords(self: *@This()) !void {
             try (try self._builder.getAnyPointer(2)).setNull();
         }
 
@@ -1160,7 +1160,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearDataRows(self: *@This()) message.BuildError!void {
+        pub fn clearDataRows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(3)).setNull();
         }
 
@@ -1174,7 +1174,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearEnumRows(self: *@This()) message.BuildError!void {
+        pub fn clearEnumRows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(4)).setNull();
         }
 
@@ -1188,7 +1188,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearServiceRows(self: *@This()) message.BuildError!void {
+        pub fn clearServiceRows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(5)).setNull();
         }
 
@@ -1202,7 +1202,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearVoidRows(self: *@This()) message.BuildError!void {
+        pub fn clearVoidRows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(6)).setNull();
         }
 
@@ -1216,7 +1216,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearChoiceRows(self: *@This()) message.BuildError!void {
+        pub fn clearChoiceRows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(7)).setNull();
             self._builder.writeU16(0, 0);
         }
@@ -1233,7 +1233,7 @@ pub const NestedListDemo = struct {
             self._builder.writeU16(0, 0);
         }
 
-        pub fn clearNone(self: *@This()) message.BuildError!void {
+        pub fn clearNone(self: *@This()) !void {
             self._builder.writeU16(0, 1);
         }
 
@@ -1242,11 +1242,11 @@ pub const NestedListDemo = struct {
             return {};
         }
 
-        pub fn clearGrouped(self: *@This()) message.BuildError!void {
+        pub fn clearGrouped(self: *@This()) !void {
             try (try self._builder.getAnyPointer(8)).setNull();
         }
 
-        pub fn clearDefaultRows(self: *@This()) message.BuildError!void {
+        pub fn clearDefaultRows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(9)).setNull();
         }
 
@@ -1261,7 +1261,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearI8Rows(self: *@This()) message.BuildError!void {
+        pub fn clearI8Rows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(10)).setNull();
         }
 
@@ -1275,7 +1275,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearU8Rows(self: *@This()) message.BuildError!void {
+        pub fn clearU8Rows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(11)).setNull();
         }
 
@@ -1289,7 +1289,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearI16Rows(self: *@This()) message.BuildError!void {
+        pub fn clearI16Rows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(12)).setNull();
         }
 
@@ -1303,7 +1303,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearI32Rows(self: *@This()) message.BuildError!void {
+        pub fn clearI32Rows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(13)).setNull();
         }
 
@@ -1317,7 +1317,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearI64Rows(self: *@This()) message.BuildError!void {
+        pub fn clearI64Rows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(14)).setNull();
         }
 
@@ -1331,7 +1331,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearU64Rows(self: *@This()) message.BuildError!void {
+        pub fn clearU64Rows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(15)).setNull();
         }
 
@@ -1345,7 +1345,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearF32Rows(self: *@This()) message.BuildError!void {
+        pub fn clearF32Rows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(16)).setNull();
         }
 
@@ -1359,7 +1359,7 @@ pub const NestedListDemo = struct {
             try capnpc.generated_helpers.setList(pointer, value);
         }
 
-        pub fn clearF64Rows(self: *@This()) message.BuildError!void {
+        pub fn clearF64Rows(self: *@This()) !void {
             try (try self._builder.getAnyPointer(17)).setNull();
         }
 
@@ -1439,7 +1439,7 @@ pub const NestedListDemo = struct {
             return try self._builder.writePointerList(7, element_count);
         }
 
-        pub fn setNone(self: *Builder, value: void) message.BuildError!void {
+        pub fn setNone(self: *Builder, value: void) !void {
             self._builder.writeU16(0, 1);
             _ = value;
         }

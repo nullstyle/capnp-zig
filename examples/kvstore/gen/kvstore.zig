@@ -567,7 +567,7 @@ pub const Entry = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearKey(self: *@This()) message.BuildError!void {
+        pub fn clearKey(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -580,7 +580,7 @@ pub const Entry = struct {
             return try field_reader.readTextStrict(0);
         }
 
-        pub fn clearValue(self: *@This()) message.BuildError!void {
+        pub fn clearValue(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
         }
 
@@ -593,7 +593,7 @@ pub const Entry = struct {
             return try field_reader.readData(1);
         }
 
-        pub fn clearVersion(self: *@This()) message.BuildError!void {
+        pub fn clearVersion(self: *@This()) !void {
             self._builder.writeU64(0, 0);
         }
 
@@ -618,7 +618,7 @@ pub const Entry = struct {
             try self._builder.writeData(1, value);
         }
 
-        pub fn setVersion(self: *Builder, value: u64) message.BuildError!void {
+        pub fn setVersion(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
 
@@ -708,7 +708,7 @@ pub const WriteOp = struct {
             return std.enums.fromInt(_capnp_file.WriteOp.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearKey(self: *@This()) message.BuildError!void {
+        pub fn clearKey(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -721,7 +721,7 @@ pub const WriteOp = struct {
             return try field_reader.readTextStrict(0);
         }
 
-        pub fn clearPut(self: *@This()) message.BuildError!void {
+        pub fn clearPut(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
             self._builder.writeU16(0, 0);
         }
@@ -736,7 +736,7 @@ pub const WriteOp = struct {
             return try field_reader.readData(1);
         }
 
-        pub fn clearDelete(self: *@This()) message.BuildError!void {
+        pub fn clearDelete(self: *@This()) !void {
             self._builder.writeU16(0, 1);
         }
 
@@ -763,7 +763,7 @@ pub const WriteOp = struct {
             try self._builder.writeData(1, value);
         }
 
-        pub fn setDelete(self: *Builder, value: void) message.BuildError!void {
+        pub fn setDelete(self: *Builder, value: void) !void {
             self._builder.writeU16(0, 1);
             _ = value;
         }
@@ -855,7 +855,7 @@ pub const WriteOpResult = struct {
             return std.enums.fromInt(_capnp_file.WriteOpResult.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
-        pub fn clearKey(self: *@This()) message.BuildError!void {
+        pub fn clearKey(self: *@This()) !void {
             try (try self._builder.getAnyPointer(0)).setNull();
         }
 
@@ -868,7 +868,7 @@ pub const WriteOpResult = struct {
             return try field_reader.readTextStrict(0);
         }
 
-        pub fn clearPut(self: *@This()) message.BuildError!void {
+        pub fn clearPut(self: *@This()) !void {
             try (try self._builder.getAnyPointer(1)).setNull();
             self._builder.writeU16(0, 0);
         }
@@ -886,7 +886,7 @@ pub const WriteOpResult = struct {
             self._builder.writeU16(0, 0);
         }
 
-        pub fn clearDelete(self: *@This()) message.BuildError!void {
+        pub fn clearDelete(self: *@This()) !void {
             self._builder.writeBool(2, 0, false);
             self._builder.writeU16(0, 1);
         }
@@ -916,7 +916,7 @@ pub const WriteOpResult = struct {
             return Entry.Builder{ ._builder = builder };
         }
 
-        pub fn setDelete(self: *Builder, value: bool) message.BuildError!void {
+        pub fn setDelete(self: *Builder, value: bool) !void {
             self._builder.writeU16(0, 1);
             self._builder.writeBool(2, 0, value != false);
         }
@@ -1040,7 +1040,7 @@ pub const BackupInfo = struct {
             return .{ ._reader = try storage.reader(self._builder) };
         }
 
-        pub fn clearBackupId(self: *@This()) message.BuildError!void {
+        pub fn clearBackupId(self: *@This()) !void {
             self._builder.writeU32(0, 0);
         }
 
@@ -1049,7 +1049,7 @@ pub const BackupInfo = struct {
             return field_reader.readU32(0);
         }
 
-        pub fn clearTimestamp(self: *@This()) message.BuildError!void {
+        pub fn clearTimestamp(self: *@This()) !void {
             self._builder.writeU64(8, 0);
         }
 
@@ -1058,7 +1058,7 @@ pub const BackupInfo = struct {
             return @bitCast(field_reader.readU64(8));
         }
 
-        pub fn clearSize(self: *@This()) message.BuildError!void {
+        pub fn clearSize(self: *@This()) !void {
             self._builder.writeU64(16, 0);
         }
 
@@ -1067,7 +1067,7 @@ pub const BackupInfo = struct {
             return field_reader.readU64(16);
         }
 
-        pub fn clearNumFiles(self: *@This()) message.BuildError!void {
+        pub fn clearNumFiles(self: *@This()) !void {
             self._builder.writeU32(4, 0);
         }
 
@@ -1076,19 +1076,19 @@ pub const BackupInfo = struct {
             return field_reader.readU32(4);
         }
 
-        pub fn setBackupId(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setBackupId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
 
-        pub fn setTimestamp(self: *Builder, value: i64) message.BuildError!void {
+        pub fn setTimestamp(self: *Builder, value: i64) !void {
             self._builder.writeU64(8, @bitCast(value));
         }
 
-        pub fn setSize(self: *Builder, value: u64) message.BuildError!void {
+        pub fn setSize(self: *Builder, value: u64) !void {
             self._builder.writeU64(16, @bitCast(value));
         }
 
-        pub fn setNumFiles(self: *Builder, value: u32) message.BuildError!void {
+        pub fn setNumFiles(self: *Builder, value: u32) !void {
             self._builder.writeU32(4, @bitCast(value));
         }
 
@@ -1695,7 +1695,7 @@ pub const KvClientNotifier = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearChanges(self: *@This()) message.BuildError!void {
+            pub fn clearChanges(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -1807,7 +1807,7 @@ pub const KvClientNotifier = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearRestoredBackupId(self: *@This()) message.BuildError!void {
+            pub fn clearRestoredBackupId(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -1816,7 +1816,7 @@ pub const KvClientNotifier = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn clearNextVersion(self: *@This()) message.BuildError!void {
+            pub fn clearNextVersion(self: *@This()) !void {
                 self._builder.writeU64(8, 0);
             }
 
@@ -1825,11 +1825,11 @@ pub const KvClientNotifier = struct {
                 return field_reader.readU64(8);
             }
 
-            pub fn setRestoredBackupId(self: *Builder, value: u32) message.BuildError!void {
+            pub fn setRestoredBackupId(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
-            pub fn setNextVersion(self: *Builder, value: u64) message.BuildError!void {
+            pub fn setNextVersion(self: *Builder, value: u64) !void {
                 self._builder.writeU64(8, @bitCast(value));
             }
 
@@ -3738,7 +3738,7 @@ pub const KvStore = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearKey(self: *@This()) message.BuildError!void {
+            pub fn clearKey(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -3813,7 +3813,7 @@ pub const KvStore = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearEntry(self: *@This()) message.BuildError!void {
+            pub fn clearEntry(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -3828,7 +3828,7 @@ pub const KvStore = struct {
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearFound(self: *@This()) message.BuildError!void {
+            pub fn clearFound(self: *@This()) !void {
                 self._builder.writeBool(0, 0, false);
             }
 
@@ -3846,7 +3846,7 @@ pub const KvStore = struct {
                 return Entry.Builder{ ._builder = builder };
             }
 
-            pub fn setFound(self: *Builder, value: bool) message.BuildError!void {
+            pub fn setFound(self: *Builder, value: bool) !void {
                 self._builder.writeBool(0, 0, value != false);
             }
 
@@ -3957,7 +3957,7 @@ pub const KvStore = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearOps(self: *@This()) message.BuildError!void {
+            pub fn clearOps(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4042,7 +4042,7 @@ pub const KvStore = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearResults(self: *@This()) message.BuildError!void {
+            pub fn clearResults(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4057,7 +4057,7 @@ pub const KvStore = struct {
                 try capnpc.generated_helpers.setList(pointer, value);
             }
 
-            pub fn clearApplied(self: *@This()) message.BuildError!void {
+            pub fn clearApplied(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -4066,7 +4066,7 @@ pub const KvStore = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn clearNextVersion(self: *@This()) message.BuildError!void {
+            pub fn clearNextVersion(self: *@This()) !void {
                 self._builder.writeU64(8, 0);
             }
 
@@ -4084,11 +4084,11 @@ pub const KvStore = struct {
                 return StructListBuilder(WriteOpResult){ ._list = raw };
             }
 
-            pub fn setApplied(self: *Builder, value: u32) message.BuildError!void {
+            pub fn setApplied(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
-            pub fn setNextVersion(self: *Builder, value: u64) message.BuildError!void {
+            pub fn setNextVersion(self: *Builder, value: u64) !void {
                 self._builder.writeU64(8, @bitCast(value));
             }
 
@@ -4145,7 +4145,7 @@ pub const KvStore = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearPrefix(self: *@This()) message.BuildError!void {
+            pub fn clearPrefix(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4158,7 +4158,7 @@ pub const KvStore = struct {
                 return try field_reader.readTextStrict(0);
             }
 
-            pub fn clearLimit(self: *@This()) message.BuildError!void {
+            pub fn clearLimit(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -4175,7 +4175,7 @@ pub const KvStore = struct {
                 try self._builder.writeText(0, value);
             }
 
-            pub fn setLimit(self: *Builder, value: u32) message.BuildError!void {
+            pub fn setLimit(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
@@ -4232,7 +4232,7 @@ pub const KvStore = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearEntries(self: *@This()) message.BuildError!void {
+            pub fn clearEntries(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4328,7 +4328,7 @@ pub const KvStore = struct {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearNotifier(self: *Builder) message.BuildError!void {
+            pub fn clearNotifier(self: *Builder) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4487,7 +4487,7 @@ pub const KvStore = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearKeys(self: *@This()) message.BuildError!void {
+            pub fn clearKeys(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4593,7 +4593,7 @@ pub const KvStore = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearFlushBeforeBackup(self: *@This()) message.BuildError!void {
+            pub fn clearFlushBeforeBackup(self: *@This()) !void {
                 self._builder.writeBool(0, 0, false);
             }
 
@@ -4602,7 +4602,7 @@ pub const KvStore = struct {
                 return field_reader.readBool(0, 0) != false;
             }
 
-            pub fn setFlushBeforeBackup(self: *Builder, value: bool) message.BuildError!void {
+            pub fn setFlushBeforeBackup(self: *Builder, value: bool) !void {
                 self._builder.writeBool(0, 0, value != false);
             }
 
@@ -4660,7 +4660,7 @@ pub const KvStore = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearBackup(self: *@This()) message.BuildError!void {
+            pub fn clearBackup(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4675,7 +4675,7 @@ pub const KvStore = struct {
                 try capnpc.generated_helpers.setStruct(pointer, value._reader);
             }
 
-            pub fn clearBackupCount(self: *@This()) message.BuildError!void {
+            pub fn clearBackupCount(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -4693,7 +4693,7 @@ pub const KvStore = struct {
                 return BackupInfo.Builder{ ._builder = builder };
             }
 
-            pub fn setBackupCount(self: *Builder, value: u32) message.BuildError!void {
+            pub fn setBackupCount(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
@@ -4844,7 +4844,7 @@ pub const KvStore = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearBackups(self: *@This()) message.BuildError!void {
+            pub fn clearBackups(self: *@This()) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4916,7 +4916,7 @@ pub const KvStore = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearBackupId(self: *@This()) message.BuildError!void {
+            pub fn clearBackupId(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -4925,7 +4925,7 @@ pub const KvStore = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn clearKeepLogFiles(self: *@This()) message.BuildError!void {
+            pub fn clearKeepLogFiles(self: *@This()) !void {
                 self._builder.writeBool(4, 0, false);
             }
 
@@ -4934,11 +4934,11 @@ pub const KvStore = struct {
                 return field_reader.readBool(4, 0) != false;
             }
 
-            pub fn setBackupId(self: *Builder, value: u32) message.BuildError!void {
+            pub fn setBackupId(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
-            pub fn setKeepLogFiles(self: *Builder, value: bool) message.BuildError!void {
+            pub fn setKeepLogFiles(self: *Builder, value: bool) !void {
                 self._builder.writeBool(4, 0, value != false);
             }
 
@@ -4990,7 +4990,7 @@ pub const KvStore = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearRestoredBackupId(self: *@This()) message.BuildError!void {
+            pub fn clearRestoredBackupId(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -4999,7 +4999,7 @@ pub const KvStore = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn clearNextVersion(self: *@This()) message.BuildError!void {
+            pub fn clearNextVersion(self: *@This()) !void {
                 self._builder.writeU64(8, 0);
             }
 
@@ -5008,11 +5008,11 @@ pub const KvStore = struct {
                 return field_reader.readU64(8);
             }
 
-            pub fn setRestoredBackupId(self: *Builder, value: u32) message.BuildError!void {
+            pub fn setRestoredBackupId(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
-            pub fn setNextVersion(self: *Builder, value: u64) message.BuildError!void {
+            pub fn setNextVersion(self: *Builder, value: u64) !void {
                 self._builder.writeU64(8, @bitCast(value));
             }
 

@@ -3236,7 +3236,7 @@ pub const CallSequence = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearN(self: *@This()) message.BuildError!void {
+            pub fn clearN(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -3245,7 +3245,7 @@ pub const CallSequence = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn setN(self: *Builder, value: u32) message.BuildError!void {
+            pub fn setN(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
@@ -4337,7 +4337,7 @@ pub const Reflector = struct {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearTarget(self: *Builder) message.BuildError!void {
+            pub fn clearTarget(self: *Builder) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4479,7 +4479,7 @@ pub const Reflector = struct {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearPromise(self: *Builder) message.BuildError!void {
+            pub fn clearPromise(self: *Builder) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4701,7 +4701,7 @@ pub const Reflector = struct {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn clearCb(self: *Builder) message.BuildError!void {
+            pub fn clearCb(self: *Builder) !void {
                 try (try self._builder.getAnyPointer(0)).setNull();
             }
 
@@ -4815,7 +4815,7 @@ pub const Reflector = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearObserved(self: *@This()) message.BuildError!void {
+            pub fn clearObserved(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -4824,7 +4824,7 @@ pub const Reflector = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn setObserved(self: *Builder, value: u32) message.BuildError!void {
+            pub fn setObserved(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
@@ -4912,7 +4912,7 @@ pub const Reflector = struct {
                 return .{ ._reader = try storage.reader(self._builder) };
             }
 
-            pub fn clearUnused(self: *@This()) message.BuildError!void {
+            pub fn clearUnused(self: *@This()) !void {
                 self._builder.writeU32(0, 0);
             }
 
@@ -4921,7 +4921,7 @@ pub const Reflector = struct {
                 return field_reader.readU32(0);
             }
 
-            pub fn setUnused(self: *Builder, value: u32) message.BuildError!void {
+            pub fn setUnused(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
