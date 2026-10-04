@@ -692,29 +692,201 @@ handshake completes. Every other frame, and everything behind it, waits for
 the handshake, which a replay can never complete. Your Restorer must therefore
 be idempotent, as the vat restore convention already requires. Native mode
 holds every early frame until the handshake. Also set `new_token_key`: a
-returning client that presents a NEW_TOKEN skips Retry, and a Retry would
-discard its first flight's 0-RTT.
+returning client that presents a valid NEW_TOKEN skips Retry, and a Retry
+costs the early restore. A NEW_TOKEN is valid only from the IP address and
+port that it was issued to; see "Retry and NEW_TOKEN: an open gap" below.
 
-**The opt-in does not make a heal after a crash-restart ride 0-RTT.**
+**The opt-in alone does not make a heal after a crash-restart ride 0-RTT.**
 BoringSSL encrypts session tickets with a key that belongs to the server's
-TLS context (one `SSL_CTX`), and each process makes a new context with a new
-random key when it starts. capnp-zig does not persist or share that key. So a
-restarted server cannot decrypt the tickets that the crashed process issued.
-The first redial after a crash-restart, which is the redial
-`WarmRedialClient` makes on `.stateless_reset`, always takes a full
-handshake: no resumption and no 0-RTT. That handshake issues a new ticket, so
-later redials to the same process can resume and send 0-RTT. The opt-in pays
-off on redials to a server process that is still running, for example after
-an idle timeout or a client network change.
+TLS context (one `SSL_CTX`). Unless the server installs a key, each process
+makes its own random key, keeps it only in memory, and rotates it every 2
+days. So a restarted server cannot decrypt the tickets that the crashed
+process issued, and the first redial after a crash-restart (the redial
+`WarmRedialClient` makes on `.stateless_reset`) takes a full handshake: no
+resumption and no 0-RTT. That handshake issues a new ticket, so later
+redials to the same process can resume. "Session-ticket key" below is the
+design for persisting the key, and states what that costs.
+
+### Session-ticket key
+
+**Status: design under review, not implemented.** `ServerOptions` has no
+`session_ticket_key` field yet. This section is the design that item 16 of
+`docs/sprint-plan-2026-10-04.md` implements. It is written before the code
+so that its security trade-off is reviewed first. Until the field lands,
+the paragraph above is the whole story.
+
+The design adds `ServerOptions.session_ticket_key: ?*const [48]u8` and the
+same field on `ServerProductionHardening`. `Listener.init` reads the key
+once and installs it on the TLS context before the server handles its first
+datagram; the caller may zero its copy after that. A server that loads the
+same key on every start decrypts the tickets that its crashed predecessor
+issued, so the heal resumes, and with `.early_data = .restore_only`
+BoringSSL accepts its 0-RTT data (under the preset, read "Retry and
+NEW_TOKEN: an open gap" below first). The key is opt-in: it defaults to
+null, in the preset too. Set it only when a 0-RTT heal is worth what a
+stolen key costs.
+
+**What a thief who copies the key file can do:**
+
+- Decrypt the recorded 0-RTT data of every dial whose ticket this key
+  sealed. A ticket carries its session's resumption secret, and the 0-RTT
+  keys derive from that secret and the ClientHello alone. In a
+  `WarmRedialClient` heal, the 0-RTT data is the Bootstrap and Restore
+  frames, with the sturdy ref that the Restore carries. When a sturdy ref is
+  a bearer secret, the thief can then restore that capability. In a resumed
+  dial, any other frame that the client queues before its handshake
+  completes also travels in 0-RTT, although the server holds it until the
+  handshake. This covers all traffic recorded while the key was in use, also
+  after a rotation, for as long as the thief keeps the file.
+- Impersonate the server to a client that offers a ticket this key sealed,
+  until that ticket expires. A resumed handshake authenticates the server by
+  the resumption secret, not by its certificate. The thief must also receive
+  the client's packets: be on the path, or redirect them.
+- Mint tickets that the server accepts. This gives the thief nothing that an
+  ordinary dial does not: capnp-zig servers do not authenticate clients
+  through TLS (`ServerOptions` has no client-certificate option), so a
+  ticket carries no client identity to forge.
+
+**What the thief cannot do:**
+
+- Read recorded 1-RTT traffic, of resumed or full handshakes. BoringSSL
+  resumes a TLS 1.3 ticket only in `psk_dhe_ke` mode, so every resumed
+  handshake also mixes in a fresh (EC)DHE secret, which a recording does not
+  contain. The server's answers to an early restore are 1-RTT traffic too.
+- Impersonate the server to a client that has no ticket, or a ticket that
+  another key sealed. That client runs a full handshake, which needs the
+  certificate's private key.
+- Forge stateless resets, Retry tokens or NEW_TOKEN tokens. Each has its own
+  key.
+
+Without the persisted key, the same theft needs the server process's memory,
+and the key found there is rotated every 2 days.
+
+**Rules for the key:**
+
+- Generate all 48 bytes from a CSPRNG. BoringSSL
+  (`SSL_CTX_set_tlsext_ticket_keys`) reads them as a 16-byte key name, a
+  16-byte HMAC-SHA256 key and a 16-byte AES-128 key. The name travels in
+  clear at the front of every ticket and tells the server which key sealed
+  it.
+- Keep the key in a file of its own: exactly 48 bytes, mode 0600, written
+  atomically. The reset-key recipe above works with the key type changed to
+  `[48]u8`. A damaged file is an error, never a silently regenerated key.
+  The design adds `loadTicketKeyFile(path)`, which reads exactly 48 bytes
+  and, on POSIX, refuses a file that the group or others can read. On
+  Windows, give the file an ACL that grants access to the service account
+  only.
+- Never derive it from the reset key, or the reset key from it. The two
+  keys have opposite sharing rules. Instances may share a reset key only
+  when the load balancer routes by connection ID ("Sharing the key" above).
+  A ticket key may be shared by every instance behind one address, so that
+  a client resumes on whichever instance it reaches; an instance with its
+  own ticket key only costs a resuming client one full handshake. A key
+  derived from the other would also leak with it.
+- Persist `new_token_key` with it, and load both on every start. With Retry
+  on (the preset always sets `retry_token_key`), only a valid NEW_TOKEN lets
+  a returning client skip Retry, and a Retry costs the early restore. A new
+  `new_token_key` at each boot invalidates every NEW_TOKEN, so every
+  restarted client gets a Retry. Today this rule is necessary but not
+  sufficient; see "Retry and NEW_TOKEN: an open gap" below.
+- Install the key again after any TLS-context reload. capnp-zig never
+  reloads the context itself. If you call quic-zig's
+  `Server.replaceTlsContext` through `Listener.server`, the new context has
+  a fresh random key: install yours on it on the loop thread, before the
+  next datagram is fed, because BoringSSL's key setter takes no lock. Do not
+  follow quic-zig's advice to pass a context you built as `.override`: the
+  server adds none of its TLS 1.3 pin, ALPN list, early-data setting or
+  anti-replay hook to such a context.
+
+**What the design refuses.** `Listener.init` returns `error.InvalidConfig`
+for an all-zero key, for a key together with `.early_data =
+.with_anti_replay` (see below), and for a key with Retry on and
+`new_token_key == null`. `serverConfigFromOptions` returns
+`error.InvalidConfig` for any key: it returns a quic-zig config, not a
+server, so it cannot install one. Embedded mode is out of scope, because
+there the host owns the quic-zig server and its TLS context. A restarted
+server accepts 0-RTT data only when it runs with the same ALPN, transport
+mode and `early_dispatch` as the process that issued the ticket. The design
+binds these into quic-zig's `early_data_application_context`, and
+BoringSSL refuses early data whose context differs; the session still
+resumes.
+
+**Rotation.** BoringSSL holds one installed key and drops the previous key
+when a new one is installed, so a rotation is a restart with a new key
+file. Tickets that the old key sealed no longer decrypt, and each client's
+next dial takes one full handshake, which issues a ticket under the new key.
+That costs one round trip per client, not an outage. Rotate the key at
+least every 7 days, and at once when the file may have leaked or when a
+host that held it is retired. BoringSSL already makes each client run a full
+handshake at least every 7 days (`SSL_DEFAULT_SESSION_AUTH_TIMEOUT`), so a
+weekly rotation adds at most one full handshake per client per week. The
+ticket lifetime bounds the exposure after a rotation: BoringSSL issues TLS
+1.3 tickets that are valid for 2 days
+(`SSL_DEFAULT_SESSION_PSK_DHE_TIMEOUT`), and a client never offers an
+expired ticket. So a thief can start to impersonate the server for at most
+2 days after the rotation. Tickets that the thief hands out while it
+impersonates do not extend this past 7 days: a client never resumes more
+than 7 days after its last full handshake. Recorded 0-RTT data stays
+readable; a rotation only limits how much traffic one key seals. The design
+adds `session_ticket_lifetime_s` to shorten the 2 days: the `raw` bindings
+of boringssl-zig expose `SSL_CTX_set_session_psk_dhe_timeout`.
+
+**Why the key is refused together with anti-replay.** With `.early_data =
+.with_anti_replay`, capnp-zig dispatches every early frame at once, because
+the tracker promises that a flight runs only once; only
+`.without_replay_protection` arms the hold. But the tracker lives in the
+server's memory. Each instance has its own, and a crash loses every entry
+added since the embedder last saved it (quic-zig can serialize a tracker).
+Without a persisted key this is sound: a restart invalidates every
+earlier ticket, and an instance cannot decrypt a sibling's tickets. With a
+persisted key, a first flight recorded before the crash still resumes after
+the restart. BoringSSL accepts its early data if the replay arrives within
+about 60 seconds of the original (its ticket-age check), which covers a fast
+restart. The empty tracker reports the flight as fresh, and every call in
+it runs a second time. Instances that share the key are open to the same
+replay from each other. The postures that remain do not depend on a
+tracker: under `.restore_only` a replay can run only the idempotent restore
+again, and under `.hold_until_handshake` it runs nothing, because a replay
+never completes a handshake.
+
+**Retry and NEW_TOKEN: an open gap.** BoringSSL's verdict
+(`EarlyDataStatus.accepted`) does not prove that the restore ran early.
+When the server sends a Retry, it drops the client's first-flight 0-RTT
+packets, because no connection exists for them yet. BoringSSL still accepts
+early data in the handshake after the Retry, so the client reports
+`.accepted`, but the restore reaches the server only after the handshake,
+and the round trip that 0-RTT exists for is lost. Under the preset, a heal
+after a crash-restart gets a Retry even with both keys persisted, for two
+reasons:
+
+- quic-zig binds a NEW_TOKEN to the client's IP address and port. A
+  capnp-zig client binds a new ephemeral port for every dial unless
+  `ClientOptions.local_addr` sets one, and `WarmRedialClient` dials every
+  generation from the same `base` options.
+- A NEW_TOKEN's issue and expiry times use the clock that the listener
+  feeds to quic-zig, and that clock counts from `Listener.init`. A restarted
+  process starts it again at zero, so it treats a token from its
+  predecessor as not yet valid until its own uptime passes the
+  predecessor's uptime when it issued the token.
+
+So, today, the key gives an early restore after a crash-restart only on a
+server without Retry (no `retry_token_key`, which the preset requires).
+Under the preset it saves the certificate exchange, but not the round trip.
+The port rule also applies to a redial to a server process that is still
+running: under the preset, its restore runs early only when the client
+redials from the address and port that earned its NEW_TOKEN. Closing the gap
+needs a NEW_TOKEN clock that survives a restart, and either a client that
+keeps its port or a NEW_TOKEN that binds only the IP address.
 
 ### Self-healing clients
 
 `rpc.transport.quic.WarmRedialClient` keeps a restored capability alive across
 server crash-restarts. When a connection ends with `.stateless_reset`, it dials
 a new connection (offering the latest session ticket, which a restarted server
-cannot accept; see the 0-RTT caveat above), restores the saved sturdy ref
-again, and hands the new capability to `on_rebind`. It redials on
-`.idle_timeout` only when `Policy.redial_on_idle_timeout` is set.
+cannot accept unless it loads the same session-ticket key; see "Session-ticket
+key" above), restores the saved sturdy ref again, and hands the new capability
+to `on_rebind`. It redials on `.idle_timeout` only when
+`Policy.redial_on_idle_timeout` is set.
 
 `Policy.max_redials` (default 3) counts **consecutive** failures, not a
 lifetime total. Each redial spends one. A generation resets the count to zero
