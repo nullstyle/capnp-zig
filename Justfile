@@ -38,6 +38,10 @@ test:
 example:
     zig build example-rpc
 
+# Run the RPC ping-pong example over QUIC (quic.serve + quic.connect)
+example-quic:
+    zig build -Dquic=true example-rpc-quic
+
 # Run static hardening gates
 hardening:
     zig build hardening

@@ -425,6 +425,40 @@ pub fn buildImpl(b: *std.Build) !void {
     const install_rpc_pingpong_step = b.step("example-rpc-install", "Build RPC ping-pong example (install only)");
     install_rpc_pingpong_step.dependOn(&b.addInstallArtifact(rpc_pingpong_example, .{}).step);
 
+    // The same ping-pong over QUIC, through `quic.serve` + `quic.connect`.
+    // Gated on -Dquic=true like bench-quic; without it the step fails with
+    // the flag to pass instead of silently doing nothing. The TLS pair is the
+    // loopback fixture the QUIC tests use, imported (not copied) so the two
+    // cannot drift.
+    const example_rpc_quic_step = b.step("example-rpc-quic", "Run the QUIC RPC ping-pong example (requires -Dquic=true)");
+    const rpc_pingpong_quic_example: ?*std.Build.Step.Compile = if (quic_zig_module) |qm| quic_example: {
+        const example_exe = b.addExecutable(.{
+            .name = "example-rpc-pingpong-quic",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("examples/rpc_pingpong_quic.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "capnpc-zig", .module = lib_module },
+                },
+            }),
+        });
+        addQuicImport(example_exe.root_module, qm);
+        example_exe.root_module.addAnonymousImport("quic_example_cert", .{
+            .root_source_file = b.path("tests/rpc/transport/quic/loopback_cert.pem"),
+        });
+        example_exe.root_module.addAnonymousImport("quic_example_key", .{
+            .root_source_file = b.path("tests/rpc/transport/quic/loopback_key.pem"),
+        });
+        const run = b.addRunArtifact(example_exe);
+        run.addPassthruArgs();
+        example_rpc_quic_step.dependOn(&run.step);
+        break :quic_example example_exe;
+    } else quic_example: {
+        example_rpc_quic_step.dependOn(&b.addFail("example-rpc-quic requires -Dquic=true").step);
+        break :quic_example null;
+    };
+
     // Standalone serialization example (no RPC). Both the generated schema
     // code and the runtime are wired through capnpc-zig-core — the
     // serialization-only module, with no TCP/QUIC transport in the graph — to
@@ -1516,6 +1550,7 @@ pub fn buildImpl(b: *std.Build) !void {
     check_compile_step.dependOn(&lib_tests.step);
     check_compile_step.dependOn(&main_tests.step);
     check_compile_step.dependOn(&rpc_pingpong_example.step);
+    if (rpc_pingpong_quic_example) |example_exe| check_compile_step.dependOn(&example_exe.step);
     check_compile_step.dependOn(&serialization_demo_example.step);
     // The soak is a real cross-platform executable; compile it for cross
     // targets so a Windows-only no-op or POSIX API cannot regress silently.

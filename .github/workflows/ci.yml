@@ -322,6 +322,12 @@ jobs:
       - name: Run native QUIC transport evidence (ReleaseSafe, no skips)
         run: zig build -Dquic=true -Doptimize=ReleaseSafe test-rpc-quic-evidence --summary all ${{ runner.os == 'Windows' && '-j1' || '' }}
 
+      # One real ping-pong round trip through the API docs/quic-transport.md
+      # teaches (`quic.serve` + `quic.connect`); the example exits non-zero on
+      # a wrong or missing reply.
+      - name: Run the QUIC RPC example (one round trip)
+        run: zig build -Dquic=true example-rpc-quic --summary all
+
       # The remaining steps validate the complete QUIC package root, rather
       # than the focused transport. Keep them on Linux to avoid tripling the
       # expensive full-tree gate now that transport execution itself is
