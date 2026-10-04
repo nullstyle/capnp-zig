@@ -121,6 +121,13 @@ test "server EOF fails the in-flight question with Disconnected; close-from-call
     defer listener.close();
 
     const accept_thread = try std.Thread.spawn(.{}, AcceptDrop.main, .{AcceptDrop{ .listener = &listener }});
+    // An early failure must not leave the thread running: closing the
+    // listener unblocks an accept that never got a connection.
+    var accept_thread_live = true;
+    defer if (accept_thread_live) {
+        listener.close();
+        accept_thread.join();
+    };
 
     var counters = Counters{};
     const session = try tcp.connect(allocator, io, server.socket.address, .{
@@ -128,19 +135,20 @@ test "server EOF fails the in-flight question with Disconnected; close-from-call
         .on_error = Counters.onError,
         .on_close = Counters.onClose,
     });
+    defer session.deinit();
 
     var waiter = DisconnectWaiter{ .session = session };
     _ = try session.peer.sendBootstrap(&waiter, DisconnectWaiter.onReturn);
 
     session.run();
     accept_thread.join();
+    accept_thread_live = false;
 
     // The dropped transport resolved the outstanding bootstrap exactly once
     // with the Disconnected terminal before on_close fired.
     try std.testing.expectEqual(@as(usize, 1), waiter.fired);
     try std.testing.expectEqual(@as(usize, 1), waiter.disconnects);
     try std.testing.expectEqual(@as(usize, 1), counters.closes);
-    session.deinit();
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +350,38 @@ const SessionWatchdog = struct {
     }
 };
 
+/// Joins and frees what a session test started, in the one order that
+/// cannot hang: the watchdog first (it reaches into the session), then the
+/// client session (its deinit gives an accepted server EOF), then the server
+/// thread (closing the listener first unblocks an accept that never got a
+/// connection). The success path calls `finish` before its assertions; the
+/// deferred call then does nothing, so an early `try` failure can never
+/// leave a thread running or a session allocated.
+const SessionTeardown = struct {
+    listener: *tcp.Listener,
+    server_thread: ?std.Thread,
+    session: ?*ClientSession = null,
+    watchdog: ?*SessionWatchdog = null,
+    watchdog_thread: ?std.Thread = null,
+
+    fn finish(self: *SessionTeardown) void {
+        if (self.watchdog_thread) |thread| {
+            self.watchdog.?.done.store(true, .release);
+            thread.join();
+            self.watchdog_thread = null;
+        }
+        if (self.session) |session| {
+            session.deinit();
+            self.session = null;
+        }
+        if (self.server_thread) |thread| {
+            self.listener.close();
+            thread.join();
+            self.server_thread = null;
+        }
+    }
+};
+
 fn listenOne(io: std.Io) !struct { listener: tcp.Listener, address: std.Io.net.IpAddress } {
     const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
     const listen = try tcp.createListenSocket(io, address, 1, false);
@@ -378,26 +418,27 @@ fn expectClientTimeoutLeavesSessionsOpen(a_catches: bool) !void {
     defer listen.listener.close();
     var server = ParkingServerThread{ .listener = &listen.listener };
     const server_thread = try std.Thread.spawn(.{}, ParkingServerThread.main, .{&server});
+    var teardown = SessionTeardown{ .listener = &listen.listener, .server_thread = server_thread };
+    defer teardown.finish();
 
     var counters = SessionCounters(ClientSession){};
     var failures = CancelFailureRecorder{};
-    const session = try tcp.connect(allocator, io, listen.address, .{
+    teardown.session = try tcp.connect(allocator, io, listen.address, .{
         .ctx = &counters,
         .on_error = SessionCounters(ClientSession).onError,
         .on_close = SessionCounters(ClientSession).onClose,
         .observer = failures.observer(),
     });
+    const session = teardown.session.?;
 
     var app = TimeoutThenCall{ .a_catches = a_catches, .errors = &counters.errors };
     try app.start(&session.peer);
 
     var watchdog = SessionWatchdog{ .session = session };
-    const watchdog_thread = try std.Thread.spawn(.{}, SessionWatchdog.run, .{ &watchdog, io });
+    teardown.watchdog = &watchdog;
+    teardown.watchdog_thread = try std.Thread.spawn(.{}, SessionWatchdog.run, .{ &watchdog, io });
     session.run();
-    watchdog.done.store(true, .release);
-    watchdog_thread.join();
-    session.deinit();
-    server_thread.join();
+    teardown.finish();
 
     try std.testing.expectEqual(@as(?anyerror, null), app.bootstrap_err);
     try std.testing.expectEqual(@as(usize, 1), app.a_fired);
@@ -524,13 +565,16 @@ fn expectServerTimeoutLeavesSessionsOpen(a_catches: bool) !void {
         .app = .{ .a_catches = a_catches, .errors = undefined },
     };
     const server_thread = try std.Thread.spawn(.{}, KickedServerThread.main, .{&server});
+    var teardown = SessionTeardown{ .listener = &listen.listener, .server_thread = server_thread };
+    defer teardown.finish();
 
     var counters = SessionCounters(ClientSession){};
-    const session = try tcp.connect(allocator, io, listen.address, .{
+    teardown.session = try tcp.connect(allocator, io, listen.address, .{
         .ctx = &counters,
         .on_error = SessionCounters(ClientSession).onError,
         .on_close = SessionCounters(ClientSession).onClose,
     });
+    const session = teardown.session.?;
     var parking = ParkingServer{ .park = 2 };
     try parking.bind(&session.peer);
     var kicker = Kicker{};
@@ -539,12 +583,10 @@ fn expectServerTimeoutLeavesSessionsOpen(a_catches: bool) !void {
     // The server closes its session when its B completes; the client then
     // sees EOF and run() returns.
     var watchdog = SessionWatchdog{ .session = session };
-    const watchdog_thread = try std.Thread.spawn(.{}, SessionWatchdog.run, .{ &watchdog, io });
+    teardown.watchdog = &watchdog;
+    teardown.watchdog_thread = try std.Thread.spawn(.{}, SessionWatchdog.run, .{ &watchdog, io });
     session.run();
-    watchdog.done.store(true, .release);
-    watchdog_thread.join();
-    session.deinit();
-    server_thread.join();
+    teardown.finish();
 
     try std.testing.expectEqual(@as(?anyerror, null), kicker.kick_err);
     try std.testing.expectEqual(@as(usize, 1), kicker.kicked);
