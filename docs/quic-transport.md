@@ -52,13 +52,16 @@ native-shell and Git Bash `pkg-config.BAT` failure path. Connection and server
 session loops drive `Connection.advance()` before waiting on datagrams and again
 during active service, then tick timers and drain outbound datagrams.
 
-The public API is intentionally close to the TCP transport while the QUIC layer
-is still maturing. Applications should treat `rpc.transport.quic.Connection` as the primary
-entry point for one client/server session; the whole QUIC module remains
-Experimental. Servers that need one UDP listener to
-host multiple sessions should use `rpc.transport.quic.Server`, which accepts up to
-`ServerOptions.max_concurrent_connections` and exposes one `ServerSession`
-transport driver per accepted QUIC connection.
+The public API matches the TCP transport's shape. Most applications need only
+two calls: `rpc.transport.quic.connect` returns a `ClientSession` (a QUIC
+`Connection` plus its `Peer`), and `rpc.transport.quic.serve` returns a
+`PeerServer` that gives every accepted QUIC session its own `Peer`. See
+[One-call sessions](#one-call-sessions-connect-and-serve). Below them,
+`rpc.transport.quic.Connection` is the transport for one client/server session,
+and `rpc.transport.quic.Server` hosts up to
+`ServerOptions.max_concurrent_connections` sessions on one UDP listener, with
+one `ServerSession` transport driver per accepted QUIC connection. The whole
+QUIC module remains Experimental.
 
 ## Modes
 
@@ -160,12 +163,145 @@ one complete Cap'n Proto RPC frame, and inbound callbacks receive one complete
 RPC frame. Higher-level RPC code can therefore use the same `Peer` attachment
 path in both modes.
 
-The eight end-to-end `Peer` cases exercise a verified-CA baseline session;
-native Bootstrap/Call/Return/Finish; a pipelined call on the returned
+The end-to-end `Peer` cases exercise, among others, a verified-CA baseline
+session; native Bootstrap/Call/Return/Finish; a pipelined call on the returned
 capability; a native large-frame data stream; graceful and abrupt close;
-two-session fanout; and fanout close isolation. The fanout server allocates
-sessions at stable heap addresses before a `Peer` borrows the transport, and it
-detaches that binding before reaping a session.
+two-session fanout with each server `Peer` attached from the accept hook;
+fanout close isolation; and `serve` plus `connect` with no hand-written session
+loop. The fanout server allocates sessions at stable heap addresses before a
+`Peer` borrows the transport, and it detaches that binding before reaping a
+session.
+
+## One-call sessions: `connect` and `serve`
+
+These are the QUIC versions of `rpc.transport.tcp.ClientSession` and
+`rpc.transport.tcp.ServerSession`. They own the wiring every QUIC consumer
+used to write by hand: construct the transport, attach a `Peer`, apply the
+secure defaults, start, run, and tear down in the one safe order.
+
+| | TCP | QUIC |
+| --- | --- | --- |
+| Client | `tcp.connect(gpa, io, address, .{...})` returns `*ClientSession` | `quic.connect(gpa, io, .{ .conn = client_options, ... })` returns `*ClientSession` |
+| Server | `tcp.ServerSession.accept(gpa, &listener, .{...})`, one connection per session | `quic.serve(gpa, io, server_options, .{ .on_accept = ... })` returns `*PeerServer`, one `Peer` per accepted session |
+| Bootstrap | `Iface.setBootstrap(&session.peer, &impl)` before `run()` | the same call, inside `on_accept` |
+| Accept event | `WorkerPool` `on_accept` | `ServeOptions.on_accept`, or `Server.setOnSessionAccepted` one level down |
+| Loop | `run()` blocks; `requestStop()` is the one thread-safe call | the same |
+| Defaults | call deadline 30 s, drain 5 s, Join lease 30 s, OS-entropy embargo ids | the same |
+
+The client:
+
+```zig
+const quic = capnpc.rpc.transport.quic;
+
+const session = try quic.connect(gpa, io, .{
+    .conn = .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .ca_pem = server_ca_pem, // keep verification on
+    },
+});
+defer session.deinit(); // only after run() returns
+_ = try PingPong.Client.fromBootstrap(&session.peer, &state, onBootstrap);
+session.run(); // returns once the connection has closed
+```
+
+Inside callbacks, `quic.ClientSession.fromPeer(peer)` recovers the session;
+call `close()` on it to end `run()`. `closeCause()` reports the typed
+`DisconnectCause` after the connection dies.
+
+The server:
+
+```zig
+fn onAccept(ctx: ?*anyopaque, session: *quic.PeerServer.Session) anyerror!void {
+    const impl: *PingPong.Server = @ptrCast(@alignCast(ctx.?));
+    _ = try PingPong.setBootstrap(&session.peer, impl);
+}
+
+const server = try quic.serve(gpa, io, .{
+    .listen_addr = listen_addr,
+    .tls_cert_pem = server_cert_pem,
+    .tls_key_pem = server_key_pem,
+    .max_concurrent_connections = 64,
+}, .{ .ctx = &impl, .on_accept = onAccept });
+defer server.deinit(); // only after run() returns
+// On a dedicated thread; `server.requestStop()` from any thread ends it.
+server.run();
+```
+
+`on_accept` runs once per accepted session, on the `run()` thread, after the
+session's `Peer` is built and before the session's first frame is handled.
+Returning an error rejects the session. Optional `on_error` and `on_close`
+hooks report per-session failures and closes. `PeerServer.Session` carries the
+`peer`, a free `user_data` slot, `close()`, `closeCause()`, and
+`Session.fromPeer(peer)` for generated handlers. The server frees each
+session's `Peer` once the QUIC connection has finished draining, not when
+`on_close` fires: a closing connection can still reach its `Peer`.
+
+[`examples/rpc_pingpong_quic.zig`](../examples/rpc_pingpong_quic.zig) is the
+complete program. `zig build -Dquic=true example-rpc-quic` runs it, and the
+QUIC CI lane runs it on Linux, macOS and Windows.
+
+### The accept hook
+
+`Server.setOnSessionAccepted(ctx, hook)` is the same event for code that
+drives `Server` directly, and `serve` is built on it. The contract:
+
+- The hook fires exactly once for every `ServerSession` the server adopts, on
+  the loop thread, inside the step that adopted it.
+- The session is already listed (`sessionCount()` and `sessionById()` see
+  it), and the step has not serviced it yet, so callbacks attached in the
+  hook see its first frame.
+- Adoption happens when the listener creates a QUIC connection for a fresh
+  Initial, before the handshake completes. Anyone who can reach the port can
+  cause adoptions, up to `max_concurrent_connections` at once and subject to
+  the listener rate gates, so keep the hook's work bounded.
+- Returning an error rejects the session; the server closes it in the same
+  step. The client cannot read that close yet (see
+  [Current Limits](#current-limits)).
+- The hook must not step, run or deinit the server.
+
+`Server.runWithAfterStep(ctx, after_step)` is `run()` with a callback after
+every step. A session's close callback fires inside a step, while its
+connection can still be stepped during draining, so state that the session's
+callbacks borrow must be freed from `after_step` once `sessionById(id)`
+returns null. `PeerServer` frees its peers this way.
+
+## Concurrency Model
+
+One QUIC connection carries one Cap'n Proto vat session, and the RPC protocol
+requires every frame of a session to arrive in order (E-order). Native mode
+moves large frames over separate QUIC streams, but it still hands them to the
+`Peer` in order. So concurrency comes from four places, from cheapest to
+most isolated:
+
+- **Many calls in flight.** A `Peer` never waits for a Return before it sends
+  the next call. By default up to 4096 questions can be outstanding on one
+  session (`PeerLimits.max_outbound_questions`), and Returns complete them as
+  they arrive.
+- **Promise pipelining.** Call a method on a result before that result exists.
+  The pipelined call goes out right behind the first one, without waiting for
+  its Return, and saves a round trip per hop. Native mode is tested with a
+  pipelined call on the bootstrap capability.
+- **`-> stream` methods.** For bulk transfer, a generated `StreamClient` keeps
+  a bounded window of calls in flight (64 calls and 1 MiB by default) and
+  applies backpressure instead of growing queues. It runs in the RPC layer,
+  above either transport mode. See [streaming.md](streaming.md).
+- **Multiple connections.** Separate connections are separate sessions, with
+  no ordering or head-of-line blocking between them. A large frame delays
+  every later frame on its own session, so give independent bulk traffic its
+  own connection. One `serve` loop thread drives all of a server's sessions;
+  a client can open several `ClientSession`s. Capabilities belong to one
+  session (three-party handoff is the exception).
+
+Per-message independence is a different model: unordered messages, cancel by
+stream reset, optional unreliable delivery. That is the qmsg messaging
+framework's model, not Cap'n Proto RPC's, and the two are not merged on the
+wire. When an application needs both, run qmsg as the per-message lane next
+to `capnp-rpc/1` on the same UDP endpoint, routed by ALPN (`EmbeddedSession`
+is the capnp seat for a foreign `quic.app.Driver` host). Cap'n Proto
+serialization, without RPC, also works as a qmsg body codec. Do not tunnel RPC
+frames through qmsg messages or QUIC DATAGRAM: a dropped or reordered RPC
+frame ends the session.
 
 ## Windows UDP Receive Bridge
 
@@ -231,9 +367,10 @@ Internally it owns a `rpc.transport.quic.Listener`, accepts the first server-sid
 `Connection.start()` callbacks.
 
 `rpc.transport.quic.Server` is the fanout API. It owns the same listener/socket root, adopts
-each accepted QUIC slot into a `rpc.transport.quic.ServerSession`, and lets callers poll
-for sessions, attach callbacks per session, and drive either one chosen session
-or all sessions. It keeps the wire behavior identical to `Connection`: the ALPN
+each accepted QUIC slot into a `rpc.transport.quic.ServerSession`, announces
+each one through the accept hook (`setOnSessionAccepted`), lets callers attach
+callbacks per session, and drives either one chosen session or all sessions.
+`rpc.transport.quic.serve` wraps it with one `Peer` per session. It keeps the wire behavior identical to `Connection`: the ALPN
 is still `capnp-rpc/1`, and each session independently uses either `.baseline`
 or `.native` according to the server options.
 
@@ -273,9 +410,10 @@ helper modules:
 - `options.zig` is the public configuration boundary; prefer adding documented
   knobs there instead of threading private constants through examples.
 
-Use `rpc.transport.quic.Server` when `ServerOptions.max_concurrent_connections` is greater
-than one. Keep `Connection.initServer()` for compatibility tests, examples, and
-single-session peers.
+Use `rpc.transport.quic.serve` when `ServerOptions.max_concurrent_connections`
+is greater than one, or `rpc.transport.quic.Server` directly when you need
+transport-level control. Keep `Connection.initServer()` for compatibility tests
+and single-session peers.
 
 ## Native Resource Budgets
 
@@ -562,10 +700,15 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
 ## Current Limits
 
 - One server `rpc.transport.quic.Connection` owns one listener and represents one active
-  QUIC session. Use `rpc.transport.quic.Server` for multi-session fanout.
-- `rpc.transport.quic.Server` is poll-driven. It does not yet provide a high-level accept
-  event abstraction; callers inspect `sessionCount()`/`sessionAt()` and attach
-  callbacks to accepted `ServerSession` values.
+  QUIC session. Use `rpc.transport.quic.serve` (or `rpc.transport.quic.Server`)
+  for multi-session fanout.
+- A session rejected from the accept hook is closed before its handshake
+  completes. quic-zig sends that close only under 1-RTT keys, which the client
+  does not have yet, so the client sees the refusal as its own handshake
+  timeout (`ClientOptions.handshake_timeout_ms`, 30 s by default), the same as
+  a dial the server's flood gates drop. RFC 9000 section 10.2.3 asks a server
+  to also send the close in Initial and Handshake packets; the rejection test
+  certifies today's behavior so that a quic-zig fix shows up.
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.
 - Mode mismatch is treated as malformed transport input and closes cleanly.
