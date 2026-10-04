@@ -11,6 +11,9 @@ const max_code_generator_request_bytes: usize = 64 * 1024 * 1024;
 /// `run.addPrefixedOutputDirectoryArg("--output-dir=", "capnp-gen")`.
 /// `capnp compile -o<plugin>:<dir>` passes no arguments and changes into
 /// `<dir>` itself, so that contract is unchanged.
+///
+/// With this flag the plugin also ignores the `CAPNPC_ZIG_*` environment
+/// options (see `applyEnvironment`).
 const output_dir_option = "--output-dir=";
 
 const RunOptions = struct {
@@ -29,7 +32,12 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
     var options = try parseRunOptionsFromArgs(init.arena.allocator(), init.minimal.args);
-    applyEnvRunOptions(init.environ_map, &options);
+    if (applyEnvironment(init.environ_map, &options)) |ignored| {
+        logStderr(
+            "capnpc-zig: ignoring {s}: environment options do not apply with --output-dir=; pass the option as an argument\n",
+            .{ignored},
+        );
+    }
 
     // Open (creating if needed) the output root before reading stdin, so a
     // bad `--output-dir=` fails before any work is done.
@@ -144,6 +152,47 @@ fn applyArgument(arg: []const u8, options: *RunOptions) void {
 fn openOutputRoot(base: std.Io.Dir, io: std.Io, path: []const u8) !std.Io.Dir {
     if (path.len == 0) return error.InvalidOutputDir;
     return base.createDirPathOpen(io, path, .{});
+}
+
+/// Every environment variable `applyEnvRunOptions` reads.
+const env_option_names = [_][]const u8{
+    "CAPNPC_ZIG_SCHEMA_MANIFEST",
+    "CAPNPC_ZIG_NO_MANIFEST",
+    "CAPNPC_ZIG_API_PROFILE",
+    "CAPNPC_ZIG_COMPACT_API",
+    "CAPNPC_ZIG_SHAPE_SHARING",
+    "CAPNPC_ZIG_MAX_CODEGEN_NODES",
+    "CAPNPC_ZIG_MAX_CODEGEN_IMPORTS",
+    "CAPNPC_ZIG_MAX_CODEGEN_FIELDS",
+    "CAPNPC_ZIG_MAX_CODEGEN_NAME_BYTES",
+    "CAPNPC_ZIG_MAX_CODEGEN_DEFAULT_BYTES",
+    "CAPNPC_ZIG_MAX_SCHEMA_MANIFEST_BYTES",
+    "CAPNPC_ZIG_MAX_CODEGEN_OUTPUT_BYTES",
+    "CAPNPC_ZIG_MAX_CODEGEN_BRAND_SPECIALIZATIONS",
+};
+
+/// Applies the `CAPNPC_ZIG_*` environment options, except in build-step mode
+/// (`--output-dir=`), where it applies none of them and returns the name of
+/// one that is set, for a diagnostic.
+///
+/// A Zig build Run step inherits the shell's environment, but Zig hashes
+/// only the arguments, stdin and declared inputs into the step's cache key,
+/// not the inherited environment. An exported `CAPNPC_ZIG_SHAPE_SHARING=1`
+/// would change the generated code but not the key: a cached build would
+/// serve whichever output it made first, and another machine would generate
+/// different code from the same build.zig. Arguments are hashed, and every
+/// option has an argument form, so arguments are the only way to set one
+/// from a build step. `capnp compile -ozig:<dir>` passes no arguments, so the
+/// environment is still how that path takes options.
+fn applyEnvironment(environ_map: *const std.process.Environ.Map, options: *RunOptions) ?[]const u8 {
+    if (options.output_dir == null) {
+        applyEnvRunOptions(environ_map, options);
+        return null;
+    }
+    for (env_option_names) |name| {
+        if (environ_map.get(name) != null) return name;
+    }
+    return null;
 }
 
 fn applyEnvRunOptions(environ_map: *const std.process.Environ.Map, options: *RunOptions) void {
@@ -581,6 +630,84 @@ test "parseRunOptions never splits an --output-dir= path into option tokens" {
     try std.testing.expectEqualStrings("out,verbose,no-reflection", options.output_dir.?);
     try std.testing.expect(!options.verbose);
     try std.testing.expect(options.emit_reflection);
+}
+
+/// An environment that sets every option away from its default.
+fn nonDefaultOptionEnvironment(allocator: std.mem.Allocator) !std.process.Environ.Map {
+    var env: std.process.Environ.Map = .init(allocator);
+    errdefer env.deinit();
+    try env.put("CAPNPC_ZIG_NO_MANIFEST", "1");
+    try env.put("CAPNPC_ZIG_API_PROFILE", "compact");
+    try env.put("CAPNPC_ZIG_SHAPE_SHARING", "1");
+    try env.put("CAPNPC_ZIG_MAX_CODEGEN_FIELDS", "3");
+    try env.put("CAPNPC_ZIG_MAX_CODEGEN_BRAND_SPECIALIZATIONS", "5");
+    return env;
+}
+
+test "applyEnvironment applies CAPNPC_ZIG_* options without --output-dir=" {
+    var env = try nonDefaultOptionEnvironment(std.testing.allocator);
+    defer env.deinit();
+
+    // `capnp compile -ozig:<dir>` passes no arguments: the environment is how
+    // that path takes options.
+    var options = parseRunOptions(@as([]const []const u8, &.{"capnpc-zig"}));
+    try std.testing.expectEqual(@as(?[]const u8, null), applyEnvironment(&env, &options));
+    try std.testing.expect(!options.emit_schema_manifest);
+    try std.testing.expectEqual(Generator.ApiProfile.compact, options.api_profile);
+    try std.testing.expect(options.shape_sharing);
+    try std.testing.expectEqual(@as(usize, 3), options.codegen_budget.max_fields);
+    try std.testing.expectEqual(@as(usize, 5), options.codegen_budget.max_brand_specializations);
+}
+
+test "applyEnvironment ignores CAPNPC_ZIG_* options in --output-dir= build-step mode" {
+    var env = try nonDefaultOptionEnvironment(std.testing.allocator);
+    defer env.deinit();
+
+    // A build Run step inherits this environment but does not hash it into
+    // its cache key, so honoring it would let a shell variable change cached
+    // generated code. The output must depend on the arguments alone.
+    var options = parseRunOptions(@as([]const []const u8, &.{ "capnpc-zig", "--output-dir=capnp-gen" }));
+    const ignored = applyEnvironment(&env, &options) orelse return error.TestExpectedIgnoredOption;
+    try std.testing.expect(std.mem.startsWith(u8, ignored, "CAPNPC_ZIG_"));
+    const defaults = parseRunOptions(@as([]const []const u8, &.{ "capnpc-zig", "--output-dir=capnp-gen" }));
+    try std.testing.expectEqual(defaults.emit_schema_manifest, options.emit_schema_manifest);
+    try std.testing.expectEqual(defaults.api_profile, options.api_profile);
+    try std.testing.expectEqual(defaults.shape_sharing, options.shape_sharing);
+    try std.testing.expectEqual(defaults.codegen_budget, options.codegen_budget);
+
+    // Arguments still set options in that mode.
+    var from_args = parseRunOptions(@as([]const []const u8, &.{ "capnpc-zig", "--output-dir=capnp-gen", "--no-manifest", "max-codegen-fields=3" }));
+    _ = applyEnvironment(&env, &from_args);
+    try std.testing.expect(!from_args.emit_schema_manifest);
+    try std.testing.expectEqual(@as(usize, 3), from_args.codegen_budget.max_fields);
+
+    // Nothing to report when no option variable is set.
+    var empty: std.process.Environ.Map = .init(std.testing.allocator);
+    defer empty.deinit();
+    try empty.put("CAPNPC_ZIG_UPDATE_GOLDENS", "1");
+    var quiet = parseRunOptions(@as([]const []const u8, &.{ "capnpc-zig", "--output-dir=capnp-gen" }));
+    try std.testing.expectEqual(@as(?[]const u8, null), applyEnvironment(&empty, &quiet));
+}
+
+test "env_option_names lists only variables applyEnvRunOptions reads" {
+    // Each listed name, set alone, must move some option off its default;
+    // a stale entry would make the build-step diagnostic name a variable
+    // that never did anything.
+    const defaults = parseRunOptions(@as([]const []const u8, &.{"capnpc-zig"}));
+    for (env_option_names) |name| {
+        var env: std.process.Environ.Map = .init(std.testing.allocator);
+        defer env.deinit();
+        const value = if (std.mem.eql(u8, name, "CAPNPC_ZIG_API_PROFILE"))
+            "compact"
+        else if (std.mem.eql(u8, name, "CAPNPC_ZIG_SCHEMA_MANIFEST"))
+            "0"
+        else
+            "1";
+        try env.put(name, value);
+        var options = defaults;
+        applyEnvRunOptions(&env, &options);
+        try std.testing.expect(!std.meta.eql(defaults, options));
+    }
 }
 
 test "openOutputRoot creates the directory and rejects an empty path" {

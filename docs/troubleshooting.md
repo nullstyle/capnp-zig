@@ -179,7 +179,8 @@ If an otherwise finite schema fails with `CodegenBudgetExceeded`, it may have
 crossed the separate 4096-application default. Raise or lower it with
 `max-codegen-brand-specializations=` or
 `CAPNPC_ZIG_MAX_CODEGEN_BRAND_SPECIALIZATIONS` after reviewing the expected
-generated-code size.
+generated-code size. A plugin run with `--output-dir=` (the build-step recipe)
+ignores the environment variable; pass the argument with `codegen.addArg`.
 
 The related `pointerKinds()` view follows the same rule for constrained
 `AnyStruct`, `AnyList`, and bare `Capability` slots. A plain unconstrained

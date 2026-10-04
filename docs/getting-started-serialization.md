@@ -599,7 +599,8 @@ schema-free `canonical.*` API is unaffected.
 Generated specialization is separately bounded by
 `CodegenBudget.max_brand_specializations` (default 4096). Maintainers invoking
 the plugin directly can set `max-codegen-brand-specializations=` or
-`CAPNPC_ZIG_MAX_CODEGEN_BRAND_SPECIALIZATIONS`.
+`CAPNPC_ZIG_MAX_CODEGEN_BRAND_SPECIALIZATIONS`. With `--output-dir=`, as in the
+build recipe above, only the argument applies.
 
 ## Quick Reference
 

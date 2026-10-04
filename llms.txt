@@ -9,7 +9,7 @@ This file is optimized for LLM orientation. Use module-level `llms.txt` files fi
 - Architecture is layered: wire format (`src/serialization/`) -> schema/request parsing -> code generation (`src/capnpc-zig/`) -> RPC runtime (`src/rpc/`).
 - Two library export surfaces exist: [src/lib.zig](src/lib.zig) (full) and [src/lib_core.zig](src/lib_core.zig) (reduced core/runtime surface).
 - [src/main.zig](src/main.zig) is a Cap'n Proto plugin entrypoint that reads `CodeGeneratorRequest` from stdin and writes generated `.zig` files.
-- Codegen behavior can be tuned via option tokens and `CAPNPC_ZIG_*` environment variables (manifest emission, API profile, shape sharing).
+- Codegen behavior can be tuned via option tokens and `CAPNPC_ZIG_*` environment variables (manifest emission, API profile, shape sharing). With `--output-dir=` (build-step mode) the plugin ignores the environment variables; only option arguments apply.
 - RPC tests are grouped by domain (`test-rpc-wire`, `test-rpc-caps`,
   `test-rpc-promises`, `test-rpc-transport`, `test-rpc-peer`,
   `test-rpc-integration`, plus optional `test-rpc-quic`).

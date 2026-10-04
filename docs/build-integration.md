@@ -179,8 +179,17 @@ How it fits together:
   `build.zig` installs `capnpc-zig`; package-preflight fails if it stops.
 - **RPC schemas** import the full runtime: use
   `capnpc_dep.module("capnpc-zig")` in place of `capnpc-zig-core`.
-- **Plugin options** go on the run step, for example
-  `codegen.addArg("--no-reflection")`.
+- **Plugin options** go on the run step as arguments, for example
+  `codegen.addArg("--no-reflection")`. With `--output-dir=` the plugin
+  ignores its `CAPNPC_ZIG_*` environment options and prints one line naming
+  any it skipped. The run step inherits your shell's environment, but Zig
+  leaves that environment out of the step's cache key. If the plugin read it,
+  an exported `CAPNPC_ZIG_SHAPE_SHARING=1` would change the generated code
+  but not the key, so a cached build would serve whichever output it made
+  first, and another machine would generate different code. Every
+  environment option has an argument form (`no-manifest`, `compact-api`,
+  `shape-sharing`, `max-codegen-fields=N`, and so on), and arguments are part
+  of the key.
 
 ### The consumer gen-check
 

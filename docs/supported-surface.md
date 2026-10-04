@@ -143,7 +143,8 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
 - **Brand generation has a separate expansion budget.**
   `CodegenBudget.max_brand_specializations` defaults to 4096. Configure it with
   `max-codegen-brand-specializations=` on the plugin command line or
-  `CAPNPC_ZIG_MAX_CODEGEN_BRAND_SPECIALIZATIONS`; exhaustion fails with
+  `CAPNPC_ZIG_MAX_CODEGEN_BRAND_SPECIALIZATIONS` (ignored with `--output-dir=`,
+  where only arguments apply); exhaustion fails with
   `CodegenBudgetExceeded` before partial output is accepted.
 
 ## Reflection contract (unreleased, Experimental)
