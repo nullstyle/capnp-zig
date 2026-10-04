@@ -19,6 +19,7 @@ const builtin = @import("builtin");
 
 const connection_mod = @import("./connection.zig");
 const runtime = @import("./runtime.zig");
+const client_wiring = @import("./client_wiring.zig");
 const peer_mod = @import("../../peer/mod.zig");
 const events = @import("../../events.zig");
 
@@ -85,53 +86,10 @@ pub const ClientSession = struct {
     ) !*ClientSession {
         const tcp_stream = try std.Io.net.IpAddress.connect(&address, io, .{ .mode = .stream });
         const fd = tcp_stream.socket.handle;
-        var socket_owned = true;
-        errdefer if (socket_owned) runtime.closeFd(io, .{ .handle = fd });
         runtime.setTcpNoDelay(.{ .handle = fd });
-
-        const self = try gpa.create(ClientSession);
-        errdefer gpa.destroy(self);
-
-        var conn_opts = options.conn;
-        if ((options.default_call_timeout_ms != null or options.join_timeout_ms != null) and
-            conn_opts.tick_interval_ms == null)
-        {
-            conn_opts.tick_interval_ms = 100;
-        }
-        if (conn_opts.observer == null) conn_opts.observer = options.observer;
-
-        self.allocator = gpa;
-        self.io = io;
-        self.user_ctx = options.ctx;
-        self.user_on_error = options.on_error;
-        self.user_on_close = options.on_close;
-
-        self.conn = try Connection.init(gpa, io, .{ .handle = fd }, conn_opts);
-        socket_owned = false; // conn.deinit() closes the socket from here on
-        errdefer self.conn.deinit();
-
-        self.peer = Peer.init(gpa, &self.conn);
-        self.peer.setLimits(options.limits);
-        self.peer.setClockIo(io);
-        // FAIL CLOSED on missing OS entropy (never a guessable fallback id),
-        // mapped into the existing error set: an entropy syscall failure is a
-        // system-level fault, reported as Unexpected with the cause logged.
-        self.embargo_rng = peer_mod.seedEntropyCsprng(io) catch |err| switch (err) {
-            error.Canceled => return error.Canceled,
-            error.EntropyUnavailable => {
-                std.log.scoped(.rpc_tcp).warn("OS entropy unavailable; refusing to construct session", .{});
-                return error.Unexpected;
-            },
-        };
-        self.peer.setEntropySource(peer_mod.EntropySource.fromCsprng(&self.embargo_rng));
-        self.peer.setTimeouts(.{
-            .default_call_timeout_ms = options.default_call_timeout_ms,
-            .shutdown_drain_timeout_ms = options.shutdown_drain_timeout_ms,
-            .join_timeout_ms = options.join_timeout_ms,
-        });
-        if (options.observer) |obs| self.peer.setObserver(obs);
-        self.peer.start(self, onPeerError, onPeerClose);
-        return self;
+        // `wire` owns the socket from here, on success and on error. The
+        // AF_UNIX `rpc.transport.unix.connect` shares it.
+        return client_wiring.wire(gpa, io, .{ .handle = fd }, options);
     }
 
     /// `IpAddress.parse(host, port)` + `connect`.
@@ -186,20 +144,5 @@ pub const ClientSession = struct {
         self.peer.deinit();
         self.conn.deinit();
         gpa.destroy(self);
-    }
-
-    fn onPeerError(ctx: ?*anyopaque, peer: *Peer, err: anyerror) void {
-        // The boilerplate every consumer used to carry: a peer error means
-        // the transport is done; close it so run() unwinds.
-        if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
-        const raw = ctx orelse return;
-        const self: *ClientSession = @ptrCast(@alignCast(raw));
-        if (self.user_on_error) |cb| cb(self.user_ctx, self, err);
-    }
-
-    fn onPeerClose(ctx: ?*anyopaque, _: *Peer) void {
-        const raw = ctx orelse return;
-        const self: *ClientSession = @ptrCast(@alignCast(raw));
-        if (self.user_on_close) |cb| cb(self.user_ctx, self);
     }
 };

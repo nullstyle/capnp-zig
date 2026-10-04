@@ -437,6 +437,25 @@ pub fn buildImpl(b: *std.Build) !void {
     const install_rpc_pingpong_step = b.step("example-rpc-install", "Build RPC ping-pong example (install only)");
     install_rpc_pingpong_step.dependOn(&b.addInstallArtifact(rpc_pingpong_example, .{}).step);
 
+    // The same ping-pong over a Unix-domain socket, through `unix.listen` +
+    // `unix.connect` (Experimental, Linux and macOS). It compiles for every
+    // target (check-compile below); elsewhere it prints that and exits.
+    const rpc_pingpong_unix_example = b.addExecutable(.{
+        .name = "example-rpc-pingpong-unix",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/rpc_pingpong_unix.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+    const run_rpc_pingpong_unix = b.addRunArtifact(rpc_pingpong_unix_example);
+    run_rpc_pingpong_unix.addPassthruArgs();
+    const example_rpc_unix_step = b.step("example-rpc-unix", "Run the RPC ping-pong example over a Unix-domain socket (Linux, macOS)");
+    example_rpc_unix_step.dependOn(&run_rpc_pingpong_unix.step);
+
     // The same ping-pong over QUIC, through `quic.serve` + `quic.connect`.
     // Gated on -Dquic=true like bench-quic; without it the step fails with
     // the flag to pass instead of silently doing nothing. The TLS pair is the
@@ -845,10 +864,16 @@ pub fn buildImpl(b: *std.Build) !void {
     // macOS run them; other targets compile them and skip.
     const run_rpc_unix_fd_drain_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_drain_test.zig", target, optimize, lib_module);
     const run_rpc_unix_linger_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_linger_test.zig", target, optimize, lib_module);
-    const test_rpc_unix_step = b.step("test-rpc-unix", "Run the AF_UNIX transport suites (regressions, fd drain, lingering close)");
+    // `rpc.transport.unix.listen`/`connect` (sprint item 7): sessions over a
+    // socket file, the path guards, the lock, stale files, permissions and
+    // close. Linux and macOS run it; other targets compile it and run only
+    // the unsupported-target stub test.
+    const run_rpc_unix_session_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_session_test.zig", target, optimize, lib_module);
+    const test_rpc_unix_step = b.step("test-rpc-unix", "Run the AF_UNIX transport suites (regressions, fd drain, lingering close, listen/connect)");
     test_rpc_unix_step.dependOn(run_rpc_unix_regression_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_fd_drain_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_linger_tests);
+    test_rpc_unix_step.dependOn(run_rpc_unix_session_tests);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, qm)
     else
@@ -1329,6 +1354,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_transport_step.dependOn(run_rpc_unix_regression_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_fd_drain_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_linger_tests);
+    test_rpc_transport_step.dependOn(run_rpc_unix_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_raw_frame_security_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_kernel_semantics_tests);
 
@@ -1624,6 +1650,9 @@ pub fn buildImpl(b: *std.Build) !void {
             // cmsghdr layout.
             "tests/rpc/transport/unix/rpc_unix_fd_drain_test.zig",
             "tests/rpc/transport/unix/rpc_unix_linger_test.zig",
+            // unix.listen/connect: the session threads, racing listeners and
+            // the accept wake-up, against glibc.
+            "tests/rpc/transport/unix/rpc_unix_session_test.zig",
         };
         for (tsan_suites) |suite_path| {
             const t = b.addTest(.{
@@ -1722,6 +1751,7 @@ pub fn buildImpl(b: *std.Build) !void {
     check_compile_step.dependOn(&lib_tests.step);
     check_compile_step.dependOn(&main_tests.step);
     check_compile_step.dependOn(&rpc_pingpong_example.step);
+    check_compile_step.dependOn(&rpc_pingpong_unix_example.step);
     if (rpc_pingpong_quic_example) |example_exe| check_compile_step.dependOn(&example_exe.step);
     check_compile_step.dependOn(&serialization_demo_example.step);
     // The soak is a real cross-platform executable; compile it for cross

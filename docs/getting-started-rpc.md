@@ -388,4 +388,4 @@ The repo includes a complete ping-pong RPC example (both halves of this guide in
 zig build example-rpc
 ```
 
-See `examples/rpc_pingpong.zig` for the source and `examples/pingpong.capnp` for the schema. For richer scenarios — sub-capabilities, mid-session release, and typed pipelining against reference peers — read `tests/e2e/zig/main_client.zig`.
+See `examples/rpc_pingpong.zig` for the source and `examples/pingpong.capnp` for the schema. On Linux and macOS, `zig build example-rpc-unix` runs the same program over a Unix-domain socket (`examples/rpc_pingpong_unix.zig`, Experimental `rpc.transport.unix.listen`/`connect`). For richer scenarios — sub-capabilities, mid-session release, and typed pipelining against reference peers — read `tests/e2e/zig/main_client.zig`.

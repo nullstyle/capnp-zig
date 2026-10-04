@@ -3970,6 +3970,7 @@ capnpc-zig.rpc.transport.tcp.Listener.close_requested: field atomic.Value(bool) 
 capnpc-zig.rpc.transport.tcp.Listener.conn_options: field rpc.transport.tcp.connection.Connection.Options
 capnpc-zig.rpc.transport.tcp.Listener.io: field Io
 capnpc-zig.rpc.transport.tcp.Listener.server: field Io.net.Server
+capnpc-zig.rpc.transport.tcp.Listener.unix_socket: field ?rpc.transport.unix.socket.SocketFile = null
 capnpc-zig.rpc.transport.tcp.Runtime.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.Runtime: struct
 capnpc-zig.rpc.transport.tcp.ServeOptions.conn: field rpc.transport.tcp.connection.Connection.Options = <default>
@@ -4072,6 +4073,8 @@ capnpc-zig.rpc.transport.tcp.runtime.Listener.io: field Io
 capnpc-zig.rpc.transport.tcp.runtime.Listener.ioBackend: fn (*const rpc.transport.tcp.runtime.Listener) Io
 capnpc-zig.rpc.transport.tcp.runtime.Listener.listenHandle: fn (*const rpc.transport.tcp.runtime.Listener) rpc.transport.tcp.stream_transport.SocketFd
 capnpc-zig.rpc.transport.tcp.runtime.Listener.server: field Io.net.Server
+capnpc-zig.rpc.transport.tcp.runtime.Listener.unixPath: fn (*const rpc.transport.tcp.runtime.Listener) ?[]const u8
+capnpc-zig.rpc.transport.tcp.runtime.Listener.unix_socket: field ?rpc.transport.unix.socket.SocketFile = null
 capnpc-zig.rpc.transport.tcp.runtime.Runtime.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.runtime.Runtime.deinit: fn (*rpc.transport.tcp.runtime.Runtime) void
 capnpc-zig.rpc.transport.tcp.runtime.Runtime.init: fn (mem.Allocator) error{}!rpc.transport.tcp.runtime.Runtime
@@ -4146,6 +4149,17 @@ capnpc-zig.rpc.transport.tcp.stream.Transport.writer_thread: field ?Thread = nul
 capnpc-zig.rpc.transport.tcp.stream.Transport: struct
 capnpc-zig.rpc.transport.tcp.stream: struct
 capnpc-zig.rpc.transport.tcp: struct
+capnpc-zig.rpc.transport.unix.ConnectError: type = error{AbstractNameUnsupported,AccessDenied,BadPathName,Canceled,ConnectionRefused,FileNotFound,NameTooLong,NotDir,OutOfMemory,ProcessFdQuotaExceeded,SymLinkLoop,SystemFdQuotaExceeded,SystemResources,Timeout,Unexpected,UnixSocketsUnsupported}
+capnpc-zig.rpc.transport.unix.ConnectOptions.connect_timeout_ms: field ?u64 = 30000
+capnpc-zig.rpc.transport.unix.ConnectOptions.session: field rpc.transport.tcp.client.ConnectOptions = <default>
+capnpc-zig.rpc.transport.unix.ConnectOptions: struct
+capnpc-zig.rpc.transport.unix.ListenError: type = error{AbstractNameUnsupported,AccessDenied,AddressInUse,BadPathName,FileNotFound,InvalidSocketMode,NameTooLong,NoSpaceLeft,NotDir,ProcessFdQuotaExceeded,ReadOnlyFileSystem,SocketPathChanged,SymLinkLoop,SystemFdQuotaExceeded,SystemResources,Unexpected,UnixSocketsUnsupported}
+capnpc-zig.rpc.transport.unix.ListenOptions.backlog: field u31 = 128
+capnpc-zig.rpc.transport.unix.ListenOptions.conn: field rpc.transport.tcp.connection.Connection.Options = <default>
+capnpc-zig.rpc.transport.unix.ListenOptions.reclaim_stale: field bool = false
+capnpc-zig.rpc.transport.unix.ListenOptions.socket_mode: field u32 = 384
+capnpc-zig.rpc.transport.unix.ListenOptions: struct
+capnpc-zig.rpc.transport.unix.connect: fn (mem.Allocator, Io, []const u8, rpc.transport.unix.socket.ConnectOptions) error{AbstractNameUnsupported,AccessDenied,BadPathName,Canceled,ConnectionRefused,FileNotFound,NameTooLong,NotDir,OutOfMemory,ProcessFdQuotaExceeded,SymLinkLoop,SystemFdQuotaExceeded,SystemResources,Timeout,Unexpected,UnixSocketsUnsupported}!*rpc.transport.tcp.client.ClientSession
 capnpc-zig.rpc.transport.unix.fd_io.Fd: type = i32
 capnpc-zig.rpc.transport.unix.fd_io.Received.control_truncated: field bool
 capnpc-zig.rpc.transport.unix.fd_io.Received.data_len: field usize
@@ -4188,6 +4202,8 @@ capnpc-zig.rpc.transport.unix.fd_io.parseRights: fn ([]const u8, []i32) usize
 capnpc-zig.rpc.transport.unix.fd_io.recvWithFds: fn (i32, []u8, []u8, []i32) error{ConnectionResetByPeer,ConnectionTimedOut,ProcessFdQuotaExceeded,SocketUnconnected,SystemFdQuotaExceeded,SystemResources,Unexpected,UnixSocketsUnsupported}!rpc.transport.unix.fd_io.Received
 capnpc-zig.rpc.transport.unix.fd_io.supported: const bool
 capnpc-zig.rpc.transport.unix.fd_io: struct
+capnpc-zig.rpc.transport.unix.listen: fn (mem.Allocator, Io, []const u8, rpc.transport.unix.socket.ListenOptions) error{AbstractNameUnsupported,AccessDenied,AddressInUse,BadPathName,FileNotFound,InvalidSocketMode,NameTooLong,NoSpaceLeft,NotDir,ProcessFdQuotaExceeded,ReadOnlyFileSystem,SocketPathChanged,SymLinkLoop,SystemFdQuotaExceeded,SystemResources,Unexpected,UnixSocketsUnsupported}!rpc.transport.tcp.runtime.Listener
+capnpc-zig.rpc.transport.unix.supported: const bool
 capnpc-zig.rpc.transport.unix: struct
 capnpc-zig.rpc.transport: struct
 capnpc-zig.rpc.vat.host.Vat: fn (comptime type) type

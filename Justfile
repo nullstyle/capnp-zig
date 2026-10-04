@@ -42,6 +42,10 @@ example:
 example-quic:
     zig build -Dquic=true example-rpc-quic
 
+# Run the RPC ping-pong example over a Unix-domain socket (Linux, macOS)
+example-unix:
+    zig build example-rpc-unix
+
 # Run static hardening gates
 hardening:
     zig build hardening
@@ -136,7 +140,7 @@ test-rpc-promises:
 test-rpc-transport:
     zig build {{ test_jobs }} test-rpc-transport --summary all
 
-# Run the AF_UNIX transport suites (regressions, fd drain, lingering close)
+# Run the AF_UNIX transport suites (regressions, fd drain, lingering close, listen/connect)
 test-rpc-unix:
     zig build {{ test_jobs }} test-rpc-unix --summary all
 
@@ -267,6 +271,7 @@ ci:
     just e2e-zig
     just e2e-l3-vatc
     zig build example-rpc
+    @if [ "{{ os() }}" != windows ]; then zig build example-rpc-unix; fi
 
 # Regenerate committed bindings with the pinned WASM compiler and this checkout's
 # native plugin. Compiler inputs and generator outputs use separate processes.

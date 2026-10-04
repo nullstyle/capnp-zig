@@ -194,6 +194,10 @@ jobs:
       - name: RPC ping-pong example (guards the connection teardown seam)
         run: zig build example-rpc
 
+      - name: RPC ping-pong example over a Unix-domain socket
+        if: runner.os != 'Windows'
+        run: zig build example-rpc-unix
+
   fmt-check:
     name: Format check
     runs-on: ubuntu-latest

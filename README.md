@@ -426,6 +426,27 @@ carries the std fix.
 zig build example-rpc
 ```
 
+### Unix-Domain Sockets (Experimental)
+
+On Linux and macOS, `capnpc.rpc.transport.unix` runs the same RPC stack over a
+socket file. `unix.listen` returns a `tcp.Listener`, so `ServerSession.accept`
+serves it unchanged, and `unix.connect` returns a `*tcp.ClientSession`. Other
+targets get `error.UnixSocketsUnsupported`.
+
+```zig
+var listener = try capnpc.rpc.transport.unix.listen(gpa, io, "/run/myapp/rpc.sock", .{});
+defer listener.close(); // removes the socket file, releases its lock
+const session = try capnpc.rpc.transport.unix.connect(gpa, io, "/run/myapp/rpc.sock", .{});
+```
+
+`listen` holds `<path>.lock` for the listener's life, sets the socket file to
+mode 0600 before it accepts anything, refuses paths that do not fit `sun_path`
+and abstract names, and replaces a stale socket file only with
+`.reclaim_stale = true`. Keep the socket in a private (0700) directory. Every
+AF_UNIX connection closes any file descriptors a peer attaches. See
+`src/rpc/transport/unix/socket.zig` for the full contract, and run the
+example with `zig build example-rpc-unix`.
+
 ### QUIC Transport
 
 The QUIC RPC transport is optional and excluded from normal builds. The
@@ -511,7 +532,7 @@ zig build test-rpc-wire       # Framing/protocol
 zig build test-rpc-caps       # Capability tables
 zig build test-rpc-promises   # Promises/pipelining
 zig build test-rpc-transport  # TCP/Unix/raw-frame transport
-zig build test-rpc-unix       # AF_UNIX suites (fd drain, lingering close)
+zig build test-rpc-unix       # AF_UNIX suites (fd drain, lingering close, listen/connect)
 zig build test-rpc-peer       # Peer semantics
 zig build test-rpc-integration # HostPeer/WorkerPool integration
 zig build -Dquic=true test-rpc-quic # Optional QUIC transport

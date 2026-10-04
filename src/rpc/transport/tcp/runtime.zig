@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_runtime);
 const Connection = @import("./connection.zig").Connection;
 const events = @import("../../events.zig");
+const unix_socket_mod = @import("../unix/socket.zig");
 const net = std.Io.net;
 
 /// Re-export of the platform-stable socket wrapper used by all public
@@ -39,12 +40,22 @@ pub const Runtime = struct {
 ///
 /// Call `close()` to stop accepting. This closes the listening socket
 /// which also unblocks any thread blocked in `accept()`.
+///
+/// ## AF_UNIX
+///
+/// `rpc.transport.unix.listen` returns a `Listener` too (Experimental,
+/// Linux and Darwin). It accepts the same way; `unixPath` returns its path,
+/// and `close` also removes its socket file and releases its lock.
 pub const Listener = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     server: net.Server,
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     conn_options: Connection.Options,
+    /// Set only by `rpc.transport.unix.listen`: the socket file this
+    /// listener owns (path, identity, held lock). Internal state; read the
+    /// path with `unixPath`. Experimental.
+    unix_socket: ?unix_socket_mod.SocketFile = null,
 
     /// Bind and listen on the given address.
     pub fn init(
@@ -119,8 +130,14 @@ pub const Listener = struct {
 
     /// Close the listening socket. Idempotent.
     /// This also unblocks any thread blocked in `accept()`.
+    ///
+    /// A listener from `rpc.transport.unix.listen` first removes its socket
+    /// file (only while the path still names that file) and releases its
+    /// lock last, so no other `unix.listen` can bind the path in between.
     pub fn close(self: *Listener) void {
         if (self.close_requested.swap(true, .acq_rel)) return;
+        if (self.unix_socket) |*file| file.unlinkIfOurs();
+        defer if (self.unix_socket) |*file| file.releaseLock();
         // POSIX: a bare close does not reliably wake a thread parked in
         // accept() on this fd (the documented contract of this method), while
         // shutdown does.
@@ -139,8 +156,18 @@ pub const Listener = struct {
     }
 
     /// Return the bound address. Useful for resolving ephemeral ports (port 0).
+    /// A listener from `rpc.transport.unix.listen` (or `initFd`) has no IP
+    /// address: this returns 0.0.0.0:0 there; see `unixPath`.
     pub fn getAddress(self: *const Listener) net.IpAddress {
         return self.server.socket.address;
+    }
+
+    /// The socket file's path for a listener from
+    /// `rpc.transport.unix.listen`; null for any other listener (TCP, or
+    /// `initFd`). The slice points into this listener. Experimental.
+    pub fn unixPath(self: *const Listener) ?[]const u8 {
+        if (self.unix_socket) |*file| return file.path();
+        return null;
     }
 
     /// Return the underlying socket handle.

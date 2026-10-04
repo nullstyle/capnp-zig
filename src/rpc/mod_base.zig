@@ -63,12 +63,24 @@ pub fn Transport(comptime quic_impl: type, comptime include_tcp: bool) type {
             pub const ipAddressToSockaddr = runtime.ipAddressToSockaddr;
         } else struct {};
 
-        /// AF_UNIX support (Experimental, Linux and Darwin). `fd_io` is the
-        /// raw read that takes peer-attached fds, and its process-wide
-        /// closer thread; every `tcp.Transport` on an AF_UNIX socket reads
-        /// through it. Like `tcp`, only the full roots carry it.
+        /// AF_UNIX support (Experimental, Linux and Darwin; elsewhere the
+        /// calls return `error.UnixSocketsUnsupported`). `listen` and
+        /// `connect` run Cap'n Proto RPC over a socket file and return the
+        /// TCP stack's own `tcp.Listener` and `*tcp.ClientSession`. `fd_io`
+        /// is the raw read that takes peer-attached fds, and its
+        /// process-wide closer thread; every `tcp.Transport` on an AF_UNIX
+        /// socket reads through it. Like `tcp`, only the full roots carry
+        /// it: the core root has no sockets.
         pub const unix = if (include_tcp) struct {
+            const socket = @import("./transport/unix/socket.zig");
             pub const fd_io = @import("./transport/unix/fd_io.zig");
+            pub const supported = socket.supported;
+            pub const listen = socket.listen;
+            pub const ListenOptions = socket.ListenOptions;
+            pub const ListenError = socket.ListenError;
+            pub const connect = socket.connect;
+            pub const ConnectOptions = socket.ConnectOptions;
+            pub const ConnectError = socket.ConnectError;
         } else struct {};
     };
 }

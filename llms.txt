@@ -60,4 +60,5 @@ This file is optimized for LLM orientation. Use module-level `llms.txt` files fi
 - [docs/wasm_host_abi.md](docs/wasm_host_abi.md): Host ABI contract and expected host responsibilities.
 - [docs/large_schema_dedup_assessment.md](docs/large_schema_dedup_assessment.md): Large-schema/codegen scaling controls and historical measurements.
 - [examples/rpc_pingpong.zig](examples/rpc_pingpong.zig): Minimal end-to-end RPC example.
+- [examples/rpc_pingpong_unix.zig](examples/rpc_pingpong_unix.zig): The same example over a Unix-domain socket (Experimental; Linux and macOS).
 - [examples/kvstore/README.md](examples/kvstore/README.md): Richer service example with persistence/notifications.
