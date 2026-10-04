@@ -6,10 +6,12 @@
         // Pinned to a TAG, not a raw commit: tags are immutable release
         // points, so the pin is auditable and reproducible.
         //
-        // v0.24.0 (commit 1d34b32). qmsg still pins v0.21.2; the coordinated
-        // release moves it here too, so a process linking both packages can
-        // resolve ONE quic module (both parents must also pass the same
-        // dependency options). The jump from v0.19.0:
+        // v0.24.1 (commit 4564995). Its src/ is byte-identical to v0.24.0;
+        // it only adds an `optimize` build option. We keep passing
+        // `.release`, the map nest/qmsg/qmesh use too. qmsg still pins
+        // v0.21.2; the coordinated release moves it here, so a process
+        // linking both packages can resolve ONE quic module (both parents
+        // must pass the same dependency options). The jump from v0.19.0:
         // 0.21.1 frees the BoringSSL AEAD context leaked per handshake key
         // derivation (~780 KB per handshake; the QUIC heal soak's RSS went
         // 5 MB -> 26.6 GB in 10 minutes on v0.19.0), and 0.24.0 (BREAKING)
@@ -20,8 +22,8 @@
         // source aef0e2df); it still links Windows ws2_32 with pkg-config
         // lookup disabled.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.24.0.tar.gz",
-            .hash = "quic-0.24.0-DnSYvUNHNABoGpnSvxo5VEF7RVsZTxddSW3UGp1vCrPw",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.24.1.tar.gz",
+            .hash = "quic-0.24.1-DnSYvRqMNADDwuJG9qlOxfaaUIGacBiERjfZ5DINt3RH",
             .lazy = true,
         },
     },

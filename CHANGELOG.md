@@ -9,13 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
-- **QUIC now pins quic-zig v0.24.0 (was v0.19.0; Experimental).**
+- **QUIC now pins quic-zig v0.24.1 (was v0.19.0; Experimental).** v0.24.1's
+  library code is byte-identical to v0.24.0; it only adds an `optimize`
+  build option. capnp-zig keeps passing `.release`.
   - v0.19.0 leaked a BoringSSL AEAD context on every handshake key derivation, about 780 KB per handshake. The QUIC heal soak reached 26.6 GB RSS in 10 minutes. v0.21.1 fixed this: the same 10-minute soak on v0.24.0 holds RSS flat (steady state -5.3%, peak 172 MB over ~89,600 handshakes) and passes `--rss-gate enforce`.
   - v0.24.0 removes the 4096-per-connection lifetime stream cap. `initial_max_streams_bidi`/`_uni` is now the number of streams the peer may have open at once, and an id comes back when a stream fully closes. `StreamLimitExceeded` is always temporary.
   - Native mode keeps a large frame queued and retries it after the next pump, at any stream index. Tests push 10,240 large frames each way over one connection, including through a uni window of 1.
   - The default `initial_max_streams_uni` rises from 4 to 8; bidi stays 16. A full window arrives as one burst that the receiver's kernel UDP queue must hold. On Linux the measured limit is the socket buffer, not the window. With a stock unprivileged buffer (416 KiB after the request below), 8 carries 17.4-18.0 MB/s at 20 ms RTT with 64 KiB frames, against 9.3 for 4. A window of 16 collapsed there to 1-3 MB/s in most runs. Where a host grants the full 4 MiB buffer (macOS, or Linux with `net.core.rmem_max`/`wmem_max` raised or `CAP_NET_ADMIN`), 16 reaches 32-35 MB/s, so raise it there. The table is in `defaultTransportParams`.
   - boringssl-zig moves to 0.6.7 with the same BoringSSL source. Windows still links `ws2_32`.
-  - **Migration:** a build that also depends on quic directly (qmsg, mruby-quic, capnp-qmsg-demo) must pin quic v0.24.0 and pass the same options as capnp-zig: `.target`, `.release = optimize != .debug`, `.@"sanitize-c" = "trap"`. Otherwise the build makes two quic modules. Code that drives quic itself should follow quic-zig's EMBEDDING.md section "Stream limits are a window": retry `StreamLimitExceeded` after a pump, finish or reset every peer stream, and refuse with STOP_SENDING plus RESET_STREAM. Custom `transport_params` still work, but the uni window now really bounds native large-frame concurrency. Size it as frames per second x RTT, and keep window x frame size within the receiver's real `SO_RCVBUF`.
+  - **Migration:** a build that also depends on quic directly (qmsg, mruby-quic, capnp-qmsg-demo) must pin quic v0.24.1 and pass the same options as capnp-zig: `.target`, `.release = optimize != .debug`, `.@"sanitize-c" = "trap"`. Otherwise the build makes two quic modules. Code that drives quic itself should follow quic-zig's EMBEDDING.md section "Stream limits are a window": retry `StreamLimitExceeded` after a pump, finish or reset every peer stream, and refuse with STOP_SENDING plus RESET_STREAM. Custom `transport_params` still work, but the uni window now really bounds native large-frame concurrency. Size it as frames per second x RTT, and keep window x frame size within the receiver's real `SO_RCVBUF`.
 
 - **Minimum Zig is now `0.17.0`, the tagged release.** The pin moves off
   `0.17.0-dev.1683+5ceec001b`, which ziglang.org has already deleted. Only
