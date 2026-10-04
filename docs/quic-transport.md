@@ -44,9 +44,9 @@ Cap'n Proto RPC vat session. The payload above the QUIC transport is still the
 standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
 between peers, not the RPC protocol that `Peer` handles.
 
-The manifest pins the `quic` package at annotated tag `v0.24.1` (commit
-`4564995`; its library code is byte-identical to `v0.24.0`, and it only adds
-an `optimize` build option), which in turn pins
+The manifest pins the `quic` package at annotated tag `v0.25.0` (commit
+`67f0fea`, the security fix for unauthenticated datagrams; see the CHANGELOG
+`0.19.1` Security entry), which in turn pins
 the published boringssl-zig commit `ff30fe99` (boringssl 0.6.7). That BoringSSL wrapper links
 Windows sockets as `ws2_32` with package-config lookup disabled, removing the
 native-shell and Git Bash `pkg-config.BAT` failure path. Connection and server
