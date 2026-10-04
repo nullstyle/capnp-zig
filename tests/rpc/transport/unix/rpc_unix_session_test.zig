@@ -794,6 +794,52 @@ test "connect waits within connect_timeout_ms until the backlog has room (Linux)
     try testing.expect(connector.elapsed_ms < 3000);
 }
 
+/// `SO_SNDTIMEO`'s value: two `long`s on Linux, libc's `timeval` on Darwin.
+const SendTimeout = if (is_linux) extern struct { sec: c_long, usec: c_long } else posix.timeval;
+
+fn setSendTimeoutRaw(fd: Fd, sec: i32) posix.E {
+    const tv: SendTimeout = .{ .sec = sec, .usec = 0 };
+    const bytes = std.mem.asBytes(&tv);
+    return posix.errno(sys.setsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDTIMEO, bytes, bytes.len));
+}
+
+fn sendTimeoutSec(fd: Fd) !i64 {
+    var tv: SendTimeout = undefined;
+    var len: posix.socklen_t = @sizeOf(SendTimeout);
+    _ = try support.check(sys.getsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDTIMEO, @ptrCast(&tv), &len), "getsockopt(SO_SNDTIMEO)");
+    return tv.sec;
+}
+
+test "after the connect, the send-timeout reset clears it on Linux and never fails on a socket the peer closed" {
+    if (comptime !supported) return error.SkipZigTest;
+    const internals = capnpc.rpc.testing.unix_socket;
+
+    // A live socket. Linux: the reset clears the bound the connect set, so
+    // no write through std.Io can see EAGAIN. macOS: connect never sets the
+    // option (a full backlog refuses at once), and the reset leaves it alone.
+    {
+        const fds = try support.socketPair();
+        defer support.closeFd(fds[0]);
+        defer support.closeFd(fds[1]);
+        try testing.expectEqual(posix.E.SUCCESS, setSendTimeoutRaw(fds[0], 5));
+        try internals.finishConnect(fds[0], true);
+        try testing.expectEqual(@as(i64, if (is_linux) 0 else 5), try sendTimeoutSec(fds[0]));
+    }
+
+    // A server that accepts and closes at once can shut the client socket
+    // down between connect(2) and the reset. XNU then refuses every socket
+    // option with EINVAL, and `connect` must not turn that into Unexpected.
+    const fds = try support.socketPair();
+    defer support.closeFd(fds[0]);
+    support.closeFd(fds[1]);
+    if (!is_linux) {
+        // The premise: XNU refuses the option on this socket.
+        try testing.expectEqual(posix.E.INVAL, setSendTimeoutRaw(fds[0], 0));
+    }
+    try internals.finishConnect(fds[0], true);
+    try internals.clearSendTimeout(fds[0]);
+}
+
 // ---------------------------------------------------------------------------
 // Peers over socketpair(AF_UNIX)
 // ---------------------------------------------------------------------------

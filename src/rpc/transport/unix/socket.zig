@@ -67,6 +67,10 @@
 //! `SO_SNDTIMEO` (`connect_timeout_ms`), which Linux applies to AF_UNIX
 //! connects, and resets it to 0 before the socket carries any data. macOS
 //! never waits: a full backlog refuses the connect (`ConnectionRefused`).
+//! So on macOS `connect` does not touch `SO_SNDTIMEO` at all: XNU refuses
+//! every socket option (EINVAL) once the socket is fully shut down, and a
+//! server that accepts and closes at once does that between the connect
+//! and the reset.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -158,8 +162,8 @@ pub const ConnectOptions = struct {
     /// limits, observer and callbacks.
     session: client.ConnectOptions = .{},
     /// How long the connect itself may wait (Linux waits while the
-    /// server's backlog is full). 0 acts as 1 ms. Null waits without a
-    /// bound.
+    /// server's backlog is full; macOS never waits). 0 acts as 1 ms. Null
+    /// waits without a bound.
     connect_timeout_ms: ?u64 = 30_000,
 };
 
@@ -559,15 +563,26 @@ fn listenSocket(fd: Fd, backlog: u31) ListenError!void {
 /// `SO_SNDTIMEO` keeps on 32-bit targets too). Darwin: libc's `timeval`.
 const SendTimeout = if (is_linux) extern struct { sec: c_long, usec: c_long } else posix.timeval;
 
+/// Whether `connect` bounds its wait with `SO_SNDTIMEO`. Only Linux waits
+/// in an AF_UNIX connect. Darwin refuses a full backlog at once, so the
+/// option bounds nothing there, and touching it after the connect can fail:
+/// XNU refuses every socket option (EINVAL) once the socket is fully shut
+/// down, which a server that accepts and closes at once causes.
+const connect_uses_send_timeout = is_linux;
+
 fn setSendTimeout(fd: Fd, ms: u64) error{Unexpected}!void {
+    switch (sendTimeoutErrno(fd, ms)) {
+        .SUCCESS => {},
+        else => |e| return unexpected("setsockopt(SO_SNDTIMEO)", e),
+    }
+}
+
+fn sendTimeoutErrno(fd: Fd, ms: u64) posix.E {
     const sec = @min(ms / 1000, std.math.maxInt(i32));
     const usec = (ms % 1000) * 1000;
     const tv: SendTimeout = .{ .sec = @intCast(sec), .usec = @intCast(usec) };
     const bytes = std.mem.asBytes(&tv);
-    switch (posix.errno(posix.system.setsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDTIMEO, bytes, bytes.len))) {
-        .SUCCESS => {},
-        else => |e| return unexpected("setsockopt(SO_SNDTIMEO)", e),
-    }
+    return posix.errno(posix.system.setsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDTIMEO, bytes, bytes.len));
 }
 
 fn nowMs() u64 {
@@ -582,7 +597,7 @@ fn connectSocket(fd: Fd, addr: *const posix.sockaddr.un, timeout_ms: ?u64) Conne
         if (deadline) |d| {
             const now = nowMs();
             if (now >= d) return error.Timeout;
-            try setSendTimeout(fd, d - now);
+            if (connect_uses_send_timeout) try setSendTimeout(fd, d - now);
         }
         const rc = posix.system.connect(fd, @ptrCast(addr), @sizeOf(posix.sockaddr.un));
         switch (posix.errno(rc)) {
@@ -604,7 +619,28 @@ fn connectSocket(fd: Fd, addr: *const posix.sockaddr.un, timeout_ms: ?u64) Conne
             else => |e| return unexpected("connect", e),
         }
     }
-    // The transport writes through std.Io, which treats EAGAIN as a bug:
-    // the send timeout must not outlive the connect.
-    if (deadline != null) try setSendTimeout(fd, 0);
+    try finishConnect(fd, deadline != null);
+}
+
+/// Undo what `connectSocket` set for the wait. `timed`: it had a deadline.
+/// The transport writes through std.Io, which treats EAGAIN as a bug, so
+/// the send timeout must not outlive the connect. Darwin: nothing to undo.
+/// Internal; `pub` only for the tests (`rpc.testing.unix_socket`).
+pub fn finishConnect(fd: Fd, timed: bool) error{Unexpected}!void {
+    if (comptime !connect_uses_send_timeout) return;
+    if (timed) try clearSendTimeout(fd);
+}
+
+/// Set `SO_SNDTIMEO` back to 0 (no bound). EINVAL is not a failure here:
+/// XNU returns it for every option once the socket is fully shut down (the
+/// peer closed after the connect), and a write on such a socket fails with
+/// EPIPE at once, so no bound is left to hit. The only other EINVAL, a
+/// wrong option size, would already have failed the set before the connect.
+/// Internal; `pub` only for the tests (`rpc.testing.unix_socket`).
+pub fn clearSendTimeout(fd: Fd) error{Unexpected}!void {
+    if (comptime !supported) return;
+    switch (sendTimeoutErrno(fd, 0)) {
+        .SUCCESS, .INVAL => {},
+        else => |e| return unexpected("setsockopt(SO_SNDTIMEO, 0)", e),
+    }
 }

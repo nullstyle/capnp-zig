@@ -21,3 +21,4 @@ pub const peer_return_send_helpers = @import("./promises/return_send_helpers.zig
 pub const peer_third_party = @import("./peer/third_party.zig");
 pub const peer_transport_callbacks = @import("./peer/peer_transport_callbacks.zig");
 pub const peer_transport_state = @import("./peer/peer_transport_state.zig");
+pub const unix_socket = @import("./transport/unix/socket.zig");
