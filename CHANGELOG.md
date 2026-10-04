@@ -94,6 +94,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     instead. The consumers we checked (capnp-qmsg-demo, mruby-quic, qmsg,
     qmesh, prollytree) switch on neither enum.
 
+- **The QUIC server constructors' inferred error sets gain
+  `SessionTicketKeyInstallFailed` (Experimental).** This affects
+  `Listener.init`, `Server.init`, `serve`/`PeerServer.init` and
+  `Connection.initServer`.
+  - **Migration:** an exhaustive `switch` over one of these error sets
+    needs a `SessionTicketKeyInstallFailed` arm (or an `else` arm). It is
+    returned only when `ServerOptions.session_ticket_key` is set and
+    BoringSSL does not read the key back as installed.
+
 ### Added
 
 - **Unix-domain sockets: `rpc.transport.unix.listen` and
@@ -199,6 +208,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also part of `test-rpc-transport`; the drain and linger suites also run in
   the Linux TSan lane.
 
+- **QUIC: a persisted session-ticket key lets a crash-restarted server
+  accept a resumed dial's 0-RTT (Experimental, opt-in).**
+  `ServerOptions.session_ticket_key: ?*const quic.SessionTicketKey` (48
+  bytes) and the same field on `ServerProductionHardening` (null by default;
+  the preset never sets one). `Listener.init` (so also `Server.init`, `serve`
+  and `Connection.initServer`) installs the key on quic-zig's TLS context
+  before the first datagram is fed, and reads it back to compare it. A
+  server that loads the same key on every start decrypts the tickets its
+  predecessor issued. A `WarmRedialClient` heal after a crash-restart then
+  resumes, and with `.early_data = .restore_only` BoringSSL accepts its
+  0-RTT. Without the key, the heal pays a full handshake as before. A stolen
+  key decrypts recorded 0-RTT data (sturdy refs included) and lets the thief
+  impersonate the server to resuming clients until their tickets expire. It
+  does not decrypt 1-RTT traffic. Read "Session-ticket key" in
+  `docs/quic-transport.md` before you set it.
+  - **Refused with `error.InvalidConfig`:** an all-zero key; a key together
+    with `.early_data = .with_anti_replay` (the tracker is per-process
+    memory); a key with Retry on and `new_token_key == null`.
+    `serverConfigFromOptions` refuses any key and any
+    `session_ticket_lifetime_s`, because it returns a config and cannot
+    install them.
+  - **`ServerOptions.session_ticket_lifetime_s`** (1 s to 2 days,
+    `quic.max_session_ticket_lifetime_s`) shortens BoringSSL's 2-day ticket
+    lifetime.
+  - **`quic.loadTicketKeyFile(io, dir, sub_path)`** (named error set
+    `quic.LoadTicketKeyFileError`) reads exactly 48 bytes and refuses an
+    all-zero file. On POSIX it also refuses a file with any group or other
+    permission bit (0o077). On Windows, protect the file with an ACL.
+  - **`WarmRedialClient.Outcome.zero_rtt_generations`** counts the
+    generations whose first flight, the Restore included, rode 0-RTT: the
+    server accepted the dial's early data and the dial got no Retry.
+    **`Outcome.retried_generations`** counts the generations whose dial got
+    a Retry.
+  - **Known gap:** under the hardened preset a heal almost always gets a
+    Retry, because each dial binds a new port and a NEW_TOKEN is valid only
+    from the port that earned it. The quic-zig v0.25.0 client then sends its
+    early data again only after the handshake, so the restore runs late
+    although BoringSSL reports `.accepted`. Such a heal counts in
+    `retried_generations`, not in `zero_rtt_generations`
+    (`docs/quic-transport.md`, "Retry and NEW_TOKEN: an open gap"). The asks
+    to quic-zig are in `docs/upstream/handoff-quic-zig-ticket-keys.md`.
+
 ### Changed
 
 - **A stream connection on an AF_UNIX socket reports `events.Source.unix`**
@@ -208,6 +259,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release-preflight X.Y.Z`).** The drift hook then judges the bump you are
   about to cut before the version sweep. `preflight` passes the version
   through.
+
+- **QUIC servers bind the transport mode and `early_dispatch` into their
+  0-RTT context (Experimental).** `serverConfigFromOptions`, and so every
+  capnp-zig QUIC server, now sets quic-zig's `early_data_application_context`
+  to `capnp-zig rpc 0-rtt v1; mode=<mode>; early_dispatch=<dispatch>`
+  instead of quic-zig's default string. If a server restarts with a
+  different mode or `early_dispatch`, it still resumes a session but refuses
+  that session's 0-RTT data. Embedders that build their own quic-zig server
+  from `serverConfigFromOptions` get the new context too.
+- **Build: with `-Dquic=true`, the library roots also import the `boringssl`
+  module that quic-zig exports** (the same instance quic is compiled
+  against), so the library can call `boringssl.raw`. Package consumers need
+  no change.
 
 ### Fixed
 
@@ -246,6 +310,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`cmsg.Iterator` dropping truncated headers, `recvmsg` EMFILE reported as
   `error.Unexpected`, `sendmsg` EBADF/EINVAL through `errnoBug`, received
   fds close-on-exec on Linux only).
+
+- **QUIC guide: the session-ticket key design, reviewed before the code.**
+  `docs/quic-transport.md` gains a "Session-ticket key" section: what a
+  stolen key file exposes and what stays safe, the rules for the key file,
+  the rotation cadence (at least every 7 days), and why the key is refused
+  together with `.with_anti_replay`.
+- **QUIC guide: corrected the warm-restore Retry claims (Experimental QUIC
+  transport).** The guide said that a returning client with a NEW_TOKEN
+  skips Retry, and that `.early_data = .restore_only` pays off after a
+  client network change. Both claims are wrong under the hardened preset:
+  quic-zig binds a NEW_TOKEN to the client's IP address and port, and a
+  capnp-zig client dials from a new ephemeral port unless
+  `ClientOptions.local_addr` sets one. The guide now explains the gap in
+  "Retry and NEW_TOKEN: an open gap".
+- `docs/upstream/handoff-quic-zig-ticket-keys.md` (a document, not an
+  issue) lists the asks to quic-zig: a ticket-key config field, rotation
+  that keeps the previous key, a ticket-lifetime setting, a fix to the
+  `.override` advice, and a client that resends 0-RTT after a Retry.
+  `docs/quic-durable-caps-plan.md` moves rung 1 to the ledger and adds rung
+  12 (the Retry gap).
 
 ## [0.19.1] - 2026-10-04
 

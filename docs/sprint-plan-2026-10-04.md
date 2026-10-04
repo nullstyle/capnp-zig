@@ -647,6 +647,30 @@ Item 16 touches only `src/rpc/transport/quic/` and `build/`. It runs in its own 
 
 **These are never skipped:** items 1-7, item 14 before any FD merge, the OOM sweep before any FD merge, item 16a before 16c, any red-first test, any ablation and the release hook. A date never forces the RC. Only green gates do.
 
+## Week 1 results (2026-10-04)
+
+**Landed on main:** items 1-7 and 16a-16d. Item 6 is the `### Security` fix. Pushed in two steps: `6c8a5d0` (shape gate, FD-0, Unix transport), then the ticket key.
+
+**Owner decision (2026-10-04): 16a approved, option A.** The ticket key merges with the Retry gap documented. Our part of the gap gets two new items (16e, 16f). The quic-zig part goes out as the handoff `docs/upstream/handoff-quic-zig-ticket-keys.md`.
+
+**Corrections to this plan:**
+- **macOS also blocks** on the final close of a received lingering socket (FD-0, 12/12 runs). The "macOS 0 ms" line in State and the blocking-close threat row now read "Linux and macOS". The closer design already covers both.
+- **Two closer lanes, not one.** Item 6 has a `.received` lane (bounded) and a `.socket` lane, so a hostile fd cannot hold another connection's socket close.
+- **`unix.connect` timeout:** a non-blocking AF_UNIX connect on Linux returns EAGAIN, and poll does not wait. The code uses a blocking connect with a send timeout on Linux and refuses at once on macOS (`8b7833d`).
+- **Item 16c, fifth negative:** "same key with a new `new_token_key` gives `.rejected`" is false on quic v0.25.0. The verdict stays `.accepted`; the server sends a Retry and the restore runs after the handshake. The test asserts that, against a same-port control that restores early.
+- **The 0-RTT verdict does not prove an early restore.** `WarmRedialClient.Outcome` now splits `zero_rtt_generations` (no Retry) from `retried_generations`.
+
+**New items:**
+- **16e P1 S: Restart-safe NEW_TOKEN clock.** `Listener.nowUs` (`src/rpc/transport/quic/listener.zig:285-290`) counts from process start. quic-zig stamps NEW_TOKEN issue and expiry times with it, so a restarted listener reads its predecessor's tokens as not yet valid. Anchor the clock to the wall clock at init, and keep it monotonic within the process. Red-first test: a token issued by generation 1 skips Retry in generation 2.
+- **16f P1 S: WarmRedialClient keeps its local port.** A NEW_TOKEN is valid only from the address and port that earned it. A heal that dials from the previous generation's port skips the Retry. If the port is taken, fall back to an ephemeral port and count a Retry.
+- **Item 17 acceptance (amended):** at least one heal per death has `zero_rtt_generations >= 1`. It needs 16e and 16f.
+
+**quic-zig v0.26.0** was released on 2026-10-04 (no security fix). We hold v0.25.0 until this sprint ends, then bump. Expected cost for capnp-zig: no code change (our NEW_TOKEN envelope is length-prefixed, `warm_state.zig:10`, and we never request key updates).
+
+**Downstream:** capnp-qmsg-demo does not build on main today (two quic modules: qmsg pins v0.24.1) and needs an `else` arm for `.cancel_failure`. Its full-stack test also fails with `QmsgLaneTimedOut` on the v0.19.0 pins. Handoff sent to the owner.
+
+**Agent environment:** the agent sandbox refuses `source wt-setup.sh` and `git -c protocol.file.allow`. Agents copied the submodule trees by hand. Full-suite counts differ between worktrees, so the merge gate on main is the count of record.
+
 ## Owner decisions
 
 **Decided by the owner (2026-10-04): D1 (a), D3 (A), D4 (B).** The owner also took the defaults listed below. For the D1 closure list, the default is to carve out each member that names an Experimental type (keep it Experimental). Promoting the named runtime type to Stable is the alternative. The owner can veto per item when the day-1 list is ready.
