@@ -86,11 +86,15 @@ pub fn setup(b: *std.Build) !Graph {
     const quic_zig_module: ?*std.Build.Module = if (enable_quic)
         (try b.dependencyLazy("quic", .{
             .target = target,
-            // quic-zig has no `optimize` option: it builds Debug or
-            // ReleaseSafe only, selected by the boolean `release`. An
-            // `.optimize` here is reported as `invalid option` and ignored,
-            // which silently built quic and BoringSSL in Debug inside every
-            // ReleaseSafe build (`--verbose` showed `-Odebug -Mquic=`).
+            // quic-zig builds Debug or ReleaseSafe only, selected by the
+            // boolean `release`. Through v0.24.0 it had no `optimize`
+            // option at all: an `.optimize` here was reported as `invalid
+            // option` and ignored, which silently built quic and BoringSSL
+            // in Debug inside every ReleaseSafe build (`--verbose` showed
+            // `-Odebug -Mquic=`). v0.24.1 also accepts `optimize`, but we
+            // keep passing `release`: every parent of quic in one build
+            // must pass the same option map (nest/qmsg/qmesh use this one),
+            // or the build makes two quic modules.
             .release = optimize != .debug,
             // BoringSSL's C/C++ objects must not reference the UBSan
             // runtime: they are linked as static archives into test

@@ -1365,8 +1365,9 @@ pub fn buildImpl(b: *std.Build) !void {
     const release_safe_quic_zig_module: ?*std.Build.Module = if (enable_quic)
         (try b.dependencyLazy("quic", .{
             .target = target,
-            // See build/modules.zig: quic-zig takes the boolean `release`,
-            // never `optimize` (which it ignores, building Debug).
+            // See build/modules.zig: we pass quic-zig the boolean
+            // `release` (never `optimize`, which it ignored through
+            // v0.24.0), the same option map every parent uses.
             .release = true,
             // See build/modules.zig: BoringSSL archives must not
             // reference the UBSan runtime; `trap` keeps the checks
