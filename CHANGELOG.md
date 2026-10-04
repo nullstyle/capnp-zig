@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **QUIC now pins quic-zig v0.24.0 (was v0.19.0; Experimental).**
+  - v0.19.0 leaked a BoringSSL AEAD context on every handshake key derivation, about 780 KB per handshake. The QUIC heal soak reached 26.6 GB RSS in 10 minutes. v0.21.1 fixed this: the same 10-minute soak on v0.24.0 holds RSS flat (steady state -5.3%, peak 172 MB over ~89,600 handshakes) and passes `--rss-gate enforce`.
+  - v0.24.0 removes the 4096-per-connection lifetime stream cap. `initial_max_streams_bidi`/`_uni` is now the number of streams the peer may have open at once, and an id comes back when a stream fully closes. `StreamLimitExceeded` is always temporary.
+  - Native mode keeps a large frame queued and retries it after the next pump, at any stream index. Tests push 10,240 large frames each way over one connection, including through a uni window of 1.
+  - The default `initial_max_streams_uni` rises from 4 to 8; bidi stays 16. A full window arrives as one burst that the receiver's kernel UDP queue must hold. On Linux the measured limit is the socket buffer, not the window. With a stock unprivileged buffer (416 KiB after the request below), 8 carries 17.4-18.0 MB/s at 20 ms RTT with 64 KiB frames, against 9.3 for 4. A window of 16 collapsed there to 1-3 MB/s in most runs. Where a host grants the full 4 MiB buffer (macOS, or Linux with `net.core.rmem_max`/`wmem_max` raised or `CAP_NET_ADMIN`), 16 reaches 32-35 MB/s, so raise it there. The table is in `defaultTransportParams`.
+  - boringssl-zig moves to 0.6.7 with the same BoringSSL source. Windows still links `ws2_32`.
+  - **Migration:** a build that also depends on quic directly (qmsg, mruby-quic, capnp-qmsg-demo) must pin quic v0.24.0 and pass the same options as capnp-zig: `.target`, `.release = optimize != .debug`, `.@"sanitize-c" = "trap"`. Otherwise the build makes two quic modules. Code that drives quic itself should follow quic-zig's EMBEDDING.md section "Stream limits are a window": retry `StreamLimitExceeded` after a pump, finish or reset every peer stream, and refuse with STOP_SENDING plus RESET_STREAM. Custom `transport_params` still work, but the uni window now really bounds native large-frame concurrency. Size it as frames per second x RTT, and keep window x frame size within the receiver's real `SO_RCVBUF`.
+
 - **Minimum Zig is now `0.17.0`, the tagged release.** The pin moves off
   `0.17.0-dev.1683+5ceec001b`, which ziglang.org has already deleted. Only
   some community mirrors still carry it, and one serves the tarball without
@@ -79,6 +87,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **QUIC transports refuse peer-opened streams the protocol never uses (Experimental).** This covers any peer bidirectional stream other than the client's stream 0, and in baseline mode any peer unidirectional stream. Each gets STOP_SENDING plus RESET_STREAM (bidi only), code `ApplicationCloseCode.protocol_error` (0x434e5002), and the connection stays up. Under v0.24.0's window rule an unanswered stream held its place in the peer's window for good. `Connection`, `ServerSession` and `EmbeddedSession` (in `onStreamOpen`) all refuse. Conforming peers never open such streams.
+- **The nightly QUIC self-healing soak enforces its RSS verdict** (`--rss-gate enforce`); the TCP soak lanes stay report-only.
+- **`bench-quic` measures native mode and stream windows** with `--transport baseline|native`, `--uni-window N`, `--bidi-window N`, `--rtt-ms N` and `--udp-buffer BYTES` (the socket buffer request on both ends; 0 keeps the OS default). The last one routes traffic through a loopback relay that adds the given round-trip time. On Linux each run reports every socket's kernel receive drops (server, client, relay) from `/proc/net/udp`, and a failed run prints both close causes.
+- **QUIC transports ask the kernel for 4 MiB UDP socket buffers (Experimental).** `ClientOptions` and `ServerOptions` gain `udp_socket_recv_buffer_bytes` and `udp_socket_send_buffer_bytes`. They default to the new `default_udp_socket_recv_buffer_bytes` and `default_udp_socket_send_buffer_bytes`, which are 4 MiB, quic-zig's recommendation. Null keeps the OS default, and 0 is `error.InvalidConfig`. The request applies to every UDP socket the transport binds (client and listener) and is best effort. On Linux it tries `SO_RCVBUFFORCE`/`SO_SNDBUFFORCE` first; otherwise `net.core.rmem_max`/`wmem_max` caps it (stock 208 KiB, which the kernel doubles to 416 KiB). macOS honors it, and Windows keeps its default. Without the request, Linux's 208 KiB default lost native full-window bursts as silent loss: a window of 8 fell to 1.2-1.3 MB/s at 50 ms RTT in two of three runs. On a Linux server, raise `net.core.rmem_max` and `net.core.wmem_max` to at least 4 MiB. `EmbeddedSession` uses the embedder's own socket, so size it there (quic-zig `transport.applyServerTuning`).
+
 - **CI's evented check is now an expected-fail canary.** `zig build -Dio-
   backend=evented check` compiled nothing evented:
   `io_backend.evented_available` is `false` because no `std.Io.Evented`
@@ -102,8 +115,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported with a `::warning::` annotation. Process RSS (Linux statm, macOS
   task_info, Windows GetProcessMemoryInfo) now goes through the heap gate's
   steady-state trend check. It is report-only by default; `--rss-gate
-  enforce` makes it fail the run. On the quic v0.19.0 pin it reads FAIL on
-  the AEAD-context leak while the Zig heap stays flat. Latency samples now
+  enforce` makes it fail the run. It read FAIL on quic v0.19.0's
+  AEAD-context leak while the Zig heap stayed flat, and passes on v0.24.0.
+  Latency samples now
   go into fixed-size histograms, so neither memory check grows with the call
   count. DebugAllocator stack traces are off by default (`--alloc-traces`
   turns them on), because the trace capture itself grows RSS. The harness's
@@ -153,6 +167,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Native-mode QUIC no longer closes on back-to-back control frames.** The receiver read every readable control-stream byte before decoding. The control framer holds only one control frame (`max_control_frame_bytes` + 4), so frames that were larger together closed the connection with `FrameTooLarge`. This happened with pipelined inline frames, or with the data-frame announcements of a full stream window. The receiver now reads only what fits and leaves the rest under QUIC flow control. New Experimental `NativeControlFramer.freeBytes`.
+- **`zig build -Dquic=true check-compile -Dtarget=x86_64-windows` compiles again.** A QUIC test-namespace re-export named a function that is a deliberate `@compileError` on Windows. CI's cross-target leg builds without `-Dquic=true`, so it never saw this.
+
 - **QUIC builds now honor ReleaseSafe.** The build passed `.optimize` to the
   quic-zig dependency, which has no such option: quic-zig builds Debug or
   ReleaseSafe only, chosen by the boolean `release`. Zig reported
@@ -165,29 +182,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that enable QUIC get a ReleaseSafe quic in release builds from this version
   on (faster QUIC, longer first builds). Found by the quic-zig maintainers.
 
-- **Native-mode QUIC no longer stalls forever when a connection's lifetime
-  stream budget runs out.** Each large frame (over `inline_frame_threshold`)
-  rides its own unidirectional stream, and the QUIC library clamps every
-  grant of peer stream credit — the initial transport parameter AND each
-  later MAX_STREAMS — at a fixed lifetime cap (4096 at the current pin).
-  The outbound queue treated `StreamLimitExceeded` as "retry later", which
-  is right for ordinary credit exhaustion below the cap but, at the cap,
-  meant every large frame from then on was retried forever: no error, no
-  close, no cause — a silent hang of exactly the long-lived connections RPC
-  cares about. Now a stream index at or above the cap fails with
-  `error.StreamLifetimeExhausted`, the owning connection, fanout session,
-  or embedded session closes, and the new certified cause
-  `rpc.events.DisconnectCause.stream_limit_exhausted` (Experimental) tells
-  the app to redial. Below the cap the retry behavior is unchanged — a
-  blanket "close on StreamLimitExceeded" would have killed healthy
-  connections that were merely waiting for credit. The cap is read from
-  the library, not copied, so the check follows upstream if it lifts the
-  limit. Proven red-then-green at the queue (both client and server stream
-  numbering) and at the shared termination path, with a guard that the
-  boundary index just below the cap stays transient and that unrelated
-  internal errors do not claim the cause.
-
 ### Added
+
+- **Pinnable plugin for consumers (slcp 07 F5).** The `capnpc-zig` plugin accepts `--output-dir=<dir>` (created if missing), so a consumer's `build.zig` can run the plugin from its pinned dependency as a cached build step instead of a PATH binary. The step is `b.addRunArtifact(b.dependency("capnpc_zig", .{ .target = b.graph.host, .optimize = .ReleaseSafe }).artifact("capnpc-zig"))`, with the `CodeGeneratorRequest` on stdin (`setStdIn`) and `addPrefixedOutputDirectoryArg("--output-dir=", "capnp-gen")` as the generated module's root. docs/build-integration.md's canonical `build.zig` is now this recipe, plus optional `gen` and `gen-check` steps for checked-in output, and says to regenerate with it, never a PATH binary. That file is byte-identical to a new package-preflight consumer (`tests/package_consumer/codegen`), which is built and run from the filtered archive; docs-smoke enforces the match. The build and serialization guides name the verified schema compiler (the pinned capnp 2.0-dev WASM compiler) and label native capnp 1.x unverified. Without the flag the plugin behaves exactly as before.
 
 - **Deferred streaming and bounded reflection (Experimental).** Generated
   streaming handlers can acknowledge after asynchronous work; configurable
