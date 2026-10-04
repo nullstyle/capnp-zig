@@ -5,7 +5,7 @@ runtime, all Experimental. Warm restore works in both halves, the stateless
 reset reaches the peer as a typed death certificate, and `WarmRedialClient`
 heals a restored capability across a server crash-restart. The hardened server
 preset now carries the reset key, and the redial budget counts consecutive
-failures. "Ledger" below lists what landed (each commit checked with
+failures, refunded only by a generation whose server proves it stayed alive. "Ledger" below lists what landed (each commit checked with
 `git log`), and "Open rungs" lists what is left, with file:line anchors. The
 sections after them are the original 2026-08-20 plan and its running notes,
 kept for the design reasoning. Where they describe a gap as open, the ledger
@@ -35,7 +35,7 @@ for this repo.
 | Nightly self-healing soak lane | `08fc53b` | The heal soak runs in Nightly. |
 | Embedded 0-RTT parity | `dece43c` | `EmbeddedSession` gets the same replay-hold posture. |
 | Lifetime stream cap removed | `bf9a2e7`, `15b86ae` | quic v0.24: stream limits are an open-at-once window; `stream_limit_exhausted` is gone. |
-| Hardened preset carries the death certificate; consecutive redial budget | this sprint (item 8) | `ServerProductionHardening.stateless_reset_key` is required; `.early_data = .restore_only` is the explicit 0-RTT opt-in (sets `.without_replay_protection` + `.restore_only` together); `WarmRedialClient.Policy.min_healthy_ms` (10 s) resets `redials` after a healthy generation. Crash-restart e2e against the preset. |
+| Hardened preset carries the death certificate; consecutive redial budget | this sprint (item 8) | `ServerProductionHardening.stateless_reset_key` is required; `.early_data = .restore_only` is the explicit 0-RTT opt-in (sets `.without_replay_protection` + `.restore_only` together); `WarmRedialClient.Policy.min_healthy_ms` (10 s) resets `redials` only when an authenticated packet from the server arrives that long after the rebind (`Connection.lastAuthenticatedReceiveNs`), so detection latency (a rare caller's late reset, an idle timeout) never counts as health. Crash-restart e2e against the preset; crash-loop e2es with late detection and with idle generations still give up. |
 
 ## Open rungs (as of 2026-10-03)
 
@@ -71,7 +71,7 @@ for this repo.
    `rotateLiveSlotCids`-driven migration and preferred-address dialing.
 7. **Redial backoff is fixed.** Every client of a crashed server redials
    after the same `Policy.backoff_ms` (50 ms,
-   `src/rpc/transport/quic/warm_redial.zig:64`): a thundering herd at fleet
+   `src/rpc/transport/quic/warm_redial.zig:70`): a thundering herd at fleet
    scale. Needs jitter, and probably exponential growth within a failure
    streak.
 8. **Anti-replay at scale.** The hardened preset offers 0-RTT only as
@@ -84,6 +84,24 @@ for this repo.
    (`tools/soak_rpc.zig:1241-1263`), so Retry, NEW_TOKEN and the rate gates
    are not exercised under churn. The preset's crash-restart behavior is
    proven only by the e2e in `tests/rpc/transport/quic/rpc_quic_peer_test.zig`.
+10. **Idle generations never prove health.** A generation is healthy only when
+    an authenticated packet from the server arrives `min_healthy_ms` after the
+    rebind (`src/rpc/transport/quic/warm_redial.zig:276`,
+    `src/rpc/transport/quic/connection.zig:251`). A client with no traffic
+    therefore spends a redial on every death, and with
+    `redial_on_idle_timeout` on every idle timeout. QUIC has no keep-alive
+    knob here: `ClientOptions` cannot ask for periodic PINGs, and quic-zig
+    exposes none. A keep-alive interval below the idle timeout would give
+    idle clients both liveness evidence and no idle timeouts.
+11. **One reset key across a fleet needs connection-ID routing.** RFC 9000
+    §21.11: instances that share a static reset key must receive every packet
+    of a connection at the instance that holds its state, or a sibling resets
+    a live connection and the client certifies a false `.stateless_reset`.
+    `ServerOptions` (`src/rpc/transport/quic/options.zig:327`) does not
+    forward quic-zig's QUIC-LB connection-ID encoding (`Server.Config.quic_lb`),
+    so today a fleet behind one address needs a key per instance
+    (docs/quic-transport.md, "Sharing the key") or a load balancer that tracks
+    connection IDs itself.
 
 ## The design in one paragraph
 

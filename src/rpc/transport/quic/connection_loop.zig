@@ -46,6 +46,11 @@ pub const Owner = struct {
     /// `.handshake_timeout`). Invoked once per step, before the closed
     /// check, so the expiry is observed the same step it fires.
     enforce_handshake_deadline: *const fn (ptr: *anyopaque, now_us: u64) void,
+    /// Stamp the time when the remote last proved it holds this
+    /// connection's keys (a newly authenticated inbound packet). Called on
+    /// every step, after the receive and service passes and BEFORE the
+    /// driver can reap the connection, so no step's packets go unseen.
+    observe_liveness: *const fn (ptr: *anyopaque) void,
     /// Latch the transport's typed close cause if one has been recorded.
     /// Idempotent and cheap once latched. Called on every step BEFORE the
     /// driver can reap the connection: a server-role compat session whose
@@ -128,6 +133,8 @@ pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
     owner.invoke_tick(owner.ptr, now_us);
 
     owner.enforce_handshake_deadline(owner.ptr, now_us);
+
+    owner.observe_liveness(owner.ptr);
 
     owner.capture_close_cause(owner.ptr);
 

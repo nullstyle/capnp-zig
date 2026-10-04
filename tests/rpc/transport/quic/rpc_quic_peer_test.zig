@@ -1374,6 +1374,10 @@ const CrashRestartCertificate = struct {
     conn_cause: rpc_events.DisconnectCause,
     /// `statelessResetsSent()` on the restarted server.
     resets_sent: u64,
+    /// The client's `lastAuthenticatedReceiveNs()` after the crash, once it
+    /// has read everything A sent, and again once the reset has closed it.
+    alive_before_reset_ns: ?u64,
+    alive_after_reset_ns: ?u64,
 };
 
 /// Bootstrap a client against a server built from `server_options`, crash
@@ -1455,6 +1459,19 @@ fn crashRestartCertificate(
     // believes the connection is alive.
     a.crash();
 
+    // Packets A sent just before the crash can still be in flight (loopback
+    // delivery is asynchronous on some hosts). Read them until the client
+    // has heard nothing for a while, so that from here on the only datagram
+    // it can receive is B's stateless reset.
+    var quiet_steps: u32 = 0;
+    var drain_steps: u32 = 0;
+    while (quiet_steps < 10 and drain_steps < 1_000) : (drain_steps += 1) {
+        const step = try client_conn.stepOnce(.poll);
+        quiet_steps = if (step.received_datagram) 0 else quiet_steps + 1;
+        loopback.sleepMs(1);
+    }
+    const alive_before_reset_ns = client_conn.lastAuthenticatedReceiveNs();
+
     // RESTART: same port, same options, empty connection table.
     var b_options = server_options;
     b_options.listen_addr = try std.Io.net.IpAddress.parse("127.0.0.1", a_port);
@@ -1499,7 +1516,17 @@ fn crashRestartCertificate(
         .peer_cause = client_peer.lastDisconnectCause(),
         .conn_cause = client_conn.closeCause(),
         .resets_sent = b_server.statelessResetsSent(),
+        .alive_before_reset_ns = alive_before_reset_ns,
+        .alive_after_reset_ns = client_conn.lastAuthenticatedReceiveNs(),
     };
+}
+
+/// The reset ended the connection, but it is not evidence that the server
+/// was alive: it leaves the client's last authenticated receive where the
+/// crash left it. `WarmRedialClient`'s health check relies on exactly this.
+fn expectResetIsNotLiveness(cert: CrashRestartCertificate) !void {
+    const before_ns = cert.alive_before_reset_ns orelse return error.NoAuthenticatedReceive;
+    try std.testing.expectEqual(@as(?u64, before_ns), cert.alive_after_reset_ns);
 }
 
 test "Peer over QUIC proves a crash-restart via DisconnectCause.stateless_reset" {
@@ -1527,6 +1554,7 @@ test "Peer over QUIC proves a crash-restart via DisconnectCause.stateless_reset"
     // And the restarted endpoint counted the reset it sent — the churn
     // observability signal.
     try std.testing.expect(cert.resets_sent >= 1);
+    try expectResetIsNotLiveness(cert);
 }
 
 // ---------------------------------------------------------------------------
@@ -1593,6 +1621,7 @@ test "withProductionServerHardening server proves a crash-restart via Disconnect
     try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, cert.cause_at_close orelse return error.NoCloseCause);
     try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, cert.conn_cause);
     try std.testing.expect(cert.resets_sent >= 1);
+    try expectResetIsNotLiveness(cert);
 }
 
 test "QUIC fanout session local close certifies .local_close to its bound peer" {
@@ -1727,6 +1756,10 @@ const RedialVat = struct {
 };
 
 const RedialAppState = struct {
+    /// True: every rebind starts a nonstop echo chain (an app that keeps
+    /// calling, so it detects a death on its next send). False: the app
+    /// sends nothing after a rebind, and the connection goes idle.
+    perpetual_echo: bool = true,
     rebinds: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     echo_ok: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     gave_up: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -1750,7 +1783,7 @@ const RedialAppState = struct {
         _ = self.rebinds.fetchAdd(1, .monotonic);
         self.last_peer = peer;
         self.last_cap = cap;
-        self.sendEcho(peer, cap);
+        if (self.perpetual_echo) self.sendEcho(peer, cap);
     }
 
     fn sendEcho(self: *RedialAppState, peer: *Peer, cap: cap_table.ResolvedCap) void {
@@ -2031,8 +2064,9 @@ test "WarmRedialClient budget counts consecutive failures: resets between health
     // One crash more than the budget: a LIFETIME budget gives up on it.
     const max_redials: u32 = 3;
     const crashes: u32 = max_redials + 1;
-    // Each generation serves echo traffic for `hold_ms` after its rebind
-    // before the next crash, well past the threshold that makes it healthy.
+    // Each generation answers echo traffic for `hold_ms` after its rebind
+    // before the next crash. Those answers are the client's proof that the
+    // server stayed alive well past the threshold that makes it healthy.
     const min_healthy_ms: u64 = 100;
     const hold_ms: u64 = 3 * min_healthy_ms;
 
@@ -2089,8 +2123,8 @@ test "WarmRedialClient budget counts consecutive failures: resets between health
         try std.testing.expect(app.echo_ok.load(.acquire) > echo_floor);
         if (crash == crashes) break;
 
-        // Stay healthy: keep serving for at least `hold_ms` (each pass
-        // sleeps at least 1 ms, so this is a lower bound on wall time).
+        // Stay healthy: keep answering echoes for at least `hold_ms` (each
+        // pass sleeps at least 1 ms, so this is a lower bound on wall time).
         var held: u64 = 0;
         while (held < hold_ms) : (held += 1) {
             _ = try vat.server.?.stepOnce(.poll);
@@ -2114,11 +2148,40 @@ test "WarmRedialClient budget counts consecutive failures: resets between health
     try std.testing.expect(outcome.redials <= 1);
 }
 
-test "WarmRedialClient budget still gives up on a server that dies right after every rebind" {
-    const allocator = std.testing.allocator;
-    const reset_key: [32]u8 = @splat(0x53);
-    const max_redials: u32 = 3;
+/// A server that dies in every generation: each incarnation crashes once the
+/// client has rebound to it, and a fresh one restarts on the same port with
+/// the same reset key.
+const CrashLoop = struct {
+    reset_key: [32]u8,
+    policy: quic.WarmRedialClient.Policy,
+    /// See `RedialAppState.perpetual_echo`.
+    perpetual_echo: bool = true,
+    client_transport_params: @TypeOf(quic.defaultTransportParams()) = quic.defaultTransportParams(),
+    /// How long a dying incarnation keeps serving after the client's rebind
+    /// before it crashes.
+    settle_ms: u64 = 0,
+    /// How long each restarted incarnation goes unserviced. The client's
+    /// packets wait in its socket, so the death certificate (the stateless
+    /// reset) reaches the client this much later: the detection latency of a
+    /// client that calls rarely.
+    detect_delay_ms: u64 = 0,
+};
 
+const CrashLoopResult = struct {
+    crashes: u32,
+    give_up_cause: ?rpc_events.DisconnectCause,
+    outcome: ?quic.WarmRedialClient.Outcome,
+};
+
+fn monotonicMs() u64 {
+    const ns = std.Io.Clock.awake.now(std.testing.io).nanoseconds;
+    return @intCast(@divTrunc(ns, std.time.ns_per_ms));
+}
+
+/// Run a `WarmRedialClient` against `loop` until it gives up, or until a
+/// bound that covers `max_redials + 2` generations. Returns what the client
+/// certified; the caller asserts.
+fn runCrashLoop(allocator: std.mem.Allocator, loop: CrashLoop) !CrashLoopResult {
     var vat = RedialVat{};
     defer vat.crash();
     vat.server = try quic.Server.init(allocator, std.testing.io, .{
@@ -2126,11 +2189,11 @@ test "WarmRedialClient budget still gives up on a server that dies right after e
         .tls_cert_pem = loopback.loopback_cert_pem,
         .tls_key_pem = loopback.loopback_key_pem,
         .max_concurrent_connections = 2,
-        .stateless_reset_key = reset_key,
+        .stateless_reset_key = loop.reset_key,
     });
     const port = vat.server.?.getAddress().getPort();
 
-    var app = RedialAppState{};
+    var app = RedialAppState{ .perpetual_echo = loop.perpetual_echo };
     var client = try quic.WarmRedialClient.init(
         allocator,
         std.testing.io,
@@ -2139,11 +2202,10 @@ test "WarmRedialClient budget still gives up on a server that dies right after e
             .server_name = "localhost",
             .insecure_skip_verify = true,
             .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+            .transport_params = loop.client_transport_params,
         },
         RedialEcho.sturdy_ref,
-        // Every generation rebinds, then dies at once: none can live for a
-        // minute, so none counts as healthy and none refunds the budget.
-        .{ .max_redials = max_redials, .backoff_ms = 10, .min_healthy_ms = 60_000 },
+        loop.policy,
         &app,
         RedialAppState.onRebind,
         RedialAppState.onGiveUp,
@@ -2156,30 +2218,120 @@ test "WarmRedialClient budget still gives up on a server that dies right after e
         thread.join();
     };
 
+    // One generation costs a dial, the incarnation's life, and the client's
+    // detection of its death: a (possibly late) reset while it calls, its
+    // idle timeout once it stops.
+    const idle_ms: u64 = if (loop.perpetual_echo) 0 else loop.client_transport_params.max_idle_timeout_ms;
+    const generation_ms = loopback.loopback_timeout_ms + loop.settle_ms + loop.detect_delay_ms + idle_ms;
+    const deadline_ms = monotonicMs() + @as(u64, loop.policy.max_redials + 2) * generation_ms;
+
     var crashes: u32 = 0;
-    var waited: u64 = 0;
-    const wait_bound = (max_redials + 2) * loopback.loopback_timeout_ms;
-    while (waited < wait_bound and !app.gave_up.load(.acquire)) : (waited += 1) {
-        _ = try vat.server.?.stepOnce(.poll);
-        try vat.bindIfNeeded(allocator);
+    var crash_due_ms: ?u64 = null;
+    var serve_from_ms: u64 = 0;
+    while (!app.gave_up.load(.acquire)) {
+        const now_ms = monotonicMs();
+        if (now_ms >= deadline_ms) break;
+        if (now_ms >= serve_from_ms) {
+            _ = try vat.server.?.stepOnce(.poll);
+            try vat.bindIfNeeded(allocator);
+        }
         if (app.rebinds.load(.acquire) > crashes) {
-            // This generation just rebound: kill it now.
-            vat.crash();
-            try restartVatOnPort(&vat, allocator, port, reset_key);
-            crashes += 1;
+            // This incarnation has rebound the client: kill it once it has
+            // served for `settle_ms`.
+            const due_ms = crash_due_ms orelse now_ms + loop.settle_ms;
+            crash_due_ms = due_ms;
+            if (now_ms >= due_ms) {
+                vat.crash();
+                try restartVatOnPort(&vat, allocator, port, loop.reset_key);
+                crashes += 1;
+                crash_due_ms = null;
+                serve_from_ms = monotonicMs() + loop.detect_delay_ms;
+            }
         }
         loopback.sleepMs(1);
     }
-    try std.testing.expect(app.gave_up.load(.acquire));
-    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, app.giveUpCause() orelse return error.NoGiveUpCause);
-    thread.join();
-    joined = true;
 
-    const outcome = app.outcome orelse return error.NoOutcome;
-    try std.testing.expectEqual(max_redials + 1, crashes);
+    const give_up_cause = app.giveUpCause();
+    if (give_up_cause != null) {
+        thread.join();
+        joined = true;
+    }
+    return .{
+        .crashes = crashes,
+        .give_up_cause = give_up_cause,
+        .outcome = if (joined) app.outcome else null,
+    };
+}
+
+/// The crash loop must exhaust the budget: exactly `max_redials` redials,
+/// one rebind per incarnation, and the last death certified as `cause`.
+fn expectCrashLoopGaveUp(result: CrashLoopResult, max_redials: u32, cause: rpc_events.DisconnectCause) !void {
+    try std.testing.expectEqual(@as(?rpc_events.DisconnectCause, cause), result.give_up_cause);
+    const outcome = result.outcome orelse return error.NoOutcome;
+    try std.testing.expectEqual(max_redials + 1, result.crashes);
     try std.testing.expectEqual(max_redials + 1, outcome.generations);
     try std.testing.expectEqual(max_redials + 1, outcome.rebinds);
     try std.testing.expectEqual(max_redials, outcome.redials);
     try std.testing.expectEqual(max_redials, outcome.total_redials);
-    try std.testing.expectEqual(rpc_events.DisconnectCause.stateless_reset, outcome.last_cause);
+    try std.testing.expectEqual(cause, outcome.last_cause);
+}
+
+test "WarmRedialClient budget still gives up on a server that dies right after every rebind" {
+    const max_redials: u32 = 3;
+    const result = try runCrashLoop(std.testing.allocator, .{
+        .reset_key = @splat(0x53),
+        // Every generation rebinds, then dies at once: none can live for a
+        // minute, so none counts as healthy and none refunds the budget.
+        .policy = .{ .max_redials = max_redials, .backoff_ms = 10, .min_healthy_ms = 60_000 },
+    });
+    try expectCrashLoopGaveUp(result, max_redials, .stateless_reset);
+}
+
+// Health must be measured against evidence that the server is alive, not
+// against when the client noticed it was dead. In the two tests below every
+// dead generation lasts several times `min_healthy_ms` on the client's clock,
+// yet the server proves itself alive for only a few milliseconds after each
+// rebind. A budget that counts time-until-detection as health resets the
+// streak on every one of them and redials forever.
+
+test "WarmRedialClient budget gives up on a crash loop whose deaths are detected late" {
+    const max_redials: u32 = 3;
+    const min_healthy_ms: u64 = 250;
+    const result = try runCrashLoop(std.testing.allocator, .{
+        .reset_key = @splat(0x54),
+        .policy = .{ .max_redials = max_redials, .backoff_ms = 10, .min_healthy_ms = min_healthy_ms },
+        // The certificate is the usual stateless reset, but it arrives three
+        // times `min_healthy_ms` after the incarnation died: the shape of a
+        // client that calls rarely (every 15 s against the 10 s default).
+        .detect_delay_ms = 3 * min_healthy_ms,
+    });
+    try expectCrashLoopGaveUp(result, max_redials, .stateless_reset);
+}
+
+test "WarmRedialClient budget gives up when every generation idles out after its rebind" {
+    const max_redials: u32 = 3;
+    // Scaled stand-in for the defaults (10 s health threshold, 30 s idle
+    // timeout): the idle timeout is three times the threshold, so a budget
+    // that counts idle time as health refunds every generation.
+    const min_healthy_ms: u64 = 200;
+    var params = quic.defaultTransportParams();
+    params.max_idle_timeout_ms = 3 * min_healthy_ms;
+    const result = try runCrashLoop(std.testing.allocator, .{
+        .reset_key = @splat(0x55),
+        .policy = .{
+            .max_redials = max_redials,
+            .backoff_ms = 10,
+            .min_healthy_ms = min_healthy_ms,
+            .redial_on_idle_timeout = true,
+        },
+        // The app sends nothing after its rebind, so it never draws a reset
+        // from the restarted incarnation: each generation ends in its idle
+        // timeout. The dying incarnation first serves long enough to
+        // acknowledge everything in flight; an unacknowledged packet would be
+        // retransmitted into the restarted incarnation and draw a reset.
+        .perpetual_echo = false,
+        .client_transport_params = params,
+        .settle_ms = min_healthy_ms / 2,
+    });
+    try expectCrashLoopGaveUp(result, max_redials, .idle_timeout);
 }

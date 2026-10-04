@@ -19,15 +19,20 @@
 //!   the idempotent call that makes the replay window acceptable — the
 //!   layer sends nothing else in early data.
 //! - Only `.stateless_reset` redials by default: it is the one cause that
-//!   PROVES crash-restart. `.idle_timeout` says nothing about liveness and
-//!   is opt-in via policy. A server only sends stateless resets when it has
-//!   a `stateless_reset_key`, which `withProductionServerHardening`
-//!   requires.
+//!   PROVES crash-restart, provided that no other instance holding the
+//!   server's reset key can receive this connection's packets (RFC 9000
+//!   §21.11; "Sharing the key" in docs/quic-transport.md).
+//!   `.idle_timeout` says nothing about liveness and is opt-in via policy.
+//!   A server only sends stateless resets when it has a
+//!   `stateless_reset_key`, which `withProductionServerHardening` requires.
 //! - The redial budget counts CONSECUTIVE failures, not a lifetime total.
-//!   A generation that rebinds and then stays up for `min_healthy_ms`
-//!   resets the streak, so a long-lived client heals every crash that a
-//!   healthy period separates from the last one. A server that dies in
-//!   every generation still exhausts `max_redials`.
+//!   A generation resets the streak only when the server PROVES it stayed
+//!   alive for `min_healthy_ms` after the rebind: an authenticated packet
+//!   from it arrives that late. Time spent detecting a death never counts,
+//!   so a long-lived client heals every crash that a proven-healthy period
+//!   separates from the last one, and a server that dies in every
+//!   generation still exhausts `max_redials` however late each death is
+//!   noticed.
 //!
 //! Experimental, like the persistence convention it rides.
 
@@ -48,8 +53,9 @@ const log = std.log.scoped(.rpc_quic_redial);
 
 pub const WarmRedialClient = struct {
     /// Default `Policy.min_healthy_ms`: 10 s. A crash-looping server
-    /// (restart, accept, restore, die) cannot look healthy for that long,
-    /// and a server that then runs normally clears the streak quickly.
+    /// (restart, accept, restore, die) cannot keep answering for that long,
+    /// and a server that then runs normally clears the streak as soon as
+    /// the application has traffic 10 s after the rebind.
     pub const default_min_healthy_ms: u64 = 10_000;
 
     pub const Policy = struct {
@@ -65,10 +71,23 @@ pub const WarmRedialClient = struct {
         /// Opt-in: also redial on idle timeout. Off by default — an idle
         /// timeout carries no proof the server crashed OR survived.
         redial_on_idle_timeout: bool = false,
-        /// How long a generation must stay up AFTER its rebind (measured
-        /// on the awake clock until its connection ends) to count as
-        /// healthy. A healthy generation resets `redials` to zero. A
-        /// generation that never rebinds is never healthy. 0 makes every
+        /// How long the server must PROVE it stayed alive after a
+        /// generation's rebind for that generation to count as healthy:
+        /// the generation's last authenticated packet from the server
+        /// (`Connection.lastAuthenticatedReceiveNs`) must arrive at least
+        /// this long after the rebind, on the awake clock. A healthy
+        /// generation resets `redials` to zero.
+        ///
+        /// Detection time is not health. A stateless reset is not
+        /// authenticated, and an idle connection receives nothing, so
+        /// neither waiting for the next call to draw a reset nor an idle
+        /// timeout makes a dead generation look healthy. The cost: a
+        /// generation that receives nothing from the server once
+        /// `min_healthy_ms` has passed since the rebind never counts as
+        /// healthy, so a client that stays idle spends one redial per
+        /// death, as a lifetime budget would.
+        ///
+        /// A generation that never rebinds is never healthy. 0 makes every
         /// rebind healthy; `std.math.maxInt(u64)` makes none healthy, which
         /// turns `max_redials` back into a lifetime budget.
         min_healthy_ms: u64 = default_min_healthy_ms,
@@ -121,8 +140,8 @@ pub const WarmRedialClient = struct {
     total_redials: u32 = 0,
     rebinds: u32 = 0,
     restore_failed: bool = false,
-    /// Awake-clock time of the current generation's rebind; null until it
-    /// rebinds.
+    /// Awake-clock time (ns) of the current generation's rebind; null
+    /// until it rebinds.
     rebound_at_ns: ?u64 = null,
 
     /// `sturdy_ref` is copied; the caller keeps ownership of the argument.
@@ -248,13 +267,18 @@ pub const WarmRedialClient = struct {
     }
 
     /// Called once the generation's connection has ended: a generation that
-    /// rebound and then stayed up for `min_healthy_ms` ends the failure
-    /// streak.
-    fn settleGenerationHealth(self: *WarmRedialClient) void {
+    /// rebound and whose server then proved itself alive for
+    /// `min_healthy_ms` ends the failure streak. The proof is the
+    /// connection's last authenticated receive, NOT the time the
+    /// connection ended: the gap between the two is detection latency (a
+    /// rare caller's wait for a stateless reset, or an idle timeout), and
+    /// counting it would let a crash loop refund its own budget.
+    fn settleGenerationHealth(self: *WarmRedialClient, conn: *const Connection) void {
         const rebound_at = self.rebound_at_ns orelse return;
         self.rebound_at_ns = null;
-        const up_ns = nowNs(self.io) -| rebound_at;
-        if (up_ns >= self.policy.min_healthy_ms *| std.time.ns_per_ms) self.redials = 0;
+        const alive_at = conn.lastAuthenticatedReceiveNs() orelse return;
+        const proven_up_ns = alive_at -| rebound_at;
+        if (proven_up_ns >= self.policy.min_healthy_ms *| std.time.ns_per_ms) self.redials = 0;
     }
 
     /// One connection generation: dial (resumed when a ticket exists),
@@ -322,7 +346,7 @@ pub const WarmRedialClient = struct {
         conn.run();
 
         last_cause.* = peer.lastDisconnectCause();
-        self.settleGenerationHealth();
+        self.settleGenerationHealth(&conn);
 
         _ = peer.takeAttachedConnection(*Connection);
         peer.deinit();

@@ -1,3 +1,5 @@
+const std = @import("std");
+
 const connection_loop = @import("connection_loop.zig");
 const connection_termination = @import("connection_termination.zig");
 const events = @import("../../events.zig");
@@ -55,6 +57,7 @@ pub fn State(comptime Connection: type) type {
                 .invoke_close_callback = loopInvokeCloseCallback,
                 .complete_deferred_deinit = loopCompleteDeferredDeinit,
                 .invoke_tick = loopInvokeTick,
+                .observe_liveness = loopObserveLiveness,
                 .capture_close_cause = loopCaptureCloseCause,
                 .enforce_handshake_deadline = loopEnforceHandshakeDeadline,
             };
@@ -177,6 +180,21 @@ pub fn State(comptime Connection: type) type {
         fn loopCancelReceive(ptr: *anyopaque) void {
             const conn = castConnection(ptr);
             conn.udp_receive.cancel(conn.endpoint.io);
+        }
+
+        /// Stamp `last_authenticated_rx_ns` when the active QUIC
+        /// connection's count of authenticated inbound packets changed
+        /// since the last step. quic-zig counts a packet only once it has
+        /// decrypted under the connection's keys, so a stateless reset (or
+        /// any spoofed datagram) never moves the stamp.
+        fn loopObserveLiveness(ptr: *anyopaque) void {
+            const conn = castConnection(ptr);
+            const active = conn.endpoint.activeQuicConnection() orelse return;
+            const received = active.stats().packets_received;
+            if (received == conn.authenticated_rx_packets) return;
+            conn.authenticated_rx_packets = received;
+            const now = std.Io.Clock.awake.now(conn.endpoint.io);
+            conn.last_authenticated_rx_ns = @intCast(now.nanoseconds);
         }
 
         fn loopCaptureCloseCause(ptr: *anyopaque) void {

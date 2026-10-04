@@ -384,7 +384,8 @@ Recommended hardening posture:
 - Provide stable, secret `retry_token_key` material and rotate it with your
   deployment's normal key-rotation process.
 - Provide a persisted `stateless_reset_key` (see below). The preset requires
-  it.
+  it. Share one key between instances only when the load balancer routes by
+  connection ID; otherwise give each instance its own.
 - Provide `new_token_key` when you want returning clients to avoid Retry after
   address validation has already succeeded.
 - Leave the preset's listener gates enabled, then tune
@@ -410,19 +411,47 @@ Recommended hardening posture:
 When a server crashes and restarts, its clients still hold connections that the
 new process knows nothing about. With a `stateless_reset_key`, the restarted
 server answers their next packet with a stateless reset (RFC 9000 §10.3). The
-client then closes with `DisconnectCause.stateless_reset`: proof that the
-server lost its state while its host is still reachable. Without the key the
-server drops those packets silently. The client can prove nothing, waits for
-its idle timeout (30 s by default), and closes with
-`DisconnectCause.idle_timeout`. `WarmRedialClient` redials on
-`.stateless_reset` only, so without the key it never heals.
+client then closes with `DisconnectCause.stateless_reset`. That proves an
+instance holding this key received the packet and had no state for the
+connection. It proves that the server lost its state (a crash-restart) only
+when packets of a live connection can reach no other instance that holds the
+key; see "Sharing the key" below. Without the key the server drops those
+packets silently. The client can prove nothing, waits for its idle timeout
+(30 s by default), and closes with `DisconnectCause.idle_timeout`.
+`WarmRedialClient` redials on `.stateless_reset` only, so without the key it
+never heals.
 
 The key works only if a restarted server holds the **same** 32 bytes as the
 process that crashed. A new key invalidates every token the old process issued.
 So generate the key once from a CSPRNG and persist it next to the server's
 other state. Keep it secret: anyone who has it can reset this server's
-connections. Every server behind one address (a load-balanced fleet) needs the
-same key.
+connections.
+
+**Sharing the key.** Every instance that holds the key can make the reset token
+for any connection ID, and a reset carries no other proof of its sender. So
+RFC 9000 §21.11 requires that instances which share a static key are arranged
+so that a packet with a given connection ID always reaches an instance that has
+the connection's state, unless the connection is no longer active. A load
+balancer that hashes the UDP address and port does not meet this. After a NAT
+rebinding or a client migration, packets of a live connection reach a sibling
+instance, which sends a valid reset and kills the connection. The client
+certifies `.stateless_reset` for a server that never died, and
+`WarmRedialClient` redials. An attacker who can change the source address of a
+client's packets can cause the same reset on purpose. Choose one of these
+layouts:
+
+- One instance behind the address: persist one key and load it on every
+  restart, as the recipe below does.
+- Several instances behind one address, with routing by connection ID
+  (QUIC-LB, draft-ietf-quic-load-balancers): the instances can share one key.
+  A packet then reaches an instance without the connection's state only after
+  the connection is gone. `ServerOptions` does not expose quic-zig's QUIC-LB
+  connection-ID encoding (`Server.Config.quic_lb`) yet, so this needs a load
+  balancer that tracks connection IDs itself.
+- Several instances with any other routing: give each instance its own key,
+  and persist each key with that instance's identity, so a restarted instance
+  loads its own key again. A sibling's reset then carries the wrong token, and
+  the client ignores it.
 
 ```zig
 /// Owner read/write only, where the platform has POSIX modes.
@@ -511,12 +540,24 @@ sturdy ref again, and hands the new capability to `on_rebind`. It redials on
 `.idle_timeout` only when `Policy.redial_on_idle_timeout` is set.
 
 `Policy.max_redials` (default 3) counts **consecutive** failures, not a
-lifetime total. Each redial spends one. A generation that rebinds and then
-stays up for `Policy.min_healthy_ms` (default 10 s) resets the count to zero.
-So a long-lived client heals every crash that a healthy period separates from
-the last one, and a server that dies in every generation (a crash loop) still
-makes the client give up after `max_redials` redials. `Outcome.redials` is the
-streak at exit; `Outcome.total_redials` counts every redial.
+lifetime total. Each redial spends one. A generation resets the count to zero
+when the server proves that it stayed alive for `Policy.min_healthy_ms`
+(default 10 s) after the rebind: an authenticated packet from the server
+arrives at least that long after the rebind
+(`Connection.lastAuthenticatedReceiveNs`). The time the client needs to detect
+a death does not count. A stateless reset is not authenticated, and an idle
+connection receives nothing. So a client that calls only every 15 s, or that
+waits out an idle timeout, cannot make a dead generation look healthy. A
+long-lived client heals every crash that a proven-healthy period separates
+from the last one. A server that dies in every generation (a crash loop) still
+makes the client give up after `max_redials` redials, however late the client
+notices each death.
+
+The cost: a generation counts as healthy only when the application has traffic
+with the server `min_healthy_ms` after the rebind. A client that stays idle
+spends one redial on each death, as a lifetime budget would. With
+`redial_on_idle_timeout`, each idle timeout spends one too. `Outcome.redials`
+is the streak at exit; `Outcome.total_redials` counts every redial.
 
 ## Current Limits
 

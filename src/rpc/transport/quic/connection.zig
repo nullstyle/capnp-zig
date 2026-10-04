@@ -86,6 +86,13 @@ pub const Connection = struct {
     /// `.unknown` until the connection dies. Loop-thread written.
     close_cause: events.DisconnectCause = .unknown,
 
+    /// Liveness evidence, loop-thread written: the active QUIC
+    /// connection's count of authenticated inbound packets at the last
+    /// step, and the awake-clock time (ns) of the step that saw it change.
+    /// Read through `lastAuthenticatedReceiveNs`.
+    authenticated_rx_packets: u64 = 0,
+    last_authenticated_rx_ns: ?u64 = null,
+
     /// Handshake-deadline guard (see the option docs). Armed on the first
     /// loop step that observes a live-but-incomplete handshake; when it
     /// expires the connection aborts with `close_cause =
@@ -230,6 +237,19 @@ pub const Connection = struct {
     /// state. Stable once the close callback has fired.
     pub fn closeCause(self: *const Connection) events.DisconnectCause {
         return self.close_cause;
+    }
+
+    /// When the remote last PROVED it was alive: the awake-clock time
+    /// (`std.Io.Clock.awake`, in ns) of the last loop step that saw a new
+    /// authenticated inbound QUIC packet, one that decrypted under this
+    /// connection's keys. Null until the first such packet. A stateless
+    /// reset is not authenticated, so it never moves this stamp, and an
+    /// idle connection receives nothing. So neither the wait for a reset
+    /// nor an idle timeout counts as time the remote was alive.
+    /// `WarmRedialClient` measures a generation's health with it. Owner
+    /// thread; stable once `run()` has returned.
+    pub fn lastAuthenticatedReceiveNs(self: *const Connection) ?u64 {
+        return self.last_authenticated_rx_ns;
     }
 
     /// Raw quic-zig close certificate (error space/code, reason bytes,

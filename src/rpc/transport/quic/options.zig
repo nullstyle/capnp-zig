@@ -466,8 +466,12 @@ pub const ServerProductionHardening = struct {
     /// never heals them. Generate it once from a CSPRNG and PERSIST it: a
     /// restarted server must hold the same bytes, because a new key
     /// invalidates every token the old process issued. Keep it secret: anyone
-    /// who has it can reset this server's connections. See "Production
-    /// Defaults" in docs/quic-transport.md for a recipe.
+    /// who has it can reset this server's connections. Share one key between
+    /// instances only when the load balancer routes by connection ID (RFC
+    /// 9000 §21.11): under address-hash routing, a sibling that receives a
+    /// live connection's packets sends a valid reset and kills it. Otherwise
+    /// give each instance its own persisted key. See "Production Defaults"
+    /// in docs/quic-transport.md for a recipe and the sharing rules.
     stateless_reset_key: StatelessResetKey,
     new_token_key: ?ServerNewTokenKey = null,
     /// 0-RTT posture. `.disabled` by default; `.restore_only` is the
