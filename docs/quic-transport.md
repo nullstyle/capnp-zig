@@ -705,27 +705,54 @@ days. So a restarted server cannot decrypt the tickets that the crashed
 process issued, and the first redial after a crash-restart (the redial
 `WarmRedialClient` makes on `.stateless_reset`) takes a full handshake: no
 resumption and no 0-RTT. That handshake issues a new ticket, so later
-redials to the same process can resume. "Session-ticket key" below is the
-design for persisting the key, and states what that costs.
+redials to the same process can resume. "Session-ticket key" below shows
+how to persist the key, and states what that costs.
 
 ### Session-ticket key
 
-**Status: design under review, not implemented.** `ServerOptions` has no
-`session_ticket_key` field yet. This section is the design that item 16 of
-`docs/sprint-plan-2026-10-04.md` implements. It is written before the code
-so that its security trade-off is reviewed first. Until the field lands,
-the paragraph above is the whole story.
-
-The design adds `ServerOptions.session_ticket_key: ?*const [48]u8` and the
-same field on `ServerProductionHardening`. `Listener.init` reads the key
-once and installs it on the TLS context before the server handles its first
+**Status: Experimental.** `ServerOptions.session_ticket_key:
+?*const SessionTicketKey` (48 bytes) persists the key, and
+`ServerProductionHardening` has the same field. `Listener.init` (so also
+`Server.init`, `serve` and `Connection.initServer`) reads the key once and
+installs it on the TLS context before the server handles its first
 datagram; the caller may zero its copy after that. A server that loads the
 same key on every start decrypts the tickets that its crashed predecessor
 issued, so the heal resumes, and with `.early_data = .restore_only`
 BoringSSL accepts its 0-RTT data (under the preset, read "Retry and
-NEW_TOKEN: an open gap" below first). The key is opt-in: it defaults to
-null, in the preset too. Set it only when a 0-RTT heal is worth what a
-stolen key costs.
+NEW_TOKEN: an open gap" below first). `WarmRedialClient.Outcome
+.zero_rtt_generations` counts the generations whose dial got that verdict.
+The key is opt-in: it defaults to null, in the preset too. Set it only when
+a 0-RTT heal is worth what a stolen key costs.
+
+The security trade-off below was reviewed before the code (item 16 of
+`docs/sprint-plan-2026-10-04.md`). Wire the key into the preset like this,
+and load it with `quic.loadTicketKeyFile(io, state_dir,
+"session-ticket.key")` on every start:
+
+<!-- verbatim: tests/docs/quic_transport_snippets_test.zig -->
+```zig
+/// The hardened preset for a warm-restore server that persists its
+/// session-ticket key. Load every key from its own file on every start.
+/// `ticket_key` must stay alive until `Server.init` returns; the server keeps
+/// no pointer to it after that.
+fn warmRestartOptions(
+    base_options: quic.ServerOptions,
+    retry_key: quic.ServerRetryTokenKey,
+    reset_key: quic.StatelessResetKey,
+    new_token_key: quic.ServerNewTokenKey,
+    ticket_key: *const quic.SessionTicketKey,
+) quic.ServerOptions {
+    return quic.withProductionServerHardening(base_options, .{
+        .retry_token_key = retry_key,
+        .stateless_reset_key = reset_key,
+        // Required with a ticket key while Retry is on. Persist it too: a
+        // new one at each start sends every restarted client a Retry.
+        .new_token_key = new_token_key,
+        .early_data = .restore_only,
+        .session_ticket_key = ticket_key,
+    });
+}
+```
 
 **What a thief who copies the key file can do:**
 
@@ -771,12 +798,15 @@ and the key found there is rotated every 2 days.
   clear at the front of every ticket and tells the server which key sealed
   it.
 - Keep the key in a file of its own: exactly 48 bytes, mode 0600, written
-  atomically. The reset-key recipe above works with the key type changed to
-  `[48]u8`. A damaged file is an error, never a silently regenerated key.
-  The design adds `loadTicketKeyFile(path)`, which reads exactly 48 bytes
-  and, on POSIX, refuses a file that the group or others can read. On
-  Windows, give the file an ACL that grants access to the service account
-  only.
+  atomically. The reset-key recipe above creates one with the key type
+  changed to `quic.SessionTicketKey`. A damaged file is an error, never a
+  silently regenerated key. `quic.loadTicketKeyFile(io, dir, sub_path)`
+  reads exactly 48 bytes, refuses an all-zero file
+  (`error.InvalidSessionTicketKeyFile`), and, on POSIX, refuses a file that
+  the group or others may access, any of the mode bits 0o077
+  (`error.SessionTicketKeyFilePermissions`), as ssh does for a private key.
+  On Windows there are no mode bits to check: give the file an ACL that
+  grants access to the service account only.
 - Never derive it from the reset key, or the reset key from it. The two
   keys have opposite sharing rules. Instances may share a reset key only
   when the load balancer routes by connection ID ("Sharing the key" above).
@@ -799,17 +829,22 @@ and the key found there is rotated every 2 days.
   server adds none of its TLS 1.3 pin, ALPN list, early-data setting or
   anti-replay hook to such a context.
 
-**What the design refuses.** `Listener.init` returns `error.InvalidConfig`
-for an all-zero key, for a key together with `.early_data =
-.with_anti_replay` (see below), and for a key with Retry on and
-`new_token_key == null`. `serverConfigFromOptions` returns
-`error.InvalidConfig` for any key: it returns a quic-zig config, not a
-server, so it cannot install one. Embedded mode is out of scope, because
-there the host owns the quic-zig server and its TLS context. A restarted
-server accepts 0-RTT data only when it runs with the same ALPN, transport
-mode and `early_dispatch` as the process that issued the ticket. The design
-binds these into quic-zig's `early_data_application_context`, and
-BoringSSL refuses early data whose context differs; the session still
+**What `Listener.init` refuses.** It returns `error.InvalidConfig` for an
+all-zero key, for a key together with `.early_data = .with_anti_replay`
+(see below), and for a key with Retry on and `new_token_key == null`.
+`serverConfigFromOptions` returns `error.InvalidConfig` for any key, and
+for `session_ticket_lifetime_s`: it returns a quic-zig config, not a
+server, so it cannot install them. Embedded mode is out of scope, because
+there the host owns the quic-zig server and its TLS context. After the key
+is installed, `Listener.init` reads it back and compares it, and fails with
+`error.SessionTicketKeyInstallFailed` on a mismatch.
+
+A restarted server accepts 0-RTT data only when it runs with the same ALPN,
+transport mode and `early_dispatch` as the process that issued the ticket.
+The server binds the mode and `early_dispatch` into quic-zig's
+`early_data_application_context` (quic-zig adds the primary ALPN and the
+replay-relevant transport parameters), and BoringSSL refuses early data
+whose context differs, or whose negotiated ALPN differs; the session still
 resumes.
 
 **Rotation.** BoringSSL holds one installed key and drops the previous key
@@ -828,9 +863,12 @@ expired ticket. So a thief can start to impersonate the server for at most
 2 days after the rotation. Tickets that the thief hands out while it
 impersonates do not extend this past 7 days: a client never resumes more
 than 7 days after its last full handshake. Recorded 0-RTT data stays
-readable; a rotation only limits how much traffic one key seals. The design
-adds `session_ticket_lifetime_s` to shorten the 2 days: the `raw` bindings
-of boringssl-zig expose `SSL_CTX_set_session_psk_dhe_timeout`.
+readable; a rotation only limits how much traffic one key seals.
+`ServerOptions.session_ticket_lifetime_s` shortens the 2 days for the
+tickets the server issues (1 second up to
+`quic.max_session_ticket_lifetime_s`, 2 days; `Listener.init` sets it with
+`SSL_CTX_set_session_psk_dhe_timeout`). A client caps a ticket at the
+lifetime the server advertised with it.
 
 **Why the key is refused together with anti-replay.** With `.early_data =
 .with_anti_replay`, capnp-zig dispatches every early frame at once, because
@@ -909,7 +947,10 @@ Closing the gap needs one of these changes:
 
 Only the first change makes an early restore after a crash-restart depend
 on the ticket key alone. Neither change is in quic-zig v0.25.0 or in
-capnp-zig yet.
+capnp-zig yet. The QUIC transport suite pins today's behavior
+("a new new_token_key after a crash-restart costs the early restore"): a
+client that sends 0-RTT again after a Retry turns that test red, which is
+the signal to update this section.
 
 ### Self-healing clients
 

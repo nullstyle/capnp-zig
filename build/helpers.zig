@@ -198,3 +198,21 @@ pub fn addMainTest(
 pub fn addQuicImport(module: *std.Build.Module, quic_zig_module: ?*std.Build.Module) void {
     if (quic_zig_module) |m| module.addImport("quic", m);
 }
+
+/// Wire a library-root module (rooted at `src/lib_quic.zig` when
+/// `-Dquic=true`) to quic-zig AND to the exact `boringssl` module instance
+/// quic-zig is compiled against, which quic exports under that name. The
+/// QUIC transport installs a persisted session-ticket key through
+/// `boringssl.raw` (src/rpc/transport/quic/session_ticket.zig). A
+/// `boringssl` dependency of our own would be a second module instance
+/// whose `SSL_CTX` type does not unify with quic's `tls_ctx.inner`.
+/// Test, bench and example roots keep `addQuicImport`: they reach BoringSSL
+/// only through the library.
+pub fn addQuicLibImports(
+    module: *std.Build.Module,
+    quic_zig_module: ?*std.Build.Module,
+    quic_boringssl_module: ?*std.Build.Module,
+) void {
+    addQuicImport(module, quic_zig_module);
+    if (quic_boringssl_module) |m| module.addImport("boringssl", m);
+}

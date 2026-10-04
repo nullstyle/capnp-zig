@@ -9,6 +9,7 @@ const addPersistenceLibTest = helpers.addPersistenceLibTest;
 const addQuicLibTest = helpers.addQuicLibTest;
 const addMainTest = helpers.addMainTest;
 const addQuicImport = helpers.addQuicImport;
+const addQuicLibImports = helpers.addQuicLibImports;
 
 /// Returns `!void` so `error.LazyDependencyNeeded` can propagate.
 ///
@@ -33,6 +34,7 @@ pub fn buildImpl(b: *std.Build) !void {
     const lib_module = graph.lib_module;
     const core_module = graph.core_module;
     const quic_zig_module = graph.quic_zig_module;
+    const quic_boringssl_module = graph.quic_boringssl_module;
     const wasm_host_module = graph.wasm_host_module;
 
     // Expected-fail canary for std.Io.Evented; self-contained in its own file.
@@ -66,7 +68,7 @@ pub fn buildImpl(b: *std.Build) !void {
         .imports = &.{},
     });
     docs_module.addImport("capnpc-zig", docs_module);
-    addQuicImport(docs_module, quic_zig_module);
+    addQuicLibImports(docs_module, quic_zig_module, quic_boringssl_module);
     const docs_obj = b.addObject(.{
         .name = "capnpc-zig-docs",
         .root_module = docs_module,
@@ -705,7 +707,7 @@ pub fn buildImpl(b: *std.Build) !void {
         .optimize = optimize,
         .imports = &.{},
     });
-    addQuicImport(lib_tests_module, quic_zig_module);
+    addQuicLibImports(lib_tests_module, quic_zig_module, quic_boringssl_module);
     // The checked-in generated code under src/rpc/gen/ imports the library by
     // its MODULE name (`@import("capnpc-zig")`), the way a consumer would. The
     // self-import makes that resolve when the library is its own test root --
@@ -1485,8 +1487,8 @@ pub fn buildImpl(b: *std.Build) !void {
 
     const release_safe_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
     // Same contract as the debug-mode resolution above: propagate, never swallow.
-    const release_safe_quic_zig_module: ?*std.Build.Module = if (enable_quic)
-        (try b.dependencyLazy("quic", .{
+    const release_safe_quic_dep: ?*std.Build.Dependency = if (enable_quic)
+        try b.dependencyLazy("quic", .{
             .target = target,
             // See build/modules.zig: we pass quic-zig the boolean
             // `release` (never `optimize`, which it ignored through
@@ -1496,9 +1498,13 @@ pub fn buildImpl(b: *std.Build) !void {
             // reference the UBSan runtime; `trap` keeps the checks
             // without the link dependency.
             .@"sanitize-c" = @as([]const u8, "trap"),
-        })).module("quic")
+        })
     else
         null;
+    const release_safe_quic_zig_module: ?*std.Build.Module = if (release_safe_quic_dep) |dep| dep.module("quic") else null;
+    // See build/modules.zig: the library root also imports the boringssl
+    // module instance this quic dependency exports.
+    const release_safe_quic_boringssl_module: ?*std.Build.Module = if (release_safe_quic_dep) |dep| dep.module("boringssl") else null;
     const release_safe_lib_module = b.addModule("capnpc-zig-release-safe", .{
         .root_source_file = b.path(lib_root),
         .target = target,
@@ -1506,7 +1512,7 @@ pub fn buildImpl(b: *std.Build) !void {
         .imports = &.{},
     });
     release_safe_lib_module.addImport("capnpc-zig", release_safe_lib_module);
-    addQuicImport(release_safe_lib_module, release_safe_quic_zig_module);
+    addQuicLibImports(release_safe_lib_module, release_safe_quic_zig_module, release_safe_quic_boringssl_module);
 
     const run_release_safe_main_tests = addMainTest(b, "src/main.zig", target, release_safe_optimize);
     const run_release_safe_message_tests = addLibTest(b, "tests/serialization/message_test.zig", target, release_safe_optimize, release_safe_lib_module);
@@ -1630,7 +1636,7 @@ pub fn buildImpl(b: *std.Build) !void {
             .imports = &.{},
         });
         tsan_lib_module.addImport("capnpc-zig", tsan_lib_module);
-        addQuicImport(tsan_lib_module, quic_zig_module);
+        addQuicLibImports(tsan_lib_module, quic_zig_module, quic_boringssl_module);
 
         const tsan_suites = [_][]const u8{
             "tests/rpc/transport/rpc_cross_thread_stress_test.zig",

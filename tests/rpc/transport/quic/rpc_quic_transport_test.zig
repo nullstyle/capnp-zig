@@ -2767,6 +2767,543 @@ test "quic hardened preset accepts warm-restore 0-RTT only through its restore_o
 }
 
 // ---------------------------------------------------------------------------
+// Persisted session-ticket key (`ServerOptions.session_ticket_key`): a server
+// that crash-restarts with the same key decrypts the tickets its predecessor
+// issued, so BoringSSL accepts the resumed dial's 0-RTT. Every other restart
+// refuses the early data. Design: "Session-ticket key" in
+// docs/quic-transport.md.
+// ---------------------------------------------------------------------------
+
+const ticket_retry_key: quic.ServerRetryTokenKey = @splat(0x81);
+const ticket_reset_key: quic.StatelessResetKey = @splat(0x82);
+const ticket_new_token_key: quic.ServerNewTokenKey = @splat(0x83);
+const ticket_key: quic.SessionTicketKey = @splat(0xa5);
+
+/// `ticket_key` with one byte changed. Bytes 0-15 are the key name, 16-31
+/// the HMAC key and 32-47 the AES key.
+fn ticketKeyWithByte(index: usize, value: u8) quic.SessionTicketKey {
+    var key = ticket_key;
+    key[index] = value;
+    return key;
+}
+
+/// One server incarnation: the hardened preset with `.restore_only`, Retry
+/// and a NEW_TOKEN key, plus the ticket settings a case varies.
+const TicketServer = struct {
+    key: ?*const quic.SessionTicketKey,
+    new_token_key: quic.ServerNewTokenKey = ticket_new_token_key,
+    early_dispatch: quic.early_dispatch.Mode = .restore_only,
+
+    fn options(self: TicketServer, listen_addr: std.Io.net.IpAddress) quic.ServerOptions {
+        var out = quic.withProductionServerHardening(.{
+            .listen_addr = listen_addr,
+            .tls_cert_pem = loopback_cert_pem,
+            .tls_key_pem = loopback_key_pem,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .max_concurrent_connections = 2,
+        }, .{
+            .retry_token_key = ticket_retry_key,
+            .stateless_reset_key = ticket_reset_key,
+            .new_token_key = self.new_token_key,
+            .early_data = .restore_only,
+            .session_ticket_key = self.key,
+        });
+        // Only the dispatch half of `.restore_only` varies: 0-RTT stays on,
+        // and only the context bound into the tickets changes.
+        out.early_dispatch = self.early_dispatch;
+        return out;
+    }
+};
+
+const TicketRestart = struct {
+    before: TicketServer,
+    after: TicketServer,
+    /// Redial from the port that earned the NEW_TOKEN, once the restarted
+    /// server's clock has passed the token's issue time. Today this is the
+    /// only redial after a crash-restart that skips the Retry ("Retry and
+    /// NEW_TOKEN: an open gap" in docs/quic-transport.md).
+    same_client_port: bool = false,
+};
+
+const TicketRestartOutcome = struct {
+    /// The resumed dial's 0-RTT verdict, as the client sees it.
+    status: quic.EarlyDataStatus,
+    /// Retry packets the restarted server sent.
+    retries_sent: u64,
+    /// The restore frame ran before the restarted server's handshake
+    /// completed: the round trip that 0-RTT exists to save.
+    restored_before_handshake: bool,
+};
+
+/// An ephemeral loopback UDP port, free when this returns.
+fn reserveUdpPort() !u16 {
+    var addr = testListenAddr();
+    const socket = try std.Io.net.IpAddress.bind(&addr, std.testing.io, .{ .mode = .dgram, .protocol = .udp });
+    defer socket.close(std.testing.io);
+    return socket.address.getPort();
+}
+
+/// Crash-restart round. Dial 1 earns a session ticket and a NEW_TOKEN from
+/// server 1. Server 1 dies (deinit, no close ceremony), and server 2 binds
+/// the same port. Dial 2 presents the ticket and the NEW_TOKEN and enqueues
+/// its restore frame before its loop starts, so the frame rides 0-RTT when
+/// the restarted server accepts early data.
+fn crashRestartResumedDial(case: TicketRestart) !TicketRestartOutcome {
+    const allocator = std.testing.allocator;
+    const frame_first = try buildBootstrapFrame(allocator, 0x0E1E);
+    defer allocator.free(frame_first);
+    const frame_restore = try buildBootstrapFrame(allocator, 0x0F1F);
+    defer allocator.free(frame_restore);
+
+    const client_local: ?std.Io.net.IpAddress = if (case.same_client_port) .{ .ip4 = .{
+        .bytes = .{ 127, 0, 0, 1 },
+        .port = try reserveUdpPort(),
+    } } else null;
+
+    var ticket = ResumptionSink{};
+    var token = NewTokenSink{};
+
+    var server1 = try quic.Server.init(allocator, std.testing.io, case.before.options(testListenAddr()));
+    var server1_alive = true;
+    defer if (server1_alive) server1.deinit();
+    const server_addr = server1.getAddress();
+
+    // ---- Dial 1: earn the ticket and the NEW_TOKEN from server 1. ----
+    {
+        var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+            .remote_addr = server_addr,
+            .local_addr = client_local,
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .new_session_callback = ResumptionSink.capture,
+            .new_session_user_data = &ticket,
+            .new_token_callback = NewTokenSink.capture,
+            .new_token_user_data = &token,
+        });
+        defer client.deinit();
+
+        var client_state = QuicEndpointState{};
+        client.start(&client_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
+        var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+        var joined = false;
+        defer if (!joined) {
+            client.requestClose();
+            client_thread.join();
+        };
+
+        try driveUntilSessions(&server1, 1);
+        var server_state = QuicEndpointState{};
+        server1.sessionAt(0).?.start(&server_state, echoQuicServerMessage, recordQuicServerError, recordQuicServerClose);
+        try client.sendFrame(frame_first);
+        try driveUntilEchoAndTicket(&server1, &client_state, &server_state, &ticket);
+        var waited_ms: u64 = 0;
+        while (waited_ms < loopback.loopback_timeout_ms and token.len.load(.acquire) == 0) : (waited_ms += loopback.loopback_poll_ms) {
+            _ = try server1.stepOnce(.wait);
+            loopback.sleepMs(loopback.loopback_poll_ms);
+        }
+
+        client.requestClose();
+        client_thread.join();
+        joined = true;
+    }
+    try std.testing.expect(ticket.len.load(.acquire) > 0);
+    try std.testing.expect(token.len.load(.acquire) > 0);
+    // Server 1 issued the NEW_TOKEN before this reading of its clock.
+    const token_issued_by_us = server1.listener.nowUs();
+
+    // ---- CRASH, then RESTART on the same port. ----
+    server1.deinit();
+    server1_alive = false;
+    var attempt: u32 = 0;
+    var server2 = blk: while (true) : (attempt += 1) {
+        break :blk quic.Server.init(allocator, std.testing.io, case.after.options(server_addr)) catch |err| {
+            if (attempt >= 40) return err;
+            loopback.sleepMs(5);
+            continue;
+        };
+    };
+    defer server2.deinit();
+    if (case.same_client_port) {
+        // The NEW_TOKEN's issue time is on server 1's clock, which counts
+        // from its own start; server 2's clock starts again at zero and
+        // treats the token as not yet valid until it passes that time.
+        // 300 ms of margin on top (Windows timers).
+        while (server2.listener.nowUs() <= token_issued_by_us + 300 * std.time.us_per_ms) {
+            loopback.sleepMs(loopback.loopback_poll_ms);
+        }
+    }
+
+    // ---- Dial 2: resume with the ticket and the NEW_TOKEN. ----
+    attempt = 0;
+    var client2 = blk: while (true) : (attempt += 1) {
+        break :blk quic.Connection.initClient(allocator, std.testing.io, .{
+            .remote_addr = server_addr,
+            .local_addr = client_local,
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .resumption_state = ticket.slice(),
+            .new_token = token.slice(),
+        }) catch |err| {
+            // Only a reused client port can be briefly busy.
+            if (!case.same_client_port or attempt >= 40) return err;
+            loopback.sleepMs(5);
+            continue;
+        };
+    };
+    defer client2.deinit();
+
+    var client2_state = QuicEndpointState{};
+    client2.start(&client2_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
+    try client2.sendFrame(frame_restore);
+
+    var client2_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client2});
+    var joined2 = false;
+    defer if (!joined2) {
+        client2.requestClose();
+        client2_thread.join();
+    };
+
+    try driveUntilSessions(&server2, 1);
+    var server2_state = EarlyGateState{};
+    server2.sessionAt(0).?.start(&server2_state, echoRecordingHandshakePhase, earlyGateServerError, earlyGateServerClose);
+    // A frame that arrived before the callbacks were bound waits in the
+    // session engine; one service pass dispatches it.
+    try server2.stepSession(0);
+
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        _ = try server2.stepOnce(.wait);
+        if (client2_state.messages.load(.acquire) > 0) break;
+        if (client2_state.errors.load(.acquire) > 0 or server2_state.inner.errors.load(.acquire) > 0) {
+            return error.QuicLoopbackUnexpectedError;
+        }
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+
+    client2.requestClose();
+    server2.requestClose();
+    client2_thread.join();
+    joined2 = true;
+
+    // Accepted or refused, the staged frame arrives exactly once.
+    try std.testing.expectEqual(@as(usize, 1), client2_state.messages.load(.acquire));
+    try std.testing.expectEqualSlices(u8, frame_restore, client2_state.receivedSlice());
+    const q2 = client2.endpoint.activeQuicConnection() orelse return error.QuicConnectionGone;
+    return .{
+        .status = q2.earlyDataStatus(),
+        .retries_sent = server2.listener.server.metricsSnapshot().feeds_retry_sent,
+        .restored_before_handshake = server2_state.dispatched_before_handshake.load(.acquire),
+    };
+}
+
+fn expectTicketRestartRejected(case: TicketRestart) !void {
+    const outcome = try crashRestartResumedDial(case);
+    try std.testing.expectEqual(quic.EarlyDataStatus.rejected, outcome.status);
+    try std.testing.expect(!outcome.restored_before_handshake);
+}
+
+test "session ticket key: a server crash-restarted with the same key accepts the resumed dial's 0-RTT" {
+    const outcome = try crashRestartResumedDial(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key },
+    });
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, outcome.status);
+}
+
+// The permanent negatives: each restart below refuses the resumed dial's
+// 0-RTT for every client, whatever its port or timing.
+
+test "session ticket key: a crash-restart with no key on either side refuses 0-RTT" {
+    // The default: BoringSSL's random per-process key.
+    try expectTicketRestartRejected(.{ .before = .{ .key = null }, .after = .{ .key = null } });
+}
+
+test "session ticket key: a crash-restart with another key name refuses 0-RTT" {
+    // Bytes 0-15 name the key; the restarted server does not try to decrypt.
+    const other_name = ticketKeyWithByte(0, 0x5a);
+    try expectTicketRestartRejected(.{ .before = .{ .key = &ticket_key }, .after = .{ .key = &other_name } });
+}
+
+test "session ticket key: a crash-restart with the same key name and another HMAC key refuses 0-RTT" {
+    const other_hmac_key = ticketKeyWithByte(20, 0x00);
+    try expectTicketRestartRejected(.{ .before = .{ .key = &ticket_key }, .after = .{ .key = &other_hmac_key } });
+}
+
+test "session ticket key: a crash-restart with the same key name and another AES key refuses 0-RTT" {
+    // The HMAC verifies, and the AES key decrypts garbage.
+    const other_aes_key = ticketKeyWithByte(40, 0x00);
+    try expectTicketRestartRejected(.{ .before = .{ .key = &ticket_key }, .after = .{ .key = &other_aes_key } });
+}
+
+test "session ticket key: a crash-restart with another early_dispatch refuses 0-RTT" {
+    // The same key: the session resumes, but the 0-RTT context bound into
+    // the ticket differs, so BoringSSL refuses the early data.
+    try expectTicketRestartRejected(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key, .early_dispatch = .hold_until_handshake },
+    });
+}
+
+test "session ticket key: a new new_token_key after a crash-restart costs the early restore" {
+    // Control: the same key and the same new_token_key, and the client
+    // redials from the port that earned its NEW_TOKEN. No Retry, and the
+    // restore runs before the restarted server's handshake completes.
+    const kept = try crashRestartResumedDial(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key },
+        .same_client_port = true,
+    });
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, kept.status);
+    try std.testing.expectEqual(@as(u64, 0), kept.retries_sent);
+    try std.testing.expect(kept.restored_before_handshake);
+
+    // A new new_token_key invalidates the NEW_TOKEN, so the restarted server
+    // answers with a Retry, which drops the first flight's 0-RTT packets, and
+    // the restore runs only after the handshake.
+    const fresh = try crashRestartResumedDial(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key, .new_token_key = @splat(0x84) },
+        .same_client_port = true,
+    });
+    try std.testing.expectEqual(@as(u64, 1), fresh.retries_sent);
+    try std.testing.expect(!fresh.restored_before_handshake);
+    // BoringSSL still reports the early data as accepted: the quic-zig
+    // v0.25.0 client keeps the dropped 0-RTT data in flight and sends it
+    // again at 1-RTT after the handshake. The verdict does not prove an early
+    // restore. A client that sends 0-RTT again after a Retry (RFC 9000
+    // 17.2.5.3) turns `restored_before_handshake` true here: then update
+    // "Retry and NEW_TOKEN: an open gap" in docs/quic-transport.md.
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, fresh.status);
+}
+
+test "serverConfigFromOptions refuses session-ticket settings it cannot install" {
+    const allocator = std.testing.allocator;
+    const base: quic.ServerOptions = .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+    };
+    _ = try quic.serverConfigFromOptions(allocator, base);
+
+    var keyed = base;
+    keyed.session_ticket_key = &ticket_key;
+    try std.testing.expectError(error.InvalidConfig, quic.serverConfigFromOptions(allocator, keyed));
+
+    var timed = base;
+    timed.session_ticket_lifetime_s = 600;
+    try std.testing.expectError(error.InvalidConfig, quic.serverConfigFromOptions(allocator, timed));
+}
+
+test "the server config binds the transport mode and early_dispatch into the 0-RTT context" {
+    // A change of this string refuses the early data of every ticket issued
+    // before it, also under a persisted session-ticket key: change it only
+    // on purpose.
+    const allocator = std.testing.allocator;
+    const base: quic.ServerOptions = .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+    };
+    const plain = try quic.serverConfigFromOptions(allocator, base);
+    try std.testing.expectEqualStrings(
+        "capnp-zig rpc 0-rtt v1; mode=baseline; early_dispatch=hold_until_handshake",
+        plain.early_data_application_context,
+    );
+    var native_restore = base;
+    native_restore.mode = .native;
+    native_restore.early_dispatch = .restore_only;
+    const native_config = try quic.serverConfigFromOptions(allocator, native_restore);
+    try std.testing.expectEqualStrings(
+        "capnp-zig rpc 0-rtt v1; mode=native; early_dispatch=restore_only",
+        native_config.early_data_application_context,
+    );
+}
+
+/// Raw options with 0-RTT on, no Retry, and `ticket_key`: the shape every
+/// refusal below starts from.
+fn keyedListenerOptions() quic.ServerOptions {
+    return .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .early_data = .without_replay_protection,
+        .session_ticket_key = &ticket_key,
+    };
+}
+
+test "Listener.init installs a session-ticket key with or without Retry" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    // Without Retry, no new_token_key is needed.
+    var listener = try quic.Listener.init(allocator, io, keyedListenerOptions());
+    listener.deinit();
+    // With Retry (the preset), a new_token_key comes with the key.
+    var server = try quic.Server.init(allocator, io, TicketServer.options(.{ .key = &ticket_key }, testListenAddr()));
+    server.deinit();
+}
+
+test "Listener.init refuses an all-zero session-ticket key" {
+    const zero_key: quic.SessionTicketKey = @splat(0);
+    var options = keyedListenerOptions();
+    options.session_ticket_key = &zero_key;
+    try std.testing.expectError(error.InvalidConfig, quic.Listener.init(std.testing.allocator, std.testing.io, options));
+}
+
+test "Listener.init refuses a session-ticket key together with the replay tracker" {
+    // The tracker is per-process memory: a persisted key would let a flight
+    // recorded before a crash replay after the restart.
+    var tracker = try quic.ServerAntiReplayTracker.init(std.testing.allocator, .{});
+    defer tracker.deinit();
+    var options = keyedListenerOptions();
+    options.early_data = .{ .with_anti_replay = &tracker };
+    try std.testing.expectError(error.InvalidConfig, quic.Listener.init(std.testing.allocator, std.testing.io, options));
+}
+
+test "Listener.init refuses a session-ticket key with Retry on and no new_token_key" {
+    // Every restarted client would get a Retry, which drops its 0-RTT. The
+    // preset always turns Retry on.
+    try std.testing.expectError(error.InvalidConfig, quic.Server.init(std.testing.allocator, std.testing.io, quic.withProductionServerHardening(.{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+    }, .{
+        .retry_token_key = ticket_retry_key,
+        .stateless_reset_key = ticket_reset_key,
+        .early_data = .restore_only,
+        .session_ticket_key = &ticket_key,
+    })));
+}
+
+test "Listener.init refuses a ticket lifetime outside 1 s to 2 days" {
+    // The lifetime only shortens BoringSSL's 2 days, and zero is no lifetime.
+    var zero = keyedListenerOptions();
+    zero.session_ticket_lifetime_s = 0;
+    try std.testing.expectError(error.InvalidConfig, quic.Listener.init(std.testing.allocator, std.testing.io, zero));
+    var too_long = keyedListenerOptions();
+    too_long.session_ticket_lifetime_s = quic.max_session_ticket_lifetime_s + 1;
+    try std.testing.expectError(error.InvalidConfig, quic.Listener.init(std.testing.allocator, std.testing.io, too_long));
+    // The bounds themselves install.
+    inline for (.{ 1, quic.max_session_ticket_lifetime_s }) |seconds| {
+        var bound = keyedListenerOptions();
+        bound.session_ticket_lifetime_s = seconds;
+        var listener = try quic.Listener.init(std.testing.allocator, std.testing.io, bound);
+        listener.deinit();
+    }
+}
+
+/// The lifetime of the session ticket a server built from `lifetime_s`
+/// issues to one dial, as the client stored it.
+fn issuedTicketLifetime(lifetime_s: ?u32) !u32 {
+    const allocator = std.testing.allocator;
+    const frame = try buildBootstrapFrame(allocator, 0x0A1A);
+    defer allocator.free(frame);
+
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .early_data = .without_replay_protection,
+        .session_ticket_lifetime_s = lifetime_s,
+    });
+    defer server.deinit();
+
+    var ticket = ResumptionSink{};
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .new_session_callback = ResumptionSink.capture,
+        .new_session_user_data = &ticket,
+    });
+    defer client.deinit();
+
+    var client_state = QuicEndpointState{};
+    client.start(&client_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        client_thread.join();
+    };
+
+    try driveUntilSessions(&server, 1);
+    var server_state = QuicEndpointState{};
+    server.sessionAt(0).?.start(&server_state, echoQuicServerMessage, recordQuicServerError, recordQuicServerClose);
+    try client.sendFrame(frame);
+    try driveUntilEchoAndTicket(&server, &client_state, &server_state, &ticket);
+
+    client.requestClose();
+    client_thread.join();
+    joined = true;
+    return try quic.testing.ticketLifetimeSeconds(ticket.slice());
+}
+
+test "session_ticket_lifetime_s sets the lifetime of the tickets a server issues" {
+    try std.testing.expectEqual(@as(u32, 600), try issuedTicketLifetime(600));
+    // Unset: BoringSSL's 2 days.
+    try std.testing.expectEqual(quic.max_session_ticket_lifetime_s, try issuedTicketLifetime(null));
+}
+
+/// Write `bytes` to `sub_path` in `dir` and, where files have POSIX mode
+/// bits, set them to `mode`.
+fn writeTicketKeyFile(dir: std.Io.Dir, sub_path: []const u8, bytes: []const u8, mode: u32) !void {
+    const io = std.testing.io;
+    try dir.writeFile(io, .{ .sub_path = sub_path, .data = bytes });
+    if (comptime @hasDecl(std.Io.File.Permissions, "fromMode")) {
+        try dir.setFilePermissions(io, sub_path, .fromMode(@intCast(mode)), .{});
+    }
+}
+
+test "loadTicketKeyFile reads a 48-byte key file" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTicketKeyFile(tmp.dir, "ticket.key", &ticket_key, 0o600);
+    const loaded = try quic.loadTicketKeyFile(io, tmp.dir, "ticket.key");
+    try std.testing.expectEqualSlices(u8, &ticket_key, &loaded);
+    // Owner read-only is fine too.
+    try writeTicketKeyFile(tmp.dir, "owner-ro.key", &ticket_key, 0o400);
+    _ = try quic.loadTicketKeyFile(io, tmp.dir, "owner-ro.key");
+
+    try std.testing.expectError(error.FileNotFound, quic.loadTicketKeyFile(io, tmp.dir, "missing.key"));
+}
+
+test "loadTicketKeyFile refuses a damaged key file" {
+    // A damaged file is an error, never a silently regenerated key.
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTicketKeyFile(tmp.dir, "short.key", ticket_key[0 .. ticket_key.len - 1], 0o600);
+    try std.testing.expectError(error.InvalidSessionTicketKeyFile, quic.loadTicketKeyFile(io, tmp.dir, "short.key"));
+    const long_bytes = ticket_key ++ [_]u8{0x01};
+    try writeTicketKeyFile(tmp.dir, "long.key", &long_bytes, 0o600);
+    try std.testing.expectError(error.InvalidSessionTicketKeyFile, quic.loadTicketKeyFile(io, tmp.dir, "long.key"));
+    const zero_bytes: quic.SessionTicketKey = @splat(0);
+    try writeTicketKeyFile(tmp.dir, "zero.key", &zero_bytes, 0o600);
+    try std.testing.expectError(error.InvalidSessionTicketKeyFile, quic.loadTicketKeyFile(io, tmp.dir, "zero.key"));
+}
+
+test "loadTicketKeyFile refuses a key file that the group or others may access" {
+    // Windows has no mode bits; the docs give ACL guidance instead. The QUIC
+    // evidence gate forbids skipped tests, so Windows passes vacuously.
+    if (comptime !@hasDecl(std.Io.File.Permissions, "fromMode")) return;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    for ([_]u32{ 0o640, 0o604, 0o620, 0o602, 0o610, 0o601 }) |mode| {
+        try writeTicketKeyFile(tmp.dir, "exposed.key", &ticket_key, mode);
+        try std.testing.expectError(error.SessionTicketKeyFilePermissions, quic.loadTicketKeyFile(io, tmp.dir, "exposed.key"));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Half-open handshake guard: a session whose handshake never completes must
 // die by deadline — otherwise half-opens are immortal, accumulate under
 // churn/loss/attack, pin max_concurrent_connections, and the server silently

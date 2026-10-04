@@ -317,3 +317,61 @@ test "quic transport guide one-call session snippets use the public session surf
     try std.testing.expectEqual(@as(?u64, 5_000), serve_options.shutdown_drain_timeout_ms);
     try std.testing.expectEqual(@as(?u64, 30_000), serve_options.join_timeout_ms);
 }
+
+// docs/quic-transport.md, "Session-ticket key": wiring a persisted ticket
+// key into the hardened preset, verbatim.
+
+/// The hardened preset for a warm-restore server that persists its
+/// session-ticket key. Load every key from its own file on every start.
+/// `ticket_key` must stay alive until `Server.init` returns; the server keeps
+/// no pointer to it after that.
+fn warmRestartOptions(
+    base_options: quic.ServerOptions,
+    retry_key: quic.ServerRetryTokenKey,
+    reset_key: quic.StatelessResetKey,
+    new_token_key: quic.ServerNewTokenKey,
+    ticket_key: *const quic.SessionTicketKey,
+) quic.ServerOptions {
+    return quic.withProductionServerHardening(base_options, .{
+        .retry_token_key = retry_key,
+        .stateless_reset_key = reset_key,
+        // Required with a ticket key while Retry is on. Persist it too: a
+        // new one at each start sends every restarted client a Retry.
+        .new_token_key = new_token_key,
+        .early_data = .restore_only,
+        .session_ticket_key = ticket_key,
+    });
+}
+
+test "quic transport guide session-ticket key wiring" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const state_dir = tmp.dir;
+    const base_options: quic.ServerOptions = .{
+        .listen_addr = loopbackAddr(7003),
+        .tls_cert_pem = server_cert_pem,
+        .tls_key_pem = server_key_pem,
+    };
+    const retry_key: quic.ServerRetryTokenKey = @splat(0x33);
+    const reset_key: quic.StatelessResetKey = @splat(0x34);
+    const new_token_key: quic.ServerNewTokenKey = @splat(0x35);
+    // A 48-byte key file, owner read/write only (`key_file_permissions`).
+    const on_disk: quic.SessionTicketKey = @splat(0x36);
+    try state_dir.writeFile(io, .{
+        .sub_path = "session-ticket.key",
+        .data = &on_disk,
+        .flags = .{ .permissions = key_file_permissions },
+    });
+
+    var ticket_key = try quic.loadTicketKeyFile(io, state_dir, "session-ticket.key");
+    defer std.crypto.secureZero(u8, &ticket_key);
+    const options = warmRestartOptions(base_options, retry_key, reset_key, new_token_key, &ticket_key);
+
+    try std.testing.expectEqualSlices(u8, &on_disk, options.session_ticket_key.?);
+    try std.testing.expectEqual(new_token_key, options.new_token_key.?);
+    try std.testing.expect(options.early_data == .without_replay_protection);
+    try std.testing.expectEqual(quic.early_dispatch.Mode.restore_only, options.early_dispatch);
+    // A config cannot carry a key: only `Listener.init` installs one.
+    try std.testing.expectError(error.InvalidConfig, quic.serverConfigFromOptions(std.testing.allocator, options));
+}

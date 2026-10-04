@@ -11,7 +11,7 @@
 //!
 //! Everything after this cluster is densely coupled (a mid-file cut costs
 //! 68-95 threaded locals, measured), so the decomposition stops at this
-//! boundary: exactly ten values cross it, and they are the `Graph` below.
+//! boundary: only the fields of the `Graph` below cross it.
 
 const std = @import("std");
 const helpers = @import("./helpers.zig");
@@ -26,6 +26,10 @@ pub const Graph = struct {
     lib_module: *std.Build.Module,
     core_module: *std.Build.Module,
     quic_zig_module: ?*std.Build.Module,
+    /// The `boringssl` module quic-zig exports: the exact instance quic is
+    /// compiled against. Library roots import it (see
+    /// `helpers.addQuicLibImports`). Null without `-Dquic=true`.
+    quic_boringssl_module: ?*std.Build.Module,
     wasm_host_module: *std.Build.Step.Compile,
 };
 
@@ -83,8 +87,8 @@ pub fn setup(b: *std.Build) !Graph {
     // Keep the normal module graph free of quic-zig/BoringSSL. The dependency
     // is declared lazy in build.zig.zon so non-QUIC builds neither fetch it nor
     // compile its build.zig; it is resolved only for `.quic = true` consumers.
-    const quic_zig_module: ?*std.Build.Module = if (enable_quic)
-        (try b.dependencyLazy("quic", .{
+    const quic_dep: ?*std.Build.Dependency = if (enable_quic)
+        try b.dependencyLazy("quic", .{
             .target = target,
             // quic-zig builds Debug or ReleaseSafe only, selected by the
             // boolean `release`. Through v0.24.0 it had no `optimize`
@@ -104,10 +108,16 @@ pub fn setup(b: *std.Build) !Graph {
             // boringssl instruments C under safe modes by default).
             // `trap` keeps the UB checks and needs no runtime.
             .@"sanitize-c" = @as([]const u8, "trap"),
-        })).module("quic")
+        })
     else
         null;
-    helpers.addQuicImport(lib_module, quic_zig_module);
+    const quic_zig_module: ?*std.Build.Module = if (quic_dep) |dep| dep.module("quic") else null;
+    // quic-zig exports the boringssl module it is compiled against (quic
+    // build.zig: "Export the exact boringssl module instance"). The library
+    // calls `boringssl.raw` to install a session-ticket key on quic's TLS
+    // context, so it must name that instance, not a boringssl of its own.
+    const quic_boringssl_module: ?*std.Build.Module = if (quic_dep) |dep| dep.module("boringssl") else null;
+    helpers.addQuicLibImports(lib_module, quic_zig_module, quic_boringssl_module);
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
@@ -174,6 +184,7 @@ pub fn setup(b: *std.Build) !Graph {
         .lib_module = lib_module,
         .core_module = core_module,
         .quic_zig_module = quic_zig_module,
+        .quic_boringssl_module = quic_boringssl_module,
         .wasm_host_module = wasm_host_module,
     };
 }

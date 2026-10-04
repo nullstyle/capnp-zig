@@ -2616,6 +2616,16 @@ const RedialEcho = struct {
 const RedialVat = struct {
     server: ?quic.Server = null,
     peer: ?Peer = null,
+    /// Server-side 0-RTT verdict of the session this incarnation bound,
+    /// once its handshake is done (see `observeEarlyData`).
+    bound_status: ?quic.EarlyDataStatus = null,
+
+    fn observeEarlyData(self: *RedialVat) void {
+        const server = &(self.server orelse return);
+        const session = server.sessionAt(0) orelse return;
+        const quic_conn = session.activeQuicConnection() orelse return;
+        if (quic_conn.handshakeDone()) self.bound_status = quic_conn.earlyDataStatus();
+    }
 
     fn bindIfNeeded(self: *RedialVat, allocator: std.mem.Allocator) !void {
         if (self.peer != null) return;
@@ -2636,6 +2646,7 @@ const RedialVat = struct {
             p.deinit();
         }
         self.peer = null;
+        self.bound_status = null;
     }
 };
 
@@ -2940,6 +2951,138 @@ test "WarmRedialClient heals across a crash-restart of a withProductionServerHar
     const outcome = app.outcome orelse return error.NoOutcome;
     try std.testing.expectEqual(@as(u32, 2), outcome.generations);
     try std.testing.expectEqual(@as(u32, 2), outcome.rebinds);
+}
+
+/// `hardenedServerOptions` with the warm-restore opt-in and an optional
+/// persisted session-ticket key. Every restart reuses the same
+/// `hardened_new_token_key`, as the key rules require.
+fn ticketedServerOptions(listen_addr: std.Io.net.IpAddress, key: ?*const quic.SessionTicketKey) quic.ServerOptions {
+    return quic.withProductionServerHardening(.{
+        .listen_addr = listen_addr,
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .max_concurrent_connections = 2,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+    }, .{
+        .retry_token_key = hardened_retry_key,
+        .stateless_reset_key = hardened_reset_key,
+        .new_token_key = hardened_new_token_key,
+        .early_data = .restore_only,
+        .session_ticket_key = key,
+    });
+}
+
+const TicketHeal = struct {
+    /// Server-side 0-RTT verdict of the healed (second) generation.
+    healed_status: quic.EarlyDataStatus,
+    outcome: quic.WarmRedialClient.Outcome,
+};
+
+/// Heal a restored capability across a crash-restart of a hardened
+/// `.restore_only` server that loads `key` on both starts. The first
+/// generation dials cold and captures a session ticket; the heal offers it.
+fn healAcrossCrashWithTicketKey(key: ?*const quic.SessionTicketKey) !TicketHeal {
+    const allocator = std.testing.allocator;
+
+    var vat = RedialVat{};
+    defer vat.crash();
+    vat.server = try quic.Server.init(allocator, std.testing.io, ticketedServerOptions(loopback.testListenAddr(), key));
+    const port = vat.server.?.getAddress().getPort();
+
+    var app = RedialAppState{};
+    var client = try quic.WarmRedialClient.init(
+        allocator,
+        std.testing.io,
+        .{
+            .remote_addr = vat.server.?.getAddress(),
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+            .transport_params = hardenedClientTransportParams(),
+        },
+        RedialEcho.sturdy_ref,
+        .{ .max_redials = 3, .backoff_ms = 10 },
+        &app,
+        RedialAppState.onRebind,
+        RedialAppState.onGiveUp,
+    );
+    defer client.deinit();
+    var thread = try std.Thread.spawn(.{}, RedialAppState.runClient, .{ &app, &client });
+    var joined = false;
+    defer if (!joined) {
+        client.requestStop();
+        thread.join();
+    };
+
+    // Phase 1: cold dial (through Retry), restore, first echo, and a
+    // captured session ticket for the heal to offer.
+    var have_ticket = false;
+    var waited: u64 = 0;
+    while (waited < hardened_wait_ms and (app.echo_ok.load(.acquire) == 0 or !have_ticket)) : (waited += 1) {
+        _ = try vat.server.?.stepOnce(.poll);
+        try vat.bindIfNeeded(allocator);
+        if (!have_ticket) {
+            if (try client.exportWarmState(allocator)) |warm| {
+                allocator.free(warm);
+                have_ticket = true;
+            }
+        }
+        loopback.sleepMs(1);
+    }
+    try std.testing.expect(have_ticket);
+    try std.testing.expect(app.echo_ok.load(.acquire) > 0);
+    try std.testing.expectEqual(@as(u32, 1), app.rebinds.load(.acquire));
+    const echo_before_crash = app.echo_ok.load(.acquire);
+
+    // CRASH + RESTART with the same persisted keys (ticket key included).
+    vat.crash();
+    try restartVatWith(&vat, allocator, ticketedServerOptions(try std.Io.net.IpAddress.parse("127.0.0.1", port), key));
+
+    waited = 0;
+    while (waited < hardened_wait_ms and !app.gave_up.load(.acquire) and
+        (app.rebinds.load(.acquire) < 2 or app.echo_ok.load(.acquire) <= echo_before_crash or vat.bound_status == null)) : (waited += 1)
+    {
+        _ = try vat.server.?.stepOnce(.poll);
+        try vat.bindIfNeeded(allocator);
+        vat.observeEarlyData();
+        loopback.sleepMs(1);
+    }
+    try std.testing.expectEqual(@as(?rpc_events.DisconnectCause, null), app.giveUpCause());
+    try std.testing.expectEqual(@as(u32, 2), app.rebinds.load(.acquire));
+    try std.testing.expect(app.echo_ok.load(.acquire) > echo_before_crash);
+    try std.testing.expect(vat.server.?.statelessResetsSent() >= 1);
+    const healed_status = vat.bound_status orelse return error.NoEarlyDataVerdict;
+
+    client.requestStop();
+    thread.join();
+    joined = true;
+
+    return .{
+        .healed_status = healed_status,
+        .outcome = app.outcome orelse return error.NoOutcome,
+    };
+}
+
+test "WarmRedialClient heal after a crash-restart rides accepted 0-RTT when the server persists its session-ticket key" {
+    const key: quic.SessionTicketKey = @splat(0x3c);
+    const heal = try healAcrossCrashWithTicketKey(&key);
+
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, heal.healed_status);
+    try std.testing.expectEqual(@as(u32, 2), heal.outcome.generations);
+    try std.testing.expectEqual(@as(u32, 2), heal.outcome.rebinds);
+    // The cold first generation offered no early data; the heal's was
+    // accepted.
+    try std.testing.expectEqual(@as(u32, 1), heal.outcome.zero_rtt_generations);
+}
+
+test "WarmRedialClient heal after a crash-restart without a session-ticket key is refused 0-RTT (ablation)" {
+    const heal = try healAcrossCrashWithTicketKey(null);
+
+    // The capability still heals, through a full handshake.
+    try std.testing.expectEqual(quic.EarlyDataStatus.rejected, heal.healed_status);
+    try std.testing.expectEqual(@as(u32, 2), heal.outcome.generations);
+    try std.testing.expectEqual(@as(u32, 2), heal.outcome.rebinds);
+    try std.testing.expectEqual(@as(u32, 0), heal.outcome.zero_rtt_generations);
 }
 
 test "WarmRedialClient budget counts consecutive failures: resets between healthy generations never exhaust it" {

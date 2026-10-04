@@ -3,9 +3,10 @@
 //! with the crash-restart proof (`Peer.lastDisconnectCause() ==
 //! .stateless_reset`), dial a fresh connection and re-restore the saved
 //! sturdy ref, so the application's capability heals without operator
-//! action. The dial offers the latest captured session ticket, but a
-//! restarted server cannot accept it (BoringSSL session-ticket keys live per
-//! process), so a heal after a crash-restart pays a full handshake.
+//! action. The dial offers the latest captured session ticket. A restarted
+//! server accepts it only when it loads the same persisted session-ticket key
+//! (`ServerOptions.session_ticket_key`); otherwise BoringSSL's per-process
+//! key cannot decrypt it, and the heal pays a full handshake.
 //!
 //! Shape (each dictated by the runtime's contracts, not preference):
 //!
@@ -113,6 +114,14 @@ pub const WarmRedialClient = struct {
         /// Every redial over the client's lifetime.
         total_redials: u32,
         rebinds: u32,
+        /// Generations whose dial the server accepted 0-RTT for (the
+        /// client's TLS verdict, `EarlyDataStatus.accepted`). After a
+        /// crash-restart this counts only when the server loads the same
+        /// `session_ticket_key`. The verdict does not prove the restore ran
+        /// before the handshake: after a Retry, the quic-zig v0.25.0 client
+        /// sends its early data again only at 1-RTT ("Retry and NEW_TOKEN:
+        /// an open gap" in docs/quic-transport.md).
+        zero_rtt_generations: u32 = 0,
         last_cause: rpc_events.DisconnectCause,
     };
 
@@ -142,6 +151,8 @@ pub const WarmRedialClient = struct {
     /// Lifetime redial count (never reset).
     total_redials: u32 = 0,
     rebinds: u32 = 0,
+    /// Generations whose dial reported `EarlyDataStatus.accepted`.
+    zero_rtt_generations: u32 = 0,
     restore_failed: bool = false,
     /// Awake-clock time (ns) of the current generation's rebind; null
     /// until it rebinds.
@@ -256,6 +267,7 @@ pub const WarmRedialClient = struct {
             .redials = self.redials,
             .total_redials = self.total_redials,
             .rebinds = self.rebinds,
+            .zero_rtt_generations = self.zero_rtt_generations,
             .last_cause = last_cause,
         };
     }
@@ -350,6 +362,11 @@ pub const WarmRedialClient = struct {
 
         last_cause.* = peer.lastDisconnectCause();
         self.settleGenerationHealth(&conn);
+        // The quic connection outlives `run()` until `conn.deinit()`, and
+        // its verdict is final once the handshake completed.
+        if (conn.activeQuicConnection()) |quic_conn| {
+            if (quic_conn.earlyDataStatus() == .accepted) self.zero_rtt_generations +|= 1;
+        }
 
         _ = peer.takeAttachedConnection(*Connection);
         peer.deinit();
