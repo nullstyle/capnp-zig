@@ -62,7 +62,7 @@ Pin a tagged release. `zig fetch --save` downloads the tag's tarball and
 records its `.url` and `.hash` in your `build.zig.zon`:
 
 ```bash
-zig fetch --save https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.18.0.tar.gz
+zig fetch --save https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.19.0.tar.gz
 ```
 
 That adds an entry like this (the command fills in the hash; do not
@@ -71,8 +71,8 @@ hand-write it):
 ```zig
 .dependencies = .{
     .capnpc_zig = .{
-        .url = "https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.18.0.tar.gz",
-        .hash = "capnpc_zig-0.18.0-nUduFTdRNwBzlJgTt6x9lUwRGmpWzSVXrMSE-xFj_dND",
+        .url = "https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.19.0.tar.gz",
+        .hash = "capnpc_zig-0.19.0-...",
     },
 },
 ```
@@ -115,12 +115,10 @@ Then let your build run the `capnpc-zig` plugin from the same pinned package,
 never a PATH binary. A plugin from another revision can emit code your runtime
 does not compile.
 
-> **This recipe needs a capnp-zig release after v0.18.0.** <!-- unreleased-after: v0.18.0 -->
-> It passes the plugin's `--output-dir=` flag, which v0.18.0 does not have. A
-> v0.18.0 plugin ignores the flag and writes `addressbook.zig` into your project
-> root. The build then fails because `capnp-gen/addressbook.zig` is not found.
-> Until the next tag, depend on a capnp-zig checkout with `.path` (step 2), or
-> `zig fetch --save` a commit of `main`.
+> **This recipe needs capnp-zig v0.19.0 or later.** It passes the plugin's
+> `--output-dir=` flag, which v0.18.0 does not have. A v0.18.0 plugin ignores
+> the flag and writes `addressbook.zig` into your project root. The build then
+> fails because `capnp-gen/addressbook.zig` is not found.
 
 These lines are an excerpt of the `build.zig` that `zig build package-preflight`
 runs from the release archive:

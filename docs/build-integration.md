@@ -20,7 +20,7 @@ Fetch a tagged release into your `build.zig.zon` (`zig fetch --save` computes
 and records the `.hash` for you):
 
 ```sh
-zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.18.0
+zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.19.0
 ```
 
 That adds an entry like this to your `build.zig.zon` (the hash is filled in by
@@ -29,8 +29,8 @@ the command above — do not hand-write it):
 ```zig
 .dependencies = .{
     .capnpc_zig = .{
-        .url = "git+https://github.com/nullstyle/capnp-zig.git#v0.18.0",
-        .hash = "capnpc_zig-0.18.0-nUduFTdRNwBzlJgTt6x9lUwRGmpWzSVXrMSE-xFj_dND",
+        .url = "git+https://github.com/nullstyle/capnp-zig.git#v0.19.0",
+        .hash = "capnpc_zig-0.19.0-...",
     },
 },
 ```
@@ -115,10 +115,9 @@ This file is the clean-room consumer that `zig build package-preflight` builds
 from the filtered release archive and runs. `zig build docs-smoke` fails if the
 two differ.
 
-> **This recipe needs a capnp-zig release after v0.18.0.** <!-- unreleased-after: v0.18.0 -->
-> It passes the plugin's `--output-dir=` flag, which v0.18.0 does not have
-> (see the `--output-dir=` note below). Until the next tag, depend on a
-> capnp-zig checkout with `.path`, or `zig fetch --save` a commit of `main`.
+> **This recipe needs capnp-zig v0.19.0 or later.** It passes the plugin's
+> `--output-dir=` flag, which v0.18.0 and older do not have (see the
+> `--output-dir=` note below).
 
 <!-- verbatim-file: tests/package_consumer/codegen/build.zig -->
 ```zig
@@ -193,7 +192,7 @@ How it fits together:
   enters your source tree and cannot go stale.
 - **`--output-dir=`** makes the plugin write under the step's output directory
   instead of its working directory. `capnp compile -o<plugin>:<dir>` is
-  unaffected. The flag is unreleased. <!-- unreleased-after: v0.18.0 --> A
+  unaffected. The flag is new in v0.19.0. A
   v0.18.0 or older plugin ignores it, writes `addressbook.zig` into its working
   directory, and the build fails with the generated file not found.
 - **`Dependency.artifact` finds only installed artifacts.** capnp-zig's own

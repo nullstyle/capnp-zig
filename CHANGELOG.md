@@ -7,352 +7,848 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-03
+
+This release moves capnp-zig to tagged Zig 0.17.0 and QUIC to quic-zig
+v0.24.1, so consumers migrate both once. Generated code gains binary schema
+reflection, mutable Builder views, typed generic RPC, strict Text getters
+and named builder error sets, and it now refuses to compile against an older
+runtime. QUIC reaches TCP parity with one-call `connect`/`serve` sessions,
+and its self-healing works with the production preset. Read `### Breaking`
+first: most consumers must regenerate bindings with the matching plugin and
+pin the matching runtime. docs/upgrading-to-0.19.0.md walks through the
+migration step by step.
+
 ### Breaking
-
-- **Builders spell named error sets where they can allocate, and keep precise sets where they cannot (Stable signatures change).** New in Stable: `message.BuildError` (12 errors) and `message.CopyError` (`BuildError` plus 9 source-read errors).
-  - Generated mutators that can allocate or write a pointer return exactly `message.BuildError`: `initX` of a struct or list field, the Text/Data `setX` (and `setXText`/`setXData`), `setXCapability` and `setXClient`.
-  - Copy setters (`setX` from a Reader) return exactly `message.CopyError`.
-  - Generated mutators that cannot allocate keep their inferred sets, and their generated lines are unchanged:
-    - Scalar `setX` (Void, Bool, integers, floats, enums, `EnumOrdinals`) still has an empty set.
-    - `clearX` and `setXNull` report at most `InvalidSegmentId`, `OutOfBounds` and `PointerIndexOutOfBounds`.
-    - `initX` of an AnyPointer, AnyStruct, AnyList or interface field (raw, in a group, or through `pointerKinds()`) only returns a handle to the slot, so it reports only `OutOfBounds` and `PointerIndexOutOfBounds`. The `init`/`set` called on that handle is what allocates.
-  - The pointer makers, `StructBuilder.writePointerList*`, `writeStructList*` and `writeTextList*` are typed `BuildError`; `cloneAnyPointer` and `cloneAnyPointerToBytes` are typed `CopyError`. A builder path that gains an error now fails to compile instead of widening to `anyerror`.
-  - `zig build api-snapshot` and `check-api` now reject any Stable builder line that renders `anyerror`.
-- **Narrowed from `anyerror` to a named set (24):** `message.AnyPointerBuilder.setCapability`, `CapabilityBuilder.set`, `PointerListBuilder.setCapability`, `StructBuilder.writePointerList`/`writePointerListInSegment`/`writeTextList`/`writeTextListInSegment`/`writeTextListInSegments`, `message.cloneAnyPointer`, `cloneAnyPointerToBytes`, `typed_list_helpers.CapabilityListBuilder.set`, and in `rpc.wire.protocol`: `CallBuilder.setSendResultsToThirdParty`, `CapDescriptor.writeThirdPartyHosted`, `MessageBuilder.buildAccept`/`buildJoin`/`buildProvide`/`buildResolveCap`/`buildThirdPartyAnswer`/`buildUnimplementedFromAnyPointer`, `PayloadBuilder.getCapTable`/`setCapTable`/`setContent`/`setContentCapability`, `ReturnBuilder.setAcceptFromThirdParty`.
-- **Rendering-only changes (117):** the Stable `StructBuilder` type now renders its pointer-maker parameters with `BuildError` instead of `anyerror`. The errors are the same.
-- **Widened (31). Each of these functions allocates through the newly named set.** `StructBuilder.writeStructList`/`writeStructListInSegment`/`writeStructListInSegments`, `rpc.caps.table.inbound.InboundCapTable.clone`, and in `rpc.wire.protocol`: `OwnedPromisedAnswerMessage.init`, `CallBuilder.initCapTableTyped`/`payloadTyped`/`setTargetImportedCap`/`setTargetPromisedAnswer`/`setTargetPromisedAnswerFrom`/`setTargetPromisedAnswerWithOps`, `CapDescriptor.writeReceiverAnswer`/`writeThirdPartyHostedNull`, `MessageBuilder.beginCall`/`beginReturn`/`buildAbort`/`buildAbortTyped`/`buildBootstrap`/`buildDisembargoAccept`/`buildDisembargoReceiverLoopback`/`buildDisembargoSenderLoopback`/`buildFinish`/`buildRelease`/`buildResolveException`, `PayloadBuilder.initCapTable`/`setContentData`/`setContentText`, `ReturnBuilder.initCapTableTyped`/`payloadTyped`/`setException`/`setExceptionTyped`.
-  - Each one reaches a struct or list `initX`, a Text/Data setter or a `CopyError` clone. The added names are typically `IndexOutOfBounds`, `InvalidPointer` and `TextTooLong`.
-  - No function that cannot allocate widened. `PayloadBuilder.initContent`, `CallBuilder.setSendResultsToThirdPartyNull` and `ReturnBuilder.setTakeFromOtherQuestion` keep their previous signatures exactly.
-- **Migration:** code that switches exhaustively over a widened set must handle the added names, or switch over `message.BuildError` / `message.CopyError` instead. Code that stored a narrowed function in an `anyerror`-typed function pointer needs a wrapper or the new type. Regenerate bindings with the matching plugin.
-- **`rpc.events.Event` gains `.cancel_failure` (Experimental).** A `switch` over an `Event` that lists every variant no longer compiles. `Event` is a tagged union, so unlike `DisconnectCause` it cannot be made non-exhaustive, and future variants will break such switches again. **Migration:** add a `.cancel_failure` arm, or an `else` arm, which is the recommended form.
-
-- **`ServerProductionHardening` now requires a `stateless_reset_key`, and its 0-RTT posture is an explicit pair (Experimental).** `withProductionServerHardening` neither took nor set the key, and `ServerOptions` defaults it to null. So a server built the documented way never sent stateless resets. After a crash-restart its clients certified `DisconnectCause.idle_timeout` (30 s later) instead of `.stateless_reset`, and `WarmRedialClient`, which redials only on `.stateless_reset` by default, never healed them. The preset now requires the key and sets it, overriding any key in the base options. docs/quic-transport.md ("Production Defaults", "Stateless-reset key") has a generate-and-persist recipe, and `tests/docs` runs it verbatim. The same section gives the rule for sharing a key between instances (RFC 9000 §21.11). Share it only when the load balancer routes by connection ID; otherwise give each instance its own persisted key. Under address-hash routing, a sibling instance resets live connections, and their clients certify a false `.stateless_reset`. A crash-restart e2e against the preset (Retry and NEW_TOKEN on) proves the client certifies `.stateless_reset` and `WarmRedialClient` rebinds; with the key dropped from the preset, the same tests certify `.idle_timeout` and fail. The preset also gains `early_data: ProductionEarlyData = .disabled`, which now resets `early_dispatch` to `.hold_until_handshake` too. `.restore_only` is the explicit warm-restore opt-in: it sets `early_data = .without_replay_protection` together with `early_dispatch = .restore_only`, so only Bootstrap and Restorer calls run before the handshake. An e2e shows a resumed dial is accepted 0-RTT through the preset's Retry gate with the opt-in, and rejected (frame still delivered at 1-RTT) without it. **Migration:** pass `.stateless_reset_key = <32 persisted bytes>` to `withProductionServerHardening`. Generate the key once from a CSPRNG, store it with the server's state (one key per instance unless your load balancer routes by connection ID), and load the same bytes on every start: a new key per start voids the certificate for connections that outlive a restart. To allow 0-RTT for warm restore, add `.early_data = .restore_only` (and a `new_token_key`), and make sure your Restorer is idempotent. 0-RTT applies when a client resumes against the same server process; a heal after a server crash-restart always pays a full handshake, because session-ticket keys live per process. The recipe syncs the key file's parent directory after linking it. The preset now also sets `early_dispatch` from `.early_data`, so a base `early_dispatch` no longer survives it.
-- **`WarmRedialClient`'s redial budget now counts consecutive failures, refunded only by proven server liveness (Experimental).** `redials` only ever grew, so `Policy.max_redials = 3` was a lifetime budget: a long-lived client stopped healing after its third crash-restart even when every generation in between was healthy. Now a generation resets `redials` to zero when the server proves it stayed alive for the new `Policy.min_healthy_ms` (default 10 s, `WarmRedialClient.default_min_healthy_ms`) after the rebind. Proof means an authenticated packet from the server arrives at least that long after the rebind. The new `quic.Connection.lastAuthenticatedReceiveNs()` gives the time of the last such packet, from quic-zig's post-AEAD packet count. The time the client takes to detect a death does not count: a stateless reset is not authenticated, and an idle connection receives nothing. So a crash loop still exhausts `max_redials`, even when a client that calls rarely notices each death late, or when generations end in idle timeouts with `redial_on_idle_timeout`. The cost: an idle client spends one redial on each death, as before. `WarmRedialClient` and `Outcome` gain `total_redials` (lifetime count). Tests prove it: four crash-restarts between healthy generations heal under `max_redials = 3` (a lifetime budget gave up on the fourth). Crash loops still give up after exactly 3 redials whether each death is detected at once, 3x `min_healthy_ms` late, or only by an idle timeout. **Migration:** code that read `Outcome.redials` or `WarmRedialClient.redials` as a lifetime total should read `total_redials`. To keep the old lifetime cap, set `.min_healthy_ms = std.math.maxInt(u64)`. A client that should reset its streak needs traffic with the server `min_healthy_ms` after each rebind.
-- **`rpc.wire.framing.Framer.buffer` no longer holds only the unread bytes.** This Stable field changed meaning when the framers gained a read cursor (see Changed).
-  - `buffer.items` now starts with a prefix that `popFrame` already returned. Only `buffer.items[consumed..]` is unread. The new `consumed` field is Experimental.
-  - `docs/api-snapshot.txt` is byte-identical, because the snapshot records types, not meaning.
-  - Code that uses only `push`, `popFrame`, `bufferedBytes` and `reset` is unaffected.
-  - The Experimental QUIC `LengthDelimitedFramer` and `NativeControlFramer` changed the same way.
-  - **Migration:**
-    - Count the unread bytes with `bufferedBytes()`.
-    - Discard them with `reset()`, not by editing `buffer`.
-    - Code that reads leftover bytes from the field must read `buffer.items[consumed..]`.
-    - Code that changes `buffer` directly must also set `consumed` (to 0 after emptying or replacing the list). If it does not, `push`, `popFrame` and `bufferedBytes` panic in safe builds and are undefined behavior in ReleaseFast.
-
-- **QUIC now pins quic-zig v0.24.1 (was v0.19.0; Experimental).** v0.24.1's
-  library code is byte-identical to v0.24.0; it only adds an `optimize`
-  build option. capnp-zig keeps passing `.release`.
-  - v0.19.0 leaked a BoringSSL AEAD context on every handshake key derivation, about 780 KB per handshake. The QUIC heal soak reached 26.6 GB RSS in 10 minutes. v0.21.1 fixed this: the same 10-minute soak on v0.24.0 holds RSS flat (steady state -5.3%, peak 172 MB over ~89,600 handshakes) and passes `--rss-gate enforce`.
-  - v0.24.0 removes the 4096-per-connection lifetime stream cap. `initial_max_streams_bidi`/`_uni` is now the number of streams the peer may have open at once, and an id comes back when a stream fully closes. `StreamLimitExceeded` is always temporary.
-  - Native mode keeps a large frame queued and retries it after the next pump, at any stream index. Tests push 10,240 large frames each way over one connection, including through a uni window of 1.
-  - The default `initial_max_streams_uni` rises from 4 to 8; bidi stays 16. A full window arrives as one burst that the receiver's kernel UDP queue must hold. On Linux the measured limit is the socket buffer, not the window. With a stock unprivileged buffer (416 KiB after the request below), 8 carries 17.4-18.0 MB/s at 20 ms RTT with 64 KiB frames, against 9.3 for 4. A window of 16 collapsed there to 1-3 MB/s in most runs. Where a host grants the full 4 MiB buffer (macOS, or Linux with `net.core.rmem_max`/`wmem_max` raised or `CAP_NET_ADMIN`), 16 reaches 32-35 MB/s, so raise it there. The table is in `defaultTransportParams`.
-  - boringssl-zig moves to 0.6.7 with the same BoringSSL source. Windows still links `ws2_32`.
-  - **Migration:** a build that also depends on quic directly (qmsg, mruby-quic, capnp-qmsg-demo) must pin quic v0.24.1 and pass the same options as capnp-zig: `.target`, `.release = optimize != .debug`, `.@"sanitize-c" = "trap"`. Otherwise the build makes two quic modules. Code that drives quic itself should follow quic-zig's EMBEDDING.md section "Stream limits are a window": retry `StreamLimitExceeded` after a pump, finish or reset every peer stream, and refuse with STOP_SENDING plus RESET_STREAM. Custom `transport_params` still work, but the uni window now really bounds native large-frame concurrency. Size it as frames per second x RTT, and keep window x frame size within the receiver's real `SO_RCVBUF`.
 
 - **Minimum Zig is now `0.17.0`, the tagged release.** The pin moves off
   `0.17.0-dev.1683+5ceec001b`, which ziglang.org has already deleted. Only
   some community mirrors still carry it, and one serves the tarball without
-  its signature, which makes `mise install` fail outright — two CI jobs hit
-  exactly that. Tagged releases stay on ziglang.org. **Migration:** upgrade
-  to Zig 0.17.0; `mise.toml` carries the exact pin. The frozen
-  `docs/api-snapshot.txt` is byte-identical across the move. In the
-  Experimental surface, std's network error sets gained
-  `ConnectionTimedOut`, so `tcp.stream.Transport.ReadError`,
-  `ReadTimeoutError`, and `WriteError` (and the QUIC listener sets built on
-  them) now include it.
-
-- **WorkerPool now reaps silent and idle connections by default
-  (Experimental behavior).** Each worker serves one connection to
-  completion. Before this change, `concurrency` clients that connected and
-  never spoke pinned every worker forever (the TCP analog of QUIC half-open
-  immortality). `WorkerPool.Config` gains `first_frame_timeout_ms` (default
-  10 s). It reaps an accepted connection that has not delivered one complete
-  frame, including a client that trickles bytes of a frame it never finishes
-  before that first frame. `WorkerPool.Config` also gains `idle_timeout_ms`
-  (default 5 min, no inbound read and no outbound enqueue), which applies
-  when `connection_options.idle_timeout_ms` is null. Both reapings emit the
-  `.idle_connection` timeout event. `Connection` gains the Experimental
-  `first_frame_timeout_ms` field (default null), so raw `Connection`,
-  `ClientSession` and the Stable `ServerSession.accept` arm neither deadline.
-  Residual, by design: after its first frame, a client that keeps sending
-  anything (a cheap frame, or one byte of a frame it never finishes) at least
-  once per `idle_timeout_ms` still holds its worker; bound such clients with
-  `on_accept` admission control. **Migration:** WorkerPool servers whose
-  clients stay idle for more than 5 minutes (Cap'n Proto has no keepalive)
-  should raise `idle_timeout_ms` or set it to `null`. Servers whose clients
-  legitimately send nothing for 10 s after connecting, such as a protocol
-  where the server speaks first, should raise `first_frame_timeout_ms`, set
-  it to `null`, or override `conn.first_frame_timeout_ms` per connection in
-  `on_accept`.
-- **`rpc.events.DisconnectCause` is now non-exhaustive (`enum(u8) { ..., _
-  }`; Experimental).** New causes keep arriving as transports learn more
-  (`handshake_timeout` most recently), and with an exhaustive enum each one
-  broke every consumer `switch` that listed the variants. A new cause is now
-  additive: older code sees an unnamed value. Named values and their order
-  are unchanged; the tag type is now `u8`. The API snapshots are byte-
-  identical because they do not render exhaustiveness. **Migration:** a
-  `switch` on a `DisconnectCause` must handle unnamed values: add a `_ =>`
-  arm (treat it like `.unknown`) or keep an `else` arm. Do not `@tagName` a
-  cause you did not construct; use `std.enums.tagName`, which returns `null`
-  for an unnamed cause. Code that indexes an array by `@backingInt(cause)`
-  must bound the index first. `std.enums.EnumArray`/`EnumSet`/`EnumMap`
-  keyed by `DisconnectCause` now span all 256 backing values: iterate
-  `std.enums.values(DisconnectCause)` instead, and do not `@tagName` their
-  keys.
-
-### Changed
-
-- **Generated code is `zig fmt` clean as the plugin writes it.** `capnpc-zig` now emits zig fmt's layout itself, so a consumer that runs the pinned plugin directly (the `dep.artifact("capnpc-zig")` recipe) gets byte-for-byte what this repo commits, and a committed copy passes the consumer's own `zig fmt --check`. Before, `just gen` piped output through `zig fmt`, which hid about 1,100 layout differences. The emitter changes:
-  - Members have no blank line before a closing brace, and a file ends with one newline.
-  - Typed generic `Apply` types are properly indented and have multi-line bodies.
-  - Array and annotation literals use zig fmt's brace padding.
-  - It writes `@backingInt`/`@fromBackingInt`, not `@intFromEnum`/`@enumFromInt`, which zig fmt rewrites.
-  - Names Zig no longer reserves (`usingnamespace`, `async`, `await`) are not quoted.
-  - Primitive names such as `void` or `type` stay bare where Zig reads a field name: union tags, enum literals, VTable fields.
-
-  Regenerated bindings are formatting-only changes: every committed file equals `zig fmt` of its previous version, except one inline `Apply(.{ ... })` argument in `src/rpc/gen/capnp/persistent.zig`, which drops its trailing commas to stay on one line. `docs/api-snapshot.txt` is byte-identical. `just gen` no longer runs `zig fmt` on plugin output. `just check-generated` now runs `zig fmt --check` on the raw output, and `just fmt`/`fmt-check` no longer exclude the generated directories or `tests/golden`. package-preflight compares the packaged plugin's raw output byte for byte. The Experimental `codegen.Generator.allocMethodVTableFieldName` now returns bare primitive names (`void`, not `@"void"`). **Migration:** none for library users. Regenerating with this plugin changes only layout, and the identifiers above (for example `@"usingnamespace"` becomes `usingnamespace`) name the same declarations.
-- **CI builds `-Dquic=true` for 32-bit x86, and the QUIC evidence floors match the suites.** The cross-target job now runs `check-compile` and `check-test-compile` with `-Dquic=true` for `x86-linux-gnu`; the soak tool and one QUIC transport test used 64-bit atomics or `usize` arithmetic that did not compile there (tests and tools only; the library was unaffected). `tools/quic_test_evidence.zig` now requires 43 + 1 + 36 + 32 = 112 tests across the four QUIC roots (was 52), so a silently dropped test fails the gate. `docs-smoke` gains a whole-file verbatim marker that keeps the canonical consumer `build.zig` in docs/build-integration.md identical to its tested fixture.
-
-- **Deadline-cancel callback errors are now visible as an observer event (Experimental `rpc.events`); sessions are unaffected.** `checkDeadlines()` cancels a question when its own deadline or the shutdown drain bound expires. If the question's callback then returns an error, the peer emits the new `Event.cancel_failure` after the `.timeout` event. An example is `unwrap()`'s `error.CallTimedOut` returned through `try response.unwrap()`. The event payload is `CancelFailureEvent`: the deadline `kind` (`.call_deadline` or `.shutdown_drain`), the `question_id` (always the wire question id, the same one the `.timeout` event for that cancellation carries) and the `err`. An OOM in the cancellation itself is reported the same way. Before, both were only debug-logged, and they still are. `on_error` is not called, so the Stable `ClientSession` and `ServerSession` keep running: one timed-out call does not close them, and later calls work. Explicit `cancelQuestion()` and teardown still only log. A failing callback on a Return that arrives over the wire still goes to `on_error`, as before.
-
-- **The benchmark gates now count allocations per RPC call, and the QUIC gate runs nightly.**
-  - `bench-rpc` and `bench-quic` count allocations over the timed window, with a separate thread-safe counting allocator for the client and the server. They report `alloc_count_per_call`, `alloc_bytes_per_call`, and the client and server counts.
-  - `bench-check` and `bench-check-quic` gate these counts hard. A round trip makes about 33 allocations, so one extra is only 3% of the total. The client and server counts are gated separately, with 3% bands over the highest value seen on macOS arm64, Linux arm64 and Linux x86_64. That catches one extra allocation per call on either end. Bytes per call have a 5% band.
-  - `bench-check-quic` now runs in its own Nightly job (`zig build -Dquic=true -Doptimize=ReleaseFast bench-check-quic`) and locally as `just bench-check-quic`. Before this it ran nowhere.
-  - QUIC baselines are re-taken on quic v0.24.1. Every earlier QUIC number had quic-zig built in Debug (fixed in 6ba1613) and was 2-7x too slow. The QUIC wall-clock cases stay advisory until they are baselined from the Nightly job. The TCP wall-clock baselines are CI numbers and are unchanged.
-  - Each baselines file records how its numbers were taken in a `note` field. `bench-check` runs each distinct command line once and reads every case's metric from that one run.
-- **The stream framers no longer shift their buffer after every frame.** The TCP `Framer`, `LengthDelimitedFramer` and `NativeControlFramer` used to move the unread tail down after each frame, so a read carrying k frames cost O(k x read size) in copies.
-  - They now share a read cursor. The consumed prefix is reclaimed when the buffer drains, when the cursor passes half the buffer, or just before an append would grow the allocation.
-  - Frames, errors, budgets and `bufferedBytes` are unchanged.
-  - Each framer gains a `consumed` field, and the meaning of its `buffer` field changed (see Breaking). `Framer.consumed` is held out of the frozen API.
-  - At the default benchmark settings nothing changes, within ±1%. With 256 calls in flight, `bench-rpc` pipelined goes from 119k to 208k calls/s (9 alternating runs each, ranges do not overlap).
-- **Every `std.mem.copyForwards` in `src/` is gone.** It is deprecated in Zig 0.17.0; all 32 call sites were replaced.
-  - Copies into fresh storage use `@memcpy`, with a comment wherever it is not obvious that the ranges cannot overlap.
-  - `U8ListBuilder.setAll` and the WASM ABI's `setError` can overlap, so they use `@memmove`.
-- **The api-snapshot freeze gates are marked `has_side_effects`, so the build cache never answers them.** This covers `api-snapshot`, `check-api`, `check-api-experimental`, `api-closure` and their `-Dquic` twins.
-  - On Zig 0.17.0 these steps already re-ran on every build. The flag guards against edits like `expectExitCode(0)`, which makes a step cacheable: with that edit, a one-line change to the snapshot left `check-api` green on a warm cache. With the flag, the same change turns it red.
-  - It adds no measurable time.
-
-- **QUIC transports refuse peer-opened streams the protocol never uses (Experimental).** This covers any peer bidirectional stream other than the client's stream 0, and in baseline mode any peer unidirectional stream. Each gets STOP_SENDING plus RESET_STREAM (bidi only), code `ApplicationCloseCode.protocol_error` (0x434e5002), and the connection stays up. Under v0.24.0's window rule an unanswered stream held its place in the peer's window for good. `Connection`, `ServerSession` and `EmbeddedSession` (in `onStreamOpen`) all refuse. Conforming peers never open such streams.
-- **The nightly QUIC self-healing soak enforces its RSS verdict** (`--rss-gate enforce`); the TCP soak lanes stay report-only.
-- **`bench-quic` measures native mode and stream windows** with `--transport baseline|native`, `--uni-window N`, `--bidi-window N`, `--rtt-ms N` and `--udp-buffer BYTES` (the socket buffer request on both ends; 0 keeps the OS default). The last one routes traffic through a loopback relay that adds the given round-trip time. On Linux each run reports every socket's kernel receive drops (server, client, relay) from `/proc/net/udp`, and a failed run prints both close causes.
-- **QUIC transports ask the kernel for 4 MiB UDP socket buffers (Experimental).** `ClientOptions` and `ServerOptions` gain `udp_socket_recv_buffer_bytes` and `udp_socket_send_buffer_bytes`. They default to the new `default_udp_socket_recv_buffer_bytes` and `default_udp_socket_send_buffer_bytes`, which are 4 MiB, quic-zig's recommendation. Null keeps the OS default, and 0 is `error.InvalidConfig`. The request applies to every UDP socket the transport binds (client and listener) and is best effort. On Linux it tries `SO_RCVBUFFORCE`/`SO_SNDBUFFORCE` first; otherwise `net.core.rmem_max`/`wmem_max` caps it (stock 208 KiB, which the kernel doubles to 416 KiB). macOS honors it, and Windows keeps its default. Without the request, Linux's 208 KiB default lost native full-window bursts as silent loss: a window of 8 fell to 1.2-1.3 MB/s at 50 ms RTT in two of three runs. On a Linux server, raise `net.core.rmem_max` and `net.core.wmem_max` to at least 4 MiB. `EmbeddedSession` uses the embedder's own socket, so size it there (quic-zig `transport.applyServerTuning`).
-
-- **CI's evented check is now an expected-fail canary.** `zig build -Dio-
-  backend=evented check` compiled nothing evented:
-  `io_backend.evented_available` is `false` because no `std.Io.Evented`
-  compiles at Zig 0.17.0. `zig build check-evented-canary` (also `just
-  check-evented`) compiles a reference to `std.Io.Evented` and passes only
-  while that fails with the known `processReplacePath` VTable error. Red, or
-  a Nightly `::notice`, means re-check the flag. Docs were also corrected:
-  the Zig target, the narrowed `std.Io` claim, the macOS TSan and Evented
-  rows, the quic pin paragraph, and hosted cross-impl e2e. There is a new
-  'Consumer Build Pitfalls' troubleshooting section, and Zig fork handoffs
-  for `Stream.read`, the evented VTable and `zig fetch` cache poisoning.
-- **Soak gates with teeth (`tools/soak_rpc.zig`).** The soak's TCP client
-  now sets TCP_NODELAY. On Linux, p99 drops from about 45 ms (Nagle plus
-  delayed ACK) to under 1 ms; `--nagle` restores the old behaviour for A/B
-  runs. Windows is unchanged because std has no AFD NODELAY path yet. Setup
-  (dial) failures are now classified as refused, port_exhaustion, resources,
-  timeout or other, and counted separately from mid-session transport
-  errors. Mid-session errors are bounded: `transport_errors <= chaos_closes
-  + death_allowance + tolerance`, with the tolerance defaulting to max(8,
-  sessions/500). Unexplained dial failures fail the run. Port exhaustion is
-  reported with a `::warning::` annotation. Process RSS (Linux statm, macOS
-  task_info, Windows GetProcessMemoryInfo) now goes through the heap gate's
-  steady-state trend check. It is report-only by default; `--rss-gate
-  enforce` makes it fail the run. It read FAIL on quic v0.19.0's
-  AEAD-context leak while the Zig heap stayed flat, and passes on v0.24.0.
-  Latency samples now
-  go into fixed-size histograms, so neither memory check grows with the call
-  count. DebugAllocator stack traces are off by default (`--alloc-traces`
-  turns them on), because the trace capture itself grows RSS. The harness's
-  own unit tests now run in `zig build test` (`test-soak-harness`); they had
-  never been compiled. Ablation hooks: `--inject-transport-error-every`,
-  `--inject-rss-growth-kib-per-s`.
-
-- **`zig build check` now compiles the tool, bench and e2e executables it
-  used to skip.** A new `check-tools` step builds: e2e-l3-cpp, e2e-l3-vatc,
-  e2e-l3-vatc-host, e2e-self, the `zig run` tools (e2e_runner,
-  e2e_l3_go_probe, fuzz_evidence and its tests), bench-check, hardening-
-  gate, package-preflight, quic-test-evidence, api-snapshot (analysis only),
-  the ping-pong/pack/RPC/QUIC benches, reflection-performance and
-  reflection-cpp-build. `check` skips it when the host or target is Windows,
-  because the L3 drivers wait on posix `poll`, which std does not wire for
-  Windows. There, `zig build check-tools` fails with that reason. This
-  closes the gap that let the e2e_l3_cpp `Io.VTable.netWrite` break reach CI
-  with local `check` green. The L3 e2e tools now share the io-write-compat
-  socket-write shim instead of carrying private copies.
-- **The clean-room package consumers now force analysis of the capnp-zig APIs that six audited downstreams call.** Zig analyzes lazily, and `package-preflight`'s consumer roots only named namespaces and types. So v0.18.0's TCP `Transport.read`, which does not compile on tagged Zig 0.17.0, passed the gate. Each consumer root (default, core, QUIC) now takes `&` of the functions its downstreams call. That includes the methods of the values those functions return, such as list readers and builders and AnyPointer readers and builders. Generic helpers are instantiated with concrete types in never-called functions. Each line names the downstream:
-  - TCP `Transport`, `Listener` and `connect` for slcp;
-  - the list wrappers that generated and hand-written code use, for slcp, bucketlist and prollytree;
-  - for mruby-quic and capnp-qmsg-demo (including the demo's tests): the QUIC connection, server and embedded-session surface, plus the Peer, wire-builder and vat surface;
-  - the serialization, `canonical` and `Framer` set for all of them.
-
-  With v0.18.0's read arm restored, `package-preflight` now fails. RELEASING.md now requires that any API a downstream newly uses, including a method on a returned value, is added to this list before a tag.
-
+  its signature, which makes `mise install` fail outright. Two CI jobs hit
+  exactly that. Tagged releases stay on ziglang.org.
+  - The frozen `docs/api-snapshot.txt` is byte-identical across the move.
+  - In the Experimental surface, std's network error sets gained
+    `ConnectionTimedOut`. So `tcp.stream.Transport.ReadError`,
+    `ReadTimeoutError` and `WriteError` (and the QUIC listener sets built on
+    them) now include it.
+  - **Migration:** upgrade to Zig 0.17.0; `mise.toml` carries the exact
+    pin. Handle `error.ConnectionTimedOut` in any exhaustive switch over
+    those error sets.
 - **The `io_backend` `.evented` selector returns
   `error.EventedBackendUnsupported` on every target (Experimental).** At
   0.17.0 no std evented backend compiles: `std.Io.Uring` (Linux) and
   `std.Io.Dispatch` (macOS) both set an `Io.VTable` field
   (`processReplacePath`) that the VTable dropped, so naming either is a
-  compile error. Neither ever had a working socket vtable, so no RPC path
-  could run on one — nothing that worked stops working.
-- **TCP reads submit the `net_read` operation directly.** At 0.17.0 std's
-  `net.Stream.read` destructures the operation's new `ReadResult` struct as
-  a tuple and fails to compile once referenced. The transport now reads
-  `data_len` itself, selecting on the result type so the same source still
-  builds where the result is a bare `usize`. No behavior change.
+  compile error. At v0.18.0, `Backend.init(.evented, ...)` constructed a
+  `std.Io.Evented` on Linux and macOS. Neither backend ever had a working
+  socket vtable, so no RPC socket path could run on one.
+  - `Backend.evented` now carries `void`. At v0.18.0 it carried a struct
+    with `allocator` and `instance`. The doc comments say the selector is
+    unsupported.
+  - **Migration:** select `.threaded` or `.process_init`. Remove code that
+    reads the `.evented` payload. `Backend.init(.evented, ...)` and
+    `initEvented` now always return `error.EventedBackendUnsupported`.
+- **QUIC now pins quic-zig v0.24.1 (was v0.19.0; Experimental).** v0.24.1's
+  library code is byte-identical to v0.24.0; it only adds an `optimize`
+  build option. capnp-zig keeps passing `.release`.
+  - v0.19.0 leaked a BoringSSL AEAD context on every handshake key
+    derivation, about 780 KB per handshake. The QUIC heal soak reached
+    26.6 GB RSS in 10 minutes. v0.21.1 fixed this: the same 10-minute soak
+    on v0.24.0 holds RSS flat (steady state -5.3%, peak 172 MB over
+    ~89,600 handshakes) and passes `--rss-gate enforce`.
+  - v0.24.0 removes the 4096-per-connection lifetime stream cap.
+    `initial_max_streams_bidi`/`_uni` is now the number of streams the peer
+    may have open at once, and an id comes back when a stream fully closes.
+    `StreamLimitExceeded` is always temporary. This also fixes a v0.18.0
+    native-mode stall (see Fixed).
+  - Native mode keeps a large frame queued and retries it after the next
+    pump, at any stream index. Tests push 10,240 large frames each way over
+    one connection, including through a uni window of 1.
+  - The default `initial_max_streams_uni` rises from 4 to 8; bidi stays 16.
+    A full window arrives as one burst that the receiver's kernel UDP queue
+    must hold. On Linux the measured limit is the socket buffer, not the
+    window. With a stock unprivileged buffer (416 KiB after the new 4 MiB
+    request; see Changed), 8 carries 17.4-18.0 MB/s at 20 ms RTT with
+    64 KiB frames, against 9.3 for 4. A window of 16 collapsed there to
+    1-3 MB/s in most runs. Where a host grants the full 4 MiB buffer (macOS,
+    or Linux with `net.core.rmem_max`/`wmem_max` raised or
+    `CAP_NET_ADMIN`), 16 reaches 32-35 MB/s, so raise it there. The table
+    is in `defaultTransportParams`.
+  - boringssl-zig moves to 0.6.7 with the same BoringSSL source. Windows
+    still links `ws2_32`.
+  - The Experimental QUIC error sets widen with quic's. `Connection.initClient`,
+    `Server.step`/`stepOnce`, `endpoint.EndpointDriver.drainOutgoingDatagrams`/
+    `handleDatagram`, `listener.Listener.drainAcceptedSessionDatagrams`/
+    `drainSessionDatagrams`/`tick`, `AcceptedSession.pollDatagram`,
+    `Session.pollDatagram` and `quic_app.Outbox.finish`/`flush`/`flushAll`/
+    `push`/`reset` gain `TooManySkippedStreamIds`. `Outbox.push` also gains
+    `QueueFull`. `Server.receiveOne`, `Listener.receiveOne` and
+    `Listener.drainStatelessResponses` gain `ConnectionTimedOut`, as do the
+    step and drain functions above.
+  - **Migration:** a build that also depends on quic directly (qmsg,
+    mruby-quic, capnp-qmsg-demo) must pin quic v0.24.1 and pass the same
+    options as capnp-zig: `.target`, `.release = optimize != .debug`,
+    `.@"sanitize-c" = "trap"`. Otherwise the build makes two quic modules.
+    Handle `error.TooManySkippedStreamIds` (and `error.QueueFull` on
+    `Outbox.push`) in any exhaustive switch over these Experimental QUIC
+    sets. Code that drives quic itself should follow quic-zig's
+    EMBEDDING.md section "Stream limits are a window": retry
+    `StreamLimitExceeded` after a pump, finish or reset every peer stream,
+    and refuse with STOP_SENDING plus RESET_STREAM. Custom
+    `transport_params` still work, but the uni window now really bounds
+    native large-frame concurrency. Size it as frames per second x RTT, and
+    keep window x frame size within the receiver's real `SO_RCVBUF`.
+- **Generated code embeds reflection metadata by default and needs the
+  v0.19.0 runtime.** Each generated module carries a `CAPNP_SCHEMA_REQUEST`
+  bundle (about 2,800 lines in each committed e2e binding) and `capnpSchema`
+  declarations that reference the new `reflection` module (see Added).
+  - A file from this plugin fails to compile against an older runtime, with
+    one skew error (see Added).
+  - With reflection on, shape sharing no longer aliases distinct schema
+    IDs, so types that shared one Zig type under `shape-sharing` become
+    distinct types.
+  - **Migration:** regenerate with the plugin from the same release as your
+    pinned runtime (docs/build-integration.md's
+    `dep.artifact("capnpc-zig")` recipe does this). To keep the previous
+    metadata-free output and shape-sharing behavior, pass
+    `--no-reflection`. `--no-reflection` output still needs the v0.19.0
+    runtime, because every generated file carries the codegen-ABI guard.
+- **Generated Text getters validate UTF-8 and the wire NUL terminator.**
+  Generated Text getters call `readTextStrict`, so malformed text now
+  returns `error.InvalidUtf8` or `error.InvalidTextPointer` instead of
+  bytes. Generated Text-list getters return `message.StrictTextListReader`
+  (was `message.TextListReader`), including nested list and generic views.
+  The low-level `StructReader.readText`/`readTextList` and
+  `TextListReader` keep their old behavior. See docs/generated-api.md.
+  - **Migration:** handle the two new errors where you read Text, and
+    change type annotations on generated Text-list results to
+    `message.StrictTextListReader`.
+- **Builders spell named error sets where they can allocate, and keep
+  precise sets where they cannot (Stable signatures change).** New in
+  Stable: `message.BuildError` (12 errors) and `message.CopyError`
+  (`BuildError` plus 9 source-read errors).
+  - Generated mutators that can allocate or write a pointer return exactly
+    `message.BuildError`: `initX` of a struct or list field, the Text/Data
+    `setX` (and `setXText`/`setXData`), `setXCapability` and `setXClient`.
+  - Copy setters (`setX` from a Reader) return exactly `message.CopyError`.
+  - Generated mutators that cannot allocate keep their inferred sets, and
+    their generated lines are unchanged:
+    - Scalar `setX` (Void, Bool, integers, floats, enums, `EnumOrdinals`)
+      still has an empty set.
+    - `clearX` and `setXNull` report at most `InvalidSegmentId`,
+      `OutOfBounds` and `PointerIndexOutOfBounds`.
+    - `initX` of an AnyPointer, AnyStruct, AnyList or interface field (raw,
+      in a group, or through `pointerKinds()`) only returns a handle to the
+      slot, so it reports only `OutOfBounds` and `PointerIndexOutOfBounds`.
+      The `init`/`set` called on that handle is what allocates.
+  - The pointer makers, `StructBuilder.writePointerList*`,
+    `writeStructList*` and `writeTextList*` are typed `BuildError`;
+    `cloneAnyPointer` and `cloneAnyPointerToBytes` are typed `CopyError`. A
+    builder path that gains an error now fails to compile instead of
+    widening to `anyerror`.
+  - `zig build api-snapshot` and `check-api` now reject any Stable builder
+    line that renders `anyerror`, in a return set, a parameter or a field.
+    The rule covers `*Builder` members and a named list of builder free
+    functions; the list reader makers are the one named exemption.
+  - **Narrowed from `anyerror` to a named set (21):**
+    `message.AnyPointerBuilder.setCapability`, `CapabilityBuilder.set`,
+    `PointerListBuilder.setCapability`,
+    `StructBuilder.writePointerList`/`writePointerListInSegment`/
+    `writeTextList`/`writeTextListInSegment`/`writeTextListInSegments`,
+    `message.cloneAnyPointer`, `cloneAnyPointerToBytes`,
+    `typed_list_helpers.CapabilityListBuilder.set`, and in
+    `rpc.wire.protocol`: `CallBuilder.setSendResultsToThirdParty`,
+    `CapDescriptor.writeThirdPartyHosted`,
+    `MessageBuilder.buildAccept`/`buildJoin`/`buildProvide`/
+    `buildResolveCap`/`buildThirdPartyAnswer`/
+    `buildUnimplementedFromAnyPointer`,
+    `PayloadBuilder.setContentCapability`,
+    `ReturnBuilder.setAcceptFromThirdParty`.
+  - **Rendering-only changes (117):** the Stable `StructBuilder` type now
+    renders its pointer-maker parameters with `BuildError` instead of
+    `anyerror`. The errors are the same.
+  - **Widened (31). Each of these functions allocates through the newly
+    named set.** `StructBuilder.writeStructList`/
+    `writeStructListInSegment`/`writeStructListInSegments`,
+    `rpc.caps.table.inbound.InboundCapTable.clone`, and in
+    `rpc.wire.protocol`: `OwnedPromisedAnswerMessage.init`,
+    `CallBuilder.initCapTableTyped`/`payloadTyped`/`setTargetImportedCap`/
+    `setTargetPromisedAnswer`/`setTargetPromisedAnswerFrom`/
+    `setTargetPromisedAnswerWithOps`,
+    `CapDescriptor.writeReceiverAnswer`/`writeThirdPartyHostedNull`,
+    `MessageBuilder.beginCall`/`beginReturn`/`buildAbort`/
+    `buildAbortTyped`/`buildBootstrap`/`buildDisembargoAccept`/
+    `buildDisembargoReceiverLoopback`/`buildDisembargoSenderLoopback`/
+    `buildFinish`/`buildRelease`/`buildResolveException`,
+    `PayloadBuilder.initCapTable`/`setContentData`/`setContentText`,
+    `ReturnBuilder.initCapTableTyped`/`payloadTyped`/`setException`/
+    `setExceptionTyped`.
+    - Each one reaches a struct or list `initX`, a Text/Data setter or a
+      `CopyError` clone. The added names are typically `IndexOutOfBounds`,
+      `InvalidPointer` and `TextTooLong`.
+    - No function that cannot allocate widened.
+      `PayloadBuilder.initContent`,
+      `CallBuilder.setSendResultsToThirdPartyNull` and
+      `ReturnBuilder.setTakeFromOtherQuestion` keep their previous
+      signatures exactly.
+  - Experimental functions change the same way. `rpc.peer.Peer.cancelQuestion`
+    and `cancelQuestionTyped` gain `ElementCountTooLarge`.
+    `rpc.peer.persistence.writeEmptySaveParams` and `writeRestoreParams`
+    widen, and so do the generated `rpc.generated.rpc` and
+    `rpc.generated.persistent` builders. `Peer.captureAnyPointerPayload`,
+    `Peer.registerPendingThirdPartyAwait`,
+    `Peer.ProvideOriginationTargetRecord.buildProvide` and
+    `peer.bootstrap.buildBootstrapReturnFrame` narrow from `anyerror` to a
+    named set.
+  - **Migration:** code that switches exhaustively over a widened set must
+    handle the added names, or switch over `message.BuildError` /
+    `message.CopyError` instead. Code that stored a narrowed function in an
+    `anyerror`-typed function pointer needs a wrapper or the new type.
+    Regenerate bindings with the matching plugin.
+- **Inherited RPC methods whose generated names collide get a
+  declaring-interface suffix.** When an interface inherits a method whose
+  generated family (`callX`, `callXWithOptions`, `callXPipelined`,
+  `callXPipelinedWithOptions`, the server VTable field) overlaps a name
+  from the interface itself or another ancestor, the inherited member
+  becomes `xFromParent` (for example `callPingFromFirst`, VTable field
+  `pingFromFirst`), with an interface-id or `_` suffix if that still
+  collides. Wire interface IDs and ordinals are unchanged. Where two
+  members had the exact same name, v0.18.0 emitted duplicate declarations,
+  so those schemas did not compile before. The family rule also renames
+  rarer near-misses that did compile, such as an inherited `ping` next to
+  an own `pingPipelined`. No committed binding in this repo changed.
+  - **Migration:** if regeneration renames an inherited member, update its
+    call sites and the server VTable field to the suffixed name.
+- **`rpc.wire.framing.Framer.buffer` no longer holds only the unread
+  bytes.** This Stable field changed meaning when the framers gained a read
+  cursor (see Changed).
+  - `buffer.items` now starts with a prefix that `popFrame` already
+    returned. Only `buffer.items[consumed..]` is unread. The new `consumed`
+    field is Experimental.
+  - `docs/api-snapshot.txt` is byte-identical, because the snapshot records
+    types, not meaning.
+  - Code that uses only `push`, `popFrame`, `bufferedBytes` and `reset` is
+    unaffected.
+  - The Experimental QUIC `LengthDelimitedFramer` and `NativeControlFramer`
+    changed the same way.
+  - **Migration:**
+    - Count the unread bytes with `bufferedBytes()`.
+    - Discard them with `reset()`, not by editing `buffer`.
+    - Code that reads leftover bytes from the field must read
+      `buffer.items[consumed..]`.
+    - Code that changes `buffer` directly must also set `consumed` (to 0
+      after emptying or replacing the list). If it does not, `push`,
+      `popFrame` and `bufferedBytes` panic in safe builds and are undefined
+      behavior in ReleaseFast.
+- **`rpc.events.DisconnectCause` is now non-exhaustive (`enum(u8) { ..., _
+  }`; Experimental).** New causes keep arriving as transports learn more
+  (`handshake_timeout` most recently), and with an exhaustive enum each one
+  broke every consumer `switch` that listed the variants. A new cause is
+  now additive: older code sees an unnamed value. Named values and their
+  order are unchanged; the tag type is now `u8`. The API snapshots are
+  byte-identical because they do not render exhaustiveness.
+  - **Migration:** a `switch` on a `DisconnectCause` must handle unnamed
+    values: add a `_ =>` arm (treat it like `.unknown`) or keep an `else`
+    arm. Do not `@tagName` a cause you did not construct; use
+    `std.enums.tagName`, which returns `null` for an unnamed cause. Code
+    that indexes an array by `@backingInt(cause)` must bound the index
+    first. `std.enums.EnumArray`/`EnumSet`/`EnumMap` keyed by
+    `DisconnectCause` now span all 256 backing values: iterate
+    `std.enums.values(DisconnectCause)` instead, and do not `@tagName`
+    their keys.
+- **`rpc.events.Event` gains `.cancel_failure` (Experimental).** A `switch`
+  over an `Event` that lists every variant no longer compiles. `Event` is a
+  tagged union, so unlike `DisconnectCause` it cannot be made
+  non-exhaustive, and future variants will break such switches again. See
+  Added for what the event reports.
+  - **Migration:** add a `.cancel_failure` arm, or an `else` arm, which is
+    the recommended form.
+- **WorkerPool now reaps silent and idle connections by default
+  (Experimental behavior).** Each worker serves one connection to
+  completion. Before this change, `concurrency` clients that connected and
+  never spoke pinned every worker forever (the TCP analog of QUIC
+  half-open immortality).
+  - `WorkerPool.Config` gains `first_frame_timeout_ms` (default 10 s). It
+    reaps an accepted connection that has not delivered one complete frame,
+    including a client that trickles bytes of a frame it never finishes.
+  - `WorkerPool.Config` also gains `idle_timeout_ms` (default 5 min, no
+    inbound read and no outbound enqueue), which applies when
+    `connection_options.idle_timeout_ms` is null.
+  - Both reapings emit the `.idle_connection` timeout event. The pool arms
+    the first-frame deadline before `on_accept`.
+  - `Connection` gains the Experimental `first_frame_timeout_ms` field
+    (default null), so raw `Connection`, `ClientSession` and the Stable
+    `ServerSession.accept` arm neither deadline.
+  - Residual, by design: after its first frame, a client that keeps
+    sending anything (a cheap frame, or one byte of a frame it never
+    finishes) at least once per `idle_timeout_ms` still holds its worker.
+    Bound such clients with `on_accept` admission control.
+  - **Migration:** WorkerPool servers whose clients stay idle for more than
+    5 minutes (Cap'n Proto has no keepalive) should raise `idle_timeout_ms`
+    or set it to `null`. Servers whose clients legitimately send nothing
+    for 10 s after connecting, such as a protocol where the server speaks
+    first, should raise `first_frame_timeout_ms`, set it to `null`, or
+    override `conn.first_frame_timeout_ms` per connection in `on_accept`.
+- **`ServerProductionHardening` now requires a `stateless_reset_key`, and
+  its 0-RTT posture is an explicit pair (Experimental).**
+  `withProductionServerHardening` neither took nor set the key, and
+  `ServerOptions` defaults it to null. So a server built the documented way
+  never sent stateless resets. After a crash-restart its clients certified
+  `DisconnectCause.idle_timeout` (30 s later) instead of
+  `.stateless_reset`, and `WarmRedialClient`, which redials only on
+  `.stateless_reset` by default, never healed them.
+  - The preset now requires the key and sets it, overriding any key in the
+    base options. docs/quic-transport.md ("Production Defaults",
+    "Stateless-reset key") has a generate-and-persist recipe, and
+    `tests/docs` runs it verbatim. The recipe syncs the key file's parent
+    directory after linking it.
+  - Key sharing (RFC 9000 §21.11): share one key between instances only
+    when the load balancer routes by connection ID; otherwise give each
+    instance its own persisted key. Under address-hash routing, a sibling
+    instance resets live connections, and their clients certify a false
+    `.stateless_reset`.
+  - A crash-restart e2e against the preset (Retry and NEW_TOKEN on) proves
+    the client certifies `.stateless_reset` and `WarmRedialClient`
+    rebinds. With the key dropped from the preset, the same tests certify
+    `.idle_timeout` and fail.
+  - The preset gains `early_data: ProductionEarlyData = .disabled`, which
+    also resets `early_dispatch` to `.hold_until_handshake`. `.restore_only`
+    is the explicit warm-restore opt-in: it sets `early_data =
+    .without_replay_protection` together with `early_dispatch =
+    .restore_only`, so only Bootstrap and Restorer calls run before the
+    handshake. An e2e shows a resumed dial is accepted 0-RTT through the
+    preset's Retry gate with the opt-in, and rejected (frame still
+    delivered at 1-RTT) without it. The preset now sets `early_dispatch`
+    from `.early_data`, so a base `early_dispatch` no longer survives it.
+  - 0-RTT applies when a client resumes against the same server process.
+    A heal after a server crash-restart always pays a full handshake,
+    because session-ticket keys live per process.
+  - **Migration:** pass `.stateless_reset_key = <32 persisted bytes>` to
+    `withProductionServerHardening`. Generate the key once from a CSPRNG,
+    store it with the server's state (one key per instance unless your
+    load balancer routes by connection ID), and load the same bytes on
+    every start: a new key per start voids the certificate for connections
+    that outlive a restart. To allow 0-RTT for warm restore, add
+    `.early_data = .restore_only` (and a `new_token_key`), and make sure
+    your Restorer is idempotent.
+- **`WarmRedialClient`'s redial budget now counts consecutive failures,
+  refunded only by proven server liveness (Experimental).** `redials` only
+  ever grew, so `Policy.max_redials = 3` was a lifetime budget: a
+  long-lived client stopped healing after its third crash-restart even when
+  every generation in between was healthy.
+  - A generation now resets `redials` to zero when the server proves it
+    stayed alive for the new `Policy.min_healthy_ms` (default 10 s,
+    `WarmRedialClient.default_min_healthy_ms`) after the rebind. Proof
+    means an authenticated packet from the server arrives at least that
+    long after the rebind.
+  - The new `quic.Connection.lastAuthenticatedReceiveNs()` gives the time
+    of the last such packet, from quic-zig's post-AEAD packet count.
+  - The time the client takes to detect a death does not count: a
+    stateless reset is not authenticated, and an idle connection receives
+    nothing. So a crash loop still exhausts `max_redials`, even when a
+    client that calls rarely notices each death late, or when generations
+    end in idle timeouts with `redial_on_idle_timeout`. The cost: an idle
+    client spends one redial on each death, as before.
+  - `WarmRedialClient` and `Outcome` gain `total_redials` (lifetime count).
+  - Tests: four crash-restarts between healthy generations heal under
+    `max_redials = 3` (a lifetime budget gave up on the fourth). Crash
+    loops still give up after exactly 3 redials whether each death is
+    detected at once, 3x `min_healthy_ms` late, or only by an idle
+    timeout.
+  - **Migration:** code that read `Outcome.redials` or
+    `WarmRedialClient.redials` as a lifetime total should read
+    `total_redials`. To keep the old lifetime cap, set `.min_healthy_ms =
+    std.math.maxInt(u64)`. A client that should reset its streak needs
+    traffic with the server `min_healthy_ms` after each rebind.
+
+### Added
+
+- **Generated code rejects plugin/runtime skew with one readable compile
+  error.** The runtime exports Stable `capnpc.codegen_abi` (`version` 1,
+  `oldest_supported` 1, `release` "0.19.0") from all three library roots.
+  - Every generated file resolves its `capnpc` binding through a comptime
+    check of `codegen_abi`. A runtime that is older, or that predates the
+    guard, fails with one error that names the release to upgrade to. A
+    runtime that has dropped the file's ABI asks for regeneration.
+  - The guard's locals are quoted names that no schema declaration can
+    shadow.
+  - `zig build test-codegen-skew` (also part of `test-codegen` and `zig
+    build test`) compiles a freshly generated binding against three stub
+    runtimes and requires exactly that error.
+  - **Migration:** files from this plugin need a runtime at least as new
+    as `codegen_abi.release`. Regenerate with the plugin that matches your
+    pinned capnp-zig.
+- **Binary schema reflection (Experimental).** Generated modules embed a
+  canonical, ID-sorted `CAPNP_SCHEMA_REQUEST` containing the original
+  compiler Nodes, and generated structs, groups, enums, interfaces, and
+  struct Reader/Builder types expose `capnpSchema`. The `reflection` module
+  is available through the full, core, and WASI library roots.
+  - It provides owned registries, raw and parsed descriptors,
+    field/enum/interface lookup, brand-aware type views, and dynamic
+    struct/list readers and builders.
+  - Dynamic mutation applies defaults, guards unions, checks value types,
+    and preserves unknown fields through struct/list evolution. Struct and
+    group replacement and growth keep reachable values on failure,
+    including aliased copies.
+  - Registry loading and lazy defaults enforce input, memory, and traversal
+    limits. Dynamic builders expose borrowed-reader queries and bounded copy
+    operations.
+  - Native and WASI conformance tests exercise the same runtime; a C++
+    oracle checks descriptors, native messages and mutations.
+- **Independent reflection controls (Experimental).** `--no-reflection`
+  omits binary metadata; existing JSON manifest options keep their meaning.
+  Programmatic generators enable reflection with the fallible `try
+  generator.setSchemaRequest(bytes)` and can disable emission with
+  `setEmitReflection(false)`. See [the reflection guide](docs/reflection.md)
+  for ownership and builder invalidation rules.
+- **Generated mutable APIs.** Builders gain field getters, typed
+  struct/list copy setters, `clearXxx()`, union inspection (`which`,
+  `whichOrdinal`), and validated `asReader()` views with explicit
+  borrowed-reader storage. Reopening evolved struct/list fields keeps
+  unknown sections. Typed copies preserve unknown stored sections through
+  borrowed source provenance, and a failed copy leaves the destination
+  unchanged.
+- **Concrete generic collections and recursion.** `brands()` handles direct
+  `List(Box(Text))`, recursive data applications and lists, and alternating
+  concrete bindings in full and compact profiles. Recursive wrappers stay
+  finite and budgeted. Existing erased APIs remain available.
+- **Generated RPC pipeline paths.** Pipelines follow non-union struct and
+  group paths to capabilities, including bounded recursive paths. The
+  standard reflected StreamResult schema is bundled and regenerated with
+  the RPC bindings.
+- **Typed generic RPC (Experimental).** Additive `Apply()` namespaces bind
+  concrete clients, server adapters, data views, imported branded
+  ancestors, and recursive capability pipelines in full and compact output.
+  - Callers can bind method-local parameters, including named generic
+    Params/Results. Server handlers for those methods stay erased because
+    the wire carries no type argument tags.
+  - Conflicting inherited applications require an explicit typed ancestor
+    view. Adapters share the existing raw call ownership. Generic anonymous
+    RPC structs keep their lexical binding scope, and constrained setters
+    on applied generic views reject wrong pointer kinds.
+  - Native/WASI consumers and real C++ calls in both directions cover Text,
+    Data, inheritance, method generics, and invocation before a generic
+    parent result arrives.
+- **Deferred streaming (Experimental).** Generated streaming handlers can
+  acknowledge after asynchronous work. Configurable call/byte windows,
+  readiness, and drain notifications account for queued work. Streaming
+  contexts, deferred acknowledgements and reservations settle once across
+  cancellation, disconnect, reentrant callbacks and reused question IDs,
+  and nested transport teardown waits for active streaming operations to
+  unwind. A failing ordinary (non-streaming) method on an interface with
+  streaming methods settles only its own question and does not poison the
+  streaming queue.
+- **Stable additions (54 declarations).** Besides `codegen_abi` (4),
+  `BuildError` and `CopyError`: `message.StrictTextListReader`,
+  `StructReader.readTextListStrict`, `AnyListReader.getTextListStrict` and
+  `PointerListReader.getTextListStrict`; `source_list` on list readers and
+  `stride_bytes` on list builders; and
+  `rpc.wire.protocol.PayloadBuilder.getContent`/`setContent`/
+  `clearContent`/`getCapTable`/`setCapTable`/`clearCapTable`.
+- **QUIC sessions at TCP parity (Experimental, `-Dquic=true`).**
+  - `rpc.transport.quic.connect` returns a `ClientSession`: a QUIC
+    `Connection` and its `Peer` in one allocation, with the TCP session's
+    secure defaults and `run`/`close`/`requestStop`/`closeCause`/
+    `fromPeer`/`deinit`.
+  - `rpc.transport.quic.serve` returns a `PeerServer` that gives every
+    accepted QUIC session its own `Peer`. `ServeOptions.on_accept` sets the
+    bootstrap, `on_error`/`on_close` are optional, and `requestStop` is
+    thread-safe. `on_error` never fires after `on_close` for the same
+    session. Reaping closed sessions costs nothing on steps where no
+    session closed.
+  - Underneath, `quic.Server.setOnSessionAccepted` fires exactly once per
+    adopted `ServerSession`, on the loop thread, before the session is
+    serviced; an error from the hook rejects the session.
+    `Server.runWithAfterStep` adds a hook after every step for freeing
+    per-session state once the transport is gone.
+  - The default (non-QUIC) root gains `@compileError` stubs for `connect`,
+    `serve`, `ClientSession` and `PeerServer`.
+  - New `zig build -Dquic=true example-rpc-quic`
+    (examples/rpc_pingpong_quic.zig, also `just example-quic`), run once
+    per OS by the QUIC CI lane.
+  - docs/quic-transport.md documents the API, drops the 'no accept event'
+    limit, and adds a Concurrency Model section.
+  - Known limit: a session rejected before its handshake completes looks
+    to the client like a handshake timeout, because quic-zig sends that
+    close only under 1-RTT keys.
+- **Pinnable plugin for consumers (slcp 07 F5).** The `capnpc-zig` plugin
+  accepts `--output-dir=<dir>` (created if missing), so a consumer's
+  `build.zig` can run the plugin from its pinned dependency as a cached
+  build step instead of a PATH binary. Without the flag the plugin behaves
+  exactly as before.
+  - The step is `b.addRunArtifact(b.dependency("capnpc_zig", .{ .target =
+    b.graph.host, .optimize = .ReleaseSafe }).artifact("capnpc-zig"))`,
+    with the `CodeGeneratorRequest` on stdin (`setStdIn`) and
+    `addPrefixedOutputDirectoryArg("--output-dir=", "capnp-gen")` as the
+    generated module's root.
+  - docs/build-integration.md's canonical `build.zig` is now this recipe,
+    plus optional `gen` and `gen-check` steps for checked-in output, and
+    says to regenerate with it, never a PATH binary. That file is
+    byte-identical to a new package-preflight consumer
+    (`tests/package_consumer/codegen`), which is built and run from the
+    filtered archive; docs-smoke enforces the match.
+  - With `--output-dir=` the plugin ignores `CAPNPC_ZIG_*` environment
+    options, because Zig does not hash inherited environment into a Run
+    step's cache key. Pass options as arguments instead; the plugin names
+    a skipped variable on stderr.
+  - The recipe's `gen-check` runs `git --no-pager diff --no-index
+    --no-ext-diff --no-textconv`, so user git config cannot change its
+    result, and package-preflight requires the injected drift to appear in
+    its failure output.
+  - The build and serialization guides name the verified schema compiler
+    (the pinned capnp 2.0-dev WASM compiler) and label native capnp 1.x
+    unverified. They list every step to run it (layout, `capnp_tool.py
+    bootstrap`, Wasmtime 48.0.1).
+- **Deadline-cancel callback errors are now visible as an observer event
+  (Experimental `rpc.events`); sessions are unaffected.** `checkDeadlines()`
+  cancels a question when its own deadline or the shutdown drain bound
+  expires. If the question's callback then returns an error, the peer
+  emits the new `Event.cancel_failure` after the `.timeout` event. An
+  example is `unwrap()`'s `error.CallTimedOut` returned through `try
+  response.unwrap()`.
+  - The payload is `CancelFailureEvent`: the deadline `kind`
+    (`.call_deadline` or `.shutdown_drain`), the `question_id` (always the
+    wire question id, the same one the `.timeout` event for that
+    cancellation carries) and the `err`. An OOM in the cancellation itself
+    is reported the same way. Before, both were only debug-logged, and
+    they still are.
+  - `on_error` is not called, so the Stable `ClientSession` and
+    `ServerSession` keep running: one timed-out call does not close them,
+    and later calls work. Explicit `cancelQuestion()` and teardown still
+    only log. A failing callback on a Return that arrives over the wire
+    still goes to `on_error`, as before.
+- **Reproducible hardening evidence.** Mandatory Linux reflection
+  conformance, positive-activity fuzz receipts, and a baseline/candidate
+  performance matrix cover the added surfaces (docs/fuzz-evidence.md,
+  docs/parity-sprint-performance.md).
+
+### Changed
+
+- **Generated code is `zig fmt` clean as the plugin writes it.**
+  `capnpc-zig` now emits zig fmt's layout itself, so a consumer that runs
+  the pinned plugin directly (the `dep.artifact("capnpc-zig")` recipe) gets
+  byte-for-byte what this repo commits, and a committed copy passes the
+  consumer's own `zig fmt --check`. Before, `just gen` piped output through
+  `zig fmt`, which hid about 1,100 layout differences. The emitter changes:
+  - Members have no blank line before a closing brace, and a file ends
+    with one newline.
+  - Typed generic `Apply` types are properly indented and have multi-line
+    bodies.
+  - Array and annotation literals use zig fmt's brace padding.
+  - It writes `@backingInt`/`@fromBackingInt`, not
+    `@intFromEnum`/`@enumFromInt`, which zig fmt rewrites.
+  - Names Zig no longer reserves (`usingnamespace`, `async`, `await`) are
+    not quoted.
+  - Primitive names such as `void` or `type` stay bare where Zig reads a
+    field name: union tags, enum literals, VTable fields, and import
+    aliases behind the `_capnp_file.` anchor.
+
+  Regenerated bindings are formatting-only changes: every committed file
+  equals `zig fmt` of its previous version, except one inline
+  `Apply(.{ ... })` argument in `src/rpc/gen/capnp/persistent.zig`, which
+  drops its trailing commas to stay on one line. `docs/api-snapshot.txt` is
+  byte-identical. `just gen` no longer runs `zig fmt` on plugin output.
+  `just check-generated` now runs `zig fmt --check` on the raw output, and
+  `just fmt`/`fmt-check` no longer exclude the generated directories or
+  `tests/golden`. package-preflight compares the packaged plugin's raw
+  output byte for byte. The Experimental
+  `codegen.Generator.allocMethodVTableFieldName` now returns bare primitive
+  names (`void`, not `@"void"`). **Migration:** none for library users.
+  Regenerating with this plugin changes only layout, and the identifiers
+  above (for example `@"usingnamespace"` becomes `usingnamespace`) name the
+  same declarations.
+- **CI's evented check is now an expected-fail canary.** `zig build
+  -Dio-backend=evented check` compiled nothing evented, because
+  `io_backend.evented_available` is `false`. `zig build
+  check-evented-canary` (also `just check-evented`) compiles a reference to
+  `std.Io.Evented` and passes only while that fails with the known
+  `processReplacePath` VTable error. Red, or a Nightly `::notice`, means
+  re-check the flag. On a Windows host, `just check-evented` cross-checks
+  the Linux backend. Docs were also corrected: the Zig target, the
+  narrowed `std.Io` claim, the macOS TSan and Evented rows, the quic pin
+  paragraph, and hosted cross-impl e2e. There is a new 'Consumer Build
+  Pitfalls' troubleshooting section, and Zig fork handoffs for
+  `Stream.read`, the evented VTable and `zig fetch` cache poisoning.
+- **QUIC transports refuse peer-opened streams the protocol never uses
+  (Experimental).** This covers any peer bidirectional stream other than
+  the client's stream 0, and in baseline mode any peer unidirectional
+  stream. Each gets STOP_SENDING plus RESET_STREAM (bidi only), code
+  `ApplicationCloseCode.protocol_error` (0x434e5002), and the connection
+  stays up. Under v0.24.0's window rule an unanswered stream held its place
+  in the peer's window for good. `Connection`, `ServerSession` and
+  `EmbeddedSession` (in `onStreamOpen`) all refuse. Conforming peers never
+  open such streams.
+- **QUIC transports ask the kernel for 4 MiB UDP socket buffers
+  (Experimental).** `ClientOptions` and `ServerOptions` gain
+  `udp_socket_recv_buffer_bytes` and `udp_socket_send_buffer_bytes`. They
+  default to the new `default_udp_socket_recv_buffer_bytes` and
+  `default_udp_socket_send_buffer_bytes`, which are 4 MiB, quic-zig's
+  recommendation. Null keeps the OS default, and 0 is
+  `error.InvalidConfig`.
+  - The request applies to every UDP socket the transport binds (client
+    and listener) and is best effort. On Linux it tries
+    `SO_RCVBUFFORCE`/`SO_SNDBUFFORCE` first; otherwise
+    `net.core.rmem_max`/`wmem_max` caps it (stock 208 KiB, which the
+    kernel doubles to 416 KiB). macOS honors it, and Windows keeps its
+    default.
+  - Without the request, Linux's 208 KiB default lost native full-window
+    bursts as silent loss: a window of 8 fell to 1.2-1.3 MB/s at 50 ms RTT
+    in two of three runs. On a Linux server, raise `net.core.rmem_max` and
+    `net.core.wmem_max` to at least 4 MiB.
+  - `EmbeddedSession` uses the embedder's own socket, so size it there
+    (quic-zig `transport.applyServerTuning`).
+- **The stream framers no longer shift their buffer after every frame.**
+  The TCP `Framer`, `LengthDelimitedFramer` and `NativeControlFramer` used
+  to move the unread tail down after each frame, so a read carrying k
+  frames cost O(k x read size) in copies.
+  - They now share a read cursor. The consumed prefix is reclaimed when the
+    buffer drains, when the cursor passes half the buffer, or just before
+    an append would grow the allocation.
+  - Frames, errors, budgets and `bufferedBytes` are unchanged.
+  - Each framer gains a `consumed` field, and the meaning of its `buffer`
+    field changed (see Breaking). `Framer.consumed` is held out of the
+    frozen API.
+  - At the default benchmark settings nothing changes, within ±1%. With 256
+    calls in flight, `bench-rpc` pipelined goes from 119k to 208k calls/s
+    (9 alternating runs each, ranges do not overlap).
+- **Every `std.mem.copyForwards` in `src/` is gone.** It is deprecated in
+  Zig 0.17.0; all 32 call sites were replaced.
+  - Copies into fresh storage use `@memcpy`, with a comment wherever it is
+    not obvious that the ranges cannot overlap.
+  - `U8ListBuilder.setAll` and the WASM ABI's `setError` can overlap, so
+    they use `@memmove`.
+- **The benchmark gates now count allocations per RPC call, and the QUIC
+  gate runs nightly.**
+  - `bench-rpc` and `bench-quic` count allocations over the timed window,
+    with a separate thread-safe counting allocator for the client and the
+    server. They report `alloc_count_per_call`, `alloc_bytes_per_call`, and
+    the client and server counts.
+  - `bench-check` and `bench-check-quic` gate these counts hard. A round
+    trip makes about 33 allocations, so one extra is only 3% of the total.
+    The client and server counts are gated separately, with 3% bands over
+    the highest value seen on macOS arm64, Linux arm64 and Linux x86_64.
+    That catches one extra allocation per call on either end. Bytes per
+    call have a 5% band.
+  - `bench-check-quic` now runs in its own Nightly job (`zig build
+    -Dquic=true -Doptimize=ReleaseFast bench-check-quic`) and locally as
+    `just bench-check-quic`. Before this it ran nowhere.
+  - QUIC baselines are re-taken on quic v0.24.1. Every earlier QUIC number
+    had quic-zig built in Debug (see Fixed) and was 2-7x too slow. The QUIC
+    wall-clock cases stay advisory until they are baselined from the
+    Nightly job. The TCP wall-clock baselines are CI numbers and are
+    unchanged.
+  - Each baselines file records how its numbers were taken in a `note`
+    field. `bench-check` runs each distinct command line once and reads
+    every case's metric from that one run.
+- **`bench-quic` measures native mode and stream windows** with
+  `--transport baseline|native`, `--uni-window N`, `--bidi-window N`,
+  `--rtt-ms N` and `--udp-buffer BYTES` (the socket buffer request on both
+  ends; 0 keeps the OS default). `--rtt-ms` routes traffic through a
+  loopback relay that adds the given round-trip time. On Linux each run
+  reports every socket's kernel receive drops (server, client, relay) from
+  `/proc/net/udp`, and a failed run prints both close causes.
+- **The api-snapshot freeze gates are marked `has_side_effects`, so the
+  build cache never answers them.** This covers `api-snapshot`,
+  `check-api`, `check-api-experimental`, `api-closure` and their `-Dquic`
+  twins.
+  - On Zig 0.17.0 these steps already re-ran on every build. The flag
+    guards against edits like `expectExitCode(0)`, which makes a step
+    cacheable: with that edit, a one-line change to the snapshot left
+    `check-api` green on a warm cache. With the flag, the same change turns
+    it red.
+  - It adds no measurable time.
+- **Soak gates with teeth (`tools/soak_rpc.zig`).**
+  - The soak's TCP client now sets TCP_NODELAY. On Linux, p99 drops from
+    about 45 ms (Nagle plus delayed ACK) to under 1 ms; `--nagle` restores
+    the old behavior for A/B runs. Windows is unchanged because std has no
+    AFD NODELAY path yet.
+  - Setup (dial) failures are classified as refused, port_exhaustion,
+    resources, timeout, ambiguous or other, and counted separately from
+    mid-session transport errors. Mid-session errors are bounded:
+    `transport_errors <= chaos_closes + death_allowance + tolerance`, with
+    the tolerance defaulting to max(8, sessions/500).
+  - Unexplained dial failures fail the run. Refused and timed-out dials
+    gate too, except under QUIC abrupt deaths, where the server is down by
+    design. A Windows connect-stage `error.Unexpected` counts as port
+    exhaustion only when it has that shape (it starts after at least 100
+    successful dials, and from then on at least half of all dials fail);
+    otherwise it gates. Port exhaustion is reported with a `::warning::`
+    annotation. The soak also fails when the TCP `WorkerPool.run` returns
+    before shutdown is requested.
+  - Process RSS (Linux statm, macOS task_info, Windows
+    GetProcessMemoryInfo) now goes through the heap gate's steady-state
+    trend check. It is report-only by default; `--rss-gate enforce` makes
+    it fail the run. It read FAIL on quic v0.19.0's AEAD-context leak while
+    the Zig heap stayed flat, and passes on v0.24.0. The nightly QUIC
+    self-healing soak enforces it; the TCP soak lanes stay report-only.
+  - Latency samples now go into fixed-size histograms, so neither memory
+    check grows with the call count. DebugAllocator stack traces are off by
+    default (`--alloc-traces` turns them on), because the trace capture
+    itself grows RSS.
+  - The harness's own unit tests now run in `zig build test`
+    (`test-soak-harness`); they had never been compiled. Ablation hooks:
+    `--inject-transport-error-every`, `--inject-rss-growth-kib-per-s`.
+- **`zig build check` now compiles the tool, bench and e2e executables it
+  used to skip.** A new `check-tools` step builds: e2e-l3-cpp,
+  e2e-l3-vatc, e2e-l3-vatc-host, e2e-self, the `zig run` tools
+  (e2e_runner, e2e_l3_go_probe, fuzz_evidence and its tests), bench-check,
+  hardening-gate, package-preflight, quic-test-evidence, api-snapshot
+  (analysis only), the ping-pong/pack/RPC/QUIC benches,
+  reflection-performance and reflection-cpp-build. `check` skips it when
+  the host or target is Windows, because the L3 drivers wait on posix
+  `poll`, which std does not wire for Windows. There, `zig build
+  check-tools` fails with that reason. This closes the gap that let the
+  e2e_l3_cpp `Io.VTable.netWrite` break reach CI with local `check` green.
+  The L3 e2e tools now share the io-write-compat socket-write shim instead
+  of carrying private copies.
+- **The clean-room package consumers now force analysis of the capnp-zig
+  APIs that six audited downstreams call.** Zig analyzes lazily, and
+  `package-preflight`'s consumer roots only named namespaces and types. So
+  v0.18.0's TCP `Transport.read`, which does not compile on tagged Zig
+  0.17.0, passed the gate. Each consumer root (default, core, QUIC) now
+  takes `&` of the functions its downstreams call. That includes the
+  methods of the values those functions return, such as list readers and
+  builders and AnyPointer readers and builders. Generic helpers are
+  instantiated with concrete types in never-called functions. Each line
+  names the downstream:
+  - TCP `Transport`, `Listener` and `connect` for slcp;
+  - the list wrappers that generated and hand-written code use, for slcp,
+    bucketlist and prollytree;
+  - for qmsg, mruby-quic and capnp-qmsg-demo (including the demo's tests):
+    the QUIC connection, server and embedded-session surface, plus the
+    Peer, wire-builder and vat surface;
+  - the serialization, `canonical` and `Framer` set for all of them.
+
+  With v0.18.0's read arm restored, `package-preflight` now fails.
+  RELEASING.md now requires that any API a downstream newly uses,
+  including a method on a returned value, is added to this list before a
+  tag.
+- **CI builds `-Dquic=true` for 32-bit x86, and the QUIC evidence floors
+  match the suites.** The cross-target job now runs `check-compile` and
+  `check-test-compile` with `-Dquic=true` for `x86-linux-gnu`; the soak
+  tool and some QUIC tests used 64-bit atomics or `usize` arithmetic that
+  did not compile there. `zig build -Dquic=true check-compile
+  -Dtarget=x86_64-windows` compiles again: a QUIC test-namespace re-export
+  named a function that is a deliberate `@compileError` on Windows. CI's
+  cross-target leg still builds x86_64-windows without `-Dquic=true`, so
+  nothing gates this compile. Both were test and tool code; the library was
+  unaffected. `tools/quic_test_evidence.zig` now requires 43 + 1 + 36 + 32
+  = 112 tests across the four QUIC roots (was 52), so a silently dropped
+  test fails the gate. `docs-smoke` gains a whole-file verbatim marker
+  that keeps the canonical consumer `build.zig` in
+  docs/build-integration.md identical to its tested fixture.
+- **Repository schema tooling uses the checksum-pinned Cap'n Proto 2.0-dev
+  WASM compiler** through a portable Python/Wasmtime driver, fetched from
+  the capnpc-wasm releases. Generation and package checks continue to
+  exercise this project's native plugin. Regenerated reflection
+  descriptors keep the newer compiler's source metadata; native C++
+  interoperability keeps its matching reference toolchain. See
+  [the tooling migration](docs/capnp-wasm-toolchain.md).
+- **Windows CI and local test recipes compile the selected suite before
+  running it with one build-runner job.** Actual Windows probes reproduced
+  completed test processes being reported as unresponsive when sibling
+  processes inherited their output pipes. Test coverage, runtime
+  concurrency, and time limits are unchanged; see
+  [the runner evidence](docs/windows-test-runner.md).
 - **CI's package cache follows `mise.toml`.** `[env]` now sets
   `ZIG_GLOBAL_CACHE_DIR` to `.zig-global-cache`, and mise's shims apply it
   over CI's own export, so the cached `.zig-cache/p` had silently stopped
-  reaching zig. The cache steps and `setup-zig` now use the same directory.
+  reaching zig. The cache steps and `setup-zig` now use the same
+  directory.
 - **The nightly forward-compat lane (zig dev.1786) is gone.** The pin is
   now past the std.Io net move that lane guarded, and dev.1786 is deleted
   upstream too.
 
 ### Fixed
 
-- **`bench-check` now fails when an advisory benchmark crashes.** A benchmark that exited non-zero on an advisory case used to count only as an advisory miss, although the tool's own comment says a broken benchmark always fails.
-
-- **Native-mode QUIC no longer closes on back-to-back control frames.** The receiver read every readable control-stream byte before decoding. The control framer holds only one control frame (`max_control_frame_bytes` + 4), so frames that were larger together closed the connection with `FrameTooLarge`. This happened with pipelined inline frames, or with the data-frame announcements of a full stream window. The receiver now reads only what fits and leaves the rest under QUIC flow control. New Experimental `NativeControlFramer.freeBytes`.
-- **`zig build -Dquic=true check-compile -Dtarget=x86_64-windows` compiles again.** A QUIC test-namespace re-export named a function that is a deliberate `@compileError` on Windows. CI's cross-target leg builds without `-Dquic=true`, so it never saw this.
-
-- **QUIC builds now honor ReleaseSafe.** The build passed `.optimize` to the
-  quic-zig dependency, which has no such option: quic-zig builds Debug or
-  ReleaseSafe only, chosen by the boolean `release`. Zig reported
-  `invalid option: "optimize"` and ignored it, so quic-zig and BoringSSL
-  compiled in **Debug inside every ReleaseSafe build** (`zig build --verbose`
-  showed `-Osafe -Mroot=…` next to `-Odebug -Mquic=…`). Both dependency sites
-  now pass `.release`. Consequences: earlier "ReleaseSafe" QUIC evidence ran
-  our code in ReleaseSafe but the quic module in Debug, and every earlier QUIC
-  throughput, latency or memory figure was taken with a Debug quic. Consumers
-  that enable QUIC get a ReleaseSafe quic in release builds from this version
-  on (faster QUIC, longer first builds). Found by the quic-zig maintainers.
-
-### Added
-
-- **Generated code rejects plugin/runtime skew with one readable compile error.** The runtime exports Stable `capnpc.codegen_abi` (`version` 1, `oldest_supported` 1, `release` "0.19.0") from all three library roots.
-  - Every generated file resolves its `capnpc` binding through a comptime check of `codegen_abi`. A runtime that is older, or that predates the guard, fails with one error that names the release to upgrade to. A runtime that has dropped the file's ABI asks for regeneration.
-  - The guard's locals are quoted names that no schema declaration can shadow.
-  - `zig build test-codegen-skew` (also part of `test-codegen` and `zig build test`) compiles a freshly generated binding against three stub runtimes and requires exactly that error.
-  - **Migration:** files from this plugin need a runtime at least as new as `codegen_abi.release`. Regenerate with the plugin that matches your pinned capnp-zig.
-
-- **QUIC sessions at TCP parity (Experimental, `-Dquic=true`).** `rpc.transport.quic.connect` returns a `ClientSession`: a QUIC `Connection` and its `Peer` in one allocation, with the TCP session's secure defaults and `run`/`close`/`requestStop`/`closeCause`/`fromPeer`/`deinit`. `rpc.transport.quic.serve` returns a `PeerServer` that gives every accepted QUIC session its own `Peer`: `ServeOptions.on_accept` sets the bootstrap, `on_error`/`on_close` are optional, and `requestStop` is thread-safe. Underneath, `quic.Server.setOnSessionAccepted` fires exactly once per adopted `ServerSession`, on the loop thread, before the session is serviced; an error from the hook rejects the session. `Server.runWithAfterStep` adds a hook after every step for freeing per-session state once the transport is gone. New `zig build -Dquic=true example-rpc-quic` (examples/rpc_pingpong_quic.zig), run once per OS by the QUIC CI lane. docs/quic-transport.md documents the API, drops the 'no accept event' limit, and adds a Concurrency Model section. `ServeOptions.on_error` never fires after `on_close` for the same session. Known limit: a session rejected before its handshake completes looks to the client like a handshake timeout, because quic-zig sends that close only under 1-RTT keys.
-
-- **Pinnable plugin for consumers (slcp 07 F5).** The `capnpc-zig` plugin accepts `--output-dir=<dir>` (created if missing), so a consumer's `build.zig` can run the plugin from its pinned dependency as a cached build step instead of a PATH binary. The step is `b.addRunArtifact(b.dependency("capnpc_zig", .{ .target = b.graph.host, .optimize = .ReleaseSafe }).artifact("capnpc-zig"))`, with the `CodeGeneratorRequest` on stdin (`setStdIn`) and `addPrefixedOutputDirectoryArg("--output-dir=", "capnp-gen")` as the generated module's root. docs/build-integration.md's canonical `build.zig` is now this recipe, plus optional `gen` and `gen-check` steps for checked-in output, and says to regenerate with it, never a PATH binary. That file is byte-identical to a new package-preflight consumer (`tests/package_consumer/codegen`), which is built and run from the filtered archive; docs-smoke enforces the match. The build and serialization guides name the verified schema compiler (the pinned capnp 2.0-dev WASM compiler) and label native capnp 1.x unverified. With `--output-dir=` the plugin ignores `CAPNPC_ZIG_*` environment options, because Zig does not hash inherited environment into a Run step's cache key; pass options as arguments instead (it names a skipped variable on stderr). The recipe's `gen-check` runs `git --no-pager diff --no-index --no-ext-diff --no-textconv`, so user git config cannot change its result, and package-preflight requires the injected drift to appear in its failure output. The consumer docs list every step to run the verified schema compiler (layout, `capnp_tool.py bootstrap`, Wasmtime 48.0.1). Without the flag the plugin behaves exactly as before.
-
-- **Deferred streaming and bounded reflection (Experimental).** Generated
-  streaming handlers can acknowledge after asynchronous work; configurable
-  call/byte windows, readiness, and drain notifications account for queued work.
-  Registry loading and lazy defaults enforce input, memory, and traversal
-  limits. Dynamic builders expose borrowed-reader queries and bounded copy
-  operations, with independent C++ mutation checks and native/WASI regressions.
-- **Reproducible hardening evidence.** Mandatory Linux reflection conformance,
-  positive-activity fuzz receipts, and a baseline/candidate performance matrix
-  cover the added surfaces. Stable API declarations remain unchanged.
-- **Generated mutable APIs.** Builders gain field getters, typed struct/list
-  copy setters, `clearXxx()`, union inspection, and validated `asReader()` views
-  with explicit borrowed-reader storage. Reopening evolved struct/list fields
-  retains unknown sections; copy failures preserve the previous destination.
-- **Concrete generic collections and recursion.** `brands()` handles direct
-  `List(Box(Text))`, recursive data applications and lists, and alternating
-  concrete bindings in full and compact profiles. Recursive wrappers remain
-  finite and budgeted. Existing erased APIs remain available.
-- **Generated RPC navigation.** Pipelines follow non-union struct/group paths
-  to capabilities, including bounded recursive paths. Inherited same-name
-  methods receive declaring-interface suffixes while preserving wire IDs and
-  ordinals. The standard reflected StreamResult schema is bundled and
-  regenerated with the RPC bindings.
-
-- **Typed generic RPC (Experimental).** Additive `Apply()` namespaces bind
-  concrete clients, server adapters, data views, imported branded ancestors,
-  and recursive capability pipelines in full and compact output. Callers can
-  bind method-local parameters, including named generic Params/Results; server
-  handlers for those methods remain erased because the wire carries no type
-  argument tags. Conflicting inherited applications require an explicit typed
-  ancestor view. Adapters share the existing raw call ownership. Native/WASI
-  consumers and real C++ calls in both directions cover Text, Data, inheritance,
-  method generics, and invocation before a generic parent result arrives.
-
-- **Binary schema reflection (Experimental).** Generated modules embed a
-  canonical, ID-sorted `CAPNP_SCHEMA_REQUEST` containing the original compiler
-  Nodes, and generated structs, groups, enums, interfaces, and struct
-  Reader/Builder types expose `capnpSchema`. The `reflection` module is available
-  through full, core, and WASI library roots. It provides owned registries, raw
-  and parsed descriptors, field/enum/interface lookup, brand-aware type views,
-  and dynamic struct/list readers and builders. Dynamic mutation applies
-  defaults, guards unions, checks value types, and preserves unknown fields
-  through struct/list evolution. Native and WASI conformance tests exercise
-  the same runtime; a C++ oracle checks descriptors and native messages.
-- **Independent reflection controls.** `--no-reflection` omits binary metadata;
-  existing JSON manifest options retain their meaning. Programmatic generators
-  enable reflection with the fallible `try generator.setSchemaRequest(bytes)`
-  and can disable emission with `setEmitReflection(false)`. These new setters
-  and the reflection API are Experimental; existing Stable signatures remain
-  unchanged. See [the reflection guide](docs/reflection.md) for ownership and
-  builder invalidation rules.
-
-### Changed
-
-- Repository schema tooling uses the checksum-pinned Cap'n Proto 2.0-dev WASM
-  compiler through a portable Python/Wasmtime driver. Generation and package
-  checks continue to exercise this project's native plugin. Regenerated
-  reflection descriptors retain the newer compiler's source metadata; native
-  C++ interoperability keeps its matching reference toolchain. See
-  [the tooling migration](docs/capnp-wasm-toolchain.md).
-
-- Windows CI and local test recipes compile the selected suite before running
-  it with one build-runner job. Actual Windows probes reproduced completed test
-  processes being reported as unresponsive when sibling processes inherited
-  their output pipes. Test coverage, runtime concurrency, and time limits are
-  unchanged; see [the runner evidence](docs/windows-test-runner.md).
-
-- Generated Text and Text-list getters validate UTF-8 and wire terminators;
-  `StrictTextListReader` is additive to the existing low-level list API.
-  See [generated-api.md](docs/generated-api.md) for the new API and lifetime
-  contract.
-
-- Plugin output includes reflection metadata by default and requires the matching
-  runtime revision. Shape sharing keeps distinct schema identities when
-  reflection is enabled. `--no-reflection` omits metadata and enables the
-  existing shape-sharing behavior; the new APIs still require matching runtime
-  sources.
-
-### Fixed
-
-- Windows timed TCP reads repair rejected batch bookkeeping and wake the
-  pinned backend's cancellation wait before joining the owned receive. Silent
-  peers time out; late bytes remain available for the next read, and successful
-  completions racing cancellation are retained. Windows CI reports each
-  timed-read test and bounds its execution before running the full suites.
-- Streaming contexts, deferred acknowledgements, and reservations settle once
-  across cancellation, disconnect, reentrant callbacks, and reused question IDs.
-  Nested transport teardown waits for active streaming operations to unwind.
-- Dynamic struct/group replacement and growth retain reachable values on
-  failure, including aliased copies. RPC-aware capability remapping restores
-  the destination pointer when cloning or mapping fails.
-- Canonical double-far structs now validate their pointer sections and enforce
-  nesting/traversal limits. Zero-width composite lists charge logical elements
-  regardless of near/far encoding. Ambiguous zero-count legacy tags receive
-  canonical struct bounds checks; validation remains an init/explicit operation.
-- Mutable primitive and pointer list views honor evolved composite strides.
-  Typed copies preserve unknown stored sections through borrowed source
-  provenance; manually constructed readers copy their represented values.
-- Constrained AnyStruct/AnyList/capability setters, including applied generic
-  views, reject wrong pointer kinds before changing the destination or union
-  discriminant. Generic anonymous RPC structs retain their lexical binding
-  scope, and named method parameter/result applications resolve method bindings.
-
-- Nested-workspace imports now resolve parent-relative and root-relative schema
-  paths correctly while rejecting traversal outside the workspace. Output paths
-  retain traversal and symlink checks.
-- Generated helper views qualify references when schema types or groups are
-  named `Brands`, `WhichTag`, `EnumOrdinals`, `NestedLists`, or `PointerKinds`.
-- Double-far struct-list writers now place the element tag in the content
-  segment and emit the reference-compatible list landing pad, including empty
-  lists and segment-aliasing cases. Existing readers retain legacy Layout A
-  compatibility; near and single-far list encodings are unchanged.
+- **TCP `Transport.read` compiles on tagged Zig 0.17.0.** At 0.17.0 std's
+  `net.Stream.read` destructures the operation's new `ReadResult` struct
+  as a tuple and fails to compile once referenced, so v0.18.0's TCP
+  transport did not build there. The transport now submits the `net_read`
+  operation directly and reads `data_len` itself, selecting on the result
+  type so the same source still builds where the result is a bare `usize`.
+  No behavior change.
+- **QUIC builds now honor ReleaseSafe.** The build passed `.optimize` to
+  the quic-zig dependency, which had no such option through v0.24.0:
+  quic-zig builds Debug or ReleaseSafe only, chosen by the boolean
+  `release`. Zig reported `invalid option: "optimize"` and ignored it, so
+  quic-zig and BoringSSL compiled in **Debug inside every ReleaseSafe
+  build** (`zig build --verbose` showed `-Osafe -Mroot=…` next to
+  `-Odebug -Mquic=…`). Both dependency sites now pass `.release`.
+  Consequences: earlier "ReleaseSafe" QUIC evidence ran our code in
+  ReleaseSafe but the quic module in Debug, and every earlier QUIC
+  throughput, latency or memory figure was taken with a Debug quic.
+  Consumers that enable QUIC get a ReleaseSafe quic in release builds from
+  this version on (faster QUIC, longer first builds). v0.24.1 accepts
+  `.optimize`, but it refuses ReleaseFast and ReleaseSmall, so direct quic
+  consumers should keep passing `.release` (see Breaking). Found by the
+  quic-zig maintainers.
+- **Native-mode QUIC no longer stalls large frames after 4096 streams.**
+  v0.18.0 pinned quic v0.19.0, which caps every grant of peer stream credit
+  at 4096 lifetime streams per connection. Native mode sends each frame
+  larger than `inline_frame_threshold` on its own uni stream, and it
+  treated `StreamLimitExceeded` as "retry later". So once one side had
+  opened 4096 uni streams on a connection, every later large frame stalled
+  for good, with no error, no close and no cause. The quic v0.24.x pin
+  removes the cap (see Breaking), and large frames now retry after the next
+  pump at any stream index.
+- **Native-mode QUIC no longer closes on back-to-back control frames.** The
+  receiver read every readable control-stream byte before decoding. The
+  control framer holds only one control frame (`max_control_frame_bytes` +
+  4), so frames that were larger together closed the connection with
+  `FrameTooLarge`. This happened with pipelined inline frames, or with the
+  data-frame announcements of a full stream window. The receiver now reads
+  only what fits and leaves the rest under QUIC flow control. New
+  Experimental `NativeControlFramer.freeBytes`.
+- **A huge `idle_timeout_ms` no longer panics a TCP `Connection`.** The
+  idle check multiplied the timeout into nanoseconds without saturation,
+  so a value meant as "never" overflowed on the first tick in safe builds.
+  It now saturates, like the first-frame deadline.
+- **WorkerPool shutdown no longer closes the listener under a pending
+  accept.** `stopAccepting` now registers accepts and checks `should_stop`
+  under one lock, wakes parked accepts one loopback dial at a time, and
+  closes the listen socket only when none is parked. The old 2 s safety
+  timeout is gone, because closing under a pending accept is never safe;
+  persistent loopback dial failures can now delay shutdown instead.
+  `shutdownGraceful` saturates a huge `drain_ms` instead of overflowing.
+- **Windows timed TCP reads repair rejected batch bookkeeping** and wake the
+  pinned backend's cancellation wait before joining the owned receive.
+  Silent peers time out; late bytes remain available for the next read,
+  and successful completions racing cancellation are kept. Windows CI
+  reports each timed-read test and bounds its execution before running the
+  full suites.
+- **`message.cloneAnyPointer` keeps double-far struct contents and
+  empty-struct presence.** Cloning a double-far struct discarded the
+  landing pad's explicit target offset, and a zero double-far tag lost the
+  presence of an empty struct. A zero double-far tag now reads as a
+  present empty struct.
+- **RPC-aware capability remapping restores the destination pointer when
+  cloning or mapping fails.** Its temporary storage now uses the builder's
+  allocator.
+- **Canonical double-far structs now validate their pointer sections** and
+  enforce nesting/traversal limits. Zero-width composite lists charge
+  logical elements regardless of near/far encoding. Ambiguous zero-count
+  legacy tags receive canonical struct bounds checks; validation remains
+  an init/explicit operation.
+- **Double-far struct-list writers now place the element tag in the
+  content segment** and emit the reference-compatible list landing pad,
+  including empty lists and segment-aliasing cases. Existing readers keep
+  legacy Layout A compatibility; near and single-far list encodings are
+  unchanged.
+- **Mutable primitive and pointer list views honor evolved composite
+  strides.** Manually constructed readers copy their represented values.
+- **Constrained AnyStruct/AnyList/capability setters reject wrong pointer
+  kinds** before changing the destination or union discriminant.
+- **Generated imports resolve parent-relative and root-relative schema
+  paths in nested workspaces** and reject traversal outside the workspace.
+  Output paths keep their traversal and symlink checks.
+- **Generated helper views qualify references** when schema types or groups
+  are named `Brands`, `WhichTag`, `EnumOrdinals`, `NestedLists`, or
+  `PointerKinds`.
+- **`bench-check` now fails when an advisory benchmark crashes.** A
+  benchmark that exited non-zero on an advisory case used to count only as
+  an advisory miss, although the tool's own comment says a broken
+  benchmark always fails.
 
 ## [0.18.0] - 2026-09-03
 
@@ -4027,7 +4523,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/nullstyle/capnp-zig/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/nullstyle/capnp-zig/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/nullstyle/capnp-zig/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/nullstyle/capnp-zig/compare/v0.15.0...v0.16.0
