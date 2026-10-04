@@ -65,6 +65,7 @@ pub const Listener = struct {
             .protocol = .udp,
         });
         errdefer socket.close(io);
+        quic_zig_adapter.requestUdpSocketBuffers(socket.handle, options.udp_socket_recv_buffer_bytes, options.udp_socket_send_buffer_bytes);
 
         var server = try quic_zig.Server.init(server_config);
         errdefer server.deinit();

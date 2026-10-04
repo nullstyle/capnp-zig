@@ -63,8 +63,12 @@ pub const EmbeddedSessionOptions = struct {
 ///
 /// The embedder owns the UDP socket, the `quic_zig.Server`, the ONE
 /// `quic.app.Driver`, and the driving loop; this session is the protocol
-/// seat for connections that negotiated `capnp-rpc/1`. The contract mirrors
-/// the owned-loop transport on the embedder side:
+/// seat for connections that negotiated `capnp-rpc/1`. Because the socket is
+/// the embedder's, so are its kernel buffers: the owned loop asks for
+/// `default_udp_socket_recv_buffer_bytes`, and an embedder should do the
+/// same (quic-zig's `transport.applyServerTuning`), or native mode loses
+/// full-window bursts to the OS default. The contract mirrors the owned-loop
+/// transport on the embedder side:
 ///
 ///   1. When a connection's ALPN matches, create one session
 ///      (`create`) — before the handshake completes, so 0-RTT stream data

@@ -10,6 +10,16 @@ pub fn defaultClientBindAddress(remote_addr: Net.IpAddress) Net.IpAddress {
     };
 }
 
+/// Ask the kernel for bigger buffers on a UDP socket this transport bound.
+/// Best effort on purpose: the OS default still works, only with less burst
+/// room, so a refused or capped request must not fail the bind. quic-zig's
+/// helpers try `SO_RCVBUFFORCE` / `SO_SNDBUFFORCE` first on Linux and report
+/// `error.Unsupported` on Windows.
+pub fn requestUdpSocketBuffers(handle: Net.Socket.Handle, recv_bytes: ?usize, send_bytes: ?usize) void {
+    if (recv_bytes) |bytes| quic_zig.transport.setRecvBufferSize(handle, bytes) catch {};
+    if (send_bytes) |bytes| quic_zig.transport.setSendBufferSize(handle, bytes) catch {};
+}
+
 pub fn ipAddressToPathAddress(addr: Net.IpAddress) quic_zig.conn.path.Address {
     // quic-zig's Address deliberately mirrors std.Io.net.IpAddress, so the
     // boundary is a one-to-one variant map.

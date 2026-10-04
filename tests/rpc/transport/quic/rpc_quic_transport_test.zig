@@ -1797,6 +1797,77 @@ test "quic server options reject unusable hardening limits" {
     }));
 }
 
+test "QUIC transport asks the kernel for bigger UDP socket buffers" {
+    // quic-zig's buffer helpers report Unsupported on Windows sockets, so
+    // the transport keeps the OS default there (documented on the option).
+    // Windows still runs the validation and the binds below: a refused
+    // request must never fail a bind.
+    const buffers_settable = @import("builtin").target.os.tag != .windows;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const socket_opts = @import("quic").transport.socket_opts;
+
+    // Zero is a configuration error; null is how to keep the OS default.
+    try std.testing.expectError(error.InvalidConfig, quic.Connection.initClient(allocator, io, .{
+        .remote_addr = testListenAddr(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .udp_socket_recv_buffer_bytes = 0,
+    }));
+    try std.testing.expectError(error.InvalidConfig, quic.serverConfigFromOptions(allocator, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+        .udp_socket_send_buffer_bytes = 0,
+    }));
+
+    // Compare against the same socket kind left at the OS default rather
+    // than against the 4 MiB request itself: an unprivileged Linux process
+    // is capped at net.core.rmem_max (which the kernel then doubles), so
+    // "bigger than the default" is the portable claim.
+    var os_listener = try quic.Listener.init(allocator, io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .udp_socket_recv_buffer_bytes = null,
+        .udp_socket_send_buffer_bytes = null,
+    });
+    defer os_listener.deinit();
+    var listener = try quic.Listener.init(allocator, io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+    });
+    defer listener.deinit();
+
+    // Clients bind their own socket in `initClient`; no handshake is needed
+    // to read its buffers.
+    var os_client = try quic.Connection.initClient(allocator, io, .{
+        .remote_addr = listener.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .udp_socket_recv_buffer_bytes = null,
+        .udp_socket_send_buffer_bytes = null,
+    });
+    defer os_client.deinit();
+    var client = try quic.Connection.initClient(allocator, io, .{
+        .remote_addr = listener.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+    });
+    defer client.deinit();
+    if (!buffers_settable) return;
+
+    try std.testing.expect(try socket_opts.getRecvBufferSize(listener.socket.handle) >
+        try socket_opts.getRecvBufferSize(os_listener.socket.handle));
+    try std.testing.expect(try socket_opts.getSendBufferSize(listener.socket.handle) >
+        try socket_opts.getSendBufferSize(os_listener.socket.handle));
+    try std.testing.expect(try socket_opts.getRecvBufferSize(client.endpoint.endpoint.client.socket.handle) >
+        try socket_opts.getRecvBufferSize(os_client.endpoint.endpoint.client.socket.handle));
+    try std.testing.expect(try socket_opts.getSendBufferSize(client.endpoint.endpoint.client.socket.handle) >
+        try socket_opts.getSendBufferSize(os_client.endpoint.endpoint.client.socket.handle));
+}
+
 test "quic native options reject unusable budgets with specific errors" {
     try std.testing.expectError(error.NativeControlFrameLimitTooSmall, quic.serverConfigFromOptions(std.testing.allocator, .{
         .listen_addr = testListenAddr(),

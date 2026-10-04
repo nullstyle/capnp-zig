@@ -2901,6 +2901,8 @@ capnpc-zig.rpc.transport.quic.ClientOptions.server_name: field []const u8
 capnpc-zig.rpc.transport.quic.ClientOptions.stream_read_buffer_size: field usize = 65536
 capnpc-zig.rpc.transport.quic.ClientOptions.transport_params: field tls.transport_params.Params = <default>
 capnpc-zig.rpc.transport.quic.ClientOptions.udp_rx_buffer_size: field usize = 65536
+capnpc-zig.rpc.transport.quic.ClientOptions.udp_socket_recv_buffer_bytes: field ?usize = 4194304
+capnpc-zig.rpc.transport.quic.ClientOptions.udp_socket_send_buffer_bytes: field ?usize = 4194304
 capnpc-zig.rpc.transport.quic.ClientOptions.udp_tx_buffer_size: field usize = 1500
 capnpc-zig.rpc.transport.quic.ClientOptions: struct
 capnpc-zig.rpc.transport.quic.CloseStatus.code: field rpc.transport.quic.close.ApplicationCloseCode
@@ -3262,6 +3264,8 @@ capnpc-zig.rpc.transport.quic.ServerOptions.tls_cert_pem: field []const u8
 capnpc-zig.rpc.transport.quic.ServerOptions.tls_key_pem: field []const u8
 capnpc-zig.rpc.transport.quic.ServerOptions.transport_params: field tls.transport_params.Params = <default>
 capnpc-zig.rpc.transport.quic.ServerOptions.udp_rx_buffer_size: field usize = 65536
+capnpc-zig.rpc.transport.quic.ServerOptions.udp_socket_recv_buffer_bytes: field ?usize = 4194304
+capnpc-zig.rpc.transport.quic.ServerOptions.udp_socket_send_buffer_bytes: field ?usize = 4194304
 capnpc-zig.rpc.transport.quic.ServerOptions.udp_tx_buffer_size: field usize = 1500
 capnpc-zig.rpc.transport.quic.ServerOptions.vn_source_rate_limit: field Server.Config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerOptions: struct
@@ -3402,6 +3406,8 @@ capnpc-zig.rpc.transport.quic.default_quic_source_rate_window_us: const u64
 capnpc-zig.rpc.transport.quic.default_quic_vn_source_rate_cap: const u64
 capnpc-zig.rpc.transport.quic.default_stream_read_buffer_size: const usize
 capnpc-zig.rpc.transport.quic.default_udp_rx_buffer_size: const usize
+capnpc-zig.rpc.transport.quic.default_udp_socket_recv_buffer_bytes: const usize
+capnpc-zig.rpc.transport.quic.default_udp_socket_send_buffer_bytes: const usize
 capnpc-zig.rpc.transport.quic.default_udp_tx_buffer_size: const usize
 capnpc-zig.rpc.transport.quic.early_dispatch.Mode.hold_until_handshake: enumerant = 0
 capnpc-zig.rpc.transport.quic.early_dispatch.Mode.restore_only: enumerant = 1

@@ -293,18 +293,43 @@ budgets:
   budget.
 
 QUIC's stream windows bound the same traffic from the other side.
-`transport_params.initial_max_streams_uni` (default 16) is how many
+`transport_params.initial_max_streams_uni` (default 8) is how many
 unidirectional streams the peer may have open at once (quic v0.24.0 and
 later; there is no lifetime cap), so it is how many large frames can be in
 flight in each direction. An id comes back once its stream is fully closed,
 about one round trip after it opened, so a window of `W` carries about
 `W / RTT` large frames per second. When the window is full, the frame stays
 at the head of the outbound queue and is retried after the next pump; this
-never fails a connection, at any stream count. The doc comment on
-`defaultTransportParams` in `src/rpc/transport/quic/options.zig` records the
-measurements behind the default. The
-native control stream is the client's bidirectional stream 0 and holds no
-unidirectional slot.
+never fails a connection, at any stream count. The native control stream is
+the client's bidirectional stream 0 and holds no unidirectional slot.
+
+A full window arrives as a burst, and the receiving kernel's UDP queue must
+hold it. A datagram the kernel drops there is silent loss, and on Linux it
+collapsed native bulk throughput 10-30x in our measurements. So the window
+and the socket buffer go together:
+
+- The transport asks for a 4 MiB `SO_RCVBUF` and `SO_SNDBUF` on every UDP
+  socket it binds (`udp_socket_recv_buffer_bytes` and
+  `udp_socket_send_buffer_bytes` on `ClientOptions` and `ServerOptions`;
+  null keeps the OS default). The request is best effort. macOS grants it.
+  Linux grants it only up to `net.core.rmem_max` / `wmem_max` (stock
+  208 KiB, which the kernel doubles to 416 KiB) unless the process has
+  `CAP_NET_ADMIN`. Windows keeps its OS default.
+- The default window of 8 is the largest that held on a stock Linux server
+  with that capped 416 KiB buffer. A window of 16 collapsed there in most
+  runs, and so did a window of 8 with the 208 KiB OS default.
+- On a Linux server, raise `net.core.rmem_max` and `net.core.wmem_max` to at
+  least 4 MiB (or grant `CAP_NET_ADMIN`). With the full 4 MiB, a window of
+  16 nearly doubles bulk throughput (33 vs 18 MB/s at 20 ms RTT with
+  64 KiB frames), so raise `initial_max_streams_uni` on such hosts.
+- `EmbeddedSession` runs on the embedder's socket, so size that socket
+  yourself, for example with quic-zig's `transport.applyServerTuning`.
+
+The doc comment on `defaultTransportParams` in
+`src/rpc/transport/quic/options.zig` records the measurements behind both
+defaults, and `bench-quic --transport native --mode bulk --rtt-ms N
+--uni-window N --udp-buffer BYTES` reproduces them. The Linux build of the
+bench also reports each socket's kernel drops.
 
 Streams the protocol never uses are refused, so they cannot hold a place in
 the window: any peer-opened bidirectional stream except the client's stream

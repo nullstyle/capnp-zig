@@ -50,15 +50,29 @@
 //! Usage: zig build -Dquic=true bench-quic -- [--mode sequential|pipelined|bulk]
 //!            [--calls N] [--warmup N] [--inflight K] [--payload BYTES] [--json]
 //!            [--transport baseline|native] [--uni-window N] [--bidi-window N]
+//!            [--rtt-ms N] [--udp-buffer BYTES]
 //!
 //! Stream windows: `--transport native --mode bulk` sends each call larger
 //! than 64 KiB on its own unidirectional stream, so it measures how the uni
 //! window (`--uni-window`, the streams a peer may have open AT ONCE since
 //! quic v0.24.0) limits large-frame throughput.
+//!
+//! Socket buffers: a window's burst lands in the receiver's kernel UDP
+//! queue, so the window and `SO_RCVBUF` must be measured together.
+//! `--udp-buffer BYTES` sets the transport's `udp_socket_recv_buffer_bytes`
+//! and `udp_socket_send_buffer_bytes` on both ends (0 keeps the OS default).
+//! On Linux each run reports every socket's kernel receive drops from
+//! `/proc/net/udp`, so a number measured through silent loss says so. To
+//! measure Linux from a macOS host, run the Linux build in a container and
+//! pin the sysctls to stock values (`--sysctl net.core.rmem_default=212992
+//! --sysctl net.core.rmem_max=212992`, same for wmem), because container
+//! hosts often raise them; add `--cap-add NET_ADMIN` so the relay can still
+//! force its own deep buffer.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
+const quic_zig = @import("quic");
 
 const rpc = capnpc.rpc;
 const protocol = rpc.wire.protocol;
@@ -101,6 +115,9 @@ const Config = struct {
     /// each direction. Loopback has no RTT, so without this a stream window
     /// (which turns over once per round trip) can never be the bottleneck.
     rtt_ms: u32 = 0,
+    /// `udp_socket_recv_buffer_bytes` / `udp_socket_send_buffer_bytes` on
+    /// both ends. Null keeps the transport default; 0 keeps the OS default.
+    udp_buffer: ?u32 = null,
 };
 
 /// A loopback UDP relay that delays every datagram by a fixed one-way time,
@@ -132,12 +149,13 @@ const DelayRelay = struct {
         const socket = try bind_addr.bind(io, .{ .mode = .dgram, .protocol = .udp });
         errdefer socket.close(io);
         // One socket carries both directions at line rate. Give it a deep
-        // kernel buffer (best effort, up to kern.ipc.maxsockbuf) so the
-        // relay itself is not where bursts are lost.
-        const buf_bytes: c_int = 8 * 1024 * 1024;
-        inline for (.{ std.posix.SO.RCVBUF, std.posix.SO.SNDBUF }) |opt| {
-            std.posix.setsockopt(socket.handle, std.posix.SOL.SOCKET, opt, std.mem.asBytes(&buf_bytes)) catch {};
-        }
+        // kernel buffer so the relay itself is not where bursts are lost.
+        // Best effort: macOS honors it up to kern.ipc.maxsockbuf; Linux goes
+        // past net.core.rmem_max only with CAP_NET_ADMIN (the FORCE
+        // variant). The Linux drop report names the relay's drops apart.
+        const buf_bytes: usize = 8 * 1024 * 1024;
+        quic_zig.transport.setRecvBufferSize(socket.handle, buf_bytes) catch {};
+        quic_zig.transport.setSendBufferSize(socket.handle, buf_bytes) catch {};
         return .{
             .io = io,
             .socket = socket,
@@ -214,6 +232,34 @@ fn runRelay(relay: *DelayRelay) void {
 
 fn nowNs(io: std.Io) u64 {
     return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+}
+
+/// Linux only: the kernel's receive-drop counter for the IPv4 UDP socket
+/// bound to `addr`'s port, from the `drops` column of /proc/net/udp. A
+/// datagram dropped there (`SO_RCVBUF` full) is loss the QUIC stack had to
+/// detect and recover from. Null when the socket is not listed.
+fn kernelUdpDrops(allocator: std.mem.Allocator, io: std.Io, addr: std.Io.net.IpAddress) ?u64 {
+    if (addr != .ip4) return null;
+    const file = std.Io.Dir.cwd().openFile(io, "/proc/net/udp", .{}) catch return null;
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.readerStreaming(io, &buf);
+    const text = reader.interface.allocRemaining(allocator, .limited(4 * 1024 * 1024)) catch return null;
+    defer allocator.free(text);
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    _ = lines.next(); // header
+    while (lines.next()) |line| {
+        var fields = std.mem.tokenizeScalar(u8, line, ' ');
+        _ = fields.next() orelse continue; // "sl"
+        const local = fields.next() orelse continue; // "0100007F:1F90"
+        const colon = std.mem.indexOfScalar(u8, local, ':') orelse continue;
+        const port = std.fmt.parseInt(u16, local[colon + 1 ..], 16) catch continue;
+        if (port != addr.ip4.port) continue;
+        var last: []const u8 = "";
+        while (fields.next()) |field| last = field;
+        return std.fmt.parseInt(u64, last, 10) catch null;
+    }
+    return null;
 }
 
 // -- Server ------------------------------------------------------------------
@@ -433,6 +479,8 @@ fn printUsage() void {
         \\  --uni-window N   initial_max_streams_uni on both ends
         \\  --bidi-window N  initial_max_streams_bidi on both ends
         \\  --rtt-ms N   add N ms of round trip through a loopback delay relay
+        \\  --udp-buffer BYTES  kernel SO_RCVBUF/SO_SNDBUF request on both ends
+        \\               (0 = OS default; default: the transport's)
         \\  --json       emit machine-readable JSON
         \\
     , .{});
@@ -475,6 +523,8 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !?Config {
             cfg.bidi_window = try parseU32(iter.next() orelse return error.InvalidArgument);
         } else if (std.mem.eql(u8, arg, "--rtt-ms")) {
             cfg.rtt_ms = try parseU32(iter.next() orelse return error.InvalidArgument);
+        } else if (std.mem.eql(u8, arg, "--udp-buffer")) {
+            cfg.udp_buffer = try parseU32(iter.next() orelse return error.InvalidArgument);
         } else if (std.mem.eql(u8, arg, "--json")) {
             cfg.json = true;
         } else if (std.mem.eql(u8, arg, "--help")) {
@@ -514,6 +564,8 @@ pub fn main(init: std.process.Init) !void {
         .max_pending_data_streams = @max(quic.default_native_max_pending_data_streams, cfg.inflight),
     };
     const params = transportParams(&cfg);
+    const recv_buffer: ?usize = if (cfg.udp_buffer) |b| (if (b == 0) null else b) else quic.default_udp_socket_recv_buffer_bytes;
+    const send_buffer: ?usize = if (cfg.udp_buffer) |b| (if (b == 0) null else b) else quic.default_udp_socket_send_buffer_bytes;
 
     var server_conn = try quic.Connection.initServer(allocator, io, .{
         .listen_addr = .{ .ip4 = .loopback(0) },
@@ -521,6 +573,8 @@ pub fn main(init: std.process.Init) !void {
         .tls_key_pem = key_pem,
         .receive_timeout = std.Io.Duration.fromMilliseconds(5),
         .transport_params = params,
+        .udp_socket_recv_buffer_bytes = recv_buffer,
+        .udp_socket_send_buffer_bytes = send_buffer,
         .mode = cfg.transport,
         .native = native_options,
     });
@@ -544,6 +598,8 @@ pub fn main(init: std.process.Init) !void {
         .receive_timeout = std.Io.Duration.fromMilliseconds(5),
         .enable_pacing = !cfg.no_pacing,
         .transport_params = params,
+        .udp_socket_recv_buffer_bytes = recv_buffer,
+        .udp_socket_send_buffer_bytes = send_buffer,
         .mode = cfg.transport,
         .native = native_options,
     });
@@ -596,9 +652,24 @@ pub fn main(init: std.process.Init) !void {
         // drops measured the relay, not the window.
         if (r.dropped > 0) std.debug.print("bench-quic: delay relay dropped {d} datagrams (queue full)\n", .{r.dropped});
     }
+    if (comptime builtin.target.os.tag == .linux) {
+        // The sockets are still open here (their deinit is deferred), so
+        // the kernel still lists their drop counters.
+        std.debug.print("bench-quic: kernel UDP receive drops: server {?d}, client {?d}, relay {?d}\n", .{
+            kernelUdpDrops(allocator, io, server_conn.getAddress()),
+            kernelUdpDrops(allocator, io, client_conn.getAddress()),
+            if (relay) |*r| kernelUdpDrops(allocator, io, r.address()) else null,
+        });
+    }
 
     if (session.failed or session.recorded == 0) {
-        std.debug.print("bench-quic: run failed (recorded={d})\n", .{session.recorded});
+        // The close causes say whether the connection died (and how) or a
+        // call failed on a live connection.
+        std.debug.print("bench-quic: run failed (recorded={d}, client close cause {t}, server close cause {t})\n", .{
+            session.recorded,
+            client_conn.closeCause(),
+            server_conn.closeCause(),
+        });
         return error.BenchmarkFailed;
     }
 

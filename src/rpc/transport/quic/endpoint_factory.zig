@@ -34,6 +34,7 @@ pub fn initClient(
         .protocol = .udp,
     });
     errdefer socket.close(io);
+    quic_zig_adapter.requestUdpSocketBuffers(socket.handle, options.udp_socket_recv_buffer_bytes, options.udp_socket_send_buffer_bytes);
 
     var client = try quic_zig.Client.connect(.{
         .allocator = allocator,

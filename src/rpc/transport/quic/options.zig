@@ -20,6 +20,22 @@ pub const baseline_stream_id: u64 = 0;
 
 pub const default_udp_rx_buffer_size: usize = 64 * 1024;
 pub const default_udp_tx_buffer_size: usize = 1500;
+/// Kernel receive buffer (`SO_RCVBUF`) this transport asks for on the UDP
+/// socket it binds: quic-zig's recommendation for a QUIC endpoint, 4 MiB.
+/// A burst that overflows the kernel queue is silent loss, and native mode
+/// then collapses (see `defaultTransportParams`): on Linux the OS default
+/// (208 KiB) lost a uni window of 8 at 50 ms RTT, and the request is what
+/// lets that default window hold. Best effort: on Linux the request tries
+/// `SO_RCVBUFFORCE` first (needs `CAP_NET_ADMIN`); otherwise it is capped at
+/// `net.core.rmem_max` (stock 208 KiB, which the kernel doubles to 416 KiB).
+/// Raise `net.core.rmem_max` and `wmem_max` on a Linux server to get the
+/// full 4 MiB. macOS honors it up to `kern.ipc.maxsockbuf`. Windows keeps
+/// its default, because quic-zig's helper does not support Windows sockets
+/// yet.
+pub const default_udp_socket_recv_buffer_bytes: usize = quic_zig.transport.socket_opts.default_server_recv_buffer_bytes;
+/// Kernel send buffer (`SO_SNDBUF`) this transport asks for on its UDP
+/// socket, best effort like `default_udp_socket_recv_buffer_bytes`.
+pub const default_udp_socket_send_buffer_bytes: usize = quic_zig.transport.socket_opts.default_server_send_buffer_bytes;
 pub const default_stream_read_buffer_size: usize = 64 * 1024;
 pub const default_max_message_bytes: usize = framing.Framer.max_frame_words * 8;
 pub const default_max_outbound_queue_items: usize = 1024;
@@ -158,21 +174,42 @@ pub const EarlyDataStatus = quic_zig.EarlyDataStatus;
 /// data stream, about one round trip after it opens). There is no lifetime
 /// cap.
 ///
-/// - `initial_max_streams_uni = 16`. Native mode sends every frame above
+/// - `initial_max_streams_uni = 8`. Native mode sends every frame above
 ///   `inline_frame_threshold` on its own one-shot uni stream, so this window
 ///   is how many large frames can be in flight per direction: about
-///   `16 / RTT` frames per second. (The native control stream is the
-///   client's bidirectional stream 0; it holds no uni slot.) Measured with
-///   `bench-quic --transport native --mode bulk --inflight 64` (64 KiB
-///   frames, ReleaseSafe quic, a loopback delay relay for the RTT):
-///   at 20 ms RTT, 4 -> 10.4 MB/s, 16 -> 33.4 MB/s, while 32 and 64 send
-///   bursts that overflow the endpoints' default UDP receive buffers
-///   (786 KB on macOS) and collapse to 1.5-4.5 MB/s; at 50 ms, 4 -> 3.8
-///   MB/s, 16 -> 10.5-13.2 MB/s. On plain loopback
-///   4 and 16 are equal (~85 MB/s) and 64 is 8-20% slower. 16 also matches
-///   the byte budget: 16 streams x 1 MiB per-stream window = the 16 MiB
-///   connection window. (quic v0.19.0 DOUBLED the old value 4 as streams
-///   ended, so the effective window there was already about 20.)
+///   `8 / RTT` frames per second. (The native control stream is the
+///   client's bidirectional stream 0; it holds no uni slot.)
+///
+///   The window also sets the burst that the receiver's kernel UDP queue
+///   must hold. An overflow there is silent loss, and loss collapses native
+///   bulk throughput 10-30x. So the default is the largest window that held
+///   on a stock Linux server: unprivileged, where the transport's 4 MiB
+///   `SO_RCVBUF` request (`default_udp_socket_recv_buffer_bytes`) is capped
+///   at `net.core.rmem_max` and gets 416 KiB. Measured with `bench-quic
+///   --transport native --mode bulk --inflight 64` (64 KiB frames,
+///   ReleaseSafe quic, a loopback delay relay for the RTT; Linux 7.0 in a
+///   container with pinned sysctls, where the bench reports each socket's
+///   kernel drops), MB/s per run:
+///
+///       kernel receive buffer      RTT    uni 4     uni 8       uni 16
+///       Linux default, 208-224 KiB 20 ms  7.8-9.3   11.6-14.2   1.0-1.5
+///                                  50 ms  3.8-3.9   1.2-7.6     0.5
+///       Linux, request capped:     20 ms  9.3       17.4-18.0   1.3-22.3
+///         416 KiB                  50 ms  3.8-3.9   7.5-7.7     0.8-2.9 [1]
+///       Linux, 4 MiB granted       20 ms  9.2-9.4   17.9-18.4   32.4-34.7
+///                                  50 ms  3.8       7.5-7.7     3.5-10.2
+///       macOS, 4 MiB granted       20 ms  10.1      18.9-19.1   26.9-30.9
+///                                  50 ms  3.9       7.8-7.9     15.7
+///
+///   [1] One more run failed after 473 of its 600 calls. With the capped
+///   buffer, 12 also collapsed at 20 ms (1.2-6.9). Where the host grants
+///   the 4 MiB (macOS; Linux with `net.core.rmem_max` and `wmem_max`
+///   raised, or with `CAP_NET_ADMIN`), a window of 16 nearly doubles bulk
+///   throughput, so raise it there. Windows above 16 were no faster even
+///   with 4 MiB and no kernel drops (20 ms: 32 -> 6.5-9.8, 64 -> 9.7-11.3);
+///   that second limit is not explained. On plain loopback the window does
+///   not matter. (quic v0.19.0 DOUBLED the old value 4 as streams ended, so
+///   its effective window was about 20.)
 /// - `initial_max_streams_bidi = 16`. Both modes use exactly one
 ///   bidirectional stream (the client's stream 0), and every other peer
 ///   bidirectional stream is refused (`peer_streams.zig`), so this only
@@ -187,7 +224,7 @@ pub fn defaultTransportParams() quic_zig.tls.TransportParams {
         .initial_max_stream_data_bidi_remote = 1 << 20,
         .initial_max_stream_data_uni = 1 << 20,
         .initial_max_streams_bidi = 16,
-        .initial_max_streams_uni = 16,
+        .initial_max_streams_uni = 8,
         .active_connection_id_limit = 4,
     };
 }
@@ -211,6 +248,13 @@ pub const ClientOptions = struct {
     handshake_timeout_ms: ?u64 = 30_000,
     udp_rx_buffer_size: usize = default_udp_rx_buffer_size,
     udp_tx_buffer_size: usize = default_udp_tx_buffer_size,
+    /// Kernel `SO_RCVBUF` to request for this transport's UDP socket, best
+    /// effort; null keeps the OS default. See
+    /// `default_udp_socket_recv_buffer_bytes`.
+    udp_socket_recv_buffer_bytes: ?usize = default_udp_socket_recv_buffer_bytes,
+    /// Kernel `SO_SNDBUF` to request for this transport's UDP socket, best
+    /// effort; null keeps the OS default.
+    udp_socket_send_buffer_bytes: ?usize = default_udp_socket_send_buffer_bytes,
     stream_read_buffer_size: usize = default_stream_read_buffer_size,
     max_message_bytes: usize = default_max_message_bytes,
     max_outbound_queue_items: usize = default_max_outbound_queue_items,
@@ -370,6 +414,13 @@ pub const ServerOptions = struct {
     receive_timeout: std.Io.Duration = std.Io.Duration.fromMilliseconds(5),
     udp_rx_buffer_size: usize = default_udp_rx_buffer_size,
     udp_tx_buffer_size: usize = default_udp_tx_buffer_size,
+    /// Kernel `SO_RCVBUF` to request for the listening UDP socket, best
+    /// effort; null keeps the OS default. See
+    /// `default_udp_socket_recv_buffer_bytes`.
+    udp_socket_recv_buffer_bytes: ?usize = default_udp_socket_recv_buffer_bytes,
+    /// Kernel `SO_SNDBUF` to request for the listening UDP socket, best
+    /// effort; null keeps the OS default.
+    udp_socket_send_buffer_bytes: ?usize = default_udp_socket_send_buffer_bytes,
     stream_read_buffer_size: usize = default_stream_read_buffer_size,
     max_message_bytes: usize = default_max_message_bytes,
     max_outbound_queue_items: usize = default_max_outbound_queue_items,
@@ -464,6 +515,8 @@ fn validateServerOptions(options: ServerOptions) !void {
     {
         return error.InvalidConfig;
     }
+    if (zeroSocketBuffer(options.udp_socket_recv_buffer_bytes) or
+        zeroSocketBuffer(options.udp_socket_send_buffer_bytes)) return error.InvalidConfig;
     if (options.source_rate_window_us == 0 or options.source_rate_table_capacity == 0) {
         return error.InvalidConfig;
     }
@@ -506,7 +559,15 @@ pub fn validateClientOptions(options: ClientOptions) !void {
     {
         return error.InvalidConfig;
     }
+    if (zeroSocketBuffer(options.udp_socket_recv_buffer_bytes) or
+        zeroSocketBuffer(options.udp_socket_send_buffer_bytes)) return error.InvalidConfig;
     try validateNativeOptions(options.mode, options.native, options.max_message_bytes);
+}
+
+/// A kernel socket buffer request of zero bytes is a configuration error
+/// (null, not zero, keeps the OS default).
+fn zeroSocketBuffer(bytes: ?usize) bool {
+    return if (bytes) |b| b == 0 else false;
 }
 
 fn validateNativeOptions(
