@@ -1,9 +1,11 @@
 //! Auto warm redial — the durable-caps ladder's integration rung
 //! (docs/quic-durable-caps-plan.md): when a QUIC client's transport dies
 //! with the crash-restart proof (`Peer.lastDisconnectCause() ==
-//! .stateless_reset`), dial a fresh connection resuming via the latest
-//! captured session ticket and re-restore the saved sturdy ref, so the
-//! application's capability heals without operator action.
+//! .stateless_reset`), dial a fresh connection and re-restore the saved
+//! sturdy ref, so the application's capability heals without operator
+//! action. The dial offers the latest captured session ticket, but a
+//! restarted server cannot accept it (BoringSSL session-ticket keys live per
+//! process), so a heal after a crash-restart pays a full handshake.
 //!
 //! Shape (each dictated by the runtime's contracts, not preference):
 //!
@@ -15,9 +17,10 @@
 //!   — existing handles cannot be revived in place.
 //! - Bootstrap + restore are enqueued BEFORE the generation's loop starts;
 //!   restore rides the promised bootstrap answer (`sendRestorePipelined`),
-//!   so on a resumed dial both frames ride 0-RTT early data. Restore is
-//!   the idempotent call that makes the replay window acceptable — the
-//!   layer sends nothing else in early data.
+//!   so when a dial does resume (the same server process, for example a
+//!   client restart seeded with `seedWarmState`) both frames ride 0-RTT
+//!   early data. Restore is the idempotent call that makes the replay
+//!   window acceptable — the layer sends nothing else in early data.
 //! - Only `.stateless_reset` redials by default: it is the one cause that
 //!   PROVES crash-restart, provided that no other instance holding the
 //!   server's reset key can receive this connection's packets (RFC 9000

@@ -334,7 +334,7 @@ capnpc-zig/
 ├── tests/
 │   ├── serialization/                 # Message, codegen, interop, schema tests
 │   ├── rpc/                           # RPC tests organized by domain
-│   ├── golden/                        # Golden codegen output (do not format)
+│   ├── golden/                        # Golden codegen output (byte-exact, fmt clean)
 │   ├── interop/                       # Cross-language interop fixtures
 │   ├── e2e/                           # End-to-end test harness
 │   ├── capnp_testdata/                # Official Cap'n Proto test fixtures

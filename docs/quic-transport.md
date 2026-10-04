@@ -20,7 +20,8 @@ just test-rpc-quic-evidence ReleaseSafe
 The native Zig evidence executable scans the complete QUIC test directory,
 rejects `SkipZigTest`, and then requires exactly four runnable roots: transport,
 public API, internal implementation, and real `Peer`-over-QUIC behavior. Its
-per-root floors are 26 + 1 + 17 + 8 = 52 tests. The build step fails immediately
+per-root floors are 43 + 1 + 36 + 32 = 112 tests (raised to the actual counts on
+2026-10-03, so a silently dropped test fails the gate). The build step fails immediately
 when `-Dquic=true` is absent, and each root is a direct build dependency, so the
 gate neither parses test output nor relies on a CI-only shell or package.
 

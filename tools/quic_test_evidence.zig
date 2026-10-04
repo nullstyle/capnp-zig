@@ -8,10 +8,10 @@ const Root = struct {
 };
 
 const roots = [_]Root{
-    .{ .path = "tests/rpc/transport/quic/rpc_quic_transport_test.zig", .minimum_tests = 26 },
+    .{ .path = "tests/rpc/transport/quic/rpc_quic_transport_test.zig", .minimum_tests = 43 },
     .{ .path = "tests/rpc/transport/quic/rpc_quic_public_api_test.zig", .minimum_tests = 1 },
-    .{ .path = "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", .minimum_tests = 17 },
-    .{ .path = "tests/rpc/transport/quic/rpc_quic_peer_test.zig", .minimum_tests = 8 },
+    .{ .path = "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", .minimum_tests = 36 },
+    .{ .path = "tests/rpc/transport/quic/rpc_quic_peer_test.zig", .minimum_tests = 32 },
 };
 
 fn countTests(bytes: []const u8) usize {

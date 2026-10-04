@@ -27,7 +27,7 @@ Requires **tagged Zig 0.17**. The exact toolchain is pinned in `mise.toml` — t
 | Build | `zig build` or `just build` |
 | Release build | `just release` |
 | Run all tests | `zig build test --summary all` or `just test` |
-| Format code | `just fmt` (never raw `zig fmt tests/` — it reformats excluded golden/generated files) |
+| Format code | `just fmt` (generated bindings and `tests/golden` are fmt clean as the plugin writes them; `just check-generated` enforces it) |
 | Check (no link) | `zig build check` or `just check` |
 | Evented canary (expected-fail until std fixes Evented) | `zig build check-evented-canary` or `just check-evented` |
 | Docs/examples smoke | `zig build docs-smoke` or `just docs-smoke` |
