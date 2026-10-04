@@ -2,7 +2,8 @@
 //! `just check-release-drift`.
 //!
 //! The tool's git and file reads are glue; these tests drive its pure core:
-//! the line diff, the bump classifier, the CHANGELOG reader and the rules
+//! the line diff, the bump classifier, the CHANGELOG reader (one entry per
+//! top-level `### Breaking` bullet, tiered by its bold title) and the rules
 //! that turn drift into findings. The four "plan" tests replay the
 //! ablations from docs/sprint-plan-2026-10-04.md item 3 on fixture text.
 
@@ -195,6 +196,8 @@ test "zonVersion reads the manifest's .version" {
 // readChangelog.
 // ---------------------------------------------------------------------------
 
+/// The v0.20.0 shape the plan expects (D3 option A): the only Breaking
+/// entry is Experimental.
 const changelog_with_release =
     \\# Changelog
     \\
@@ -221,13 +224,41 @@ const changelog_with_release =
     \\
 ;
 
+/// A release that declares a Stable break next to an Experimental one.
+const changelog_with_stable_break =
+    \\# Changelog
+    \\
+    \\## [Unreleased]
+    \\
+    \\## [0.20.0] - 2026-10-18
+    \\
+    \\### Breaking
+    \\
+    \\- **`lib.b` is removed.** Call `lib.a`.
+    \\  - **Migration:** replace `lib.b(n)` with `lib.a()`.
+    \\- **`events.Source` gains `.unix` (Experimental).**
+    \\  - **Migration:** add an `else` arm.
+    \\
+    \\## [0.19.1] - 2026-10-04
+    \\
+;
+
+/// The titles of a section's Breaking entries, in order.
+fn titles(c: drift.Changelog, out: [][]const u8) usize {
+    var it = c.entries();
+    var n: usize = 0;
+    while (it.next()) |entry| : (n += 1) out[n] = entry.title;
+    return n;
+}
+
 test "readChangelog: the version's own section wins over [Unreleased]" {
     const c = drift.readChangelog(changelog_with_release, "0.20.0");
     try testing.expectEqualStrings("0.20.0", c.section);
     try testing.expect(c.found);
-    try testing.expect(c.breaking);
-    try testing.expect(c.breaking_experimental);
-    try testing.expect(c.breaking_migration);
+    try testing.expectEqual(@as(usize, 1), c.breaking_entries);
+    try testing.expectEqual(@as(usize, 1), c.experimental_entries);
+    try testing.expectEqual(@as(usize, 0), c.stableEntries());
+    try testing.expectEqual(@as(usize, 0), c.entries_without_migration);
 }
 
 test "readChangelog: a version with no section falls back to [Unreleased]" {
@@ -235,13 +266,13 @@ test "readChangelog: a version with no section falls back to [Unreleased]" {
     try testing.expectEqualStrings("Unreleased", c.section);
     try testing.expect(c.found);
     // The Breaking heading of the 0.20.0 section below does not count.
-    try testing.expect(!c.breaking);
+    try testing.expectEqual(@as(usize, 0), c.breaking_entries);
 }
 
 test "readChangelog: no version reads [Unreleased]" {
     const c = drift.readChangelog(changelog_with_release, null);
     try testing.expectEqualStrings("Unreleased", c.section);
-    try testing.expect(!c.breaking);
+    try testing.expectEqual(@as(usize, 0), c.breaking_entries);
 }
 
 test "readChangelog: Breaking stops at the next ### heading" {
@@ -254,25 +285,26 @@ test "readChangelog: Breaking stops at the next ### heading" {
         \\
         \\### Added
         \\
-        \\- An Experimental thing. Migration notes are elsewhere.
+        \\- **An Experimental thing.** Migration notes are elsewhere.
         \\
     ;
     const c = drift.readChangelog(text, null);
-    try testing.expect(c.breaking);
-    try testing.expect(!c.breaking_experimental);
-    try testing.expect(!c.breaking_migration);
+    try testing.expectEqual(@as(usize, 1), c.breaking_entries);
+    try testing.expectEqual(@as(usize, 0), c.experimental_entries);
+    try testing.expectEqual(@as(usize, 1), c.entries_without_migration);
 }
 
 test "readChangelog: an empty Breaking heading is no Breaking entry" {
     const c = drift.readChangelog("## [Unreleased]\n\n### Breaking\n\n### Added\n\n- x\n", null);
     try testing.expect(c.found);
-    try testing.expect(!c.breaking);
+    try testing.expectEqual(@as(usize, 0), c.breaking_entries);
+    try testing.expectEqual(@as(usize, 0), c.stableEntries());
 }
 
 test "readChangelog: a missing section is reported" {
     const c = drift.readChangelog("# Changelog\n\n## [0.19.1] - 2026-10-04\n", null);
     try testing.expect(!c.found);
-    try testing.expect(!c.breaking);
+    try testing.expectEqual(@as(usize, 0), c.breaking_entries);
 }
 
 test "readChangelog: a heading the version is only a prefix of does not match" {
@@ -297,7 +329,69 @@ test "readChangelog: a heading the version is only a prefix of does not match" {
     const c = drift.readChangelog(text, "0.20.0");
     try testing.expectEqualStrings("0.20.0", c.section);
     try testing.expect(c.found);
-    try testing.expect(!c.breaking);
+    try testing.expectEqual(@as(usize, 0), c.breaking_entries);
+}
+
+test "readChangelog: each top-level bullet is one entry, tiered by its bold title" {
+    // The shapes the real CHANGELOG uses: a title wrapped over two lines, a
+    // `*` bullet, `(Experimental behavior)`, `(...; Experimental)`, a
+    // Migration paragraph at column 2, and a Stable entry whose body (not
+    // its title) mentions Experimental.
+    const text =
+        \\## [Unreleased]
+        \\
+        \\### Breaking
+        \\
+        \\- **Minimum Zig is now `0.17.0`.** In the Experimental surface, std's
+        \\  sets gained `ConnectionTimedOut`.
+        \\  - **Migration:** upgrade Zig.
+        \\- **The `io_backend` `.evented` selector returns
+        \\  `error.EventedBackendUnsupported` (Experimental).** A body that
+        \\  names the Stable `Backend` type.
+        \\  - **Migration:** select `.threaded`.
+        \\* **`DisconnectCause` is now non-exhaustive (`enum(u8)`; Experimental).**
+        \\  - A nested bullet is part of its entry.
+        \\- **WorkerPool reaps idle connections (Experimental behavior).**
+        \\
+        \\  **Migration:** raise `idle_timeout_ms`.
+        \\
+    ;
+    const c = drift.readChangelog(text, null);
+    try testing.expectEqual(@as(usize, 4), c.breaking_entries);
+    try testing.expectEqual(@as(usize, 3), c.experimental_entries);
+    try testing.expectEqual(@as(usize, 1), c.stableEntries());
+    // Only the DisconnectCause entry lacks a Migration paragraph; one entry
+    // having one does not cover another.
+    try testing.expectEqual(@as(usize, 1), c.entries_without_migration);
+
+    var buf: [8][]const u8 = undefined;
+    try testing.expectEqual(@as(usize, 4), titles(c, &buf));
+    try testing.expectEqualStrings("Minimum Zig is now `0.17.0`.", buf[0]);
+    try testing.expectEqualStrings("The `io_backend` `.evented` selector returns\n  `error.EventedBackendUnsupported` (Experimental).", buf[1]);
+    try testing.expectEqualStrings("WorkerPool reaps idle connections (Experimental behavior).", buf[3]);
+
+    var it = c.entries();
+    const first = it.next().?;
+    try testing.expect(!first.experimental());
+    try testing.expect(first.migration());
+    try testing.expect(it.next().?.experimental());
+    const third = it.next().?;
+    try testing.expect(third.experimental());
+    try testing.expect(!third.migration());
+    try testing.expect(std.mem.indexOf(u8, third.text, "A nested bullet") != null);
+    try testing.expect(it.next().?.migration());
+    try testing.expect(it.next() == null);
+}
+
+test "readChangelog: Breaking prose with no bullet is one Stable entry" {
+    const text = "## [Unreleased]\n\n### Breaking\n\nThe `lib.b` function is gone.\nMigration: call `lib.a`.\n";
+    const c = drift.readChangelog(text, null);
+    try testing.expectEqual(@as(usize, 1), c.breaking_entries);
+    try testing.expectEqual(@as(usize, 1), c.stableEntries());
+    try testing.expectEqual(@as(usize, 0), c.entries_without_migration);
+    var buf: [2][]const u8 = undefined;
+    try testing.expectEqual(@as(usize, 1), titles(c, &buf));
+    try testing.expectEqualStrings("The `lib.b` function is gone.", buf[0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -353,22 +447,43 @@ test "plan ablation 4: a patch bump with an Experimental-only change is red" {
 // evaluate: the other rules.
 // ---------------------------------------------------------------------------
 
-test "a Stable removal with a Breaking entry and a minor bump is green" {
+test "a Stable removal with a Stable Breaking entry and a minor bump is green, and lists the lines" {
     var pairs = unchanged();
     pairs[indexOf("docs/api-snapshot.txt")].new = header ++ "lib.a: fn () void\nlib.c: struct\n";
     const list = try drifts(pairs);
     defer freeDrifts(&list);
-    const findings = try drift.evaluate(gpa, .minor, &list, drift.readChangelog(changelog_with_release, "0.20.0"));
+    const findings = try drift.evaluate(gpa, .minor, &list, drift.readChangelog(changelog_with_stable_break, "0.20.0"));
     defer gpa.free(findings);
-    try testing.expectEqual(@as(usize, 0), findings.len);
+    try testing.expectEqual(@as(usize, 0), failures(findings));
+    // The releaser still checks that the entries cover the removed lines.
+    try testing.expectEqual(@as(usize, 1), findings.len);
+    try testing.expectEqual(drift.Kind.stable_removal_declared, findings[0].kind);
+    try testing.expectEqualStrings("docs/api-snapshot.txt", findings[0].path.?);
+    try testing.expectEqual(drift.Severity.note, drift.severity(.stable_removal_declared));
 }
 
-test "a Stable removal is red under a patch bump even with a Breaking entry" {
+test "a Stable removal whose only Breaking entry is Experimental is red" {
+    // The v0.20.0 shape: D3 brings a Breaking (Experimental) entry for
+    // `events.Source`. It must not declare an unrelated Stable removal.
     var pairs = unchanged();
     pairs[indexOf("docs/api-snapshot.txt")].new = header ++ "lib.a: fn () void\nlib.c: struct\n";
     const list = try drifts(pairs);
     defer freeDrifts(&list);
-    const findings = try drift.evaluate(gpa, .patch, &list, drift.readChangelog(changelog_with_release, "0.20.0"));
+    const changelog = drift.readChangelog(changelog_with_release, "0.20.0");
+    try testing.expectEqual(@as(usize, 1), changelog.breaking_entries);
+    const findings = try drift.evaluate(gpa, .minor, &list, changelog);
+    defer gpa.free(findings);
+    try testing.expectEqual(@as(usize, 1), countKind(findings, .stable_removal_without_breaking));
+    try testing.expectEqualStrings("docs/api-snapshot.txt", findings[0].path.?);
+    try testing.expectEqual(@as(usize, 1), failures(findings));
+}
+
+test "a Stable removal is red under a patch bump even with a Stable Breaking entry" {
+    var pairs = unchanged();
+    pairs[indexOf("docs/api-snapshot.txt")].new = header ++ "lib.a: fn () void\nlib.c: struct\n";
+    const list = try drifts(pairs);
+    defer freeDrifts(&list);
+    const findings = try drift.evaluate(gpa, .patch, &list, drift.readChangelog(changelog_with_stable_break, "0.20.0"));
     defer gpa.free(findings);
     try testing.expectEqual(@as(usize, 0), countKind(findings, .stable_removal_without_breaking));
     try testing.expectEqual(@as(usize, 1), countKind(findings, .patch_with_drift));
@@ -394,6 +509,26 @@ test "an Experimental removal without a Breaking (Experimental) entry warns, and
     defer gpa.free(findings);
     try testing.expectEqual(@as(usize, 1), countKind(findings, .experimental_removal_without_breaking_entry));
     try testing.expectEqual(drift.Severity.warn, drift.severity(.experimental_removal_without_breaking_entry));
+    try testing.expectEqual(@as(usize, 0), failures(findings));
+}
+
+test "a Stable entry whose body mentions Experimental does not cover an Experimental removal" {
+    const text =
+        \\## [Unreleased]
+        \\
+        \\### Breaking
+        \\
+        \\- **`lib.b` is removed.** The Experimental `lib.x` is unaffected.
+        \\  - **Migration:** call `lib.a`.
+        \\
+    ;
+    var pairs = unchanged();
+    pairs[indexOf("docs/api-snapshot-experimental.txt")].new = "# EXPERIMENTAL\nlib.x: fn () void\n";
+    const list = try drifts(pairs);
+    defer freeDrifts(&list);
+    const findings = try drift.evaluate(gpa, .minor, &list, drift.readChangelog(text, null));
+    defer gpa.free(findings);
+    try testing.expectEqual(@as(usize, 1), countKind(findings, .experimental_removal_without_breaking_entry));
     try testing.expectEqual(@as(usize, 0), failures(findings));
 }
 
@@ -464,6 +599,27 @@ test "a Breaking section with no Migration paragraph warns" {
     defer gpa.free(findings);
     try testing.expectEqual(@as(usize, 1), countKind(findings, .breaking_without_migration));
     try testing.expectEqual(drift.Severity.warn, drift.severity(.breaking_without_migration));
+}
+
+test "a Breaking entry without Migration warns even when another entry has one" {
+    const text =
+        \\## [Unreleased]
+        \\
+        \\### Breaking
+        \\
+        \\- **`lib.b` is removed.**
+        \\  - **Migration:** call `lib.a`.
+        \\- **`lib.c` is renamed.**
+        \\
+    ;
+    const c = drift.readChangelog(text, null);
+    try testing.expectEqual(@as(usize, 2), c.breaking_entries);
+    try testing.expectEqual(@as(usize, 1), c.entries_without_migration);
+    const list = try drifts(unchanged());
+    defer freeDrifts(&list);
+    const findings = try drift.evaluate(gpa, .minor, &list, c);
+    defer gpa.free(findings);
+    try testing.expectEqual(@as(usize, 1), countKind(findings, .breaking_without_migration));
 }
 
 test "a missing CHANGELOG section warns" {

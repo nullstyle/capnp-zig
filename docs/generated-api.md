@@ -235,8 +235,9 @@ walks every public declaration of the generated files and renders each as one
 line, `<profile>.<file>.<path>: <signature>`, into one of two files:
 
 - `docs/generated-shape.txt` is **Stable and frozen**. A removed or changed
-  line breaks code that consumers generate. It needs a `### Breaking` CHANGELOG
-  entry with a Migration paragraph, and a minor bump.
+  line breaks code that consumers generate. It needs a Stable `### Breaking`
+  CHANGELOG entry (not tagged `(Experimental)`) with a Migration paragraph,
+  and a minor bump.
 - `docs/generated-shape-experimental.txt` is Experimental. It must match the
   tree, but its lines can change in any minor release.
 

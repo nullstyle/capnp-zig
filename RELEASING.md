@@ -36,13 +36,22 @@ when:
 
 - a Stable file (`docs/api-snapshot.txt` or `docs/generated-shape.txt`)
   removes or changes a line, and the release's CHANGELOG section has no
-  `### Breaking` entry;
+  Stable `### Breaking` entry;
 - any of the five files changed, and the bump is a patch.
 
-It warns when an experimental file loses lines and no Breaking entry names
-anything Experimental. A file that did not exist at the previous tag counts as
-all additions. `release-preflight` and `release-tag` both run it, against the
-newest `v*` tag; the rules are in `tools/release_drift.zig`.
+The hook reads each top-level bullet under `### Breaking` as one entry. An
+entry whose bold title says `Experimental` (`(Experimental)`,
+`(Experimental behavior)`) is an Experimental entry; every other entry is a
+Stable entry. Only the title counts, so a Breaking section that holds only
+Experimental entries does not declare a Stable break.
+
+It warns when an experimental file loses lines and no Breaking entry is
+tagged Experimental, and when an entry has no Migration paragraph. When
+Stable lines go and a Stable entry exists, it lists the lines in a NOTE: it
+cannot tell which entry covers which line, so check that by hand. A file that
+did not exist at the previous tag counts as all additions.
+`release-preflight` and `release-tag` both run it, against the newest `v*`
+tag; the rules are in `tools/release_drift.zig`.
 
 Generated code used to be the row that was easy to get wrong. `zig build
 check-api` snapshots *library* declarations only, so a change to what the
@@ -63,8 +72,10 @@ WASM binding, the checked-in V1/V2 schema-evolution fixtures and the
 generated-shape corpus; all of their diffs are part of the review surface.
 
 A minor bump with any breaking content needs a `### Breaking` heading in the
-CHANGELOG with a **Migration** paragraph. Do not file breaking changes under
-`### Fixed`.
+CHANGELOG with a **Migration** paragraph in each entry. Do not file breaking
+changes under `### Fixed`. Put `(Experimental)` in the bold title of an entry
+that breaks only Experimental surface. When one change breaks both tiers,
+write two entries, one for each tier.
 
 ## 1. Preconditions
 
@@ -180,8 +191,9 @@ reason.
 
 - [ ] Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and open a fresh
       empty `## [Unreleased]` above it.
-- [ ] Move any breaking entries into a `### Breaking` heading with a
-      **Migration** paragraph.
+- [ ] Move any breaking entries into a `### Breaking` heading, each with a
+      **Migration** paragraph. Tag an Experimental-only entry with
+      `(Experimental)` in its bold title (see Semver classification).
 - [ ] Update the link footer: repoint `[Unreleased]` at
       `compare/vX.Y.Z...HEAD` and add `[X.Y.Z]: …compare/<prev>...vX.Y.Z`.
 

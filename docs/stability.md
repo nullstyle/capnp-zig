@@ -379,8 +379,9 @@ capnpc-zig follows [Semantic Versioning 2.0.0](https://semver.org/).
   version where possible, with breaking changes clearly documented in the
   changelog. `just check-release-drift` (run by `release-preflight` and
   `release-tag`) enforces this on the five surface snapshots: a removed or
-  changed Stable line needs a `### Breaking` entry, and any snapshot change
-  rules out a patch release.
+  changed Stable line needs a Stable `### Breaking` entry (one whose bold
+  title is not tagged `(Experimental)`), and any snapshot change rules out a
+  patch release.
 - Once the project reaches **1.0.0**, the stability levels above will be
   enforced strictly:
   - Breaking changes to **Stable** modules require a major version bump.

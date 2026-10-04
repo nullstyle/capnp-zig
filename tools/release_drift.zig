@@ -13,15 +13,24 @@
 //!   docs/api-snapshot-experimental-quic.txt  Experimental (the -Dquic root)
 //!   docs/generated-shape-experimental.txt    Experimental
 //!
+//! Each top-level bullet under the section's `### Breaking` heading is one
+//! entry. An entry whose bold title says `Experimental` (`(Experimental)`,
+//! `(Experimental behavior)`, `(...; Experimental)`) is an Experimental
+//! entry; every other entry is a Stable one. Only the title counts.
+//!
 //! It FAILS when:
 //!   * a Stable file removes or changes a line, and the release's CHANGELOG
-//!     section has no `### Breaking` entry (a changed line is one removal
-//!     plus one addition);
+//!     section has no Stable `### Breaking` entry (a changed line is one
+//!     removal plus one addition). A section whose Breaking entries are all
+//!     Experimental declares no Stable break;
 //!   * any of the five files changed, and the bump is a patch;
 //!   * the version goes backwards.
-//! It WARNS when an Experimental file loses lines and the `### Breaking`
-//! entry names nothing Experimental, when a `### Breaking` entry has no
-//! Migration paragraph, and when the CHANGELOG section is missing.
+//! It WARNS when an Experimental file loses lines and no Breaking entry is
+//! Experimental, when a Breaking entry has no Migration paragraph (each
+//! entry needs its own), and when the CHANGELOG section is missing. When a
+//! Stable Breaking entry does exist, it lists the removed Stable lines in a
+//! NOTE: it cannot tell which entry covers which line, so the releaser
+//! checks that by hand.
 //!
 //! A file that does not exist at the previous release counts as empty, so
 //! all its lines are added. Header lines (`#`) and blank lines are not
@@ -161,19 +170,98 @@ pub fn zonVersion(text: []const u8) ?[]const u8 {
 // The CHANGELOG.
 // ---------------------------------------------------------------------------
 
+/// One top-level entry under `### Breaking`: a `- ` or `* ` bullet at
+/// column 0, with everything below it up to the next one (nested bullets
+/// and indented Migration paragraphs included). Text before the first
+/// bullet is an entry of its own.
+pub const BreakingEntry = struct {
+    /// The bold title (`- **...**`), or the entry's first line when it has
+    /// none. Borrowed; a wrapped title keeps its line breaks.
+    title: []const u8,
+    /// The whole entry. Borrowed.
+    text: []const u8,
+
+    /// The entry is tagged Experimental: its title says so, as in
+    /// `(Experimental)`, `(Experimental behavior)` or `(...; Experimental)`.
+    /// Only the title counts. A Stable entry may mention an Experimental
+    /// detail in its body and is still a Stable entry, and an Experimental
+    /// entry never declares a Stable break: a release that breaks both
+    /// tiers writes one entry for each.
+    pub fn experimental(entry: BreakingEntry) bool {
+        return std.mem.indexOf(u8, entry.title, "Experimental") != null;
+    }
+
+    /// The entry carries a Migration paragraph (RELEASING.md).
+    pub fn migration(entry: BreakingEntry) bool {
+        return std.mem.indexOf(u8, entry.text, "Migration") != null;
+    }
+};
+
+/// Iterates the entries of a `### Breaking` body.
+pub const BreakingEntries = struct {
+    rest: []const u8,
+
+    fn isBullet(line: []const u8) bool {
+        return std.mem.startsWith(u8, line, "- ") or std.mem.startsWith(u8, line, "* ");
+    }
+
+    pub fn next(self: *BreakingEntries) ?BreakingEntry {
+        // Skip blank lines; the entry starts at the first other line.
+        while (self.rest.len > 0) {
+            const eol = std.mem.indexOfScalar(u8, self.rest, '\n') orelse self.rest.len;
+            if (std.mem.trim(u8, self.rest[0..eol], " \t\r").len > 0) break;
+            self.rest = self.rest[@min(self.rest.len, eol + 1)..];
+        }
+        if (self.rest.len == 0) return null;
+
+        // The entry runs to the next column-0 bullet.
+        var end: usize = std.mem.indexOfScalar(u8, self.rest, '\n') orelse self.rest.len;
+        while (end < self.rest.len) {
+            const line_start = end + 1;
+            if (isBullet(self.rest[line_start..])) break;
+            end = if (std.mem.indexOfScalarPos(u8, self.rest, line_start, '\n')) |eol| eol else self.rest.len;
+        }
+        const text = std.mem.trimEnd(u8, self.rest[0..end], " \t\r\n");
+        self.rest = self.rest[@min(self.rest.len, end + 1)..];
+
+        // The title: the bold span after the bullet, else the first line.
+        const lead = if (isBullet(text)) std.mem.trimStart(u8, text[2..], " \t") else text;
+        if (std.mem.startsWith(u8, lead, "**")) {
+            if (std.mem.indexOfPos(u8, lead, 2, "**")) |close| {
+                return .{ .title = lead[2..close], .text = text };
+            }
+        }
+        const first_line = lead[0 .. std.mem.indexOfScalar(u8, lead, '\n') orelse lead.len];
+        return .{ .title = std.mem.trimEnd(u8, first_line, " \t\r"), .text = text };
+    }
+};
+
 pub const Changelog = struct {
     /// The section the release is checked against: a version, or
     /// "Unreleased". Borrowed from the caller.
     section: []const u8,
     /// False when the CHANGELOG has no such section.
     found: bool = false,
-    /// The section has a `### Breaking` heading with an entry under it.
-    breaking: bool = false,
-    /// The Breaking entries mention "Experimental": a Breaking
+    /// The text under the section's `### Breaking` heading; empty when it
+    /// has none. Borrowed from the caller.
+    breaking_text: []const u8 = "",
+    /// Entries under `### Breaking` (see `BreakingEntry`).
+    breaking_entries: usize = 0,
+    /// Entries tagged Experimental in their title: a Breaking
     /// (Experimental) entry, as `rpc.events.Event` gaining a variant was.
-    breaking_experimental: bool = false,
-    /// The Breaking entries carry a Migration paragraph.
-    breaking_migration: bool = false,
+    experimental_entries: usize = 0,
+    /// Entries with no Migration paragraph.
+    entries_without_migration: usize = 0,
+
+    /// Entries that can declare a Stable break: those not tagged
+    /// Experimental.
+    pub fn stableEntries(self: Changelog) usize {
+        return self.breaking_entries - self.experimental_entries;
+    }
+
+    pub fn entries(self: Changelog) BreakingEntries {
+        return .{ .rest = self.breaking_text };
+    }
 };
 
 /// The body of `## [<name>]` (the lines below its heading, up to the next
@@ -231,9 +319,13 @@ pub fn readChangelog(text: []const u8, version: ?[]const u8) Changelog {
     }
     var result: Changelog = .{ .section = name, .found = body != null };
     const breaking = breakingBody(body orelse return result) orelse return result;
-    result.breaking = std.mem.trim(u8, breaking, " \t\r\n").len > 0;
-    result.breaking_experimental = result.breaking and std.mem.indexOf(u8, breaking, "Experimental") != null;
-    result.breaking_migration = result.breaking and std.mem.indexOf(u8, breaking, "Migration") != null;
+    result.breaking_text = breaking;
+    var it = result.entries();
+    while (it.next()) |entry| {
+        result.breaking_entries += 1;
+        if (entry.experimental()) result.experimental_entries += 1;
+        if (!entry.migration()) result.entries_without_migration += 1;
+    }
     return result;
 }
 
@@ -252,19 +344,24 @@ pub const FileDrift = struct {
 
 pub const Kind = enum {
     /// A Stable file removed or changed a line, and the section has no
-    /// `### Breaking` entry.
+    /// Stable `### Breaking` entry (one whose title is not tagged
+    /// Experimental).
     stable_removal_without_breaking,
     /// A snapshot file changed, and the bump is a patch.
     patch_with_drift,
-    /// An Experimental file lost lines, and no Breaking entry names
-    /// anything Experimental.
+    /// An Experimental file lost lines, and no Breaking entry is tagged
+    /// Experimental.
     experimental_removal_without_breaking_entry,
-    /// A `### Breaking` entry without a Migration paragraph.
+    /// One or more `### Breaking` entries have no Migration paragraph.
     breaking_without_migration,
     /// The CHANGELOG has no section for this release.
     changelog_section_missing,
     /// The version is not bumped yet, and the files drifted.
     bump_pending,
+    /// A Stable file removed or changed a line under a Stable Breaking
+    /// entry. The tool cannot tell which entry covers which line, so it
+    /// lists the lines for the releaser to check.
+    stable_removal_declared,
 };
 
 pub const Severity = enum { fail, warn, note };
@@ -273,7 +370,7 @@ pub fn severity(kind: Kind) Severity {
     return switch (kind) {
         .stable_removal_without_breaking, .patch_with_drift => .fail,
         .experimental_removal_without_breaking_entry, .breaking_without_migration, .changelog_section_missing => .warn,
-        .bump_pending => .note,
+        .bump_pending, .stable_removal_declared => .note,
     };
 }
 
@@ -294,10 +391,11 @@ pub fn evaluate(gpa: std.mem.Allocator, bump: Bump, drifts: []const FileDrift, c
         if (d.diff.added + d.diff.removed > 0) any_drift = true;
         if (d.diff.removed == 0) continue;
         switch (d.tier) {
-            .stable => if (!changelog.breaking) {
-                try findings.append(gpa, .{ .kind = .stable_removal_without_breaking, .path = d.path });
-            },
-            .experimental => if (!changelog.breaking_experimental) {
+            .stable => try findings.append(gpa, .{
+                .kind = if (changelog.stableEntries() == 0) .stable_removal_without_breaking else .stable_removal_declared,
+                .path = d.path,
+            }),
+            .experimental => if (changelog.experimental_entries == 0) {
                 try findings.append(gpa, .{ .kind = .experimental_removal_without_breaking_entry, .path = d.path });
             },
         }
@@ -307,7 +405,7 @@ pub fn evaluate(gpa: std.mem.Allocator, bump: Bump, drifts: []const FileDrift, c
         .none => try findings.append(gpa, .{ .kind = .bump_pending }),
         .minor, .major => {},
     };
-    if (changelog.breaking and !changelog.breaking_migration) {
+    if (changelog.entries_without_migration > 0) {
         try findings.append(gpa, .{ .kind = .breaking_without_migration });
     }
     if (!changelog.found) try findings.append(gpa, .{ .kind = .changelog_section_missing });
@@ -420,8 +518,28 @@ fn bumpName(bump: Bump) []const u8 {
     };
 }
 
-fn yesNo(value: bool) []const u8 {
-    return if (value) "yes" else "no";
+fn driftFor(drifts: []const FileDrift, path: []const u8) FileDrift {
+    for (drifts) |d| {
+        if (std.mem.eql(u8, d.path, path)) return d;
+    }
+    unreachable;
+}
+
+/// The removed lines of one file, as many as the diff kept.
+fn printRemoved(d: FileDrift, prev_ref: []const u8) void {
+    for (d.diff.removed_sample) |line| std.debug.print("      - {s}\n", .{line});
+    if (d.diff.removed > d.diff.removed_sample.len) {
+        std.debug.print("      ... and {d} more (git diff {s} -- {s})\n", .{ d.diff.removed - d.diff.removed_sample.len, prev_ref, d.path });
+    }
+}
+
+/// An entry title on one line: a wrapped title's line breaks and
+/// indentation become single spaces.
+fn printTitle(title: []const u8) void {
+    std.debug.print("      -", .{});
+    var words = std.mem.tokenizeAny(u8, title, " \t\r\n");
+    while (words.next()) |word| std.debug.print(" {s}", .{word});
+    std.debug.print("\n", .{});
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -524,8 +642,13 @@ pub fn main(init: std.process.Init) !void {
         });
     }
     if (changelog.found) {
-        std.debug.print("  CHANGELOG [{s}]: ### Breaking: {s} (names Experimental: {s}; Migration: {s})\n", .{
-            changelog.section, yesNo(changelog.breaking), yesNo(changelog.breaking_experimental), yesNo(changelog.breaking_migration),
+        std.debug.print("  CHANGELOG [{s}]: ### Breaking: {d} entr{s} ({d} Stable, {d} tagged Experimental; {d} without Migration)\n", .{
+            changelog.section,
+            changelog.breaking_entries,
+            if (changelog.breaking_entries == 1) "y" else "ies",
+            changelog.stableEntries(),
+            changelog.experimental_entries,
+            changelog.entries_without_migration,
         });
     } else {
         std.debug.print("  CHANGELOG [{s}]: no such section\n", .{changelog.section});
@@ -546,30 +669,46 @@ pub fn main(init: std.process.Init) !void {
         };
         switch (f.kind) {
             .stable_removal_without_breaking => {
-                const d = for (drifts) |entry| {
-                    if (std.mem.eql(u8, entry.path, f.path.?)) break entry;
-                } else unreachable;
-                std.debug.print(
-                    "{s} {s} removes or changes {d} Stable line(s), and CHANGELOG [{s}] has no `### Breaking` entry. A frozen contract moved: add a Breaking entry with a Migration paragraph and bump the minor version (RELEASING.md), or restore the lines.\n",
-                    .{ tag, f.path.?, d.diff.removed, changelog.section },
-                );
-                for (d.diff.removed_sample) |line| std.debug.print("      - {s}\n", .{line});
-                if (d.diff.removed > d.diff.removed_sample.len) {
-                    std.debug.print("      ... and {d} more (git diff {s} -- {s})\n", .{ d.diff.removed - d.diff.removed_sample.len, prev_ref, f.path.? });
+                const d = driftFor(&drifts, f.path.?);
+                if (changelog.breaking_entries == 0) {
+                    std.debug.print(
+                        "{s} {s} removes or changes {d} Stable line(s), and CHANGELOG [{s}] has no `### Breaking` entry. A frozen contract moved: add a Breaking entry with a Migration paragraph and bump the minor version (RELEASING.md), or restore the lines.\n",
+                        .{ tag, f.path.?, d.diff.removed, changelog.section },
+                    );
+                } else {
+                    std.debug.print(
+                        "{s} {s} removes or changes {d} Stable line(s), and every `### Breaking` entry in CHANGELOG [{s}] is tagged Experimental in its title, so none declares a Stable break. A frozen contract moved: add a Stable Breaking entry (no `Experimental` in its bold title) with a Migration paragraph, or restore the lines.\n",
+                        .{ tag, f.path.?, d.diff.removed, changelog.section },
+                    );
                 }
+                printRemoved(d, prev_ref);
+            },
+            .stable_removal_declared => {
+                const d = driftFor(&drifts, f.path.?);
+                std.debug.print(
+                    "{s} {s} removes or changes {d} Stable line(s) under {d} Stable `### Breaking` entr{s}. Check that the entries cover every line:\n",
+                    .{ tag, f.path.?, d.diff.removed, changelog.stableEntries(), if (changelog.stableEntries() == 1) "y" else "ies" },
+                );
+                printRemoved(d, prev_ref);
             },
             .patch_with_drift => std.debug.print(
                 "{s} {s} -> {s} is a patch bump, but the snapshot files changed. Any surface change, on any tier, is a minor bump (RELEASING.md).\n",
                 .{ tag, prev_version_text, version_text },
             ),
             .experimental_removal_without_breaking_entry => std.debug.print(
-                "{s} {s} loses lines, and no `### Breaking` entry in CHANGELOG [{s}] names anything Experimental. If a consumer could see the change, add a Breaking (Experimental) entry with a Migration note.\n",
+                "{s} {s} loses lines, and no `### Breaking` entry in CHANGELOG [{s}] is tagged Experimental in its title. If a consumer could see the change, add a Breaking (Experimental) entry with a Migration note.\n",
                 .{ tag, f.path.?, changelog.section },
             ),
-            .breaking_without_migration => std.debug.print(
-                "{s} CHANGELOG [{s}] has a `### Breaking` entry with no Migration paragraph (RELEASING.md).\n",
-                .{ tag, changelog.section },
-            ),
+            .breaking_without_migration => {
+                std.debug.print(
+                    "{s} CHANGELOG [{s}] has {d} `### Breaking` entr{s} with no Migration paragraph (RELEASING.md):\n",
+                    .{ tag, changelog.section, changelog.entries_without_migration, if (changelog.entries_without_migration == 1) "y" else "ies" },
+                );
+                var it = changelog.entries();
+                while (it.next()) |entry| {
+                    if (!entry.migration()) printTitle(entry.title);
+                }
+            },
             .changelog_section_missing => std.debug.print(
                 "{s} CHANGELOG.md has no `## [{s}]` section.\n",
                 .{ tag, changelog.section },

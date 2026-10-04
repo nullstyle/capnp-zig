@@ -24,7 +24,8 @@ version (`zig fetch --save …#v0.19.1`) and read the CHANGELOG before bumping.
   [What is frozen in generated code](generated-api.md#what-is-frozen-in-generated-code)).
   Breaking changes are avoided within 0.3.x and called out in the CHANGELOG
   when unavoidable; `just check-release-drift` fails a release that changes a
-  Stable line without a `### Breaking` entry.
+  Stable line without a Stable `### Breaking` entry (an entry tagged
+  `(Experimental)` does not count).
 - **Experimental** (retained outbound-answer lifetimes, L3/L4 three-party
   origination, reflected-cap resolve, QUIC, persistence vat-restore, events,
   `io_backend`, binary schema reflection, the demoted transport/ctor variants): may break at any 0.x
