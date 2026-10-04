@@ -3053,6 +3053,7 @@ capnpc-zig.rpc.transport.quic.LengthDelimitedFramer.Options.max_message_bytes: f
 capnpc-zig.rpc.transport.quic.LengthDelimitedFramer.Options: struct
 capnpc-zig.rpc.transport.quic.LengthDelimitedFramer.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.quic.LengthDelimitedFramer.buffer: field array_list.Aligned(u8,null)
+capnpc-zig.rpc.transport.quic.LengthDelimitedFramer.consumed: field usize = 0
 capnpc-zig.rpc.transport.quic.LengthDelimitedFramer.deinit: fn (*rpc.transport.quic.length_framer.LengthDelimitedFramer) void
 capnpc-zig.rpc.transport.quic.LengthDelimitedFramer.expected_len: field ?usize = null
 capnpc-zig.rpc.transport.quic.LengthDelimitedFramer.init: fn (mem.Allocator, usize) rpc.transport.quic.length_framer.LengthDelimitedFramer
@@ -3088,6 +3089,7 @@ capnpc-zig.rpc.transport.quic.NativeControlFramer.Options.max_rpc_frame_bytes: f
 capnpc-zig.rpc.transport.quic.NativeControlFramer.Options: struct
 capnpc-zig.rpc.transport.quic.NativeControlFramer.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.quic.NativeControlFramer.buffer: field array_list.Aligned(u8,null)
+capnpc-zig.rpc.transport.quic.NativeControlFramer.consumed: field usize = 0
 capnpc-zig.rpc.transport.quic.NativeControlFramer.deinit: fn (*rpc.transport.quic.native_framer.ControlFramer) void
 capnpc-zig.rpc.transport.quic.NativeControlFramer.expected_len: field ?usize = null
 capnpc-zig.rpc.transport.quic.NativeControlFramer.freeBytes: fn (*const rpc.transport.quic.native_framer.ControlFramer) usize
@@ -3687,6 +3689,7 @@ capnpc-zig.rpc.transport.quic.native.ControlFrameTag.inline_rpc: enumerant = 2
 capnpc-zig.rpc.transport.quic.native.ControlFrameTag: enum
 capnpc-zig.rpc.transport.quic.native.ControlFramer.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.quic.native.ControlFramer.buffer: field array_list.Aligned(u8,null)
+capnpc-zig.rpc.transport.quic.native.ControlFramer.consumed: field usize = 0
 capnpc-zig.rpc.transport.quic.native.ControlFramer.expected_len: field ?usize = null
 capnpc-zig.rpc.transport.quic.native.ControlFramer.max_buffered_bytes: field usize
 capnpc-zig.rpc.transport.quic.native.ControlFramer.max_control_frame_bytes: field usize
@@ -4197,6 +4200,7 @@ capnpc-zig.rpc.vat.quic_network.nonce_len: const usize
 capnpc-zig.rpc.vat.quic_network.ticket_version: const u16
 capnpc-zig.rpc.vat.quic_network: struct
 capnpc-zig.rpc.vat: struct
+capnpc-zig.rpc.wire.framing.Framer.consumed: field usize = 0
 capnpc-zig.rpc.wire.protocol.MessageBuilder.buildProvidePromisedAnswerWithOps: fn (*rpc.wire.protocol.MessageBuilder, u32, u32, []const rpc.wire.protocol.PromisedAnswerOp, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!void
 capnpc-zig.rpc.wire.protocol.PayloadBuilder.asReader: fn (rpc.gen.capnp.rpc.Payload.Builder, *serialization.generated_helpers.ReaderStorage) error{EmptyMessage,InvalidFarPointer,InvalidInlineCompositePointer,InvalidPointer,InvalidSegmentId,ListTooLarge,NestingLimitExceeded,OutOfBounds,OutOfMemory,SegmentCountLimitExceeded,TraversalLimitExceeded,TruncatedMessage}!rpc.gen.capnp.rpc.Payload.Reader
 capnpc-zig.rpc.wire.protocol.PayloadBuilder.capnpSchema: const reflection.registry.SchemaRef

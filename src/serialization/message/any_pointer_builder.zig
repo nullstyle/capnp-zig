@@ -23,7 +23,9 @@ pub fn setData(builder: anytype, segment_id: u32, pointer_pos: usize, data: []co
     );
     const segment = &builder.segments.items[segment_id];
     const slice = segment.items[offset .. offset + data.len];
-    std.mem.copyForwards(u8, slice, data);
+    // Disjoint: writeListPointer just appended `slice` past the segment's
+    // previous end, beyond every byte `data` can view.
+    @memcpy(slice, data);
 }
 
 pub fn setCapability(

@@ -233,7 +233,7 @@ pub fn canonicalizeMessageFlatWithBrand(
     if (builder.segments.items.len != 1) return error.NonCanonicalSegments;
     const segment = builder.segments.items[0].items;
     const out = try allocator.alloc(u8, segment.len);
-    std.mem.copyForwards(u8, out, segment);
+    @memcpy(out, segment);
     return out;
 }
 

@@ -93,7 +93,9 @@ pub fn define(
 
                 const segment = &self.builder.segments.items[target_segment_id];
                 const slice = segment.items[offset .. offset + value.len];
-                std.mem.copyForwards(u8, slice, value);
+                // Disjoint: writeListPointer just appended `slice` past the
+                // segment's previous end, beyond every byte `value` can view.
+                @memcpy(slice, value);
             }
 
             /// Initialize a nested struct at the given element index and return its builder.
@@ -759,7 +761,9 @@ pub fn define(
                 const info = try self.writePrimitiveListInSegment(pointer_index, @as(u32, @intCast(data.len)), 2, target_segment_id);
                 const segment = &self.builder.segments.items[info.segment_id];
                 const slice = segment.items[info.offset .. info.offset + data.len];
-                std.mem.copyForwards(u8, slice, data);
+                // Disjoint: the list body was just appended past the
+                // segment's previous end, beyond every byte `data` can view.
+                @memcpy(slice, data);
             }
 
             /// Write a void list pointer at the given pointer index. Void lists carry

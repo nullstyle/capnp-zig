@@ -55,7 +55,7 @@ pub const OutboundQueue = struct {
         const bytes = allocator.alloc(u8, encoded_len) catch return error.OutOfMemory;
         errdefer allocator.free(bytes);
         std.mem.writeInt(u32, bytes[0..length_framer.length_prefix_bytes], @intCast(frame.len), .little);
-        std.mem.copyForwards(u8, bytes[length_framer.length_prefix_bytes..], frame);
+        @memcpy(bytes[length_framer.length_prefix_bytes..], frame);
         self.items.append(allocator, .{ .bytes = bytes }) catch {
             return error.OutOfMemory;
         };
@@ -197,11 +197,9 @@ pub const OutboundQueue = struct {
         if (self.head < 32 or self.head < self.items.items.len - self.head) return;
 
         const live = self.items.items.len - self.head;
-        std.mem.copyForwards(
-            QueuedWrite,
-            self.items.items[0..live],
-            self.items.items[self.head..],
-        );
+        // Disjoint: the guard above returns unless head >= live, so the
+        // destination [0, live) ends at or before the source starts.
+        @memcpy(self.items.items[0..live], self.items.items[self.head..]);
         self.items.items.len = live;
         self.head = 0;
     }

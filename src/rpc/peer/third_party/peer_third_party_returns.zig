@@ -28,7 +28,7 @@ pub fn bufferPendingReturn(
 ) !void {
     const copy = try allocator.alloc(u8, frame.len);
     errdefer allocator.free(copy);
-    std.mem.copyForwards(u8, copy, frame);
+    @memcpy(copy, frame);
     // Free any existing entry for this answer_id to avoid leaking memory
     // on duplicate third-party answer IDs.
     if (pending_returns.fetchRemove(answer_id)) |old| {

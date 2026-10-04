@@ -22,7 +22,7 @@ pub fn queuePendingCall(
 
     const copy = try allocator.alloc(u8, frame.len);
     errdefer allocator.free(copy);
-    std.mem.copyForwards(u8, copy, frame);
+    @memcpy(copy, frame);
 
     // Decode the call's question id once, here, so the per-inbound-message
     // duplicate-id and cancellation scans can match on the stored id instead of

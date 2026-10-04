@@ -1,4 +1,5 @@
 const std = @import("std");
+const read_cursor = @import("../../wire/read_cursor.zig");
 
 pub const preface = "capnp-zig-quic-native/1\n";
 pub const version: u16 = 1;
@@ -49,11 +50,15 @@ pub const ControlFramer = struct {
     };
 
     allocator: std.mem.Allocator,
+    /// Inbound bytes; `buffer.items[consumed..]` are unread (see
+    /// `rpc/wire/read_cursor.zig`).
     buffer: std.ArrayList(u8),
     expected_len: ?usize = null,
     max_control_frame_bytes: usize,
     max_rpc_frame_bytes: usize,
     max_buffered_bytes: usize,
+    /// Read cursor into `buffer`.
+    consumed: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, options: Options) ControlFramer {
         return .{
@@ -67,17 +72,18 @@ pub const ControlFramer = struct {
 
     pub fn deinit(self: *ControlFramer) void {
         self.buffer.deinit(self.allocator);
+        self.consumed = 0;
         self.expected_len = null;
     }
 
     pub fn push(self: *ControlFramer, data: []const u8) !void {
         if (data.len == 0) return;
         try self.ensureAppendBudget(data.len);
-        try self.buffer.appendSlice(self.allocator, data);
+        try read_cursor.append(&self.buffer, &self.consumed, self.allocator, data);
     }
 
     pub fn reset(self: *ControlFramer) void {
-        self.buffer.items.len = 0;
+        read_cursor.clear(&self.buffer, &self.consumed);
         self.expected_len = null;
     }
 
@@ -85,32 +91,33 @@ pub const ControlFramer = struct {
     /// reader that never pushes more than this leaves the rest of the
     /// stream to QUIC flow control instead of failing with FrameTooLarge.
     pub fn freeBytes(self: *const ControlFramer) usize {
-        return self.max_buffered_bytes -| self.buffer.items.len;
+        return self.max_buffered_bytes -| self.unreadLen();
     }
 
     pub fn popFrame(self: *ControlFramer) !?ControlFrame {
         try self.updateExpected();
         const len = self.expected_len orelse return null;
         const total = length_prefix_bytes + len;
-        if (self.buffer.items.len < total) return null;
+        const pending = read_cursor.unread(&self.buffer, self.consumed);
+        if (pending.len < total) return null;
 
-        const payload = self.buffer.items[length_prefix_bytes..total];
-        const frame = try decodePayload(self.allocator, payload, self.max_rpc_frame_bytes);
-
-        const remaining = self.buffer.items.len - total;
-        if (remaining > 0) {
-            std.mem.copyForwards(u8, self.buffer.items[0..remaining], self.buffer.items[total..]);
-        }
-        self.buffer.items.len = remaining;
+        // A decode error leaves the frame unconsumed; the caller resets.
+        const frame = try decodePayload(self.allocator, pending[length_prefix_bytes..total], self.max_rpc_frame_bytes);
+        read_cursor.advance(&self.buffer, &self.consumed, total);
         self.expected_len = null;
         return frame;
     }
 
+    fn unreadLen(self: *const ControlFramer) usize {
+        return self.buffer.items.len - self.consumed;
+    }
+
     fn updateExpected(self: *ControlFramer) !void {
         if (self.expected_len != null) return;
-        if (self.buffer.items.len < length_prefix_bytes) return;
+        const pending = read_cursor.unread(&self.buffer, self.consumed);
+        if (pending.len < length_prefix_bytes) return;
 
-        const raw_len = std.mem.readInt(u32, self.buffer.items[0..length_prefix_bytes], .little);
+        const raw_len = std.mem.readInt(u32, pending[0..length_prefix_bytes], .little);
         if (raw_len == 0) return error.InvalidFrame;
         const len: usize = @intCast(raw_len);
         if (len > self.max_control_frame_bytes) return error.FrameTooLarge;
@@ -118,7 +125,7 @@ pub const ControlFramer = struct {
     }
 
     fn ensureAppendBudget(self: *const ControlFramer, data_len: usize) !void {
-        const next = std.math.add(usize, self.buffer.items.len, data_len) catch return error.FrameTooLarge;
+        const next = std.math.add(usize, self.unreadLen(), data_len) catch return error.FrameTooLarge;
         if (next > self.max_buffered_bytes) return error.FrameTooLarge;
     }
 };
@@ -152,7 +159,7 @@ pub fn encodeInlineRpc(
     out[4] = @backingInt(ControlFrameTag.inline_rpc);
     @memset(out[5..8], 0);
     std.mem.writeInt(u64, out[8..16], sequence, .little);
-    std.mem.copyForwards(u8, out[16..], frame);
+    @memcpy(out[16..], frame);
     return out;
 }
 
@@ -212,7 +219,7 @@ fn decodeInlineRpc(
 
     const frame = try allocator.alloc(u8, frame_len);
     errdefer allocator.free(frame);
-    std.mem.copyForwards(u8, frame, payload[rpc_header_bytes..]);
+    @memcpy(frame, payload[rpc_header_bytes..]);
     return .{
         .inline_rpc = .{
             .sequence = std.mem.readInt(u64, payload[4..12], .little),

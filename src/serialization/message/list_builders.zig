@@ -78,7 +78,9 @@ pub fn define(
                 const segment = &self.builder.segments.items[self.segment_id];
                 try bounds.checkBoundsMut(segment.items, self.elements_offset, data.len);
                 const slice = segment.items[self.elements_offset .. self.elements_offset + data.len];
-                std.mem.copyForwards(u8, slice, data);
+                // @memmove: this list's storage already exists, and `data`
+                // may be a view of it (e.g. the same list read back).
+                @memmove(slice, data);
             }
         };
 

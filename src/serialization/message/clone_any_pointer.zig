@@ -26,7 +26,7 @@ pub fn define(
             }
             const segment = builder.segments.items[0].items;
             const out = try allocator.alloc(u8, segment.len);
-            std.mem.copyForwards(u8, out, segment);
+            @memcpy(out, segment);
             return out;
         }
 
@@ -66,7 +66,11 @@ pub fn define(
             const dest_start = dest.offset;
             const dest_end = dest_start + src_data.len;
             try bounds.checkBoundsMut(dest_segment.items, dest_start, src_data.len);
-            std.mem.copyForwards(u8, dest_segment.items[dest_start..dest_end], src_data);
+            // Disjoint: `dest` is storage this clone appended (a new struct,
+            // or an element of a struct list it just wrote), and `src` is a
+            // complete message, so none of its bytes can lie there (even
+            // when it reads this same builder's segments).
+            @memcpy(dest_segment.items[dest_start..dest_end], src_data);
 
             const pointer_section = src.getPointerSection();
             var ptr_index: u16 = 0;
@@ -165,8 +169,9 @@ pub fn define(
 
             const dest_segment = &dest.builder.segments.items[dest.segment_id];
             try bounds.checkBoundsMut(dest_segment.items, dest_offset, total_bytes);
-            std.mem.copyForwards(
-                u8,
+            // Disjoint for the same reason as in cloneStructDepth: the list
+            // body was just appended past the destination segment's old end.
+            @memcpy(
                 dest_segment.items[dest_offset .. dest_offset + total_bytes],
                 src_segment[list.content_offset .. list.content_offset + total_bytes],
             );

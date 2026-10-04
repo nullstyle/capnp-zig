@@ -8,7 +8,7 @@ pub fn cloneOpsFromSlice(
 ) ![]protocol.PromisedAnswerOp {
     const copied = try allocator.alloc(protocol.PromisedAnswerOp, ops.len);
     errdefer allocator.free(copied);
-    std.mem.copyForwards(protocol.PromisedAnswerOp, copied, ops);
+    @memcpy(copied, ops);
     return copied;
 }
 

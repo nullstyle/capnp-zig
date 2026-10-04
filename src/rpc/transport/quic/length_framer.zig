@@ -1,4 +1,5 @@
 const std = @import("std");
+const read_cursor = @import("../../wire/read_cursor.zig");
 
 pub const length_prefix_bytes: usize = 4;
 
@@ -12,10 +13,14 @@ pub const LengthDelimitedFramer = struct {
     };
 
     allocator: std.mem.Allocator,
+    /// Inbound bytes; `buffer.items[consumed..]` are unread (see
+    /// `rpc/wire/read_cursor.zig`).
     buffer: std.ArrayList(u8),
     expected_len: ?usize = null,
     max_message_bytes: usize,
     max_buffered_bytes: usize,
+    /// Read cursor into `buffer`.
+    consumed: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, max_message_bytes: usize) LengthDelimitedFramer {
         return initWithOptions(allocator, .{ .max_message_bytes = max_message_bytes });
@@ -32,17 +37,18 @@ pub const LengthDelimitedFramer = struct {
 
     pub fn deinit(self: *LengthDelimitedFramer) void {
         self.buffer.deinit(self.allocator);
+        self.consumed = 0;
         self.expected_len = null;
     }
 
     pub fn push(self: *LengthDelimitedFramer, data: []const u8) !void {
         if (data.len == 0) return;
         try self.ensureAppendBudget(data.len);
-        try self.buffer.appendSlice(self.allocator, data);
+        try read_cursor.append(&self.buffer, &self.consumed, self.allocator, data);
     }
 
     pub fn reset(self: *LengthDelimitedFramer) void {
-        self.buffer.items.len = 0;
+        read_cursor.clear(&self.buffer, &self.consumed);
         self.expected_len = null;
     }
 
@@ -50,25 +56,22 @@ pub const LengthDelimitedFramer = struct {
         try self.updateExpected();
         const len = self.expected_len orelse return null;
         const total = length_prefix_bytes + len;
-        if (self.buffer.items.len < total) return null;
+        const pending = read_cursor.unread(&self.buffer, self.consumed);
+        if (pending.len < total) return null;
 
         const frame = try self.allocator.alloc(u8, len);
-        std.mem.copyForwards(u8, frame, self.buffer.items[length_prefix_bytes..total]);
-
-        const remaining = self.buffer.items.len - total;
-        if (remaining > 0) {
-            std.mem.copyForwards(u8, self.buffer.items[0..remaining], self.buffer.items[total..]);
-        }
-        self.buffer.items.len = remaining;
+        @memcpy(frame, pending[length_prefix_bytes..total]);
+        read_cursor.advance(&self.buffer, &self.consumed, total);
         self.expected_len = null;
         return frame;
     }
 
     fn updateExpected(self: *LengthDelimitedFramer) !void {
         if (self.expected_len != null) return;
-        if (self.buffer.items.len < length_prefix_bytes) return;
+        const pending = read_cursor.unread(&self.buffer, self.consumed);
+        if (pending.len < length_prefix_bytes) return;
 
-        const raw_len = std.mem.readInt(u32, self.buffer.items[0..length_prefix_bytes], .little);
+        const raw_len = std.mem.readInt(u32, pending[0..length_prefix_bytes], .little);
         if (raw_len == 0) return error.InvalidFrame;
         const len: usize = @intCast(raw_len);
         if (len > self.max_message_bytes) return error.FrameTooLarge;
@@ -76,7 +79,8 @@ pub const LengthDelimitedFramer = struct {
     }
 
     fn ensureAppendBudget(self: *const LengthDelimitedFramer, data_len: usize) !void {
-        const next = std.math.add(usize, self.buffer.items.len, data_len) catch return error.FrameTooLarge;
+        const unread = self.buffer.items.len - self.consumed;
+        const next = std.math.add(usize, unread, data_len) catch return error.FrameTooLarge;
         if (next > self.max_buffered_bytes) return error.FrameTooLarge;
     }
 };

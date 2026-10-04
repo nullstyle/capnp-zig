@@ -531,7 +531,7 @@ pub const HostPeer = struct {
 
         const frame_copy = try self.allocator.alloc(u8, inbound_frame.len);
         errdefer self.allocator.free(frame_copy);
-        std.mem.copyForwards(u8, frame_copy, inbound_frame);
+        @memcpy(frame_copy, inbound_frame);
 
         const pending = try self.pending_host_call_questions.getOrPut(call.question_id);
         if (pending.found_existing) return error.DuplicateQuestionId;
@@ -677,7 +677,7 @@ pub const HostPeer = struct {
         if (try self.sanitizedAbortFrame(frame)) |sanitized| return sanitized;
 
         const owned = try self.outgoing_allocator.alloc(u8, frame.len);
-        std.mem.copyForwards(u8, owned, frame);
+        @memcpy(owned, frame);
         return owned;
     }
 

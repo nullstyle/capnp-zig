@@ -1128,8 +1128,8 @@ test "connection handleRead dispatches coalesced frames in order" {
 
     const combined = try allocator.alloc(u8, first.len + second.len);
     defer allocator.free(combined);
-    std.mem.copyForwards(u8, combined[0..first.len], first);
-    std.mem.copyForwards(u8, combined[first.len..], second);
+    @memcpy(combined[0..first.len], first);
+    @memcpy(combined[first.len..], second);
 
     var state = Harness.State{
         .allocator = allocator,
@@ -1189,8 +1189,8 @@ test "connection handleRead stops draining when message handler errors" {
 
     const combined = try allocator.alloc(u8, first.len + second.len);
     defer allocator.free(combined);
-    std.mem.copyForwards(u8, combined[0..first.len], first);
-    std.mem.copyForwards(u8, combined[first.len..], second);
+    @memcpy(combined[0..first.len], first);
+    @memcpy(combined[first.len..], second);
 
     var state = Harness.State{
         .allocator = allocator,

@@ -255,7 +255,10 @@ fn setError(code: u32, msg: []const u8) void {
         msg;
     const n = @min(public_msg.len, last_error_buf.len);
     if (n > 0) {
-        std.mem.copyForwards(u8, last_error_buf[0..n], public_msg[0..n]);
+        // @memmove: `msg` can be a view of last_error_buf itself, since the
+        // ABI hands that buffer's address out (capnp_last_error_ptr) and
+        // testingSetErrorForDisclosure accepts any slice.
+        @memmove(last_error_buf[0..n], public_msg[0..n]);
     }
     last_error_code = code;
     last_error_len = @intCast(n);
@@ -1359,7 +1362,7 @@ pub export fn capnp_schema_manifest_json(out_ptr_ptr: AbiPtr, out_len_ptr: AbiPt
         setError(ERROR_ALLOC, "schema manifest allocation failed");
         return 0;
     };
-    std.mem.copyForwards(u8, copy, manifest);
+    @memcpy(copy, manifest);
 
     trackBuffer(copy) catch {
         allocator.free(copy);

@@ -93,7 +93,7 @@ pub fn handleAbort(
         last_remote_abort_reason.* = null;
     }
     const reason_copy = try allocator.alloc(u8, abort.exception.reason.len);
-    std.mem.copyForwards(u8, reason_copy, abort.exception.reason);
+    @memcpy(reason_copy, abort.exception.reason);
     last_remote_abort_reason.* = reason_copy;
     return error.RemoteAbort;
 }

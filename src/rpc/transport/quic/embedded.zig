@@ -141,7 +141,9 @@ pub const EmbeddedSession = struct {
             }
             if (self.consumed < 32 or self.consumed < self.data.items.len - self.consumed) return;
             const live = self.data.items.len - self.consumed;
-            std.mem.copyForwards(u8, self.data.items[0..live], self.data.items[self.consumed..]);
+            // Disjoint: the guard above returns unless consumed >= live, so
+            // the destination [0, live) ends at or before the source starts.
+            @memcpy(self.data.items[0..live], self.data.items[self.consumed..]);
             self.data.items.len = live;
             self.consumed = 0;
         }
