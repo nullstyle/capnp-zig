@@ -474,6 +474,11 @@ pub fn Lifecycle(comptime Peer: type) type {
         ///
         /// `.log` is an explicit `cancelQuestion` (its caller is on the stack)
         /// and teardown (`deinit`, transport close): log only.
+        ///
+        /// `question_id` is always the questions-table (wire) id, the one the
+        /// `.timeout` event for the same cancellation carries, never the
+        /// caller's logical id (they differ for a retained call redirected
+        /// by `awaitFromThirdParty`).
         const CancelFailureRoute = enum { call_deadline, shutdown_drain, log };
 
         fn routeCancelFailure(self: *Peer, route: CancelFailureRoute, question_id: u32, err: anyerror) void {
@@ -514,7 +519,7 @@ pub fn Lifecycle(comptime Peer: type) type {
             if (question.is_loopback) {
                 _ = self.loopback_questions.remove(wire_answer_id);
                 self.removeQuestion(wire_answer_id);
-                try deliverLocalException(self, question, logical_question_id, reason, ex_type, route);
+                try deliverLocalException(self, question, logical_question_id, wire_answer_id, reason, ex_type, route);
                 return;
             }
 
@@ -538,7 +543,7 @@ pub fn Lifecycle(comptime Peer: type) type {
                 log.debug("cancel finish send failed for question {}: {}", .{ wire_answer_id, err });
             };
 
-            try deliverLocalException(self, question, logical_question_id, reason, ex_type, route);
+            try deliverLocalException(self, question, logical_question_id, wire_answer_id, reason, ex_type, route);
         }
 
         /// Cancel every question whose deadline has passed, and enforce the
@@ -619,12 +624,15 @@ pub fn Lifecycle(comptime Peer: type) type {
         /// `question.deinit_ctx` — callers have already removed the entry from
         /// the questions map (or dropped its cleanup hook), so nothing else can.
         ///
-        /// A non-OOM callback failure is consumed here and sent along `route`;
-        /// OOM propagates to the caller.
+        /// A non-OOM callback failure is consumed here and sent along `route`,
+        /// reported under `wire_question_id` (see `CancelFailureRoute`); the
+        /// synthesized Return itself names the caller's logical
+        /// `question_id`. OOM propagates to the caller.
         fn deliverLocalException(
             self: *Peer,
             question: Question,
             question_id: u32,
+            wire_question_id: u32,
             reason: []const u8,
             ex_type: protocol.ExceptionType,
             route: CancelFailureRoute,
@@ -652,7 +660,7 @@ pub fn Lifecycle(comptime Peer: type) type {
             callback_ran = true;
             question.on_return(question.ctx, self, ret, &inbound_caps) catch |err| {
                 if (err == error.OutOfMemory) return error.OutOfMemory;
-                routeCancelFailure(self, route, question_id, err);
+                routeCancelFailure(self, route, wire_question_id, err);
             };
         }
 
@@ -702,8 +710,8 @@ pub fn Lifecycle(comptime Peer: type) type {
                         log.debug("drain finish send failed for question {}: {}", .{ question_id, err });
                     };
                 }
-                deliverLocalException(self, question, logical_question_id, reason, ex_type, route) catch |err| {
-                    routeCancelFailure(self, route, logical_question_id, err);
+                deliverLocalException(self, question, logical_question_id, question_id, reason, ex_type, route) catch |err| {
+                    routeCancelFailure(self, route, question_id, err);
                 };
                 cancelled += 1;
             }

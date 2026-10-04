@@ -1503,7 +1503,9 @@ pub fn buildImpl(b: *std.Build) !void {
             "tests/rpc/transport/tcp/rpc_server_session_test.zig",
             "tests/rpc/integration/rpc_worker_pool_test.zig",
             // Single-threaded, but its deadline sweep runs on transport tick
-            // threads in production; keep the on_error routing TSan-built.
+            // threads in production; keep the deadline-cancel failure
+            // routing (a `.cancel_failure` observer event, never on_error)
+            // TSan-built.
             "tests/rpc/peer/rpc_deadline_test.zig",
         };
         for (tsan_suites) |suite_path| {

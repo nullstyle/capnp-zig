@@ -236,6 +236,7 @@ pub const TimeoutEvent = struct {
     role: Role = .unknown,
     kind: TimeoutKind,
     /// Outbound question ID for `call_deadline`; null for every other kind.
+    /// The wire id (see `CancelFailureEvent.question_id`).
     question_id: ?u32 = null,
     /// Inbound answer ID for `parked_accept` and `join`; null for every other
     /// kind. No Join key, target, provision, or address enters this event.
@@ -259,7 +260,13 @@ pub const CancelFailureEvent = struct {
     /// The deadline that cancelled the question: `.call_deadline` (its own
     /// deadline) or `.shutdown_drain` (the graceful-shutdown drain bound).
     kind: TimeoutKind,
-    /// Outbound question ID of the cancelled question.
+    /// Outbound question ID of the cancelled question, in the id space the
+    /// `.timeout` event for the same cancellation uses (for `.call_deadline`
+    /// the two ids are equal): the wire id the questions table is keyed by.
+    /// That is the id the send returned, except for a retained call that
+    /// `awaitFromThirdParty` redirected, where it is the adopted
+    /// third-party answer id. `.shutdown_drain` uses the same id space,
+    /// though its `.timeout` event names no question.
     question_id: u32,
     err: anyerror,
 };

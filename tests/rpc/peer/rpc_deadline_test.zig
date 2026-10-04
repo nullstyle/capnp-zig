@@ -1,6 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
+const message = capnpc.message;
 const protocol = capnpc.rpc.wire.protocol;
 const peer_impl = capnpc.rpc.peer;
 const cap_table = capnpc.rpc.caps.table;
@@ -1004,6 +1005,141 @@ test "drain-bound force-cancel callback failures are observer events, not on_err
     try std.testing.expectEqual(@as(anyerror, error.TestCallbackFailed), failure.err);
     try std.testing.expectEqual(@as(usize, 0), errors.count);
     try std.testing.expect(ShutdownFlag.fired);
+}
+
+test "a drain-bound force-cancel that itself fails (OOM) is an observer event, not on_error" {
+    const allocator = std.testing.allocator;
+
+    var clock = rpc_time.TestClock{};
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var errors = PeerErrorRecorder{};
+    var event_recorder = EventRecorder{};
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+    peer.setObserver(event_recorder.observer());
+    peer.setClock(clock.clock());
+    peer.setTimeouts(.{ .shutdown_drain_timeout_ms = 50 });
+    peer.start(&errors, PeerErrorRecorder.onError, null);
+
+    // An OOM from the callback propagates out of the force-cancel's
+    // delivery (it is never swallowed as a callback failure), into the
+    // drain sweep's own catch: the drain-bound twin of the per-question
+    // deadline test above.
+    var oom = FailingReturn{ .fail_with = error.OutOfMemory };
+    const oom_id = try peer.sendBootstrap(&oom, FailingReturn.onReturn);
+
+    ShutdownFlag.fired = false;
+    peer.shutdown(ShutdownFlag.onComplete);
+    clock.advanceMs(50);
+    try std.testing.expectEqual(@as(usize, 1), peer.checkDeadlines());
+    try std.testing.expectEqual(@as(usize, 1), oom.return_count);
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.shutdown_drain_timeouts);
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.cancel_failures);
+    const failure = event_recorder.last_cancel_failure.?;
+    try std.testing.expectEqual(events.Source.peer, failure.source);
+    try std.testing.expectEqual(events.TimeoutKind.shutdown_drain, failure.kind);
+    try std.testing.expectEqual(oom_id, failure.question_id);
+    try std.testing.expectEqual(@as(anyerror, error.OutOfMemory), failure.err);
+    // The .timeout event came first, then the failure.
+    try std.testing.expectEqual(@as(usize, 0), event_recorder.cancel_failures_at_last_timeout);
+    try std.testing.expectEqual(@as(usize, 0), errors.count);
+    // The failed delivery still removed the question, so the drain finished.
+    try std.testing.expectEqual(@as(u32, 0), peer.questions.count());
+    try std.testing.expect(ShutdownFlag.fired);
+}
+
+// -- One question-id space per cancellation ----------------------------------
+//
+// A `.cancel_failure` event names the question with the id the `.timeout`
+// event for the same cancellation carries: the questions-table (wire) id.
+// The two id spaces differ only for a retained call redirected by
+// `awaitFromThirdParty`, whose open answer is the adopted third-party answer
+// id while its caller still addresses it by the id the send returned. That
+// is the case below. Both emit sites are covered: a failing callback (the
+// delivery path) and an OOM that escapes the cancel (the sweep's own catch).
+
+fn expectRedirectedCancelFailureMatchesTimeoutId(fail_with: anyerror) !void {
+    const allocator = std.testing.allocator;
+
+    var clock = rpc_time.TestClock{};
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var errors = PeerErrorRecorder{};
+    var event_recorder = EventRecorder{};
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+    peer.setObserver(event_recorder.observer());
+    peer.setClock(clock.clock());
+    peer.setTimeouts(.{ .default_call_timeout_ms = 100 });
+    peer.start(&errors, PeerErrorRecorder.onError, null);
+
+    var redirected = FailingReturn{ .fail_with = fail_with };
+    const logical_id = try peer.sendCallWithOptions(
+        7,
+        0x5155_4943,
+        7,
+        &redirected,
+        null,
+        FailingReturn.onReturn,
+        .{ .result_lifetime = .retained },
+    );
+    const adopted_id: u32 = 0x4000_0077;
+
+    var completion_builder = message.MessageBuilder.init(allocator);
+    defer completion_builder.deinit();
+    const completion_root = try completion_builder.initRootAnyPointer();
+    try completion_root.setText("deadline-redirect-completion");
+    const completion_bytes = try completion_builder.toBytes();
+    defer allocator.free(completion_bytes);
+    var completion_message = try message.Message.init(allocator, completion_bytes, .{});
+    defer completion_message.deinit();
+    const completion = try completion_message.getRootAnyPointer();
+
+    var await_builder = protocol.MessageBuilder.init(allocator);
+    defer await_builder.deinit();
+    var await_ret = try await_builder.beginReturn(logical_id, .awaitFromThirdParty);
+    try await_ret.setAcceptFromThirdParty(completion);
+    const await_frame = try await_builder.finish();
+    defer allocator.free(await_frame);
+    try peer.handleFrame(await_frame);
+
+    var answer_builder = protocol.MessageBuilder.init(allocator);
+    defer answer_builder.deinit();
+    try answer_builder.buildThirdPartyAnswer(adopted_id, completion);
+    const answer_frame = try answer_builder.finish();
+    defer allocator.free(answer_frame);
+    try peer.handleFrame(answer_frame);
+
+    // The question now waits under the adopted wire id, still carrying the
+    // deadline it was sent with.
+    try std.testing.expect(peer.questions.contains(adopted_id));
+    try std.testing.expect(!peer.questions.contains(logical_id));
+    try std.testing.expectEqual(@as(usize, 0), redirected.return_count);
+
+    clock.advanceMs(100);
+    _ = peer.checkDeadlines();
+    try std.testing.expectEqual(@as(usize, 1), redirected.return_count);
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.call_deadline_timeouts);
+    try std.testing.expectEqual(@as(?u32, adopted_id), event_recorder.last_timeout_question_id);
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.cancel_failures);
+    const failure = event_recorder.last_cancel_failure.?;
+    try std.testing.expectEqual(events.TimeoutKind.call_deadline, failure.kind);
+    try std.testing.expectEqual(event_recorder.last_timeout_question_id.?, failure.question_id);
+    try std.testing.expectEqual(fail_with, failure.err);
+    try std.testing.expectEqual(@as(usize, 0), errors.count);
+}
+
+test "a redirected question's cancel_failure from a failing callback carries the timeout event's id" {
+    try expectRedirectedCancelFailureMatchesTimeoutId(error.CallTimedOut);
+}
+
+test "a redirected question's cancel_failure from a failed cancel (OOM) carries the timeout event's id" {
+    try expectRedirectedCancelFailureMatchesTimeoutId(error.OutOfMemory);
 }
 
 /// A question callback that re-enters the peer and grows the questions map
