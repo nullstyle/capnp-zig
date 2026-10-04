@@ -1,14 +1,89 @@
 # QUIC durable capabilities — substrate map and prototype plan
 
-Status: design + prototype #1 (2026-08-20). Nothing here is wired into the
-RPC runtime yet. This document records (a) the design being pursued, (b) a
-verified map of what quic-zig and capnp-zig already provide for it, and
-(c) the prototype sequence, with prototype #1 landed upstream.
+Status (refreshed 2026-10-03): the ladder's first three rungs are in the RPC
+runtime, all Experimental. Warm restore works in both halves, the stateless
+reset reaches the peer as a typed death certificate, and `WarmRedialClient`
+heals a restored capability across a server crash-restart. The hardened server
+preset now carries the reset key, and the redial budget counts consecutive
+failures. "Ledger" below lists what landed (each commit checked with
+`git log`), and "Open rungs" lists what is left, with file:line anchors. The
+sections after them are the original 2026-08-20 plan and its running notes,
+kept for the design reasoning. Where they describe a gap as open, the ledger
+is authoritative.
 
 The design itself came out of an August 2026 exploration into using QUIC
 connection-ID machinery as the transport substrate for Cap'n Proto durable
 capabilities, aimed at an eventual QUIC netlayer (a concrete `VatNetwork`)
 for this repo.
+
+## Ledger (done, verified 2026-10-03)
+
+| Rung | Commit | What landed |
+|---|---|---|
+| Substrate map + prototype plan | `d981181` | This document. |
+| Prototype #2, client half | `0c0b6b7` | `ClientOptions` resumption surface; RPC stream opens pre-handshake on resumed dials, so frames ride 0-RTT. |
+| On-tick parity | `858bc14` | The QUIC transport drives `Peer` call deadlines (the gap prototype #2 found). |
+| 0-RTT replay-execution window | `58d6756` | With `.without_replay_protection`, early frames wait for the handshake. |
+| QuicVatNetwork v1 | `5a543fc`, `28587e8` | Provision-ticket introductions over a pre-established peer pool. |
+| Death certificate | `090c6bd`, `fa31651`, `f918272` | `rpc.events.DisconnectCause` from the QUIC close event to `Peer.lastDisconnectCause()`; `ServerOptions.stateless_reset_key` forwarded. |
+| Fixed-token footgun | `8ec89c3`, `1466177`, `062fc64` | Hand-set reset tokens refused (quic v0.16.1). |
+| Abrupt-death soak mode | `a6893a2` | `--abrupt-death-every-ms` kills and restarts the QUIC server mid-run. |
+| Auto warm redial | `182b6ce`, `8a2aaf2` | `WarmRedialClient`: redial on `.stateless_reset`, re-restore, `on_rebind`. |
+| **Warm restore, server half** | **`c093648`** | `ServerOptions.early_dispatch = .restore_only` executes only the idempotent prefix (Bootstrap + Restorer calls) inside the replay window; `quic.warm_state` persists {ticket, NEW_TOKEN} as one blob; `WarmRedialClient.exportWarmState`/`seedWarmState`. Closes prototype #2's "Remaining" items 1 and 2. |
+| **Soak healing workers** | **`4c563e4`** | `--heal-workers K`: persistent `WarmRedialClient`s heal across every abrupt death (first run: 56 redials, 64 rebinds, 0 give-ups). Closes "wire the redial path into the soak's workers". |
+| **Half-open handshake guard** | **`0f99d89`** | `handshake_timeout_ms` on server (10 s) and client (30 s), certified `DisconnectCause.handshake_timeout`, `Server.feedOutcomeCounts()`, batched receive. Made heal-under-death hold at churn scale. |
+| Nightly self-healing soak lane | `08fc53b` | The heal soak runs in Nightly. |
+| Embedded 0-RTT parity | `dece43c` | `EmbeddedSession` gets the same replay-hold posture. |
+| Lifetime stream cap removed | `bf9a2e7`, `15b86ae` | quic v0.24: stream limits are an open-at-once window; `stream_limit_exhausted` is gone. |
+| Hardened preset carries the death certificate; consecutive redial budget | this sprint (item 8) | `ServerProductionHardening.stateless_reset_key` is required; `.early_data = .restore_only` is the explicit 0-RTT opt-in (sets `.without_replay_protection` + `.restore_only` together); `WarmRedialClient.Policy.min_healthy_ms` (10 s) resets `redials` after a healthy generation. Crash-restart e2e against the preset. |
+
+## Open rungs (as of 2026-10-03)
+
+1. **Session-ticket keys do not survive a restart.** BoringSSL mints tickets
+   under a per-`SSL_CTX` key, so after a crash-restart the redial's ticket is
+   always rejected: the heal works, but it pays a full handshake and never
+   rides 0-RTT. `ServerOptions` has no ticket-key field
+   (`src/rpc/transport/quic/options.zig:327`); quic-zig leaves ticket keys to
+   the embedder (`Server.replaceTlsContext`, "Resumption note"). Needs a
+   persisted ticket key, like the reset key, and then an e2e that a
+   crash-restart redial is ACCEPTED 0-RTT.
+2. **Provision dials vs the hardened preset's Retry.** The preset requires
+   `retry_token_key` (`src/rpc/transport/quic/options.zig:460`), and a Retry
+   replaces a dictated initial DCID on the wire, so a VatC behind the preset
+   misses every provision (`ServerSession.initialDcid`,
+   `src/rpc/transport/quic/server.zig:880-882`). Needs a no-Retry carve-out
+   for ticketed DCIDs, or ODCID recovery from the Retry token.
+3. **VatC-side admission.** Matching `initialDcid()` against expected tickets
+   at adoption, with a single-use claim, is still embedder policy
+   (`src/rpc/transport/quic/server.zig:882`).
+4. **Dial-on-miss for QuicVatNetwork.** `connectToIntroduced` redeems only
+   from the pre-established pool and fails with `error.NoPathToVat`
+   (`src/rpc/vat/quic_network.zig:345-353`). Both seam consumers run inside
+   frame dispatch and need a live peer synchronously, so this needs its own
+   design (pool warm-up from ticket hints).
+5. **Provision-ticket reset token.** `reset_token` rides empty
+   (`src/rpc/vat/quic_network.zig:29`, `:91`, `:165`): quic-zig still has no
+   client-side knob to preinstall an expected stateless-reset token for a
+   dial. The §18.2 transport parameter covers the handshake CID.
+6. **Migration walk.** `ClientEndpoint.handleDatagram` drops datagrams from
+   any source other than the configured remote
+   (`src/rpc/transport/quic/client_endpoint.zig:78`), which rules out
+   `rotateLiveSlotCids`-driven migration and preferred-address dialing.
+7. **Redial backoff is fixed.** Every client of a crashed server redials
+   after the same `Policy.backoff_ms` (50 ms,
+   `src/rpc/transport/quic/warm_redial.zig:64`): a thundering herd at fleet
+   scale. Needs jitter, and probably exponential growth within a failure
+   streak.
+8. **Anti-replay at scale.** The hardened preset offers 0-RTT only as
+   `.restore_only` without a tracker (`ProductionEarlyData`,
+   `src/rpc/transport/quic/options.zig:440`), because quic-zig's
+   `AntiReplayTracker` is single-process. A fleet-wide tracker would allow
+   `.with_anti_replay` and early dispatch of more than the restore prefix.
+9. **The soak does not run the hardened preset.** The abrupt-death soak
+   builds raw `ServerOptions` with a fixed reset key
+   (`tools/soak_rpc.zig:1241-1263`), so Retry, NEW_TOKEN and the rate gates
+   are not exercised under churn. The preset's crash-restart behavior is
+   proven only by the e2e in `tests/rpc/transport/quic/rpc_quic_peer_test.zig`.
 
 ## The design in one paragraph
 
@@ -48,6 +123,9 @@ demux. CIDs select connections, not streams, and a stable
 capability-derived CID is a linkability beacon.
 
 ## Substrate map (verified against source, 2026-08-20)
+
+Historical snapshot: the gaps below were true on 2026-08-20. Most are
+closed now; see "Ledger" and "Open rungs" above.
 
 Nine parallel readers swept quic-zig (post-v0.13.1 working tree) and
 capnp-zig. Condensed verdicts; PRESENT means implemented and tested.
@@ -164,9 +242,9 @@ Landing it also flushed out a latent adapter bug (frames buffered
 before callbacks bound were never dispatched without new bytes) and,
 via the new QUIC soak variant, a real gap: **the QUIC transport has no
 `on_tick` plumbing, so Peer call-deadlines never fire over QUIC** —
-tracked as its own fix.
+fixed in `858bc14`.
 
-Remaining (server half, unblocked by the v0.14.0 pin):
+Server half: **DONE in `c093648`** (2026-08-26). It was:
 
 1. Idempotency gate: only `restore` (and explicitly idempotent
    methods) may execute off streams flagged
@@ -268,8 +346,8 @@ Deliberate v1 boundaries (each is the next rung, not an oversight):
   redial, healed cap answers, server reset counter advances) plus a
   zero-budget ablation (detects but does not heal, give-up carries the
   certified cause). The abrupt-death soak mode (`--abrupt-death-every-ms`)
-  is the churn-scale instrument for it; wiring the redial path into the
-  soak's workers is the next rung.
+  is the churn-scale instrument for it; the soak's healing workers
+  (`--heal-workers`, `4c563e4`) run the redial path under it.
 - Migration walk: `rotateLiveSlotCids` exists; the capnp adapter must
   stop dropping datagrams from unexpected sources first.
 
