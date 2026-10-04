@@ -967,21 +967,38 @@ pub fn buildImpl(b: *std.Build) !void {
         }),
     });
 
+    // Every api-snapshot run is marked `has_side_effects`, so it executes on
+    // every invocation and is never answered from the build cache. The tool
+    // reads and writes docs/api-snapshot*.txt, none of which the build graph
+    // knows about: a cached result would be keyed on the tool binary alone,
+    // and a hand-edited or stale snapshot would pass the freeze gate.
+    //
+    // Today Zig 0.17.0 already re-runs these (a Run step with no output
+    // arguments and no captured stdio is inferred side-effecting), but that
+    // is an inference this file does not control: the first
+    // `expectExitCode(0)` or `captureStdOut()` added to one of these steps
+    // makes it cacheable. Measured with exactly that change: a one-line edit
+    // to docs/api-snapshot.txt left `check-api` GREEN ("run exe api-snapshot
+    // cached") until this flag was set, and RED with it. Cost: none on 0.17.0,
+    // since the steps already re-ran (~0.4 s each).
     const run_api_snapshot_write = b.addRunArtifact(api_snapshot_tool);
     run_api_snapshot_write.addArg("--write");
     run_api_snapshot_write.setCwd(b.path("."));
+    run_api_snapshot_write.has_side_effects = true;
     const api_snapshot_step = b.step("api-snapshot", "Regenerate docs/api-snapshot.txt from the live public API");
     api_snapshot_step.dependOn(&run_api_snapshot_write.step);
 
     const run_api_snapshot_check = b.addRunArtifact(api_snapshot_tool);
     run_api_snapshot_check.addArg("--check");
     run_api_snapshot_check.setCwd(b.path("."));
+    run_api_snapshot_check.has_side_effects = true;
     // A gate. It began as a diagnostic (14 violations on the first run, each a
     // genuine API decision); with those resolved, gating it forces the next such
     // decision to surface at review time rather than accumulate silently.
     const run_api_closure = b.addRunArtifact(api_snapshot_tool);
     run_api_closure.addArg("--closure");
     run_api_closure.setCwd(b.path("."));
+    run_api_closure.has_side_effects = true;
     const api_closure_step = b.step("api-closure", "Report Stable declarations whose signatures mention Experimental types");
     api_closure_step.dependOn(&run_api_closure.step);
 
@@ -999,6 +1016,7 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_api_snapshot_check_strict = b.addRunArtifact(api_snapshot_tool);
     run_api_snapshot_check_strict.addArgs(&.{ "--check", "--strict-experimental" });
     run_api_snapshot_check_strict.setCwd(b.path("."));
+    run_api_snapshot_check_strict.has_side_effects = true;
     const check_api_experimental_step = b.step(
         "check-api-experimental",
         "Fail when the committed experimental snapshot is stale (strict CI mode)",
@@ -1030,6 +1048,8 @@ pub fn buildImpl(b: *std.Build) !void {
             "docs/api-snapshot-experimental-quic.txt",
         });
         run_api_snapshot_write_quic.setCwd(b.path("."));
+        // Never cached; see `run_api_snapshot_write`.
+        run_api_snapshot_write_quic.has_side_effects = true;
         const api_snapshot_quic_step = b.step(
             "api-snapshot-quic",
             "Regenerate the QUIC-enabled experimental snapshot (requires -Dquic=true)",
@@ -1043,6 +1063,7 @@ pub fn buildImpl(b: *std.Build) !void {
             "docs/api-snapshot-experimental-quic.txt",
         });
         run_api_snapshot_check_quic.setCwd(b.path("."));
+        run_api_snapshot_check_quic.has_side_effects = true;
         const check_api_quic_step = b.step(
             "check-api-quic",
             "Fail when the QUIC-enabled public API drifts (requires -Dquic=true)",
@@ -1059,6 +1080,7 @@ pub fn buildImpl(b: *std.Build) !void {
             "docs/api-snapshot-experimental-quic.txt",
         });
         run_api_snapshot_check_quic_strict.setCwd(b.path("."));
+        run_api_snapshot_check_quic_strict.has_side_effects = true;
         const check_api_experimental_quic_step = b.step(
             "check-api-experimental-quic",
             "Fail when the committed QUIC experimental snapshot is stale (strict CI mode, requires -Dquic=true)",
