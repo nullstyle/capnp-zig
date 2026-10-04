@@ -3225,3 +3225,446 @@ test "WarmRedialClient budget gives up when every generation idles out after its
     });
     try expectCrashLoopGaveUp(result, max_redials, .idle_timeout);
 }
+
+// ---------------------------------------------------------------------------
+// Unauthenticated datagrams. UDP lets anyone who can reach an endpoint send
+// it a datagram, and a QUIC packet is authenticated only by its AEAD tag:
+// every header field in front of the tag (connection-ID lengths, the token
+// length, the Length field, the size of the datagram) is whatever the sender
+// wrote. RFC 9000 §12.2 / RFC 9001 §5.5: a packet that does not
+// authenticate is discarded, and it must not end the connection.
+//
+// quic-zig v0.24.1 and every earlier tag returned an error from
+// `Connection.handle` for such a packet (a datagram too short for the
+// header-protection sample, a Length larger than the datagram, a
+// connection-ID length over 20, ...). `Server.feed` closes the connection
+// on that error, and so does our client loop
+// (src/rpc/transport/quic/client_endpoint.zig `handleDatagram` does `try
+// conn.handle(...)`, the step fails, `run()` terminates). So one datagram of
+// 12 bytes from anyone who saw a connection ID ended a capnp-zig QUIC
+// connection, client or server. Fixed in quic-zig v0.25.0 (commit 7209b55):
+// every failure before a packet authenticates is a dropped packet.
+//
+// Each test runs a real `quic.connect` client against a real `quic.serve`
+// server through `udp_tap.zig`, a relay that adds one datagram of its own
+// from the peer's address, then requires the connection to stay up: no
+// close on either side, and another RPC round trip on the same connection.
+// ---------------------------------------------------------------------------
+
+const udp_tap = @import("udp_tap.zig");
+
+const unauth_interface_id: u64 = 0x5155_4943;
+const unauth_method_id: u16 = 7;
+/// Bound on every wait below. Generous: Windows CI is slow.
+const unauth_wait_ms: u64 = 10_000;
+/// Time a connection ended by the extra datagram has to show it before the
+/// next round trip, which also catches it (the extra datagram is relayed
+/// before that round trip's datagrams).
+const unauth_settle_ms: u64 = 300;
+/// The shortest 1-RTT packet the receiver can take the header-protection
+/// sample from: first byte, an 8-byte connection ID, 4 bytes from which the
+/// packet number is read, the 16-byte sample (RFC 9001 §5.4.2).
+const unauth_min_short_packet_len: usize = 1 + quic.default_quic_local_cid_len + 4 + 16;
+/// Far longer than the default max_ack_delay (25 ms), so an ACK owed for
+/// the last round trip has gone out on its own, even on a slow Windows
+/// runner (where 50 ms left too little margin to rely on).
+const unauth_ack_wait_ms: u64 = 300;
+/// Bound on the round trips spent waiting for an ACK-only datagram.
+const unauth_max_setup_round_trips: usize = 20;
+
+/// Server side: answers every call on its bootstrap capability, and records
+/// how its session ended. Callbacks run on the server's `run()` thread.
+const UnauthServer = struct {
+    accepts: std.atomic.Value(usize) = .init(0),
+    calls: std.atomic.Value(usize) = .init(0),
+    errors: std.atomic.Value(usize) = .init(0),
+    closes: std.atomic.Value(usize) = .init(0),
+    cause: std.atomic.Value(rpc_events.DisconnectCause) = .init(.unknown),
+
+    fn onAccept(ctx: ?*anyopaque, session: *quic.PeerServer.Session) anyerror!void {
+        const self: *UnauthServer = @ptrCast(@alignCast(ctx.?));
+        _ = self.accepts.fetchAdd(1, .acq_rel);
+        _ = try session.peer.setBootstrap(.{ .ctx = self, .on_call = onCall });
+    }
+
+    fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *UnauthServer = @ptrCast(@alignCast(ctx_ptr));
+        _ = self.calls.fetchAdd(1, .acq_rel);
+        try peer.sendReturnEmptyStruct(call.question_id);
+    }
+
+    fn onError(ctx: ?*anyopaque, _: *quic.PeerServer.Session, _: anyerror) void {
+        const self: *UnauthServer = @ptrCast(@alignCast(ctx.?));
+        _ = self.errors.fetchAdd(1, .acq_rel);
+    }
+
+    fn onClose(ctx: ?*anyopaque, session: *quic.PeerServer.Session) void {
+        const self: *UnauthServer = @ptrCast(@alignCast(ctx.?));
+        self.cause.store(session.closeCause(), .release);
+        _ = self.closes.fetchAdd(1, .acq_rel);
+    }
+};
+
+/// Client side. A ClientSession is thread-affine and its `run()` blocks, so
+/// the test thread asks for calls through `requested`, and the session's own
+/// loop sends them from its `on_tick` (wrapped below, after the peer's
+/// deadline sweep it already drives). `stop` closes the session the same way.
+const UnauthClient = struct {
+    // Test thread -> loop thread.
+    requested: std.atomic.Value(usize) = .init(0),
+    stop: std.atomic.Value(bool) = .init(false),
+
+    // Loop thread -> test thread.
+    bootstrapped: std.atomic.Value(bool) = .init(false),
+    returned: std.atomic.Value(usize) = .init(0),
+    failures: std.atomic.Value(usize) = .init(0),
+    closes: std.atomic.Value(usize) = .init(0),
+    cause: std.atomic.Value(rpc_events.DisconnectCause) = .init(.unknown),
+    /// Written before `failures` is bumped (release); read after an acquire
+    /// load of it sees the bump, or after the client thread is joined.
+    last_error: ?anyerror = null,
+    connect_failure: ?anyerror = null,
+
+    // Loop thread only.
+    issued: usize = 0,
+    target: ?cap_table.ResolvedCap = null,
+    peer_tick: ?*const fn (conn: *quic.Connection) void = null,
+
+    fn fail(self: *UnauthClient, err: anyerror) void {
+        self.last_error = err;
+        _ = self.failures.fetchAdd(1, .acq_rel);
+    }
+
+    fn onBootstrap(ctx_ptr: *anyopaque, _: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *UnauthClient = @ptrCast(@alignCast(ctx_ptr));
+        if (ret.tag != .results) return error.ExpectedBootstrapResults;
+        const results = ret.results orelse return error.MissingBootstrapResults;
+        const cap = try results.content.getCapability();
+        // Kept for every later call, so retained past this callback.
+        var mutable_caps: *cap_table.InboundCapTable = @constCast(caps);
+        self.target = try mutable_caps.resolveCapability(cap);
+        try mutable_caps.retainCapability(cap);
+        self.bootstrapped.store(true, .release);
+    }
+
+    fn buildCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+        _ = try call.initCapTableTyped(0);
+    }
+
+    fn onReturn(ctx_ptr: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *UnauthClient = @ptrCast(@alignCast(ctx_ptr));
+        if (ret.tag != .results) {
+            self.fail(error.ExpectedCallResults);
+            return;
+        }
+        _ = self.returned.fetchAdd(1, .acq_rel);
+    }
+
+    fn onTick(conn: *quic.Connection) void {
+        const session: *quic.ClientSession = @alignCast(@fieldParentPtr("conn", conn));
+        const self: *UnauthClient = @ptrCast(@alignCast(session.user_ctx.?));
+        if (self.peer_tick) |peer_tick| peer_tick(conn);
+        if (self.stop.load(.acquire)) {
+            session.close();
+            return;
+        }
+        const target = self.target orelse return;
+        while (self.issued < self.requested.load(.acquire)) : (self.issued += 1) {
+            _ = session.peer.sendCallResolved(target, unauth_interface_id, unauth_method_id, self, buildCall, onReturn) catch |err| {
+                self.fail(err);
+                return;
+            };
+        }
+    }
+
+    fn onError(ctx: ?*anyopaque, _: *quic.ClientSession, err: anyerror) void {
+        const self: *UnauthClient = @ptrCast(@alignCast(ctx.?));
+        self.fail(err);
+    }
+
+    fn onClose(ctx: ?*anyopaque, session: *quic.ClientSession) void {
+        const self: *UnauthClient = @ptrCast(@alignCast(ctx.?));
+        self.cause.store(session.closeCause(), .release);
+        _ = self.closes.fetchAdd(1, .acq_rel);
+    }
+};
+
+fn runUnauthClient(state: *UnauthClient, dial_addr: std.Io.net.IpAddress) void {
+    const session = quic.connect(std.testing.allocator, std.testing.io, .{
+        .conn = .{
+            .remote_addr = dial_addr,
+            .server_name = "localhost",
+            .ca_pem = loopback.loopback_cert_pem,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .handshake_timeout_ms = unauth_wait_ms,
+        },
+        .default_call_timeout_ms = unauth_wait_ms,
+        .ctx = state,
+        .on_error = UnauthClient.onError,
+        .on_close = UnauthClient.onClose,
+    }) catch |err| {
+        state.connect_failure = err;
+        _ = state.closes.fetchAdd(1, .acq_rel);
+        return;
+    };
+    defer session.deinit();
+    // `Peer.init` pointed the connection's tick at the peer's deadline sweep;
+    // the wrapper keeps calling it.
+    state.peer_tick = session.conn.on_tick;
+    session.conn.on_tick = UnauthClient.onTick;
+    _ = session.peer.sendBootstrap(state, UnauthClient.onBootstrap) catch |err| {
+        state.fail(err);
+        state.stop.store(true, .release);
+    };
+    session.run();
+}
+
+fn runUnauthServer(server: *quic.PeerServer) void {
+    server.run();
+}
+
+fn runUnauthTap(tap: *udp_tap.UdpTap) void {
+    tap.run();
+}
+
+const UnauthOptions = struct {
+    corrupt_first_server_datagram: bool = false,
+};
+
+/// Server, tap and client, each on its own thread. Initialized in place:
+/// the threads hold pointers into it.
+const UnauthHarness = struct {
+    served: UnauthServer = .{},
+    client: UnauthClient = .{},
+    server: *quic.PeerServer = undefined,
+    tap: udp_tap.UdpTap = undefined,
+    server_thread: ?std.Thread = null,
+    tap_thread: ?std.Thread = null,
+    client_thread: ?std.Thread = null,
+
+    fn start(self: *UnauthHarness, options: UnauthOptions) !void {
+        const allocator = std.testing.allocator;
+        self.* = .{};
+        self.server = try quic.serve(allocator, std.testing.io, .{
+            .listen_addr = loopback.testListenAddr(),
+            .tls_cert_pem = loopback.loopback_cert_pem,
+            .tls_key_pem = loopback.loopback_key_pem,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .max_concurrent_connections = 1,
+        }, .{
+            .ctx = &self.served,
+            .on_accept = UnauthServer.onAccept,
+            .on_error = UnauthServer.onError,
+            .on_close = UnauthServer.onClose,
+        });
+        errdefer self.server.deinit();
+        self.tap = try udp_tap.UdpTap.init(allocator, std.testing.io, self.server.getAddress());
+        errdefer self.tap.deinit();
+        self.tap.corrupt_first_server_datagram = options.corrupt_first_server_datagram;
+
+        self.server_thread = try std.Thread.spawn(.{}, runUnauthServer, .{self.server});
+        errdefer self.joinThreads();
+        self.tap_thread = try std.Thread.spawn(.{}, runUnauthTap, .{&self.tap});
+        self.client_thread = try std.Thread.spawn(.{}, runUnauthClient, .{ &self.client, self.tap.address() });
+    }
+
+    /// Join every thread and free everything.
+    fn stop(self: *UnauthHarness) void {
+        self.joinThreads();
+        self.tap.deinit();
+        self.server.deinit();
+    }
+
+    /// Client first, so the server sees its close while the tap still
+    /// relays.
+    fn joinThreads(self: *UnauthHarness) void {
+        if (self.client_thread) |thread| {
+            self.client.stop.store(true, .release);
+            thread.join();
+            self.client_thread = null;
+        }
+        if (self.server_thread) |thread| {
+            self.server.requestStop();
+            thread.join();
+            self.server_thread = null;
+        }
+        if (self.tap_thread) |thread| {
+            self.tap.stop.store(true, .release);
+            thread.join();
+            self.tap_thread = null;
+        }
+    }
+
+    fn connectionEnded(self: *UnauthHarness) bool {
+        return self.client.closes.load(.acquire) > 0 or
+            self.client.failures.load(.acquire) > 0 or
+            self.served.closes.load(.acquire) > 0 or
+            self.served.errors.load(.acquire) > 0;
+    }
+
+    /// No close on either side, no error, one accepted session. On a
+    /// failure, print what each side certified: that is the regression's
+    /// evidence.
+    fn expectOpen(self: *UnauthHarness) !void {
+        if (self.connectionEnded()) {
+            std.debug.print(
+                "unauthenticated datagram ended the RPC connection: client closes={d} cause={t} last_error={any} | server closes={d} cause={t} errors={d} | extra datagrams={d}, last {d} bytes (source {d} bytes)\n",
+                .{
+                    self.client.closes.load(.acquire),
+                    self.client.cause.load(.acquire),
+                    if (self.client.failures.load(.acquire) > 0) self.client.last_error else null,
+                    self.served.closes.load(.acquire),
+                    self.served.cause.load(.acquire),
+                    self.served.errors.load(.acquire),
+                    self.tap.injected.load(.acquire),
+                    self.tap.last_injected_len.load(.acquire),
+                    self.tap.last_source_len.load(.acquire),
+                },
+            );
+        }
+        if (self.client.connect_failure) |err| return err;
+        try std.testing.expectEqual(rpc_events.DisconnectCause.unknown, self.client.cause.load(.acquire));
+        try std.testing.expectEqual(rpc_events.DisconnectCause.unknown, self.served.cause.load(.acquire));
+        try std.testing.expectEqual(@as(usize, 0), self.client.closes.load(.acquire));
+        try std.testing.expectEqual(@as(usize, 0), self.served.closes.load(.acquire));
+        try std.testing.expectEqual(@as(usize, 0), self.client.failures.load(.acquire));
+        try std.testing.expectEqual(@as(usize, 0), self.served.errors.load(.acquire));
+        try std.testing.expectEqual(@as(usize, 1), self.served.accepts.load(.acquire));
+    }
+
+    /// One more Call -> Return on the bootstrap capability. The first one
+    /// also waits for the handshake and the bootstrap.
+    fn roundTrip(self: *UnauthHarness) !void {
+        var waited_ms: u64 = 0;
+        while (!self.client.bootstrapped.load(.acquire)) : (waited_ms += loopback.loopback_poll_ms) {
+            if (self.connectionEnded() or waited_ms >= unauth_wait_ms) {
+                try self.expectOpen();
+                return error.UnauthBootstrapTimedOut;
+            }
+            loopback.sleepMs(loopback.loopback_poll_ms);
+        }
+        const want = self.client.requested.fetchAdd(1, .acq_rel) + 1;
+        waited_ms = 0;
+        while (self.client.returned.load(.acquire) < want) : (waited_ms += loopback.loopback_poll_ms) {
+            if (self.connectionEnded() or waited_ms >= unauth_wait_ms) {
+                try self.expectOpen();
+                return error.UnauthRoundTripTimedOut;
+            }
+            loopback.sleepMs(loopback.loopback_poll_ms);
+        }
+        try std.testing.expectEqual(want, self.served.calls.load(.acquire));
+    }
+
+    /// Have the tap send one extra datagram toward `direction`, and wait
+    /// until it has.
+    fn inject(self: *UnauthHarness, direction: udp_tap.Direction, injection: udp_tap.Injection) !void {
+        const before = self.tap.injected.load(.acquire);
+        const unserved_before = self.tap.unserved.load(.acquire);
+        self.tap.request(direction, injection);
+        var waited_ms: u64 = 0;
+        while (self.tap.injected.load(.acquire) == before) : (waited_ms += loopback.loopback_poll_ms) {
+            if (self.tap.unserved.load(.acquire) != unserved_before) return error.UnauthTapHadNothingToSend;
+            if (waited_ms >= unauth_wait_ms) return error.UnauthInjectTimedOut;
+            loopback.sleepMs(loopback.loopback_poll_ms);
+        }
+    }
+
+    /// Round trips until the tap has relayed toward `direction` a 1-RTT
+    /// datagram whose half is too short for the header-protection sample:
+    /// an ACK alone, about 31 bytes. Which round trip leaves one depends on
+    /// ACK timing, so wait out the ACK delay between tries, and give up
+    /// after a bounded number of them.
+    fn roundTripsUntilShortDatagram(self: *UnauthHarness, direction: udp_tap.Direction) !void {
+        var tries: usize = 0;
+        while (true) : (tries += 1) {
+            loopback.sleepMs(unauth_ack_wait_ms);
+            const shortest = self.tap.shortest_len[@backingInt(direction)].load(.acquire);
+            if (shortest != 0 and shortest / 2 < unauth_min_short_packet_len) return;
+            if (tries >= unauth_max_setup_round_trips) return error.UnauthNoShortDatagram;
+            try self.roundTrip();
+        }
+    }
+
+    /// The connection must survive what was just injected: still open after
+    /// the settle time, and able to carry another round trip.
+    fn expectSurvived(self: *UnauthHarness) !void {
+        loopback.sleepMs(unauth_settle_ms);
+        try self.expectOpen();
+        try self.roundTrip();
+        try self.expectOpen();
+        try std.testing.expectEqual(@as(usize, 0), self.tap.socket_errors.load(.acquire));
+    }
+};
+
+fn expectForgedShortHeader(tap: *const udp_tap.UdpTap) !void {
+    // First byte + 8-byte connection ID + 3 bytes, built from no real packet.
+    try std.testing.expectEqual(@as(usize, 12), tap.last_injected_len.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), tap.last_source_len.load(.acquire));
+}
+
+fn expectHalfDatagram(tap: *const udp_tap.UdpTap) !void {
+    const source_len = tap.last_source_len.load(.acquire);
+    const cut_len = tap.last_injected_len.load(.acquire);
+    try std.testing.expectEqual(source_len / 2, cut_len);
+    // Half of the shortest datagram (an ACK) is too short for the
+    // header-protection sample, so it never reaches the AEAD: the cut that
+    // quic-zig v0.24.1 returned from `handle` as an error. Half of a longer
+    // datagram would reach the AEAD and be dropped even there.
+    try std.testing.expect(cut_len < unauth_min_short_packet_len);
+}
+
+test "unauthenticated datagram: a 12-byte forgery with the client's connection ID ends no client connection" {
+    var h: UnauthHarness = undefined;
+    try h.start(.{});
+    defer h.stop();
+    try h.roundTrip();
+    try h.inject(.to_client, .forged_short_header);
+    try expectForgedShortHeader(&h.tap);
+    try h.expectSurvived();
+}
+
+test "unauthenticated datagram: a server datagram cut to half its length ends no client connection" {
+    var h: UnauthHarness = undefined;
+    try h.start(.{});
+    defer h.stop();
+    try h.roundTrip();
+    try h.roundTripsUntilShortDatagram(.to_client);
+    try h.inject(.to_client, .half_of_shortest);
+    try expectHalfDatagram(&h.tap);
+    try h.expectSurvived();
+}
+
+test "unauthenticated datagram: a handshake datagram with a changed header byte ends no client connection" {
+    // The server's first datagram (its Initial, with the handshake flight)
+    // reaches the client twice: first with byte 5, the Destination
+    // Connection ID Length, changed to 0xf7, then as sent. 0xf7 is longer
+    // than any connection ID (20 bytes at most), so the header cannot be
+    // parsed.
+    var h: UnauthHarness = undefined;
+    try h.start(.{ .corrupt_first_server_datagram = true });
+    defer h.stop();
+    try h.roundTrip();
+    try std.testing.expectEqual(@as(usize, 1), h.tap.injected.load(.acquire));
+    try h.expectSurvived();
+}
+
+test "unauthenticated datagram: a 12-byte forgery with the server's connection ID ends no server session" {
+    var h: UnauthHarness = undefined;
+    try h.start(.{});
+    defer h.stop();
+    try h.roundTrip();
+    try h.inject(.to_server, .forged_short_header);
+    try expectForgedShortHeader(&h.tap);
+    try h.expectSurvived();
+}
+
+test "unauthenticated datagram: a client datagram cut to half its length ends no server session" {
+    var h: UnauthHarness = undefined;
+    try h.start(.{});
+    defer h.stop();
+    try h.roundTrip();
+    try h.roundTripsUntilShortDatagram(.to_server);
+    try h.inject(.to_server, .half_of_shortest);
+    try expectHalfDatagram(&h.tap);
+    try h.expectSurvived();
+}
