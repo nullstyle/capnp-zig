@@ -37,6 +37,8 @@ const ServerSession = server_mod.ServerSession;
 const ServerOptions = options_mod.ServerOptions;
 const Peer = peer_mod.Peer;
 
+const log = std.log.scoped(.rpc_quic_server);
+
 pub const ServeOptions = struct {
     /// Deadline stamped on every outbound question a session's peer makes (a
     /// server that holds client capabilities calls back through them). On by
@@ -73,7 +75,9 @@ pub const ServeOptions = struct {
     on_accept: *const fn (ctx: ?*anyopaque, session: *PeerServer.Session) anyerror!void,
 
     /// Optional; fires on the `run()` thread. The session's transport is
-    /// already being closed when this runs.
+    /// already being closed when this runs. Never fires once the session's
+    /// `on_close` has (`Session.isClosed()`): an error while its closed QUIC
+    /// connection drains is only debug-logged.
     on_error: ?*const fn (ctx: ?*anyopaque, session: *PeerServer.Session, err: anyerror) void = null,
 
     /// Optional; fires exactly once per started session, on the `run()`
@@ -267,7 +271,7 @@ pub const PeerServer = struct {
         session.embargo_rng = peer_mod.seedEntropyCsprng(self.io) catch |err| switch (err) {
             error.Canceled => return error.Canceled,
             error.EntropyUnavailable => {
-                std.log.scoped(.rpc_quic_server).warn("OS entropy unavailable; rejecting session", .{});
+                log.warn("OS entropy unavailable; rejecting session", .{});
                 return error.Unexpected;
             },
         };
@@ -352,6 +356,13 @@ pub const PeerServer = struct {
         if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
         const raw = ctx orelse return;
         const session: *Session = @ptrCast(@alignCast(raw));
+        // A closed session is still stepped while its QUIC connection
+        // drains, and an error there still reaches this callback. on_close
+        // was the session's last word, so only log it.
+        if (session.isClosed()) {
+            log.debug("dropping error from closed session {d}: {}", .{ session.id, err });
+            return;
+        }
         const opts = session.owner.options;
         if (opts.on_error) |cb| cb(opts.ctx, session, err);
     }

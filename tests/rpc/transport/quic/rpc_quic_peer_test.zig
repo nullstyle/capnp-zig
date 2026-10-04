@@ -776,6 +776,660 @@ test "QUIC serve reaps many closing sessions and skips the reap while all are li
 }
 
 // ---------------------------------------------------------------------------
+// Session lifecycle edges, ported from the TCP ClientSession/ServerSession
+// suites: close or requestStop before run, deinit without run, connect under
+// allocation failure, and a rejected accept. Then PeerServer close isolation
+// and its rule that on_error never follows on_close.
+// ---------------------------------------------------------------------------
+
+/// `on_error`/`on_close` counts for a ClientSession. Atomic because some
+/// tests run the session on its own thread and read these from the test
+/// thread after joining it.
+const ClientCounters = struct {
+    errors: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    closes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+
+    fn onError(ctx: ?*anyopaque, _: *quic.ClientSession, _: anyerror) void {
+        const self: *ClientCounters = @ptrCast(@alignCast(ctx.?));
+        _ = self.errors.fetchAdd(1, .acq_rel);
+    }
+
+    fn onClose(ctx: ?*anyopaque, _: *quic.ClientSession) void {
+        const self: *ClientCounters = @ptrCast(@alignCast(ctx.?));
+        _ = self.closes.fetchAdd(1, .acq_rel);
+    }
+};
+
+fn lifecycleConnectOptions(server_addr: std.Io.net.IpAddress, counters: *ClientCounters) quic.ConnectOptions {
+    return .{
+        .conn = .{
+            .remote_addr = server_addr,
+            .server_name = "localhost",
+            .ca_pem = loopback.loopback_cert_pem,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            // Bound a broken run instead of hanging on the 30 s defaults.
+            .handshake_timeout_ms = 10_000,
+        },
+        .default_call_timeout_ms = 10_000,
+        .ctx = counters,
+        .on_error = ClientCounters.onError,
+        .on_close = ClientCounters.onClose,
+    };
+}
+
+fn lifecycleServerOptions(max_sessions: u32) quic.ServerOptions {
+    return .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = max_sessions,
+    };
+}
+
+fn refuseEverySession(_: ?*anyopaque, _: *quic.PeerServer.Session) anyerror!void {
+    return error.UnexpectedSession;
+}
+
+/// A bound PeerServer that is never run. Its UDP socket absorbs a client's
+/// datagrams the way a TCP listen backlog absorbs a dial, so a client test
+/// needs no live server; it is also the "deinit without run" server case.
+fn idlePeerServer(allocator: std.mem.Allocator) !*quic.PeerServer {
+    return quic.serve(allocator, std.testing.io, lifecycleServerOptions(1), .{
+        .on_accept = refuseEverySession,
+    });
+}
+
+/// Records how a question's callback ran (exactly once, and with what).
+const ReturnWaiter = struct {
+    fired: usize = 0,
+    disconnected: usize = 0,
+
+    fn onReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *ReturnWaiter = @ptrCast(@alignCast(ctx));
+        self.fired += 1;
+        if (ret.tag != .exception) return;
+        const ex = ret.exception orelse return;
+        if (std.mem.eql(u8, ex.reason, capnpc.rpc.peer.disconnected_reason)) self.disconnected += 1;
+    }
+};
+
+test "QUIC ClientSession close before run: run returns, on_close fires exactly once, fromPeer recovers" {
+    const allocator = std.testing.allocator;
+    const server = try idlePeerServer(allocator);
+    defer server.deinit();
+
+    var counters = ClientCounters{};
+    const session = try quic.connect(allocator, std.testing.io, lifecycleConnectOptions(server.getAddress(), &counters));
+    defer session.deinit();
+    try std.testing.expectEqual(session, quic.ClientSession.fromPeer(&session.peer));
+
+    // Calls before run() only queue; the close must still settle them.
+    var waiter = ReturnWaiter{};
+    _ = try session.peer.sendBootstrap(&waiter, ReturnWaiter.onReturn);
+
+    session.close();
+    session.close(); // idempotent
+    session.run();
+
+    try std.testing.expectEqual(@as(usize, 1), counters.closes.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), counters.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), waiter.fired);
+    try std.testing.expectEqual(@as(usize, 1), waiter.disconnected);
+}
+
+test "QUIC ClientSession requestStop before run: run returns, on_close fires once, deinit leak-free" {
+    const allocator = std.testing.allocator;
+    const server = try idlePeerServer(allocator);
+    defer server.deinit();
+
+    var counters = ClientCounters{};
+    const session = try quic.connect(allocator, std.testing.io, lifecycleConnectOptions(server.getAddress(), &counters));
+    defer session.deinit();
+    var waiter = ReturnWaiter{};
+    _ = try session.peer.sendBootstrap(&waiter, ReturnWaiter.onReturn);
+
+    session.requestStop();
+    session.run();
+
+    try std.testing.expectEqual(@as(usize, 1), counters.closes.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), counters.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), waiter.fired);
+    try std.testing.expectEqual(@as(usize, 1), waiter.disconnected);
+}
+
+test "QUIC ClientSession deinit without run fires no session callback and leaks nothing" {
+    const allocator = std.testing.allocator;
+    const server = try idlePeerServer(allocator);
+    defer server.deinit();
+
+    var counters = ClientCounters{};
+    const session = try quic.connect(allocator, std.testing.io, lifecycleConnectOptions(server.getAddress(), &counters));
+    // A queued frame and an outstanding question are the state a deinit
+    // without run must free (std.testing.allocator fails on a leak).
+    var waiter = ReturnWaiter{};
+    _ = try session.peer.sendBootstrap(&waiter, ReturnWaiter.onReturn);
+    session.deinit();
+
+    // No session callback: they belong to run(). The question is still
+    // settled, once, rather than stranded.
+    try std.testing.expectEqual(@as(usize, 0), counters.closes.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), counters.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), waiter.fired);
+    try std.testing.expectEqual(@as(usize, 1), waiter.disconnected);
+}
+
+fn connectThenDeinit(allocator: std.mem.Allocator, server_addr: std.Io.net.IpAddress) !void {
+    var counters = ClientCounters{};
+    const session = try quic.connect(allocator, std.testing.io, lifecycleConnectOptions(server_addr, &counters));
+    session.deinit();
+}
+
+test "QUIC connect never leaks under allocation failure" {
+    const server = try idlePeerServer(std.testing.allocator);
+    defer server.deinit();
+    // Fails every allocation connect makes, one at a time: each must
+    // surface as error.OutOfMemory with everything allocated so far freed.
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, connectThenDeinit, .{server.getAddress()});
+}
+
+test "QUIC PeerServer deinit without run, and requestStop before run, leak nothing" {
+    const allocator = std.testing.allocator;
+
+    const never_run = try idlePeerServer(allocator);
+    never_run.deinit();
+
+    var served = ServedState{};
+    const server = try quic.serve(allocator, std.testing.io, lifecycleServerOptions(1), .{
+        .ctx = &served,
+        .on_accept = ServedState.onAccept,
+        .on_error = ServedState.onError,
+        .on_close = ServedState.onClose,
+    });
+    defer server.deinit();
+    served.loop_thread.store(std.Thread.getCurrentId(), .release);
+    server.requestStop();
+    server.run(); // returns at once: nothing to drain
+
+    try std.testing.expectEqual(@as(usize, 0), server.sessionCount());
+    try std.testing.expectEqual(@as(usize, 0), served.accepts);
+    try std.testing.expectEqual(@as(usize, 0), served.closes);
+    try std.testing.expectEqual(@as(usize, 0), served.errors);
+}
+
+/// Refuses every session while `refuse` is set and serves the rest. A
+/// refused session gets a bootstrap first, so its discarded peer has
+/// capability state to free.
+const GatedAcceptor = struct {
+    refuse: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+    // Written on the run() thread; read after it is joined.
+    refused: usize = 0,
+    accepted: usize = 0,
+    calls: usize = 0,
+    errors: usize = 0,
+    closes: usize = 0,
+
+    fn onAccept(ctx: ?*anyopaque, session: *quic.PeerServer.Session) anyerror!void {
+        const self: *GatedAcceptor = @ptrCast(@alignCast(ctx.?));
+        _ = try session.peer.setBootstrap(.{ .ctx = self, .on_call = onCall });
+        if (self.refuse.load(.acquire)) {
+            self.refused += 1;
+            return error.TestSessionRefused;
+        }
+        self.accepted += 1;
+    }
+
+    fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *GatedAcceptor = @ptrCast(@alignCast(ctx_ptr));
+        self.calls += 1;
+        try peer.sendReturnEmptyStruct(call.question_id);
+    }
+
+    fn onError(ctx: ?*anyopaque, _: *quic.PeerServer.Session, _: anyerror) void {
+        const self: *GatedAcceptor = @ptrCast(@alignCast(ctx.?));
+        self.errors += 1;
+    }
+
+    fn onClose(ctx: ?*anyopaque, _: *quic.PeerServer.Session) void {
+        const self: *GatedAcceptor = @ptrCast(@alignCast(ctx.?));
+        self.closes += 1;
+    }
+};
+
+test "QUIC PeerServer on_accept error discards the session's peer, leaks nothing, and the next dial is served" {
+    const allocator = std.testing.allocator;
+
+    var gate = GatedAcceptor{};
+    const server = try quic.serve(allocator, std.testing.io, lifecycleServerOptions(4), .{
+        .ctx = &gate,
+        .on_accept = GatedAcceptor.onAccept,
+        .on_error = GatedAcceptor.onError,
+        .on_close = GatedAcceptor.onClose,
+    });
+    defer server.deinit();
+    const server_thread = try std.Thread.spawn(.{}, quic.PeerServer.run, .{server});
+    var server_joined = false;
+    defer if (!server_joined) {
+        server.requestStop();
+        server_thread.join();
+    };
+
+    // First dial: refused inside on_accept. The server closes the session
+    // under 1-RTT keys this client never gets (see
+    // `Server.setOnSessionAccepted`), so the client learns of the refusal
+    // from its own handshake timeout. Every retransmitted Initial is
+    // refused too while the gate is set.
+    var refused_counters = ClientCounters{};
+    var refused_options = lifecycleConnectOptions(server.getAddress(), &refused_counters);
+    refused_options.conn.handshake_timeout_ms = 500;
+    var refused_waiter = ReturnWaiter{};
+    var refused_cause: capnpc.rpc.events.DisconnectCause = .unknown;
+    {
+        const refused = try quic.connect(allocator, std.testing.io, refused_options);
+        defer refused.deinit();
+        _ = try refused.peer.sendBootstrap(&refused_waiter, ReturnWaiter.onReturn);
+        refused.run();
+        refused_cause = refused.closeCause();
+    }
+
+    // Second dial, after the gate opens: served end to end.
+    gate.refuse.store(false, .release);
+    var served_client = SessionClientState{};
+    runSessionClient(&served_client, server.getAddress());
+
+    server.requestStop();
+    server_thread.join();
+    server_joined = true;
+
+    if (served_client.failure) |err| return err;
+    try std.testing.expect(served_client.returned.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), served_client.closes);
+
+    try std.testing.expectEqual(@as(usize, 1), refused_counters.closes.load(.acquire));
+    try std.testing.expectEqual(capnpc.rpc.events.DisconnectCause.handshake_timeout, refused_cause);
+    try std.testing.expectEqual(@as(usize, 1), refused_waiter.fired);
+    try std.testing.expectEqual(@as(usize, 1), refused_waiter.disconnected);
+
+    try std.testing.expect(gate.refused >= 1);
+    try std.testing.expectEqual(@as(usize, 1), gate.accepted);
+    try std.testing.expectEqual(@as(usize, 1), gate.calls);
+    // on_close fires only for a session whose peer started; a refused
+    // session's peer never did, and it never reached on_error either.
+    try std.testing.expectEqual(@as(usize, 1), gate.closes);
+    try std.testing.expectEqual(@as(usize, 0), gate.errors);
+    // Nothing of a refused session stays listed (std.testing.allocator
+    // also fails the test if its peer or Session was not freed).
+    try std.testing.expectEqual(@as(usize, 0), server.sessionCount());
+}
+
+const isolation_close_me_method: u16 = 9;
+const isolation_probe_method: u16 = 8;
+const isolation_call_method: u16 = 7;
+
+/// Server side of the close-isolation test. A `close_me` call closes the
+/// caller's session from inside its handler (`Session.close()` on the run
+/// thread); a probe records what the server sees once that session closed.
+const IsolationServer = struct {
+    // Written on the run() thread; read after it is joined.
+    accepts: usize = 0,
+    calls: usize = 0,
+    closes: usize = 0,
+    errors: usize = 0,
+    victim_id: ?u64 = null,
+    victim_closed: bool = false,
+    probes_after_victim_close: usize = 0,
+    count_at_reap: ?usize = null,
+    /// Set by the first probe served after the victim's on_close that finds
+    /// the reap done (`sessionCount()` back to 1). The probing client reads
+    /// it on its own thread, after that probe's Return arrives.
+    reaped: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn onAccept(ctx: ?*anyopaque, session: *quic.PeerServer.Session) anyerror!void {
+        const self: *IsolationServer = @ptrCast(@alignCast(ctx.?));
+        self.accepts += 1;
+        _ = try session.peer.setBootstrap(.{ .ctx = self, .on_call = onCall });
+    }
+
+    fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *IsolationServer = @ptrCast(@alignCast(ctx_ptr));
+        const session = quic.PeerServer.Session.fromPeer(peer);
+        self.calls += 1;
+        try peer.sendReturnEmptyStruct(call.question_id);
+        switch (call.method_id) {
+            isolation_close_me_method => {
+                self.victim_id = session.id;
+                session.close();
+            },
+            isolation_probe_method => {
+                if (!self.victim_closed or self.reaped.load(.acquire)) return;
+                self.probes_after_victim_close += 1;
+                const count = session.owner.sessionCount();
+                if (count == 1) {
+                    self.count_at_reap = count;
+                    self.reaped.store(true, .release);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn onError(ctx: ?*anyopaque, _: *quic.PeerServer.Session, _: anyerror) void {
+        const self: *IsolationServer = @ptrCast(@alignCast(ctx.?));
+        self.errors += 1;
+    }
+
+    fn onClose(ctx: ?*anyopaque, session: *quic.PeerServer.Session) void {
+        const self: *IsolationServer = @ptrCast(@alignCast(ctx.?));
+        self.closes += 1;
+        if (self.victim_id == session.id) self.victim_closed = true;
+    }
+};
+
+fn buildIsolationCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+    _ = try call.initCapTableTyped(0);
+}
+
+/// The sibling: one round trip, then probes until the server reports the
+/// victim closed and reaped, then one brand-new call, then it closes itself.
+///
+/// `errors_at_fresh` snapshots the session's `on_error` count when that call
+/// returns, before the close. Closing (from inside a callback, or by a
+/// cross-thread stop) makes the writes the peer attempts after the callback
+/// returns, such as the call's Finish, fail into `on_error`: close-path
+/// noise, not the isolation under test (the TCP session suites snapshot the
+/// same way).
+const ProbingClient = struct {
+    server: *const IsolationServer,
+    counters: *const ClientCounters,
+    target: ?cap_table.ResolvedCap = null,
+    /// The first round trip completed (read by the test thread).
+    ready: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    // Client-thread only; read after its thread is joined.
+    probes: usize = 0,
+    fresh_returned: bool = false,
+    errors_at_fresh: ?usize = null,
+    failure: ?anyerror = null,
+
+    const probe_interval_ms: u64 = 5;
+    const max_probes: usize = 2_000;
+
+    fn onBootstrap(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *ProbingClient = @ptrCast(@alignCast(ctx));
+        if (ret.tag != .results) return self.fail(peer, error.ExpectedBootstrapResults);
+        const results = ret.results orelse return self.fail(peer, error.MissingBootstrapResults);
+        self.target = try caps.resolveCapability(try results.content.getCapability());
+        _ = try peer.sendCallResolved(self.target.?, 0x5155_4943, isolation_call_method, self, buildIsolationCall, onFirstReturn);
+    }
+
+    fn onFirstReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *ProbingClient = @ptrCast(@alignCast(ctx));
+        if (ret.tag != .results) return self.fail(peer, error.ExpectedCallResults);
+        self.ready.store(true, .release);
+        _ = try peer.sendCallResolved(self.target.?, 0x5155_4943, isolation_probe_method, self, buildIsolationCall, onProbeReturn);
+    }
+
+    fn onProbeReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *ProbingClient = @ptrCast(@alignCast(ctx));
+        if (ret.tag != .results) return self.fail(peer, error.ProbeFailed);
+        self.probes += 1;
+        if (self.server.reaped.load(.acquire)) {
+            // Sent only after the victim closed and was reaped.
+            _ = try peer.sendCallResolved(self.target.?, 0x5155_4943, isolation_call_method, self, buildIsolationCall, onFreshReturn);
+            return;
+        }
+        if (self.probes >= max_probes) return self.fail(peer, error.VictimReapNotObserved);
+        loopback.sleepMs(probe_interval_ms);
+        _ = try peer.sendCallResolved(self.target.?, 0x5155_4943, isolation_probe_method, self, buildIsolationCall, onProbeReturn);
+    }
+
+    fn onFreshReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *ProbingClient = @ptrCast(@alignCast(ctx));
+        self.errors_at_fresh = self.counters.errors.load(.acquire);
+        if (ret.tag != .results) return self.fail(peer, error.FreshCallFailed);
+        self.fresh_returned = true;
+        quic.ClientSession.fromPeer(peer).close();
+    }
+
+    fn fail(self: *ProbingClient, peer: *Peer, err: anyerror) void {
+        if (self.failure == null) self.failure = err;
+        quic.ClientSession.fromPeer(peer).close();
+    }
+};
+
+/// The victim: asks the server to close its session, then waits for the
+/// close (it never closes itself).
+const VictimClient = struct {
+    fn onBootstrap(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+        if (ret.tag != .results) return error.ExpectedBootstrapResults;
+        const results = ret.results orelse return error.MissingBootstrapResults;
+        const target = try caps.resolveCapability(try results.content.getCapability());
+        _ = try peer.sendCallResolved(target, 0x5155_4943, isolation_close_me_method, ctx, buildIsolationCall, onCloseMeReturn);
+    }
+
+    // The Return races the server's close; either outcome is fine.
+    fn onCloseMeReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+};
+
+fn runClientSession(session: *quic.ClientSession) void {
+    session.run();
+}
+
+/// Free a session whose `run()` ran on a thread the caller has joined. A
+/// ClientSession is thread-affine and `run()` adopted that thread, so move
+/// affinity back first: the same quiescent handoff `run()` performs on entry.
+fn deinitJoinedClient(session: *quic.ClientSession) void {
+    session.peer.adoptOwnerThread();
+    session.conn.adoptOwnerThread();
+    session.deinit();
+}
+
+/// Stops every listed endpoint after `budget_ms` unless `done` is set
+/// first, so a regression fails instead of hanging the suite.
+const LifecycleWatchdog = struct {
+    clients: [2]?*quic.ClientSession = .{ null, null },
+    server: ?*quic.PeerServer = null,
+    budget_ms: u64 = 20_000,
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    fired: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn run(self: *LifecycleWatchdog) void {
+        var waited_ms: u64 = 0;
+        while (waited_ms < self.budget_ms and !self.done.load(.acquire)) : (waited_ms += 10) {
+            loopback.sleepMs(10);
+        }
+        if (self.done.load(.acquire)) return;
+        self.fired.store(true, .release);
+        for (self.clients) |client| if (client) |session| session.requestStop();
+        if (self.server) |server| server.requestStop();
+    }
+};
+
+test "QUIC PeerServer close isolation: closing one Session keeps the sibling serving, and the reap drops sessionCount to 1" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var isolation = IsolationServer{};
+    const server = try quic.serve(allocator, io, lifecycleServerOptions(2), .{
+        .ctx = &isolation,
+        .on_accept = IsolationServer.onAccept,
+        .on_error = IsolationServer.onError,
+        .on_close = IsolationServer.onClose,
+    });
+    defer server.deinit();
+    var server_thread: ?std.Thread = try std.Thread.spawn(.{}, quic.PeerServer.run, .{server});
+    defer if (server_thread) |thread| {
+        server.requestStop();
+        thread.join();
+    };
+
+    var sibling_counters = ClientCounters{};
+    const sibling = try quic.connect(allocator, io, lifecycleConnectOptions(server.getAddress(), &sibling_counters));
+    defer deinitJoinedClient(sibling);
+    var victim_counters = ClientCounters{};
+    const victim = try quic.connect(allocator, io, lifecycleConnectOptions(server.getAddress(), &victim_counters));
+    defer deinitJoinedClient(victim);
+
+    // Joined before either session is freed: it may still requestStop them.
+    var watchdog = LifecycleWatchdog{ .clients = .{ sibling, victim }, .server = server };
+    var watchdog_thread: ?std.Thread = try std.Thread.spawn(.{}, LifecycleWatchdog.run, .{&watchdog});
+    defer if (watchdog_thread) |thread| {
+        watchdog.done.store(true, .release);
+        thread.join();
+    };
+
+    var probing = ProbingClient{ .server = &isolation, .counters = &sibling_counters };
+    _ = try sibling.peer.sendBootstrap(&probing, ProbingClient.onBootstrap);
+    var sibling_thread: ?std.Thread = try std.Thread.spawn(.{}, runClientSession, .{sibling});
+    defer if (sibling_thread) |thread| {
+        sibling.requestStop();
+        thread.join();
+    };
+
+    // The victim dials only once the sibling has a live, proven session, so
+    // the server holds two sessions when it closes the victim's.
+    var waited_ms: u64 = 0;
+    while (!probing.ready.load(.acquire) and waited_ms < 10_000) : (waited_ms += loopback.loopback_poll_ms) {
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+    if (!probing.ready.load(.acquire)) return error.SiblingFirstRoundTripTimedOut;
+
+    var victim_state: u8 = 0;
+    _ = try victim.peer.sendBootstrap(&victim_state, VictimClient.onBootstrap);
+    var victim_thread: ?std.Thread = try std.Thread.spawn(.{}, runClientSession, .{victim});
+    defer if (victim_thread) |thread| {
+        victim.requestStop();
+        thread.join();
+    };
+
+    // The victim's run() returns once the server's close reaches it; the
+    // sibling's once its fresh post-reap call returned and it closed itself.
+    victim_thread.?.join();
+    victim_thread = null;
+    sibling_thread.?.join();
+    sibling_thread = null;
+    server.requestStop();
+    server_thread.?.join();
+    server_thread = null;
+    watchdog.done.store(true, .release);
+    watchdog_thread.?.join();
+    watchdog_thread = null;
+
+    try std.testing.expect(!watchdog.fired.load(.acquire));
+    if (probing.failure) |err| return err;
+    // The sibling survived the victim's close and reap: a brand-new call it
+    // sent only after both returned over its own session, and nothing
+    // reached its on_error before its own close.
+    try std.testing.expect(probing.fresh_returned);
+    try std.testing.expectEqual(@as(?usize, 0), probing.errors_at_fresh);
+    try std.testing.expectEqual(@as(usize, 1), sibling_counters.closes.load(.acquire));
+    try std.testing.expectEqual(capnpc.rpc.events.DisconnectCause.local_close, sibling.closeCause());
+    try std.testing.expectEqual(@as(usize, 1), victim_counters.closes.load(.acquire));
+
+    try std.testing.expectEqual(@as(usize, 2), isolation.accepts);
+    try std.testing.expect(isolation.victim_id != null);
+    try std.testing.expect(isolation.victim_closed);
+    // A probe served after the victim's on_close found the reap done.
+    try std.testing.expect(isolation.reaped.load(.acquire));
+    try std.testing.expect(isolation.probes_after_victim_close >= 1);
+    try std.testing.expectEqual(@as(?usize, 1), isolation.count_at_reap);
+    try std.testing.expectEqual(@as(usize, 2), isolation.closes);
+    try std.testing.expectEqual(@as(usize, 0), isolation.errors);
+    try std.testing.expectEqual(@as(usize, 0), server.sessionCount());
+}
+
+/// Holds a ClientSession open after one round trip; only the server closes
+/// it.
+const HoldingClient = struct {
+    returned: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn onBootstrap(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+        if (ret.tag != .results) return error.ExpectedBootstrapResults;
+        const results = ret.results orelse return error.MissingBootstrapResults;
+        const target = try caps.resolveCapability(try results.content.getCapability());
+        _ = try peer.sendCallResolved(target, 0x5155_4943, isolation_call_method, ctx, buildIsolationCall, onReturn);
+    }
+
+    fn onReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *HoldingClient = @ptrCast(@alignCast(ctx));
+        if (ret.tag != .results) return error.ExpectedCallResults;
+        self.returned.store(true, .release);
+    }
+};
+
+test "QUIC PeerServer never calls on_error after on_close: a closed session's drain-phase error is dropped" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var served = ServedState{};
+    served.loop_thread.store(std.Thread.getCurrentId(), .release);
+    const server = try quic.serve(allocator, io, lifecycleServerOptions(1), .{
+        .ctx = &served,
+        .on_accept = ServedState.onAccept,
+        .on_error = ServedState.onError,
+        .on_close = ServedState.onClose,
+    });
+    defer server.deinit();
+
+    var client_counters = ClientCounters{};
+    const client = try quic.connect(allocator, io, lifecycleConnectOptions(server.getAddress(), &client_counters));
+    defer deinitJoinedClient(client);
+    var holding = HoldingClient{};
+    _ = try client.peer.sendBootstrap(&holding, HoldingClient.onBootstrap);
+    var client_thread: ?std.Thread = try std.Thread.spawn(.{}, runClientSession, .{client});
+    defer if (client_thread) |thread| {
+        client.requestStop();
+        thread.join();
+    };
+
+    // White-box: this thread steps the PeerServer's own fanout server,
+    // which makes it the run() thread, so it can stop between steps where
+    // `run()` would not. Its accept hook still builds and starts each
+    // session's peer; only the after-step reap is skipped until the final
+    // `run()` below, so the closed session stays allocated meanwhile.
+    var waited_ms: u64 = 0;
+    while (!holding.returned.load(.acquire) and waited_ms < 10_000) : (waited_ms += 1) {
+        _ = try server.server.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    if (!holding.returned.load(.acquire)) return error.QuicRoundTripTimedOut;
+    try std.testing.expectEqual(@as(usize, 1), server.sessionCount());
+    const session = server.sessions.items[0];
+    const session_id = session.id;
+
+    session.close();
+    waited_ms = 0;
+    while (served.closes == 0 and waited_ms < 10_000) : (waited_ms += 1) {
+        _ = try server.server.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    try std.testing.expectEqual(@as(usize, 1), served.closes);
+    try std.testing.expect(session.isClosed());
+
+    // The closed session's QUIC connection is still draining, so the server
+    // still steps it, and a step error there (`terminateInternalError`)
+    // reaches the transport's error callback, which is still installed.
+    // Raise exactly that callback now, after on_close.
+    const transport = server.server.sessionById(session_id) orelse return error.ClosedTransportAlreadyReaped;
+    const on_transport_error = transport.callback_lifecycle.errorCallback() orelse return error.TransportErrorCallbackCleared;
+    transport.callback_lifecycle.invokeError(transport, on_transport_error, error.TestDrainPhaseFailure);
+    try std.testing.expectEqual(@as(usize, 0), served.errors);
+
+    // Hand the rest to run() on this same thread: it drains, reaps, and
+    // returns. The client's run() returns once the close reaches it.
+    server.requestStop();
+    server.run();
+    client_thread.?.join();
+    client_thread = null;
+
+    try std.testing.expectEqual(@as(usize, 1), served.accepts);
+    try std.testing.expectEqual(@as(usize, 1), served.closes);
+    try std.testing.expectEqual(@as(usize, 0), served.errors);
+    try std.testing.expectEqual(@as(usize, 0), served.wrong_session);
+    try std.testing.expectEqual(@as(usize, 0), server.sessionCount());
+    try std.testing.expectEqual(@as(usize, 1), client_counters.closes.load(.acquire));
+}
+
+// ---------------------------------------------------------------------------
 // Deadline cancellation over QUIC: the transport's on_tick plumbing drives
 // Peer.checkDeadlines from the run loop. Without it (the gap the QUIC soak
 // found: cancelled=0), this test hangs until its wait budget and fails —
