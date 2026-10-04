@@ -853,6 +853,10 @@ pub fn buildImpl(b: *std.Build) !void {
     else
         null;
     const run_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, optimize, lib_module);
+    // FD-0: per-OS kernel semantics of SCM_RIGHTS that the Unix transport
+    // and fd passing depend on. Raw syscalls only; skips off Linux/macOS.
+    const run_rpc_unix_kernel_semantics_tests = addLibTest(b, "tests/rpc/transport/unix/unix_kernel_semantics_test.zig", target, optimize, lib_module);
+    b.step("test-rpc-unix-kernel", "Run the FD-0 kernel-semantics suite (SCM_RIGHTS over AF_UNIX, Linux and macOS)").dependOn(run_rpc_unix_kernel_semantics_tests);
     const run_rpc_peer_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_test.zig", target, optimize, lib_module);
     const run_rpc_peer_from_peer_zig_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_from_peer_zig_test.zig", target, optimize, lib_module);
     const run_rpc_quic_vat_network_tests = addLibTest(b, "tests/rpc/peer/rpc_quic_vat_network_test.zig", target, optimize, lib_module);
@@ -1310,6 +1314,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_transport_step.dependOn(run_rpc_client_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_server_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_raw_frame_security_tests);
+    test_rpc_transport_step.dependOn(run_rpc_unix_kernel_semantics_tests);
 
     const test_rpc_quic_step = b.step("test-rpc-quic", "Run quic-zig-backed QUIC RPC transport tests (requires -Dquic=true)");
     if (run_rpc_quic_transport_tests) |step| test_rpc_quic_step.dependOn(step);
@@ -1595,6 +1600,9 @@ pub fn buildImpl(b: *std.Build) !void {
             // routing (a `.cancel_failure` observer event, never on_error)
             // TSan-built.
             "tests/rpc/peer/rpc_deadline_test.zig",
+            // Single-threaded apart from one writer thread, but it is the
+            // only lane that runs FD-0 against glibc's `cmsghdr` layout.
+            "tests/rpc/transport/unix/unix_kernel_semantics_test.zig",
         };
         for (tsan_suites) |suite_path| {
             const t = b.addTest(.{
