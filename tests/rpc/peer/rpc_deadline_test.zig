@@ -66,11 +66,16 @@ const EventRecorder = struct {
     join_timeouts: usize = 0,
     backpressure_events: usize = 0,
     last_timeout_question_id: ?u32 = null,
+    cancel_failures: usize = 0,
+    last_cancel_failure: ?events.CancelFailureEvent = null,
+    /// `cancel_failures` at the moment the last `.timeout` event arrived.
+    cancel_failures_at_last_timeout: usize = 0,
 
     fn onEvent(ctx_ptr: *anyopaque, event: events.Event) void {
         const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
         switch (event) {
             .timeout => |t| {
+                self.cancel_failures_at_last_timeout = self.cancel_failures;
                 switch (t.kind) {
                     .call_deadline => {
                         self.call_deadline_timeouts += 1;
@@ -83,6 +88,10 @@ const EventRecorder = struct {
                 }
             },
             .backpressure => self.backpressure_events += 1,
+            .cancel_failure => |f| {
+                self.cancel_failures += 1;
+                self.last_cancel_failure = f;
+            },
             else => {},
         }
     }
@@ -823,13 +832,16 @@ test "outbound question pressure event fires at 80% of the budget" {
     try std.testing.expectEqual(@as(usize, 10), pressure.last_limit);
 }
 
-// -- Deadline-cancel failures reach on_error ---------------------------------
+// -- Deadline-cancel failures are observer events, not on_error -------------
 //
 // A wire Return whose question callback fails is handed to `on_error` (the
-// nonfatal seam in `dispatchQuestionReturn`). The deadline sweep synthesizes
-// the same Return locally, but used to swallow the identical failure in a
-// debug log, so timeout-path failures under load were invisible to apps and
-// observers. These pin the parity.
+// nonfatal seam in `dispatchQuestionReturn`), and the Stable sessions close
+// on `on_error`. The deadline sweep synthesizes an exception Return locally;
+// a callback failing on it (the `try response.unwrap()` idiom returns
+// `error.CallTimedOut`) or the cancel itself failing used to vanish into a
+// debug log. These pin the chosen behavior: the failure is VISIBLE as a
+// `.cancel_failure` observer event, and `on_error` is NOT called, so one
+// timed-out call never ends a session.
 
 /// Records `on_error` reports.
 const PeerErrorRecorder = struct {
@@ -860,7 +872,7 @@ const FailingReturn = struct {
     }
 };
 
-test "deadline-cancel callback failure reaches on_error like a wire Return's" {
+test "deadline-cancel callback failure is an observer event, not on_error (a wire Return's still is)" {
     const allocator = std.testing.allocator;
 
     var clock = rpc_time.TestClock{};
@@ -876,7 +888,8 @@ test "deadline-cancel callback failure reaches on_error like a wire Return's" {
     peer.setClock(clock.clock());
     peer.start(&errors, PeerErrorRecorder.onError, null);
 
-    // Parity baseline: the wire Return path reports a failing callback.
+    // Contrast: the wire Return path reports a failing callback to on_error,
+    // and emits no cancel_failure event.
     var wire = FailingReturn{ .fail_with = error.TestCallbackFailed };
     const wire_id = try peer.sendBootstrap(&wire, FailingReturn.onReturn);
     const ret_frame = try buildRemoteExceptionReturn(allocator, wire_id);
@@ -885,33 +898,52 @@ test "deadline-cancel callback failure reaches on_error like a wire Return's" {
     try std.testing.expectEqual(@as(usize, 1), wire.return_count);
     try std.testing.expectEqual(@as(usize, 1), errors.count);
     try std.testing.expectEqual(@as(?anyerror, error.TestCallbackFailed), errors.last);
+    try std.testing.expectEqual(@as(usize, 0), event_recorder.cancel_failures);
 
-    // The deadline sweep synthesizes the same Return; its failure must take
-    // the same route instead of vanishing.
+    // The deadline sweep synthesizes an exception Return; its callback
+    // failure is reported to the observer only.
     errors = .{};
     peer.setTimeouts(.{ .default_call_timeout_ms = 100 });
-    var timed = FailingReturn{ .fail_with = error.TestCallbackFailed };
+    var timed = FailingReturn{ .fail_with = error.CallTimedOut };
     const timed_id = try peer.sendBootstrap(&timed, FailingReturn.onReturn);
     clock.advanceMs(100);
     try std.testing.expectEqual(@as(usize, 1), peer.checkDeadlines());
     try std.testing.expectEqual(@as(usize, 1), timed.return_count);
     try std.testing.expectEqual(@as(usize, 1), event_recorder.call_deadline_timeouts);
     try std.testing.expectEqual(@as(?u32, timed_id), event_recorder.last_timeout_question_id);
-    try std.testing.expectEqual(@as(usize, 1), errors.count);
-    try std.testing.expectEqual(@as(?anyerror, error.TestCallbackFailed), errors.last);
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.cancel_failures);
+    const failure = event_recorder.last_cancel_failure.?;
+    try std.testing.expectEqual(events.Source.peer, failure.source);
+    try std.testing.expectEqual(events.TimeoutKind.call_deadline, failure.kind);
+    try std.testing.expectEqual(timed_id, failure.question_id);
+    try std.testing.expectEqual(@as(anyerror, error.CallTimedOut), failure.err);
+    // The .timeout event came first, then the failure.
+    try std.testing.expectEqual(@as(usize, 0), event_recorder.cancel_failures_at_last_timeout);
+    try std.testing.expectEqual(@as(usize, 0), errors.count);
+
+    // An explicit cancelQuestion keeps log-only behavior: its caller is on
+    // the stack, so neither the observer nor on_error hears about it.
+    var explicit = FailingReturn{ .fail_with = error.TestCallbackFailed };
+    const explicit_id = try peer.sendBootstrap(&explicit, FailingReturn.onReturn);
+    try peer.cancelQuestion(explicit_id, "caller gave up");
+    try std.testing.expectEqual(@as(usize, 1), explicit.return_count);
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.cancel_failures);
+    try std.testing.expectEqual(@as(usize, 0), errors.count);
 }
 
-test "a deadline cancel that itself fails reaches on_error instead of a debug log" {
+test "a deadline cancel that itself fails is an observer event, not on_error" {
     const allocator = std.testing.allocator;
 
     var clock = rpc_time.TestClock{};
     var capture = Capture{ .allocator = allocator, .frames = .empty };
     defer capture.deinit();
     var errors = PeerErrorRecorder{};
+    var event_recorder = EventRecorder{};
 
     var peer = Peer.initDetached(allocator);
     defer peer.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
+    peer.setObserver(event_recorder.observer());
     peer.setClock(clock.clock());
     peer.setTimeouts(.{ .default_call_timeout_ms = 100 });
     peer.start(&errors, PeerErrorRecorder.onError, null);
@@ -919,20 +951,25 @@ test "a deadline cancel that itself fails reaches on_error instead of a debug lo
     // An OOM from the callback propagates out of the cancel itself (it is
     // never swallowed as a callback failure), into the sweep's own catch.
     var oom = FailingReturn{ .fail_with = error.OutOfMemory };
-    _ = try peer.sendBootstrap(&oom, FailingReturn.onReturn);
+    const oom_id = try peer.sendBootstrap(&oom, FailingReturn.onReturn);
     clock.advanceMs(100);
     _ = peer.checkDeadlines();
     try std.testing.expectEqual(@as(usize, 1), oom.return_count);
-    try std.testing.expectEqual(@as(usize, 1), errors.count);
-    try std.testing.expectEqual(@as(?anyerror, error.OutOfMemory), errors.last);
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.cancel_failures);
+    const failure = event_recorder.last_cancel_failure.?;
+    try std.testing.expectEqual(events.TimeoutKind.call_deadline, failure.kind);
+    try std.testing.expectEqual(oom_id, failure.question_id);
+    try std.testing.expectEqual(@as(anyerror, error.OutOfMemory), failure.err);
+    try std.testing.expectEqual(@as(usize, 0), errors.count);
 
     // The cancelled entry absorbs later sweeps without a second report.
     clock.advanceMs(1000);
     try std.testing.expectEqual(@as(usize, 0), peer.checkDeadlines());
-    try std.testing.expectEqual(@as(usize, 1), errors.count);
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.cancel_failures);
+    try std.testing.expectEqual(@as(usize, 0), errors.count);
 }
 
-test "drain-bound force-cancel callback failures reach on_error" {
+test "drain-bound force-cancel callback failures are observer events, not on_error" {
     const allocator = std.testing.allocator;
 
     var clock = rpc_time.TestClock{};
@@ -961,58 +998,74 @@ test "drain-bound force-cancel callback failures reach on_error" {
     try std.testing.expectEqual(@as(usize, 1), event_recorder.shutdown_drain_timeouts);
     try std.testing.expectEqual(@as(usize, 1), first.return_count);
     try std.testing.expectEqual(@as(usize, 1), second.return_count);
-    try std.testing.expectEqual(@as(usize, 2), errors.count);
+    try std.testing.expectEqual(@as(usize, 2), event_recorder.cancel_failures);
+    const failure = event_recorder.last_cancel_failure.?;
+    try std.testing.expectEqual(events.TimeoutKind.shutdown_drain, failure.kind);
+    try std.testing.expectEqual(@as(anyerror, error.TestCallbackFailed), failure.err);
+    try std.testing.expectEqual(@as(usize, 0), errors.count);
     try std.testing.expect(ShutdownFlag.fired);
 }
 
-/// An `on_error` handler that re-enters the peer mid-sweep and grows the
-/// questions map (forcing rehashes) on every report.
-const ReentrantErrorHandler = struct {
-    peer: *Peer,
+/// A question callback that re-enters the peer and grows the questions map
+/// (forcing rehashes) before it fails, as a callback that issues follow-up
+/// calls and then propagates `unwrap()`'s error does.
+const ReentrantFailingReturn = struct {
     recorder: *ReturnRecorder,
-    reports: usize = 0,
+    return_count: usize = 0,
     new_calls: usize = 0,
 
-    fn onError(ctx: ?*anyopaque, _: *Peer, _: anyerror) void {
-        const self: *@This() = @ptrCast(@alignCast(ctx.?));
-        self.reports += 1;
+    fn onReturn(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        _: protocol.Return,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        self.return_count += 1;
         for (0..8) |_| {
-            _ = self.peer.sendBootstrap(self.recorder, ReturnRecorder.onReturn) catch return;
+            _ = try peer.sendBootstrap(self.recorder, ReturnRecorder.onReturn);
             self.new_calls += 1;
         }
+        return error.CallTimedOut;
     }
 };
 
-test "on_error may re-enter the peer and grow the questions map mid-sweep" {
+test "failing deadline-cancel callbacks may re-enter the peer and grow the questions map mid-sweep" {
     const allocator = std.testing.allocator;
 
     var clock = rpc_time.TestClock{};
     var capture = Capture{ .allocator = allocator, .frames = .empty };
     defer capture.deinit();
     var late = ReturnRecorder{};
+    var errors = PeerErrorRecorder{};
+    var event_recorder = EventRecorder{};
 
     var peer = Peer.initDetached(allocator);
     defer peer.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
+    peer.setObserver(event_recorder.observer());
     peer.setClock(clock.clock());
     peer.setTimeouts(.{ .default_call_timeout_ms = 100 });
-    var handler = ReentrantErrorHandler{ .peer = &peer, .recorder = &late };
-    peer.start(&handler, ReentrantErrorHandler.onError, null);
+    peer.start(&errors, PeerErrorRecorder.onError, null);
 
-    var expiring: [8]FailingReturn = undefined;
+    var expiring: [8]ReentrantFailingReturn = undefined;
     for (&expiring) |*cb| {
-        cb.* = .{ .fail_with = error.TestCallbackFailed };
-        _ = try peer.sendBootstrap(cb, FailingReturn.onReturn);
+        cb.* = .{ .recorder = &late };
+        _ = try peer.sendBootstrap(cb, ReentrantFailingReturn.onReturn);
     }
 
     clock.advanceMs(100);
-    // Every report sends new calls, rehashing the map the sweep collected its
-    // expired ids from. The sweep must cancel exactly the 8 expired questions,
-    // each exactly once, and none of the calls issued during it.
+    // Every callback sends new calls, rehashing the map the sweep collected
+    // its expired ids from, and then fails. The sweep must cancel exactly the
+    // 8 expired questions, each exactly once, report each failure once, and
+    // touch none of the calls issued during it.
     try std.testing.expectEqual(@as(usize, 8), peer.checkDeadlines());
-    for (expiring) |cb| try std.testing.expectEqual(@as(usize, 1), cb.return_count);
-    try std.testing.expectEqual(@as(usize, 8), handler.reports);
-    try std.testing.expectEqual(@as(usize, 64), handler.new_calls);
+    for (expiring) |cb| {
+        try std.testing.expectEqual(@as(usize, 1), cb.return_count);
+        try std.testing.expectEqual(@as(usize, 8), cb.new_calls);
+    }
+    try std.testing.expectEqual(@as(usize, 8), event_recorder.cancel_failures);
+    try std.testing.expectEqual(@as(usize, 0), errors.count);
     try std.testing.expectEqual(@as(usize, 0), late.return_count);
     try std.testing.expectEqual(@as(u32, 8 + 64), peer.questions.count());
 }

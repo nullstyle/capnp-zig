@@ -165,6 +165,7 @@ pub const Event = union(enum) {
     timeout: TimeoutEvent,
     pressure: PressureEvent,
     call_latency: CallLatencyEvent,
+    cancel_failure: CancelFailureEvent,
 };
 
 pub const ConnectionEvent = struct {
@@ -234,6 +235,28 @@ pub const TimeoutEvent = struct {
     /// Inbound answer ID for `parked_accept` and `join`; null for every other
     /// kind. No Join key, target, provision, or address enters this event.
     answer_id: ?u32 = null,
+};
+
+/// A deadline cancelled an outbound question, and delivering that
+/// cancellation did not complete cleanly: the question's callback returned
+/// an error for the locally synthesized exception Return (for example
+/// `error.CallTimedOut` from `try response.unwrap()`), or the cancellation
+/// itself failed (`error.OutOfMemory`).
+///
+/// This event and a debug log line are the only report: `on_error` is not
+/// called, so a session that closes on `on_error` keeps running (a wire
+/// Return whose callback fails still goes to `on_error`). Emitted after the
+/// `.timeout` event for the same cancellation. An explicit `cancelQuestion`
+/// and teardown only log such failures.
+pub const CancelFailureEvent = struct {
+    source: Source,
+    role: Role = .unknown,
+    /// The deadline that cancelled the question: `.call_deadline` (its own
+    /// deadline) or `.shutdown_drain` (the graceful-shutdown drain bound).
+    kind: TimeoutKind,
+    /// Outbound question ID of the cancelled question.
+    question_id: u32,
+    err: anyerror,
 };
 
 /// Early-warning signal: a bounded resource crossed 80% of its budget.
@@ -393,6 +416,23 @@ pub inline fn emitJoinTimeout(observer: ?Observer, answer_id: u32) void {
         .role = .unknown,
         .kind = .join,
         .answer_id = answer_id,
+    } });
+}
+
+pub inline fn emitCancelFailure(
+    observer: ?Observer,
+    source: Source,
+    role: Role,
+    kind: TimeoutKind,
+    question_id: u32,
+    err: anyerror,
+) void {
+    emit(observer, .{ .cancel_failure = .{
+        .source = source,
+        .role = role,
+        .kind = kind,
+        .question_id = question_id,
+        .err = err,
     } });
 }
 

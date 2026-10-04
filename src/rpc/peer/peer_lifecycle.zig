@@ -8,7 +8,6 @@ const events = @import("../events.zig");
 const peer_cleanup = @import("./peer_cleanup.zig");
 const peer_outbound_control = @import("./peer_outbound_control.zig");
 const peer_return_frames = @import("./return/peer_return_frames.zig");
-const peer_return_dispatch = @import("./return/peer_return_dispatch.zig");
 
 /// Peer lifecycle: teardown, graceful shutdown, question cancellation, and
 /// the deadline sweep — extracted from `peer/mod.zig` (P10) and made generic
@@ -460,25 +459,31 @@ pub fn Lifecycle(comptime Peer: type) type {
 
         /// Where a failure inside a locally synthesized cancellation goes: a
         /// non-OOM error the question callback returns, or the cancel itself
-        /// failing (OOM).
+        /// failing (OOM). Every route logs it.
         ///
-        /// `.report` is the deadline sweep (`checkDeadlines`: per-question
-        /// deadlines and the shutdown drain bound). The failure goes to
-        /// `on_error`, the same nonfatal seam a wire Return's failing callback
-        /// takes (`peer_return_dispatch.dispatchQuestionReturn`); before this a
-        /// timeout-path failure under load vanished into a debug log.
+        /// `.call_deadline` and `.shutdown_drain` are the deadline sweep
+        /// (`checkDeadlines`: per-question deadlines and the shutdown drain
+        /// bound). The failure is also emitted as a `.cancel_failure` observer
+        /// event naming the deadline, the question and the error, so it is
+        /// visible without a debug log. It deliberately does NOT go to
+        /// `on_error`: the Stable `ClientSession`/`ServerSession` close on
+        /// `on_error`, and a callback that returns `unwrap()`'s
+        /// `error.CallTimedOut` (the `try response.unwrap()` idiom) must not
+        /// end the session over one timed-out call. A wire Return's failing
+        /// callback still goes to `on_error`.
         ///
-        /// `.log` keeps the debug-only behavior for an explicit
-        /// `cancelQuestion` (its caller is on the stack) and for teardown
-        /// (`deinit`, transport close), where `on_error` must not fire into an
-        /// owner that is going away.
-        const CancelFailureRoute = enum { report, log };
+        /// `.log` is an explicit `cancelQuestion` (its caller is on the stack)
+        /// and teardown (`deinit`, transport close): log only.
+        const CancelFailureRoute = enum { call_deadline, shutdown_drain, log };
 
         fn routeCancelFailure(self: *Peer, route: CancelFailureRoute, question_id: u32, err: anyerror) void {
-            switch (route) {
-                .report => peer_return_dispatch.reportNonfatalErrorForPeer(Peer, self, err),
-                .log => log.debug("cancel delivery failed for question {}: {}", .{ question_id, err }),
-            }
+            log.debug("cancel delivery failed for question {}: {}", .{ question_id, err });
+            const kind: events.TimeoutKind = switch (route) {
+                .call_deadline => .call_deadline,
+                .shutdown_drain => .shutdown_drain,
+                .log => return,
+            };
+            events.emitCancelFailure(self.observer, .peer, .unknown, kind, question_id, err);
         }
 
         fn cancelQuestionRouted(
@@ -571,17 +576,17 @@ pub fn Lifecycle(comptime Peer: type) type {
                 if (now >= deadline) expired.append(self.allocator, kv.key_ptr.*) catch break;
             }
 
-            // Failures go to `on_error` from THIS loop, which walks the copied
-            // id list, never from the map iteration above: a handler that
-            // re-enters the peer (new calls, cancels, close) may mutate
-            // `self.questions` freely. An id a re-entrant handler already
-            // retired surfaces as UnknownQuestion: it is already settled, so
-            // it is logged rather than reported.
+            // Callbacks run, and failures are reported, from THIS loop, which
+            // walks the copied id list, never from the map iteration above: a
+            // callback that re-enters the peer (new calls, cancels, close) may
+            // mutate `self.questions` freely. An id a re-entrant callback
+            // already retired surfaces as UnknownQuestion: it is already
+            // settled, so it is logged rather than reported.
             var cancelled: usize = 0;
             for (expired.items) |question_id| {
                 events.emitTimeout(self.observer, .peer, .unknown, .call_deadline, question_id);
-                cancelQuestionRouted(self, question_id, deadline_reason, .overloaded, .report) catch |err| {
-                    const route: CancelFailureRoute = if (err == error.UnknownQuestion) .log else .report;
+                cancelQuestionRouted(self, question_id, deadline_reason, .overloaded, .call_deadline) catch |err| {
+                    const route: CancelFailureRoute = if (err == error.UnknownQuestion) .log else .call_deadline;
                     routeCancelFailure(self, route, question_id, err);
                     continue;
                 };
@@ -598,7 +603,7 @@ pub fn Lifecycle(comptime Peer: type) type {
                     if (now >= drain_deadline and self.questions.count() != 0) {
                         self.shutdown_deadline_ns = null;
                         events.emitTimeout(self.observer, .peer, .unknown, .shutdown_drain, null);
-                        cancelled += forceCancelAllQuestionsRouted(self, shutdown_reason, .disconnected, .report);
+                        cancelled += forceCancelAllQuestionsRouted(self, shutdown_reason, .disconnected, .shutdown_drain);
                     }
                 }
             }
@@ -657,7 +662,7 @@ pub fn Lifecycle(comptime Peer: type) type {
         ///
         /// This entry point serves teardown (`deinit`, transport close), so
         /// delivery failures are only logged; the drain-bound sweep uses the
-        /// `.report` route instead.
+        /// `.shutdown_drain` route instead.
         pub fn forceCancelAllQuestions(self: *Peer, reason: []const u8, ex_type: protocol.ExceptionType) usize {
             return forceCancelAllQuestionsRouted(self, reason, ex_type, .log);
         }

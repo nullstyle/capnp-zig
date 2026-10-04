@@ -357,6 +357,12 @@ capnpc-zig.rpc.events.CallLatencyEvent.question_id: field u32
 capnpc-zig.rpc.events.CallLatencyEvent.role: field rpc.events.Role = .unknown
 capnpc-zig.rpc.events.CallLatencyEvent.source: field rpc.events.Source
 capnpc-zig.rpc.events.CallLatencyEvent: struct
+capnpc-zig.rpc.events.CancelFailureEvent.err: field anyerror
+capnpc-zig.rpc.events.CancelFailureEvent.kind: field rpc.events.TimeoutKind
+capnpc-zig.rpc.events.CancelFailureEvent.question_id: field u32
+capnpc-zig.rpc.events.CancelFailureEvent.role: field rpc.events.Role = .unknown
+capnpc-zig.rpc.events.CancelFailureEvent.source: field rpc.events.Source
+capnpc-zig.rpc.events.CancelFailureEvent: struct
 capnpc-zig.rpc.events.CloseEvent.err: field ?anyerror = null
 capnpc-zig.rpc.events.CloseEvent.role: field rpc.events.Role = .unknown
 capnpc-zig.rpc.events.CloseEvent.source: field rpc.events.Source
@@ -382,6 +388,7 @@ capnpc-zig.rpc.events.DisconnectCause.unknown: enumerant = 0
 capnpc-zig.rpc.events.DisconnectCause: enum
 capnpc-zig.rpc.events.Event.backpressure: variant rpc.events.BackpressureEvent
 capnpc-zig.rpc.events.Event.call_latency: variant rpc.events.CallLatencyEvent
+capnpc-zig.rpc.events.Event.cancel_failure: variant rpc.events.CancelFailureEvent
 capnpc-zig.rpc.events.Event.close: variant rpc.events.CloseEvent
 capnpc-zig.rpc.events.Event.connection: variant rpc.events.ConnectionEvent
 capnpc-zig.rpc.events.Event.frame: variant rpc.events.FrameEvent
@@ -475,6 +482,7 @@ capnpc-zig.rpc.events.TimeoutKind: enum
 capnpc-zig.rpc.events.emit: fn (?rpc.events.Observer, rpc.events.Event) callconv(.@"inline") void
 capnpc-zig.rpc.events.emitBackpressure: fn (?rpc.events.Observer, rpc.events.Source, rpc.events.Role, rpc.events.Resource, ?usize, ?usize, anyerror) callconv(.@"inline") void
 capnpc-zig.rpc.events.emitCallLatency: fn (?rpc.events.Observer, rpc.events.Source, rpc.events.Role, u32, u64) callconv(.@"inline") void
+capnpc-zig.rpc.events.emitCancelFailure: fn (?rpc.events.Observer, rpc.events.Source, rpc.events.Role, rpc.events.TimeoutKind, u32, anyerror) callconv(.@"inline") void
 capnpc-zig.rpc.events.emitClose: fn (?rpc.events.Observer, rpc.events.Source, rpc.events.Role, ?anyerror) callconv(.@"inline") void
 capnpc-zig.rpc.events.emitConnection: fn (?rpc.events.Observer, rpc.events.Source, rpc.events.Role, rpc.events.ConnectionPhase) callconv(.@"inline") void
 capnpc-zig.rpc.events.emitFrame: fn (?rpc.events.Observer, rpc.events.Source, rpc.events.Role, rpc.events.FrameStage, usize) callconv(.@"inline") void
