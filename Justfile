@@ -367,9 +367,25 @@ check-toolchain:
     fi
     echo "zig ${have} matches the mise.toml pin"
 
-# Complete local release preflight, including heavier CI build/regression jobs
-release-preflight:
+# Hold a release to the semver table in RELEASING.md: diff the five surface
+# snapshots (docs/api-snapshot.txt and docs/generated-shape.txt, both Stable
+# and frozen, plus the three experimental files) against PREV_TAG. Fails when
+# a Stable file removes or changes a line and the release's CHANGELOG section
+# has no `### Breaking` entry, and when any of the five changed under a patch
+# bump. Warns when an experimental file loses lines with no Breaking
+# (Experimental) entry. VERSION defaults to build.zig.zon; while that still
+# equals PREV_TAG's version, it checks `[Unreleased]` and prints the bump the
+# drift needs. tools/release_drift.zig has the rules.
+# Usage: just check-release-drift v0.19.1 [0.20.0]
+check-release-drift PREV_TAG VERSION="":
+    zig build release-drift -- --prev "{{ PREV_TAG }}" {{ if VERSION == "" { "" } else { "--version " + VERSION } }}
+
+# Complete local release preflight, including heavier CI build/regression jobs.
+# Pass the version you are about to cut, so the drift hook checks the bump
+# before the version sweep: `just release-preflight 0.20.0`.
+release-preflight VERSION="":
     just check-toolchain
+    just check-release-drift "$(git describe --tags --abbrev=0 --match 'v[0-9]*')" {{ VERSION }}
     just ci
     just test-release-safe-full
     just wasm-build
@@ -377,17 +393,20 @@ release-preflight:
     just release
 
 # Alias for the complete local release preflight
-preflight: release-preflight
+preflight VERSION="": (release-preflight VERSION)
 
 # Create and push an annotated release tag — but refuse when the commit being
 # tagged does not already have a green CI run. v0.4.0 was tagged three minutes
 # before its own push run went red on four jobs; this recipe is the preventive
 # half of that lesson (.github/workflows/release.yml is the detective half).
+# It also refuses a VERSION that under-declares the surface drift since the
+# last release tag (`check-release-drift`), before anything is tagged.
 # Usage: just release-tag 0.5.0 "one-line theme"
 release-tag VERSION THEME="":
     just check-toolchain
     test -z "$(git status --porcelain)" || { echo "ERROR: worktree is dirty — commit or stash first"; exit 1; }
     test "$(cat build.zig.zon | sed -n 's/.*\.version = "\(.*\)".*/\1/p')" = "{{VERSION}}" || { echo "ERROR: build.zig.zon version does not match {{VERSION}} — run the RELEASING.md sweep first"; exit 1; }
+    just check-release-drift "$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude 'v{{VERSION}}')" {{VERSION}}
     zig build docs-smoke
     gh api "repos/:owner/:repo/actions/runs?head_sha=$(git rev-parse HEAD)" --jq '[.workflow_runs[] | select(.name == "CI")] | if length == 0 then "NO_RUN" elif all(.conclusion == "success") then "GREEN" else "RED" end' | grep -qx GREEN || { echo "ERROR: HEAD has no green CI run — push and wait for CI before tagging (see RELEASING.md step 2)"; exit 1; }
     git tag -a "v{{VERSION}}" -m "$(test -n "{{THEME}}" && echo "v{{VERSION}} — {{THEME}}" || echo "v{{VERSION}}")"

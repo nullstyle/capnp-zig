@@ -1149,6 +1149,44 @@ pub fn buildImpl(b: *std.Build) !void {
         check_api_experimental_quic_step.dependOn(&run_api_snapshot_check_quic_strict.step);
     }
 
+    // Release drift hook (`just check-release-drift <prev-tag> [version]`,
+    // called by release-preflight and release-tag). It diffs the five
+    // surface snapshots (the three docs/api-snapshot*.txt files and the two
+    // docs/generated-shape*.txt files) against a previous release and fails
+    // a release whose bump or CHANGELOG under-declares the drift. It runs
+    // `git show`, so it executes from the repository root, and it reads
+    // files the build graph does not know about, so it is never cached
+    // (see `run_api_snapshot_write`). Args pass through:
+    // `zig build release-drift -- --prev v0.19.1 [--version X.Y.Z] [--head <ref>]`.
+    const release_drift_module = b.createModule(.{
+        .root_source_file = b.path("tools/release_drift.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const release_drift_tool = b.addExecutable(.{
+        .name = "release-drift",
+        .root_module = release_drift_module,
+    });
+    const run_release_drift = b.addRunArtifact(release_drift_tool);
+    run_release_drift.addPassthruArgs();
+    run_release_drift.setCwd(b.path("."));
+    run_release_drift.has_side_effects = true;
+    b.step("release-drift", "Classify snapshot drift since a release tag (pass `-- --prev <tag>`)").dependOn(&run_release_drift.step);
+
+    const release_drift_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/tools/release_drift_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "release-drift", .module = release_drift_module },
+            },
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &release_drift_tests.step) catch @panic("OOM");
+    const test_release_drift_step = b.step("test-release-drift", "Run the release drift hook's own tests (tools/release_drift.zig)");
+    test_release_drift_step.dependOn(&b.addRunArtifact(release_drift_tests).step);
+
     // Generated-shape gate: the shape of the code the plugin generates for a
     // fixed corpus of committed requests (docs/generated-shape*.txt). The
     // plugin runs on the host, like the build-integration snippet above.
@@ -1639,6 +1677,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_step.dependOn(test_soak_harness_step);
     test_step.dependOn(run_package_preflight_tests);
     test_step.dependOn(test_snapshot_render_step);
+    test_step.dependOn(test_release_drift_step);
 
     // Configure these after the suites are complete. Windows can warm their
     // exact compile prerequisites in parallel, then run the unchanged suites
