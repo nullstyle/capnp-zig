@@ -23,7 +23,11 @@
 //!
 //! Lines are `<profile>.<file>.<decl path>: <description>`, rendered by the
 //! shared walker (tools/snapshot_render.zig) with const values on, so an
-//! interface id, a method ordinal or a schema constant is pinned by value.
+//! interface id, a method ordinal or a scalar, Text or Data schema constant
+//! is pinned by value. A pointer-typed schema constant (struct, list,
+//! AnyPointer) is a namespace with a `get()`; its name and signature are
+//! pinned, but not its value, because the generated code keeps the value's
+//! bytes private.
 //! Each generated type renders once, at the path that declares it; a
 //! re-export renders as `alias <type>`. Runtime type names are rewritten to
 //! their public capnpc-zig paths (`capnpc-zig.message.StructBuilder`, not the
@@ -91,6 +95,9 @@ const Rule = struct {
     /// When set, the rule also requires this text in the line's
     /// description: an override for "every member that names type X".
     names: ?[]const u8 = null,
+    /// When true, the rule also requires the line to be part of a
+    /// pointer-typed schema constant (see `markPointerConsts`).
+    pointer_const: bool = false,
     /// Why the rule exists; printed when it matches nothing.
     why: []const u8,
 };
@@ -114,6 +121,13 @@ const stable_families = [_]Rule{
     // WhichTag, enums (schema enums, `Method`) and consts, with their values.
     .{ .glob = "**", .kinds = &.{ .@"enum", .enumerant }, .why = "enums and their enumerants" },
     .{ .glob = "**", .kinds = &.{.@"const"}, .why = "consts" },
+    // A pointer-typed schema constant (struct, list, AnyPointer) is not a
+    // Zig `const` line: the plugin emits `pub const X = struct { pub fn
+    // get() !<Reader> }` and keeps the value bytes private. Its name and
+    // `get` signature are pinned; its value is not (the walker cannot read
+    // a private declaration).
+    .{ .glob = "**", .kinds = &.{.@"struct"}, .pointer_const = true, .why = "pointer schema constant namespace" },
+    .{ .glob = "**.get", .kinds = &.{.@"fn"}, .pointer_const = true, .why = "pointer schema constant get()" },
     // Client init/release/fromBootstrap/callX/callXPipelined.
     .{ .glob = "**.Client", .kinds = &.{.@"struct"}, .why = "Client" },
     .{ .glob = "**.Client.init", .kinds = &.{.@"fn"}, .why = "Client init" },
@@ -539,6 +553,8 @@ const Line = struct {
     stable: bool,
     /// An `experimental_overrides` rule matched it.
     overridden: bool = false,
+    /// The namespace or the `get` of a pointer-typed schema constant.
+    pointer_const: bool = false,
     runtime_refs: []const RuntimeRef,
 };
 
@@ -624,6 +640,7 @@ fn ruleMatches(rule: Rule, line: *const Line) bool {
     if (rule.names) |names| {
         if (std.mem.indexOf(u8, line.description, names) == null) return false;
     }
+    if (rule.pointer_const and !line.pointer_const) return false;
     for (rule.kinds) |kind| {
         if (kind == line.kind) return globMatch(rule.glob, line.rel);
     }
@@ -644,6 +661,41 @@ fn parentPath(path: []const u8) ?[]const u8 {
     if (segments.len < 2) return null;
     const last = segments[segments.len - 1];
     return path[0 .. path.len - last.len - 1];
+}
+
+/// Mark the pointer-typed schema constants: a struct whose one public
+/// declaration is a parameterless `get` (`generatePointerConst` in
+/// src/capnpc-zig/generator.zig). Nothing else the plugin emits has that
+/// shape: a schema struct declares `Reader` and `Builder`, an interface its
+/// `Client`, an annotation its `Type` and `targets`.
+fn markPointerConsts(
+    arena: std.mem.Allocator,
+    lines: []Line,
+    line_by_path: *const std.StringHashMapUnmanaged(*Line),
+) !void {
+    const Children = struct { count: usize = 0, get: ?*Line = null };
+    var children: std.StringHashMapUnmanaged(Children) = .empty;
+    for (lines) |*line| {
+        if (line.walk.instances) continue;
+        const parent = parentPath(line.path) orelse continue;
+        const slot = try children.getOrPut(arena, parent);
+        if (!slot.found_existing) slot.value_ptr.* = .{};
+        slot.value_ptr.count += 1;
+        if (line.kind == .@"fn" and std.mem.eql(u8, lastSegment(line.path), "get") and
+            std.mem.startsWith(u8, line.description, "fn () "))
+        {
+            slot.value_ptr.get = line;
+        }
+    }
+    var it = children.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.count != 1) continue;
+        const get = entry.value_ptr.get orelse continue;
+        const container = line_by_path.get(entry.key_ptr.*) orelse continue;
+        if (container.kind != .@"struct") continue;
+        container.pointer_const = true;
+        get.pointer_const = true;
+    }
 }
 
 const Violation = struct { line: *const Line, offender: []const u8, why: []const u8 };
@@ -753,6 +805,11 @@ const census = [_]Census{
     .{ .name = "const with a rendered value", .predicate = struct {
         fn f(l: *const Line) bool {
             return l.kind == .@"const" and std.mem.indexOf(u8, l.description, " = ") != null;
+        }
+    }.f },
+    .{ .name = "pointer schema constant (`X.get()`)", .predicate = struct {
+        fn f(l: *const Line) bool {
+            return l.pointer_const and l.kind == .@"fn";
         }
     }.f },
     .{ .name = "Apply instance", .predicate = struct {
@@ -948,6 +1005,10 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    var line_by_path: std.StringHashMapUnmanaged(*Line) = .empty;
+    for (lines.items) |*line| try line_by_path.put(arena, line.path, line);
+    try markPointerConsts(arena, lines.items, &line_by_path);
+
     var family_hits: [stable_families.len]usize = @splat(0);
     var override_hits: [experimental_overrides.len]usize = @splat(0);
     for (lines.items) |*line| {
@@ -975,8 +1036,6 @@ pub fn main(init: std.process.Init) !void {
     // A container that declares a Stable line is Stable too: the families
     // name members, and a member is used through its container's path
     // (`addressbook.Person` in `StructListReader(addressbook.Person)`).
-    var line_by_path: std.StringHashMapUnmanaged(*Line) = .empty;
-    for (lines.items) |*line| try line_by_path.put(arena, line.path, line);
     for (lines.items) |*line| {
         if (!line.stable) continue;
         var path = line.path;

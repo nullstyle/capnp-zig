@@ -2300,10 +2300,6 @@ full.defaults.Widget.Reader.capnpSchema: const capnpc-zig.reflection.SchemaRef
 full.defaults.Widget.Reader.enumOrdinals: fn (defaults.Widget.Reader) defaults.Widget.Reader.EnumOrdinals
 full.defaults.Widget.capnpSchema: const capnpc-zig.reflection.SchemaRef
 full.defaults.capnpSchemaManifestJson: fn () []const u8
-full.defaults.magicInner.get: fn () error{EmptyMessage,InvalidFarPointer,InvalidRootPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit,TruncatedMessage}!defaults.Inner.Reader
-full.defaults.magicInner: struct
-full.defaults.magicList.get: fn () error{EmptyMessage,InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit,TruncatedMessage}!capnpc-zig.message.U16ListReader
-full.defaults.magicList: struct
 full.edge_codegen.CAPNP_SCHEMA_MANIFEST_JSON: const []const u8
 full.edge_codegen.CAPNP_SCHEMA_REQUEST: const []const u8
 full.edge_codegen.EdgeHolder.Apply: fn (comptime anytype) type
@@ -2327,8 +2323,6 @@ full.edge_codegen.Empty.capnpSchema: const capnpc-zig.reflection.SchemaRef
 full.edge_codegen.Empty.exportServer: fn (*capnpc-zig.rpc.peer.Peer, *edge_codegen.Empty.Server) error{CapTableFull,OutOfMemory}!u32
 full.edge_codegen.Empty.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *edge_codegen.Empty.Server) error{CapTableFull,OutOfMemory}!u32
 full.edge_codegen.capnpSchemaManifestJson: fn () []const u8
-full.edge_codegen.emptyList.get: fn () error{EmptyMessage,InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit,TruncatedMessage}!capnpc-zig.message.U16ListReader
-full.edge_codegen.emptyList: struct
 full.enum_evolution_v1.CAPNP_SCHEMA_MANIFEST_JSON: const []const u8
 full.enum_evolution_v1.CAPNP_SCHEMA_REQUEST: const []const u8
 full.enum_evolution_v1.Child.Builder._builder: field capnpc-zig.message.StructBuilder

@@ -2410,6 +2410,10 @@ full.defaults.Widget.Reader: struct
 full.defaults.Widget: struct
 full.defaults.magicColor: const defaults.Color = .Blue
 full.defaults.magicData: const []const u8 = "\n\x0b\x0c"
+full.defaults.magicInner.get: fn () error{EmptyMessage,InvalidFarPointer,InvalidRootPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit,TruncatedMessage}!defaults.Inner.Reader
+full.defaults.magicInner: struct
+full.defaults.magicList.get: fn () error{EmptyMessage,InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit,TruncatedMessage}!capnpc-zig.message.U16ListReader
+full.defaults.magicList: struct
 full.defaults.magicNumber: const u32 = 987
 full.edge_codegen.EdgeHolder.Builder.clearService: fn (*edge_codegen.EdgeHolder.Builder) error{InvalidSegmentId,OutOfBounds,PointerIndexOutOfBounds}!void
 full.edge_codegen.EdgeHolder.Builder.getService: fn (*edge_codegen.EdgeHolder.Builder) error{InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit,PointerIndexOutOfBounds}!capnpc-zig.message.Capability
@@ -2448,6 +2452,8 @@ full.edge_codegen.Empty.Server: struct
 full.edge_codegen.Empty.VTable: struct
 full.edge_codegen.Empty.interface_id: const u64 = 12820801343994801390
 full.edge_codegen.Empty: struct
+full.edge_codegen.emptyList.get: fn () error{EmptyMessage,InvalidFarPointer,InvalidPointer,InvalidSegmentId,OutOfBounds,PointerDepthLimit,TruncatedMessage}!capnpc-zig.message.U16ListReader
+full.edge_codegen.emptyList: struct
 full.edge_codegen.emptyText: const []const u8 = ""
 full.edge_codegen.sampleData: const []const u8 = "\x00"
 full.enum_evolution_v1.Child.Builder.clearValue: fn (*enum_evolution_v1.Child.Builder) error{}!void
