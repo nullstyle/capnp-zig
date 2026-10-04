@@ -283,6 +283,18 @@ pub fn buildImpl(b: *std.Build) !void {
     run_package_preflight.addPassthruArgs();
     const package_preflight_step = b.step("package-preflight", "Validate the filtered package with clean-room consumers");
     package_preflight_step.dependOn(&run_package_preflight.step);
+    // The preflight's own verdict logic (does a failed gen-check show the
+    // injected drift?). `test` runs it too, since package-preflight is slow.
+    const package_preflight_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/package_preflight.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &package_preflight_tests.step) catch @panic("OOM");
+    const run_package_preflight_tests = &b.addRunArtifact(package_preflight_tests).step;
+    package_preflight_step.dependOn(run_package_preflight_tests);
 
     const docs_examples_smoke = b.addExecutable(.{
         .name = "docs-examples-smoke",
@@ -1587,6 +1599,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_step.dependOn(test_resource_budgets_step);
     test_step.dependOn(test_oom_step);
     test_step.dependOn(test_soak_harness_step);
+    test_step.dependOn(run_package_preflight_tests);
 
     // Configure these after the suites are complete. Windows can warm their
     // exact compile prerequisites in parallel, then run the unchanged suites

@@ -153,7 +153,9 @@ pub fn build(b: *std.Build) void {
     gen.addCopyFileToSource(gen_dir.path(b, "addressbook.zig"), "src/gen/addressbook.zig");
     b.step("gen", "Regenerate src/gen with the pinned capnpc-zig").dependOn(&gen.step);
 
-    const gen_check = b.addSystemCommand(&.{ "git", "diff", "--no-index", "--exit-code", "--" });
+    // No pager, and no external diff or textconv driver from your git config,
+    // so only the file contents decide the result.
+    const gen_check = b.addSystemCommand(&.{ "git", "--no-pager", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--exit-code", "--" });
     gen_check.addFileArg(b.path("src/gen/addressbook.zig"));
     gen_check.addFileArg(gen_dir.path(b, "addressbook.zig"));
     b.step("gen-check", "Fail if src/gen differs from the pinned capnpc-zig").dependOn(&gen_check.step);
@@ -194,12 +196,16 @@ zig build gen          # after a schema or capnp-zig bump; commit the result
 zig build gen-check    # in CI: fails, with the diff, when src/gen is stale
 ```
 
-`gen-check` runs `git diff --no-index` between the checked-in file and the
-pinned plugin's fresh output, so it needs `git` on the build machine. Keep
+`gen-check` runs `git --no-pager diff --no-index` between the checked-in file
+and the pinned plugin's fresh output, so it needs `git` on the build machine.
+`--no-pager` keeps an interactive `zig build gen-check` from stopping in your
+pager, and `--no-ext-diff --no-textconv` keep a `diff.external` or textconv
+driver in your git config from deciding the result. Keep
 generated files byte-exact in Git (for example `src/gen/** -text` in
 `.gitattributes`), or a Windows checkout with `core.autocrlf` reports every
 line as changed. package-preflight runs `gen`, then `gen-check` (which must
-pass), then edits the copy and runs `gen-check` again (which must fail).
+pass), then appends a marker line to the copy and runs `gen-check` again,
+which must fail with a diff that shows the marker.
 
 The plugin's output is already `zig fmt` clean, so a committed copy can sit
 under your `zig fmt --check` gate unchanged. Do not reformat it: `gen-check`

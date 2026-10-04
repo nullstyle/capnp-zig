@@ -113,23 +113,26 @@ fn runWithStdin(
 }
 
 /// Run a command that MUST fail: a gate proven only by its passing case has
-/// not been shown to catch anything.
+/// not been shown to catch anything. Returns the captured output (the caller
+/// frees both streams) so the caller can check the failure is the one it
+/// provoked: a non-zero exit alone also covers a broken command.
 fn runExpectFailure(
     ctx: *const Context,
     argv: []const []const u8,
     cwd: std.process.Child.Cwd,
     environ_map: ?*const std.process.Environ.Map,
-) !void {
+) !std.process.RunResult {
     const result = try runCollect(ctx, argv, cwd, environ_map, .ignore);
-    defer ctx.allocator.free(result.stdout);
-    defer ctx.allocator.free(result.stderr);
     if (result.term.success()) {
         std.debug.print(
             "command unexpectedly succeeded: {s}\nstdout:\n{s}\nstderr:\n{s}\n",
             .{ argv[0], result.stdout, result.stderr },
         );
+        ctx.allocator.free(result.stdout);
+        ctx.allocator.free(result.stderr);
         return error.PackagePreflightCommandUnexpectedlySucceeded;
     }
+    return result;
 }
 
 /// Spawn, drain and wait; the caller judges the exit status.
@@ -565,12 +568,54 @@ fn runCodegenConsumer(
     {
         const file = try std.Io.Dir.cwd().openFile(ctx.io, checked_in, .{ .mode = .read_write });
         defer file.close(ctx.io);
-        try file.writePositionalAll(ctx.io, "// drift\n", try file.length(ctx.io));
+        try file.writePositionalAll(ctx.io, gen_check_drift_marker ++ "\n", try file.length(ctx.io));
     }
-    runExpectFailure(ctx, &.{ "zig", "build", "gen-check" }, .{ .path = codegen_abs }, consumer_env) catch |err| {
+    const drifted = runExpectFailure(ctx, &.{ "zig", "build", "gen-check" }, .{ .path = codegen_abs }, consumer_env) catch |err| {
         std.debug.print("codegen consumer: gen-check passed on a drifted checked-in copy\n", .{});
         return err;
     };
+    defer ctx.allocator.free(drifted.stdout);
+    defer ctx.allocator.free(drifted.stderr);
+    // gen-check prints its diff, so a failure that caught the drift names the
+    // injected line. Any other failure (git missing, a bad flag, an unreadable
+    // file) exits non-zero too and would otherwise pass for proof.
+    if (!reportsDrift(drifted.stdout, drifted.stderr)) {
+        std.debug.print(
+            "codegen consumer: gen-check failed without a diff showing the injected drift `{s}`\n" ++
+                "stdout:\n{s}\nstderr:\n{s}\n",
+            .{ gen_check_drift_marker, drifted.stdout, drifted.stderr },
+        );
+        return error.PackagePreflightGenCheckFailedForAnotherReason;
+    }
+}
+
+/// The line package-preflight appends to the consumer's checked-in generated
+/// file. No generated file contains it, so only a diff of the drift shows it.
+const gen_check_drift_marker = "// package-preflight: injected gen-check drift";
+
+/// True when gen-check's output shows the injected line as removed from the
+/// checked-in copy (the copy is diff's first file).
+fn reportsDrift(stdout: []const u8, stderr: []const u8) bool {
+    const removed = "\n-" ++ gen_check_drift_marker;
+    return std.mem.indexOf(u8, stdout, removed) != null or std.mem.indexOf(u8, stderr, removed) != null;
+}
+
+test "reportsDrift requires the diff line, not just a failure" {
+    const diff =
+        \\diff --git a/src/gen/addressbook.zig b/.zig-cache/o/abc/capnp-gen/addressbook.zig
+        \\--- a/src/gen/addressbook.zig
+        \\+++ b/.zig-cache/o/abc/capnp-gen/addressbook.zig
+        \\@@ -10,4 +10,3 @@
+        \\ }
+        \\-// package-preflight: injected gen-check drift
+        \\
+    ;
+    try std.testing.expect(reportsDrift(diff, ""));
+    try std.testing.expect(reportsDrift("", diff));
+    // A failure for any other reason: no diff at all.
+    try std.testing.expect(!reportsDrift("", "error: unable to spawn git: FileNotFound\n"));
+    // The marker as an added line would mean the fresh output contains it.
+    try std.testing.expect(!reportsDrift("\n+" ++ gen_check_drift_marker ++ "\n", ""));
 }
 
 fn status(ctx: *const Context) ![]u8 {

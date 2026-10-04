@@ -50,7 +50,9 @@ pub fn build(b: *std.Build) void {
     gen.addCopyFileToSource(gen_dir.path(b, "addressbook.zig"), "src/gen/addressbook.zig");
     b.step("gen", "Regenerate src/gen with the pinned capnpc-zig").dependOn(&gen.step);
 
-    const gen_check = b.addSystemCommand(&.{ "git", "diff", "--no-index", "--exit-code", "--" });
+    // No pager, and no external diff or textconv driver from your git config,
+    // so only the file contents decide the result.
+    const gen_check = b.addSystemCommand(&.{ "git", "--no-pager", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--exit-code", "--" });
     gen_check.addFileArg(b.path("src/gen/addressbook.zig"));
     gen_check.addFileArg(gen_dir.path(b, "addressbook.zig"));
     b.step("gen-check", "Fail if src/gen differs from the pinned capnpc-zig").dependOn(&gen_check.step);
