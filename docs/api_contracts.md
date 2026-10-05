@@ -82,6 +82,25 @@ Internal helper behavior may change, but exported type semantics and error class
   worker for up to `idle_timeout_ms`. Bound active clients with admission
   control in `on_accept` and size `concurrency` for it.
 
+## Experimental WorkerPool Listener Contract
+
+- `WorkerPool.initListener` serves a `tcp.Listener` the caller already has,
+  such as one from `rpc.transport.unix.listen`. Linux and Darwin only; on
+  every other target it returns `error.UnixSocketsUnsupported` (use `init`
+  for TCP there). On every error the caller still owns the listener,
+  unchanged.
+- The pool owns the listener from then on. Shutdown closes it with
+  `Listener.close` once no worker waits on it, so a socket file from
+  `unix.listen` is removed and its lock released.
+- Workers park in `poll` on the listen socket and on a wake door (a pipe the
+  pool owns). Shutdown writes the door, which wakes every parked worker. It
+  never dials the listener, so it finishes even after the socket file was
+  removed or another server took the path.
+- The pool makes the listen socket non-blocking and accepts on it with raw
+  syscalls, because `std.Io`'s accept treats EAGAIN as a bug. Accepted
+  sockets are close-on-exec and blocking (Darwin's `accept` copies
+  O_NONBLOCK from the listener; the pool clears it).
+
 ## Deadline-Cancel Failure Contract
 
 - When the deadline sweep in `checkDeadlines()` cancels a question (its own

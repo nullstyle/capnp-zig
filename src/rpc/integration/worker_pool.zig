@@ -5,6 +5,8 @@ const Connection = @import("../transport/tcp/connection.zig").Connection;
 const Listener = @import("../transport/tcp/runtime.zig").Listener;
 const runtime_helpers = @import("../transport/tcp/runtime.zig");
 const Runtime = @import("../transport/tcp/runtime.zig").Runtime;
+const events = @import("../events.zig");
+const wake_lock = @import("../transport/wake_lock.zig");
 const peer_mod = @import("../peer/mod.zig");
 const Peer = peer_mod.Peer;
 const net = std.Io.net;
@@ -20,6 +22,10 @@ const net = std.Io.net;
 /// The user-provided `AcceptFn` callback fires on the worker thread when a
 /// connection is accepted. WorkerPool owns the accepted peer/connection; the
 /// callback configures it and returns whether to run or reject it.
+///
+/// `init` binds a TCP address. `initListener` (Experimental, Linux and
+/// Darwin) serves a `tcp.Listener` the caller already has, such as one from
+/// `rpc.transport.unix.listen`; see its doc for how its workers wait.
 pub const WorkerPool = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -38,11 +44,23 @@ pub const WorkerPool = struct {
     run_active: std.atomic.Value(bool),
     should_stop: std.atomic.Value(bool),
     fd_closed: std.atomic.Value(bool),
-    /// Number of workers currently parked inside `listener.accept()`. The
-    /// teardown path must drive this to zero before closing the listen
-    /// socket — see `stopAccepting` for why that order is load-bearing on
-    /// Windows.
+    /// Number of workers currently parked inside `listener.accept()` (for
+    /// `initListener`: waiting in `poll` on the listener and the wake door,
+    /// or in the non-blocking `accept` that follows). The teardown path
+    /// must drive this to zero before closing the listen socket — see
+    /// `stopAccepting` for why that order is load-bearing on Windows.
     acceptors_parked: std.atomic.Value(u32),
+    /// The listener `initListener` took; null for `init`. The pool owns it
+    /// and closes it with `Listener.close` once no worker waits on it, which
+    /// for a listener from `rpc.transport.unix.listen` also removes its
+    /// socket file and releases its lock. Experimental.
+    listener: ?Listener = null,
+    /// `initListener` only: the wake door, a non-blocking close-on-exec pipe
+    /// (`[0]` read end, `[1]` write end). Workers wait in `poll` on it and
+    /// on the listener. Shutdown writes one byte and nothing ever reads it,
+    /// so every worker that polls from then on wakes at once. `deinit`
+    /// closes it. Experimental.
+    park_door: ?[2]i32 = null,
 
     pub const Config = struct {
         concurrency: ?u32 = null,
@@ -134,14 +152,6 @@ pub const WorkerPool = struct {
         errdefer allocator.free(active_connections);
         @memset(active_connections, null);
 
-        var connection_options = config.connection_options;
-        if (config.join_timeout_ms != null and connection_options.tick_interval_ms == null) {
-            connection_options.tick_interval_ms = 100;
-        }
-        if (connection_options.idle_timeout_ms == null) {
-            connection_options.idle_timeout_ms = config.idle_timeout_ms;
-        }
-
         return .{
             .allocator = allocator,
             .io = io,
@@ -149,7 +159,7 @@ pub const WorkerPool = struct {
             .server = server,
             .ctx = ctx,
             .on_accept = on_accept,
-            .conn_options = connection_options,
+            .conn_options = poolConnectionOptions(config),
             .peer_limits = config.peer_limits,
             .join_timeout_ms = config.join_timeout_ms,
             .first_frame_timeout_ms = config.first_frame_timeout_ms,
@@ -160,6 +170,108 @@ pub const WorkerPool = struct {
             .fd_closed = std.atomic.Value(bool).init(false),
             .acceptors_parked = std.atomic.Value(u32).init(0),
         };
+    }
+
+    /// Every way `initListener` fails. On each of them the caller still
+    /// owns `listener`, unchanged.
+    pub const InitListenerError = error{
+        /// `Config.concurrency` is 0.
+        InvalidConcurrency,
+        /// `listener` was already closed.
+        ListenerClosed,
+        OutOfMemory,
+        /// The wake door's pipe hit the process fd limit.
+        ProcessFdQuotaExceeded,
+        /// The wake door's pipe hit the system fd limit.
+        SystemFdQuotaExceeded,
+        Unexpected,
+        /// Not Linux or Darwin. Use `init` for TCP there.
+        UnixSocketsUnsupported,
+    };
+
+    /// Serve connections from a listener the caller already has, such as
+    /// one from `rpc.transport.unix.listen`. Experimental. Linux and Darwin
+    /// only; elsewhere this returns `error.UnixSocketsUnsupported`.
+    ///
+    /// The pool takes ownership of `listener`: do not accept on it or close
+    /// it after this returns. Shutdown (`shutdown`, `shutdownGraceful` or
+    /// `deinit`) closes it with `Listener.close` once no worker waits on it,
+    /// so a socket file from `unix.listen` is removed and its lock released.
+    /// The pool runs on the listener's `std.Io` (`Listener.ioBackend`).
+    /// `config.connection_options` applies to every connection; the
+    /// listener's own `conn_options` and `config.listen_backlog` are not
+    /// used.
+    ///
+    /// How the workers wait: each one parks in `poll` on the listen socket
+    /// and on a wake door (a pipe the pool owns), then makes a non-blocking
+    /// `accept`. A worker that loses the race for a connection parks again.
+    /// Shutdown writes the wake door, which wakes every parked worker. It
+    /// never dials the listener, so it finishes even when the socket file
+    /// was removed or another server now has the path. For this the pool
+    /// makes the listen socket non-blocking, and accepts on it with raw
+    /// syscalls: `std.Io`'s accept treats EAGAIN as a bug. An accepted
+    /// socket is close-on-exec and blocking (Darwin's `accept` would copy
+    /// O_NONBLOCK from the listener; the pool clears it).
+    pub fn initListener(
+        allocator: std.mem.Allocator,
+        listener: Listener,
+        ctx: *anyopaque,
+        on_accept: AcceptFn,
+        config: Config,
+    ) InitListenerError!WorkerPool {
+        if (comptime !park_door_supported) return error.UnixSocketsUnsupported;
+        const concurrency: u32 = config.concurrency orelse @intCast(std.Thread.getCpuCount() catch 1);
+        if (concurrency == 0) return error.InvalidConcurrency;
+        if (listener.close_requested.load(.acquire)) return error.ListenerClosed;
+
+        const workers = try allocator.alloc(Worker, concurrency);
+        errdefer allocator.free(workers);
+        for (workers) |*w| {
+            w.* = .{};
+        }
+
+        const active_connections = try allocator.alloc(?*Connection, concurrency);
+        errdefer allocator.free(active_connections);
+        @memset(active_connections, null);
+
+        const door = try park.openDoor();
+        errdefer park.closeDoor(door);
+
+        // Last: nothing below can fail, so on any error above the caller's
+        // listener is still blocking and still theirs.
+        try park.setNonBlocking(listener.server.socket.handle, true);
+
+        return .{
+            .allocator = allocator,
+            .io = listener.io,
+            .workers = workers,
+            .server = listener.server,
+            .ctx = ctx,
+            .on_accept = on_accept,
+            .conn_options = poolConnectionOptions(config),
+            .peer_limits = config.peer_limits,
+            .join_timeout_ms = config.join_timeout_ms,
+            .first_frame_timeout_ms = config.first_frame_timeout_ms,
+            .active_connections = active_connections,
+            .active_mu = .init,
+            .run_active = std.atomic.Value(bool).init(false),
+            .should_stop = std.atomic.Value(bool).init(false),
+            .fd_closed = std.atomic.Value(bool).init(false),
+            .acceptors_parked = std.atomic.Value(u32).init(0),
+            .listener = listener,
+            .park_door = door,
+        };
+    }
+
+    fn poolConnectionOptions(config: Config) Connection.Options {
+        var connection_options = config.connection_options;
+        if (config.join_timeout_ms != null and connection_options.tick_interval_ms == null) {
+            connection_options.tick_interval_ms = 100;
+        }
+        if (connection_options.idle_timeout_ms == null) {
+            connection_options.idle_timeout_ms = config.idle_timeout_ms;
+        }
+        return connection_options;
     }
 
     /// Blocks until shutdown. Spawns N-1 threads; the calling thread runs
@@ -239,6 +351,13 @@ pub const WorkerPool = struct {
     /// make closing under a pending accept safe. Persistent loopback failures
     /// can delay shutdown; transient failures are retried without canceling
     /// the kernel operation by closing its handle.
+    ///
+    /// `initListener` pools neither shut the socket down nor dial it. Their
+    /// workers wait in `poll` on the wake door too, so one byte written to
+    /// the door wakes them all. Neither of the others would do: `shutdown`
+    /// does not wake an AF_UNIX accept on macOS, and a dial to a socket file
+    /// that was removed or rebound never reaches this listener, so the wait
+    /// below would never end.
     fn stopAccepting(self: *WorkerPool) void {
         // Registering an accept and checking should_stop use this same lock.
         // After this transition the parked count can only decrease.
@@ -248,7 +367,10 @@ pub const WorkerPool = struct {
             self.active_mu.unlock(self.io);
             return;
         }
-        if (comptime builtin.target.os.tag != .windows) {
+        if (self.park_door) |door| {
+            // Under the lock, so `deinit` cannot have closed the door yet.
+            park.signalDoor(door);
+        } else if (comptime builtin.target.os.tag != .windows) {
             // POSIX: shutting the listener down pops threads parked in
             // accept(). Windows AFD rejects shutdown on a listening socket
             // (noisy INVALID_PARAMETER), so it relies on the nudges alone.
@@ -256,13 +378,17 @@ pub const WorkerPool = struct {
         }
         self.active_mu.unlock(self.io);
         while (self.acceptors_parked.load(.acquire) != 0) {
-            self.nudgeAcceptors();
+            if (self.park_door == null) self.nudgeAcceptors();
             if (self.acceptors_parked.load(.acquire) != 0) sleepMs(self.io, drain_poll_interval_ms);
         }
         self.active_mu.lockUncancelable(self.io);
         defer self.active_mu.unlock(self.io);
         if (!self.fd_closed.swap(true, .acq_rel)) {
-            runtime_helpers.closeFd(self.io, .{ .handle = self.server.socket.handle });
+            if (self.listener) |*listener| {
+                listener.close();
+            } else {
+                runtime_helpers.closeFd(self.io, .{ .handle = self.server.socket.handle });
+            }
         }
     }
 
@@ -291,6 +417,12 @@ pub const WorkerPool = struct {
                 w.thread = null;
             }
         }
+        // No worker polls the door any more, and `shutdown` above marked the
+        // listener closed, so no `stopAccepting` writes to it again.
+        if (comptime park_door_supported) {
+            if (self.park_door) |door| park.closeDoor(door);
+        }
+        self.park_door = null;
         self.allocator.free(self.active_connections);
         self.allocator.free(self.workers);
     }
@@ -339,7 +471,7 @@ pub const WorkerPool = struct {
             pool.active_mu.unlock(pool.io);
             const accepted = blk: {
                 defer _ = pool.acceptors_parked.fetchSub(1, .release);
-                break :blk listener.accept();
+                break :blk pool.acceptNext(&listener);
             };
             const conn_ptr = accepted catch |err| {
                 if (pool.should_stop.load(.acquire)) break;
@@ -410,6 +542,38 @@ pub const WorkerPool = struct {
         }
     }
 
+    /// One accepted connection: from `Listener.accept` for `init`, from the
+    /// wake-door wait for `initListener`.
+    fn acceptNext(pool: *WorkerPool, listener: *Listener) !*Connection {
+        if (comptime park_door_supported) {
+            if (pool.park_door) |door| return pool.acceptParked(door);
+        }
+        return listener.accept();
+    }
+
+    /// Park in `poll` on the listener and the wake door until a connection
+    /// is accepted (or the door says stop: `error.ListenerClosed`), then
+    /// wrap it exactly as `Listener.accept` does.
+    fn acceptParked(pool: *WorkerPool, door: [2]i32) !*Connection {
+        const listen_fd = pool.server.socket.handle;
+        const fd = while (true) {
+            switch (try park.wait(listen_fd, door[0])) {
+                .stop => return error.ListenerClosed,
+                // Null: another worker took the connection, or its client
+                // gave up first. Park again.
+                .listener => if (try park.accept(listen_fd)) |fd| break fd,
+            }
+        };
+        errdefer runtime_helpers.closeFd(pool.io, .{ .handle = fd });
+        runtime_helpers.setTcpNoDelay(.{ .handle = fd });
+
+        const conn_ptr = try pool.allocator.create(Connection);
+        errdefer pool.allocator.destroy(conn_ptr);
+        conn_ptr.* = try Connection.init(pool.allocator, pool.io, .{ .handle = fd }, pool.conn_options);
+        events.emitConnection(pool.conn_options.observer, conn_ptr.transport.source, .server, .accepted);
+        return conn_ptr;
+    }
+
     fn setActiveConnection(self: *WorkerPool, worker_index: u32, conn: *Connection) void {
         self.active_mu.lockUncancelable(self.io);
         defer self.active_mu.unlock(self.io);
@@ -475,6 +639,166 @@ pub const WorkerPool = struct {
         // Closing immediately can discard the wake before Windows consumes it.
         // The registration lock makes this count monotonic during shutdown.
         while (self.acceptors_parked.load(.acquire) >= before) sleepMs(self.io, drain_poll_interval_ms);
+    }
+};
+
+/// Where `initListener` works: Linux and Darwin, the targets of
+/// `rpc.transport.unix`.
+const park_door_supported: bool = builtin.target.os.tag == .linux or builtin.target.os.tag.isDarwin();
+
+/// The raw syscalls behind `initListener`'s wait: the wake door, the
+/// listener's non-blocking mode, `poll` and `accept`. Reached only where
+/// `park_door_supported` holds.
+///
+/// Raw, not `std.Io`: the listen socket is non-blocking, and
+/// `Io.Threaded`'s accept treats EAGAIN as a bug (it panics in Debug). The
+/// wake door follows the wake-door contract of `wake_lock.zig`: both ends
+/// non-blocking, and a raw write for which EAGAIN means "already signalled".
+const park = struct {
+    const posix = std.posix;
+    const sys = posix.system;
+    const is_linux = builtin.target.os.tag == .linux;
+    const nonblock_bit: usize = 1 << @bitOffsetOf(posix.O, "NONBLOCK");
+
+    const DoorError = error{ ProcessFdQuotaExceeded, SystemFdQuotaExceeded, Unexpected };
+
+    fn unexpected(what: []const u8, err: posix.E) error{Unexpected} {
+        // The number, never the tag: `posix.E` does not name every errno.
+        log.debug("{s} failed: errno {d}", .{ what, @backingInt(err) });
+        return error.Unexpected;
+    }
+
+    fn closeRaw(fd: i32) void {
+        _ = sys.close(fd);
+    }
+
+    /// A pipe, both ends non-blocking and close-on-exec.
+    fn openDoor() DoorError![2]i32 {
+        var fds: [2]i32 = undefined;
+        const rc = if (is_linux)
+            sys.pipe2(&fds, .{ .CLOEXEC = true, .NONBLOCK = true })
+        else
+            sys.pipe(&fds);
+        switch (posix.errno(rc)) {
+            .SUCCESS => {},
+            .MFILE => return error.ProcessFdQuotaExceeded,
+            .NFILE => return error.SystemFdQuotaExceeded,
+            else => |err| return unexpected("pipe", err),
+        }
+        if (!is_linux) {
+            // Darwin has no pipe2.
+            errdefer closeDoor(fds);
+            for (fds) |fd| {
+                try setCloexec(fd);
+                try setNonBlocking(fd, true);
+            }
+        }
+        return fds;
+    }
+
+    fn closeDoor(fds: [2]i32) void {
+        closeRaw(fds[0]);
+        closeRaw(fds[1]);
+    }
+
+    /// One byte into the door. Never blocks; EAGAIN means bytes are already
+    /// there, which is the state this makes.
+    fn signalDoor(fds: [2]i32) void {
+        // Only `initListener` opens a door, and only where it is supported.
+        if (comptime !park_door_supported) return;
+        wake_lock.writeByte(fds[1]);
+    }
+
+    fn setCloexec(fd: i32) error{Unexpected}!void {
+        while (true) {
+            switch (posix.errno(sys.fcntl(fd, posix.F.SETFD, @as(usize, posix.FD_CLOEXEC)))) {
+                .SUCCESS => return,
+                .INTR => continue,
+                else => |err| return unexpected("fcntl(F_SETFD)", err),
+            }
+        }
+    }
+
+    fn setNonBlocking(fd: i32, on: bool) error{Unexpected}!void {
+        const get = sys.fcntl(fd, posix.F.GETFL, @as(usize, 0));
+        switch (posix.errno(get)) {
+            .SUCCESS => {},
+            else => |err| return unexpected("fcntl(F_GETFL)", err),
+        }
+        const old: usize = @intCast(get);
+        const new = if (on) old | nonblock_bit else old & ~nonblock_bit;
+        if (new == old) return;
+        switch (posix.errno(sys.fcntl(fd, posix.F.SETFL, new))) {
+            .SUCCESS => {},
+            else => |err| return unexpected("fcntl(F_SETFL)", err),
+        }
+    }
+
+    const Ready = enum { stop, listener };
+
+    /// Wait, without a bound, until the door or the listener is readable.
+    /// The door wins a tie.
+    fn wait(listen_fd: i32, door_fd: i32) error{ SystemResources, Unexpected }!Ready {
+        var fds = [2]posix.pollfd{
+            .{ .fd = door_fd, .events = posix.POLL.IN, .revents = 0 },
+            .{ .fd = listen_fd, .events = posix.POLL.IN, .revents = 0 },
+        };
+        while (true) {
+            const rc = sys.poll(&fds, fds.len, -1);
+            switch (posix.errno(rc)) {
+                .SUCCESS => {},
+                .INTR => continue,
+                .AGAIN, .NOMEM => return error.SystemResources,
+                else => |err| return unexpected("poll", err),
+            }
+            // Any event on the door (data, or an error on a door that
+            // should not have one) stops the worker.
+            if (fds[0].revents != 0) return .stop;
+            // Readable, or an error state that `accept` reports.
+            if (fds[1].revents != 0) return .listener;
+        }
+    }
+
+    const AcceptError = error{
+        ProcessFdQuotaExceeded,
+        SystemFdQuotaExceeded,
+        SystemResources,
+        Unexpected,
+    };
+
+    /// One non-blocking `accept`: the new socket, close-on-exec and
+    /// blocking, or null when there is nothing to take now (another worker
+    /// took it, or the client went away first).
+    fn accept(listen_fd: i32) AcceptError!?i32 {
+        const fd: i32 = while (true) {
+            const rc = if (is_linux)
+                sys.accept4(listen_fd, null, null, posix.SOCK.CLOEXEC)
+            else
+                sys.accept(listen_fd, null, null);
+            switch (posix.errno(rc)) {
+                .SUCCESS => break @intCast(rc),
+                .INTR => continue,
+                // Nothing pending any more, or the pending connection was
+                // reset or refused before we took it. Park again.
+                .AGAIN, .CONNABORTED, .PERM => return null,
+                // Linux reports a TCP connection's pending network error
+                // from accept; accept(2) says to treat these like EAGAIN.
+                .NETDOWN, .PROTO, .NOPROTOOPT, .HOSTDOWN, .HOSTUNREACH, .OPNOTSUPP, .NETUNREACH => return null,
+                .MFILE => return error.ProcessFdQuotaExceeded,
+                .NFILE => return error.SystemFdQuotaExceeded,
+                .NOBUFS, .NOMEM => return error.SystemResources,
+                else => |err| return unexpected("accept", err),
+            }
+        };
+        if (!is_linux) {
+            // Darwin has no accept4, and its accept copies O_NONBLOCK from
+            // the listener. The transport writes through `std.Io`, which
+            // panics on EAGAIN, so the socket must block.
+            errdefer closeRaw(fd);
+            try setCloexec(fd);
+            try setNonBlocking(fd, false);
+        }
+        return fd;
     }
 };
 

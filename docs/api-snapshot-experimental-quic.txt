@@ -1552,7 +1552,9 @@ capnpc-zig.rpc.integration.WorkerPool.fd_closed: field atomic.Value(bool)
 capnpc-zig.rpc.integration.WorkerPool.first_frame_timeout_ms: field ?u64
 capnpc-zig.rpc.integration.WorkerPool.io: field Io
 capnpc-zig.rpc.integration.WorkerPool.join_timeout_ms: field ?u64
+capnpc-zig.rpc.integration.WorkerPool.listener: field ?rpc.transport.tcp.runtime.Listener = null
 capnpc-zig.rpc.integration.WorkerPool.on_accept: field *const fn (*anyopaque, *rpc.peer.mod.Peer, *rpc.transport.tcp.connection.Connection, u32) anyerror!rpc.integration.worker_pool.WorkerPool.AcceptDecision
+capnpc-zig.rpc.integration.WorkerPool.park_door: field ?[2]i32 = null
 capnpc-zig.rpc.integration.WorkerPool.peer_limits: field rpc.peer.state.PeerLimits
 capnpc-zig.rpc.integration.WorkerPool.run_active: field atomic.Value(bool)
 capnpc-zig.rpc.integration.WorkerPool.server: field Io.net.Server
@@ -1633,6 +1635,7 @@ capnpc-zig.rpc.integration.worker_pool.WorkerPool.Config.join_timeout_ms: field 
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.Config.listen_backlog: field u31 = 128
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.Config.peer_limits: field rpc.peer.state.PeerLimits = <default>
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.Config: struct
+capnpc-zig.rpc.integration.worker_pool.WorkerPool.InitListenerError: type = error{InvalidConcurrency,ListenerClosed,OutOfMemory,ProcessFdQuotaExceeded,SystemFdQuotaExceeded,Unexpected,UnixSocketsUnsupported}
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.acceptors_parked: field atomic.Value(u32)
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.active_connections: field []?*rpc.transport.tcp.connection.Connection
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.active_mu: field Io.Mutex
@@ -1645,9 +1648,12 @@ capnpc-zig.rpc.integration.worker_pool.WorkerPool.deinit: fn (*rpc.integration.w
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.fd_closed: field atomic.Value(bool)
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.first_frame_timeout_ms: field ?u64
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.init: fn (mem.Allocator, Io, Io.net.IpAddress, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, *rpc.transport.tcp.connection.Connection, u32) anyerror!rpc.integration.worker_pool.WorkerPool.AcceptDecision, rpc.integration.worker_pool.WorkerPool.Config) error{AccessDenied,AddressFamilyUnsupported,AddressInUse,AddressUnavailable,Canceled,InvalidConcurrency,NetworkDown,OptionUnsupported,OutOfMemory,ProcessFdQuotaExceeded,ProtocolUnsupportedByAddressFamily,ProtocolUnsupportedBySystem,SocketModeUnsupported,SystemFdQuotaExceeded,SystemResources,Unexpected}!rpc.integration.worker_pool.WorkerPool
+capnpc-zig.rpc.integration.worker_pool.WorkerPool.initListener: fn (mem.Allocator, rpc.transport.tcp.runtime.Listener, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, *rpc.transport.tcp.connection.Connection, u32) anyerror!rpc.integration.worker_pool.WorkerPool.AcceptDecision, rpc.integration.worker_pool.WorkerPool.Config) error{InvalidConcurrency,ListenerClosed,OutOfMemory,ProcessFdQuotaExceeded,SystemFdQuotaExceeded,Unexpected,UnixSocketsUnsupported}!rpc.integration.worker_pool.WorkerPool
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.io: field Io
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.join_timeout_ms: field ?u64
+capnpc-zig.rpc.integration.worker_pool.WorkerPool.listener: field ?rpc.transport.tcp.runtime.Listener = null
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.on_accept: field *const fn (*anyopaque, *rpc.peer.mod.Peer, *rpc.transport.tcp.connection.Connection, u32) anyerror!rpc.integration.worker_pool.WorkerPool.AcceptDecision
+capnpc-zig.rpc.integration.worker_pool.WorkerPool.park_door: field ?[2]i32 = null
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.peer_limits: field rpc.peer.state.PeerLimits
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.run: fn (*rpc.integration.worker_pool.WorkerPool) error{LockedMemoryLimitExceeded,OutOfMemory,SystemResources,ThreadQuotaExceeded,Unexpected,WorkerPoolAlreadyRunning}!void
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.run_active: field atomic.Value(bool)

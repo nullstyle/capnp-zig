@@ -882,11 +882,16 @@ pub fn buildImpl(b: *std.Build) !void {
     // close. Linux and macOS run it; other targets compile it and run only
     // the unsupported-target stub test.
     const run_rpc_unix_session_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_session_test.zig", target, optimize, lib_module);
-    const test_rpc_unix_step = b.step("test-rpc-unix", "Run the AF_UNIX transport suites (regressions, fd drain, lingering close, listen/connect)");
+    // `WorkerPool.initListener` on a Unix listener (sprint item 9): workers
+    // parked on the wake door shut down promptly, even after the socket file
+    // is gone. Linux and macOS run it; other targets run only the stub case.
+    const run_rpc_unix_worker_pool_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_worker_pool_test.zig", target, optimize, lib_module);
+    const test_rpc_unix_step = b.step("test-rpc-unix", "Run the AF_UNIX transport suites (regressions, fd drain, lingering close, listen/connect, WorkerPool)");
     test_rpc_unix_step.dependOn(run_rpc_unix_regression_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_fd_drain_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_linger_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_session_tests);
+    test_rpc_unix_step.dependOn(run_rpc_unix_worker_pool_tests);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, qm)
     else
@@ -1369,6 +1374,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_transport_step.dependOn(run_rpc_unix_fd_drain_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_linger_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_session_tests);
+    test_rpc_transport_step.dependOn(run_rpc_unix_worker_pool_tests);
     test_rpc_transport_step.dependOn(run_rpc_raw_frame_security_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_kernel_semantics_tests);
 
@@ -1438,6 +1444,7 @@ pub fn buildImpl(b: *std.Build) !void {
     const test_rpc_integration_step = b.step("test-rpc-integration", "Run RPC integration tests");
     test_rpc_integration_step.dependOn(run_rpc_host_peer_tests);
     test_rpc_integration_step.dependOn(run_rpc_worker_pool_tests);
+    test_rpc_integration_step.dependOn(run_rpc_unix_worker_pool_tests);
     test_rpc_integration_step.dependOn(run_rpc_persistence_reconnect_tests);
     test_rpc_integration_step.dependOn(run_rpc_typed_pipelining_tests);
 
@@ -1671,6 +1678,9 @@ pub fn buildImpl(b: *std.Build) !void {
             // unix.listen/connect: the session threads, racing listeners and
             // the accept wake-up, against glibc.
             "tests/rpc/transport/unix/rpc_unix_session_test.zig",
+            // WorkerPool.initListener: workers parked on the wake door and
+            // the shutdown that writes it, against glibc.
+            "tests/rpc/transport/unix/rpc_unix_worker_pool_test.zig",
         };
         for (tsan_suites) |suite_path| {
             const t = b.addTest(.{

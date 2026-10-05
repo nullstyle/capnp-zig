@@ -135,14 +135,15 @@ comptime {
     _ = &forceQuicGenerics;
 }
 
-// Unix-domain transport (Experimental, sprint item 7). No downstream uses it
-// yet. Forced so the full roots keep exporting it and its bodies compile on
+// Unix-domain transport (Experimental, sprint items 7 and 9). No downstream
+// uses it yet. Forced so the full roots keep exporting it and its bodies compile on
 // every consumer target (stubs where AF_UNIX is unsupported).
 comptime {
     const unix = capnpc.rpc.transport.unix;
     _ = &unix.listen; // release sentinel (no downstream yet)
     _ = &unix.connect; // release sentinel (no downstream yet)
     _ = &capnpc.rpc.transport.tcp.Listener.unixPath; // release sentinel (no downstream yet)
+    _ = &capnpc.rpc.integration.WorkerPool.initListener; // release sentinel (no downstream yet; sprint item 9)
 }
 
 /// Never called. Taking its address forces its body through analysis, which
