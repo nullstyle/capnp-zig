@@ -770,10 +770,11 @@ The fix work also found row 44: on macOS a close of the other end of a socket wh
 - At the cut (the release ceremony, after the version sweep):
   - README: one `unreleased-after: v0.19.1` marker sits on the upgrade-guide line. docs-smoke fails on it after the bump, by design. Delete the sentence that says v0.20.0 is not tagged, and the marker.
   - `docs/upgrading-to-0.20.0.md`: delete the "Release candidate" note at the top, and put the real `capnpc_zig-0.20.0-...` hash in its table. docs-smoke does not scan this file.
+  - The downstream quic pins: read the newest tags of http3-zig, qmsg, qmesh-zig and nest again. Update the table in `docs/upgrading-to-0.20.0.md` ("One quic module per process") and the "One quic module per process" Migration note of the quic bump in CHANGELOG. On 2026-10-05, no tag of http3-zig, qmsg or qmesh-zig pins quic v0.27.0 (`v0.5.1` pins v0.26.0; `v0.7.0` and `0.2.1` pin v0.21.0). Their `main` branches pin v0.27.0.
 - The owner approves the tag. Then `just release-tag 0.20.0`, `just verify-release-hash 0.20.0`, a real `zig fetch`, and the consumer builds.
 - Handoffs (files, no pushes):
   - slcp: the shape gate and the walker seam.
-  - qmsg, nest, qmesh-zig: move to quic v0.27.0 with the coordinated set (one quic module per process). http3-zig is on v0.27.0 already.
+  - http3-zig, qmsg, qmesh-zig, nest: tag a release that pins quic v0.27.0 (one quic module per process). The `main` branches of the first three pin it already. No tag of theirs does.
   - quic-zig: it can release `Server.tls_ctx`, `retry_accepted` and (outside one test root) `boringssl.raw`. Ask it to hold `Stream.recv.reset` and `Connection.streamRecvWasReaped` next to `Stream.recv.final_size`.
   - capnp-qmsg-demo and mruby-quic: the switch fix.
   - prollytree and bucketlist: scratch builds.

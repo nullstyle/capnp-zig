@@ -88,9 +88,23 @@ map. Otherwise the build makes two quic modules, each with its own
 BoringSSL, and Zig 0.17.0 can fail with `file exists in modules 'quic' and
 'quic0'`.
 
-So move every package that depends on quic-zig to v0.27.0 in the same
-commit: capnp-zig, qmsg, nest, qmesh-zig, http3-zig, and your own build.
-http3-zig is on v0.27.0 already. The others move with the coordinated set.
+So, in the same commit, pin every package that depends on quic-zig at a
+release that pins quic v0.27.0: capnp-zig, qmsg, nest, qmesh-zig,
+http3-zig, and your own build. Before you pin a release of such a package,
+read its `build.zig.zon`. Its quic pin must be v0.27.0.
+
+On 2026-10-05, no tag of http3-zig, qmsg or qmesh-zig pins quic v0.27.0.
+Their `main` branches pin it, but their newest tags pin older versions:
+
+| Package | Newest tag | quic pin of that tag | quic pin of `main` |
+|---|---|---|---|
+| http3-zig | `v0.5.1` | `v0.26.0` | `v0.27.0` |
+| qmsg | `v0.7.0` | `v0.21.0` | `v0.27.0` |
+| qmesh-zig | `0.2.1` | `v0.21.0` | `v0.27.0` |
+
+Do not pin one of these tags next to capnp-zig v0.20.0 with `-Dquic=true`.
+The build then makes two quic modules. Pin a release of the package that
+pins quic v0.27.0, or wait for one.
 
 The option map does not change. capnp-zig passes this map to quic
 (`build/modules.zig`):
@@ -198,13 +212,10 @@ Do the items that apply. Each item names the change and what to do.
     it. So each generation after the first binds the previous generation's
     local UDP port. A `base.local_addr` that names a port is used as it
     is.
-    - When the old port is taken, the dial falls back to an ephemeral port,
-      gets a Retry, and counts in the new
-      `Outcome.port_fallback_generations`.
-    - `Outcome.zero_rtt_generations` now also counts a dial that rode 0-RTT
-      behind a Retry, so it no longer says that a dial skipped the Retry.
-      The new `Outcome.retried_generations` counts the dials that got a
-      Retry.
+    - When the old port is taken, the dial falls back to an ephemeral port
+      and gets a Retry. The new counter
+      `Outcome.port_fallback_generations` counts these dials ("What is
+      new" lists the new counters).
     - Behind a NAT, the server sees the NAT's port. The redial skips the
       Retry only when the NAT maps the reused local port to the same
       external port.
@@ -223,7 +234,7 @@ To find the call sites in one pass:
 ```sh
 grep -rn --include='*.zig' -e 'events.Source' -e 'events.Resource' \
   -e '@tagName' -e 'handshake_timeout' -e 'nowUs' -e 'WarmRedialClient' \
-  -e 'zero_rtt_generations' -e 'exportWarmState' -e 'requestKeyUpdate' \
+  -e 'exportWarmState' -e 'requestKeyUpdate' \
   -e 'setRememberedPeerTransportParams' -e 'initFd' .
 ```
 
@@ -279,3 +290,18 @@ All of it is Experimental and additive. None of it changes
   to resuming clients. Read "Session-ticket key" in
   [quic-transport.md](quic-transport.md#session-ticket-key) before you set
   it.
+- **Three new `WarmRedialClient` counters.** `WarmRedialClient.Outcome` has
+  three new fields, and `WarmRedialClient` has fields with the same names.
+  Each one starts at 0, so a struct literal of `Outcome` without them still
+  compiles.
+  - `zero_rtt_generations` counts the dials whose early data the server
+    accepted, with or without a Retry. The restore of such a dial ran
+    before the handshake completed.
+  - `retried_generations` counts the dials that got a Retry. Each one cost
+    one more round trip.
+  - `port_fallback_generations` counts the dials that fell back to an
+    ephemeral port, because the port of the generation before was taken.
+
+  A dial in `zero_rtt_generations` and in `retried_generations` restored in
+  0-RTT behind a Retry. A dial in `zero_rtt_generations` and not in
+  `retried_generations` also skipped the Retry.

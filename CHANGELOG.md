@@ -733,10 +733,13 @@ by step.
   - **Migration:**
     - **One quic module per process.** A build that links capnp-zig with
       `-Dquic=true` next to another package that depends on quic-zig
-      (qmsg, nest, qmesh-zig, http3-zig, ...) must pin quic-zig v0.27.0
-      there too, with the same option map. Otherwise it builds two quic
-      modules, each with its own BoringSSL. http3-zig is on v0.27.0; the
-      others move with the coordinated set.
+      (qmsg, nest, qmesh-zig, http3-zig, ...) must pin a release of that
+      package that pins quic-zig v0.27.0, with the same option map.
+      Otherwise it builds two quic modules, each with its own BoringSSL.
+      On 2026-10-05, no tag of http3-zig, qmsg or qmesh-zig pins v0.27.0:
+      their newest tags (`v0.5.1`, `v0.7.0`, `0.2.1`) pin quic v0.26.0,
+      v0.21.0 and v0.21.0. Their `main` branches pin v0.27.0.
+      `docs/upgrading-to-0.20.0.md` has the table.
     - **Tokens are 114 bytes (were 96).** A NEW_TOKEN that a v0.19.x client
       persisted (for example inside a `WarmRedialClient.exportWarmState`
       envelope) reads as malformed at a v0.27.0 server, which treats it as
