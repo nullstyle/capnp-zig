@@ -35,7 +35,12 @@ pub const NativePendingData = native_pending_data.PendingData;
 
 fn isNativeFrameError(err: anyerror) bool {
     return switch (err) {
-        error.InvalidFrame, error.FrameTooLarge, error.OutOfMemory, error.DataStreamTimeout => true,
+        error.InvalidFrame,
+        error.FrameTooLarge,
+        error.OutOfMemory,
+        error.DataStreamTimeout,
+        error.DataStreamReset,
+        => true,
         else => false,
     };
 }

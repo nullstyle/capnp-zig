@@ -9,7 +9,10 @@ const loopback = @import("loopback_test_support.zig");
 const raw_client_rx_buffer_size: usize = 64 * 1024;
 const raw_client_tx_buffer_size: usize = 1500;
 
-const RawFaultClient = struct {
+/// A bare quic-zig client that speaks the native wire by hand, for faults and
+/// orderings a capnp-zig peer never produces. Windows receives go through the
+/// UDP receive bridge.
+pub const RawFaultClient = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     socket: std.Io.net.Socket,
@@ -20,7 +23,7 @@ const RawFaultClient = struct {
     tx_buf: []u8,
     udp_receive: quic.testing.UdpReceiveBridge = .{},
 
-    fn init(
+    pub fn init(
         allocator: std.mem.Allocator,
         io: std.Io,
         remote_addr: std.Io.net.IpAddress,
@@ -58,7 +61,7 @@ const RawFaultClient = struct {
         };
     }
 
-    fn deinit(self: *RawFaultClient) void {
+    pub fn deinit(self: *RawFaultClient) void {
         // The concurrent task borrows both socket and receive buffer. Reap it
         // before either can be torn down, even when a fault case exits early.
         self.udp_receive.cancel(self.io);
@@ -68,7 +71,7 @@ const RawFaultClient = struct {
         self.allocator.free(self.tx_buf);
     }
 
-    fn waitForHandshake(self: *RawFaultClient, server_state: *const loopback.QuicEndpointState) !void {
+    pub fn waitForHandshake(self: *RawFaultClient, server_state: *const loopback.QuicEndpointState) !void {
         var waited_ms: u64 = 0;
         while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
             try self.step(std.Io.Duration.fromMilliseconds(1));
@@ -89,21 +92,21 @@ const RawFaultClient = struct {
         return error.QuicLoopbackTimedOut;
     }
 
-    fn ensureControlStream(self: *RawFaultClient) !void {
+    pub fn ensureControlStream(self: *RawFaultClient) !void {
         _ = self.client.conn.openBidi(quic.baseline_stream_id) catch |err| switch (err) {
             error.StreamAlreadyOpen => return,
             else => return err,
         };
     }
 
-    fn ensureUniStream(self: *RawFaultClient, stream_id: u64) !void {
+    pub fn ensureUniStream(self: *RawFaultClient, stream_id: u64) !void {
         _ = self.client.conn.openUni(stream_id) catch |err| switch (err) {
             error.StreamAlreadyOpen => return,
             else => return err,
         };
     }
 
-    fn writeAll(self: *RawFaultClient, stream_id: u64, bytes: []const u8) !void {
+    pub fn writeAll(self: *RawFaultClient, stream_id: u64, bytes: []const u8) !void {
         var offset: usize = 0;
         while (offset < bytes.len) {
             const written = try self.client.conn.streamWrite(stream_id, bytes[offset..]);
@@ -117,7 +120,7 @@ const RawFaultClient = struct {
         }
     }
 
-    fn step(self: *RawFaultClient, receive_timeout: std.Io.Duration) !void {
+    pub fn step(self: *RawFaultClient, receive_timeout: std.Io.Duration) !void {
         var now_us = self.nowUs();
         try self.client.conn.advance();
         try self.drainOutgoing(now_us);
@@ -168,7 +171,7 @@ const RawFaultClient = struct {
         try self.drainOutgoing(now_us);
     }
 
-    fn drainOutgoing(self: *RawFaultClient, now_us: u64) !void {
+    pub fn drainOutgoing(self: *RawFaultClient, now_us: u64) !void {
         while (try self.client.conn.pollDatagram(self.tx_buf, now_us)) |out| {
             const dest = if (out.to) |addr|
                 quic.pathAddressToIpAddress(addr) orelse self.remote_addr
@@ -178,7 +181,7 @@ const RawFaultClient = struct {
         }
     }
 
-    fn nowUs(self: *RawFaultClient) u64 {
+    pub fn nowUs(self: *RawFaultClient) u64 {
         const now = std.Io.Timestamp.now(self.io, .awake);
         const delta = self.start_timestamp.durationTo(now).toMicroseconds();
         if (delta <= 0) return 0;

@@ -80,7 +80,9 @@ pub const EmbeddedSessionOptions = struct {
 ///   3. Forward the embedder's Driver hooks: `onStreamOpen`,
 ///      `onStreamData`, `onStreamEnd`, and `notifyDisconnected`.
 ///   4. Call `service(now_us)` once per loop pass, after `driver.service`
-///      and before `Server.tick`.
+///      and before `Server.tick` ("Embedder rules" in
+///      docs/quic-transport.md: a tick first can reap a stream before the
+///      Driver sees its end).
 ///
 /// Frames reach the `Peer` strictly in stream order (QUIC per-stream order
 /// plus FIFO seat buffers), preserving the E-order contract of
@@ -122,15 +124,26 @@ pub const EmbeddedSession = struct {
     streams: std.AutoHashMapUnmanaged(u64, StreamBuffer) = .empty,
     max_buffered_stream_bytes: usize,
     buffered_bytes: usize = 0,
+    /// How many entries of `streams` other than stream 0 have ended. While
+    /// it is zero, `releaseDrainedDataStreams` has nothing to do.
+    ended_data_streams: usize = 0,
     wake_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     const StreamBuffer = struct {
         data: std.ArrayListUnmanaged(u8) = .empty,
         /// Bytes already consumed by `streamRead`; `data[consumed..]` unread.
         consumed: usize = 0,
-        /// Total bytes ever pushed on this stream (the final size once `fin`).
+        /// Total bytes ever pushed on this stream (the final size once
+        /// `ended`).
         total: usize = 0,
-        fin: bool = false,
+        /// No more bytes come on this stream: the peer sent FIN or RESET, or
+        /// quic-zig reaped the stream. The bytes already pushed stay here
+        /// until the engine reads them.
+        ended: bool = false,
+
+        fn drained(self: *const StreamBuffer) bool {
+            return self.consumed == self.data.items.len;
+        }
 
         fn compactIfNeeded(self: *StreamBuffer) void {
             if (self.consumed == 0) return;
@@ -323,7 +336,7 @@ pub const EmbeddedSession = struct {
         const gop = try self.streams.getOrPut(self.allocator, stream_id);
         if (!gop.found_existing) gop.value_ptr.* = .{};
         const buf = gop.value_ptr;
-        if (buf.fin) return error.StreamClosed;
+        if (buf.ended) return error.StreamClosed;
         if (self.buffered_bytes + chunk.len > self.max_buffered_stream_bytes) {
             Termination.frameError(self, error.FrameTooLarge);
             return;
@@ -335,27 +348,81 @@ pub const EmbeddedSession = struct {
 
     /// Forward from the embedder's `on_stream_end`.
     ///
-    /// `.fin` keeps the stream entry (its final size settles native
-    /// pending-data completion); `.reset` and `.reaped` drop it — the bytes
-    /// are gone and no read can complete. A reset of the ordered control
-    /// stream (stream 0) is session loss by the E-order contract and closes
-    /// the session; a reset of an announced native data stream surfaces
-    /// through the engine's completion deadline instead.
+    /// The ordered control stream (stream 0): `.fin` keeps its entry,
+    /// `.reset` and `.reaped` drop it. A reset of stream 0 is session loss by
+    /// the E-order contract and closes the session.
+    ///
+    /// A native data stream keeps the bytes the Driver delivered and is
+    /// marked as ended, for `.fin`, for `.reset`, and for `.reaped` when
+    /// quic-zig's stream GC reaped it. The bytes in hand then settle the
+    /// announced message: all of them complete it, fewer fail it at once
+    /// (`InvalidFrame`), with no wait for the completion deadline. A
+    /// `.reaped` is how the end arrives when the host ticks before it
+    /// services the Driver (see "Embedder rules" in docs/quic-transport.md).
+    /// A `.reaped` for a stream that is still live is the Driver's teardown
+    /// pass before `onDisconnect`; it drops the entry.
     pub fn onStreamEnd(self: *EmbeddedSession, stream_id: u64, end: quic_zig.app.StreamEnd) void {
+        if (stream_id == quic_options.baseline_stream_id) {
+            switch (end) {
+                .fin => if (self.streams.getPtr(stream_id)) |buf| {
+                    buf.ended = true;
+                },
+                .reset, .reaped => {
+                    self.dropStream(stream_id);
+                    if (end == .reset) self.requestControlStreamLoss();
+                },
+            }
+            return;
+        }
         switch (end) {
-            .fin => {
-                if (self.streams.getPtr(stream_id)) |buf| buf.fin = true;
-            },
-            .reset, .reaped => {
-                if (self.streams.fetchRemove(stream_id)) |removed| {
-                    var buf = removed.value;
-                    self.buffered_bytes -= unreadBytes(&buf);
-                    buf.data.deinit(self.allocator);
-                }
-                if (stream_id == quic_options.baseline_stream_id and end == .reset) {
-                    self.requestControlStreamLoss();
-                }
-            },
+            .fin, .reset => self.markDataStreamEnded(stream_id),
+            .reaped => if (self.conn.streamRecvWasReaped(stream_id))
+                self.markDataStreamEnded(stream_id)
+            else
+                self.dropStream(stream_id),
+        }
+    }
+
+    fn markDataStreamEnded(self: *EmbeddedSession, stream_id: u64) void {
+        const buf = self.streams.getPtr(stream_id) orelse return;
+        if (buf.ended) return;
+        buf.ended = true;
+        self.ended_data_streams += 1;
+    }
+
+    fn dropStream(self: *EmbeddedSession, stream_id: u64) void {
+        var removed = (self.streams.fetchRemove(stream_id) orelse return).value;
+        self.buffered_bytes -= unreadBytes(&removed);
+        if (removed.ended and stream_id != quic_options.baseline_stream_id) {
+            self.ended_data_streams -= 1;
+        }
+        removed.data.deinit(self.allocator);
+    }
+
+    /// Free the buffer of each data stream that has ended and whose bytes
+    /// the engine has read, except the one it still waits on. The engine
+    /// never reads such a stream again. Without this pass the seat kept one
+    /// entry, and the capacity of its buffer, for every large frame until
+    /// the session closed.
+    fn releaseDrainedDataStreams(self: *EmbeddedSession) void {
+        if (self.ended_data_streams == 0) return;
+        const waiting: ?u64 = if (self.native.pending_data) |pending| pending.stream_id else null;
+        var batch: [32]u64 = undefined;
+        while (true) {
+            var n: usize = 0;
+            var it = self.streams.iterator();
+            while (it.next()) |entry| {
+                const id = entry.key_ptr.*;
+                const buf = entry.value_ptr;
+                if (id == quic_options.baseline_stream_id) continue;
+                if (!buf.ended or !buf.drained()) continue;
+                if (waiting) |waiting_id| if (waiting_id == id) continue;
+                batch[n] = id;
+                n += 1;
+                if (n == batch.len) break;
+            }
+            for (batch[0..n]) |id| self.dropStream(id);
+            if (n < batch.len) return;
         }
     }
 
@@ -411,7 +478,10 @@ pub const EmbeddedSession = struct {
         const owner = Adapters.engineOwner(self);
         switch (self.mode) {
             .baseline => try router.baseline.service(owner.baseline(), adapter),
-            .native => try router.native.service(owner.native(), adapter, now_us),
+            .native => {
+                try router.native.service(owner.native(), adapter, now_us);
+                self.releaseDrainedDataStreams();
+            },
         }
 
         if (self.conn.isClosed()) {
@@ -452,13 +522,20 @@ pub const EmbeddedSession = struct {
             return self.session.conn.streamArrivedInEarlyData(stream_id);
         }
 
+        /// The part of quic-zig's `Stream` the engines read. `reset` is
+        /// always null: the seat keeps the bytes a reset stream delivered and
+        /// reports the end as a final size (the bytes in hand), so a cut
+        /// message fails the final-size check at once.
         const StreamView = struct {
-            recv: struct { final_size: ?usize },
+            recv: struct {
+                final_size: ?usize,
+                reset: ?struct { error_code: u64 } = null,
+            },
         };
 
         pub fn stream(self: BufferedConn, stream_id: u64) ?StreamView {
             const buf = self.session.streams.getPtr(stream_id) orelse return null;
-            return .{ .recv = .{ .final_size = if (buf.fin) buf.total else null } };
+            return .{ .recv = .{ .final_size = if (buf.ended) buf.total else null } };
         }
 
         pub fn openBidi(self: BufferedConn, stream_id: u64) !*quic_zig.Connection.Stream {

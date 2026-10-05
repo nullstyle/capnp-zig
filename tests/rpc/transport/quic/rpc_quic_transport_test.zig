@@ -2,6 +2,7 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const loopback = @import("loopback_test_support.zig");
 const raw_faults = @import("raw_fault_client.zig");
+const stream_end = @import("stream_end_support.zig");
 
 test {
     _ = @import("rpc_quic_embedded_test.zig");
@@ -1937,6 +1938,39 @@ test "quic native raw peer data stream violations close with typed frame errors"
         .max_pending_data_streams = 4,
         .max_pending_data_bytes = 4,
     }, error.FrameTooLarge);
+}
+
+// The stream-end trap (quic-zig, 2026-10-05): every byte of a data stream is
+// read, then its FIN or RESET arrives alone. A QUIC tick before the next
+// service pass frees the stream, and a read gets `StreamNotFound`. The
+// announced length is in hand, so the frame must complete in either order.
+// Ablation: with the reaped-stream branch of `native_pending_data.readComplete`
+// removed, the tick-then-service cases fail with `DataStreamTimeout`.
+
+test "stream end alone: the native server finishes a data frame, service then tick" {
+    try stream_end.runServerDirection(.fin, .service_then_tick);
+    try stream_end.runServerDirection(.reset, .service_then_tick);
+}
+
+test "stream end alone: the native server finishes a data frame, tick then service (the trap order)" {
+    try stream_end.runServerDirection(.fin, .tick_then_service);
+    try stream_end.runServerDirection(.reset, .tick_then_service);
+}
+
+test "stream end alone: the native client finishes a data frame, service then tick" {
+    try stream_end.runClientDirection(.fin, .service_then_tick);
+    try stream_end.runClientDirection(.reset, .service_then_tick);
+}
+
+test "stream end alone: the native client finishes a data frame, tick then service (the trap order)" {
+    try stream_end.runClientDirection(.fin, .tick_then_service);
+    try stream_end.runClientDirection(.reset, .tick_then_service);
+}
+
+test "quic native server fails at once when a data stream is reset before its bytes were read" {
+    // Ablation: without the reset check in `readComplete`, the session waits
+    // for the completion deadline and fails with `DataStreamTimeout`.
+    try stream_end.runServerResetBeforeRead();
 }
 
 test "quic server refuses peer streams it never uses, so they do not fill its stream window" {

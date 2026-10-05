@@ -299,6 +299,149 @@ test "embedded quic session refuses peer streams it never uses (native)" {
     try runEmbeddedRefusal(std.testing.allocator, .{ .mode = .native });
 }
 
+// The stream-end trap in the seat: a data stream's bytes reach the seat
+// before its announcement, and its end follows alone. In the safe order the
+// end comes as `.fin` or `.reset`; when the host ticks first it comes as
+// `.reaped`. Either way the seat must keep the bytes, finish the frame when
+// the announcement arrives, then free the stream's buffer. Ablation: with
+// `onStreamEnd` dropping the bytes on `.reset` and `.reaped` (the old code),
+// three of the four cases fail with `DataStreamTimeout` (all but
+// service-then-tick FIN); with `releaseDrainedDataStreams` removed, the seat
+// still holds the data stream (2 buffers, not 1).
+
+const stream_end = @import("stream_end_support.zig");
+
+test "embedded native seat keeps a data stream's bytes past its end, service then tick" {
+    try stream_end.runEmbedded(.fin, .service_then_tick);
+    try stream_end.runEmbedded(.reset, .service_then_tick);
+}
+
+test "embedded native seat keeps a data stream's bytes past its end, tick then service (the trap order)" {
+    try stream_end.runEmbedded(.fin, .tick_then_service);
+    try stream_end.runEmbedded(.reset, .tick_then_service);
+}
+
+fn countEmbeddedClientMessage(conn: *quic.Connection, frame: []const u8) anyerror!void {
+    const state: *loopback.QuicEndpointState = @ptrCast(@alignCast(conn.context().?));
+    try state.recordMessage(frame);
+}
+
+/// A capnp-zig client sends `frame_count` frames large enough for native
+/// data streams; the seat echoes each one. After the last echo, the seat
+/// holds no buffer for any of those data streams. Ablation: without
+/// `releaseDrainedDataStreams` (and on the seat code before it), the seat
+/// holds 9 buffers after 8 frames.
+fn runEmbeddedDataStreamRelease(allocator: std.mem.Allocator, frame_count: usize) !void {
+    // Room for every frame at once: the client queues them all before
+    // its loop runs.
+    const native_options = quic.NativeOptions{
+        .inline_frame_threshold = 128,
+        .max_control_frame_bytes = 256,
+        .max_pending_data_streams = 16,
+        .max_pending_data_bytes = 16 * 1024,
+    };
+    var host = HostApp{
+        .allocator = allocator,
+        .mode = .{ .mode = .native, .native = native_options },
+        .state = undefined,
+    };
+    defer host.seats.deinit(allocator);
+    var server_state = loopback.QuicEndpointState{};
+    host.state = &server_state;
+    var client_state = loopback.QuicEndpointState{};
+
+    var driver = try D.init(.{
+        .allocator = allocator,
+        .app = &host,
+        .max_tracked_streams = 16,
+        .hooks = .{
+            .on_connect = HostApp.onConnect,
+            .on_handshake = HostApp.onHandshake,
+            .on_stream_open = HostApp.onStreamOpen,
+            .on_stream_data = HostApp.onStreamData,
+            .on_stream_end = HostApp.onStreamEnd,
+            .on_disconnect = HostApp.onDisconnect,
+        },
+    });
+    var listener = quic.Listener.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .alpn_protocols = &.{"capnp-rpc/1"},
+        .max_concurrent_connections = 4,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    }) catch |err| {
+        driver.deinit();
+        return err;
+    };
+    driver.attach(&listener.server);
+    // Same load-bearing deinit order as runEmbeddedEchoExchange.
+    defer driver.deinit();
+    defer listener.deinit();
+
+    var host_thread = try std.Thread.spawn(.{}, runHost, .{ &host, &listener, &driver });
+    var host_joined = false;
+    defer if (!host_joined) {
+        host.stop.store(true, .release);
+        host_thread.join();
+    };
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = listener.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    });
+    defer client.deinit();
+    client.start(&client_state, countEmbeddedClientMessage, loopback.recordQuicError, loopback.recordQuicClose);
+
+    for (0..frame_count) |index| {
+        const frame = try loopback.buildCallFrameWithData(allocator, @intCast(index), 512);
+        defer allocator.free(frame);
+        try std.testing.expect(frame.len > native_options.inline_frame_threshold);
+        try client.sendFrame(frame);
+    }
+
+    var client_thread = try std.Thread.spawn(.{}, loopback.runQuicConnection, .{&client});
+    var client_joined = false;
+    defer if (!client_joined) {
+        client.requestClose();
+        client_thread.join();
+    };
+
+    var waited_ms: u64 = 0;
+    while (client_state.messages.load(.acquire) < frame_count) : (waited_ms += loopback.loopback_poll_ms) {
+        if (client_state.errors.load(.acquire) > 0 or server_state.errors.load(.acquire) > 0) break;
+        if (waited_ms >= loopback.loopback_timeout_ms) return error.QuicLoopbackTimedOut;
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+    try std.testing.expectEqual(@as(usize, 0), server_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    try std.testing.expectEqual(frame_count, server_state.messages.load(.acquire));
+
+    // Stop the host loop, then read the seat on this thread.
+    host.stop.store(true, .release);
+    host_thread.join();
+    host_joined = true;
+    try std.testing.expectEqual(@as(usize, 1), host.seats.items.len);
+    const seat = host.seats.items[0];
+    try std.testing.expectEqual(@as(usize, 1), seat.streams.count());
+    try std.testing.expect(seat.streams.get(quic.baseline_stream_id) != null);
+    try std.testing.expectEqual(@as(usize, 0), seat.ended_data_streams);
+
+    client.requestClose();
+    client_thread.join();
+    client_joined = true;
+}
+
+test "embedded native seat frees each data stream's buffer once the engine has read it" {
+    try runEmbeddedDataStreamRelease(std.testing.allocator, 8);
+}
+
 // ---------------------------------------------------------------------------
 // Peer-level coverage: a real `Peer` attached to an embedded session over a
 // foreign host loop — the full Bootstrap → Call → Return → Finish lifecycle

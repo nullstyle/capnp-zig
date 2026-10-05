@@ -7,6 +7,7 @@ const endpoint_mod = @import("endpoint.zig");
 const engine_owner = @import("engine_owner.zig");
 const mode_router = @import("mode_router.zig");
 const scheduler = @import("scheduler.zig");
+const test_knobs = @import("test_knobs.zig");
 const udp_receive_bridge = @import("udp_receive_bridge.zig");
 const wake_mod = @import("wake.zig");
 
@@ -116,6 +117,10 @@ pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
 
     now_us = driver.nowUs();
     try advanceActive(driver);
+    // Service BEFORE the tick: the tick frees a stream whose end arrived
+    // alone, and the engine must see that end first. The knob is a test-only
+    // way to put the wrong order back (comptime false outside tests).
+    if (test_knobs.tickBeforeService()) try tickActive(driver, now_us);
     try serviceModeStreams(owner, driver, now_us);
     try datagram_io.drainOutgoingDatagrams(driver, owner.udp_tx_buf, now_us);
 

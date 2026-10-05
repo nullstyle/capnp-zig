@@ -1278,3 +1278,113 @@ test "peer streams: a refusal ends both halves of a bidi stream, the one half of
     // We have no send half on a peer's uni stream; a reset would be an error.
     try std.testing.expectEqual(@as(?u64, null), uni.reset);
 }
+
+// ---------------------------------------------------------------------------
+// Native data frames: when a stream's end settles the announced frame.
+// ---------------------------------------------------------------------------
+
+const pending_data = quic.testing.native_pending_data;
+
+/// The two calls `readComplete` makes, on a stream that the test shapes by
+/// hand: present or reaped, its final size, a reset, the readable bytes.
+const FakeDataStream = struct {
+    const View = struct {
+        recv: struct {
+            final_size: ?usize = null,
+            reset: ?struct { error_code: u64 } = null,
+        } = .{},
+    };
+
+    present: bool = true,
+    view: View = .{},
+    readable: []const u8 = &.{},
+
+    pub fn stream(self: *const FakeDataStream, _: u64) ?View {
+        return if (self.present) self.view else null;
+    }
+
+    /// `anyerror`, like the embedded seat's reader: `readComplete` keeps an
+    /// `else` prong for transport errors.
+    pub fn streamRead(self: *FakeDataStream, _: u64, dst: []u8) anyerror!usize {
+        if (!self.present) return error.StreamNotFound;
+        const n = @min(dst.len, self.readable.len);
+        @memcpy(dst[0..n], self.readable[0..n]);
+        self.readable = self.readable[n..];
+        return n;
+    }
+};
+
+const fake_data_stream_id: u64 = 3;
+const fake_deadline_us: u64 = 1_000;
+
+/// An announced 8-byte frame of which `offset` bytes are read.
+fn pendingFrame(offset: usize) !?pending_data.PendingData {
+    const bytes = try std.testing.allocator.alloc(u8, 8);
+    @memset(bytes, 0x5a);
+    return .{
+        .sequence = 0,
+        .stream_id = fake_data_stream_id,
+        .bytes = bytes,
+        .offset = offset,
+        .deadline_us = fake_deadline_us,
+    };
+}
+
+test "native data frame: a stream reaped after every byte was read completes the frame" {
+    // quic-zig freed the stream in a tick after its FIN or RESET arrived
+    // alone. The length came on the control stream; nothing is missing.
+    var pending = try pendingFrame(8);
+    defer pending_data.reset(std.testing.allocator, &pending);
+    var conn = FakeDataStream{ .present = false };
+
+    const frame = (try pending_data.readComplete(&pending, &conn, 0, fake_deadline_us)) orelse
+        return error.TestExpectedCompleteFrame;
+    defer std.testing.allocator.free(frame);
+    try std.testing.expectEqual(@as(usize, 8), frame.len);
+    try std.testing.expect(pending == null);
+}
+
+test "native data frame: a stream reaped with bytes missing still ends at the deadline" {
+    var pending = try pendingFrame(3);
+    defer pending_data.reset(std.testing.allocator, &pending);
+    var conn = FakeDataStream{ .present = false };
+
+    try std.testing.expectEqual(@as(?[]u8, null), try pending_data.readComplete(&pending, &conn, fake_deadline_us - 1, fake_deadline_us));
+    try std.testing.expectError(error.DataStreamTimeout, pending_data.readComplete(&pending, &conn, fake_deadline_us, fake_deadline_us));
+}
+
+test "native data frame: a reset stream with bytes missing fails at once, not at the deadline" {
+    // quic-zig drops the unread bytes when RESET_STREAM arrives, so no read
+    // can finish the frame. The final size matches the announced length.
+    var pending = try pendingFrame(3);
+    defer pending_data.reset(std.testing.allocator, &pending);
+    var conn = FakeDataStream{ .view = .{ .recv = .{ .final_size = 8, .reset = .{ .error_code = 77 } } } };
+
+    try std.testing.expectError(error.DataStreamReset, pending_data.readComplete(&pending, &conn, 0, fake_deadline_us));
+}
+
+test "native data frame: a reset after every byte was read completes the frame" {
+    var pending = try pendingFrame(8);
+    defer pending_data.reset(std.testing.allocator, &pending);
+    var conn = FakeDataStream{ .view = .{ .recv = .{ .final_size = 8, .reset = .{ .error_code = 77 } } } };
+
+    const frame = (try pending_data.readComplete(&pending, &conn, 0, fake_deadline_us)) orelse
+        return error.TestExpectedCompleteFrame;
+    defer std.testing.allocator.free(frame);
+    try std.testing.expectEqual(@as(usize, 8), frame.len);
+}
+
+test "native data frame: a live stream with bytes missing and no reset keeps waiting" {
+    // A FIN that locks the final size does not mean the bytes are lost: a
+    // reordered datagram can still bring them.
+    var pending = try pendingFrame(3);
+    defer pending_data.reset(std.testing.allocator, &pending);
+    var conn = FakeDataStream{ .view = .{ .recv = .{ .final_size = 8 } } };
+
+    try std.testing.expectEqual(@as(?[]u8, null), try pending_data.readComplete(&pending, &conn, 0, fake_deadline_us));
+    conn.readable = "\x5a\x5a\x5a\x5a\x5a";
+    const frame = (try pending_data.readComplete(&pending, &conn, 1, fake_deadline_us)) orelse
+        return error.TestExpectedCompleteFrame;
+    defer std.testing.allocator.free(frame);
+    try std.testing.expectEqual(@as(usize, 8), frame.len);
+}

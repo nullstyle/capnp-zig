@@ -6,6 +6,8 @@ const native_framer = @import("native_framer.zig");
 
 const Role = endpoint_mod.Role;
 
+const log = std.log.scoped(.rpc_quic_transport);
+
 pub const PendingData = struct {
     sequence: u64,
     stream_id: u64,
@@ -55,6 +57,14 @@ pub fn start(
     };
 }
 
+/// Read the announced data stream as far as it goes. Returns the whole
+/// message once every announced byte is in hand, null while bytes are still
+/// to come, and an error when the stream can no longer complete it.
+///
+/// `conn.stream(id)` gives a view with `recv.final_size` (null until the
+/// stream ends) and `recv.reset` (null unless the peer reset the stream,
+/// else a value with `error_code`). quic-zig's own stream has both; so has
+/// the embedded seat's buffered view.
 pub fn readComplete(
     pending_data: *?PendingData,
     conn: anytype,
@@ -63,11 +73,23 @@ pub fn readComplete(
 ) !?[]u8 {
     var pending = if (pending_data.*) |*pending| pending else return null;
 
-    // Not yet complete when the stream has not been opened at all. The
-    // completion deadline still applies so a peer that announces a data stream
-    // then never opens (or drips into) it cannot pin the session open.
-    const stream = conn.stream(pending.stream_id) orelse
+    const stream = conn.stream(pending.stream_id) orelse {
+        // The stream is gone after every announced byte was read: quic-zig
+        // reaped it in a `tick` after its FIN or RESET arrived alone (its
+        // stream GC frees a stream once the receive half ends). The length
+        // came on the control stream, so nothing is missing. No end can
+        // come now, so do not wait for one.
+        if (pending.offset == pending.bytes.len) {
+            const bytes = pending.bytes;
+            pending_data.* = null;
+            return bytes;
+        }
+        // Not yet complete when the stream has not been opened at all. The
+        // completion deadline still applies so a peer that announces a data
+        // stream then never opens (or drips into) it cannot pin the session
+        // open. A stream reaped with bytes still missing also ends here.
         return incompleteOrTimeout(pending, false, now_us, completion_deadline_us);
+    };
     if (stream.recv.final_size) |final_size| {
         if (final_size != pending.bytes.len) return error.InvalidFrame;
     }
@@ -86,7 +108,18 @@ pub fn readComplete(
         }
     }
 
-    if (pending.offset < pending.bytes.len or stream.recv.final_size == null) {
+    if (pending.offset < pending.bytes.len) {
+        // A reset stream gives no more bytes: quic-zig drops the unread ones
+        // when the RESET_STREAM arrives. Fail now, not at the deadline.
+        if (stream.recv.reset) |reset_info| {
+            log.debug("native data stream {d} reset by the peer (code {d}) after {d} of {d} bytes", .{
+                pending.stream_id, reset_info.error_code, pending.offset, pending.bytes.len,
+            });
+            return error.DataStreamReset;
+        }
+        return incompleteOrTimeout(pending, made_progress, now_us, completion_deadline_us);
+    }
+    if (stream.recv.final_size == null) {
         return incompleteOrTimeout(pending, made_progress, now_us, completion_deadline_us);
     }
 

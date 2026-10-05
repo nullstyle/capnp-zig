@@ -21,6 +21,7 @@ const quic_close = @import("close.zig");
 const quic_options = @import("options.zig");
 const scheduler = @import("scheduler.zig");
 const session_mod = @import("session.zig");
+const test_knobs = @import("test_knobs.zig");
 const udp_receive_bridge = @import("udp_receive_bridge.zig");
 const wake_mod = @import("wake.zig");
 
@@ -731,6 +732,11 @@ pub const Server = struct {
         }
 
         try conn.advance();
+        // Service BEFORE the tick: the tick frees a stream whose end arrived
+        // alone, and the engine must see that end first. The knob is a
+        // test-only way to put the wrong order back (comptime false outside
+        // tests).
+        if (test_knobs.tickBeforeService()) try conn.tick(now_us);
         try server_session.serviceMode(conn, now_us);
         try self.listener.drainAcceptedSessionDatagrams(server_session.acceptedSession(), self.udp_tx_buf, now_us);
 

@@ -121,6 +121,12 @@ pub const testing = if (builtin.is_test) struct {
     /// that depth. Verified by ablation — an inverted assertion there left
     /// `test-rpc-quic`, `test-lib` and `test` all exiting 0.
     pub const isTransientPeerFault = datagram_io.isTransientPeerFault;
+    /// Test-only loop switches, such as the stream-end trap order
+    /// (`knobs.setTickBeforeService`). Product builds have none.
+    pub const knobs = @import("test_knobs.zig");
+    /// The native data-stream completion rules, driven with a fake stream
+    /// view (no network): a reaped stream, a reset stream.
+    pub const native_pending_data = @import("native_pending_data.zig");
 } else struct {};
 
 pub const alpn = options.alpn;

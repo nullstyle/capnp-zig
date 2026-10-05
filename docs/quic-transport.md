@@ -426,6 +426,50 @@ is greater than one, or `rpc.transport.quic.Server` directly when you need
 transport-level control. Keep `Connection.initServer()` for compatibility tests
 and single-session peers.
 
+### Embedder rules
+
+An `EmbeddedSession` runs in a loop that you own: your UDP socket, your
+`quic_zig.Server` and your `quic.app.Driver`. Your loop must obey two rules.
+capnp-zig's own loops (`Connection`, `Server`, `connect` and `serve`)
+already obey both.
+
+**1. Feed, then service, then tick.** Do these steps in each pass:
+
+1. Give the received datagrams to quic-zig (`Server.feed`).
+2. Call `driver.service`, then call `service(now_us)` on each
+   `EmbeddedSession`.
+3. Call `Server.tick`.
+
+The reason is quic-zig's stream GC. `tick` frees a stream when its receive
+half has ended. Sometimes every byte of a stream is read, and then its FIN or
+RESET arrives alone. If `tick` runs before the service pass, the stream is
+gone before the Driver sees its end. The Driver then reports `.reaped`, not
+`.fin` or `.reset`, and a read gets `StreamNotFound`. So a clean end and a
+cut stream look the same, and the RESET error code is lost.
+
+capnp-zig survives the wrong order. A native data frame announces its length
+on the control stream (stream 0). The seat keeps the bytes of a data stream
+after its end, also after `.reaped`. When every announced byte is in hand,
+the frame completes. When bytes are missing, the session closes at once with
+`InvalidFrame`. Obey the rule all the same: other protocols on the same
+Driver cannot always recover the end of a stream.
+
+**2. One socket for a `Server` and your own dials: give each datagram to your
+dials first.** Since quic-zig v0.26.0, the first flight of a server is 1200
+bytes, so it passes the Initial size gate of your `Server`. If the `Server`
+gets the answer to your dial first, it takes it as a new connection (`feed`
+returns `.accepted`). Your dial then never gets its answer, and the `Server`
+holds a half-open connection. Do these steps for each datagram:
+
+1. Find a live dial whose peer address is the source of the datagram and
+   that owns the destination connection ID of the datagram
+   (`Connection.ownsLocalCid`).
+2. If you find one, give the datagram to that dial (`Connection.handle`).
+3. If not, give the datagram to the `Server` (`Server.feed`).
+
+capnp-zig never puts a `Server` and a dial on one socket: `Listener` binds
+its own socket, and each `Connection.initClient` binds its own socket too.
+
 ## Native Resource Budgets
 
 Native mode has the normal QUIC send queue budgets plus native-specific stream

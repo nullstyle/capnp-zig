@@ -3051,6 +3051,7 @@ capnpc-zig.rpc.transport.quic.EmbeddedSession.close_controller: field rpc.transp
 capnpc-zig.rpc.transport.quic.EmbeddedSession.closed_notified: field bool = false
 capnpc-zig.rpc.transport.quic.EmbeddedSession.closing_emitted: field bool = false
 capnpc-zig.rpc.transport.quic.EmbeddedSession.conn: field *Connection
+capnpc-zig.rpc.transport.quic.EmbeddedSession.ended_data_streams: field usize = 0
 capnpc-zig.rpc.transport.quic.EmbeddedSession.last_tick_us: field u64 = 0
 capnpc-zig.rpc.transport.quic.EmbeddedSession.max_buffered_stream_bytes: field usize
 capnpc-zig.rpc.transport.quic.EmbeddedSession.max_message_bytes: field usize
@@ -3567,6 +3568,7 @@ capnpc-zig.rpc.transport.quic.embedded.EmbeddedSession.conn: field *Connection
 capnpc-zig.rpc.transport.quic.embedded.EmbeddedSession.context: fn (*const rpc.transport.quic.embedded.EmbeddedSession) ?*anyopaque
 capnpc-zig.rpc.transport.quic.embedded.EmbeddedSession.create: fn (mem.Allocator, *Connection, rpc.transport.quic.embedded.EmbeddedSessionOptions) error{OutOfMemory}!*rpc.transport.quic.embedded.EmbeddedSession
 capnpc-zig.rpc.transport.quic.embedded.EmbeddedSession.destroy: fn (*rpc.transport.quic.embedded.EmbeddedSession) void
+capnpc-zig.rpc.transport.quic.embedded.EmbeddedSession.ended_data_streams: field usize = 0
 capnpc-zig.rpc.transport.quic.embedded.EmbeddedSession.isClosing: fn (*const rpc.transport.quic.embedded.EmbeddedSession) bool
 capnpc-zig.rpc.transport.quic.embedded.EmbeddedSession.last_tick_us: field u64 = 0
 capnpc-zig.rpc.transport.quic.embedded.EmbeddedSession.max_buffered_stream_bytes: field usize
