@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release adds Cap'n Proto RPC over Unix-domain sockets, with fd
+passing, on Linux and macOS. It also moves QUIC to quic-zig v0.27.0, adds a
+freeze gate for generated code, and adds a session-ticket key that lets a
+restarted QUIC server accept 0-RTT. The Security entry fixes an fd leak and
+a stall on AF_UNIX connections: read it if you run RPC over a Unix socket.
+No Stable line changes (`docs/api-snapshot.txt` is the same as in v0.19.1,
+and `docs/generated-shape.txt` is new). Every `### Breaking` entry is
+Experimental. docs/upgrading-to-0.20.0.md walks through the migration step
+by step.
+
 ### Security
 
 - **An AF_UNIX connection kept every file descriptor a local peer attached
@@ -183,14 +193,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     instead. The consumers we checked (capnp-qmsg-demo, mruby-quic, qmsg,
     qmesh, prollytree) switch on neither enum.
 
-- **The QUIC server constructors' inferred error sets gain
-  `SessionTicketKeyInstallFailed` (Experimental).** This affects
-  `Listener.init`, `Server.init`, `serve`/`PeerServer.init` and
-  `Connection.initServer`.
-  - **Migration:** an exhaustive `switch` over one of these error sets
-    needs a `SessionTicketKeyInstallFailed` arm (or an `else` arm). It is
-    returned only when `ServerOptions.session_ticket_key` is set and
-    BoringSSL does not read the key back as installed.
+- **A QUIC client refused during its handshake now ends at once with
+  `DisconnectCause.peer_close`, not `.handshake_timeout` (Experimental
+  behavior).** A server that refuses a session in its accept hook
+  (`Server.setOnSessionAccepted` returning an error, or
+  `ServeOptions.on_accept` failing) closes it before the handshake
+  completes. Through quic-zig v0.25.0 the client could not read that close:
+  it waited for its own handshake timeout
+  (`ClientOptions.handshake_timeout_ms`, 30 s by default) and closed with
+  `.handshake_timeout`. quic-zig v0.26.0 sends the close in packets the
+  client can read. capnp-zig's client loop now ends a connection that closed
+  before its handshake completed, even while frames it queued before the
+  handshake (a `connect` + Bootstrap) are still waiting: `run()` returns
+  within a round trip, and outstanding questions settle as `disconnected`.
+  - **Migration:** code that treated `.handshake_timeout` as "the server
+    refused me" must also handle `.peer_close` (a `switch` on
+    `DisconnectCause` already has an `else` arm). `WarmRedialClient`
+    redials on neither. A refusal whose close is lost (quic-zig does not
+    send a lost CONNECTION_CLOSE again) still ends at the handshake
+    timeout, so keep that timeout.
 
 - **`quic.Listener.nowUs` returns microseconds since the Unix epoch, not
   since `Listener.init` (Experimental).** The listener clock now starts at
@@ -531,44 +552,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accept a resumed dial's 0-RTT (Experimental, opt-in).**
   `ServerOptions.session_ticket_key: ?*const quic.SessionTicketKey` (48
   bytes) and the same field on `ServerProductionHardening` (null by default;
-  the preset never sets one). `Listener.init` (so also `Server.init`, `serve`
-  and `Connection.initServer`) installs the key on quic-zig's TLS context
-  before the first datagram is fed, and reads it back to compare it. A
-  server that loads the same key on every start decrypts the tickets its
-  predecessor issued. A `WarmRedialClient` heal after a crash-restart then
-  resumes, and with `.early_data = .restore_only` BoringSSL accepts its
-  0-RTT. Without the key, the heal pays a full handshake as before. A stolen
-  key decrypts recorded 0-RTT data (sturdy refs included) and lets the thief
-  impersonate the server to resuming clients until their tickets expire. It
-  does not decrypt 1-RTT traffic. Read "Session-ticket key" in
-  `docs/quic-transport.md` before you set it.
+  the preset never sets one). `serverConfigFromOptions` copies the key into
+  quic-zig v0.27.0's `Server.Config.session_ticket_key`, and quic-zig
+  installs it on every TLS context it builds, a `.pem` reload included.
+  `Listener.init` (so also `Server.init`, `serve` and
+  `Connection.initServer`) zeroes its copy once quic-zig's server is built
+  and keeps no pointer to the caller's. A server that loads the same key on
+  every start decrypts the tickets its predecessor issued. A
+  `WarmRedialClient` heal after a crash-restart then resumes, and with
+  `.early_data = .restore_only` its restore runs before the restarted
+  server's handshake completes, behind a Retry too. Without the key, the
+  heal pays a full handshake as before. A stolen key decrypts recorded 0-RTT
+  data (sturdy refs included) and lets the thief impersonate the server to
+  resuming clients until their tickets expire. It does not decrypt 1-RTT
+  traffic. Read "Session-ticket key" in `docs/quic-transport.md` before you
+  set it.
   - **Refused with `error.InvalidConfig`:** an all-zero key; a key together
     with `.early_data = .with_anti_replay` (the tracker is per-process
-    memory); a key with Retry on and `new_token_key == null`.
-    `serverConfigFromOptions` refuses any key and any
-    `session_ticket_lifetime_s`, because it returns a config and cannot
-    install them.
+    memory). quic-zig refuses both as well. `serverConfigFromOptions`
+    carries the key and `session_ticket_lifetime_s` into the quic-zig
+    config it returns (a copy of the key, by value: zero it after
+    `quic.Server.init`), so an embedder that builds its own quic-zig server
+    gets them too. A key with Retry on and `new_token_key == null` is
+    allowed: every returning client then pays a Retry's round trip, and its
+    restore still runs early.
   - **`ServerOptions.session_ticket_lifetime_s`** (1 s to 2 days,
     `quic.max_session_ticket_lifetime_s`) shortens BoringSSL's 2-day ticket
-    lifetime.
+    lifetime. quic-zig accepts up to 7 days; capnp-zig keeps 2 days as the
+    maximum, because a BoringSSL client (every quic-zig client) keeps a
+    ticket 2 days at most.
   - **`quic.loadTicketKeyFile(io, dir, sub_path)`** (named error set
     `quic.LoadTicketKeyFileError`) reads exactly 48 bytes and refuses an
     all-zero file. On POSIX it also refuses a file with any group or other
     permission bit (0o077). On Windows, protect the file with an ACL.
   - **`WarmRedialClient.Outcome.zero_rtt_generations`** counts the
     generations whose first flight, the Restore included, rode 0-RTT: the
-    server accepted the dial's early data and the dial got no Retry.
+    server accepted the dial's early data, with or without a Retry.
     **`Outcome.retried_generations`** counts the generations whose dial got
-    a Retry.
-  - **Known gap:** a dial that gets a Retry restores late, because the
-    quic-zig v0.25.0 client sends its 0-RTT data again only at 1-RTT after a
-    Retry (quic-zig finding F8), although BoringSSL reports `.accepted`.
-    Such a dial counts in `retried_generations`, not in
-    `zero_rtt_generations`. A `WarmRedialClient` heal now avoids the Retry
-    by keeping its port (see Changed). A Retry still comes when the old port
-    is taken, on a client's first dial from a new process, or with a new
-    `new_token_key` or an expired token (`docs/quic-transport.md`, "Retry
-    and NEW_TOKEN: an open gap").
+    a Retry (one more round trip); a generation in both rode 0-RTT behind a
+    Retry. `WarmRedialClient` reads quic-zig's `Connection.retryAccepted()`.
+  - A `.pem` reload through `Listener.server` keeps the key (tested).
+    Rotation: see the next Added entry.
+
+- **QUIC: rotate the session-ticket key with no restart and no lost ticket
+  (Experimental).** `Server.rotateSessionTicketKey(&new_key)` and
+  `Listener.rotateSessionTicketKey(&new_key)` call quic-zig v0.27.0's
+  `Server.rotateSessionTicketKey` with the listener's own clock
+  (`Listener.nowUs`). New tickets are sealed under the new key at once. The
+  previous key still opens tickets, 0-RTT included, for one ticket lifetime
+  (`session_ticket_lifetime_s`, or 2 days), and a second rotation drops it.
+  Loop-thread only: `Server`'s version checks the thread (Debug always,
+  release with `runtime_thread_checks`). Call it from `runWithAfterStep`'s
+  `after_step`, from the accept hook, or before `run`. It returns
+  `error.InvalidConfig`, and changes nothing, when no key is configured, for
+  an all-zero key, or for a key with the current key's name. `PeerServer`
+  has no loop-thread hook for it (rotate through `PeerServer.server` before
+  `run`). A process starts with one key: `docs/quic-transport.md`
+  ("Session-ticket key", "Rotation") has the restart recipe.
 
 - **`WorkerPool.initListener` serves a listener you already have, such as
   one from `rpc.transport.unix.listen` (Experimental; Linux and macOS,
@@ -625,12 +665,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Nightly ticket-key soak (`tools/soak_rpc.zig --ticket-key`).** The
   abrupt-death QUIC soak can run the hardened preset (Retry on) with
   `.restore_only` 0-RTT, loading the same session-ticket key,
-  `new_token_key`, Retry key and reset key on every restart. It fails unless
-  every abrupt death gets at least one heal that a client counted in
-  `zero_rtt_generations` and that the restarted server restored before its
-  handshake completed. Nightly `extended-gates` runs it with `--rss-gate
-  enforce`. `--inject-ticket-key-rotation` is an ablation hook that makes
-  the gate fail.
+  `new_token_key`, Retry key and reset key on every restart. Nightly
+  `extended-gates` runs it with `--rss-gate enforce`. It fails unless both
+  checks pass:
+  - **Per abrupt death** (`assessZeroRttHeals`): at least one heal rode
+    0-RTT AND skipped the Retry. A client counted that heal in
+    `zero_rtt_generations` and not in `retried_generations`, and the
+    restarted server ran a restore before that session's handshake
+    completed. Since quic-zig v0.27.0 a 0-RTT heal can come behind a Retry,
+    so the 0-RTT count alone no longer proves that a NEW_TOKEN from an
+    earlier server validated. A death in the last second before the healing
+    clients stop is not judged, and a run that judges no death fails.
+  - **Every Retry** (`assessHealRetries`): each Retry that a healing client
+    gets must be its first dial or a port fallback
+    (`port_fallback_generations`). Any other Retry means that a heal's
+    NEW_TOKEN did not validate, for example because the restarted
+    listener's clock started again at zero.
+
+  `--inject-ticket-key-rotation` is an ablation hook that makes the gate
+  fail.
 
 ### Changed
 
@@ -650,10 +703,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   different mode or `early_dispatch`, it still resumes a session but refuses
   that session's 0-RTT data. Embedders that build their own quic-zig server
   from `serverConfigFromOptions` get the new context too.
-- **Build: with `-Dquic=true`, the library roots also import the `boringssl`
-  module that quic-zig exports** (the same instance quic is compiled
-  against), so the library can call `boringssl.raw`. Package consumers need
-  no change.
 
 - **`WarmRedialClient` redials from the local port of the generation before
   it (Experimental QUIC transport).** A NEW_TOKEN is valid only from the
@@ -667,7 +716,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   completes, and counts in `Outcome.zero_rtt_generations`. When the old
   port cannot be bound, the heal dials from an ephemeral port and counts it
   in the new **`Outcome.port_fallback_generations`**; such a dial still gets
-  a Retry and restores late.
+  a Retry, which costs one more round trip; its restore still runs early
+  (quic-zig v0.27.0), and it counts in `zero_rtt_generations` as well as in
+  `retried_generations`.
+
+- **QUIC: quic-zig v0.25.0 -> v0.27.0 (tag `9d2ab6e`,
+  `quic-0.27.0-DnSYvdkEOQDHm_pJQOp6Vo47gQ1Cm7-0c2sgVV0M6Xht`).**
+  boringssl-zig is unchanged (`ff30fe99`, 0.6.7), and so is the dependency
+  option map (`.target`, `.release = optimize != .debug`,
+  `.@"sanitize-c" = "trap"`). v0.27.0 makes session tickets live through a
+  restart (a ticket-key config field, rotation, a lifetime setting; see
+  Added). It also has the client send its 0-RTT data again after a Retry,
+  so a warm restore behind a Retry still runs before the handshake
+  completes, one round trip later. v0.26.0 (not pinned on its own) repairs
+  RFC 9000/9001 rules. No security fix since v0.25.0.
+  - **Migration:**
+    - **One quic module per process.** A build that links capnp-zig with
+      `-Dquic=true` next to another package that depends on quic-zig
+      (qmsg, nest, qmesh-zig, http3-zig, ...) must pin quic-zig v0.27.0
+      there too, with the same option map. Otherwise it builds two quic
+      modules, each with its own BoringSSL. http3-zig is on v0.27.0; the
+      others move with the coordinated set.
+    - **Tokens are 114 bytes (were 96).** A NEW_TOKEN that a v0.19.x client
+      persisted (for example inside a `WarmRedialClient.exportWarmState`
+      envelope) reads as malformed at a v0.27.0 server, which treats it as
+      no token. That client's next dial gets one Retry (one round trip; its
+      0-RTT restore still runs early), and it receives a new token. Nothing
+      closes. Code that holds a token in a `[96]u8` must use quic-zig's
+      type or `max_token_len`; capnp-zig holds none.
+    - **A refused handshake ends with `.peer_close`** (see Breaking).
+    - **Handshake datagrams are at most 1200 bytes** (a client Initial and
+      a server's first datagram are exactly 1200). A test that counts or
+      measures handshake datagrams may change. capnp-zig's receive buffers
+      are larger.
+    - **Direct quic-zig users:** `requestKeyUpdate` returns
+      `error.KeyUpdateBlocked` until the handshake is confirmed, and
+      `Connection.setRememberedPeerTransportParams` must carry the two
+      stream counts (a resumed client opens at most that many streams
+      before its handshake). capnp-zig calls neither; its native mode
+      already treats the early `StreamLimitExceeded` as transient.
 
 ### Fixed
 
@@ -691,12 +778,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   times with `Listener.nowUs` and checks them with no clock-skew allowance.
   That clock counted from `Listener.init`, so a restarted server read every
   token from its predecessor as not yet valid and sent those clients a
-  Retry, which on quic-zig v0.25.0 also costs the early restore. The clock
-  now continues across restarts (see Breaking). It never goes backwards
-  within a process, and a wall-clock step moves no timer. Remaining: a
-  wall-clock step backwards between the two starts, or a monotonic clock
-  that ran fast over a long uptime (macOS `.awake` is not NTP-disciplined),
-  still costs the newest tokens a Retry, because quic-zig allows no skew.
+  Retry (on quic-zig v0.25.0 that also cost the early restore; since
+  v0.27.0 it costs a round trip). The clock now continues across restarts
+  (see Breaking). It never goes backwards within a process, and a
+  wall-clock step moves no timer. Remaining: a wall-clock step backwards
+  between the two starts, or a monotonic clock that ran fast over a long
+  uptime (macOS `.awake` is not NTP-disciplined), still costs the newest
+  tokens a Retry, because quic-zig allows no skew.
+
+- **A native QUIC data frame whose stream end arrives alone completes
+  when the loop ticks first (Experimental QUIC transport).** quic-zig's
+  `Connection.tick` frees a stream once its receive half has ended. When
+  every byte of a data stream was read and its FIN or RESET then arrived
+  alone, a tick before the service pass freed the stream. The frame then
+  waited for `data_stream_completion_deadline_us`, and the session closed
+  with `DataStreamTimeout`. capnp-zig's own loops service before they tick,
+  so they were not exposed. A host loop that ticks first was. Now a data
+  stream that is gone after every announced byte was read completes its
+  frame: the length came on the control stream, so nothing is missing. In
+  the safe order nothing changes. Test builds get
+  `rpc.transport.quic.testing.knobs.setTickBeforeService`, which puts the
+  wrong order into the owned loops. Other builds compile it out.
+- **The embedded seat keeps a data stream's bytes past its end, and judges
+  a reset stream by its RESET (Experimental QUIC transport).**
+  `EmbeddedSession.onStreamEnd` dropped the buffered bytes of a native data
+  stream on `.reset` and `.reaped`. A frame whose bytes reached the seat
+  before its announcement then failed with `DataStreamTimeout` at the
+  deadline, with every byte in hand. The seat now keeps the bytes and marks
+  the end for `.fin`, for `.reset`, and for a `.reaped` from quic-zig's
+  stream GC. A host that ticks before `driver.service` gets `.reaped`.
+  - For `.fin` and `.reaped`, the bytes in hand are the final size. All the
+    announced bytes complete the frame. Fewer bytes fail it at once with
+    `InvalidFrame`.
+  - For `.reset`, the seat reads the final size and the error code of the
+    RESET from quic-zig, so it gives the same results as the owned loops.
+    A final size other than the announced length fails the frame with
+    `InvalidFrame` (close code `frame_error`). Missing bytes fail it with
+    `DataStreamReset` (close code `protocol_error`), and the reset code is
+    logged. When every byte is in hand, the frame completes.
+  - A `.reaped` from the Driver's teardown pass still drops the entry. The
+    kept bytes count toward `max_buffered_stream_bytes` until the engine
+    reads them.
+- **The embedded seat no longer keeps a buffer for every large frame
+  (Experimental QUIC transport).** `EmbeddedSession` kept one entry, with
+  the capacity of its buffer, for each native data stream until the
+  session closed (measured: 9 entries after 8 large frames). It now frees
+  the entry of a data stream once the stream has ended and the engine has
+  read its bytes. New Experimental field
+  `EmbeddedSession.ended_data_streams`.
+- **A native data stream that the peer resets before its bytes are read
+  fails the session at once (Experimental QUIC transport).** quic-zig
+  drops the unread bytes of a stream when RESET_STREAM arrives, so the
+  frame can never complete. The session waited for the completion
+  deadline and closed with `DataStreamTimeout`. It now closes at once
+  with `error.DataStreamReset` (close code `protocol_error`), and logs the
+  reset code of the peer at debug level. This applies to the owned loops
+  and to the embedded seat. A RESET that arrives after every byte was read
+  still completes the frame.
 
 ### Documentation
 
@@ -747,6 +885,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1-RTT, not 0-RTT (quic-zig F8)" and the assertions that flip when
   quic-zig resends 0-RTT after a Retry. `docs/quic-transport.md` says which
   half of "Retry and NEW_TOKEN: an open gap" is closed.
+- `docs/upstream/handoff-quic-zig-ticket-keys.md` is marked DELIVERED
+  (quic-zig v0.27.0: asks 1-5 and the accessor), with the candidates
+  quic-zig left open (a thread check in `rotateSessionTicketKey`, the
+  previous key at start, the NEW_TOKEN clock asks).
+  `docs/quic-transport.md`'s section is now "Retry and NEW_TOKEN", with
+  both halves closed. `docs/stability.md` and `docs/supported-surface.md`
+  gain a QUIC session-ticket key row (Experimental).
+
+- **QUIC guide: "Embedder rules" (Experimental QUIC transport).**
+  `docs/quic-transport.md` gives the two rules for a host loop that runs
+  `EmbeddedSession`. First: feed, then service the Driver and every seat,
+  then tick (the stream-end trap). In the wrong order the seat does not
+  get the final size of a RESET. Second: when one UDP socket serves a
+  quic-zig `Server` and your own dials, give each datagram to your dials
+  first (`Connection.ownsLocalCid`). Since quic-zig v0.26.0, the first
+  flight of a server is 1200 bytes and passes the Initial gate of the
+  `Server`. capnp-zig's own loops obey the first rule, and they never put
+  a `Server` and a dial on one socket.
+
+- **`docs/upgrading-to-0.20.0.md`, the upgrade guide for this release.**
+  It lists the coordinated set (capnp-zig v0.20.0, quic-zig v0.27.0, Zig
+  0.17.0), the one-quic-module rule with the option map, each Breaking
+  (Experimental) entry with its migration, who must take the AF_UNIX
+  security fix, and what is new. `docs/supported-surface.md` gains rows for
+  the Unix transport and for fd passing (Experimental). `docs/stability.md`
+  no longer says that no CI lane runs fd passing against C++: the
+  reflection-conformance job runs `zig build test-rpc-fd-cpp` on Linux, and
+  macOS is left out on purpose.
 
 - **`docs/rpc-unix-sockets.md`, the guide to RPC over Unix-domain sockets
   and fd passing (Experimental; Linux and macOS).** It covers:

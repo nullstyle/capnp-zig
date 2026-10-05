@@ -44,6 +44,11 @@ Then import `capnpc-zig` (full: serialization + codegen + RPC) or
 from the same pinned package (`dep.artifact("capnpc-zig")`, never a PATH
 binary). That codegen recipe needs v0.19.0 or later.
 
+Upgrading from v0.19.x? [docs/upgrading-to-0.20.0.md](docs/upgrading-to-0.20.0.md)
+lists the coordinated set, every Breaking change with its migration, and who
+must take the AF_UNIX security fix. v0.20.0 is not tagged yet, so the pin
+above stays on v0.19.1 until it is. <!-- unreleased-after: v0.19.1 -->
+
 ### Prerequisites
 
 - Tagged Zig 0.17 on `PATH` (`mise install` provides the pinned version; the floor is declared in `build.zig.zon`)

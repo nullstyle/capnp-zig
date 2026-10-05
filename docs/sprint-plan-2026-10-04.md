@@ -677,7 +677,7 @@ Item 16 touches only `src/rpc/transport/quic/` and `build/`. It runs in its own 
 - **D-A = A.** FD passing (items 10-15) ships in v0.20.0: Experimental, Linux and macOS.
 - **D-B = A.** A small soft `RLIMIT_NOFILE` is an app contract (threat-table row 41 in `docs/rpc-unix-sockets.md`). The app raises its own soft limit, to 1024 or more, before its first AF_UNIX connection. The library never changes process limits. The security review had asked the library to raise the limit when the closer starts, or to refuse drain mode below a minimum limit. Both are rejected: a library must not change a process-wide limit, and a refused drain mode brings back the macOS fd leak.
 
-**Landed on main.** The week-2 lanes through `1b6e510` are pushed. Local `main` is at `e416dd3`: the FD-passing merge and its three follow-ups are not pushed yet, so no CI run covers them.
+**Landed on main.** The week-2 lanes through `1b6e510` are pushed. Local `main` is at `e416dd3`: the FD-passing merge and its three follow-ups are not pushed yet, so no CI run covers them. (Pushed later that day, with a green CI run: see "Week 2, part 2".)
 - Item 8, e2e over Unix sockets (Zig to Zig, Zig to C++): `56c0666`, `53b4e53`.
 - Item 9, `WorkerPool.initListener`: `f9b987c`, `20381cf`.
 - Items 16e and 16f, the restart-safe NEW_TOKEN clock and a `WarmRedialClient` that keeps its port: `5f5b677`, `6a00b0b`. The F8 pin at our seam: `018a90d`.
@@ -719,16 +719,64 @@ The fix work also found row 44: on macOS a close of the other end of a socket wh
 
 **Corrections to this plan:**
 - **macOS-to-C++ fd passing is lossy.** Item 15 said "Not on macOS" with a guess ([I]). The first item-15 commit (`e7158dd`) ran the test on macOS anyway, on the claim that kj reads a message's fds exactly. That claim is false. `TwoPartyVatNetwork` reads through kj's `BufferedMessageStream`, which reads in bulk and gives a read's fds to the message that holds the read's last byte. macOS anchors fds to a read's first byte, so kj can give a frame's fds to the next frame and drop them. Measured 16 runs at a time: 5% to 44% of runs failed on macOS, and 0 of 640 on Linux arm64. `375df17` makes the test Linux-only. The guide (`docs/rpc-unix-sockets.md`, "Fd passing") says: do not send fds to a C++ peer on macOS. capnp-zig's sender cannot prevent the loss. The other direction (C++ sends, capnp-zig receives) did not fail. This also settles the Risks line "The C++ macOS fd interop is not run".
-- **The quic-zig v0.26.0 bump flips two tests.** Week 1 expected no code change. A trial bump makes two tests see `DisconnectCause.peer_close` where they expect `.handshake_timeout`: "quic Server on_session_accepted rejecting a session closes it and keeps serving" (`rpc_quic_transport_test.zig`) and "QUIC PeerServer on_accept error discards the session's peer, leaks nothing, and the next dial is served" (`rpc_quic_peer_test.zig`). The pin stays at v0.25.0 for v0.20.0. The bump after the sprint must update those two assertions.
-- **quic-zig built our five asks.** Its `sprint/ticket-keys` branch (`fbf7fa1`) implements the five asks in `docs/upstream/handoff-quic-zig-ticket-keys.md`: a ticket-key config field, rotation that keeps the previous key, a ticket-lifetime setting, the `.override` advice fix, and a client that resends 0-RTT after a Retry. Our QUIC suite passed against that branch, except the three F8 flips that the handoff predicts (and the two v0.26.0 flips above). When quic-zig releases it, capnp-zig flips those three assertions and moves `session_ticket_key` onto the new config fields ("When quic-zig ships asks 1-3" in the handoff).
+- **The quic-zig v0.26.0 bump flips two tests.** Week 1 expected no code change. A trial bump makes two tests see `DisconnectCause.peer_close` where they expect `.handshake_timeout`: "quic Server on_session_accepted rejecting a session closes it and keeps serving" (`rpc_quic_transport_test.zig`) and "QUIC PeerServer on_accept error discards the session's peer, leaks nothing, and the next dial is served" (`rpc_quic_peer_test.zig`). The pin stays at v0.25.0 for v0.20.0. The bump after the sprint must update those two assertions. (Superseded the same day by the owner's option B: see "Week 2, part 2".)
+- **quic-zig built our five asks.** Its `sprint/ticket-keys` branch (`fbf7fa1`) implements the five asks in `docs/upstream/handoff-quic-zig-ticket-keys.md`: a ticket-key config field, rotation that keeps the previous key, a ticket-lifetime setting, the `.override` advice fix, and a client that resends 0-RTT after a Retry. Our QUIC suite passed against that branch, except the three F8 flips that the handoff predicts (and the two v0.26.0 flips above). When quic-zig releases it, capnp-zig flips those three assertions and moves `session_ticket_key` onto the new config fields ("When quic-zig ships asks 1-3" in the handoff). (Done: quic-zig released it as v0.27.0, and v0.20.0 moves onto it. See "Week 2, part 2".)
+
+### Week 2, part 2 (2026-10-05): quic-zig v0.27.0, stream-end hardening, RC docs
+
+**Owner decision (2026-10-05): option B.** Move to quic-zig v0.27.0 before the RC, not after the sprint. quic-zig released our five asks as v0.27.0 (tag `9d2ab6e`) on 2026-10-05. The coordinated set (http3-zig, qmsg, nest) is on quic v0.26/v0.27, and a process can hold only one quic module. This decision replaces two corrections above: the pin does not stay at v0.25.0, and capnp-zig does not wait for a later quic-zig release.
+
+**The move is on main and pushed.** `origin/main` is `d86bb92`. CI run 37378767785 on `d86bb92` is green on every job, including the step "Fd passing against the C++ reference" in the reflection-conformance job. So the FD-passing merge now has a green CI run too. Before that, `940abe8` fixed a test that x86_64 ubuntu failed (run 37357958317): Linux reports a bulk read's fds on the whole read, and the test now accepts that.
+
+| Commit | What it did |
+|---|---|
+| `881a64b` | Pins quic-zig v0.27.0. boringssl-zig (`ff30fe99`, 0.6.7) and the option map do not change. Five assertions flip, each where the handoff predicted: three F8 assertions (the restore now arrives in 0-RTT after a Retry) and two `.handshake_timeout` -> `.peer_close`. |
+| `ebcab4a` | `connection_loop.closedForGood`: a client that a server refuses during its handshake ends within a round trip with `.peer_close`. Before, the frames it queued before the handshake (`connect` + Bootstrap) kept it waiting for its own handshake timeout (30 s by default). The pin found this. The two flipped tests had hidden it with short handshake timeouts. Red first; ablated. |
+| `9c9c539` | The config field: `serverConfigFromOptions` copies the key into quic-zig's `Server.Config.session_ticket_key`. The bridge (the install on `Server.tls_ctx`, the read-back, `SessionTicketKeyInstallFailed`) and the library's `boringssl` import are gone. A key with Retry on and no `new_token_key` is now allowed: a Retry costs a round trip, not the early restore. |
+| `8008684` | Rotation: `Server.rotateSessionTicketKey` (loop-thread check) and `Listener.rotateSessionTicketKey`, with the listener's clock. |
+| `3bd3651` | `WarmRedialClient` reads `Connection.retryAccepted()` and counts a dial that rode 0-RTT behind a Retry in `zero_rtt_generations`. |
+| `dde9a46` | A native warm restore stages five data frames against a remembered window of two streams, and all five arrive. On v0.26.0 the server closed that connection. |
+| `294b13e`, `ab4fb41` | Docs for the config field, rotation and the closed Retry gap. The NEW_TOKEN clock test's witness is now the Retry count. |
+| `d86bb92` | Soak gate teeth restored. After `3bd3651`, the `--ticket-key` gate read only the 0-RTT count, so a heal behind a Retry passed: Nightly no longer guarded port reuse (16f) or the restart-safe clock (16e). Now each death needs a heal that rode 0-RTT AND skipped the Retry (`assessZeroRttHeals`). Every Retry a healing client gets must be its first dial or a port fallback (`assessHealRetries`). Ablations, each red: 16f off fails every death (168 unexplained Retries), 16e off gives 104 and 106 unexplained Retries, and `--inject-ticket-key-rotation` gives no 0-RTT heal. |
+
+**The stream-end audit.** quic-zig measured a trap that http3-zig reported: `Connection.tick` frees a stream once its receive half has ended. When the FIN or RESET arrives alone and `tick` runs before the read, the stream is gone, and a clean end looks like a cut one. The audit result:
+- capnp-zig's own loops are safe: our client and our server service before they tick. A probe that puts a tick between the feed and the service reproduces the trap in native mode, in both directions.
+- A host loop that runs `EmbeddedSession` and ticks first was exposed.
+- Native mode reads `Stream.recv.final_size` directly. quic-zig's "repair A" (a stream counts as done only when the application saw its end) would stall native mode. We told quic-zig, and it ruled repair A out.
+
+**The stream-end hardening** is on `sprint/stream-end-hardening` (`e2974e5`, `52a05e1`), under the RC-docs branch. Neither is on main yet.
+- A native data frame completes when its stream is gone after every announced byte was read. The length came on the control stream, so nothing is missing.
+- The embedded seat keeps a data stream's bytes past `.fin`, `.reset` and a stream-GC `.reaped`, and frees each ended stream once the engine has read it (it kept 9 buffers after 8 large frames).
+- A data stream that the peer resets before its bytes are read fails the session at once with `DataStreamReset`, not at the completion deadline.
+- Test builds get `rpc.transport.quic.testing.knobs.setTickBeforeService`, which puts the wrong order into the owned loops.
+- `docs/quic-transport.md` gains "Embedder rules": feed, service, then tick; and on a shared socket, give each datagram to your own dials first.
+- The review found one medium defect in `e2974e5`: on `.reset` the seat ignored the RESET's final size and error code. `52a05e1` reads them from quic-zig, so the seat gives the same results as the owned loops (`InvalidFrame` for a wrong final size, `DataStreamReset` for missing bytes). Each fix was ablated red.
+
+**quic-zig holds four names for us.** The quic-zig session recorded our constraint as a hard one for any stream-end repair. It keeps these names and their meaning: `Server.tls_ctx`, `Connection.retry_accepted`, `boringssl.raw` (for the bridge) and `Stream.recv.final_size` (native mode reads it). It will also send us any change to when its GC reclaims a stream before it writes code. After the v0.27.0 move, the library no longer uses `Server.tls_ctx` or `retry_accepted`, and only one QUIC test root uses `boringssl.raw` (to read a ticket's lifetime). The stream-end hardening adds two reads that quic-zig does not hold yet: `Stream.recv.reset` (its `final_size` and `error_code`) and `Connection.streamRecvWasReaped`.
+
+**The Ubuntu 26 runner migration.** The `ubuntu-latest` jobs of CI run 37378767785 carry this annotation: "The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026." Most CI and Nightly jobs run on `ubuntu-latest`. The reflection-conformance job (`ubuntu-24.04`) and the Nightly fuzz lane (`ubuntu-24.04-arm`) are pinned. A toolchain or kernel change on the new image can turn a lane red with no change in our code.
 
 **What remains: item 18, the v0.20.0 release candidate.**
-- Push main, and get a green CI run on it. No CI run covers the FD-passing merge yet: x86_64 Linux, the CI TSan lane, `macos-latest`, native Windows, and the `test-rpc-fd-cpp` step in the reflection-conformance job.
-- Two green Nightly runs on the RC commit, dispatched against the RC ref.
+- Done on `sprint/rc-docs`:
+  - CHANGELOG `[Unreleased]`: the quic v0.27.0 move (a new Breaking (Experimental behavior) entry, the rotation entry, the bump with its Migration notes), the two deletions (the `SessionTicketKeyInstallFailed` Breaking entry and the "library roots import boringssl" Changed entry), the soak gate, and the stream-end entries.
+  - `docs/upgrading-to-0.20.0.md`, linked from the CHANGELOG intro and from README.
+  - `docs/supported-surface.md` rows for the Unix transport and FD passing. Both files already had the ticket-key row.
+  - `docs/stability.md`: the "RPC fd passing" row now says that `test-rpc-fd-cpp` runs on Linux in CI, and that macOS is left out on purpose.
+  - `just check-release-drift v0.19.1 0.20.0`: OK, 0 warnings.
+- Merge `sprint/stream-end-hardening` and `sprint/rc-docs` to main, push, and get a green CI run on the RC commit.
+- Freeze the RC commit before 2026-10-19 if you can, so that its CI and Nightly evidence is on the image it was tested on. If the RC commit runs on Ubuntu 26, read every red lane before you tag.
+- Two green Nightly runs on the RC commit, dispatched against the RC ref. They are the first Nightlies with the Retry-free soak gate.
 - `just release-preflight 0.20.0` green, including the drift hook.
-- `docs/supported-surface.md` rows for the Unix transport and FD passing (`docs/stability.md` has them, but its "RPC fd passing" row still says no CI lane runs it against C++: `test-rpc-fd-cpp` now runs on Linux in the reflection-conformance job, and macOS is excluded on purpose).
-- A ticket-key row (Experimental-quic) in both `docs/stability.md` and `docs/supported-surface.md`.
-- The owner approves the tag. Then `just release-tag 0.20.0`, `just verify-release-hash 0.20.0`, a real `zig fetch`, the consumer builds and the handoffs, as item 18 lists.
+- At the cut (the release ceremony, after the version sweep):
+  - README: one `unreleased-after: v0.19.1` marker sits on the upgrade-guide line. docs-smoke fails on it after the bump, by design. Delete the sentence that says v0.20.0 is not tagged, and the marker.
+  - `docs/upgrading-to-0.20.0.md`: delete the "Release candidate" note at the top, and put the real `capnpc_zig-0.20.0-...` hash in its table. docs-smoke does not scan this file.
+- The owner approves the tag. Then `just release-tag 0.20.0`, `just verify-release-hash 0.20.0`, a real `zig fetch`, and the consumer builds.
+- Handoffs (files, no pushes):
+  - slcp: the shape gate and the walker seam.
+  - qmsg, nest, qmesh-zig: move to quic v0.27.0 with the coordinated set (one quic module per process). http3-zig is on v0.27.0 already.
+  - quic-zig: it can release `Server.tls_ctx`, `retry_accepted` and (outside one test root) `boringssl.raw`. Ask it to hold `Stream.recv.reset` and `Connection.streamRecvWasReaped` next to `Stream.recv.final_size`.
+  - capnp-qmsg-demo and mruby-quic: the switch fix.
+  - prollytree and bucketlist: scratch builds.
 
 ## Owner decisions
 
@@ -815,9 +863,9 @@ The fix work also found row 44: on macOS a close of the other end of a socket wh
 | Generated `Client.fd()` helper | Needs a codegen ABI bump; `client.peer.importFd(client.cap_id)` works today |
 | Bulk-read anchor optimization | Only if fd throughput needs it; gated by FD-0 |
 | Ticket-key pair or ring (callback form) | BoringSSL's setter takes one 48-byte key. A pair needs the callback form and new crypto glue. Add it if field data asks, or adopt quic-zig's field |
-| Adopting quic-zig's ticket-key config field; ticket keys in embedded mode | Waits for a quic release that ships the field |
+| Adopting quic-zig's ticket-key config field; ticket keys in embedded mode | Done in v0.20.0 ("Week 2, part 2"): the key goes through quic-zig v0.27.0's config, so an embedder that builds its server from `serverConfigFromOptions` gets it too |
 | Sturdy-ref proof format | Open question in `quic-durable-caps-plan.md:376` |
-| quic v0.26.0 pin; QuicVatNetwork rung 2 | RetryToken size change; hold v0.25.0 unless a security fix forces a move |
+| quic v0.26.0 pin; QuicVatNetwork rung 2 | The pin is done: v0.20.0 moves to v0.27.0 (owner's option B, "Week 2, part 2"). Rung 2 stays deferred |
 | TCP loop off `poll(2)` | Same loop that the `recvmsg` seam extends |
 | Module-root restructure; compat/0.18 sweep | Moves Stable paths; path-dependency consumers |
 | Devtools package for slcp | Item 1 builds the seam; publish it next sprint |
