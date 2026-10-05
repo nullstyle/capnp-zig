@@ -3430,10 +3430,12 @@ capnpc-zig.rpc.transport.quic.WarmRedialClient.cb_ctx: field ?*anyopaque
 capnpc-zig.rpc.transport.quic.WarmRedialClient.current_conn: field ?*rpc.transport.quic.connection.Connection = null
 capnpc-zig.rpc.transport.quic.WarmRedialClient.generations: field u32 = 0
 capnpc-zig.rpc.transport.quic.WarmRedialClient.io: field Io
+capnpc-zig.rpc.transport.quic.WarmRedialClient.last_local_port: field ?u16 = null
 capnpc-zig.rpc.transport.quic.WarmRedialClient.mu: field Io.Mutex = <default>
 capnpc-zig.rpc.transport.quic.WarmRedialClient.on_give_up: field ?*const fn (?*anyopaque, rpc.events.DisconnectCause) void
 capnpc-zig.rpc.transport.quic.WarmRedialClient.on_rebind: field *const fn (?*anyopaque, *rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap) void
 capnpc-zig.rpc.transport.quic.WarmRedialClient.policy: field rpc.transport.quic.warm_redial.WarmRedialClient.Policy
+capnpc-zig.rpc.transport.quic.WarmRedialClient.port_fallback_generations: field u32 = 0
 capnpc-zig.rpc.transport.quic.WarmRedialClient.rebinds: field u32 = 0
 capnpc-zig.rpc.transport.quic.WarmRedialClient.rebound_at_ns: field ?u64 = null
 capnpc-zig.rpc.transport.quic.WarmRedialClient.redials: field u32 = 0
@@ -3855,6 +3857,7 @@ capnpc-zig.rpc.transport.quic.wake: struct
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.GiveUpFn: type = *const fn (?*anyopaque, rpc.events.DisconnectCause) void
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.generations: field u32
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.last_cause: field rpc.events.DisconnectCause
+capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.port_fallback_generations: field u32 = 0
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.rebinds: field u32
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.redials: field u32
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.Outcome.retried_generations: field u32 = 0
@@ -3877,10 +3880,12 @@ capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.exportWarmState: fn (
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.generations: field u32 = 0
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.init: fn (mem.Allocator, Io, rpc.transport.quic.options.ClientOptions, []const u8, rpc.transport.quic.warm_redial.WarmRedialClient.Policy, ?*anyopaque, *const fn (?*anyopaque, *rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap) void, ?*const fn (?*anyopaque, rpc.events.DisconnectCause) void) error{OutOfMemory}!rpc.transport.quic.warm_redial.WarmRedialClient
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.io: field Io
+capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.last_local_port: field ?u16 = null
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.mu: field Io.Mutex = <default>
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.on_give_up: field ?*const fn (?*anyopaque, rpc.events.DisconnectCause) void
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.on_rebind: field *const fn (?*anyopaque, *rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap) void
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.policy: field rpc.transport.quic.warm_redial.WarmRedialClient.Policy
+capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.port_fallback_generations: field u32 = 0
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.rebinds: field u32 = 0
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.rebound_at_ns: field ?u64 = null
 capnpc-zig.rpc.transport.quic.warm_redial.WarmRedialClient.redials: field u32 = 0

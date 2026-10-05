@@ -2680,6 +2680,10 @@ const RedialAppState = struct {
     /// Written on the run thread BEFORE the `gave_up` release-store; read it
     /// through `giveUpCause`, which acquires that flag first.
     give_up_cause: ?rpc_events.DisconnectCause = null,
+    /// The local UDP port of the generation behind each of the first rebinds,
+    /// 0 when unknown. Written on the run thread BEFORE the `rebinds`
+    /// release-increment; read entry `i` once `rebinds` (acquire) is past `i`.
+    local_ports: [4]u16 = @splat(0),
     // Run-thread-only within a generation; rewritten by each rebind.
     last_peer: ?*Peer = null,
     last_cap: ?cap_table.ResolvedCap = null,
@@ -2692,9 +2696,22 @@ const RedialAppState = struct {
         return self.give_up_cause;
     }
 
+    /// The local port of the generation behind rebind `index` (0-based), or
+    /// null while that rebind has not happened.
+    fn rebindPort(self: *const RedialAppState, index: usize) ?u16 {
+        if (self.rebinds.load(.acquire) <= index) return null;
+        return self.local_ports[index];
+    }
+
     fn onRebind(ctx: ?*anyopaque, peer: *Peer, cap: cap_table.ResolvedCap) void {
         const self: *RedialAppState = @ptrCast(@alignCast(ctx.?));
-        _ = self.rebinds.fetchAdd(1, .monotonic);
+        const index = self.rebinds.load(.monotonic);
+        if (index < self.local_ports.len) {
+            if (peer.getAttachedConnection(*quic.Connection)) |conn| {
+                self.local_ports[index] = conn.getAddress().getPort();
+            }
+        }
+        _ = self.rebinds.fetchAdd(1, .release);
         self.last_peer = peer;
         self.last_cap = cap;
         if (self.perpetual_echo) self.sendEcho(peer, cap);
@@ -3010,6 +3027,32 @@ fn ticketedServerOptions(kind: TicketServer, listen_addr: std.Io.net.IpAddress, 
     };
 }
 
+/// What the heal finds at the first generation's local port.
+const HealPort = enum {
+    /// Free: the heal can dial from the port that earned its NEW_TOKEN.
+    free,
+    /// Taken: the test binds the first generation's port as soon as that
+    /// generation's socket closes and holds it until the end, so the heal
+    /// must fall back to an ephemeral port.
+    taken,
+};
+
+/// The client's pause before the heal when the test takes the first
+/// generation's port. The test binds that port within a few milliseconds of
+/// the first generation's close, so this leaves far more than the 300 ms
+/// margin that Windows CI needs.
+const taken_port_backoff_ms: u64 = 1_000;
+
+/// Bind `port` on the unspecified IPv4 address, where a client dial without
+/// `local_addr` binds. Null while another socket holds the port.
+fn holdUdpPort(port: u16) !?std.Io.net.Socket {
+    var addr: std.Io.net.IpAddress = .{ .ip4 = .unspecified(port) };
+    return std.Io.net.IpAddress.bind(&addr, std.testing.io, .{ .mode = .dgram, .protocol = .udp }) catch |err| switch (err) {
+        error.AddressInUse => null,
+        else => err,
+    };
+}
+
 const TicketHeal = struct {
     /// Server-side 0-RTT verdict of the healed (second) generation.
     healed_status: quic.EarlyDataStatus,
@@ -3018,13 +3061,19 @@ const TicketHeal = struct {
     early_restores: u32,
     /// Retries the restarted server sent (only the heal dials it).
     restarted_retries: u64,
+    /// Local port of the first generation, which earned the NEW_TOKEN.
+    first_port: u16,
+    /// Local port of the healed (second) generation.
+    healed_port: u16,
     outcome: quic.WarmRedialClient.Outcome,
 };
 
 /// Heal a restored capability across a crash-restart of a `.restore_only`
 /// server of `kind` that loads `key` on both starts. The first generation
-/// dials cold and captures a session ticket; the heal offers it.
-fn healAcrossCrashWithTicketKey(kind: TicketServer, key: ?*const quic.SessionTicketKey) !TicketHeal {
+/// dials cold and captures a session ticket, and from the hardened server
+/// also a NEW_TOKEN; the heal offers both. `heal_port` says whether the
+/// heal can dial from the first generation's port.
+fn healAcrossCrashWithTicketKey(kind: TicketServer, key: ?*const quic.SessionTicketKey, heal_port: HealPort) !TicketHeal {
     const allocator = std.testing.allocator;
 
     var vat = RedialVat{};
@@ -3044,7 +3093,10 @@ fn healAcrossCrashWithTicketKey(kind: TicketServer, key: ?*const quic.SessionTic
             .transport_params = hardenedClientTransportParams(),
         },
         RedialEcho.sturdy_ref,
-        .{ .max_redials = 3, .backoff_ms = 10 },
+        .{ .max_redials = 3, .backoff_ms = switch (heal_port) {
+            .free => 10,
+            .taken => taken_port_backoff_ms,
+        } },
         &app,
         RedialAppState.onRebind,
         RedialAppState.onGiveUp,
@@ -3058,33 +3110,43 @@ fn healAcrossCrashWithTicketKey(kind: TicketServer, key: ?*const quic.SessionTic
     };
 
     // Phase 1: cold dial (through a Retry on the hardened server), restore,
-    // first echo, and a captured session ticket for the heal to offer.
-    var have_ticket = false;
+    // first echo, and the warm state the heal offers: a session ticket, and
+    // from the hardened server the NEW_TOKEN that lets the heal skip Retry.
+    var have_warm_state = false;
     var waited: u64 = 0;
-    while (waited < hardened_wait_ms and (app.echo_ok.load(.acquire) == 0 or !have_ticket)) : (waited += 1) {
+    while (waited < hardened_wait_ms and (app.echo_ok.load(.acquire) == 0 or !have_warm_state)) : (waited += 1) {
         _ = try vat.server.?.stepOnce(.poll);
         try vat.bindIfNeeded(allocator);
-        if (!have_ticket) {
+        if (!have_warm_state) {
             if (try client.exportWarmState(allocator)) |warm| {
-                allocator.free(warm);
-                have_ticket = true;
+                defer allocator.free(warm);
+                const decoded = try quic.warm_state.decode(warm);
+                have_warm_state = kind == .no_retry or decoded.token.len > 0;
             }
         }
         loopback.sleepMs(1);
     }
-    try std.testing.expect(have_ticket);
+    try std.testing.expect(have_warm_state);
     try std.testing.expect(app.echo_ok.load(.acquire) > 0);
     try std.testing.expectEqual(@as(u32, 1), app.rebinds.load(.acquire));
     const echo_before_crash = app.echo_ok.load(.acquire);
+    const first_port = app.rebindPort(0) orelse return error.NoFirstRebind;
+    try std.testing.expect(first_port != 0);
 
     // CRASH + RESTART with the same persisted keys (ticket key included).
     vat.crash();
     try restartVatWith(&vat, allocator, ticketedServerOptions(kind, try std.Io.net.IpAddress.parse("127.0.0.1", port), key));
 
+    // With `.taken`, the bind below fails while the first generation holds
+    // its port, and succeeds once that generation has closed its socket,
+    // during the client's backoff before the heal.
+    var held: ?std.Io.net.Socket = null;
+    defer if (held) |socket| socket.close(std.testing.io);
     waited = 0;
     while (waited < hardened_wait_ms and !app.gave_up.load(.acquire) and
         (app.rebinds.load(.acquire) < 2 or app.echo_ok.load(.acquire) <= echo_before_crash or vat.bound_status == null)) : (waited += 1)
     {
+        if (heal_port == .taken and held == null) held = try holdUdpPort(first_port);
         _ = try vat.server.?.stepOnce(.poll);
         try vat.bindIfNeeded(allocator);
         vat.observeEarlyData();
@@ -3094,9 +3156,12 @@ fn healAcrossCrashWithTicketKey(kind: TicketServer, key: ?*const quic.SessionTic
     try std.testing.expectEqual(@as(u32, 2), app.rebinds.load(.acquire));
     try std.testing.expect(app.echo_ok.load(.acquire) > echo_before_crash);
     try std.testing.expect(vat.server.?.statelessResetsSent() >= 1);
+    // The test took the port before the heal dialed (the backoff above).
+    if (heal_port == .taken) try std.testing.expect(held != null);
     const healed_status = vat.bound_status orelse return error.NoEarlyDataVerdict;
     const early_restores = vat.restores_before_handshake;
     const restarted_retries = vat.server.?.listener.server.metricsSnapshot().feeds_retry_sent;
+    const healed_port = app.rebindPort(1) orelse return error.NoHealRebind;
 
     client.requestStop();
     thread.join();
@@ -3106,13 +3171,15 @@ fn healAcrossCrashWithTicketKey(kind: TicketServer, key: ?*const quic.SessionTic
         .healed_status = healed_status,
         .early_restores = early_restores,
         .restarted_retries = restarted_retries,
+        .first_port = first_port,
+        .healed_port = healed_port,
         .outcome = app.outcome orelse return error.NoOutcome,
     };
 }
 
 test "WarmRedialClient heal after a crash-restart rides 0-RTT when the server persists its session-ticket key and sends no Retry" {
     const key: quic.SessionTicketKey = @splat(0x3c);
-    const heal = try healAcrossCrashWithTicketKey(.no_retry, &key);
+    const heal = try healAcrossCrashWithTicketKey(.no_retry, &key, .free);
 
     try std.testing.expectEqual(quic.EarlyDataStatus.accepted, heal.healed_status);
     try std.testing.expectEqual(@as(u64, 0), heal.restarted_retries);
@@ -3125,33 +3192,57 @@ test "WarmRedialClient heal after a crash-restart rides 0-RTT when the server pe
     // 0-RTT. Neither dial got a Retry.
     try std.testing.expectEqual(@as(u32, 1), heal.outcome.zero_rtt_generations);
     try std.testing.expectEqual(@as(u32, 0), heal.outcome.retried_generations);
+    try std.testing.expectEqual(@as(u32, 0), heal.outcome.port_fallback_generations);
 }
 
-test "WarmRedialClient heal after a crash-restart of a hardened server with a session-ticket key counts a Retry'd dial as retried, not as 0-RTT" {
+test "WarmRedialClient heal after a crash-restart of a hardened server with a session-ticket key rides 0-RTT from the port that earned its NEW_TOKEN" {
     const key: quic.SessionTicketKey = @splat(0x3d);
-    const heal = try healAcrossCrashWithTicketKey(.hardened, &key);
+    const heal = try healAcrossCrashWithTicketKey(.hardened, &key, .free);
 
-    // The heal resumes and BoringSSL accepts its early data.
+    // The heal dials from the first generation's port. quic-zig binds a
+    // NEW_TOKEN to the client's address and port, the restarted server
+    // keeps the same `new_token_key`, and its token clock continues across
+    // the restart, so the NEW_TOKEN is valid and the dial skips the Retry.
+    try std.testing.expectEqual(heal.first_port, heal.healed_port);
+    try std.testing.expectEqual(@as(u64, 0), heal.restarted_retries);
+    // The same ticket key resumes the session, and the restore runs before
+    // the restarted server's handshake completes: it rode 0-RTT.
     try std.testing.expectEqual(quic.EarlyDataStatus.accepted, heal.healed_status);
+    try std.testing.expectEqual(@as(u32, 1), heal.early_restores);
     try std.testing.expectEqual(@as(u32, 2), heal.outcome.generations);
     try std.testing.expectEqual(@as(u32, 2), heal.outcome.rebinds);
-    // The heal dials from a new port, so its NEW_TOKEN does not match and
-    // the restarted server almost always answers with a Retry. Then the
-    // restore runs only after the handshake (quic-zig v0.25.0), and the
-    // client counts the dial as retried, not as 0-RTT, whatever the verdict.
-    // The cold first generation always gets a Retry.
-    const heal_retried = heal.restarted_retries > 0;
-    try std.testing.expectEqual(@as(u32, 1) + @intFromBool(heal_retried), heal.outcome.retried_generations);
-    try std.testing.expectEqual(@as(u32, @intFromBool(!heal_retried)), heal.outcome.zero_rtt_generations);
-    // The counter agrees with the server: a heal counts as 0-RTT exactly
-    // when the restarted server ran its restore before the handshake. When
-    // the quic-zig client sends 0-RTT again after a Retry, this goes red
-    // (see `zero_rtt_generations` in warm_redial.zig).
-    try std.testing.expectEqual(heal.early_restores, heal.outcome.zero_rtt_generations);
+    // Only the cold first generation got a Retry; the heal counts as 0-RTT.
+    try std.testing.expectEqual(@as(u32, 1), heal.outcome.zero_rtt_generations);
+    try std.testing.expectEqual(@as(u32, 1), heal.outcome.retried_generations);
+    try std.testing.expectEqual(@as(u32, 0), heal.outcome.port_fallback_generations);
+}
+
+test "WarmRedialClient heal falls back to an ephemeral port when its previous port is taken, and pays a Retry" {
+    const key: quic.SessionTicketKey = @splat(0x3e);
+    const heal = try healAcrossCrashWithTicketKey(.hardened, &key, .taken);
+
+    // The capability still heals, from another port, and the client counts
+    // the fallback.
+    try std.testing.expect(heal.healed_port != heal.first_port);
+    try std.testing.expectEqual(@as(u32, 1), heal.outcome.port_fallback_generations);
+    try std.testing.expectEqual(@as(u32, 2), heal.outcome.generations);
+    try std.testing.expectEqual(@as(u32, 2), heal.outcome.rebinds);
+    // From the new port the NEW_TOKEN is invalid, so the restarted server
+    // sends a Retry. BoringSSL still accepts the early data, but the quic-zig
+    // v0.25.0 client sends it again only at 1-RTT after a Retry (quic-zig
+    // finding F8), so the restore runs after the handshake and the client
+    // counts the dial as retried, not as 0-RTT. When quic-zig sends 0-RTT
+    // again after a Retry, `early_restores` becomes 1 here (checked against a
+    // patched v0.25.0): then count such a dial as 0-RTT in warm_redial.zig.
+    try std.testing.expectEqual(@as(u64, 1), heal.restarted_retries);
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, heal.healed_status);
+    try std.testing.expectEqual(@as(u32, 0), heal.early_restores);
+    try std.testing.expectEqual(@as(u32, 0), heal.outcome.zero_rtt_generations);
+    try std.testing.expectEqual(@as(u32, 2), heal.outcome.retried_generations);
 }
 
 test "WarmRedialClient heal after a crash-restart without a session-ticket key is refused 0-RTT (ablation)" {
-    const heal = try healAcrossCrashWithTicketKey(.hardened, null);
+    const heal = try healAcrossCrashWithTicketKey(.hardened, null, .free);
 
     // The capability still heals, through a full handshake.
     try std.testing.expectEqual(quic.EarlyDataStatus.rejected, heal.healed_status);
@@ -3159,7 +3250,11 @@ test "WarmRedialClient heal after a crash-restart without a session-ticket key i
     try std.testing.expectEqual(@as(u32, 2), heal.outcome.rebinds);
     try std.testing.expectEqual(@as(u32, 0), heal.early_restores);
     try std.testing.expectEqual(@as(u32, 0), heal.outcome.zero_rtt_generations);
-    try std.testing.expectEqual(@as(u32, 1) + @intFromBool(heal.restarted_retries > 0), heal.outcome.retried_generations);
+    // The NEW_TOKEN still skips the Retry: it does not depend on the ticket
+    // key. Only the cold first generation got one.
+    try std.testing.expectEqual(heal.first_port, heal.healed_port);
+    try std.testing.expectEqual(@as(u64, 0), heal.restarted_retries);
+    try std.testing.expectEqual(@as(u32, 1), heal.outcome.retried_generations);
 }
 
 test "WarmRedialClient budget counts consecutive failures: resets between healthy generations never exhaust it" {

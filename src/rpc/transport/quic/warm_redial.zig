@@ -22,6 +22,13 @@
 //!   client restart seeded with `seedWarmState`) both frames ride 0-RTT
 //!   early data. Restore is the idempotent call that makes the replay
 //!   window acceptable — the layer sends nothing else in early data.
+//! - A redial binds the previous generation's local UDP port again (the one
+//!   thing a generation hands on besides the warm state): quic-zig binds a
+//!   NEW_TOKEN to the client's address and port, and a server with Retry on
+//!   skips the Retry, and keeps the 0-RTT restore, only for a token that is
+//!   valid from where the dial comes. When the port is taken, the redial
+//!   falls back to an ephemeral port and counts it
+//!   (`Outcome.port_fallback_generations`).
 //! - Only `.stateless_reset` redials by default: it is the one cause that
 //!   PROVES crash-restart, provided that no other instance holding the
 //!   server's reset key can receive this connection's packets (RFC 9000
@@ -44,6 +51,7 @@ const std = @import("std");
 
 const connection_mod = @import("./connection.zig");
 const options_mod = @import("./options.zig");
+const quic_zig_adapter = @import("./quic_zig_adapter.zig");
 const warm_state = @import("./warm_state.zig");
 const peer_mod = @import("../../peer/mod.zig");
 const rpc_events = @import("../../events.zig");
@@ -52,6 +60,7 @@ const protocol = @import("../../wire/protocol.zig");
 
 const Connection = connection_mod.Connection;
 const ClientOptions = options_mod.ClientOptions;
+const Net = std.Io.net;
 const Peer = peer_mod.Peer;
 const log = std.log.scoped(.rpc_quic_redial);
 
@@ -118,7 +127,9 @@ pub const WarmRedialClient = struct {
         /// frames included, rode 0-RTT: the server accepted the dial's
         /// early data (`EarlyDataStatus.accepted`) and the dial got no
         /// Retry. After a crash-restart this needs a server that loads the
-        /// same `session_ticket_key`. A dial that gets a Retry counts in
+        /// same `session_ticket_key`, and, with Retry on, the same
+        /// `new_token_key` and a dial from the port that earned the
+        /// NEW_TOKEN, which the layer keeps. A dial that gets a Retry counts in
         /// `retried_generations` instead, even when the verdict is
         /// `.accepted`, because the quic-zig v0.25.0 client sends its early
         /// data again only at 1-RTT after a Retry ("Retry and NEW_TOKEN: an
@@ -128,16 +139,26 @@ pub const WarmRedialClient = struct {
         /// cost one more round trip, and on quic-zig v0.25.0 its restore ran
         /// only after the handshake. Under the hardened preset, a dial
         /// without a valid NEW_TOKEN gets a Retry; a NEW_TOKEN is valid only
-        /// from the address and port that earned it.
+        /// from the address and port that earned it. The first dial of a
+        /// client always has a new port, unless `base.local_addr` names one.
         retried_generations: u32 = 0,
+        /// Generations that dialed from a new ephemeral port because the
+        /// previous generation's local port could not be bound (another
+        /// socket took it). Under the hardened preset such a dial also gets
+        /// a Retry, because its NEW_TOKEN was earned from the old port.
+        port_fallback_generations: u32 = 0,
         last_cause: rpc_events.DisconnectCause,
     };
 
     allocator: std.mem.Allocator,
     io: std.Io,
     /// Dial template. The layer OWNS the resumption fields: it overwrites
-    /// `resumption_state`, `new_session_callback`, and
-    /// `new_session_user_data` on every generation.
+    /// `resumption_state`, `new_session_callback`, `new_session_user_data`,
+    /// `new_token`, `new_token_callback` and `new_token_user_data` on every
+    /// generation. When `local_addr` is null or names port 0, every
+    /// generation after the first dials from the previous generation's port
+    /// (falling back to an ephemeral port when it is taken); a `local_addr`
+    /// with a port is used as it is.
     base: ClientOptions,
     policy: Policy,
     sturdy_ref: []u8,
@@ -163,6 +184,12 @@ pub const WarmRedialClient = struct {
     zero_rtt_generations: u32 = 0,
     /// Generations whose dial got a Retry.
     retried_generations: u32 = 0,
+    /// Generations that fell back to an ephemeral port.
+    port_fallback_generations: u32 = 0,
+    /// Local UDP port of the last generation that dialed, which the next
+    /// generation dials from again (see `keptLocalAddr`). Null before the
+    /// first dial.
+    last_local_port: ?u16 = null,
     restore_failed: bool = false,
     /// Awake-clock time (ns) of the current generation's rebind; null
     /// until it rebinds.
@@ -279,6 +306,7 @@ pub const WarmRedialClient = struct {
             .rebinds = self.rebinds,
             .zero_rtt_generations = self.zero_rtt_generations,
             .retried_generations = self.retried_generations,
+            .port_fallback_generations = self.port_fallback_generations,
             .last_cause = last_cause,
         };
     }
@@ -305,6 +333,51 @@ pub const WarmRedialClient = struct {
         const alive_at = conn.lastAuthenticatedReceiveNs() orelse return;
         const proven_up_ns = alive_at -| rebound_at;
         if (proven_up_ns >= self.policy.min_healthy_ms *| std.time.ns_per_ms) self.redials = 0;
+    }
+
+    /// The address the next dial binds to keep the last generation's port,
+    /// or null when there is nothing to keep: before the first dial, or when
+    /// `base.local_addr` already names a port. The IP part is
+    /// `base.local_addr`'s, or the unspecified address that a dial without
+    /// one binds.
+    fn keptLocalAddr(self: *const WarmRedialClient) ?Net.IpAddress {
+        const port = self.last_local_port orelse return null;
+        var addr = self.base.local_addr orelse quic_zig_adapter.defaultClientBindAddress(self.base.remote_addr);
+        if (addr.getPort() != 0) return null;
+        addr.setPort(port);
+        return addr;
+    }
+
+    /// Dial from the last generation's local port, and fall back to the
+    /// port `options` asks for (ephemeral unless `base.local_addr` names
+    /// one) when that port cannot be bound.
+    ///
+    /// Why the port matters: quic-zig binds a NEW_TOKEN to the client's IP
+    /// address and port. A server with Retry on (the hardened preset)
+    /// validates a returning client's address with that token and skips the
+    /// Retry only for a dial from the same address and port. A Retry costs a
+    /// round trip, and on quic-zig v0.25.0 it also costs the early restore
+    /// (see `Outcome.retried_generations`). The previous generation's socket
+    /// is closed by now, so the port is normally free; when another socket
+    /// took it, the dial falls back and `port_fallback_generations` counts
+    /// it.
+    fn dial(self: *WarmRedialClient, options: ClientOptions) !Connection {
+        const kept = self.keptLocalAddr() orelse return Connection.initClient(self.allocator, self.io, options);
+        var kept_options = options;
+        kept_options.local_addr = kept;
+        if (Connection.initClient(self.allocator, self.io, kept_options)) |conn| {
+            return conn;
+        } else |err| switch (err) {
+            // The errors that say this address cannot be bound now. Any other
+            // error would fail the fallback dial too.
+            error.AddressInUse, error.AddressUnavailable, error.AccessDenied => {
+                log.debug("local port {d} unavailable ({}); dialing from an ephemeral port", .{ kept.getPort(), err });
+            },
+            else => return err,
+        }
+        const conn = try Connection.initClient(self.allocator, self.io, options);
+        self.port_fallback_generations +|= 1;
+        return conn;
     }
 
     /// One connection generation: dial (resumed when a ticket exists),
@@ -335,9 +408,13 @@ pub const WarmRedialClient = struct {
         options.new_token_callback = onNewToken;
         options.new_token_user_data = self;
 
-        var conn = try Connection.initClient(self.allocator, self.io, options);
+        var conn = try self.dial(options);
         var conn_alive = true;
         defer if (conn_alive) conn.deinit();
+        // The next generation dials from this port: a NEW_TOKEN that this
+        // connection receives is valid only from here.
+        const bound_port = conn.getAddress().getPort();
+        self.last_local_port = if (bound_port != 0) bound_port else null;
 
         {
             self.mu.lockUncancelable(self.io);

@@ -695,7 +695,8 @@ holds every early frame until the handshake. Also set `new_token_key`: a
 returning client that presents a valid NEW_TOKEN skips Retry. Today a Retry
 costs the early restore, because the quic-zig client does not send its 0-RTT
 data again after a Retry. A NEW_TOKEN is valid only from the IP address and
-port that it was issued to; see "Retry and NEW_TOKEN: an open gap" below.
+port that it was issued to, so `WarmRedialClient` redials from the port of
+its previous connection; see "Retry and NEW_TOKEN: an open gap" below.
 
 **The opt-in alone does not make a heal after a crash-restart ride 0-RTT.**
 BoringSSL encrypts session tickets with a key that belongs to the server's
@@ -724,11 +725,15 @@ NEW_TOKEN: an open gap" below first). `WarmRedialClient.Outcome
 Restore, rode 0-RTT: the verdict was `.accepted` and the dial got no Retry.
 `Outcome.retried_generations` counts the generations whose dial got a
 Retry; today such a dial restores only after the handshake, even when the
-verdict is `.accepted`, so it never counts as 0-RTT. Under the preset a heal
-after a crash-restart almost always gets a Retry, so expect
-`zero_rtt_generations` to stay 0 there until that gap closes. The key is
-opt-in: it defaults to null, in the preset too. Set it only when a 0-RTT
-heal is worth what a stolen key costs.
+verdict is `.accepted`, so it never counts as 0-RTT. Under the preset, with
+`new_token_key` persisted too, a heal after a crash-restart skips the Retry
+and counts in `zero_rtt_generations`: it redials from the port that earned
+its NEW_TOKEN, and the restarted server's token clock continues from its
+predecessor's. A heal whose old port was taken dials from a new port, gets a
+Retry, and counts in `retried_generations` and
+`Outcome.port_fallback_generations`. The key is opt-in: it defaults to null,
+in the preset too. Set it only when a 0-RTT heal is worth what a stolen key
+costs.
 
 The security trade-off below was reviewed before the code (item 16 of
 `docs/sprint-plan-2026-10-04.md`). Wire the key into the preset like this,
@@ -824,8 +829,9 @@ and the key found there is rotated every 2 days.
   on (the preset always sets `retry_token_key`), only a valid NEW_TOKEN lets
   a returning client skip Retry, and today a Retry costs the early restore. A
   new `new_token_key` at each boot invalidates every NEW_TOKEN, so every
-  restarted client gets a Retry. Today this rule is necessary but not
-  sufficient; see "Retry and NEW_TOKEN: an open gap" below.
+  restarted client gets a Retry. For a `WarmRedialClient` heal this rule is
+  enough; a dial from a new port still gets a Retry. See "Retry and
+  NEW_TOKEN: an open gap" below.
 - Install the key again after any TLS-context reload. capnp-zig never
   reloads the context itself. If you call quic-zig's
   `Server.replaceTlsContext` through `Listener.server`, the new context has
@@ -911,11 +917,50 @@ client does:
 BoringSSL still accepts early data in the handshake after the Retry, so the
 client reports `.accepted`. But the restore runs only after the server's
 handshake completes, and the round trip that 0-RTT exists for is lost.
-Under the preset, a heal after a crash-restart gets a Retry even with both
-keys persisted, because quic-zig binds a NEW_TOKEN to the client's IP
-address and port. A capnp-zig client binds a new ephemeral port for every
-dial unless `ClientOptions.local_addr` sets one, and `WarmRedialClient`
-dials every generation from the same `base` options.
+
+There are two ways to close the gap. The first is closed for
+`WarmRedialClient` heals; the second is open.
+
+- **The client skips the Retry: closed for heals (v0.20.0).** quic-zig binds
+  a NEW_TOKEN to the client's IP address and port, and a capnp-zig dial binds
+  a new ephemeral port unless `ClientOptions.local_addr` names one. So
+  `WarmRedialClient` dials every generation after the first from the local
+  port of the generation before it: with `base.local_addr`'s IP address, or
+  the unspecified address when `base.local_addr` is null. A `base.local_addr`
+  that names a port is used as it is. The token clock also survives a restart
+  (below). Under the preset, with the ticket key and `new_token_key` both
+  persisted, a heal after a crash-restart therefore presents a valid
+  NEW_TOKEN, gets no Retry, runs its restore before the restarted server's
+  handshake completes, and counts in `Outcome.zero_rtt_generations`. The same
+  holds for a redial to a server process that is still running. The server
+  checks the address it sees, so behind a NAT this works only when the NAT
+  maps the reused local port to the same external port.
+- **The client sends its 0-RTT data again after a Retry: open.** This is
+  quic-zig's finding F8, described above. With it, a Retry would cost one more
+  round trip, but the restore would still run before the handshake completes,
+  whatever the client's port, the token clock or the `new_token_key`. A
+  scratch probe gave the quic-zig v0.25.0 client this behavior: on a Retry, it
+  queued its in-flight 0-RTT data to be sent again as 0-RTT. The unchanged
+  v0.25.0 server accepted the new 0-RTT packets, which arrive with the Initial
+  that carries the Retry token, and it ran the restore before its handshake
+  completed. This held after a restart with the same ticket key, from a new
+  port, and also with a new `new_token_key`.
+  `docs/upstream/handoff-quic-zig-ticket-keys.md` asks quic-zig for this
+  change.
+
+Until quic-zig sends 0-RTT again after a Retry, every dial that gets a Retry
+restores late. Under the preset, these dials still get one:
+
+- A heal whose previous port another socket took. `WarmRedialClient` falls
+  back to an ephemeral port and counts the dial in
+  `Outcome.port_fallback_generations` (and in `retried_generations`).
+- The first dial of a client: a new process binds a new port unless
+  `ClientOptions.local_addr` names one. This includes a client seeded with
+  `seedWarmState`, because the warm-state envelope carries no port.
+- A heal whose first generation died before the server's NEW_TOKEN arrived
+  (the server sends it after the handshake).
+- A dial to a server with a new `new_token_key`, or with a NEW_TOKEN that
+  expired or that the restarted server's clock reads as not yet valid (below).
 
 The token clock survives a restart. quic-zig stamps a NEW_TOKEN's issue
 and expiry times with the clock that the listener feeds it,
@@ -934,45 +979,29 @@ predecessor as not yet valid until its own uptime passed the predecessor's
 uptime at the time of issue. In embedded mode the host feeds its own clock
 to its quic-zig server, so the host's clock needs the same property.
 
-So, today, a heal after a crash-restart runs its restore early in two cases
-only. The server runs without Retry (no `retry_token_key`, which the preset
-requires). Or both keys are persisted and the client redials from the port
-that earned its NEW_TOKEN. Under the preset the key saves the certificate
-exchange, but usually not the round trip. The port rule also applies to a
-redial to a server process that is still running: under the preset, its
-restore runs early only when the client redials from the address and port
-that earned its NEW_TOKEN.
+So, today, a heal after a crash-restart runs its restore early in two
+cases. The server runs without Retry (no `retry_token_key`, which the preset
+requires). Or both keys are persisted and the heal redials from the port
+that earned its NEW_TOKEN, which `WarmRedialClient` does unless that port is
+taken. Only quic-zig's change would make an early restore after a
+crash-restart depend on the ticket key alone.
 
-Closing the gap needs one of these changes:
-
-- The client sends its 0-RTT data again after a Retry. Then a Retry costs
-  one more round trip, but the restore still runs before the handshake
-  completes, whatever the client's port, the token clock or the
-  `new_token_key`. A scratch probe gave the quic-zig v0.25.0 client this
-  behavior: on a Retry, it queued its in-flight 0-RTT data to be sent again
-  as 0-RTT. The unchanged v0.25.0 server accepted the new 0-RTT packets,
-  which arrive with the Initial that carries the Retry token, and it ran the
-  restore before its handshake completed. This held after a restart with
-  the same ticket key, from a new port, and also with a new
-  `new_token_key`.
-- The client skips the Retry. The NEW_TOKEN clock already survives a
-  restart; this also needs either a client that keeps its port or a
-  NEW_TOKEN that binds only the IP address. This also saves the round trip
-  of the Retry, but only for a client whose NEW_TOKEN is still valid.
-
-Only the first change makes an early restore after a crash-restart depend
-on the ticket key alone. Neither change is in quic-zig v0.25.0 or in
-capnp-zig yet; `docs/upstream/handoff-quic-zig-ticket-keys.md` asks
-quic-zig for the first one. The QUIC transport suite pins today's behavior
-("a new new_token_key after a crash-restart costs the early restore"): a
-client that sends 0-RTT again after a Retry turns that test red, which is
-the signal to update this section and to count such a dial in
+The tests pin today's behavior. In the peer suite, "WarmRedialClient heal
+after a crash-restart of a hardened server with a session-ticket key rides
+0-RTT from the port that earned its NEW_TOKEN" and "WarmRedialClient heal
+falls back to an ephemeral port when its previous port is taken, and pays a
+Retry" cover the closed part. A quic-zig client that sends 0-RTT again after
+a Retry turns the transport suite's "a new new_token_key after a
+crash-restart costs the early restore" red, and the peer suite's fallback
+test too (checked against a patched v0.25.0 client). That is the signal to
+update this section and to count such a dial in
 `WarmRedialClient.Outcome.zero_rtt_generations`.
 
-To see which case a client is in, compare the two counters:
+To see which case a client is in, compare the counters:
 `WarmRedialClient.Outcome.zero_rtt_generations` counts only the
-generations whose restore rode 0-RTT, and `retried_generations` counts the
-generations that paid a Retry instead.
+generations whose restore rode 0-RTT, `retried_generations` counts the
+generations that paid a Retry instead, and `port_fallback_generations`
+counts the generations that could not reuse the previous port.
 
 ### Self-healing clients
 
@@ -983,6 +1012,15 @@ cannot accept unless it loads the same session-ticket key; see "Session-ticket
 key" above), restores the saved sturdy ref again, and hands the new capability
 to `on_rebind`. It redials on `.idle_timeout` only when
 `Policy.redial_on_idle_timeout` is set.
+
+Each redial binds the local UDP port of the connection before it again, so
+the NEW_TOKEN that connection received stays valid and a server with Retry
+on lets the redial skip the Retry ("Retry and NEW_TOKEN: an open gap"
+above). The client keeps only the port: the IP address is
+`base.local_addr`'s, or the unspecified address when `base.local_addr` is
+null, and a `base.local_addr` that names a port is used as it is. When the
+port cannot be bound (another socket took it), the redial falls back to an
+ephemeral port and counts it in `Outcome.port_fallback_generations`.
 
 `Policy.max_redials` (default 3) counts **consecutive** failures, not a
 lifetime total. Each redial spends one. A generation resets the count to zero

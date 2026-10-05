@@ -245,7 +245,10 @@ pub fn defaultTransportParams() quic_zig.tls.TransportParams {
 
 pub const ClientOptions = struct {
     /// UDP local bind address. When null, an ephemeral unspecified address is
-    /// chosen with the same address family as `remote_addr`.
+    /// chosen with the same address family as `remote_addr`. A NEW_TOKEN is
+    /// valid only from the address and port that received it, so a server
+    /// with Retry on skips the Retry only for a dial from that port;
+    /// `WarmRedialClient` reuses each generation's port for its next dial.
     local_addr: ?Net.IpAddress = null,
     remote_addr: Net.IpAddress,
     server_name: []const u8,
