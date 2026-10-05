@@ -698,12 +698,12 @@ Item 16 touches only `src/rpc/transport/quic/` and `build/`. It runs in its own 
 
 **The item-14 security review: 6 high findings.** Two defects were each found twice, so the 6 findings name four defects. All four were on main before FD passing: three in week-1 drain mode, and one in `Listener.close`. `979de11` fixes all four, each with a red-first test and an ablation. The merge and its follow-ups extend two of the fixes.
 
-| # | High finding | Fix | Threat-table row |
+| Defect | High finding | Fix | Threat-table row |
 |---|---|---|---|
-| 1, 2 | `MSG_OOB` bypasses drain mode on Linux 5.15 and later. A normal `recvmsg` skips the out-of-band byte, and the kernel closes its fds inside the read, on the reader thread, outside the closer and its bound (measured: 3 s for a 3 s linger). | `SO_OOBINLINE` on every drain-mode socket before its first read (`fd_io.setOobInline`). If it cannot be set, every read fails. | 39 |
-| 3 | `Listener.close` closes an AF_UNIX listening socket inline. Its final close disposes of the fds on the backlog's unread messages, so a lingering fd blocks the closing thread (3 s on Linux and macOS). | The final close runs on the closer's `.socket` lane, through a close-on-exec dup. `unix.listen` reserves the slot for it. The merge extends this to every AF_UNIX listener (`236550d`). `e416dd3` starts the closer threads before `listen` reserves the slot. | 40 |
-| 4, 5 | The `.socket` lane has no bound (row 8 was OPEN). Behind one stuck close, a peer that reconnects in a loop fills the fd table. | An accept gate: an AF_UNIX listener takes no connection while the lane holds `socketLaneBound()` jobs, with a `SocketCloseQueueFull` backpressure event. The merge adds the `WorkerPool` workers (`236550d`), and `2406b68` adds `Listener.initFd` on an AF_UNIX socket. | 8 (now Bounded) |
-| 6 | The closer's check takes no headroom for the read that follows it, so readers that wake together all pass it (measured without the fix: 16 readers put 4063 fds in a lane bounded at 16). | Read claims (`closer.claimRead`, `endRead`): each read claims 254 fds' worth, granted only while the limit has room, so the lane ends at most one read past its limit. The suggested RLIMIT change became D-B. | 7 |
+| MSG_OOB (979de11 #1) | `MSG_OOB` bypasses drain mode on Linux 5.15 and later. A normal `recvmsg` skips the out-of-band byte, and the kernel closes its fds inside the read, on the reader thread, outside the closer and its bound (measured: 3 s for a 3 s linger). | `SO_OOBINLINE` on every drain-mode socket before its first read (`fd_io.setOobInline`). If it cannot be set, every read fails. | 39 |
+| Listener.close (979de11 #4) | `Listener.close` closes an AF_UNIX listening socket inline. Its final close disposes of the fds on the backlog's unread messages, so a lingering fd blocks the closing thread (3 s on Linux and macOS). | The final close runs on the closer's `.socket` lane, through a close-on-exec dup. `unix.listen` reserves the slot for it. The merge extends this to every AF_UNIX listener (`236550d`). `e416dd3` starts the closer threads before `listen` reserves the slot. | 40 |
+| Socket lane (979de11 #3) | The `.socket` lane has no bound (row 8 was OPEN). Behind one stuck close, a peer that reconnects in a loop fills the fd table. | An accept gate: an AF_UNIX listener takes no connection while the lane holds `socketLaneBound()` jobs, with a `SocketCloseQueueFull` backpressure event. The merge adds the `WorkerPool` workers (`236550d`), and `2406b68` adds `Listener.initFd` on an AF_UNIX socket. | 8 (now Bounded) |
+| Read claims (979de11 #2) | The closer's check takes no headroom for the read that follows it, so readers that wake together all pass it (measured without the fix: 16 readers put 4063 fds in a lane bounded at 16). | Read claims (`closer.claimRead`, `endRead`): each read claims 254 fds' worth, granted only while the limit has room, so the lane ends at most one read past its limit. The suggested RLIMIT change became D-B. | 7 |
 
 The review's medium findings added two more fixes:
 - A reader parked inside a blocking `recvmsg` skipped the closer's check. The read after `poll` is now non-blocking (`fd_io.tryRecvWithFds`, `979de11`, row 42).
@@ -726,7 +726,8 @@ The fix work also found row 44: on macOS a close of the other end of a socket wh
 - Push main, and get a green CI run on it. No CI run covers the FD-passing merge yet: x86_64 Linux, the CI TSan lane, `macos-latest`, native Windows, and the `test-rpc-fd-cpp` step in the reflection-conformance job.
 - Two green Nightly runs on the RC commit, dispatched against the RC ref.
 - `just release-preflight 0.20.0` green, including the drift hook.
-- `docs/supported-surface.md` rows for the Unix transport and FD passing (`docs/stability.md` has them).
+- `docs/supported-surface.md` rows for the Unix transport and FD passing (`docs/stability.md` has them, but its "RPC fd passing" row still says no CI lane runs it against C++: `test-rpc-fd-cpp` now runs on Linux in the reflection-conformance job, and macOS is excluded on purpose).
+- A ticket-key row (Experimental-quic) in both `docs/stability.md` and `docs/supported-surface.md`.
 - The owner approves the tag. Then `just release-tag 0.20.0`, `just verify-release-hash 0.20.0`, a real `zig fetch`, the consumer builds and the handoffs, as item 18 lists.
 
 ## Owner decisions

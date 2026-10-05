@@ -57,10 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       closed on the reader or `Peer` thread.
     - The process fd budget bounds that lane (`fd_io.budget.limit()`,
       `RLIMIT_NOFILE / 4` by default). Each read first claims room for one
-      read's fds (254). The closer grants a claim only while the limit has
-      room for it. While the lane is below the limit, the first reader
-      always gets one. So readers that wake together end at most one read
-      past the limit.
+      read's fds (254). The closer grants a claim only while the arrivals
+      plus the claims already granted stay below the limit. While the lane
+      is below the limit, the first reader always gets one. So readers that
+      wake together end at most one read past the limit.
     - Once the fds that arrived in the lane reach the limit, a read that
       finds data takes nothing. A read whose fds push the lane past the
       limit is that connection's last. A reader that gets no claim within
@@ -80,7 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `unix.listen` starts the closer threads and reserves the `.socket`
       slot for that close, so the hand-off never allocates. The hand-off of
       a `Listener.initFd` listener allocates, and the close runs inline only
-      if that allocation fails. A `WorkerPool` shutdown closes its listener
+      if that allocation fails or the closer threads cannot start. A
+      `WorkerPool` shutdown closes its listener
       with `Listener.close` too.
     - An AF_UNIX listener accepts nothing while the `.socket` lane holds
       `fd_io.closer.socketLaneBound()` jobs (a quarter of the budget's
@@ -241,11 +242,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `.received` closes the fds peers attach. `.socket` does the
     transport's own socket closes, the macOS shutdowns and the final close
     of an AF_UNIX listener. `.sent` closes the dups of the fds this process
-    sends. The API: `ensureStarted`, `reserve`, `reserveSent`, `trim`,
+    sends. Its functions include `ensureStarted`, `reserve`,
+    `reserveSent`, `trim`,
     `release`, `handOff`, `handOffCounted`, `handOffSent`,
     `handOffSocketClose`, `handOffShutdown`, `admission`, `claimRead`,
     `endRead`, `readClaims`, `socketLaneBound`, `socketLaneFull`,
-    `waitSocketLane`, `pending` and `pendingIn`.
+    `waitSocketLane`, `pending` and `pendingIn`; its types and constants
+    include `ReadClaim`, `max_fds_per_recv` and `min_socket_lane_bound`.
   - Fault injection for tests: `closer.injectAllocationFailure` and
     `closer.allocationFailureArmed` make one closer-queue allocation fail.
 - **New `tcp` fields and one function (Experimental).**
@@ -346,13 +349,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     sends none (drain mode), as in C++, because macOS installs fds in a
     receiver that did not ask for them. `Listener.accept`,
     `ServerSession.accept` and `unix.connect` apply the switch before the
-    first read. `ServerSession.accept` also gives its `Peer` the live-fd
-    cap.
+    first read. `ServerSession.accept` and `unix.connect` also give their
+    `Peer` the live-fd cap.
   - **Sending:** `Peer.setExportFd(export_id, FdHandle)` (named error set
     `rpc.peer.SetExportFdError`) attaches a borrowed fd to an export. Every
     Call, Return, Resolve and Bootstrap Return that sends that export as a
     `senderHosted` capability carries a dup of the fd, at most 253 per
-    message. `Peer.clearExportFd` stops it. Keep the fd open while the
+    message. Forwarded (prebuilt) Returns, frames sent through a
+    `send_frame_override`, and fds through proxies carry none.
+    `Peer.clearExportFd` stops it. Keep the fd open while the
     export has it. Over TCP and QUIC, `attachedFd` stays 0xff.
   - **Receiving:** `Peer.importFd(import_id) ?FdHandle` lends the fd that
     the remote attached to an import, until the import is released. A
@@ -416,8 +421,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tcp.Connection.enableFdPassing(max_fds_per_message)` make an AF_UNIX
   connection keep up to `max_fds_per_message` fds per inbound message
   (hard cap 253, `Transport.max_fds_per_message_cap`). Call it before the
-  first read, or it returns `error.AlreadyReading`. It also lets the
-  connection send fds.
+  first read, or it returns `error.AlreadyReading`.
+  `Connection.enableFdPassing` also lets the connection send fds
+  (`maxOutboundFds`, `sendFrameWithFds`); `Transport.enqueueWriteWithFds`
+  works on any AF_UNIX transport.
   - The transport then reads one Cap'n Proto frame at a time: the 8-byte
     head, the rest of the segment table, then the body. No `recvmsg`
     crosses a frame boundary, so every fd belongs to the message whose
@@ -575,9 +582,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     still owns the listener, unchanged.
   - Shutdown closes the listener with `Listener.close` once no worker waits
     on it, which removes a `unix.listen` socket file and releases its lock.
-    That close never waits for the fds on connections nobody accepted (see
-    Security). Workers park in `poll` on the listen socket and on a wake
-    door, a pipe the pool owns; shutdown writes the door and never dials the
+    On a `unix.listen` listener that close never waits for the fds on
+    connections nobody accepted (see Security). Workers park in `poll` on
+    the listen socket and on a wake door, a pipe the pool owns; shutdown
+    writes the door and never dials the
     listener, so it finishes even after the socket file was unlinked or
     another server took the path (10-12 ms with 4 parked workers on macOS
     and Linux).
