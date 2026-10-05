@@ -68,18 +68,24 @@
 //! otherwise fill the fd table.
 //!
 //! - `.received`: an fd that arrived must go somewhere, so `handOff` always
-//!   takes it. `handOff` counts the fds it is given; `handOffCounted` takes
-//!   fds already counted (a frame's, an import's). Before each `recvmsg`,
-//!   once its socket is readable, a reader checks `admission()`. While the
-//!   lane alone holds `fd_budget.limit()` fds or more (`full()`) the reader
-//!   takes nothing: the transport closes that connection with a typed cause.
-//!   A hand-off that leaves more than the limit pending in the lane reports
-//!   `over_limit`, and the transport closes the connection that sent those
-//!   fds. The fds already received still go to the lane: closing them
-//!   anywhere else could block. So the lane holds at most the limit plus
-//!   one read (at most 254 fds: the most one send carries) for each reader
-//!   that passed its check before the lane filled and had not handed off
-//!   yet.
+//!   takes it, and counts it in the budget as it comes, whatever the limit.
+//!   These are the lane's *arrivals*: the only fds that can take the budget
+//!   past its limit. `handOffCounted` takes fds the budget already counts
+//!   (a frame's, an import's). Moving them here does not change the count,
+//!   so they are not arrivals, and a burst of them (a `Peer` torn down with
+//!   every import, a frame's fds after dispatch) closes no connection.
+//!   Before each `recvmsg`, once its socket is readable, a reader checks
+//!   `admission()`. While the lane holds `fd_budget.limit()` arrivals or
+//!   more (`full()`: a close that blocks has stopped the lane) the reader
+//!   takes nothing: the transport closes that connection with a typed
+//!   cause. A hand-off that leaves more than the limit of arrivals in the
+//!   lane reports `over_limit`, and the transport closes the connection
+//!   that sent those fds. The fds already received still go to the lane:
+//!   closing them anywhere else could block. So the lane holds at most the
+//!   limit of arrivals plus one read (at most 254 fds: the most one send
+//!   carries) for each reader that passed its check before the lane filled
+//!   and had not handed off yet. Its counted fds come on top, and the
+//!   budget keeps those under its limit when it lets them in.
 //! - `.sent`: a transport counts each dup before it makes it, by reserving
 //!   a `.sent` slot (`reserveSent`), which succeeds only while the dups fit
 //!   in the budget (`fd_budget.tryAcquire`). Otherwise the transport refuses
@@ -132,7 +138,8 @@ comptime {
 /// doc).
 pub const Lane = enum(u8) {
     /// Fds a peer attached. Counted in the process fd budget; a reader stops
-    /// once this lane alone holds the budget's limit (`admission`).
+    /// once this lane holds the budget's limit of fds that arrived
+    /// (`handOff`, not `handOffCounted`; see `admission`).
     received,
     /// A transport's own socket: its final close, and on Darwin the read
     /// half of its shutdown. Not counted.
@@ -176,11 +183,13 @@ pub const Reservation = struct {
     slots: usize = 0,
 };
 
-/// The `.received` lane at one moment (see "The process fd budget" in the
-/// module doc).
+/// The `.received` lane's arrivals at one moment: the fds `handOff` took
+/// (counting them in the budget as they came) that are not closed yet. Fds
+/// moved there already counted (`handOffCounted`) are not among them: they
+/// cannot grow the count. See "The process fd budget" in the module doc.
 pub const Admission = struct {
-    /// Fds handed off and not yet closed, including a hand-off that
-    /// returned this.
+    /// Arrivals handed off and not yet closed, including a hand-off that
+    /// returned this. `pendingIn(.received)` counts every fd in the lane.
     pending: usize,
     /// The process fd budget's limit in force (`fd_io.budget.limit()`).
     limit: usize,
@@ -200,6 +209,9 @@ const Op = enum(u8) { close, shutdown };
 const Job = struct {
     fd: Fd,
     op: Op,
+    /// A `.received` fd that `handOff` took: one of the lane's arrivals
+    /// (`LaneState.arrivals`).
+    arrival: bool = false,
 };
 
 const LaneState = struct {
@@ -214,6 +226,9 @@ const LaneState = struct {
     reserved: usize = 0,
     /// Jobs the thread took from the queue and has not finished.
     running: usize = 0,
+    /// Jobs with `Job.arrival` set that are queued or running: what
+    /// `admission` measures. A job run inline, never queued, is not counted.
+    arrivals: usize = 0,
     /// Written once, under `start_mu`.
     thread_started: bool = false,
 
@@ -335,7 +350,8 @@ pub fn release(r: *Reservation) void {
 /// Hand `fds` (fds a peer attached) to the `.received` lane, which closes
 /// each one. The caller must not touch them again. They start counting
 /// against the process fd budget now, whatever its limit, and stop once
-/// closed (see "The process fd budget" in the module doc).
+/// closed. Until then they are arrivals: `admission` measures them (see
+/// "The process fd budget" in the module doc).
 ///
 /// The fds covered by `r` (a `.received` reservation; up to `r.slots`) use
 /// reserved capacity and cannot fail; `r.slots` drops by that many. The rest
@@ -343,18 +359,22 @@ pub fn release(r: *Reservation) void {
 /// are closed inline on the calling thread, with a warning. Never fails.
 pub fn handOff(r: ?*Reservation, fds: []const Fd) Admission {
     if (comptime !supported) return .{ .pending = 0, .limit = 0, .over_limit = false };
+    if (r) |res| std.debug.assert(res.lane == .received);
+    if (fds.len == 0) return admission();
     budget.acquire(fds.len);
-    return handOffCounted(r, fds);
+    return handOffCloses(.received, r, fds, true);
 }
 
 /// `handOff` for fds already counted in the process fd budget: the fds a
 /// transport kept for a frame, or a `Peer` for its imports. Their units
 /// pass to the closer, which gives them back once it has closed the fds.
+/// They are not arrivals: moving them cannot grow the count, so they never
+/// make the lane `full()`, however many come at once.
 pub fn handOffCounted(r: ?*Reservation, fds: []const Fd) Admission {
     if (comptime !supported) return .{ .pending = 0, .limit = 0, .over_limit = false };
     if (r) |res| std.debug.assert(res.lane == .received);
     if (fds.len == 0) return admission();
-    return handOffCloses(.received, r, fds);
+    return handOffCloses(.received, r, fds, false);
 }
 
 /// Hand `fds` (a transport's dups of fds it sent, or gave up sending) to the
@@ -371,16 +391,19 @@ pub fn handOffSent(r: ?*Reservation, fds: []const Fd) void {
     // slot count is stable here.
     const covered = if (r) |res| @min(res.slots, fds.len) else 0;
     budget.acquire(fds.len - covered);
-    _ = handOffCloses(.sent, r, fds);
+    _ = handOffCloses(.sent, r, fds, false);
 }
 
-fn handOffCloses(lane: Lane, r: ?*Reservation, fds: []const Fd) Admission {
+/// `fds` must not be empty.
+fn handOffCloses(lane: Lane, r: ?*Reservation, fds: []const Fd, arrival: bool) Admission {
+    std.debug.assert(fds.len != 0);
+    std.debug.assert(!arrival or lane == .received);
     var jobs: [64]Job = undefined;
     var after: Admission = undefined;
     var rest = fds;
     while (rest.len != 0) {
         const n = @min(rest.len, jobs.len);
-        for (jobs[0..n], rest[0..n]) |*job, fd| job.* = .{ .fd = fd, .op = .close };
+        for (jobs[0..n], rest[0..n]) |*job, fd| job.* = .{ .fd = fd, .op = .close, .arrival = arrival };
         after = enqueue(lane, r, jobs[0..n]);
         rest = rest[n..];
     }
@@ -412,7 +435,7 @@ pub fn handOffShutdown(r: ?*Reservation, socket: Fd) void {
 /// Queue `jobs` in `lane`. Returns the lane's state right after the append,
 /// taken under the same lock, so the closer cannot drain this hand-off's
 /// jobs before they are counted (`over_limit` only means something for
-/// `.received`).
+/// `.received`, and counts its arrivals).
 fn enqueue(lane: Lane, r: ?*Reservation, jobs: []const Job) Admission {
     ensureStarted() catch |err| {
         log.warn("fd closer thread unavailable ({t}); running {d} job(s) on the calling thread", .{ err, jobs.len });
@@ -435,24 +458,25 @@ fn enqueue(lane: Lane, r: ?*Reservation, jobs: []const Job) Admission {
             s.reserved -= covered;
         }
         s.jobs.appendSliceAssumeCapacity(jobs[0..covered]);
+        countArrivals(s, jobs[0..covered]);
         const rest = jobs[covered..];
         if (rest.len != 0) {
             if (injectedFailure()) {
                 inline_jobs = rest;
             } else if (s.jobs.ensureTotalCapacity(std.heap.page_allocator, s.jobs.items.len + s.reserved + rest.len)) |_| {
                 s.jobs.appendSliceAssumeCapacity(rest);
+                countArrivals(s, rest);
             } else |_| {
                 inline_jobs = rest;
             }
         }
         s.work.signal(syncIo());
-        const pending_now = s.pendingLocked();
         after = switch (lane) {
             .received => blk: {
                 const cap = budget.limit();
-                break :blk .{ .pending = pending_now, .limit = cap, .over_limit = pending_now > cap };
+                break :blk .{ .pending = s.arrivals, .limit = cap, .over_limit = s.arrivals > cap };
             },
-            .socket, .sent => .{ .pending = pending_now, .limit = 0, .over_limit = false },
+            .socket, .sent => .{ .pending = s.pendingLocked(), .limit = 0, .over_limit = false },
         };
     }
     if (inline_jobs.len != 0) {
@@ -460,6 +484,14 @@ fn enqueue(lane: Lane, r: ?*Reservation, jobs: []const Job) Admission {
         runAll(lane, inline_jobs);
     }
     return after;
+}
+
+/// `queued` were just appended to `s` (under its lock): count the arrivals
+/// among them.
+fn countArrivals(s: *LaneState, queued: []const Job) void {
+    for (queued) |job| {
+        if (job.arrival) s.arrivals += 1;
+    }
 }
 
 /// `jobs` jobs of a hand-off under `r` run inline (no thread): take the
@@ -507,14 +539,17 @@ fn injectedFailure() bool {
     return false;
 }
 
-/// The `.received` lane right now, against the process fd budget's limit.
-/// A reader checks `full()` once its socket is readable and before
-/// `recvmsg` (see "The process fd budget" in the module doc).
+/// The `.received` lane's arrivals right now, against the process fd
+/// budget's limit. A reader checks `full()` once its socket is readable and
+/// before `recvmsg` (see "The process fd budget" in the module doc).
 pub fn admission() Admission {
     if (comptime !supported) return .{ .pending = 0, .limit = 0, .over_limit = false };
     const cap = budget.limit();
-    const pending_now = pendingIn(.received);
-    return .{ .pending = pending_now, .limit = cap, .over_limit = pending_now > cap };
+    const s = laneState(.received);
+    s.lock();
+    const arrivals = s.arrivals;
+    s.unlock();
+    return .{ .pending = arrivals, .limit = cap, .over_limit = arrivals > cap };
 }
 
 /// Jobs handed off and not yet done, in every lane.
@@ -553,6 +588,7 @@ fn closerMain(lane: Lane) void {
             runOne(lane, job);
             s.lock();
             s.running -= 1;
+            if (job.arrival) s.arrivals -= 1;
             s.unlock();
         }
     }

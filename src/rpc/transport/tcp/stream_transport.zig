@@ -710,9 +710,10 @@ pub const Transport = struct {
     /// goes to the closer. Three conditions there close the connection with
     /// `error.SystemResources`, each after a `.resource_rejection` event that
     /// names the cause in `err`: the closer's `.received` lane already held
-    /// as many fds as the process fd budget's limit when data arrived
-    /// (nothing is read; `error.FdCloseQueueFull`), this read's fds pushed it
-    /// past that limit (`error.FdCloseQueueFull`), or the process fd table
+    /// as many fds that arrived uncounted (`fd_io.closer.admission`) as the
+    /// process fd budget's limit when data arrived (nothing is read;
+    /// `error.FdCloseQueueFull`), this read's fds pushed those past that
+    /// limit (`error.FdCloseQueueFull`), or the process fd table
     /// stayed full for a read and its one retry
     /// (`error.ProcessFdQuotaExceeded` or `error.SystemFdQuotaExceeded`).
     ///

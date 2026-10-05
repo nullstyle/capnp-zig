@@ -81,9 +81,9 @@
 //!   window shut, on macOS up to the linger time (near 327 s at most), and a
 //!   peer can chain them. The fds piling up behind it count against the
 //!   process fd budget: first fd passing stops keeping and sending fds in
-//!   the whole process, and once the lane alone holds the budget's limit
-//!   (see `closer`), every AF_UNIX read that finds data reads nothing and
-//!   closes its connection. A peer that can stall a close can deny service
+//!   the whole process, and once the lane holds the budget's limit of fds
+//!   that arrived there uncounted (see `closer`), every AF_UNIX read that
+//!   finds data reads nothing and closes its connection. A peer that can stall a close can deny service
 //!   on every AF_UNIX connection that receives data meanwhile, but cannot
 //!   fill the fd table. TCP and QUIC connections, and AF_UNIX socket closes
 //!   and shutdowns (the `.socket` lane), do not wait for it.

@@ -8,6 +8,10 @@
 //! - The per-connection live-fd cap (`FdPassing.max_live_imported_fds`)
 //!   together with the budget: N connections that each try to fill their cap
 //!   cannot fill the fd table, and `accept` still works.
+//! - The closer's `.received` bound counts only fds that arrived uncounted:
+//!   fds the budget already holds (a frame's after dispatch, a `Peer`'s
+//!   imports at teardown) end no connection when they move there, even while
+//!   a close there blocks.
 //! - Injected faults, none of which may leak an fd or a budget unit: OOM at
 //!   every allocation of the Peer's fd paths and of the closer's queues,
 //!   EMFILE while a sent fd is dup'd, a peer torn down with live imports,
@@ -19,6 +23,10 @@
 //!
 //! Linux and macOS run it; other targets compile it and skip. Tests that
 //! shrink the fd table do it themselves, with `setrlimit`, and restore it.
+//! While it is shrunk they send fds only where they mean to be refused:
+//! Linux checks the user's fds in flight, in all of its processes (other
+//! test binaries run at the same time), against the sender's soft limit
+//! (ETOOMANYREFS).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -662,11 +670,22 @@ const Noop = struct {
     }
 };
 
+/// What `seamScenario` saw on the Peer's fd paths.
+const SeamSeen = struct {
+    /// Caps of the inbound Call whose fd the Peer adopted (`importFd`).
+    adopted: usize,
+    /// Sends with fds: the Return that carries the export's fd.
+    fd_sends: usize,
+
+    /// Every fd path ran.
+    const complete: SeamSeen = .{ .adopted = 2, .fd_sends = 1 };
+};
+
 /// The Peer's fd paths, end to end, on `allocator`: `setExportFd`, an
 /// inbound Call whose two caps bring fds (adopted into the import table),
 /// a Return that carries the export's fd, the release of one import, and
 /// `Peer.deinit` with the other still live. Any step may fail (OOM sweeps).
-fn seamScenario(allocator: std.mem.Allocator, pipe_w: Fd) !void {
+fn seamScenario(allocator: std.mem.Allocator, pipe_w: Fd) !SeamSeen {
     var fake: FakeBinding = .{};
     var peer = Peer.initDetached(allocator);
     defer peer.deinit();
@@ -683,6 +702,7 @@ fn seamScenario(allocator: std.mem.Allocator, pipe_w: Fd) !void {
     defer allocator.free(call);
     try fake.deliver(&peer, call, &.{ pipe_w, pipe_w });
     try peer.releaseImport(10, 1);
+    return .{ .adopted = handler.imports_with_fd, .fd_sends = fake.fd_sends };
 }
 
 test "imports count against the budget: one unit per imported fd, until the import is released or the peer is gone" {
@@ -730,6 +750,10 @@ test "OOM at every allocation of the Peer's fd paths leaks no fd, no byte and no
     defer pipes.closeAll();
     const before = support.FdSnapshot.take();
 
+    // Without a failure the scenario runs every fd path.
+    try testing.expectEqual(SeamSeen.complete, try seamScenario(testing.allocator, pipes.write_ends[0]));
+    try support.expectBackAtBaseline(before);
+
     // `std.testing.checkAllAllocationFailures` needs every failure to come
     // back as `error.OutOfMemory`; the Peer deliberately swallows some (an fd
     // it cannot adopt stays with the transport, a handler's OOM becomes an
@@ -739,7 +763,7 @@ test "OOM at every allocation of the Peer's fd paths leaks no fd, no byte and no
     var failed_runs: usize = 0;
     while (true) : (fail_index += 1) {
         var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = fail_index });
-        seamScenario(failing.allocator(), pipes.write_ends[0]) catch {};
+        const result = seamScenario(failing.allocator(), pipes.write_ends[0]);
         if (failing.allocated_bytes != failing.freed_bytes) {
             std.debug.print("allocation {d} failed: {d} bytes leaked\n", .{ fail_index, failing.allocated_bytes - failing.freed_bytes });
             return error.MemoryLeakDetected;
@@ -748,7 +772,23 @@ test "OOM at every allocation of the Peer's fd paths leaks no fd, no byte and no
             std.debug.print("allocation {d} failed: the fd table or the budget is off\n", .{fail_index});
             return err;
         };
-        if (!failing.has_induced_failure) break;
+        if (!failing.has_induced_failure) {
+            // The sweep ran past the last allocation: this run failed
+            // nothing, so it must have run every fd path.
+            const seen = result catch |err| {
+                std.debug.print("no allocation failed, and the scenario still failed: {t}\n", .{err});
+                return err;
+            };
+            try testing.expectEqual(SeamSeen.complete, seen);
+            break;
+        }
+        // The Peer either went on without what failed, or stopped with
+        // the OOM. Any other error means the scenario broke for another
+        // reason, and the sweep would not reach the fd paths.
+        if (result) |_| {} else |err| if (err != error.OutOfMemory) {
+            std.debug.print("allocation {d} failed, and the scenario failed with {t}\n", .{ fail_index, err });
+            return err;
+        }
         failed_runs += 1;
     }
     // The scenario allocates on every fd path (measured: 32 allocations);
@@ -767,18 +807,164 @@ test "a failed closer-queue allocation at any point of the Peer's fd paths leaks
     var nth: usize = 0;
     while (true) : (nth += 1) {
         _ = fd_io.closer.injectAllocationFailure(nth);
-        seamScenario(testing.allocator, pipes.write_ends[0]) catch {};
+        const result = seamScenario(testing.allocator, pipes.write_ends[0]);
         const fired = !fd_io.closer.allocationFailureArmed();
         _ = fd_io.closer.injectAllocationFailure(null);
         support.expectBackAtBaseline(before) catch |err| {
             std.debug.print("closer allocation {d} failed: the fd table or the budget is off\n", .{nth});
             return err;
         };
+        // A closer slot the Peer cannot reserve stops nothing: it adopts
+        // one fd fewer (that fd stays with the transport), and every other
+        // fd path still runs.
+        const seen = result catch |err| {
+            std.debug.print("closer allocation {d} (fired: {}): the scenario failed with {t}\n", .{ nth, fired, err });
+            return err;
+        };
+        const want: SeamSeen = if (fired) .{ .adopted = 1, .fd_sends = 1 } else .complete;
+        try testing.expectEqual(want, seen);
         if (!fired) break;
     }
     // Each of the two adoptions reserves a closer slot: both injections
     // fired (measured: 2).
     try testing.expect(nth >= 2);
+}
+
+// ---------------------------------------------------------------------------
+// Counted fds that move to the closer end no connection
+// ---------------------------------------------------------------------------
+
+/// A drain-mode reader (fd passing off) or, with `max_fds`, an fd-passing
+/// reader, each with its peer's end and an event recorder.
+const Reader = struct {
+    peer: Fd,
+    events: SharedRecorder = .{},
+    transport: Transport = undefined,
+
+    /// Pinned: the transport's observer points into `self`.
+    fn open(self: *Reader, gpa: std.mem.Allocator, max_fds: u8) !void {
+        const sp = try support.socketPair();
+        self.* = .{ .peer = sp[0] };
+        errdefer support.closeFd(sp[0]);
+        self.transport = Transport.initWithOptions(gpa, testing.io, .{ .handle = sp[1] }, .{
+            .read_buffer_size = 64 * 1024,
+            .observer = self.events.observer(),
+        }) catch |err| {
+            support.closeFd(sp[1]);
+            return err;
+        };
+        errdefer self.transport.deinit();
+        if (max_fds != 0) try self.transport.enableFdPassing(.{ .max_fds_per_message = max_fds });
+    }
+
+    fn close(self: *Reader) void {
+        self.transport.deinit();
+        support.closeFd(self.peer);
+    }
+
+    /// Its peer sends `frame` with `fds`; it reads the whole frame, and
+    /// stays up.
+    fn receive(self: *Reader, frame: []const u8, fds: []const Fd) !void {
+        try support.sendWithFds(self.peer, frame, fds);
+        readFrame(&self.transport, frame.len) catch |err| {
+            const queue_full = self.events.countRejections(error.FdCloseQueueFull);
+            const lane = fd_io.closer.pendingIn(.received);
+            std.debug.print("the reader failed ({t}): {d} FdCloseQueueFull event(s), received lane {d}, limit {d}\n", .{ err, queue_full, lane, budget.limit() });
+            return err;
+        };
+        try testing.expect(!self.transport.isClosing());
+        try testing.expectEqual(@as(usize, 0), self.events.countRejections(error.FdCloseQueueFull));
+    }
+};
+
+test "fds the budget already counts end no connection when they move to the closer, even while a close there blocks" {
+    if (comptime !supported) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    try warmUp();
+    const before = support.FdSnapshot.take();
+    {
+        var pipes = try support.Pipes.open(1);
+        defer pipes.closeAll();
+        const w = pipes.write_ends[0];
+        const frame = try support.buildFrame(gpa, 43);
+        defer gpa.free(frame);
+        // Seven counted fds per hand-off: with the stuck fd below, each
+        // burst alone brings the lane to the budget's limit.
+        const burst = 7;
+        const copies: [burst]Fd = @splat(w);
+
+        // A peer stalls the received lane: one fd that arrived (counted as
+        // it came), whose close blocks. Every fd handed off later stays in
+        // the lane until the test ends the linger.
+        var lingering = try support.LingeringSocket.open(60);
+        defer lingering.deinit();
+        var stall: Reader = undefined;
+        try stall.open(gpa, 0);
+        defer stall.close();
+        try support.sendWithFds(stall.peer, "x", &.{lingering.client});
+        lingering.closeClient();
+        try testing.expectEqual(@as(usize, 1), try stall.transport.read());
+        try support.expectLaneStuck(.received, 200);
+        // Setup: the budget counts exactly the lane's one fd.
+        const stuck = fd_io.closer.pendingIn(.received);
+        try testing.expectEqual(stuck, budget.inUse());
+
+        var drain: Reader = undefined;
+        try drain.open(gpa, 0);
+        defer drain.close();
+        var passing: Reader = undefined;
+        try passing.open(gpa, 8);
+        defer passing.close();
+        const saved_limit = support.BudgetLimit.set(stuck + burst);
+        defer saved_limit.restore();
+
+        // 1. A frame's fds after dispatch: the fd-passing reader keeps
+        // `burst` (the budget has room for exactly them), and its next read
+        // hands them to the lane, which then holds the budget's limit. That
+        // reader, and another connection, read on.
+        try passing.receive(frame, &copies);
+        try testing.expectEqual(@as(usize, burst), passing.transport.frameFdCount());
+        try testing.expectEqual(budget.limit(), budget.inUse());
+        try passing.receive(frame, &.{});
+        try testing.expectEqual(budget.limit(), fd_io.closer.pendingIn(.received));
+        try drain.receive(frame, &.{});
+        try passing.receive(frame, &.{});
+
+        // 2. A Peer torn down with its imports: they move to the lane, still
+        // counted, in one hand-off of the limit's size above the stuck fd.
+        {
+            var fake: FakeBinding = .{};
+            var peer = Peer.initDetached(gpa);
+            defer peer.deinit();
+            peer.attachTransportBinding(fake.binding());
+            var handler: SeamHandler = .{};
+            const bootstrap = try peer.setBootstrap(.{ .ctx = &handler, .on_call = SeamHandler.onCall });
+            var ids: [burst]u32 = undefined;
+            for (&ids, 0..) |*id, i| id.* = @intCast(20 + i);
+            const call = try buildFdCall(gpa, 0, bootstrap, &ids);
+            defer gpa.free(call);
+            try fake.deliver(&peer, call, &copies);
+            try testing.expectEqual(@as(usize, burst), handler.imports_with_fd);
+        }
+        try testing.expectEqual(stuck + 2 * burst, fd_io.closer.pendingIn(.received));
+        // Other connections read on: a drain-mode one, and an fd-passing one
+        // whose fd the full budget does not let it keep (that fd arrives
+        // uncounted, and the connection still stays).
+        try drain.receive(frame, &.{});
+        try passing.receive(frame, &.{w});
+        try testing.expectEqual(@as(usize, 0), passing.transport.frameFdCount());
+        try testing.expectEqual(@as(usize, 1), passing.events.countRejections(error.FdBudgetExceeded));
+        // What the readers checked: only the stuck fd and that one arrived
+        // uncounted.
+        try testing.expectEqual(stuck + 1, fd_io.closer.admission().pending);
+
+        // The counted fds and the stuck one all close once the linger ends.
+        lingering.endLinger();
+        try support.waitCloserIdle(10_000);
+        pipes.closeWriters();
+        try pipes.expectAllWritersClosed();
+    }
+    try support.expectBackAtBaseline(before);
 }
 
 // ---------------------------------------------------------------------------
@@ -987,6 +1173,26 @@ fn sendKeepCall(gpa: std.mem.Allocator, client: Fd, pipe_w: Fd, fd_count: usize)
     try support.sendWithFds(client, call_frame, fds[0..fd_count]);
 }
 
+/// Starts `session`'s thread: it accepts the next connection.
+fn startSession(session: *Session, listener: *tcp.Listener, keeper: *Keeper) !void {
+    session.* = .{ .listener = listener, .keeper = keeper };
+    session.thread = try std.Thread.spawn(.{}, Session.main, .{session});
+}
+
+/// Waits until session `i` dispatched its call and the closer is idle. A
+/// full fd table shows up as a session that could not be set up (its accept
+/// or its Connection failed): say which.
+fn waitDispatched(keeper: *Keeper, sessions: []Session, i: usize) !void {
+    errdefer {
+        support.sleepMs(100);
+        for (sessions[0 .. i + 1], 0..) |*s, k| {
+            if (s.done.load(.acquire)) std.debug.print("session {d} ended: {?t}\n", .{ k, s.err });
+        }
+    }
+    try keeper.waitCalls(i + 1, sessions[0 .. i + 1]);
+    try support.waitCloserIdle(support.closed_wait_ms);
+}
+
 test "N connections at their per-connection fd cap: the budget holds the total, and accept still works" {
     if (comptime !supported) return error.SkipZigTest;
     const gpa = testing.allocator;
@@ -1035,35 +1241,36 @@ test "N connections at their per-connection fd cap: the budget holds the total, 
         const limit = support.BudgetLimit.set(base + room);
         defer limit.restore();
 
-        var before_first: support.FdSnapshot = undefined;
-        for (0..n_conns + 1) |i| {
-            if (i == 0) before_first = support.FdSnapshot.take();
-            sessions[i] = .{ .listener = &listener, .keeper = &keeper };
-            sessions[i].thread = try std.Thread.spawn(.{}, Session.main, .{&sessions[i]});
-            // A full fd table shows up as a session that could not be set
-            // up (its accept or its Connection failed): say which.
-            errdefer {
-                support.sleepMs(100);
-                for (sessions[0 .. i + 1], 0..) |*s, k| {
-                    if (s.done.load(.acquire)) std.debug.print("session {d} ended: {?t}\n", .{ k, s.err });
-                }
-            }
-            clients[i] = try rawConnect(path);
-            try sendKeepCall(gpa, clients[i], pipe_w, per_call);
-            try keeper.waitCalls(i + 1, sessions[0 .. i + 1]);
-            try support.waitCloserIdle(support.closed_wait_ms);
-            if (i == 0) {
-                // What one connection costs here (client socket, server
-                // socket, wake pair: measured, not assumed), then a table
-                // with room for the rest of the connections, the rest of
-                // the budget and one call's fds in flight, plus a margin.
-                // Without the budget the imports alone (5 more connections
-                // at the cap: 20 fds) would not fit.
-                var added: [32]Fd = undefined;
-                const per_conn = support.FdSnapshot.take().added(before_first, &added) - cap;
-                const margin = 6;
-                try table.leave(n_conns * per_conn + (room - cap) + per_call + margin, p[0]);
-            }
+        // Connection 0, end to end, with the fd table as it is: what one
+        // connection costs here (client socket, server socket, wake pair:
+        // measured, not assumed).
+        const before_first = support.FdSnapshot.take();
+        try startSession(&sessions[0], &listener, &keeper);
+        clients[0] = try rawConnect(path);
+        try sendKeepCall(gpa, clients[0], pipe_w, per_call);
+        try waitDispatched(&keeper, &sessions, 0);
+        var added: [32]Fd = undefined;
+        const per_conn = support.FdSnapshot.take().added(before_first, &added) - cap;
+
+        // Every other client connects and sends its call now, before the fd
+        // table shrinks: Linux refuses a send with fds (ETOOMANYREFS) while
+        // the user's fds in flight, in all of its processes (other test
+        // binaries too), pass the sender's soft RLIMIT_NOFILE. The
+        // connections wait in the listener's backlog, their calls on them.
+        for (clients[1..]) |*c| {
+            c.* = try rawConnect(path);
+            try sendKeepCall(gpa, c.*, pipe_w, per_call);
+        }
+        // Then a table with room for the server side of those connections
+        // (their client sockets are open already), the rest of the budget
+        // and one call's fds being received, plus a margin. Without the
+        // budget the imports alone (5 more connections at the cap: 20 fds)
+        // would not fit.
+        const margin = 6;
+        try table.leave(n_conns * (per_conn - 1) + (room - cap) + per_call + margin, p[0]);
+        for (1..n_conns + 1) |i| {
+            try startSession(&sessions[i], &listener, &keeper);
+            try waitDispatched(&keeper, &sessions, i);
         }
 
         // The first two connections reached their cap (the fifth fd refused
@@ -1166,34 +1373,40 @@ test "Linux ETOOMANYREFS: a direct send is refused with FdQueueFull, a queued on
         defer pipes.closeAll();
         const w = pipes.write_ends[0];
 
-        // The in-flight limit is the sender's soft RLIMIT_NOFILE: lower it to
-        // a little above what is open, then park more fds than that in
-        // flight on a socket nobody reads.
+        // Linux refuses a send with fds while the user's fds in flight, in
+        // all of its processes, pass the sender's soft RLIMIT_NOFILE. Other
+        // test binaries of this user may hold fds in flight, and may let
+        // them go at any time. So park more fds than the limit this test
+        // sets next on a socket nobody reads, under the limit in force,
+        // then lower the limit below what this test alone has in flight:
+        // from then on every send with fds is refused, whatever the other
+        // processes do.
         var table = try FdTable.save();
         defer table.restore();
-        var lowered = table.saved;
-        lowered.cur = @min(table.saved.max, support.FdSnapshot.take().highest() + 64);
-        try posix.setrlimit(.NOFILE, lowered);
         const parked = try support.socketPair();
         var parked_open = true;
         defer if (parked_open) {
             support.closeFd(parked[0]);
             support.closeFd(parked[1]);
         };
+        var lowered = table.saved;
+        lowered.cur = @min(table.saved.max, support.FdSnapshot.take().highest() + 64);
         const many: [fd_io.max_fds_per_send]Fd = @splat(parked_pipe.write_ends[0]);
         var in_flight: usize = 0;
-        const refused = while (in_flight <= lowered.cur + 2 * many.len) {
-            fd_io.sendWithFds(parked[0], "p", &many) catch |err| switch (err) {
-                error.TooManyFdsInFlight => break true,
-                else => return err,
+        while (in_flight <= lowered.cur) {
+            fd_io.sendWithFds(parked[0], "p", &many) catch |err| {
+                std.debug.print("setup: parking fd {d} failed under the soft limit in force ({d}): {t}\n", .{ in_flight, table.saved.cur, err });
+                return err;
             };
             in_flight += many.len;
-        } else false;
-        if (!refused) {
-            // Root and CAP_SYS_RESOURCE may have any number in flight.
-            std.debug.print("skipped: {d} fds in flight and no ETOOMANYREFS (privileged user)\n", .{in_flight});
-            return error.SkipZigTest;
         }
+        try posix.setrlimit(.NOFILE, lowered);
+        const probe = fd_io.sendWithFds(parked[0], "p", &.{w});
+        if (probe) |_| {
+            // Root and CAP_SYS_RESOURCE may have any number in flight.
+            std.debug.print("skipped: {d} fds in flight and no ETOOMANYREFS (privileged user)\n", .{in_flight + 1});
+            return error.SkipZigTest;
+        } else |err| try testing.expectEqual(error.TooManyFdsInFlight, err);
 
         var recorder: SharedRecorder = .{};
         const sp = try support.socketPair();
@@ -1222,10 +1435,13 @@ test "Linux ETOOMANYREFS: a direct send is refused with FdQueueFull, a queued on
         try testing.expectEqual(@as(usize, 2), recorder.countBackpressure(error.TooManyFdsInFlight));
         try testing.expect(!transport.isClosing());
 
-        // Once the parked fds are gone, fds go out again.
+        // Once the parked fds are gone, and the soft limit is back (other
+        // processes' fds in flight may pass the lowered one), fds go out
+        // again.
         support.closeFd(parked[0]);
         support.closeFd(parked[1]);
         parked_open = false;
+        table.restore();
         try transport.enqueueWriteWithFds("again", &.{w});
         try testing.expectEqual(@as(usize, 1), try readAndCloseFds(sp[0], "again".len));
         pipes.closeWriters();

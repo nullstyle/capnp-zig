@@ -37,12 +37,16 @@
 //!   transport returns `error.FdQueueFull`, with a `.backpressure` event
 //!   (`err = error.FdBudgetExceeded`). Sends without fds still go.
 //!
-//! The closer's `.received` lane is the one thing that may pass the limit:
-//! an fd that already arrived has nowhere else to go. While that lane alone
-//! holds `limit()` fds (a close that blocks has stopped it), every AF_UNIX
+//! The fds a reader hands to the closer's `.received` lane as they arrive
+//! (`fd_closer.handOff`) are the one thing that may pass the limit: an fd
+//! that already arrived has nowhere else to go. While that lane holds
+//! `limit()` of them (a close that blocks has stopped it), every AF_UNIX
 //! read that finds data closes its connection instead (see `fd_closer`).
-//! So the fds counted here stay below about twice the limit, plus one read
-//! (254 fds) per reader: half of `RLIMIT_NOFILE` by default.
+//! Fds this budget already counts that move to the lane (a frame's after
+//! dispatch, a `Peer`'s imports) never trip that stop: the move does not
+//! change the count. So the fds counted here stay below about twice the
+//! limit, plus one read (254 fds) per reader: half of `RLIMIT_NOFILE` by
+//! default.
 //!
 //! The count is one atomic integer; every call is safe from any thread.
 

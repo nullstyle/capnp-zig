@@ -147,9 +147,9 @@ pub const Resource = enum(u8) {
     /// (`fd_io.budget`) was full (`error.FdBudgetExceeded`: `attempted` = the
     /// fds the budget would count with them, `limit` = its limit; the frame
     /// arrives without them and the connection stays), and the closer's
-    /// `.received` queue alone at that limit (`error.FdCloseQueueFull`:
-    /// `attempted` = fds pending, `limit` = the budget's limit; the
-    /// connection is closed). On the send side, a message whose fds would
+    /// `.received` queue at that limit of fds that arrived uncounted
+    /// (`error.FdCloseQueueFull`: `attempted` = those fds pending, `limit` =
+    /// the budget's limit; the connection is closed). On the send side, a message whose fds would
     /// take a transport's write queue past `Transport.max_queued_fds` emits a
     /// `.backpressure` (`err` = `error.FdQueueFull`, `attempted_bytes` = the
     /// message's fd count, `limit` = the cap); the connection stays open. A
