@@ -351,6 +351,23 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_rpc_getting_started_snippet_tests = &b.addRunArtifact(rpc_getting_started_snippet_tests).step;
     const run_serialization_getting_started_snippet_tests = addLibTest(b, "tests/docs/serialization_getting_started_snippets_test.zig", target, optimize, lib_module);
     const run_rpc_events_snippet_tests = addLibTest(b, "tests/docs/rpc_events_snippets_test.zig", target, optimize, lib_module);
+    // docs/rpc-unix-sockets.md: its snippets run over a real socket file
+    // (Linux, macOS; elsewhere the unsupported stubs are checked), and a
+    // test reads the doc to require each one word for word.
+    const rpc_unix_snippet_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/docs/rpc_unix_snippets_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "pingpong", .module = docs_pingpong_module },
+            },
+        }),
+    });
+    rpc_unix_snippet_tests.root_module.addAnonymousImport("rpc-unix-sockets-doc", .{ .root_source_file = b.path("docs/rpc-unix-sockets.md") });
+    registered_test_compile_steps.append(b.allocator, &rpc_unix_snippet_tests.step) catch @panic("OOM");
+    const run_rpc_unix_snippet_tests = &b.addRunArtifact(rpc_unix_snippet_tests).step;
     // The documented pinned-plugin recipe (docs/build-integration.md), run
     // against this checkout: the plugin, built for the host so cross-target
     // compile checks can still run it, reads the codegen consumer's checked-in
@@ -408,6 +425,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_docs_snippets_step.dependOn(run_rpc_getting_started_snippet_tests);
     test_docs_snippets_step.dependOn(run_serialization_getting_started_snippet_tests);
     test_docs_snippets_step.dependOn(run_rpc_events_snippet_tests);
+    test_docs_snippets_step.dependOn(run_rpc_unix_snippet_tests);
     test_docs_snippets_step.dependOn(run_build_integration_snippet_tests);
     test_docs_snippets_step.dependOn(run_troubleshooting_contracts_snippet_tests);
     if (run_quic_transport_disabled_snippet_tests) |step| test_docs_snippets_step.dependOn(step);
@@ -457,6 +475,27 @@ pub fn buildImpl(b: *std.Build) !void {
     run_rpc_pingpong_unix.addPassthruArgs();
     const example_rpc_unix_step = b.step("example-rpc-unix", "Run the RPC ping-pong example over a Unix-domain socket (Linux, macOS)");
     example_rpc_unix_step.dependOn(&run_rpc_pingpong_unix.step);
+
+    // Fd passing over a Unix-domain socket (Experimental, Linux and macOS):
+    // the server attaches a pipe's write end to its bootstrap capability,
+    // the client writes through `Peer.importFd`, and the run fails unless
+    // every copy of the fd is closed at the end. It compiles for every
+    // target (check-compile below); elsewhere it prints that and exits.
+    const rpc_fd_passing_example = b.addExecutable(.{
+        .name = "example-rpc-fd-passing",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/rpc_fd_passing.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+    const run_rpc_fd_passing = b.addRunArtifact(rpc_fd_passing_example);
+    run_rpc_fd_passing.addPassthruArgs();
+    const example_rpc_fd_step = b.step("example-rpc-fd", "Run the fd-passing example over a Unix-domain socket (Linux, macOS)");
+    example_rpc_fd_step.dependOn(&run_rpc_fd_passing.step);
 
     // The same ping-pong over QUIC, through `quic.serve` + `quic.connect`.
     // Gated on -Dquic=true like bench-quic; without it the step fails with
@@ -877,6 +916,29 @@ pub fn buildImpl(b: *std.Build) !void {
     // macOS run them; other targets compile them and skip.
     const run_rpc_unix_fd_drain_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_drain_test.zig", target, optimize, lib_module);
     const run_rpc_unix_linger_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_linger_test.zig", target, optimize, lib_module);
+    // FD passing, send side (sprint item 10): `fd_io.sendWithFds` and fds in
+    // the write queue; every dup the queue makes is closed exactly once.
+    // Linux and macOS run it; other targets compile it and run the stubs.
+    const run_rpc_unix_fd_send_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_send_test.zig", target, optimize, lib_module);
+    // FD passing, receive side (sprint item 11): exact-boundary reads put
+    // every fd in the frame whose bytes carried it; the per-message cap, two
+    // batches in one frame, CTRUNC/EMFILE, hostile headers, and a fuzz.
+    // Linux and macOS run it; other targets compile it and run the TCP test.
+    const run_rpc_unix_fd_boundary_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_boundary_test.zig", target, optimize, lib_module);
+    // FD passing through the Peer (sprint item 12): `setExportFd`/`importFd`,
+    // the side tables outside the frozen cap table, which descriptor keeps
+    // which fd, every close hook, TCP (0xff), and the wake fds never sent.
+    // Linux and macOS run it; other targets compile it and run the stub test.
+    const run_rpc_unix_fd_peer_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_peer_test.zig", target, optimize, lib_module);
+    // FD passing limits and fault injection (sprint item 13): the process fd
+    // budget, N connections at their per-connection cap with accept still
+    // working, OOM at every allocation of the Peer's and the transport's fd
+    // paths (and of the closer's queues), EMFILE on a sent fd's dup, and
+    // Linux ETOOMANYREFS. Part of the Hardening gate (`test-oom`,
+    // `test-resource-budgets` and its own step). Linux and macOS run it;
+    // other targets compile it and skip.
+    const run_rpc_unix_fd_limits_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_limits_test.zig", target, optimize, lib_module);
+    b.step("test-rpc-unix-fd-limits", "Run the fd-passing limit and fault-injection suite (process fd budget, OOM sweeps, EMFILE, ETOOMANYREFS; Linux and macOS)").dependOn(run_rpc_unix_fd_limits_tests);
     // `rpc.transport.unix.listen`/`connect` (sprint item 7): sessions over a
     // socket file, the path guards, the lock, stale files, permissions and
     // close. Linux and macOS run it; other targets compile it and run only
@@ -886,10 +948,14 @@ pub fn buildImpl(b: *std.Build) !void {
     // parked on the wake door shut down promptly, even after the socket file
     // is gone. Linux and macOS run it; other targets run only the stub case.
     const run_rpc_unix_worker_pool_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_worker_pool_test.zig", target, optimize, lib_module);
-    const test_rpc_unix_step = b.step("test-rpc-unix", "Run the AF_UNIX transport suites (regressions, fd drain, lingering close, listen/connect, WorkerPool)");
+    const test_rpc_unix_step = b.step("test-rpc-unix", "Run the AF_UNIX transport suites (regressions, fd drain, lingering close, fd send, fd boundary reads, fd limits, listen/connect, WorkerPool)");
     test_rpc_unix_step.dependOn(run_rpc_unix_regression_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_fd_drain_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_linger_tests);
+    test_rpc_unix_step.dependOn(run_rpc_unix_fd_send_tests);
+    test_rpc_unix_step.dependOn(run_rpc_unix_fd_boundary_tests);
+    test_rpc_unix_step.dependOn(run_rpc_unix_fd_peer_tests);
+    test_rpc_unix_step.dependOn(run_rpc_unix_fd_limits_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_session_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_worker_pool_tests);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
@@ -1016,6 +1082,29 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_codegen_streaming_cpp = addLibTest(b, "tests/serialization/codegen_streaming_cpp_test.zig", target, optimize, lib_module);
     b.step("test-codegen-streaming-cpp", "Run C++ and Zig deferred streaming interoperability").dependOn(run_codegen_streaming_cpp);
     b.step("test-codegen-generic-rpc-cpp", "Run C++ and Zig typed generic RPC interoperability").dependOn(addLibTest(b, "tests/serialization/generic_rpc_cpp_test.zig", target, optimize, lib_module));
+    // Fd passing against the C++ reference (sprint item 15): the reference's
+    // fd tests ported to a C++ <-> Zig connection over a socketpair, both
+    // directions, through the real Connection and Peer. Linux only (other
+    // targets compile it and skip; on macOS kj itself can drop the fds); it
+    // needs the reference found by `pkg-config capnp`, so CI runs it in the
+    // reflection-conformance job, not in `test`.
+    const rpc_fd_cpp_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc/transport/unix/rpc_unix_fd_cpp_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "capnp-cli", .module = b.createModule(.{
+                    .root_source_file = b.path("tests/serialization/support/capnp_cli.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                }) },
+            },
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &rpc_fd_cpp_tests.step) catch @panic("OOM");
+    b.step("test-rpc-fd-cpp", "Run fd passing between the C++ reference and capnp-zig over AF_UNIX (Linux; needs pkg-config capnp)").dependOn(&b.addRunArtifact(rpc_fd_cpp_tests).step);
     const fuzz_filter = b.option([]const u8, "fuzz-filter", "Select one wire/RPC fuzz target");
     const selected_fuzz = b.addTest(.{
         .root_module = b.createModule(.{ .root_source_file = b.path("tests/fuzz/fuzz_targets.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "capnpc-zig", .module = lib_module }} }),
@@ -1373,6 +1462,10 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_transport_step.dependOn(run_rpc_unix_regression_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_fd_drain_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_linger_tests);
+    test_rpc_transport_step.dependOn(run_rpc_unix_fd_send_tests);
+    test_rpc_transport_step.dependOn(run_rpc_unix_fd_boundary_tests);
+    test_rpc_transport_step.dependOn(run_rpc_unix_fd_peer_tests);
+    test_rpc_transport_step.dependOn(run_rpc_unix_fd_limits_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_worker_pool_tests);
     test_rpc_transport_step.dependOn(run_rpc_raw_frame_security_tests);
@@ -1482,6 +1575,7 @@ pub fn buildImpl(b: *std.Build) !void {
     if (run_rpc_quic_connection_internal_tests) |step| test_resource_budgets_step.dependOn(step);
     if (run_rpc_quic_peer_tests) |step| test_resource_budgets_step.dependOn(step);
     test_resource_budgets_step.dependOn(run_rpc_raw_frame_security_tests);
+    test_resource_budgets_step.dependOn(run_rpc_unix_fd_limits_tests);
     test_resource_budgets_step.dependOn(&run_wasm_host_abi_tests.step);
 
     const test_oom_step = b.step("test-oom", "Run OOM and failing allocator regression tests");
@@ -1498,6 +1592,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_oom_step.dependOn(run_rpc_persistence_tests);
     test_oom_step.dependOn(run_rpc_three_party_handoff_vatc_tests);
     test_oom_step.dependOn(run_rpc_raw_frame_security_tests);
+    test_oom_step.dependOn(run_rpc_unix_fd_limits_tests);
     test_oom_step.dependOn(&run_wasm_host_abi_tests.step);
 
     const test_lib_step = b.step("test-lib", "Run source module tests from src/lib.zig");
@@ -1675,6 +1770,18 @@ pub fn buildImpl(b: *std.Build) !void {
             // cmsghdr layout.
             "tests/rpc/transport/unix/rpc_unix_fd_drain_test.zig",
             "tests/rpc/transport/unix/rpc_unix_linger_test.zig",
+            // Fd passing, send side: the owner thread queues dups, the writer
+            // and the owner hand them to the closer's `.sent` lane.
+            "tests/rpc/transport/unix/rpc_unix_fd_send_test.zig",
+            // Fd passing, receive side: the fuzz's sender thread against the
+            // exact-boundary reader, and fds handed to the closer.
+            "tests/rpc/transport/unix/rpc_unix_fd_boundary_test.zig",
+            // Fd passing through the Peer: session threads, the closer
+            // taking imported fds, and the wake socketpair, against glibc.
+            "tests/rpc/transport/unix/rpc_unix_fd_peer_test.zig",
+            // Fd passing limits: the process fd budget's atomic count, shared
+            // by readers, writers, session threads and the closer.
+            "tests/rpc/transport/unix/rpc_unix_fd_limits_test.zig",
             // unix.listen/connect: the session threads, racing listeners and
             // the accept wake-up, against glibc.
             "tests/rpc/transport/unix/rpc_unix_session_test.zig",
@@ -1780,6 +1887,7 @@ pub fn buildImpl(b: *std.Build) !void {
     check_compile_step.dependOn(&main_tests.step);
     check_compile_step.dependOn(&rpc_pingpong_example.step);
     check_compile_step.dependOn(&rpc_pingpong_unix_example.step);
+    check_compile_step.dependOn(&rpc_fd_passing_example.step);
     if (rpc_pingpong_quic_example) |example_exe| check_compile_step.dependOn(&example_exe.step);
     check_compile_step.dependOn(&serialization_demo_example.step);
     // The soak is a real cross-platform executable; compile it for cross

@@ -5,6 +5,8 @@ const Connection = @import("./connection.zig").Connection;
 const events = @import("../../events.zig");
 const unix_socket_mod = @import("../unix/socket.zig");
 const fd_io = @import("../unix/fd_io.zig");
+const fd_passing_mod = @import("../fd_passing.zig");
+const client_wiring = @import("./client_wiring.zig");
 const net = std.Io.net;
 
 /// Re-export of the platform-stable socket wrapper used by all public
@@ -45,8 +47,11 @@ pub const Runtime = struct {
 /// ## AF_UNIX
 ///
 /// `rpc.transport.unix.listen` returns a `Listener` too (Experimental,
-/// Linux and Darwin). It accepts the same way; `unixPath` returns its path,
-/// and `close` also removes its socket file and releases its lock.
+/// Linux and Darwin). It accepts the same way, except that it waits while
+/// the fd closer's `.socket` lane is full (`awaitSocketLane`); `unixPath`
+/// returns its path, and `close` also removes its socket file and releases
+/// its lock. The final close of any AF_UNIX listener (this one, or
+/// `initFd` on an AF_UNIX socket) runs on that lane (see `close`).
 pub const Listener = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -57,6 +62,10 @@ pub const Listener = struct {
     /// listener owns (path, identity, held lock). Internal state; read the
     /// path with `unixPath`. Experimental.
     unix_socket: ?unix_socket_mod.SocketFile = null,
+    /// Fd passing on every connection this listener accepts
+    /// (`rpc.transport.unix.ListenOptions.fd_passing`). Experimental; only
+    /// an AF_UNIX listener may turn it on.
+    fd_passing: fd_passing_mod.FdPassing = .{},
 
     /// Bind and listen on the given address.
     pub fn init(
@@ -98,16 +107,28 @@ pub const Listener = struct {
 
     /// Accept a single connection. Blocks until a client connects.
     /// Returns a heap-allocated Connection.
+    ///
+    /// A listener from `rpc.transport.unix.listen` also waits while the fd
+    /// closer's `.socket` lane is full (see `awaitSocketLane`).
     pub fn accept(self: *Listener) !*Connection {
         if (self.close_requested.load(.acquire)) return error.ListenerClosed;
+        try self.awaitSocketCloses();
 
         const stream = try self.server.accept(self.io);
         const client_fd = stream.socket.handle;
-        errdefer closeFd(self.io, .{ .handle = client_fd });
-
-        setTcpNoDelay(.{ .handle = client_fd });
-
-        return self.createConnection(client_fd);
+        const conn = blk: {
+            errdefer closeFd(self.io, .{ .handle = client_fd });
+            setTcpNoDelay(.{ .handle = client_fd });
+            break :blk try self.createConnection(client_fd);
+        };
+        // Before anything reads: fd passing starts at the stream's first
+        // byte. The connection owns the socket now; its deinit closes it.
+        client_wiring.enableFdPassing(conn, self.fd_passing) catch |err| {
+            conn.deinit();
+            self.allocator.destroy(conn);
+            return err;
+        };
+        return conn;
     }
 
     /// Accept a single connection and return only its socket, with Nagle
@@ -117,10 +138,19 @@ pub const Listener = struct {
     /// produces.
     pub fn acceptFd(self: *Listener) !SocketFd {
         if (self.close_requested.load(.acquire)) return error.ListenerClosed;
+        try self.awaitSocketCloses();
         const stream = try self.server.accept(self.io);
         const client_fd = stream.socket.handle;
         setTcpNoDelay(.{ .handle = client_fd });
         return .{ .handle = client_fd };
+    }
+
+    /// A listener from `rpc.transport.unix.listen` takes no connection
+    /// while the fd closer's `.socket` lane is full (`awaitSocketLane`).
+    /// Returns `error.ListenerClosed` once `close` is called.
+    fn awaitSocketCloses(self: *Listener) error{ListenerClosed}!void {
+        if (self.unix_socket == null) return;
+        return awaitSocketLane(self.conn_options.observer, &self.close_requested);
     }
 
     /// The `std.Io` this listener accepts on. A `ServerSession` built from
@@ -136,12 +166,15 @@ pub const Listener = struct {
     /// file (only while the path still names that file) and releases its
     /// lock last, so no other `unix.listen` can bind the path in between.
     ///
-    /// On Linux and Darwin, an AF_UNIX listener (any socket that is not
-    /// IPv4 or IPv6) never does its final close on the calling thread: the
-    /// kernel closes the fds riding on connections still in its backlog
-    /// inside that close, and a peer can make one of those closes block. See
-    /// `closeListenSocket`. This fd is still closed before `close` returns,
-    /// and the lock is released without waiting for that final close.
+    /// On Linux and Darwin an AF_UNIX listener (one from
+    /// `rpc.transport.unix.listen`, or any socket `getsockname` reports as
+    /// neither IPv4 nor IPv6) never does its final close on the calling
+    /// thread. The connections still in its accept queue are released inside
+    /// that close, with any fds riding on their unread messages, and one of
+    /// those closes can block. The final close runs on the fd closer's
+    /// `.socket` lane instead (see `closeListenSocket`). This fd is still
+    /// closed before `close` returns, so a thread parked in `accept` wakes at
+    /// once, and the lock is released without waiting for that final close.
     pub fn close(self: *Listener) void {
         if (self.close_requested.swap(true, .acq_rel)) return;
         if (self.unix_socket) |*file| file.unlinkIfOurs();
@@ -160,7 +193,7 @@ pub const Listener = struct {
         if (comptime builtin.target.os.tag != .windows) {
             shutdownFd(self.io, .{ .handle = self.server.socket.handle });
         }
-        closeListenSocket(self.io, .{ .handle = self.server.socket.handle });
+        closeListenSocket(self.io, .{ .handle = self.server.socket.handle }, if (self.unix_socket) |*file| file else null);
     }
 
     /// Return the bound address. Useful for resolving ephemeral ports (port 0).
@@ -292,14 +325,17 @@ pub fn closeFd(io: std.Io, socket: SocketFd) void {
 /// The close of `Listener.close`. An IP listener (and every listener on
 /// Windows) closes inline, as before.
 ///
-/// On Linux and Darwin an AF_UNIX listener (any socket `getsockname` reports
-/// as neither IPv4 nor IPv6) never does its final close on this thread. The
-/// kernel closes the fds riding on connections still in a listener's backlog
-/// inside the listener's final close, on the closing thread, and `shutdown`
-/// disposes of none of them (measured with a 3 s linger: close 3006 ms on
-/// Linux and 3001 ms on macOS, shutdown 0 ms on both). A peer that connects,
-/// attaches a lingering TCP socket and is never accepted would otherwise
-/// block this thread for the linger time (without end on Linux).
+/// On Linux and Darwin an AF_UNIX listener never does its final close on
+/// this thread: one from `rpc.transport.unix.listen` (`unix_file` set), or
+/// any other socket `getsockname` reports as neither IPv4 nor IPv6 (a
+/// `Listener.initFd` on an AF_UNIX socket). The kernel releases the
+/// connections still in a listener's accept queue inside the listener's
+/// final close, on the closing thread, and closes the fds riding on their
+/// unread messages there; `shutdown` disposes of none of them (measured with
+/// a 3 s linger: close 3006 ms on Linux and 3001 ms on macOS, shutdown 0 ms
+/// on both). A peer that connects, attaches a lingering TCP socket and is
+/// never accepted would otherwise block this thread for the linger time
+/// (without end on Linux).
 ///
 /// So this takes a close-on-exec duplicate first, closes the listener's own
 /// fd here, and hands the duplicate to the closer's `.socket` lane, which
@@ -309,28 +345,62 @@ pub fn closeFd(io: std.Io, socket: SocketFd) void {
 /// the duplicate cannot be made (fd table full), the listener's own fd goes
 /// to the lane instead, and on macOS a parked `accept` then wakes when the
 /// lane gets to it.
-fn closeListenSocket(io: std.Io, socket: SocketFd) void {
+///
+/// A `unix.listen` listener hands off under the `.socket` slot `listen`
+/// reserved (`SocketFile.close_reservation`), so this never allocates and
+/// never falls back to an inline close. Any other AF_UNIX listener's
+/// hand-off needs a queue allocation; if that fails, the closer runs the
+/// close inline, with a warning (see `fd_io.closer`).
+fn closeListenSocket(io: std.Io, socket: SocketFd, unix_file: ?*unix_socket_mod.SocketFile) void {
     if (comptime fd_io.supported) {
-        if (isNonIpSocket(socket)) {
-            const posix = std.posix;
-            const rc = posix.system.fcntl(socket.handle, posix.F.DUPFD_CLOEXEC, @as(usize, 0));
-            switch (posix.errno(rc)) {
-                .SUCCESS => {
-                    const duplicate: fd_io.Fd = @intCast(rc);
-                    closeFd(io, socket);
-                    fd_io.closer.handOffSocketClose(null, duplicate);
-                },
-                else => |err| {
-                    // The number, never the tag: `posix.E` does not name
-                    // every errno.
-                    log.debug("duplicating a listening socket failed: errno {d}; the closer closes it", .{@backingInt(err)});
-                    fd_io.closer.handOffSocketClose(null, socket.handle);
-                },
-            }
+        if (unix_file != null or isNonIpSocket(socket)) {
+            const reservation: ?*fd_io.closer.Reservation = if (unix_file) |file| &file.close_reservation else null;
+            const duplicate = fd_io.dupCloexec(socket.handle) catch |err| {
+                log.debug("duplicating a listening socket failed ({t}); the closer closes it", .{err});
+                fd_io.closer.handOffSocketClose(reservation, socket.handle);
+                return;
+            };
+            closeFd(io, socket);
+            fd_io.closer.handOffSocketClose(reservation, duplicate);
             return;
         }
     }
     closeFd(io, socket);
+}
+
+/// How often an accept waiting in `awaitSocketLane` looks at its cancel
+/// flag, at most.
+const socket_lane_wait_ms: u32 = 50;
+
+/// The accept gate of a listener from `rpc.transport.unix.listen`
+/// (`Listener.accept`, `Listener.acceptFd`, and a `WorkerPool` serving one
+/// through `initListener`). Experimental; Linux and Darwin (elsewhere it
+/// returns at once).
+///
+/// Returns at once while the fd closer's `.socket` lane holds fewer than
+/// `fd_io.closer.socketLaneBound()` jobs; otherwise waits until it does.
+/// Each job there holds one socket fd, and a close there blocks while that
+/// socket still carries a peer's fd whose close blocks; every AF_UNIX close
+/// queued behind it keeps its fd until then (macOS sends every AF_UNIX
+/// close there, Linux every close with unread bytes). A peer that stalls one
+/// close and then reconnects in a loop would otherwise fill the fd table.
+/// Waiting leaves its connections in the kernel's backlog, outside this
+/// process's fd table. Emits one `.backpressure` event per wait to
+/// `observer` (`resource = .attached_fds`, `err =
+/// error.SocketCloseQueueFull`, `attempted_bytes` = the lane's pending jobs,
+/// `limit` = the bound). Returns `error.ListenerClosed` once `cancel` is
+/// set, checking it at least every 50 ms.
+pub fn awaitSocketLane(observer: ?events.Observer, cancel: *const std.atomic.Value(bool)) error{ListenerClosed}!void {
+    if (comptime !fd_io.supported) return;
+    if (!fd_io.closer.socketLaneFull()) return;
+    const bound = fd_io.closer.socketLaneBound();
+    log.warn("fd closer: {d} AF_UNIX socket job(s) pending (bound {d}); accept waits", .{ fd_io.closer.pendingIn(.socket), bound });
+    events.emitBackpressure(observer, .unix, .server, .attached_fds, fd_io.closer.pendingIn(.socket), bound, error.SocketCloseQueueFull);
+    while (fd_io.closer.socketLaneFull()) {
+        if (cancel.load(.acquire)) return error.ListenerClosed;
+        fd_io.closer.waitSocketLane(socket_lane_wait_ms);
+    }
+    if (cancel.load(.acquire)) return error.ListenerClosed;
 }
 
 /// Shut down a socket for both directions via Io, ignoring errors. On POSIX a

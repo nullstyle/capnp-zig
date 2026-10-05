@@ -6,6 +6,8 @@ const table = @import("../caps/table.zig");
 const protocol = @import("../wire/protocol.zig");
 const sender = @import("call/peer_call_sender.zig");
 const state = @import("state.zig");
+const peer_fds = @import("peer_fds.zig");
+const peer_export_release = @import("peer_export_release.zig");
 const StreamState = @import("../transport/stream_state.zig").StreamState;
 
 pub fn Streaming(comptime Peer: type) type {
@@ -28,14 +30,17 @@ pub fn Streaming(comptime Peer: type) type {
             fn record(self: *@This(), id: u32, entries: []const table.OutboundEntry) !void {
                 try self.peer.recordQuestionParamExports(id, entries);
             }
-            fn send(self: *@This(), builder: *protocol.MessageBuilder) !void {
+            fn send(self: *@This(), builder: *protocol.MessageBuilder, call: *protocol.CallBuilder) !void {
+                // Fd passing: the same post-encode pass as every other Call.
+                var fds: peer_fds.OutboundFds = .{};
+                try peer_fds.PeerFds(Peer).attachPayload(self.peer, call.payload, &fds);
                 const bytes = try builder.finish();
                 const allocator = self.peer.allocator;
                 defer allocator.free(bytes);
                 try self.reservation.reserveBytes(bytes.len);
                 // A synchronous Return may destroy the reservation's owner.
                 // Never access it after calling the transport.
-                try self.peer.sendFrame(bytes);
+                try peer_export_release.ExportRelease(Peer).sendFrameWithFds(self.peer, bytes, fds.slice());
             }
             fn loopback(self: *@This(), bytes: []const u8) !void {
                 try self.reservation.reserveBytes(bytes.len);

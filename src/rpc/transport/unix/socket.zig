@@ -10,9 +10,15 @@
 //! - `connect` returns a `*tcp.ClientSession`, wired exactly like
 //!   `tcp.connect`.
 //!
-//! Every connection reads in drain mode (`fd_io`): fds a peer attaches are
-//! closed off the reader thread, never kept. Connections report
-//! `events.Source.unix`.
+//! By default every connection reads in drain mode (`fd_io`): fds a peer
+//! attaches are closed off the reader thread, never kept. With
+//! `fd_passing.max_fds_per_message > 0` (`ListenOptions`, `ConnectOptions`)
+//! the connection keeps up to that many per message, and the `Peer`
+//! attaches them to the capabilities they came with (`Peer.importFd`).
+//! The same option turns sending on: only then does an export given an fd
+//! with `Peer.setExportFd` carry it. A connection in drain mode sends no
+//! fds, as in C++, because a receiver that did not ask for them still gets
+//! them installed on macOS. Connections report `events.Source.unix`.
 //!
 //! ## The socket file
 //!
@@ -54,11 +60,21 @@
 //!   and releases the lock. A relative path resolves against the current
 //!   directory at each step: after a `chdir`, `close` finds a different file
 //!   (or none) and leaves the socket file in place. The socket's final
-//!   close runs on the closer's `.socket` lane (see `fd_io`): the kernel
-//!   closes the fds riding on connections still in the backlog inside it,
-//!   and one of those closes can block. `close` still closes the listener's
-//!   own fd before it returns, which wakes a thread parked in `accept`, and
-//!   it releases the lock without waiting for that lane.
+//!   close runs on the fd closer's `.socket` lane (`tcp.Listener.close`, on
+//!   a close-on-exec dup, under the `.socket` slot `listen` reserved, so it
+//!   never allocates): connections still in the accept queue are released
+//!   inside it, with the fds on their unread messages, and one of those
+//!   closes can block. `close` still closes the listener's own fd before it
+//!   returns, which wakes a thread parked in `accept`, and it releases the
+//!   lock without waiting for that lane.
+//! - **Accept waits while socket closes are stuck.** `Listener.accept`,
+//!   `Listener.acceptFd`, `ServerSession.accept` and the workers of a
+//!   `WorkerPool` built with `initListener` on this listener wait while the
+//!   fd closer's `.socket` lane holds `fd_io.closer.socketLaneBound()` jobs
+//!   or more (`tcp.runtime.awaitSocketLane`; a close there that blocks
+//!   holds every AF_UNIX close queued behind it, each with its fd). New
+//!   connections then wait in the kernel's backlog. `close` (or the pool's
+//!   shutdown) ends the wait with `error.ListenerClosed`.
 //! - **Flags.** The listening and client sockets are close-on-exec (std
 //!   already makes accepted sockets close-on-exec). No `TCP_NODELAY`: these
 //!   are not TCP sockets.
@@ -83,6 +99,7 @@ const posix = std.posix;
 const log = std.log.scoped(.rpc_unix);
 
 const fd_io = @import("fd_io.zig");
+const fd_passing_mod = @import("../fd_passing.zig");
 const runtime = @import("../tcp/runtime.zig");
 const client = @import("../tcp/client.zig");
 const client_wiring = @import("../tcp/client_wiring.zig");
@@ -126,7 +143,17 @@ pub const ListenOptions = struct {
     /// Remove a socket file that a server which is gone left at the path.
     /// See "Stale files" in the module doc.
     reclaim_stale: bool = false,
+    /// Fd passing on every accepted connection (`Listener.accept` and
+    /// `ServerSession.accept`). The default keeps no received fd and sends
+    /// none.
+    /// `ServerSession.accept` also gives its peer `max_live_imported_fds`;
+    /// a `Peer` you build on a `Listener.accept` connection takes it from
+    /// `Peer.setMaxLiveImportedFds` (default 64).
+    fd_passing: FdPassing = .{},
 };
+
+/// Fd passing on one connection; see `rpc.transport.unix.FdPassing`.
+pub const FdPassing = fd_passing_mod.FdPassing;
 
 /// Every way `listen` fails.
 pub const ListenError = error{
@@ -170,6 +197,9 @@ pub const ConnectOptions = struct {
     /// server's backlog is full; macOS never waits). 0 acts as 1 ms. Null
     /// waits without a bound.
     connect_timeout_ms: ?u64 = 30_000,
+    /// Fd passing on the connection. The default keeps no received fd and
+    /// sends none.
+    fd_passing: FdPassing = .{},
 };
 
 /// Every way `connect` fails.
@@ -214,10 +244,19 @@ pub const SocketFile = struct {
     ino: u64,
     /// The open `<path>.lock` with the flock held; -1 once released.
     lock_fd: Fd,
+    /// The closer's `.socket`-lane slot for the listening socket's final
+    /// close (`tcp.Listener.close`), taken by `listen`, so that close never
+    /// allocates or runs inline.
+    close_reservation: fd_io.closer.Reservation = .{ .lane = .socket },
 
     /// The path `listen` bound.
     pub fn path(self: *const SocketFile) []const u8 {
         return self.path_buf[0..self.path_len];
+    }
+
+    /// Give back the `.socket`-lane slot (`listen`'s error paths).
+    fn releaseReservation(self: *SocketFile) void {
+        fd_io.closer.release(&self.close_reservation);
     }
 
     /// Remove the path if it still names the file `bind` created. Holding
@@ -281,6 +320,12 @@ pub fn listen(
     errdefer file.releaseLock();
     try takeLock(file.lock_fd);
 
+    fd_io.closer.reserve(&file.close_reservation, 1) catch |err| return switch (err) {
+        error.OutOfMemory => error.SystemResources,
+        error.UnixSocketsUnsupported => error.UnixSocketsUnsupported,
+    };
+    errdefer file.releaseReservation();
+
     const fd = try openSocket(ListenError);
     errdefer closeRaw(fd);
 
@@ -308,6 +353,7 @@ pub fn listen(
 
     var listener = Listener.initFd(gpa, io, .{ .handle = fd }, options.conn);
     listener.unix_socket = file;
+    listener.fd_passing = options.fd_passing;
     return listener;
 }
 
@@ -330,7 +376,7 @@ pub fn connect(
         try connectSocket(fd, &addr, options.connect_timeout_ms);
     }
     // `wire` owns the socket from here, on success and on error.
-    return client_wiring.wire(gpa, io, .{ .handle = fd }, options.session);
+    return client_wiring.wireWithFdPassing(gpa, io, .{ .handle = fd }, options.session, options.fd_passing);
 }
 
 // ---------------------------------------------------------------------------

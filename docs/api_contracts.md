@@ -103,7 +103,16 @@ Internal helper behavior may change, but exported type semantics and error class
   and leaves the final close to the closer's `.socket` lane (see
   `rpc.transport.unix.fd_io`). Residual: while that close blocks, the
   `.socket` lane waits too, and AF_UNIX socket closes queued behind it each
-  hold one fd until it ends.
+  hold one fd until it ends. That is why the next rule exists.
+- On a `unix.listen` listener, a worker takes no connection while the
+  closer's `.socket` lane holds `fd_io.closer.socketLaneBound()` jobs or
+  more, exactly as `Listener.accept` does (`tcp.runtime.awaitSocketLane`):
+  one `.backpressure` event (`error.SocketCloseQueueFull`) per wait goes to
+  `Config.connection_options.observer`, new connections wait in the
+  kernel's backlog, and shutdown ends the wait.
+- The listener's `fd_passing` applies to every connection the pool
+  accepts, as with `ServerSession.accept`: the transport keeps fds from the
+  first byte, and each `Peer` gets its `max_live_imported_fds`.
 - Workers park in `poll` on the listen socket and on a wake door (a pipe the
   pool owns). Shutdown writes the door, which wakes every parked worker. It
   never dials the listener, so it finishes even after the socket file was

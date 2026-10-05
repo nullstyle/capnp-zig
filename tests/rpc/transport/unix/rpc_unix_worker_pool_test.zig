@@ -15,6 +15,12 @@
 //! listener by pointer and marks the caller's copy closed, so a leftover
 //! `defer listener.close()` cannot close it under the pool.
 //!
+//! The pool accepts with its own raw syscalls, so it keeps the listener's
+//! other promises itself: its workers take no connection while the fd
+//! closer's `.socket` lane is at its bound (as `Listener.accept` does), and
+//! every connection gets the listener's fd passing (as from
+//! `ServerSession.accept`).
+//!
 //! Every case runs in its own private directory (mode 0700) under /tmp,
 //! with short names (`sun_path` is 104 bytes on Darwin). Linux and macOS
 //! run the suite; every other target compiles it and runs only the
@@ -498,6 +504,192 @@ test "WorkerPool.initListener: a backlog connection carrying a lingering socket 
 
     lingering.endLinger();
     try support.waitCloserIdle(closer_drain_ms);
+}
+
+// ---------------------------------------------------------------------------
+// The socket lane's bound, and fd passing
+// ---------------------------------------------------------------------------
+
+/// Stalls the closer's `.socket` lane: a connection torn down with a
+/// lingering socket still unread in its queue. Returns the peer's end, which
+/// the caller closes only after the linger ended (on macOS that close waits
+/// for the stuck `shutdown(SHUT_RD)` on the lane; FD-0 pins it).
+fn stallSocketLane(lingering: *support.LingeringSocket) !Fd {
+    const d = try support.socketPair();
+    errdefer support.closeFd(d[0]);
+    var td = try tcp.Transport.init(testing.allocator, testing.io, .{ .handle = d[1] }, 64);
+    try support.sendWithFds(d[0], "unread", &.{lingering.client});
+    lingering.closeClient();
+    td.deinit();
+    try support.expectLaneStuck(.socket, 200);
+    return d[0];
+}
+
+/// Counts the `.backpressure` events that say the `.socket` lane is full.
+const LaneEvents = struct {
+    socket_close_queue_full: std.atomic.Value(u32) = .init(0),
+    last_limit: std.atomic.Value(usize) = .init(0),
+
+    fn observer(self: *LaneEvents) capnpc.rpc.events.Observer {
+        return capnpc.rpc.events.Observer.init(self, onEvent);
+    }
+
+    fn onEvent(ctx: *anyopaque, event: capnpc.rpc.events.Event) void {
+        const self: *LaneEvents = @ptrCast(@alignCast(ctx));
+        switch (event) {
+            .backpressure => |b| if (b.err == error.SocketCloseQueueFull) {
+                self.last_limit.store(b.limit orelse 0, .release);
+                _ = self.socket_close_queue_full.fetchAdd(1, .acq_rel);
+            },
+            else => {},
+        }
+    }
+};
+
+test "WorkerPool.initListener: behind a stuck socket-lane close, the workers stop accepting at the lane's bound, and shutdown still ends the wait" {
+    // The accept gate of `Listener.accept` (threat table row 8), on the
+    // pool's own raw accept: each AF_UNIX close queued behind a stuck one
+    // keeps its fd, so a peer that reconnects in a loop must wait in the
+    // kernel's backlog once the lane holds `socketLaneBound()` jobs.
+    if (comptime !supported) return error.SkipZigTest;
+    try support.fd_io.closer.ensureStarted();
+    try support.waitCloserIdle(closer_drain_ms);
+    const before = support.FdSnapshot.take();
+    {
+        const budget_limit = support.BudgetLimit.set(16);
+        defer budget_limit.restore();
+        const bound = support.fd_io.closer.socketLaneBound();
+        try testing.expectEqual(support.fd_io.closer.min_socket_lane_bound, bound);
+
+        var dir: support.TestDir = .{};
+        try dir.init();
+        defer dir.deinit();
+        var path_buf: [96]u8 = undefined;
+        const path = dir.path(&path_buf, "s");
+
+        // Every connection is rejected, so its worker tears it down at once
+        // with the peer's byte unread: on both kernels its close goes to the
+        // `.socket` lane.
+        var counter: RejectCounter = .{};
+        var lane_events: LaneEvents = .{};
+        var listener = try unix.listen(testing.allocator, testing.io, path, .{});
+        defer listener.close();
+        var pool = try WorkerPool.initListener(testing.allocator, &listener, &counter, RejectCounter.onAccept, .{
+            .concurrency = 1,
+            .connection_options = .{ .observer = lane_events.observer() },
+        });
+        defer pool.deinit();
+
+        var lingering = try support.LingeringSocket.open(stall_linger_seconds);
+        defer lingering.deinit();
+        const stall_peer = try stallSocketLane(&lingering);
+        defer {
+            // End the linger first: on macOS this close waits for it.
+            lingering.endLinger();
+            support.closeFd(stall_peer);
+        }
+        // macOS queues two jobs per teardown (the read half of the
+        // shutdown, then the close), Linux one (the close).
+        const per_teardown: usize = if (support.is_macos) 2 else 1;
+        const stall_jobs = support.fd_io.closer.pendingIn(.socket);
+        try testing.expectEqual(per_teardown, stall_jobs);
+
+        // A peer that reconnects in a loop, leaving one byte unread each
+        // time. They all wait in the backlog before the pool runs, so each
+        // byte is there when its connection is torn down.
+        const reconnects = 3 * bound;
+        for (0..reconnects) |_| {
+            const client = try support.connectPath(path);
+            defer support.closeFd(client);
+            try support.sendWithFds(client, "u", &.{});
+        }
+        const held_before = support.FdSnapshot.take();
+
+        const run_thread = try std.Thread.spawn(.{}, runPool, .{&pool});
+        var run_joined = false;
+        defer if (!run_joined) {
+            pool.shutdown();
+            run_thread.join();
+        };
+        // Let the worker take what it will.
+        support.sleepMs(500);
+        const accepted: usize = counter.count.load(.acquire);
+        var held: [64]Fd = undefined;
+        const n_held = support.FdSnapshot.take().added(held_before, &held);
+        errdefer std.debug.print("accepted {d} of {d} reconnects; {d} fd(s) held; socket lane {d}, bound {d}\n", .{ accepted, reconnects, n_held, support.fd_io.closer.pendingIn(.socket), bound });
+        // The stuck close plus the jobs of each accepted connection fill
+        // the lane; each of those connections holds one fd.
+        const fit = (bound - stall_jobs + per_teardown - 1) / per_teardown;
+        try testing.expectEqual(fit, accepted);
+        try testing.expectEqual(stall_jobs + fit * per_teardown, support.fd_io.closer.pendingIn(.socket));
+        try testing.expectEqual(fit, n_held);
+        // One event for the wait, to the pool's observer.
+        try testing.expectEqual(@as(u32, 1), lane_events.socket_close_queue_full.load(.acquire));
+        try testing.expectEqual(bound, lane_events.last_limit.load(.acquire));
+
+        // Shutdown ends the wait at once, and nothing more was accepted.
+        run_joined = true;
+        const elapsed = try timedShutdown(&pool, run_thread, "shutdown of a pool waiting at the socket lane's bound");
+        try testing.expect(elapsed < shutdown_bound_ms);
+        try testing.expectEqual(fit, counter.count.load(.acquire));
+        try testing.expect(!support.pathExists(path));
+
+        // Every fd is released once the blocked close ends.
+        lingering.endLinger();
+        try support.waitCloserIdle(closer_drain_ms);
+    }
+    try support.expectBackAtBaseline(before);
+}
+
+/// Records what fd passing an accepted connection got, then rejects it.
+const FdPassingProbe = struct {
+    seen: std.atomic.Value(bool) = .init(false),
+    max_fds_per_message: u8 = 0,
+    max_live_imports: u32 = 0,
+
+    fn onAccept(ctx: *anyopaque, peer: *Peer, conn: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
+        const self: *FdPassingProbe = @ptrCast(@alignCast(ctx));
+        self.max_fds_per_message = conn.transport.maxFdsPerMessage();
+        self.max_live_imports = peer.fds.max_live_imports;
+        self.seen.store(true, .release);
+        return .reject;
+    }
+};
+
+test "WorkerPool.initListener: every connection gets the listener's fd passing, as from ServerSession.accept" {
+    if (comptime !supported) return error.SkipZigTest;
+
+    var dir: support.TestDir = .{};
+    try dir.init();
+    defer dir.deinit();
+    var path_buf: [96]u8 = undefined;
+    const path = dir.path(&path_buf, "s");
+
+    var listener = try unix.listen(testing.allocator, testing.io, path, .{
+        .fd_passing = .{ .max_fds_per_message = 4, .max_live_imported_fds = 7 },
+    });
+    defer listener.close();
+    var probe: FdPassingProbe = .{};
+    var pool = try WorkerPool.initListener(testing.allocator, &listener, &probe, FdPassingProbe.onAccept, .{ .concurrency = 1 });
+    defer pool.deinit();
+    const run_thread = try std.Thread.spawn(.{}, runPool, .{&pool});
+    var run_joined = false;
+    defer if (!run_joined) {
+        pool.shutdown();
+        run_thread.join();
+    };
+
+    const client = try support.connectPath(path);
+    defer support.closeFd(client);
+    const start = support.nowNs();
+    while (!probe.seen.load(.acquire) and support.msSince(start) < 2000) support.sleepMs(1);
+    try testing.expect(probe.seen.load(.acquire));
+    try testing.expectEqual(@as(u8, 4), probe.max_fds_per_message);
+    try testing.expectEqual(@as(u32, 7), probe.max_live_imports);
+
+    run_joined = true;
+    const elapsed = try timedShutdown(&pool, run_thread, "shutdown of a pool with fd passing on");
+    try testing.expect(elapsed < shutdown_bound_ms);
 }
 
 // ---------------------------------------------------------------------------

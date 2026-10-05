@@ -73,6 +73,18 @@ jobs:
           mise exec -- zig build test-reflection test-reflection-wasi test-reflection-cpp --summary all -j4
           mise exec -- zig build -Doptimize=ReleaseSafe test-reflection test-reflection-wasi test-reflection-cpp --summary all -j4
           mise exec -- zig build test-reflection-oracle-ablation test-codegen-streaming-cpp test-codegen-generic-rpc-cpp --summary all -j2
+      - name: Fd passing against the C++ reference
+        # Sprint item 15: the reference's "send FD over RPC" and "FD per
+        # message limit" tests, C++ <-> Zig over an AF_UNIX socketpair, in
+        # both directions. Built against the pinned reference above.
+        shell: bash
+        run: |
+          export PATH="$RUNNER_TEMP/capnp-reference/bin:$PATH"
+          export PKG_CONFIG_LIBDIR="$RUNNER_TEMP/capnp-reference/lib/pkgconfig"
+          unset PKG_CONFIG_PATH
+          test "$(command -v capnp)" = "$RUNNER_TEMP/capnp-reference/bin/capnp"
+          test "$(pkg-config --variable=prefix capnp)" = "$RUNNER_TEMP/capnp-reference"
+          mise exec -- zig build test-rpc-fd-cpp --summary all
 
   test:
     name: Test (${{ matrix.os }})
@@ -203,6 +215,12 @@ jobs:
       - name: RPC ping-pong example over a Unix-domain socket
         if: runner.os != 'Windows'
         run: zig build example-rpc-unix
+
+      - name: Fd-passing example over a Unix-domain socket
+        # Fails unless the fd arrives, works, and every copy of it is closed
+        # at the end (docs/rpc-unix-sockets.md).
+        if: runner.os != 'Windows'
+        run: zig build example-rpc-fd
 
   fmt-check:
     name: Format check
@@ -537,6 +555,16 @@ jobs:
 
       - name: Run OOM regression tests
         run: zig build test-oom --summary all
+
+      - name: Run fd-passing limit and fault-injection tests
+        # Sprint item 13: the process fd budget, N connections at their
+        # per-connection fd cap with accept still working, OOM at every
+        # allocation of the fd paths (the fd-passing merge needs it green),
+        # EMFILE, and Linux ETOOMANYREFS (the runner is not root). The suite
+        # is also part of test-oom and test-resource-budgets, so this step is
+        # usually a cache hit; it names the gate. Windows compiles it and
+        # skips.
+        run: zig build test-rpc-unix-fd-limits --summary all
 
       - name: Run raw-frame security e2e tests
         run: zig build test-e2e-security --summary all

@@ -6,6 +6,7 @@ const protocol = @import("../wire/protocol.zig");
 const state = @import("./state.zig");
 const events = @import("../events.zig");
 const peer_cleanup = @import("./peer_cleanup.zig");
+const peer_fds = @import("./peer_fds.zig");
 const peer_outbound_control = @import("./peer_outbound_control.zig");
 const peer_return_frames = @import("./return/peer_return_frames.zig");
 
@@ -278,6 +279,9 @@ pub fn Lifecycle(comptime Peer: type) type {
             self.incoming_automatic_third_party_routes.deinit();
             peer_cleanup.clearOptionalOwnedBytes(self.allocator, &self.last_remote_abort_reason);
             releaseAllImports(self);
+            // Fd passing: every fd still held by an import goes to the closer
+            // thread with the import table.
+            peer_fds.PeerFds(Peer).deinit(self);
             self.caps.deinit();
         }
 

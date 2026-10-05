@@ -1,5 +1,6 @@
 //! Raw-syscall helpers shared by the AF_UNIX fd suites
 //! (`rpc_unix_fd_drain_test.zig`, `rpc_unix_linger_test.zig`,
+//! `rpc_unix_fd_send_test.zig`, `rpc_unix_fd_boundary_test.zig`,
 //! `rpc_unix_worker_pool_test.zig`).
 //!
 //! The "peer" in these suites is a raw socket that attaches fds with
@@ -74,6 +75,12 @@ pub fn isOpen(fd: Fd) bool {
     return fdFlags(fd) != null;
 }
 
+/// `fd` is open and close-on-exec.
+pub fn isCloexec(fd: Fd) bool {
+    const flags = fdFlags(fd) orelse return false;
+    return flags & posix.FD_CLOEXEC != 0;
+}
+
 pub fn setNonBlocking(fd: Fd, on: bool) !void {
     const nonblock: usize = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
     const get = if (is_linux and !builtin.link_libc)
@@ -134,6 +141,24 @@ fn buildRights(buf: []align(cmsg_align) u8, fds: []const Fd) []align(cmsg_align)
 
 /// One raw `sendmsg`; a non-empty `fds` goes out as one SCM_RIGHTS cmsg.
 fn sendOnce(sock: Fd, bytes: []const u8, fds: []const Fd) !usize {
+    return switch (sendFlagsErrno(sock, bytes, fds, 0)) {
+        .ok => |n| n,
+        .err => |err| {
+            std.debug.print("sendmsg failed with errno {d}\n", .{@backingInt(err)});
+            return error.SyscallFailed;
+        },
+    };
+}
+
+/// The outcome of one `sendFlagsErrno`.
+pub const SendOutcome = union(enum) {
+    ok: usize,
+    err: posix.E,
+};
+
+/// One raw `sendmsg` with `flags` (for example `MSG_OOB`), `fds` as one
+/// SCM_RIGHTS cmsg; the bytes sent or the errno, which the caller judges.
+pub fn sendFlagsErrno(sock: Fd, bytes: []const u8, fds: []const Fd, flags: u32) SendOutcome {
     var control_buf: [cmsg.space(max_send_fds * @sizeOf(Fd))]u8 align(cmsg_align) = undefined;
     const control: []const u8 = if (fds.len == 0) &.{} else buildRights(&control_buf, fds);
     var iov = [1]posix.iovec_const{.{ .base = bytes.ptr, .len = bytes.len }};
@@ -147,14 +172,11 @@ fn sendOnce(sock: Fd, bytes: []const u8, fds: []const Fd) !usize {
         .flags = 0,
     };
     while (true) {
-        const rc = sys.sendmsg(sock, &msg, 0);
+        const rc = sys.sendmsg(sock, &msg, flags);
         switch (posix.errno(rc)) {
-            .SUCCESS => return @intCast(ival(rc)),
+            .SUCCESS => return .{ .ok = @intCast(ival(rc)) },
             .INTR => continue,
-            else => |err| {
-                std.debug.print("sendmsg failed with errno {d}\n", .{@backingInt(err)});
-                return error.SyscallFailed;
-            },
+            else => |err| return .{ .err = err },
         }
     }
 }
@@ -379,6 +401,28 @@ pub const Pipes = struct {
         self.count = 0;
     }
 
+    /// Fails unless pipe `i` sees EOF within `closed_wait_ms`, for each `i`
+    /// in `indexes`: every copy of its write end is closed.
+    pub fn expectClosed(self: *const Pipes, indexes: []const usize) !void {
+        for (indexes) |i| {
+            if (!pipeWritersClosed(self.read_ends[i], closed_wait_ms)) {
+                std.debug.print("pipe {d}: a copy of its write end is still open\n", .{i});
+                return error.AttachedFdStillOpen;
+            }
+        }
+    }
+
+    /// Fails unless pipe `i` still has a copy of its write end open, for
+    /// each `i` in `indexes`.
+    pub fn expectOpen(self: *const Pipes, indexes: []const usize) !void {
+        for (indexes) |i| {
+            if (pipeWritersClosed(self.read_ends[i], still_open_wait_ms)) {
+                std.debug.print("pipe {d}: every copy of its write end is closed\n", .{i});
+                return error.AttachedFdClosedEarly;
+            }
+        }
+    }
+
     /// Fails unless every pipe sees EOF within `closed_wait_ms`: the
     /// receiver closed every write end it got.
     pub fn expectAllWritersClosed(self: *const Pipes) !void {
@@ -397,9 +441,11 @@ pub const max_scanned_fd = 2048;
 
 pub const FdSnapshot = struct {
     open: std.StaticBitSet(max_scanned_fd),
+    /// The process fd budget's count (`fd_io.budget.inUse()`) when taken.
+    budget_in_use: usize = 0,
 
     pub fn take() FdSnapshot {
-        var snapshot: FdSnapshot = .{ .open = .empty };
+        var snapshot: FdSnapshot = .{ .open = .empty, .budget_in_use = fd_io.budget.inUse() };
         var fd: usize = 0;
         while (fd < max_scanned_fd) : (fd += 1) {
             if (isOpen(@intCast(fd))) snapshot.open.set(fd);
@@ -426,7 +472,8 @@ pub const FdSnapshot = struct {
 };
 
 /// Waits (up to `closed_wait_ms`, for the closer thread) until the fd table
-/// is exactly `before` again; prints the difference and fails otherwise.
+/// is exactly `before` again, and the process fd budget counts what it did
+/// then; prints the difference and fails otherwise.
 pub fn expectBackAtBaseline(before: FdSnapshot) !void {
     const start = nowNs();
     while (true) {
@@ -435,16 +482,46 @@ pub fn expectBackAtBaseline(before: FdSnapshot) !void {
         const n_leaked = after.added(before, &leaked);
         var lost: [16]Fd = undefined;
         const n_lost = before.added(after, &lost);
-        if (n_leaked == 0 and n_lost == 0) return;
+        if (n_leaked == 0 and n_lost == 0 and after.budget_in_use == before.budget_in_use) return;
         if (msSince(start) >= closed_wait_ms) {
             std.debug.print("fd table not back at baseline: {d} new fd(s) {any}, {d} closed fd(s) {any}\n", .{
                 n_leaked, leaked[0..@min(n_leaked, leaked.len)], n_lost, lost[0..@min(n_lost, lost.len)],
             });
+            if (after.budget_in_use != before.budget_in_use) {
+                std.debug.print("process fd budget counts {d} fd(s), {d} at the baseline\n", .{ after.budget_in_use, before.budget_in_use });
+                return error.FdBudgetNotAtBaseline;
+            }
             return error.FdTableNotAtBaseline;
         }
         sleepMs(10);
     }
 }
+
+/// Waits (up to `closed_wait_ms`, for the closer thread) until the process
+/// fd budget counts exactly `want`.
+pub fn expectBudgetInUse(want: usize) !void {
+    const start = nowNs();
+    while (fd_io.budget.inUse() != want) {
+        if (msSince(start) >= closed_wait_ms) {
+            std.debug.print("process fd budget counts {d} fd(s), expected {d}\n", .{ fd_io.budget.inUse(), want });
+            return error.FdBudgetMismatch;
+        }
+        sleepMs(5);
+    }
+}
+
+/// Sets the process fd budget's limit for one test, and restores it.
+pub const BudgetLimit = struct {
+    previous: usize,
+
+    pub fn set(limit: usize) BudgetLimit {
+        return .{ .previous = fd_io.budget.setLimit(limit) };
+    }
+
+    pub fn restore(self: BudgetLimit) void {
+        _ = fd_io.budget.setLimit(self.previous);
+    }
+};
 
 /// Waits until the closer threads have done everything handed to them.
 pub fn waitCloserIdle(timeout_ms: i64) !void {
@@ -468,6 +545,60 @@ pub fn waitLaneIdle(lane: fd_io.closer.Lane, timeout_ms: i64) !void {
         }
         sleepMs(10);
     }
+}
+
+/// Setup check for the stall tests: `lane` still has a job after
+/// `settle_ms`, so the lingering close in it really blocks (otherwise the
+/// test proves nothing).
+pub fn expectLaneStuck(lane: fd_io.closer.Lane, settle_ms: i64) !void {
+    sleepMs(settle_ms);
+    if (fd_io.closer.pendingIn(lane) == 0) {
+        std.debug.print("setup: the lingering close on the {t} lane did not block\n", .{lane});
+        return error.LingerDidNotBlock;
+    }
+}
+
+/// A private (0700) directory under /tmp for one socket file (`<dir>/s`),
+/// removed with everything in it. A `TestDir` underneath, so its names
+/// never collide with one.
+pub const PrivateDir = struct {
+    test_dir: TestDir = .{},
+    path_buf: [96]u8 = undefined,
+
+    pub fn init(self: *PrivateDir) !void {
+        try self.test_dir.init();
+    }
+
+    pub fn deinit(self: *PrivateDir) void {
+        self.test_dir.deinit();
+    }
+
+    /// `<dir>/s`: the socket file's path.
+    pub fn socketPath(self: *PrivateDir) []const u8 {
+        return self.test_dir.path(&self.path_buf, "s");
+    }
+};
+
+/// A raw blocking client connect to the AF_UNIX socket file at `path`
+/// (`connectPath`).
+pub fn rawConnect(path: []const u8) !Fd {
+    return connectPath(path);
+}
+
+/// Raise the soft RLIMIT_NOFILE to `want` (at most the hard limit) for a
+/// test that installs many fds; null when the hard limit is below `need`.
+/// Give the returned limit back to `restoreFdLimit`.
+pub fn raiseFdLimit(want: u64, need: u64) !?posix.rlimit {
+    const previous = try posix.getrlimit(.NOFILE);
+    if (previous.max < need) return null;
+    var next = previous;
+    next.cur = @max(previous.cur, @min(want, previous.max));
+    try posix.setrlimit(.NOFILE, next);
+    return previous;
+}
+
+pub fn restoreFdLimit(previous: posix.rlimit) void {
+    posix.setrlimit(.NOFILE, previous) catch {};
 }
 
 /// True once `fd` is closed, within `timeout_ms`. Only for an fd number
@@ -529,6 +660,8 @@ pub const Recorder = struct {
     connection_count: usize = 0,
     close_err: ?anyerror = null,
     closed: bool = false,
+    protocol_errs: [8]anyerror = undefined,
+    protocol_count: usize = 0,
 
     pub fn observer(self: *Recorder) events.Observer {
         return events.Observer.init(self, onEvent);
@@ -548,6 +681,10 @@ pub const Recorder = struct {
             .close => |c| {
                 self.closed = true;
                 self.close_err = c.err;
+            },
+            .protocol_error => |p| if (self.protocol_count < self.protocol_errs.len) {
+                self.protocol_errs[self.protocol_count] = p.err;
+                self.protocol_count += 1;
             },
             else => {},
         }

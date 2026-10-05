@@ -7,6 +7,7 @@ const runtime_helpers = @import("../transport/tcp/runtime.zig");
 const Runtime = @import("../transport/tcp/runtime.zig").Runtime;
 const events = @import("../events.zig");
 const wake_lock = @import("../transport/wake_lock.zig");
+const client_wiring = @import("../transport/tcp/client_wiring.zig");
 const peer_mod = @import("../peer/mod.zig");
 const Peer = peer_mod.Peer;
 const net = std.Io.net;
@@ -206,7 +207,16 @@ pub const WorkerPool = struct {
     /// pool runs on the listener's `std.Io` (`Listener.ioBackend`).
     /// `config.connection_options` applies to every connection; the
     /// listener's own `conn_options` and `config.listen_backlog` are not
-    /// used.
+    /// used. The listener's `fd_passing` (`unix.ListenOptions.fd_passing`)
+    /// applies to every connection, as with `ServerSession.accept`.
+    ///
+    /// Like `Listener.accept`, the workers of a pool on a `unix.listen`
+    /// listener take no connection while the fd closer's `.socket` lane is
+    /// full (`tcp.runtime.awaitSocketLane`, with one `.backpressure` event
+    /// per wait to `config.connection_options.observer`): a peer that
+    /// stalls a socket close and reconnects in a loop then waits in the
+    /// kernel's backlog instead of growing this process's fds. Shutdown
+    /// ends that wait too.
     ///
     /// How the workers wait: each one parks in `poll` on the listen socket
     /// and on a wake door (a pipe the pool owns), then makes a non-blocking
@@ -522,6 +532,10 @@ pub const WorkerPool = struct {
 
             peer_ptr.* = Peer.init(pool.allocator, conn_ptr);
             peer_ptr.setLimits(pool.peer_limits);
+            // The listener's fd passing limit, as `ServerSession.accept`
+            // sets it (the default where fd passing is off). Only this
+            // field is read: `stopAccepting` may be closing the listener.
+            if (pool.listener) |*owned| peer_ptr.setMaxLiveImportedFds(owned.fd_passing.max_live_imported_fds);
             peer_ptr.setClockIo(pool.io);
             peer_ptr.setTimeouts(.{ .join_timeout_ms = pool.join_timeout_ms });
 
@@ -573,23 +587,45 @@ pub const WorkerPool = struct {
     /// Park in `poll` on the listener and the wake door until a connection
     /// is accepted (or the door says stop: `error.ListenerClosed`), then
     /// wrap it exactly as `Listener.accept` does.
+    ///
+    /// Only workers of an `initListener` pool get here, and the pool closes
+    /// its listener only once none of them is parked (`stopAccepting`), so
+    /// reading `pool.listener` here never races that close.
     fn acceptParked(pool: *WorkerPool, door: [2]i32) !*Connection {
         const listen_fd = pool.server.socket.handle;
+        const listener = &pool.listener.?;
         const fd = while (true) {
             switch (try park.wait(listen_fd, door[0])) {
                 .stop => return error.ListenerClosed,
-                // Null: another worker took the connection, or its client
-                // gave up first. Park again.
-                .listener => if (try park.accept(listen_fd)) |fd| break fd,
+                .listener => {
+                    // The accept gate of a `unix.listen` listener, as in
+                    // `Listener.accept`: take nothing while the closer's
+                    // `.socket` lane is full. Shutdown ends the wait.
+                    if (listener.unix_socket != null) {
+                        try runtime_helpers.awaitSocketLane(pool.conn_options.observer, &pool.should_stop);
+                    }
+                    // Null: another worker took the connection, or its
+                    // client gave up first. Park again.
+                    if (try park.accept(listen_fd)) |fd| break fd;
+                },
             }
         };
-        errdefer runtime_helpers.closeFd(pool.io, .{ .handle = fd });
-        runtime_helpers.setTcpNoDelay(.{ .handle = fd });
-
-        const conn_ptr = try pool.allocator.create(Connection);
-        errdefer pool.allocator.destroy(conn_ptr);
-        conn_ptr.* = try Connection.init(pool.allocator, pool.io, .{ .handle = fd }, pool.conn_options);
+        const conn_ptr = blk: {
+            errdefer runtime_helpers.closeFd(pool.io, .{ .handle = fd });
+            runtime_helpers.setTcpNoDelay(.{ .handle = fd });
+            const created = try pool.allocator.create(Connection);
+            errdefer pool.allocator.destroy(created);
+            created.* = try Connection.init(pool.allocator, pool.io, .{ .handle = fd }, pool.conn_options);
+            break :blk created;
+        };
         events.emitConnection(pool.conn_options.observer, conn_ptr.transport.source, .server, .accepted);
+        // Before anything reads, as `Listener.accept` and
+        // `ServerSession.accept` do: fd passing starts at the stream's first
+        // byte. The connection owns the socket now.
+        client_wiring.enableFdPassing(conn_ptr, listener.fd_passing) catch |err| {
+            destroyConnection(pool.allocator, conn_ptr);
+            return err;
+        };
         return conn_ptr;
     }
 

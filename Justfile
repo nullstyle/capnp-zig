@@ -46,6 +46,10 @@ example-quic:
 example-unix:
     zig build example-rpc-unix
 
+# Run the fd-passing example over a Unix-domain socket (Linux, macOS)
+example-fd:
+    zig build example-rpc-fd
+
 # Run static hardening gates
 hardening:
     zig build hardening
@@ -282,6 +286,7 @@ ci:
     just e2e-l3-vatc
     zig build example-rpc
     @if [ "{{ os() }}" != windows ]; then zig build example-rpc-unix; fi
+    @if [ "{{ os() }}" != windows ]; then zig build example-rpc-fd; fi
 
 # Regenerate committed bindings with the pinned WASM compiler and this checkout's
 # native plugin. Compiler inputs and generator outputs use separate processes.

@@ -443,9 +443,12 @@ const session = try capnpc.rpc.transport.unix.connect(gpa, io, "/run/myapp/rpc.s
 mode 0600 before it accepts anything, refuses paths that do not fit `sun_path`
 and abstract names, and replaces a stale socket file only with
 `.reclaim_stale = true`. Keep the socket in a private (0700) directory. Every
-AF_UNIX connection closes any file descriptors a peer attaches. See
-`src/rpc/transport/unix/socket.zig` for the full contract, and run the
-example with `zig build example-rpc-unix`.
+AF_UNIX connection closes any file descriptors a peer attaches, unless both
+ends turn on fd passing (`.fd_passing`), which ties fds to capabilities
+(`Peer.setExportFd`, `Peer.importFd`). See
+[docs/rpc-unix-sockets.md](docs/rpc-unix-sockets.md) for the full contract
+and the threat table, and run the examples with `zig build example-rpc-unix`
+and `zig build example-rpc-fd`.
 
 ### QUIC Transport
 

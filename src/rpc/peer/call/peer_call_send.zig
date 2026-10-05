@@ -4,6 +4,7 @@ const log = std.log.scoped(.rpc_peer);
 const cap_table = @import("../../caps/table.zig");
 const protocol = @import("../../wire/protocol.zig");
 const peer_call_sender = @import("./peer_call_sender.zig");
+const peer_fds = @import("../peer_fds.zig");
 const retained_question_state = @import("../retained_questions.zig");
 const provide_forward_target = @import("../provide/forward_target.zig");
 const state = @import("../state.zig");
@@ -24,6 +25,9 @@ pub fn CallSend(comptime Peer: type) type {
         const CallOptions = retained_question_state.CallOptions;
         const ensureCountLimit = Peer.ensureCountLimit;
         const Question = state.Question(QuestionCallback);
+        /// Every remote Call goes out through `PeerFds.sendCall`: the
+        /// fd-passing pass over its params, then the send with their fds.
+        const PeerFds = peer_fds.PeerFds(Peer);
 
         pub fn sendCall(
             self: *Peer,
@@ -144,7 +148,7 @@ pub fn CallSend(comptime Peer: type) type {
                 allocate_question,
                 Peer.removeQuestion,
                 Peer.recordQuestionParamExports,
-                Peer.sendBuilder,
+                PeerFds.sendCall,
             );
             // Record the promise-import target on the question so the Level-3
             // recipient auto-pickup can observe an in-flight pipelined call against
@@ -197,7 +201,7 @@ pub fn CallSend(comptime Peer: type) type {
                 Peer.allocateQuestionNoRestore,
                 Peer.removeQuestion,
                 Peer.recordQuestionParamExports,
-                Peer.sendBuilder,
+                PeerFds.sendCall,
             );
         }
 
@@ -246,7 +250,7 @@ pub fn CallSend(comptime Peer: type) type {
                     Peer.allocateQuestionNoRestore,
                     Peer.removeQuestion,
                     Peer.recordQuestionParamExports,
-                    Peer.sendBuilder,
+                    PeerFds.sendCall,
                 ),
             };
         }
@@ -325,7 +329,7 @@ pub fn CallSend(comptime Peer: type) type {
                     allocate_question,
                     Peer.removeQuestion,
                     Peer.recordQuestionParamExports,
-                    Peer.sendBuilder,
+                    PeerFds.sendCall,
                 ),
                 .promised => |promised| sendCallPromisedWithOptionsRestore(
                     self,
@@ -443,7 +447,7 @@ pub fn CallSend(comptime Peer: type) type {
                 allocate_question,
                 Peer.removeQuestion,
                 Peer.recordQuestionParamExports,
-                Peer.sendBuilder,
+                PeerFds.sendCall,
             );
         }
 
@@ -563,7 +567,7 @@ pub fn CallSend(comptime Peer: type) type {
                 allocate_question,
                 Peer.removeQuestion,
                 Peer.recordQuestionParamExports,
-                Peer.sendBuilder,
+                PeerFds.sendCall,
             );
         }
     };

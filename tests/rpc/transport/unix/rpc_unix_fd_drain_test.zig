@@ -235,6 +235,88 @@ test "fd_io.recvWithFds waits out EAGAIN on a non-blocking socket instead of fai
     try testing.expectEqual(@as(usize, 0), got.fd_count);
 }
 
+test "fd_io.recvWithFds returns close-on-exec fds on both kernels (Linux: MSG_CMSG_CLOEXEC; macOS: fcntl right after)" {
+    // The threat table's CLOEXEC row (docs/rpc-unix-sockets.md): a received
+    // fd must not survive an exec. Every fd the transport keeps for a frame,
+    // and so every fd `Peer.importFd` lends, comes from this call.
+    if (!support.supported) return error.SkipZigTest;
+    try warmUp();
+    const before = support.FdSnapshot.take();
+    {
+        const sp = try support.socketPair();
+        defer support.closeFd(sp[0]);
+        defer support.closeFd(sp[1]);
+        var pipes = try support.Pipes.open(3);
+        defer pipes.closeAll();
+        // The sender's copies are not close-on-exec. The flag belongs to the
+        // fd, not the file, so only the receive can set it on ours.
+        for (pipes.writers()) |w| try testing.expect(!support.isCloexec(w));
+        try support.sendWithFds(sp[0], "C", pipes.writers());
+        pipes.closeWriters();
+
+        var data: [8]u8 = undefined;
+        var control: [fd_io.controlSpace(8)]u8 align(8) = undefined;
+        var fds: [8]fd_io.Fd = undefined;
+        const got = try fd_io.recvWithFds(sp[1], &data, &control, &fds);
+        try testing.expectEqual(@as(usize, 3), got.fd_count);
+        var cloexec: usize = 0;
+        for (fds[0..got.fd_count]) |fd| cloexec += @intFromBool(support.isCloexec(fd));
+        _ = fd_io.closer.handOff(null, fds[0..got.fd_count]);
+        try testing.expectEqual(got.fd_count, cloexec);
+        try pipes.expectAllWritersClosed();
+        try support.waitCloserIdle(5000);
+    }
+    try support.expectBackAtBaseline(before);
+}
+
+/// Writes `byte` to `fd` after `delay_ms`, on its own thread.
+const LateWriter = struct {
+    fn run(fd: Fd, delay_ms: i64) void {
+        support.sleepMs(delay_ms);
+        _ = sys.write(fd, "L", 1);
+    }
+};
+
+test "fd_io.tryRecvWithFds never waits: nothing to read on a blocking socket is null at once, then the data with its fds" {
+    // The transport reads with it once poll said the socket is readable, so
+    // a wakeup with nothing to read goes back to poll and to the closer's
+    // check, never into a recvmsg that blocks and takes the next message's
+    // fds unchecked.
+    if (!support.supported) return error.SkipZigTest;
+    try warmUp();
+    const before = support.FdSnapshot.take();
+    {
+        const sp = try support.socketPair();
+        defer support.closeFd(sp[0]);
+        defer support.closeFd(sp[1]);
+        var data: [8]u8 = undefined;
+        var control: [fd_io.controlSpace(8)]u8 align(8) = undefined;
+        var fds: [8]fd_io.Fd = undefined;
+
+        // sp[1] is blocking. Something arrives only after 1 s.
+        const late = try std.Thread.spawn(.{}, LateWriter.run, .{ sp[0], 1000 });
+        defer late.join();
+        const start = support.nowNs();
+        const nothing = try fd_io.tryRecvWithFds(sp[1], &data, &control, &fds);
+        const waited_ms = support.msSince(start);
+        errdefer std.debug.print("tryRecvWithFds took {d} ms on an empty socket\n", .{waited_ms});
+        try testing.expect(nothing == null);
+        try testing.expect(waited_ms < 500);
+
+        var pipes = try support.Pipes.open(2);
+        defer pipes.closeAll();
+        try support.sendWithFds(sp[0], "D", pipes.writers());
+        pipes.closeWriters();
+        const got = (try fd_io.tryRecvWithFds(sp[1], &data, &control, &fds)) orelse return error.NothingRead;
+        try testing.expectEqual(@as(usize, 1), got.data_len);
+        try testing.expectEqual(@as(usize, 2), got.fd_count);
+        _ = fd_io.closer.handOff(null, fds[0..got.fd_count]);
+        try pipes.expectAllWritersClosed();
+        try support.waitCloserIdle(5000);
+    }
+    try support.expectBackAtBaseline(before);
+}
+
 // ---------------------------------------------------------------------------
 // Truncation and the clamped parser
 // ---------------------------------------------------------------------------
@@ -458,8 +540,8 @@ test "fds past the closer-queue bound close the connection that sent them, with 
     try warmUp();
     const before = support.FdSnapshot.take();
     {
-        const previous_limit = fd_io.closer.setQueueLimit(2);
-        defer _ = fd_io.closer.setQueueLimit(previous_limit);
+        const previous_limit = fd_io.budget.setLimit(2);
+        defer _ = fd_io.budget.setLimit(previous_limit);
 
         const sp = try support.socketPair();
         var pipes = try support.Pipes.open(4);

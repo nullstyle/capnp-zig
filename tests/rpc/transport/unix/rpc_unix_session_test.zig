@@ -506,6 +506,27 @@ test "close releases the lock: a later listen on the same path binds" {
     try expectServes(&second, path);
 }
 
+test "a symbolic link at <path>.lock is refused, and listen creates nothing where it points" {
+    // The threat table's lock-file row (docs/rpc-unix-sockets.md): the lock
+    // is opened with O_NOFOLLOW, so a link planted there cannot make listen
+    // create (or lock) a file somewhere else.
+    if (comptime !supported) return error.SkipZigTest;
+    var dir: TestDir = .{};
+    try dir.init();
+    defer dir.deinit();
+    var path_buf: [96]u8 = undefined;
+    const path = dir.path(&path_buf, "s");
+    var lock_buf: [96]u8 = undefined;
+    const lock_path = dir.path(&lock_buf, "s.lock");
+    var target_buf: [96]u8 = undefined;
+    const target = dir.path(&target_buf, "elsewhere");
+
+    try std.Io.Dir.cwd().symLink(testing.io, target, lock_path, .{});
+    try testing.expectError(error.SymLinkLoop, unix.listen(testing.allocator, testing.io, path, .{}));
+    try testing.expect(lstatPath(target) == null);
+    try testing.expect(lstatPath(path) == null);
+}
+
 // ---------------------------------------------------------------------------
 // Permissions and flags
 // ---------------------------------------------------------------------------

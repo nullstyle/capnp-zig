@@ -1,4 +1,5 @@
 const transport_binding = @import("../transport/binding.zig");
+const fd_passing = @import("../transport/fd_passing.zig");
 
 fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
     return @ptrCast(@alignCast(ctx));
@@ -34,7 +35,7 @@ pub fn bindingForConnection(
     comptime notify_close: *const fn (*PeerType) void,
 ) transport_binding.Binding(PeerType) {
     const Binding = transport_binding.Binding(PeerType);
-    return Binding.init(
+    var binding = Binding.init(
         conn,
         struct {
             fn call(ctx: *anyopaque, peer: *PeerType) void {
@@ -66,6 +67,32 @@ pub fn bindingForConnection(
             }
         }.call,
     );
+    // Fd passing (Experimental): a connection that can carry fds says how
+    // many one frame may carry (0 for TCP, and until fd passing is on: it
+    // is asked for every frame, so `enableFdPassing` may come after the
+    // attach), and hands the peer the fds of the frame it is dispatching.
+    const Conn = @typeInfo(ConnPtr).pointer.child;
+    if (comptime @hasDecl(Conn, "sendFrameWithFds") and @hasDecl(Conn, "takeFrameFd") and @hasDecl(Conn, "maxOutboundFds")) {
+        binding.max_outbound_fds = struct {
+            fn call(ctx: *anyopaque) u8 {
+                const typed: ConnPtr = castCtx(ConnPtr, ctx);
+                return typed.maxOutboundFds();
+            }
+        }.call;
+        binding.send_with_fds = struct {
+            fn call(ctx: *anyopaque, frame: []const u8, fds: []const fd_passing.FdHandle) anyerror!void {
+                const typed: ConnPtr = castCtx(ConnPtr, ctx);
+                try typed.sendFrameWithFds(frame, fds);
+            }
+        }.call;
+        binding.take_frame_fd = struct {
+            fn call(ctx: *anyopaque, index: u8) ?fd_passing.FdHandle {
+                const typed: ConnPtr = castCtx(ConnPtr, ctx);
+                return typed.takeFrameFd(index);
+            }
+        }.call;
+    }
+    return binding;
 }
 
 /// Tick callback that drives the peer's deadline sweep from the

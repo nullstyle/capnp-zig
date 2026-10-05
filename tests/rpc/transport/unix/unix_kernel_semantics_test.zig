@@ -87,6 +87,35 @@ const KernelExpect = struct {
     /// pass, and its SO_LINGER counts clock ticks, not seconds. A probe
     /// that missed either measured 0 ms there.
     final_close_lingers: bool,
+    /// A blocking `sendmsg` that carries fds, on a socket whose path to the
+    /// peer has no room for the control message, fails at once with
+    /// EMSGSIZE instead of blocking (macOS). Linux blocks as for plain
+    /// bytes. Item 10's `sendWithFds` waits until the socket is writable
+    /// and retries that EMSGSIZE; without it, a busy peer would break the
+    /// connection.
+    full_path_rejects_fds: bool,
+    /// An AF_UNIX stream socket takes `MSG_OOB` (Linux 5.15+), and a normal
+    /// `recvmsg` skips the out-of-band message: the kernel frees it and
+    /// closes its fds inside that read, on the reading thread (a lingering
+    /// one blocks it). With `SO_OOBINLINE` the byte is stream data and its
+    /// fds come through the control buffer. macOS refuses `MSG_OOB` on
+    /// AF_UNIX. This is why every drain-mode transport sets `SO_OOBINLINE`
+    /// on Linux (`fd_io.setOobInline`).
+    af_unix_takes_msg_oob: bool,
+    /// The final close of a listening socket releases the connections
+    /// still in its accept queue, and with them the fds on their unread
+    /// messages, inside that close (both kernels): a lingering one blocks
+    /// it. This is why a `unix.listen` listener does that close on the
+    /// closer's `.socket` lane.
+    listener_close_disposes_queued_fds: bool,
+    /// A close of the other end of a socket that is stuck in its
+    /// `shutdown(SHUT_RD)`, disposing of a lingering in-flight fd, waits
+    /// for that to end (macOS, which disposes of in-flight fds in the
+    /// shutdown). Linux disposes of them only in the close, and the other
+    /// end's close does not wait. The Unix transport's closer does that
+    /// shutdown on macOS, so this matters when both ends live in one
+    /// process.
+    peer_close_waits_for_stuck_close: bool,
 };
 
 const linux_expect: KernelExpect = .{
@@ -99,6 +128,10 @@ const linux_expect: KernelExpect = .{
     .max_fds_per_sendmsg = 253,
     .emfile_fails_recvmsg = false,
     .final_close_lingers = true,
+    .full_path_rejects_fds = false,
+    .af_unix_takes_msg_oob = true,
+    .listener_close_disposes_queued_fds = true,
+    .peer_close_waits_for_stuck_close = false,
 };
 
 const macos_expect: KernelExpect = .{
@@ -111,6 +144,10 @@ const macos_expect: KernelExpect = .{
     .max_fds_per_sendmsg = 254,
     .emfile_fails_recvmsg = true,
     .final_close_lingers = true,
+    .full_path_rejects_fds = true,
+    .af_unix_takes_msg_oob = false,
+    .listener_close_disposes_queued_fds = true,
+    .peer_close_waits_for_stuck_close = true,
 };
 
 const expect: KernelExpect = if (is_linux) linux_expect else macos_expect;
@@ -1140,6 +1177,83 @@ test "FD-0 the per-sendmsg fd limit is 253 on Linux and 254 on macOS" {
     try expectNoFdDelta(before);
 }
 
+/// How long a blocked `sendmsg` waits in the full-path test (SO_SNDTIMEO).
+const full_path_send_timeout_ms = 400;
+
+test "FD-0 a blocking sendmsg with fds on a full path: Linux blocks, macOS fails at once with EMSGSIZE" {
+    if (!supported) return error.SkipZigTest;
+    const before = FdSnapshot.take();
+    {
+        const sp = try socketPair();
+        defer closeFd(sp[0]);
+        defer closeFd(sp[1]);
+        const p = try pipePair();
+        defer closeFd(p[0]);
+        defer closeFd(p[1]);
+
+        // Fill the path from sp[0] to sp[1] until a non-blocking send would
+        // block, then make sp[0] blocking again.
+        try setNonBlocking(sp[0], true);
+        var chunk: [4096]u8 = undefined;
+        @memset(&chunk, 0xF0);
+        var filled: usize = 0;
+        while (true) {
+            switch (sendRights(sp[0], &chunk, &.{}, 0)) {
+                .sent => |n| filled += n,
+                .failed => |err| {
+                    try testing.expectEqual(posix.E.AGAIN, err);
+                    break;
+                },
+            }
+        }
+        try testing.expect(filled != 0);
+        try setNonBlocking(sp[0], false);
+        // Bound the wait where the send does block.
+        const timeout: posix.timeval = .{ .sec = 0, .usec = full_path_send_timeout_ms * 1000 };
+        _ = try check(sys.setsockopt(sp[0], posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&timeout), @sizeOf(posix.timeval)), "setsockopt(SO_SNDTIMEO)");
+
+        const start = nowNs();
+        const outcome = sendRights(sp[0], "F", &.{p[1]}, 0);
+        const elapsed = msSince(start);
+        switch (outcome) {
+            .sent => return error.FullPathAcceptedFds,
+            .failed => |err| if (expect.full_path_rejects_fds) {
+                // No wait for room: EMSGSIZE at once.
+                try testing.expectEqual(posix.E.MSGSIZE, err);
+                try testing.expect(elapsed < full_path_send_timeout_ms / 2);
+            } else {
+                // A blocking send: it waited out the send timeout.
+                try testing.expectEqual(posix.E.AGAIN, err);
+                try testing.expect(elapsed >= full_path_send_timeout_ms / 2);
+            },
+        }
+
+        // Nothing but the fill reached the peer, and no fd.
+        try setNonBlocking(sp[1], true);
+        var data: [8192]u8 = undefined;
+        var control: [cmsg.space(4 * @sizeOf(posix.fd_t))]u8 align(cmsg_align) = undefined;
+        var got: [4]i32 = undefined;
+        var read: usize = 0;
+        while (true) {
+            switch (recvRaw(sp[1], &data, &control, recv_flags | posix.MSG.DONTWAIT)) {
+                .received => |r| {
+                    if (r.len == 0) break;
+                    read += r.len;
+                    const n = receivedFds(&control, r, &got);
+                    closeAll(got[0..@min(n, got.len)]);
+                    try testing.expectEqual(@as(usize, 0), n);
+                },
+                .failed => |err| {
+                    try testing.expectEqual(posix.E.AGAIN, err);
+                    break;
+                },
+            }
+        }
+        try testing.expectEqual(filled, read);
+    }
+    try expectNoFdDelta(before);
+}
+
 test "FD-0 EMFILE: Linux delivers a partial list with CTRUNC; macOS fails the first recvmsg and drops the fds" {
     try emfileCase(0);
 }
@@ -1387,6 +1501,175 @@ test "FD-0 the final close of a received lingering socket blocks the closing thr
             try testing.expect(close_ms >= blocked_min_ms);
         } else {
             try testing.expect(close_ms < unblocked_max_ms);
+        }
+    }
+    try expectNoFdDelta(before);
+}
+
+test "FD-0 MSG_OOB on AF_UNIX: Linux skips an out-of-band byte in a normal read and closes its fds inside it, SO_OOBINLINE reads it in line; macOS refuses it" {
+    if (!supported) return error.SkipZigTest;
+    const before = FdSnapshot.take();
+    { // A normal read, as before `fd_io.setOobInline`.
+        var lingering = try LingeringSocket.open();
+        defer lingering.deinit();
+        const sp = try socketPair();
+        defer closeFd(sp[0]);
+        defer closeFd(sp[1]);
+        switch (sendRights(sp[0], "!", &.{lingering.client}, posix.MSG.OOB)) {
+            .sent => |n| {
+                try testing.expect(expect.af_unix_takes_msg_oob);
+                try testing.expectEqual(@as(usize, 1), n);
+            },
+            .failed => |err| {
+                if (expect.af_unix_takes_msg_oob) {
+                    // A Linux kernel built without CONFIG_AF_UNIX_OOB: no
+                    // out-of-band message can arrive.
+                    std.debug.print("FD-0: MSG_OOB refused (errno {d}); nothing to pin\n", .{@backingInt(err)});
+                    return error.SkipZigTest;
+                }
+                // macOS refuses it: nothing out of band can arrive.
+                return;
+            },
+        }
+        closeFd(lingering.client);
+        lingering.client = -1;
+        try sendAll(sp[0], "x", &.{});
+
+        var data: [8]u8 = undefined;
+        var control: [cmsg.space(16 * @sizeOf(posix.fd_t))]u8 align(cmsg_align) = undefined;
+        const start = nowNs();
+        const r = try recvOk(sp[1], &data, &control, recv_flags);
+        const ms = msSince(start);
+        var got: [4]i32 = undefined;
+        const n = receivedFds(&control, r, &got);
+        errdefer std.debug.print("FD-0: the read returned {d} byte(s) and {d} fd(s) after {d} ms\n", .{ r.len, n, ms });
+        // The read skipped the "!" and its fd, and did that fd's final close.
+        try testing.expectEqual(@as(usize, 1), r.len);
+        try testing.expectEqual(@as(u8, 'x'), data[0]);
+        try testing.expectEqual(@as(usize, 0), n);
+        try testing.expect(ms >= blocked_min_ms);
+    }
+    { // With SO_OOBINLINE the byte is stream data, and its fd arrives.
+        var lingering = try LingeringSocket.open();
+        defer lingering.deinit();
+        const sp = try socketPair();
+        defer closeFd(sp[0]);
+        defer closeFd(sp[1]);
+        const on: c_int = 1;
+        _ = try check(sys.setsockopt(sp[1], posix.SOL.SOCKET, posix.SO.OOBINLINE, std.mem.asBytes(&on), @sizeOf(c_int)), "setsockopt(SO_OOBINLINE)");
+        switch (sendRights(sp[0], "!", &.{lingering.client}, posix.MSG.OOB)) {
+            .sent => {},
+            .failed => return error.SyscallFailed,
+        }
+        closeFd(lingering.client);
+        lingering.client = -1;
+        try sendAll(sp[0], "x", &.{});
+
+        var data: [8]u8 = undefined;
+        var control: [cmsg.space(16 * @sizeOf(posix.fd_t))]u8 align(cmsg_align) = undefined;
+        const start = nowNs();
+        const r = try recvOk(sp[1], &data, &control, recv_flags);
+        const ms = msSince(start);
+        var got: [4]i32 = undefined;
+        const n = receivedFds(&control, r, &got);
+        errdefer std.debug.print("FD-0: the inline read returned {d} byte(s) and {d} fd(s) after {d} ms\n", .{ r.len, n, ms });
+        try testing.expect(r.len >= 1);
+        try testing.expectEqual(@as(u8, '!'), data[0]);
+        try testing.expectEqual(@as(usize, 1), n);
+        try testing.expect(ms < unblocked_max_ms);
+        // Ours is the final close now, and it lingers.
+        closeFd(got[0]);
+    }
+    try expectNoFdDelta(before);
+}
+
+/// A fresh socket-file path under /tmp for one FD-0 test; the caller
+/// unlinks it.
+fn tmpSocketPath(buf: []u8, name: []const u8) ![:0]const u8 {
+    const path = try std.fmt.bufPrintSentinel(buf, "/tmp/fd0-{s}-{d}.sock", .{ name, sys.getpid() }, 0);
+    _ = sys.unlink(path.ptr);
+    return path;
+}
+
+fn unixAddr(path: []const u8) posix.sockaddr.un {
+    var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
+    @memset(&addr.path, 0);
+    @memcpy(addr.path[0..path.len], path);
+    return addr;
+}
+
+test "FD-0 the final close of a listening socket closes the fds on its pending connections' unread messages, and blocks on a lingering one" {
+    if (!supported) return error.SkipZigTest;
+    const before = FdSnapshot.take();
+    {
+        var lingering = try LingeringSocket.open();
+        defer lingering.deinit();
+        var path_buf: [64]u8 = undefined;
+        const path = try tmpSocketPath(&path_buf, "lc");
+        defer _ = sys.unlink(path.ptr);
+        var addr = unixAddr(path);
+        const listener: posix.fd_t = @intCast(try check(sys.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0), "socket"));
+        var listener_open = true;
+        defer if (listener_open) closeFd(listener);
+        _ = try check(sys.bind(listener, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)), "bind");
+        _ = try check(sys.listen(listener, 4), "listen");
+        { // A client connects, attaches the lingering socket and leaves.
+            const client: posix.fd_t = @intCast(try check(sys.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0), "socket"));
+            defer closeFd(client);
+            _ = try check(sys.connect(client, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)), "connect");
+            try sendAll(client, "x", &.{lingering.client});
+            closeFd(lingering.client);
+            lingering.client = -1;
+        }
+        const start = nowNs();
+        closeFd(listener);
+        listener_open = false;
+        const ms = msSince(start);
+        errdefer std.debug.print("FD-0: the listening socket's close took {d} ms\n", .{ms});
+        if (expect.listener_close_disposes_queued_fds) {
+            try testing.expect(ms >= blocked_min_ms);
+        } else {
+            try testing.expect(ms < unblocked_max_ms);
+        }
+    }
+    try expectNoFdDelta(before);
+}
+
+/// Shuts `fd` down both ways, then closes it, on its own thread, as the
+/// Unix transport's closer does on macOS: the read half of the shutdown
+/// disposes of the fds in flight there (and blocks on a lingering one);
+/// Linux does that inside the close.
+const BlockingTeardown = struct {
+    fn run(fd: posix.fd_t) void {
+        _ = sys.shutdown(fd, posix.SHUT.RDWR);
+        closeFd(fd);
+    }
+};
+
+test "FD-0 a close of the other end of a socket stuck disposing of a lingering fd: macOS waits for it, Linux does not" {
+    if (!supported) return error.SkipZigTest;
+    const before = FdSnapshot.take();
+    {
+        var lingering = try LingeringSocket.open();
+        defer lingering.deinit();
+        const sp = try socketPair();
+        try sendAll(sp[0], "L", &.{lingering.client});
+        closeFd(lingering.client);
+        lingering.client = -1;
+        // sp[1]'s teardown disposes of the lingering socket in flight and
+        // blocks for the linger time.
+        const closer = try std.Thread.spawn(.{}, BlockingTeardown.run, .{sp[1]});
+        defer closer.join();
+        try std.Io.sleep(testing.io, .fromMilliseconds(200), .awake);
+        const start = nowNs();
+        closeFd(sp[0]);
+        const ms = msSince(start);
+        errdefer std.debug.print("FD-0: the other end's close took {d} ms\n", .{ms});
+        if (expect.peer_close_waits_for_stuck_close) {
+            // The linger is 1000 ms, and 200 of them have passed.
+            try testing.expect(ms >= blocked_min_ms - 200);
+        } else {
+            try testing.expect(ms < unblocked_max_ms);
         }
     }
     try expectNoFdDelta(before);

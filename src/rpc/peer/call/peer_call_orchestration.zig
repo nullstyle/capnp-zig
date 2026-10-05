@@ -2,6 +2,7 @@ const std = @import("std");
 const cap_table = @import("../../caps/table.zig");
 const peer_call_targets = @import("./peer_call_targets.zig");
 const protocol = @import("../../wire/protocol.zig");
+const peer_fds = @import("../peer_fds.zig");
 
 pub fn routeCallTarget(call: protocol.Call) !union(enum) {
     imported: u32,
@@ -190,6 +191,9 @@ pub fn handleCallImportedTargetForPeer(
     handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
 ) !void {
     var inbound_caps = try InboundCapsType.init(peer.allocator, call.params.cap_table, &peer.caps);
+    // Fd passing: imports the params noted take the fds their descriptors
+    // name, before any handler can ask for them.
+    if (comptime @hasField(PeerType, "fds")) peer_fds.PeerFds(PeerType).adoptPayload(peer, call.params.cap_table);
     var inbound_caps_owned = true;
     var release_caps = false;
     defer if (inbound_caps_owned) {
@@ -296,6 +300,9 @@ pub fn handleCallPromisedTargetForPeer(
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
 ) !void {
     var inbound_caps = try InboundCapsType.init(peer.allocator, call.params.cap_table, &peer.caps);
+    // Fd passing: imports the params noted take the fds their descriptors
+    // name, before any handler can ask for them.
+    if (comptime @hasField(PeerType, "fds")) peer_fds.PeerFds(PeerType).adoptPayload(peer, call.params.cap_table);
     var inbound_caps_owned = true;
     var release_caps = false;
     defer if (inbound_caps_owned) {

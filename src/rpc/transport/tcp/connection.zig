@@ -7,6 +7,13 @@ const runtime_helpers = @import("./runtime.zig");
 const message = @import("../../../serialization/message.zig");
 const events = @import("../../events.zig");
 const wake_lock = @import("../wake_lock.zig");
+const fd_io = @import("../unix/fd_io.zig");
+const fd_passing = @import("../fd_passing.zig");
+
+comptime {
+    std.debug.assert(fd_io.supported == fd_passing.supported);
+    std.debug.assert(fd_io.max_fds_per_send == fd_passing.max_fds_per_message_cap);
+}
 
 /// A framed Cap'n Proto connection over TCP.
 ///
@@ -422,6 +429,28 @@ pub const Connection = struct {
         return self.ctx;
     }
 
+    /// Experimental. Keep the fds a peer attaches to inbound messages, at
+    /// most `max_fds_per_message` per message (0 turns it off again), on an
+    /// AF_UNIX connection on Linux or macOS. Call before `run`. The
+    /// transport then reads one frame at a time and checks each header
+    /// against this connection's `max_buffered_frame_bytes` before it reads
+    /// the rest (see "Receiving fds" on `Transport`).
+    ///
+    /// While `on_message` runs, `transport.frameFdCount()` and
+    /// `transport.takeFrameFd(i)` give the fds of the frame being
+    /// dispatched. When it returns, every fd it did not take goes to the
+    /// closer thread. So does every fd of a frame that is never dispatched.
+    ///
+    /// It also lets this connection send fds (`maxOutboundFds`,
+    /// `sendFrameWithFds`): without it, an attached `Peer` sends none.
+    pub fn enableFdPassing(self: *Connection, max_fds_per_message: u8) transport_mod.Transport.EnableFdPassingError!void {
+        self.assertThreadAffinity();
+        return self.transport.enableFdPassing(.{
+            .max_fds_per_message = max_fds_per_message,
+            .max_buffered_frame_bytes = self.framer.max_buffered_bytes,
+        });
+    }
+
     /// Blocking read loop. Reads from the transport, pushes data through
     /// the framer, and dispatches complete message frames to callbacks.
     ///
@@ -737,6 +766,90 @@ pub const Connection = struct {
         self.last_activity_ns = nowNs(self.io);
     }
 
+    /// `sendFrameWithFds` failures: the transport's
+    /// (`Transport.EnqueueFdsError`). On each, nothing was queued and the
+    /// caller still owns its fds.
+    pub const SendFdsError = transport_mod.Transport.EnqueueFdsError;
+
+    /// Experimental (fd passing). Enqueue a framed message with `fds`
+    /// attached, in order: the transport sends a close-on-exec dup of each
+    /// fd with the frame's first bytes (`Transport.enqueueWriteWithFds`).
+    /// The caller keeps owning `fds`. Only an AF_UNIX connection on Linux or
+    /// macOS with fd passing on can do it (`maxOutboundFds() > 0`); before
+    /// `enableFdPassing` and elsewhere this returns
+    /// `error.FdPassingUnsupported`. With no fds it is `sendFrame`.
+    ///
+    /// The errors `sendFrame` has (`BrokenPipe`, `OutOfMemory`,
+    /// `WriteQueueFull`, `WriteQueueBytesExceeded`) also go to `on_error`,
+    /// as there. The fd errors refuse this one message and leave the
+    /// connection healthy, so they only return: `FdQueueFull` is
+    /// backpressure (retry later; the transport emitted a `.backpressure`
+    /// event), and the rest name a bad argument.
+    pub fn sendFrameWithFds(self: *Connection, frame: []const u8, fds: []const fd_passing.FdHandle) SendFdsError!void {
+        self.assertThreadAffinity();
+        if (fds.len == 0) return self.sendFrame(frame);
+        if (comptime !fd_io.supported) return error.FdPassingUnsupported;
+        const limit = self.maxOutboundFds();
+        if (limit == 0) return error.FdPassingUnsupported;
+        if (fds.len > limit) return error.TooManyFds;
+        var raw: [fd_io.max_fds_per_send]fd_io.Fd = undefined;
+        for (fds, raw[0..fds.len]) |handle, *fd| fd.* = handle.fd;
+        self.transport.enqueueWriteWithFds(frame, raw[0..fds.len]) catch |err| {
+            log.debug("write enqueue with fds failed: {}", .{err});
+            switch (err) {
+                error.BrokenPipe,
+                error.OutOfMemory,
+                error.WriteQueueFull,
+                error.WriteQueueBytesExceeded,
+                => self.invokeOnError(err),
+                error.FdPassingUnsupported,
+                error.TooManyFds,
+                error.FdsWithoutData,
+                error.FdQueueFull,
+                error.InvalidFd,
+                error.ProcessFdQuotaExceeded,
+                error.SystemResources,
+                error.Unexpected,
+                => {},
+            }
+            return err;
+        };
+        self.last_activity_ns = nowNs(self.io);
+    }
+
+    /// Experimental (fd passing). Take fd `index` (in the order the peer
+    /// attached them) of the frame `on_message` is dispatching. The caller
+    /// owns it from then on (`Transport.takeFrameFd`), and it no longer
+    /// counts against the process fd budget (`fd_io.budget`). Null when fd
+    /// passing is off (`enableFdPassing`), for an index out of range, and
+    /// for an fd already taken.
+    pub fn takeFrameFd(self: *Connection, index: u8) ?fd_passing.FdHandle {
+        self.assertThreadAffinity();
+        if (comptime !fd_io.supported) return null;
+        const fd = self.transport.takeFrameFd(index) orelse return null;
+        return .{ .fd = fd };
+    }
+
+    /// Experimental (fd passing). The most fds one outbound frame of this
+    /// connection may carry: `fd_passing.max_fds_per_message_cap` (253) once
+    /// fd passing is on (`enableFdPassing` with `max_fds_per_message > 0`,
+    /// on an AF_UNIX connection on Linux or macOS), 0 before that and
+    /// everywhere else (TCP). The cap does not follow this side's
+    /// `max_fds_per_message`, which bounds only what it keeps.
+    ///
+    /// A connection sends fds only when it also takes them, as C++ does
+    /// (`rpc-twoparty.c++`, `OutgoingMessageImpl::setFds`): the spec expects
+    /// a receiver that did not ask for fds to drop them
+    /// (`rpc.capnp:1118-1124`), but macOS installs them in its fd table
+    /// anyway. A `Peer` attached to this connection asks for every frame it
+    /// sends.
+    pub fn maxOutboundFds(self: *const Connection) u8 {
+        if (comptime !fd_io.supported) return 0;
+        if (self.transport.source != .unix) return 0;
+        if (self.transport.maxFdsPerMessage() == 0) return 0;
+        return fd_passing.max_fds_per_message_cap;
+    }
+
     /// Initiate connection close. This shuts down the socket, which will
     /// cause `run()` to exit on the next read attempt.
     pub fn close(self: *Connection) void {
@@ -785,6 +898,11 @@ pub const Connection = struct {
     }
 
     fn handleRead(self: *Connection, data: []const u8) bool {
+        // With fd passing on, a read completes at most one frame, and its
+        // fds stay with the transport until here: whether the frame was
+        // dispatched or dropped, every fd `on_message` did not take goes to
+        // the closer now, not at the next read (which may be far off).
+        defer self.transport.releaseFrameFds();
         if (self.on_message == null or self.on_error == null) return false;
 
         const push_result = self.framer.push(data);
@@ -1078,12 +1196,13 @@ test "connection handleRead assembles fragmented frame and dispatches once compl
     var conn = Connection{
         .allocator = allocator,
         .io = std.testing.io,
-        .transport = undefined,
+        .transport = try closedTestTransport(allocator),
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
         .on_message = Harness.onMessage,
         .on_error = Harness.onError,
     };
+    defer conn.transport.deinit();
     defer conn.framer.deinit();
 
     try std.testing.expect(frame.len > 8);
@@ -1140,12 +1259,13 @@ test "connection handleRead dispatches coalesced frames in order" {
     var conn = Connection{
         .allocator = allocator,
         .io = std.testing.io,
-        .transport = undefined,
+        .transport = try closedTestTransport(allocator),
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
         .on_message = Harness.onMessage,
         .on_error = Harness.onError,
     };
+    defer conn.transport.deinit();
     defer conn.framer.deinit();
 
     try std.testing.expect(conn.handleRead(combined));
@@ -1201,12 +1321,13 @@ test "connection handleRead stops draining when message handler errors" {
     var conn = Connection{
         .allocator = allocator,
         .io = std.testing.io,
-        .transport = undefined,
+        .transport = try closedTestTransport(allocator),
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
         .on_message = Harness.onMessage,
         .on_error = Harness.onError,
     };
+    defer conn.transport.deinit();
     defer conn.framer.deinit();
 
     try std.testing.expect(conn.handleRead(combined));
@@ -1236,28 +1357,16 @@ test "connection handleRead reports malformed frame errors" {
     };
 
     var state = Harness.State{};
-    // A real Transport rather than `undefined`. `handleRead`'s terminal-error
-    // path runs `invokeTerminalError` -> `transport.shutdown()`, which reads
-    // the io vtable and closes the write queue; against an undefined transport
-    // that is a segfault dereferencing `io.vtable`. These two tests were
-    // written before `invokeTerminalError` shut the transport down, and never
-    // compiled afterwards, so nothing caught the drift.
-    //
-    // The socket is pre-marked closed so `shutdown` skips `netShutdown` and
-    // `deinit` skips `close` -- the sentinel fd is never handed to the OS.
-    var transport = try transport_mod.Transport.init(allocator, std.testing.io, .{ .handle = invalid_socket_handle }, 64);
-    transport.fd_closed.store(true, .release);
-    defer transport.deinit();
-
     var conn = Connection{
         .allocator = allocator,
         .io = std.testing.io,
-        .transport = transport,
+        .transport = try closedTestTransport(allocator),
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
         .on_message = Harness.onMessage,
         .on_error = Harness.onError,
     };
+    defer conn.transport.deinit();
     defer conn.framer.deinit();
 
     // segment_count_minus_one = max u32 overflows on +1 in framer.updateExpected()
@@ -1270,11 +1379,26 @@ test "connection handleRead reports malformed frame errors" {
     try std.testing.expect(conn.on_error == null);
 }
 
-/// A socket handle that is never handed to the OS. Used by the `handleRead`
-/// terminal-error tests, whose transports are constructed already-closed so
-/// the fd is only ever compared, never operated on. Comptime-selected because
-/// `net.Socket.Handle` is an integer fd on POSIX and a pointer HANDLE on
-/// Windows.
+/// A real Transport for the `handleRead` tests, never an `undefined` one.
+/// `handleRead` always touches the transport: its deferred
+/// `releaseFrameFds` reads the drain state, and its terminal-error path runs
+/// `invokeTerminalError` -> `transport.shutdown()`, which reads the io vtable
+/// and closes the write queue. Against an `undefined` transport both read
+/// whatever the stack slot holds: Debug happened to see zeroes, ReleaseSafe
+/// segfaulted in `releaseFrameFds`.
+///
+/// The socket is pre-marked closed so `shutdown` skips `netShutdown` and
+/// `deinit` skips `close` -- the sentinel fd is never handed to the OS, and
+/// it is no socket, so the transport has no drain state.
+fn closedTestTransport(allocator: std.mem.Allocator) !transport_mod.Transport {
+    var transport = try transport_mod.Transport.init(allocator, std.testing.io, .{ .handle = invalid_socket_handle }, 64);
+    transport.fd_closed.store(true, .release);
+    return transport;
+}
+
+/// A socket handle that is never handed to the OS (see
+/// `closedTestTransport`). Comptime-selected because `net.Socket.Handle` is
+/// an integer fd on POSIX and a pointer HANDLE on Windows.
 const invalid_socket_handle: std.Io.net.Socket.Handle = switch (@typeInfo(std.Io.net.Socket.Handle)) {
     .pointer => @ptrFromInt(std.math.maxInt(usize)),
     else => -1,
@@ -1299,28 +1423,16 @@ test "connection handleRead rejects oversized frame headers" {
     };
 
     var state = Harness.State{};
-    // A real Transport rather than `undefined`. `handleRead`'s terminal-error
-    // path runs `invokeTerminalError` -> `transport.shutdown()`, which reads
-    // the io vtable and closes the write queue; against an undefined transport
-    // that is a segfault dereferencing `io.vtable`. These two tests were
-    // written before `invokeTerminalError` shut the transport down, and never
-    // compiled afterwards, so nothing caught the drift.
-    //
-    // The socket is pre-marked closed so `shutdown` skips `netShutdown` and
-    // `deinit` skips `close` -- the sentinel fd is never handed to the OS.
-    var transport = try transport_mod.Transport.init(allocator, std.testing.io, .{ .handle = invalid_socket_handle }, 64);
-    transport.fd_closed.store(true, .release);
-    defer transport.deinit();
-
     var conn = Connection{
         .allocator = allocator,
         .io = std.testing.io,
-        .transport = transport,
+        .transport = try closedTestTransport(allocator),
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
         .on_message = Harness.onMessage,
         .on_error = Harness.onError,
     };
+    defer conn.transport.deinit();
     defer conn.framer.deinit();
 
     const oversized_words: u32 = (8 * 1024 * 1024) + 1;
