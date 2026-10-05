@@ -74,6 +74,12 @@ pub fn isOpen(fd: Fd) bool {
     return fdFlags(fd) != null;
 }
 
+/// `fd` is open and close-on-exec.
+pub fn isCloexec(fd: Fd) bool {
+    const flags = fdFlags(fd) orelse return false;
+    return flags & posix.FD_CLOEXEC != 0;
+}
+
 pub fn setNonBlocking(fd: Fd, on: bool) !void {
     const nonblock: usize = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
     const get = if (is_linux and !builtin.link_libc)

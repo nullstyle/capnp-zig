@@ -400,3 +400,51 @@ test "a connection torn down with a blocking fd still unread stalls only the soc
     }
     try support.expectBackAtBaseline(before);
 }
+
+test "open residual: behind a stuck socket-lane close, every later AF_UNIX teardown with bytes unread holds its socket fd until that close ends" {
+    // The threat table's one OPEN row (docs/rpc-unix-sockets.md, "socket
+    // lane"). The `.socket` lane has no bound: once a close there blocks (a
+    // connection torn down with a lingering fd still unread), each later
+    // socket close it takes keeps that socket's fd open until the blocked
+    // close ends. Linux sends a close there only when the receive queue is
+    // not empty; macOS sends every AF_UNIX close there. A peer can force
+    // unread bytes at teardown on both: a full `.received` lane makes every
+    // reader stop reading and close its connection. This test pins the
+    // residual as it is. It goes red when a bound lands; update it with the
+    // fix and the table row.
+    if (!support.supported) return error.SkipZigTest;
+    try warmUp();
+    const before = support.FdSnapshot.take();
+    {
+        var lingering = try LingeringSocket.open(stall_linger_seconds);
+        defer lingering.deinit();
+        const d = try support.socketPair();
+        defer support.closeFd(d[0]);
+        var td = try tcp.Transport.init(testing.allocator, testing.io, .{ .handle = d[1] }, 64);
+        try support.sendWithFds(d[0], "unread", &.{lingering.client});
+        lingering.closeClient();
+        td.deinit();
+        try expectStuck(.socket);
+
+        const torn_down = 16;
+        const held_before = support.FdSnapshot.take();
+        for (0..torn_down) |_| {
+            const sp = try support.socketPair();
+            defer support.closeFd(sp[0]);
+            var t = try tcp.Transport.init(testing.allocator, testing.io, .{ .handle = sp[1] }, 64);
+            // Bytes, no fds, left unread at teardown.
+            try support.sendWithFds(sp[0], "u", &.{});
+            t.deinit();
+        }
+        var held: [torn_down + 4]Fd = undefined;
+        const n_held = support.FdSnapshot.take().added(held_before, &held);
+        errdefer std.debug.print("{d} of {d} sockets torn down behind the stuck close still hold an fd\n", .{ n_held, torn_down });
+        try testing.expectEqual(@as(usize, torn_down), n_held);
+        try testing.expect(fd_io.closer.pendingIn(.socket) > torn_down);
+
+        // They are released once the blocked close ends.
+        lingering.endLinger();
+        try support.waitCloserIdle(closer_drain_ms);
+    }
+    try support.expectBackAtBaseline(before);
+}

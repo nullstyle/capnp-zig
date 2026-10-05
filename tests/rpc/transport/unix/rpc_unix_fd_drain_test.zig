@@ -235,6 +235,40 @@ test "fd_io.recvWithFds waits out EAGAIN on a non-blocking socket instead of fai
     try testing.expectEqual(@as(usize, 0), got.fd_count);
 }
 
+test "fd_io.recvWithFds returns close-on-exec fds on both kernels (Linux: MSG_CMSG_CLOEXEC; macOS: fcntl right after)" {
+    // The threat table's CLOEXEC row (docs/rpc-unix-sockets.md): a received
+    // fd must not survive an exec. Every fd the transport keeps for a frame,
+    // and so every fd `Peer.importFd` lends, comes from this call.
+    if (!support.supported) return error.SkipZigTest;
+    try warmUp();
+    const before = support.FdSnapshot.take();
+    {
+        const sp = try support.socketPair();
+        defer support.closeFd(sp[0]);
+        defer support.closeFd(sp[1]);
+        var pipes = try support.Pipes.open(3);
+        defer pipes.closeAll();
+        // The sender's copies are not close-on-exec. The flag belongs to the
+        // fd, not the file, so only the receive can set it on ours.
+        for (pipes.writers()) |w| try testing.expect(!support.isCloexec(w));
+        try support.sendWithFds(sp[0], "C", pipes.writers());
+        pipes.closeWriters();
+
+        var data: [8]u8 = undefined;
+        var control: [fd_io.controlSpace(8)]u8 align(8) = undefined;
+        var fds: [8]fd_io.Fd = undefined;
+        const got = try fd_io.recvWithFds(sp[1], &data, &control, &fds);
+        try testing.expectEqual(@as(usize, 3), got.fd_count);
+        var cloexec: usize = 0;
+        for (fds[0..got.fd_count]) |fd| cloexec += @intFromBool(support.isCloexec(fd));
+        _ = fd_io.closer.handOff(null, fds[0..got.fd_count]);
+        try testing.expectEqual(got.fd_count, cloexec);
+        try pipes.expectAllWritersClosed();
+        try support.waitCloserIdle(5000);
+    }
+    try support.expectBackAtBaseline(before);
+}
+
 // ---------------------------------------------------------------------------
 // Truncation and the clamped parser
 // ---------------------------------------------------------------------------
