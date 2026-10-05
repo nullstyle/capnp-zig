@@ -72,7 +72,8 @@ const KernelExpect = struct {
     /// The largest fd count that one `sendmsg` accepts. One more gives
     /// EINVAL. Item 10 rejects more than 253 before the syscall.
     max_fds_per_sendmsg: usize,
-    /// At RLIMIT_NOFILE, `recvmsg` fails with EMFILE and installs nothing;
+    /// At RLIMIT_NOFILE, `recvmsg` fails with EMFILE (or EMSGSIZE, which
+    /// macOS 26 returns with a large fd table) and installs nothing;
     /// the retry returns the data with no fds and no MSG_CTRUNC (macOS).
     /// Linux delivers the fds that fit and sets MSG_CTRUNC. Item 6 emits the
     /// drop event on the first EMFILE and retries once.
@@ -1140,7 +1141,23 @@ test "FD-0 the per-sendmsg fd limit is 253 on Linux and 254 on macOS" {
 }
 
 test "FD-0 EMFILE: Linux delivers a partial list with CTRUNC; macOS fails the first recvmsg and drops the fds" {
+    try emfileCase(0);
+}
+
+test "FD-0 EMFILE with a large fd table: macOS may report the limit as EMSGSIZE" {
+    // macOS 26 (CI) fails the recvmsg with EMSGSIZE, not EMFILE, when the
+    // process already holds ~130 fds: XNU's free-slot check reports the
+    // limit that way. macOS 27 returned EMFILE here too. The drain test hit
+    // the EMSGSIZE arm on CI and closed the connection as unexpected.
+    try emfileCase(132);
+}
+
+fn emfileCase(ballast_count: usize) !void {
     if (!supported) return error.SkipZigTest;
+    var ballast: [256]posix.fd_t = undefined;
+    std.debug.assert(ballast_count <= ballast.len);
+    for (ballast[0..ballast_count]) |*b| b.* = @intCast(ival(sys.dup(0)));
+    defer closeAll(ballast[0..ballast_count]);
     const before = FdSnapshot.take();
     {
         const sp = try socketPair();
@@ -1197,8 +1214,12 @@ test "FD-0 EMFILE: Linux delivers a partial list with CTRUNC; macOS fails the fi
                     std.debug.print("FD-0: recvmsg at the fd limit failed with errno {d}\n", .{@backingInt(err)});
                     return error.UnexpectedRecvFailure;
                 }
-                // macOS: EMFILE, and nothing was installed.
-                try testing.expectEqual(posix.E.MFILE, err);
+                // macOS: EMFILE (or EMSGSIZE from XNU's free-slot check),
+                // and nothing was installed.
+                if (err != posix.E.MFILE and err != posix.E.MSGSIZE) {
+                    std.debug.print("FD-0: recvmsg at the fd limit failed with errno {d}\n", .{@backingInt(err)});
+                    return error.UnexpectedRecvFailure;
+                }
                 var installed: [8]posix.fd_t = undefined;
                 try testing.expectEqual(@as(usize, 0), FdSnapshot.take().added(pre_read, &installed));
                 // The retry, at the same limit, returns the data with no

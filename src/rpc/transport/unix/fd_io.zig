@@ -30,8 +30,10 @@
 //!   attached fds inside the `recvmsg` that hits it, on the reading thread,
 //!   and a close that blocks (a lingering socket) blocks that reader for as
 //!   long. Linux installs the fds that fit, sets MSG_CTRUNC and closes the
-//!   rest. macOS fails the call with EMFILE and closes all of that message's
-//!   fds inside it (measured: 2000 ms for a 2 s linger); the transport reports
+//!   rest. macOS fails the call with EMFILE (or EMSGSIZE, from XNU's
+//!   free-slot check: macOS 26 with a large fd table) and closes all of that
+//!   message's fds inside it (measured: 2000 ms for a 2 s linger); the
+//!   transport reports
 //!   the drop and retries once, and the retry returns the data. A second
 //!   EMFILE closes the connection. One message carries up to 254 fds, so at
 //!   the macOS default soft limit (256) a single message can reach EMFILE:
@@ -98,8 +100,10 @@ pub const RecvError = error{
     ConnectionTimedOut,
     SocketUnconnected,
     SystemResources,
-    /// EMFILE. On macOS the kernel installed nothing and has already closed
-    /// the message's fds inside this failed call; a retry returns the data.
+    /// EMFILE (and, on macOS, EMSGSIZE: XNU's free-slot check reports the
+    /// same limit that way). On macOS the kernel installed nothing and has
+    /// already closed the message's fds inside this failed call; a retry
+    /// returns the data.
     ProcessFdQuotaExceeded,
     /// ENFILE: the system-wide fd table is full.
     SystemFdQuotaExceeded,
@@ -171,6 +175,17 @@ pub fn recvWithFds(socket: Fd, data: []u8, control: []u8, fds_out: []Fd) RecvErr
             .NOMEM, .NOBUFS => return error.SystemResources,
             .MFILE => return error.ProcessFdQuotaExceeded,
             .NFILE => return error.SystemFdQuotaExceeded,
+            // XNU reports the same fd-table limit as EMSGSIZE when its
+            // free-slot check fails before it allocates (macOS 26 does this
+            // with a large fd table; macOS 27 returned EMFILE in every
+            // layout we tried). This call passes one iovec, so EMSGSIZE has
+            // no other cause on a stream socket.
+            .MSGSIZE => if (comptime builtin.target.os.tag.isDarwin()) {
+                return error.ProcessFdQuotaExceeded;
+            } else {
+                log.debug("recvmsg failed: errno {d}", .{@backingInt(posix.E.MSGSIZE)});
+                return error.Unexpected;
+            },
             // Log the number, never the tag: `posix.E` does not name every errno.
             else => |err| {
                 log.debug("recvmsg failed: errno {d}", .{@backingInt(err)});
