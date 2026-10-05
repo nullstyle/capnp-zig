@@ -72,6 +72,13 @@
 //!   AF_UNIX connection that receives data meanwhile, but cannot fill the
 //!   fd table. TCP and QUIC connections, and AF_UNIX socket closes and
 //!   shutdowns (the `.socket` lane), do not wait for it.
+//! - The same holds on the send side for an fd this process sends whose
+//!   close blocks, once the app and the receiver have closed their copies:
+//!   the transport's dup of it stops the closer's `.sent` lane. That lane
+//!   counts every dup alive, queued or waiting for its close, against its
+//!   own bound (see `closer`). Once the bound is reached every transport
+//!   refuses fd messages with `error.FdQueueFull` until the close ends;
+//!   messages without fds still go, and the fd table does not fill.
 //! - A transport's own socket: the kernel closes the fds still in flight on
 //!   it inside its final close, and on macOS inside `shutdown(SHUT_RD)`.
 //!   Linux closes the socket inline when nothing can be in flight (an empty

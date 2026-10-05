@@ -8,9 +8,16 @@
 //! that each pipe's read end sees EOF (every copy of the write end is
 //! closed) and that the fd table returns to its baseline.
 //!
+//! The closer bounds the dups of the whole process, queued or waiting for
+//! their close (`fd_io.closer.sentLimit`). The last tests keep the closer's
+//! `.sent` lane stuck in a lingering close on purpose and check that the
+//! dups piling up behind it stop at that bound, across many transports.
+//!
 //! Linux and macOS run the tests; other targets compile the file and run
 //! only the stub and TCP tests. Tests that hold more than a few dozen fds
-//! raise the soft RLIMIT_NOFILE themselves (the macOS default is 256).
+//! raise the soft RLIMIT_NOFILE themselves (the macOS default is 256), and
+//! set the `.sent` bound they need (its default is a quarter of the soft
+//! limit, read at first use).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -54,6 +61,24 @@ const FdHeadroom = struct {
         };
     }
 };
+
+/// Sets the closer's process-wide bound on sent dups for one test, and
+/// restores the previous one.
+const SentLimit = struct {
+    previous: usize,
+
+    fn set(limit: usize) SentLimit {
+        return .{ .previous = fd_io.closer.setSentLimit(limit) };
+    }
+
+    fn restore(self: SentLimit) void {
+        _ = fd_io.closer.setSentLimit(self.previous);
+    }
+};
+
+/// A `.sent` bound far above what the tests that set it hold at once: they
+/// test something else.
+const roomy_sent_limit = 4096;
 
 /// A message larger than any AF_UNIX socket buffer, so the writer blocks in
 /// it until the peer reads or closes.
@@ -124,9 +149,10 @@ fn waitClosing(transport: *Transport) !void {
     }
 }
 
-/// Records the backpressure events a transport emits.
+/// Records the backpressure events a transport emits. They come from
+/// `enqueueWriteWithFds`, on the test thread.
 const BackpressureRecorder = struct {
-    seen: [8]events.BackpressureEvent = undefined,
+    seen: [64]events.BackpressureEvent = undefined,
     count: usize = 0,
 
     fn observer(self: *BackpressureRecorder) events.Observer {
@@ -141,6 +167,20 @@ const BackpressureRecorder = struct {
                 self.count += 1;
             },
             else => {},
+        }
+    }
+
+    /// Fails unless the recorded events are exactly `n` `.attached_fds`
+    /// refusals by the closer's bound: `err` = `error.FdCloseQueueFull`,
+    /// `limit` = `limit`, one fd attempted each.
+    fn expectCloserRefusals(self: *const BackpressureRecorder, n: usize, limit: usize) !void {
+        try testing.expectEqual(n, self.count);
+        for (self.seen[0..self.count]) |event| {
+            try testing.expectEqual(events.Resource.attached_fds, event.resource);
+            try testing.expectEqual(events.Source.unix, event.source);
+            try testing.expectEqual(@as(anyerror, error.FdCloseQueueFull), event.err);
+            try testing.expectEqual(@as(?usize, limit), event.limit);
+            try testing.expectEqual(@as(?usize, 1), event.attempted_bytes);
         }
     }
 };
@@ -431,6 +471,10 @@ test "N queued sends: every fd arrives, and every dup is closed after its send" 
     try warmUp();
     const before = support.FdSnapshot.take();
     {
+        // The enqueue loop can run ahead of the writer: up to all 120 dups
+        // held at once.
+        const sent_limit = SentLimit.set(roomy_sent_limit);
+        defer sent_limit.restore();
         const sp = try support.socketPair();
         defer support.closeFd(sp[0]);
         var pipes = try support.Pipes.open(2);
@@ -697,6 +741,9 @@ test "at most 256 fds in flight per transport, then FdQueueFull with a backpress
     try warmUp();
     const before = support.FdSnapshot.take();
     {
+        // This transport's own cap, not the process-wide one.
+        const sent_limit = SentLimit.set(roomy_sent_limit);
+        defer sent_limit.restore();
         const sp = try support.socketPair();
         defer support.closeFd(sp[0]);
         var pipes = try support.Pipes.open(1);
@@ -808,6 +855,242 @@ test "enqueueWriteWithFds fails cleanly at every allocation" {
         pipes.closeWriters();
         support.closeFd(sp[1]);
         try pipes.expectAllWritersClosed();
+    }
+    try support.expectBackAtBaseline(before);
+}
+
+// ---------------------------------------------------------------------------
+// The closer's bound on sent dups
+// ---------------------------------------------------------------------------
+
+test "a failed fd enqueue gives back what it counted against the closer's bound" {
+    if (!support.supported) return error.SkipZigTest;
+    try warmUp();
+    const before = support.FdSnapshot.take();
+    {
+        const limit = 4;
+        const sent_limit = SentLimit.set(limit);
+        defer sent_limit.restore();
+        var pipes = try support.Pipes.open(2);
+        defer pipes.closeAll();
+        const w = pipes.write_ends[0];
+
+        // A: three slots counted, two dups made, then the third dup fails.
+        // A stays alive (its teardown would give back everything anyway).
+        const a = try support.socketPair();
+        defer support.closeFd(a[0]);
+        var ta = try Transport.init(testing.allocator, testing.io, .{ .handle = a[1] }, 64);
+        defer ta.deinit();
+        try ta.startWriter();
+        const not_open: Fd = support.max_scanned_fd - 1;
+        try testing.expect(!support.isOpen(not_open));
+        const bad = [_]Fd{ w, pipes.write_ends[1], not_open };
+        try testing.expectError(error.InvalidFd, ta.enqueueWriteWithFds("bad", &bad));
+        try testing.expectEqual(@as(usize, 0), ta.queueStats().fds);
+        try support.waitLaneIdle(.sent, 2000);
+
+        // B: its writer blocks inside `big` (nobody reads b[0]), so every
+        // dup it queues from here stays held.
+        const b = try support.socketPair();
+        defer support.closeFd(b[0]);
+        const big = try testing.allocator.alloc(u8, blocking_len);
+        defer testing.allocator.free(big);
+        @memset(big, 0x4B);
+        var recorder: BackpressureRecorder = .{};
+        var tb = try Transport.initWithOptions(testing.allocator, testing.io, .{ .handle = b[1] }, .{
+            .read_buffer_size = 64,
+            .observer = recorder.observer(),
+        });
+        var tb_live = true;
+        defer if (tb_live) tb.deinit();
+        try tb.startWriter();
+        try tb.enqueueWrite(big);
+        try waitBatchTaken(&tb);
+
+        // Nothing of A's failure still counts: B gets the whole bound, and
+        // the message after that is refused.
+        for (0..limit) |_| try tb.enqueueWriteWithFds("held", &.{w});
+        try testing.expectEqual(@as(usize, limit), tb.queueStats().fds);
+        try testing.expectEqual(@as(usize, 0), recorder.count);
+        try testing.expectError(error.FdQueueFull, tb.enqueueWriteWithFds("one more", &.{w}));
+        try recorder.expectCloserRefusals(1, limit);
+        try testing.expectEqual(@as(usize, limit), tb.queueStats().fds);
+        try testing.expect(!tb.isClosing());
+
+        pipes.closeWriters();
+        tb.deinit();
+        tb_live = false;
+        try pipes.expectAllWritersClosed();
+    }
+    try support.expectBackAtBaseline(before);
+}
+
+/// The stall test keeps the `.sent` lane stuck on purpose. The linger is
+/// long enough that it never ends by itself during the test; the test ends
+/// it by closing the accepting side.
+const stall_linger_seconds = 60;
+/// How long the stuck lane must stay stuck before the test trusts it.
+const stall_settle_ms = 200;
+/// How long the closer may take to finish the lingering close once the test
+/// ends the linger.
+const closer_drain_ms = 6000;
+
+/// Stalls the closer's `.sent` lane the way an app can: it queues a
+/// lingering TCP socket on a transport whose writer is blocked, closes its
+/// own copy (`enqueueWriteWithFds` allows that), and tears the transport
+/// down before the message goes out. The queue's dup is then the last copy,
+/// and its close blocks the `.sent` lane until `lingering.endLinger()`.
+fn stallSentLane(lingering: *support.LingeringSocket) !void {
+    const sp = try support.socketPair();
+    defer support.closeFd(sp[0]);
+    const big = try testing.allocator.alloc(u8, blocking_len);
+    defer testing.allocator.free(big);
+    @memset(big, 0x7E);
+
+    var transport = Transport.init(testing.allocator, testing.io, .{ .handle = sp[1] }, 64) catch |err| {
+        support.closeFd(sp[1]);
+        return err;
+    };
+    var transport_live = true;
+    defer if (transport_live) transport.deinit();
+    try transport.startWriter();
+    try transport.enqueueWrite(big);
+    try waitBatchTaken(&transport);
+    try transport.enqueueWriteWithFds("lingering", &.{lingering.client});
+    lingering.closeClient();
+    // The blocked write fails, and `drain` hands the dup to the closer.
+    transport.deinit();
+    transport_live = false;
+    try support.expectLaneStuck(.sent, stall_settle_ms);
+}
+
+/// A transport with a started writer, and the raw peer socket that reads
+/// what it sends. Pinned: open it in place (the writer thread keeps a
+/// pointer to `transport`).
+const Link = struct {
+    peer: Fd = -1,
+    transport: Transport = undefined,
+    live: bool = false,
+    /// Fd messages the transport took.
+    admitted: usize = 0,
+
+    fn open(self: *Link, observer: events.Observer) !void {
+        const sp = try support.socketPair();
+        errdefer support.closeFd(sp[0]);
+        self.transport = Transport.initWithOptions(testing.allocator, testing.io, .{ .handle = sp[1] }, .{
+            .read_buffer_size = 64,
+            .observer = observer,
+        }) catch |err| {
+            support.closeFd(sp[1]);
+            return err;
+        };
+        errdefer self.transport.deinit();
+        try self.transport.startWriter();
+        self.peer = sp[0];
+        self.live = true;
+    }
+
+    fn close(self: *Link) void {
+        if (!self.live) return;
+        self.transport.deinit();
+        support.closeFd(self.peer);
+        self.live = false;
+    }
+};
+
+/// Waits until the `.sent` lane has exactly `want` jobs pending: the writers
+/// hand a dup off just after its send returns.
+fn waitSentPending(want: usize, timeout_ms: i64) !void {
+    const start = support.nowNs();
+    while (fd_io.closer.pendingIn(.sent) != want) {
+        if (support.msSince(start) >= timeout_ms) {
+            std.debug.print("the .sent lane has {d} job(s) pending, expected {d}\n", .{ fd_io.closer.pendingIn(.sent), want });
+            return error.SentLaneMismatch;
+        }
+        support.sleepMs(5);
+    }
+}
+
+test "while a sent dup's close blocks, the dups behind it stop at the closer's bound across many transports" {
+    if (!support.supported) return error.SkipZigTest;
+    try warmUp();
+    const before = support.FdSnapshot.take();
+    {
+        const limit = 24;
+        const n_links = 6;
+        const rounds = 8;
+        const sent_limit = SentLimit.set(limit);
+        defer sent_limit.restore();
+
+        const p = try support.pipePair();
+        defer support.closeFd(p[0]);
+        defer support.closeFd(p[1]);
+
+        // On a failure below, this ends the linger first, so the closer
+        // catches up before the next test.
+        var lingering = try support.LingeringSocket.open(stall_linger_seconds);
+        defer lingering.deinit();
+        try stallSentLane(&lingering);
+
+        var recorder: BackpressureRecorder = .{};
+        var links: [n_links]Link = @splat(.{});
+        defer for (&links) |*link| link.close();
+        for (&links) |*link| try link.open(recorder.observer());
+
+        // From here every new fd in this process is a dup that the stuck
+        // lane holds: the peers close what they receive.
+        const held_before = support.FdSnapshot.take();
+        const message = "fd message";
+        var refused: usize = 0;
+        for (0..rounds) |_| {
+            for (&links) |*link| {
+                link.transport.enqueueWriteWithFds(message, &.{p[1]}) catch |err| {
+                    try testing.expectEqual(error.FdQueueFull, err);
+                    refused += 1;
+                    continue;
+                };
+                link.admitted += 1;
+            }
+        }
+
+        // The lingering dup counts too, so exactly `limit - 1` messages got
+        // in, whatever the writers had sent by then. Every later one was
+        // refused, with an event, and queued nothing.
+        var admitted: usize = 0;
+        for (&links) |*link| admitted += link.admitted;
+        errdefer std.debug.print("admitted {d}, refused {d}, bound {d}\n", .{ admitted, refused, limit });
+        try testing.expectEqual(@as(usize, limit - 1), admitted);
+        try testing.expectEqual(@as(usize, n_links * rounds - (limit - 1)), refused);
+        try recorder.expectCloserRefusals(refused, limit);
+
+        // Each admitted message reaches its peer with its fd.
+        for (&links) |*link| {
+            const got = try PeerRead.readExactly(link.peer, link.admitted * message.len);
+            try testing.expectEqual(link.admitted, got.fds);
+        }
+        // Their dups wait behind the lingering close, and hold this
+        // process's only new fds.
+        try waitSentPending(limit, 2000);
+        var held: [4]Fd = undefined;
+        const n_held = support.FdSnapshot.take().added(held_before, &held);
+        try testing.expectEqual(@as(usize, limit - 1), n_held);
+
+        // Every connection stays up and still sends messages without fds.
+        for (&links) |*link| {
+            try testing.expect(!link.transport.isClosing());
+            try link.transport.enqueueWrite("plain");
+            _ = try PeerRead.readExactly(link.peer, "plain".len);
+        }
+
+        // Once the close ends, the closer catches up and fds go out again.
+        lingering.endLinger();
+        try support.waitLaneIdle(.sent, closer_drain_ms);
+        for (&links) |*link| {
+            try link.transport.enqueueWriteWithFds(message, &.{p[1]});
+            const got = try PeerRead.readExactly(link.peer, message.len);
+            try testing.expectEqual(@as(usize, 1), got.fds);
+        }
+        try testing.expectEqual(refused, recorder.count);
     }
     try support.expectBackAtBaseline(before);
 }

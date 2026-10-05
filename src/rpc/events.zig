@@ -141,7 +141,11 @@ pub const Resource = enum(u8) {
     /// send side, a message whose fds would take a transport's write queue
     /// past `Transport.max_queued_fds` emits a `.backpressure`
     /// (`err` = `error.FdQueueFull`, `attempted_bytes` = the message's fd
-    /// count, `limit` = the cap); the connection stays open.
+    /// count, `limit` = the cap); the connection stays open. A message
+    /// refused because the process already holds as many dups of sent fds
+    /// as the closer's bound allows emits the same, with `err` =
+    /// `error.FdCloseQueueFull` and `limit` = that bound
+    /// (`fd_io.closer.sentLimit`).
     attached_fds,
     _,
 };

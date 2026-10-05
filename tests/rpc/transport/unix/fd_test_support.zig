@@ -309,6 +309,105 @@ pub fn waitLaneIdle(lane: fd_io.closer.Lane, timeout_ms: i64) !void {
     }
 }
 
+/// Setup check for the stall tests: `lane` still has a job after
+/// `settle_ms`, so the lingering close in it really blocks (otherwise the
+/// test proves nothing).
+pub fn expectLaneStuck(lane: fd_io.closer.Lane, settle_ms: i64) !void {
+    sleepMs(settle_ms);
+    if (fd_io.closer.pendingIn(lane) == 0) {
+        std.debug.print("setup: the lingering close on the {t} lane did not block\n", .{lane});
+        return error.LingerDidNotBlock;
+    }
+}
+
+/// A TCP client socket whose final close lingers: the accepting side never
+/// reads, so unsent data stays queued, and SO_LINGER is on. Its final close
+/// blocks the closing thread for `seconds`, or until `endLinger`.
+pub const LingeringSocket = struct {
+    listener: Fd,
+    server_side: Fd,
+    client: Fd,
+
+    var chunk: [64 * 1024]u8 = @splat(0xab);
+
+    pub fn open(seconds: i32) !LingeringSocket {
+        const listener: Fd = @intCast(try check(sys.socket(posix.AF.INET, posix.SOCK.STREAM, 0), "socket"));
+        errdefer closeFd(listener);
+        var addr: posix.sockaddr.in = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f00_0001) };
+        _ = try check(sys.bind(listener, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)), "bind");
+        _ = try check(sys.listen(listener, 1), "listen");
+        var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.in);
+        _ = try check(sys.getsockname(listener, @ptrCast(&addr), &addr_len), "getsockname");
+        const client: Fd = @intCast(try check(sys.socket(posix.AF.INET, posix.SOCK.STREAM, 0), "socket"));
+        errdefer closeFd(client);
+        _ = try check(sys.connect(client, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)), "connect");
+        const server_side: Fd = @intCast(try check(sys.accept(listener, null, null), "accept"));
+        errdefer closeFd(server_side);
+
+        // Fill the send queue; the accepting side never reads. One pass is
+        // not enough on macOS: receive-buffer autotuning drains it and the
+        // close then does not linger. Refill until two passes 10 ms apart
+        // add nothing.
+        try setNonBlocking(client, true);
+        var queued = try fillSendQueue(client);
+        try testing.expect(queued > 0);
+        var quiet_passes: usize = 0;
+        var passes: usize = 0;
+        while (quiet_passes < 2) : (passes += 1) {
+            if (passes == 200) return error.SendQueueNeverSettled;
+            sleepMs(10);
+            const more = try fillSendQueue(client);
+            queued += more;
+            quiet_passes = if (more == 0) quiet_passes + 1 else 0;
+        }
+        try setNonBlocking(client, false);
+
+        // Darwin's SO_LINGER counts clock ticks; SO_LINGER_SEC counts
+        // seconds, as Linux's SO_LINGER does.
+        const linger_opt = if (is_macos) posix.SO.LINGER_SEC else posix.SO.LINGER;
+        const lg: posix.linger = .{ .onoff = 1, .linger = seconds };
+        _ = try check(sys.setsockopt(client, posix.SOL.SOCKET, linger_opt, std.mem.asBytes(&lg), @sizeOf(posix.linger)), "setsockopt(SO_LINGER)");
+        return .{ .listener = listener, .server_side = server_side, .client = client };
+    }
+
+    /// Sends on the non-blocking `client` until EAGAIN; returns the bytes sent.
+    fn fillSendQueue(client: Fd) !usize {
+        var queued: usize = 0;
+        while (queued < 64 * 1024 * 1024) {
+            const rc = sys.write(client, &chunk, chunk.len);
+            switch (posix.errno(rc)) {
+                .SUCCESS => queued += @intCast(rc),
+                .INTR => {},
+                .AGAIN => return queued,
+                else => |err| {
+                    std.debug.print("filling the TCP send queue failed with errno {d}\n", .{@backingInt(err)});
+                    return error.SyscallFailed;
+                },
+            }
+        }
+        return error.SendQueueNeverFilled;
+    }
+
+    /// Our own copy of the lingering socket, after it was attached.
+    pub fn closeClient(self: *LingeringSocket) void {
+        if (self.client >= 0) closeFd(self.client);
+        self.client = -1;
+    }
+
+    /// Close the accepting side. That resets the connection, which ends
+    /// any linger still running on the closer thread.
+    pub fn endLinger(self: *LingeringSocket) void {
+        if (self.server_side >= 0) closeFd(self.server_side);
+        self.server_side = -1;
+    }
+
+    pub fn deinit(self: *LingeringSocket) void {
+        self.closeClient();
+        self.endLinger();
+        closeFd(self.listener);
+    }
+};
+
 /// True once `fd` is closed, within `timeout_ms`. Only for an fd number
 /// nothing else in the process can reuse in the meantime.
 pub fn waitClosed(fd: Fd, timeout_ms: i64) bool {

@@ -51,93 +51,7 @@ const stall_linger_seconds = 60;
 /// How long a stuck lane must stay stuck before a stall test trusts it.
 const stall_settle_ms = 200;
 
-/// A TCP client socket whose final close lingers: the accepting side never
-/// reads, so unsent data stays queued, and SO_LINGER is on.
-const LingeringSocket = struct {
-    listener: Fd,
-    server_side: Fd,
-    client: Fd,
-
-    var chunk: [64 * 1024]u8 = @splat(0xab);
-
-    fn open(seconds: i32) !LingeringSocket {
-        const listener: Fd = @intCast(try support.check(sys.socket(posix.AF.INET, posix.SOCK.STREAM, 0), "socket"));
-        errdefer support.closeFd(listener);
-        var addr: posix.sockaddr.in = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f00_0001) };
-        _ = try support.check(sys.bind(listener, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)), "bind");
-        _ = try support.check(sys.listen(listener, 1), "listen");
-        var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.in);
-        _ = try support.check(sys.getsockname(listener, @ptrCast(&addr), &addr_len), "getsockname");
-        const client: Fd = @intCast(try support.check(sys.socket(posix.AF.INET, posix.SOCK.STREAM, 0), "socket"));
-        errdefer support.closeFd(client);
-        _ = try support.check(sys.connect(client, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)), "connect");
-        const server_side: Fd = @intCast(try support.check(sys.accept(listener, null, null), "accept"));
-        errdefer support.closeFd(server_side);
-
-        // Fill the send queue; the accepting side never reads. One pass is
-        // not enough on macOS: receive-buffer autotuning drains it and the
-        // close then does not linger. Refill until two passes 10 ms apart
-        // add nothing.
-        try support.setNonBlocking(client, true);
-        var queued = try fillSendQueue(client);
-        try testing.expect(queued > 0);
-        var quiet_passes: usize = 0;
-        var passes: usize = 0;
-        while (quiet_passes < 2) : (passes += 1) {
-            if (passes == 200) return error.SendQueueNeverSettled;
-            support.sleepMs(10);
-            const more = try fillSendQueue(client);
-            queued += more;
-            quiet_passes = if (more == 0) quiet_passes + 1 else 0;
-        }
-        try support.setNonBlocking(client, false);
-
-        // Darwin's SO_LINGER counts clock ticks; SO_LINGER_SEC counts
-        // seconds, as Linux's SO_LINGER does.
-        const linger_opt = if (support.is_macos) posix.SO.LINGER_SEC else posix.SO.LINGER;
-        const lg: posix.linger = .{ .onoff = 1, .linger = seconds };
-        _ = try support.check(sys.setsockopt(client, posix.SOL.SOCKET, linger_opt, std.mem.asBytes(&lg), @sizeOf(posix.linger)), "setsockopt(SO_LINGER)");
-        return .{ .listener = listener, .server_side = server_side, .client = client };
-    }
-
-    /// Sends on the non-blocking `client` until EAGAIN; returns the bytes sent.
-    fn fillSendQueue(client: Fd) !usize {
-        var queued: usize = 0;
-        while (queued < 64 * 1024 * 1024) {
-            const rc = sys.write(client, &chunk, chunk.len);
-            switch (posix.errno(rc)) {
-                .SUCCESS => queued += @intCast(rc),
-                .INTR => {},
-                .AGAIN => return queued,
-                else => |err| {
-                    std.debug.print("filling the TCP send queue failed with errno {d}\n", .{@backingInt(err)});
-                    return error.SyscallFailed;
-                },
-            }
-        }
-        return error.SendQueueNeverFilled;
-    }
-
-    /// Our own copy of the lingering socket, after it was attached.
-    fn closeClient(self: *LingeringSocket) void {
-        if (self.client >= 0) support.closeFd(self.client);
-        self.client = -1;
-    }
-
-    /// Close the accepting side. That resets the connection, which ends
-    /// any linger still running on the closer thread.
-    fn endLinger(self: *LingeringSocket) void {
-        if (self.server_side >= 0) support.closeFd(self.server_side);
-        self.server_side = -1;
-    }
-
-    fn deinit(self: *LingeringSocket) void {
-        self.closeClient();
-        self.endLinger();
-        support.closeFd(self.listener);
-    }
-};
-
+const LingeringSocket = support.LingeringSocket;
 const Inbox = support.Inbox;
 
 fn onMessage(conn: *Connection, _: []const u8) anyerror!void {
@@ -270,14 +184,8 @@ const Stall = struct {
     }
 };
 
-/// Setup check: `lane` still has a job after `stall_settle_ms`, so the
-/// lingering close in it really blocks (otherwise the test proves nothing).
 fn expectStuck(lane: fd_io.closer.Lane) !void {
-    support.sleepMs(stall_settle_ms);
-    if (fd_io.closer.pendingIn(lane) == 0) {
-        std.debug.print("setup: the lingering close on the {t} lane did not block\n", .{lane});
-        return error.LingerDidNotBlock;
-    }
+    return support.expectLaneStuck(lane, stall_settle_ms);
 }
 
 fn expectClosedSoon(fd: Fd, name: []const u8) !void {

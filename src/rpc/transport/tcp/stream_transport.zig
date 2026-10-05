@@ -81,6 +81,12 @@ pub const SocketFd = struct {
 /// (and for each later item of that batch, which is never sent), or when
 /// `stopWriter` drains the queue. No thread of the transport closes a dup
 /// itself, so `deinit` never waits for one.
+///
+/// The closer bounds the dups of the whole process, held here or waiting
+/// for their close (`fd_io.closer.sentLimit`). While a dup's close blocks,
+/// the dups behind it pile up to that bound, and then every transport
+/// refuses fd messages with `error.FdQueueFull` until the closer catches
+/// up. Messages without fds still go.
 pub const Transport = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -130,9 +136,12 @@ pub const Transport = struct {
         /// Fds with an empty message: a stream socket cannot carry them.
         FdsWithoutData,
         /// Backpressure: this message's fds would take the transport past
-        /// `max_queued_fds`. Retry once the writer has sent what it holds.
-        /// Before `startWriter` (a direct send) it means the kernel refused
-        /// the send with ETOOMANYREFS (`fd_io.SendError.TooManyFdsInFlight`).
+        /// `max_queued_fds`, or the process already holds
+        /// `fd_io.closer.sentLimit()` dups (queued in any transport, or
+        /// waiting for the closer). Retry once the writer has sent what it
+        /// holds and the closer has caught up. Before `startWriter` (a
+        /// direct send, no dups) it means the kernel refused the send with
+        /// ETOOMANYREFS (`fd_io.SendError.TooManyFdsInFlight`).
         FdQueueFull,
         /// One of the fds is not open.
         InvalidFd,
@@ -187,9 +196,11 @@ pub const Transport = struct {
         max_bytes: usize = default_max_queued_bytes,
         max_fds: usize = max_queued_fds,
         /// `.sent`-lane capacity for every dup held, so no hand-off of a
-        /// dup allocates or falls back to an inline close. Invariant (under
-        /// `mu`): `fd_reservation.slots >= queued_fds + in_flight_fds`.
-        /// Used only under `mu`.
+        /// dup allocates or falls back to an inline close. It is also how
+        /// the dups held here count against the closer's process-wide
+        /// bound (`fd_io.closer.sentLimit`). Invariant (under `mu`):
+        /// `fd_reservation.slots == queued_fds + in_flight_fds` (a failed
+        /// enqueue trims what it reserved). Used only under `mu`.
         fd_reservation: fd_io.closer.Reservation = .{ .lane = .sent },
         closed: bool = false,
 
@@ -224,9 +235,11 @@ pub const Transport = struct {
             return self.queuedLocked(io, accounted_bytes, data.len);
         }
 
-        /// `enqueueCopy` for a message with fds: also checks the fd bound,
-        /// and queues a dup of each fd. The dups are made last, so a failure
-        /// before them leaves nothing to undo but frees; a failed dup sends
+        /// `enqueueCopy` for a message with fds: also checks the fd bounds
+        /// (`max_fds` here, then the closer's process-wide `.sent` bound,
+        /// which fails with `error.FdCloseQueueFull`), and queues a dup of
+        /// each fd. The dups are made last, so a failure before them leaves
+        /// nothing to undo but frees and the reservation; a failed dup sends
         /// the dups made so far to the closer.
         fn enqueueCopyWithFds(
             self: *WriteQueue,
@@ -234,7 +247,7 @@ pub const Transport = struct {
             allocator: std.mem.Allocator,
             bytes: []const u8,
             fds: []const fd_io.Fd,
-        ) EnqueueFdsError!EnqueueOutcome {
+        ) (EnqueueFdsError || error{FdCloseQueueFull})!EnqueueOutcome {
             self.mu.lockUncancelable(io);
             defer self.mu.unlock(io);
 
@@ -247,10 +260,16 @@ pub const Transport = struct {
             // The closer must exist before any dup does: dups are never
             // closed on the threads that use this queue.
             fd_io.closer.ensureStarted() catch return error.SystemResources;
-            fd_io.closer.reserve(&self.fd_reservation, held_fds + fds.len) catch |err| switch (err) {
+            // Counts these dups against the process-wide bound before any
+            // exists; refused while the closer is at that bound.
+            fd_io.closer.reserveSent(&self.fd_reservation, held_fds + fds.len) catch |err| switch (err) {
+                error.FdCloseQueueFull => return error.FdCloseQueueFull,
                 error.OutOfMemory => return error.OutOfMemory,
                 error.UnixSocketsUnsupported => return error.FdPassingUnsupported,
             };
+            // Runs last on failure, after the dups made so far went to the
+            // closer under this reservation: give back the rest of it.
+            errdefer fd_io.closer.trim(&self.fd_reservation, held_fds);
             const data = allocator.dupe(u8, bytes) catch return error.OutOfMemory;
             errdefer allocator.free(data);
             const dups = allocator.alloc(fd_io.Fd, fds.len) catch return error.OutOfMemory;
@@ -669,7 +688,12 @@ pub const Transport = struct {
     /// closer thread closes the dups once the message is sent or dropped
     /// (see `fd_io.closer`, lane `.sent`). The dups count against
     /// `max_queued_fds` until then; a message whose fds would pass it is
-    /// refused with `error.FdQueueFull`, and the transport stays open.
+    /// refused with `error.FdQueueFull`, and the transport stays open. They
+    /// also count against the closer's process-wide bound
+    /// (`fd_io.closer.sentLimit`) until the closer has closed them: while
+    /// the process is at that bound, every fd message is refused the same
+    /// way, with a `.backpressure` event whose `err` is
+    /// `error.FdCloseQueueFull`.
     ///
     /// Before `startWriter` this sends at once on the calling thread, with
     /// the caller's fds and no dups, like `enqueueWrite`.
@@ -687,7 +711,12 @@ pub const Transport = struct {
         }
         const outcome = self.write_queue.enqueueCopyWithFds(self.io, self.allocator, bytes, fds) catch |err| {
             self.emitEnqueueRejected(err, bytes.len, fds.len);
-            return err;
+            return switch (err) {
+                // The process-wide bound: the same backpressure as this
+                // transport's own; only the event tells them apart.
+                error.FdCloseQueueFull => error.FdQueueFull,
+                else => |e| e,
+            };
         };
         self.emitEnqueued(outcome, bytes.len);
     }
@@ -738,6 +767,15 @@ pub const Transport = struct {
                 .attached_fds,
                 fd_count,
                 self.write_queue.max_fds,
+                err,
+            ),
+            error.FdCloseQueueFull => events.emitBackpressure(
+                self.observer,
+                self.source,
+                .unknown,
+                .attached_fds,
+                fd_count,
+                fd_io.closer.sentLimit(),
                 err,
             ),
             else => {},
