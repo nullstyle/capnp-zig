@@ -196,6 +196,14 @@ e2e-zig:
 e2e-self:
     zig build e2e-self --summary all
 
+# The same self-interop e2e over a Unix-domain socket (Linux and macOS)
+e2e-self-unix:
+    zig build e2e-self-unix --summary all
+
+# Run the Zig <-> C++ e2e over Unix-domain sockets (docker; both peers in the cpp-rpc container)
+e2e-unix:
+    just --justfile tests/e2e/Justfile test-unix
+
 # Run e2e without rebuilding docker images
 e2e-skip-build:
     just --justfile tests/e2e/Justfile test-skip-build
@@ -268,7 +276,9 @@ ci:
     just package-preflight
     just test
     just e2e-self
+    @if [ "{{ os() }}" != windows ]; then just e2e-self-unix; fi
     just e2e-zig
+    just e2e-unix
     just e2e-l3-vatc
     zig build example-rpc
     @if [ "{{ os() }}" != windows ]; then zig build example-rpc-unix; fi

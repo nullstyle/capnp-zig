@@ -82,6 +82,27 @@ zig run tools/e2e_runner.zig -- --allow-missing-hooks
 just --justfile tests/e2e/Justfile test
 ```
 
+## Unix-domain sockets
+
+`--transport=unix` (`just e2e-unix`) runs the Zig e2e server and client against
+the C++ reference over an AF_UNIX socket file, in both directions. The Zig
+binaries take `--host unix:/path`; kj's `parseAddress` takes the same form, so
+the C++ binaries need no change.
+
+- Both peers run inside one `cpp-rpc` container, started with `--network none`.
+  The runner cross-builds the Zig server and client as static musl binaries
+  for the image's architecture (`docker image inspect -f '{{.Architecture}}'`:
+  `amd64` gives `x86_64-linux-musl`, `arm64` gives `aarch64-linux-musl`) into
+  `tests/e2e/.results/unix-zig/` and mounts them at `/zig`.
+- Only the C++ backend runs. Go, Python and Rust record
+  `SKIP(unix: reference harness TCP-only)`, and `l3_l4_interop` records a SKIP
+  because its driver dials TCP only.
+- A case whose client cannot connect prints no TAP and reads `FAIL`, never
+  `SKIP`. The summary goes to `tests/e2e/.results/summary-unix.json`.
+
+The Zig-to-Zig lane over a socket file needs no docker:
+`zig build e2e-self-unix` (Linux and macOS).
+
 ## Notes
 
 - Go backend schema name uses `gameworld`; the harness maps `game_world -> gameworld` automatically.

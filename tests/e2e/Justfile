@@ -19,6 +19,14 @@ test-deno:
 test-skip-build:
     {{runner}} --skip-build
 
+# Zig <-> C++ over AF_UNIX sockets, both directions, both peers inside the
+# cpp-rpc container (go, python and rust record SKIP: their harness is TCP-only).
+test-unix:
+    {{runner}} --transport=unix
+
+test-unix-skip-build:
+    {{runner}} --transport=unix --skip-build
+
 test-l3-cpp:
     {{runner}} --backend=cpp --schema=l3_l4_interop --direction=zig-client
 

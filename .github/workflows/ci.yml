@@ -188,6 +188,12 @@ jobs:
       - name: Self-interop e2e (zig client vs zig server, loopback)
         run: zig build e2e-self --summary all
 
+      - name: Self-interop e2e over a Unix-domain socket (zig client vs zig server)
+        # rpc.transport.unix is Linux and macOS only; the tool fails (not
+        # skips) on any other target, so the step is gated here instead.
+        if: runner.os != 'Windows'
+        run: zig build e2e-self-unix --summary all
+
       - name: Experimental L4 Join lease/recovery e2e (Zig, loopback)
         run: zig build e2e-l4-zig --summary all
 
@@ -590,6 +596,16 @@ jobs:
 
       - name: Run Zig e2e gate
         run: just e2e-zig
+
+      # Zig <-> C++ over AF_UNIX sockets, both directions. Both peers run
+      # inside the cpp-rpc container: the runner cross-builds the Zig server
+      # and client for the image's architecture (x86_64-linux-musl here) and
+      # mounts them; the container has no network but loopback. It reuses the
+      # image the gate above just built. Go, Python and Rust record SKIP
+      # (their reference harness is TCP-only); a lane that cannot connect
+      # reads FAIL, never SKIP.
+      - name: Zig e2e interop over Unix-domain sockets (C++ reference)
+        run: just e2e-unix
 
       # The cross-implementation Level-3 HOSTING proof: the vendored Cap'n Proto
       # C++ reference drives the recipient and introducer roles over real TCP

@@ -21,6 +21,7 @@ updated as phases land.
 | TCP transport: `TCP_NODELAY` | full | full | blocked upstream (std's AFD sockets accept no winsock setsockopt; AFD option helper not exposed) |
 | Soak harness | full | full | full (nightly lane; success requires positive traffic/chaos counters) |
 | Self-interop e2e (zig↔zig loopback, `zig build e2e-self`) | full | full | full |
+| Self-interop e2e over a Unix socket file (`zig build e2e-self-unix`) | full | full | not available (no AF_UNIX transport on Windows) |
 | Cross-implementation e2e (docker reference impls) | full (hosted CI, `Zig e2e interop`: every push to `main` and every PR) | full (local Docker Desktop) | local only (Docker Desktop/WSL2); hosted runners cannot run Linux containers |
 | Deterministic fuzz smoke | full | full | full |
 | Structural fuzz: L3/L4 peer frames, QUIC framers, persistence restore | full | full | full |
@@ -250,9 +251,12 @@ integer, so the snapshots used to differ by the platform that generated them.
   interop` job in `ci.yml` runs on `ubuntu-latest` for every push to `main`
   and every pull request. It runs `just e2e-zig`, the full Docker matrix
   against the C++, Go, Python, and Rust reference peers (every schema and
-  direction, minus the documented reference-library skips), then the
+  direction, minus the documented reference-library skips), then the same
+  Zig↔C++ scenarios over Unix-domain sockets in both directions
+  (`just e2e-unix`; both peers inside the C++ container), then the
   cross-impl L3 hosting gate (`just e2e-l3-vatc`). The Zig↔Zig self-interop
-  e2e (`zig build e2e-self`) also runs on every OS. Hosted macOS and Windows
+  e2e (`zig build e2e-self`) also runs on every OS, and over a Unix socket
+  file (`zig build e2e-self-unix`) on Linux and macOS. Hosted macOS and Windows
   runners cannot run the Linux-container matrix, so there it is local only
   (Docker Desktop / WSL2).
 

@@ -33,6 +33,13 @@ const Direction = enum {
     zig_server,
 };
 
+/// `--transport=unix` runs the lane over AF_UNIX sockets instead of TCP (see
+/// `runUnixLane`).
+const Transport = enum {
+    tcp,
+    unix,
+};
+
 const CaseResult = struct {
     key: []u8,
     status: []u8,
@@ -56,6 +63,7 @@ const Config = struct {
     allow_missing_hooks: bool = false,
     verbose: bool = false,
     direction: Direction = .both,
+    transport: Transport = .tcp,
     backend_selected: [4]bool = .{ false, false, false, false },
     schema_selected: [6]bool = .{ false, false, false, false, false, false },
 
@@ -162,6 +170,10 @@ fn usage() void {
         \\  --build-only
         \\  --skip-build
         \\  --direction=both|zig-client|zig-server
+        \\  --transport=tcp|unix
+        \\      unix: both peers run inside the C++ reference container and talk
+        \\      over an AF_UNIX socket. Only the cpp backend runs; go, python and
+        \\      rust record SKIP(unix: reference harness TCP-only).
         \\  --backend=cpp|go|python|rust (repeatable)
         \\  --schema=game_world|chat|inventory|matchmaking|resolve_disembargo|l3_l4_interop (repeatable)
         \\  --allow-missing-hooks
@@ -464,6 +476,10 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !Config {
             cfg.direction = try parseDirection(arg["--direction=".len..]);
             continue;
         }
+        if (std.mem.startsWith(u8, arg, "--transport=")) {
+            cfg.transport = std.meta.stringToEnum(Transport, arg["--transport=".len..]) orelse return error.InvalidTransport;
+            continue;
+        }
         if (std.mem.startsWith(u8, arg, "--backend=")) {
             const b = try parseBackend(arg["--backend=".len..]);
             cfg.backend_selected[@backingInt(b)] = true;
@@ -748,6 +764,8 @@ fn composeDown(allocator: Allocator, io: std.Io, paths: Paths) !void {
 fn buildImages(allocator: Allocator, io: std.Io, paths: Paths, cfg: Config) !void {
     for (all_backends) |backend| {
         if (!cfg.isBackendSelected(backend)) continue;
+        // The Unix lane runs only the C++ reference image.
+        if (cfg.transport == .unix and backend != unix_backend) continue;
 
         const justfile = paths.backendJustfile(backend);
         const res = try runCapture(allocator, io, &.{ "just", "--justfile", justfile, "docker-build" }, null, null);
@@ -1164,7 +1182,284 @@ fn runZigServerPhase(
     }
 }
 
-fn writeSummary(allocator: Allocator, io: std.Io, paths: Paths, results: []const CaseResult) !void {
+// ---------------------------------------------------------------------------
+// Unix-domain socket lane (`--transport=unix`)
+// ---------------------------------------------------------------------------
+//
+// Cap'n Proto RPC over an AF_UNIX socket file, Zig against the C++ reference,
+// in both directions. A socket file cannot cross from the docker host into a
+// container on every platform (Docker Desktop runs containers in a VM), so
+// BOTH peers run inside one C++ reference container:
+//   - the Zig e2e server and client are cross-built for the image's
+//     architecture (`docker image inspect -f {{.Architecture}}`) as static
+//     musl binaries and mounted read-only at /zig;
+//   - a shell script in the container starts the server on
+//     `unix:<private dir>/rpc.sock`, waits for its READY line (it prints it
+//     after `listen`), and runs the client against the same path;
+//   - the container has no network but loopback (`--network none`), and
+//     neither peer is given an IP address, so the peers meet only on the
+//     socket file.
+// kj's `parseAddress` takes `unix:<path>` natively, so the C++ binaries need no
+// change: the C++ client ignores `--port` for a unix address but refuses 0, so
+// it gets 1. The Zig binaries take `--host unix:<path>`.
+//
+// Status comes from the client's TAP output and exit code exactly as in the
+// TCP lane (`statusFromRun`): a client that never connects prints no TAP, so a
+// broken lane reads FAIL, never SKIP.
+
+/// The one reference backend the Unix lane runs.
+const unix_backend: Backend = .cpp;
+/// Compose service of that backend's image.
+const unix_compose_service = "cpp-rpc";
+/// Image name when `docker compose config --images` cannot say (compose names
+/// it `<project>-<service>`, and the project is the compose file's directory).
+const unix_default_image = "e2e-cpp-rpc";
+/// Bound on one case's whole container run: server readiness (30 s), the
+/// client (`case_timeout_ms`) and container start.
+const unix_case_timeout_ms: i64 = 90 * 1000;
+
+fn unixCaseSkip(schema: Schema, backend: Backend) ?[]const u8 {
+    if (backend != unix_backend) return "SKIP(unix: reference harness TCP-only)";
+    // The L3/L4 driver (tools/e2e_l3_cpp.zig) dials TCP only.
+    if (schema == .l3_l4_interop) return "SKIP(unix: l3_l4_interop driver is TCP-only)";
+    return null;
+}
+
+/// What every Unix case needs: the C++ image and the Zig binaries built for it.
+const UnixLaneSetup = struct {
+    image: []u8,
+    /// Absolute host path holding e2e-zig-server and e2e-zig-client.
+    bin_dir: []u8,
+
+    fn deinit(self: *UnixLaneSetup, allocator: Allocator) void {
+        allocator.free(self.image);
+        allocator.free(self.bin_dir);
+    }
+};
+
+fn trimmedOutput(text: []const u8) []const u8 {
+    return std.mem.trim(u8, text, " \t\r\n");
+}
+
+/// The image `docker compose` builds for the C++ service.
+fn unixCppImage(allocator: Allocator, io: std.Io, paths: Paths) ![]u8 {
+    const res = try runCapture(allocator, io, &.{ "docker", "compose", "-f", paths.compose_file, "config", "--images", unix_compose_service }, null, null);
+    defer allocator.free(res.stdout);
+    defer allocator.free(res.stderr);
+    const name = trimmedOutput(res.stdout);
+    if (res.exit_code != 0 or name.len == 0 or std.mem.indexOfScalar(u8, name, '\n') != null) {
+        return allocator.dupe(u8, unix_default_image);
+    }
+    return allocator.dupe(u8, name);
+}
+
+/// The static Zig target that runs inside `image`.
+fn unixZigTarget(allocator: Allocator, io: std.Io, image: []const u8) ![]const u8 {
+    const res = try runCapture(allocator, io, &.{ "docker", "image", "inspect", "-f", "{{.Architecture}}", image }, null, null);
+    defer allocator.free(res.stdout);
+    defer allocator.free(res.stderr);
+    if (res.exit_code != 0) {
+        printCommandFailure("docker image inspect", res);
+        return error.ImageInspectFailed;
+    }
+    const arch = trimmedOutput(res.stdout);
+    if (std.mem.eql(u8, arch, "arm64")) return "aarch64-linux-musl";
+    if (std.mem.eql(u8, arch, "amd64")) return "x86_64-linux-musl";
+    std.debug.print("    unix lane: image {s} has unsupported architecture '{s}'\n", .{ image, arch });
+    return error.UnsupportedImageArchitecture;
+}
+
+fn prepareUnixLane(allocator: Allocator, io: std.Io, environ: std.process.Environ, paths: Paths) !UnixLaneSetup {
+    const image = try unixCppImage(allocator, io, paths);
+    errdefer allocator.free(image);
+    const zig_target = try unixZigTarget(allocator, io, image);
+
+    // Its own prefix, so the host-arch binaries in zig-out stay untouched.
+    const prefix_rel = try std.fmt.allocPrint(allocator, "{s}/unix-zig", .{paths.results_dir});
+    defer allocator.free(prefix_rel);
+    try std.Io.Dir.cwd().createDirPath(io, prefix_rel);
+    const prefix = try std.Io.Dir.cwd().realPathFileAlloc(io, prefix_rel, allocator);
+    defer allocator.free(prefix);
+
+    var env = try environ.createMap(allocator);
+    defer env.deinit();
+    const cache_dir = if (env.get("E2E_ZIG_GLOBAL_CACHE_DIR")) |dir|
+        dir
+    else if (env.get("ZIG_GLOBAL_CACHE_DIR")) |dir|
+        dir
+    else
+        default_e2e_zig_global_cache_dir;
+    try env.put("ZIG_GLOBAL_CACHE_DIR", cache_dir);
+
+    const target_arg = try std.fmt.allocPrint(allocator, "-Dtarget={s}", .{zig_target});
+    defer allocator.free(target_arg);
+    std.debug.print("    unix lane: image {s}; building the Zig e2e server and client for {s}...\n", .{ image, zig_target });
+    const res = try runCapture(allocator, io, &.{
+        "zig",
+        "build",
+        "e2e-zig-server-install",
+        "e2e-zig-client-install",
+        target_arg,
+        "--prefix",
+        prefix,
+    }, paths.repo_root, &env);
+    defer allocator.free(res.stdout);
+    defer allocator.free(res.stderr);
+    if (res.exit_code != 0) {
+        printCommandFailure("zig build (unix lane cross-build)", res);
+        return error.UnixLaneBuildFailed;
+    }
+
+    return .{
+        .image = image,
+        .bin_dir = try std.fmt.allocPrint(allocator, "{s}/bin", .{prefix}),
+    };
+}
+
+/// The script one Unix case runs inside the container. `$sock` is the one
+/// socket path both peers get.
+fn unixCaseScript(allocator: Allocator, role: Direction, schema: Schema) ![]u8 {
+    // zig_server: Zig serves, the C++ reference client calls it.
+    // zig_client: the C++ reference serves, the Zig client calls it.
+    const server_cmd = if (role == .zig_server) "/zig/e2e-zig-server" else "/app/bin/server --port 0";
+    const client_cmd = if (role == .zig_server) "/app/bin/client --port 1" else "/zig/e2e-zig-client";
+    return std.fmt.allocPrint(allocator,
+        \\set -u
+        \\dir=$(mktemp -d /tmp/capnp-unix.XXXXXX)
+        \\chmod 700 "$dir"
+        \\sock="$dir/rpc.sock"
+        \\{[server]s} --host "unix:$sock" --schema {[schema]s} >"$dir/server.log" 2>&1 &
+        \\spid=$!
+        \\ready=0
+        \\for _ in $(seq 1 300); do
+        \\  if grep -q '^READY' "$dir/server.log"; then ready=1; break; fi
+        \\  kill -0 "$spid" 2>/dev/null || break
+        \\  sleep 0.1
+        \\done
+        \\if [ "$ready" != 1 ]; then
+        \\  echo "unix lane: the server did not become ready on $sock" >&2
+        \\  sed 's/^/server| /' "$dir/server.log" >&2
+        \\  kill -9 "$spid" 2>/dev/null
+        \\  exit 3
+        \\fi
+        \\timeout --signal=TERM --kill-after=5 {[client_timeout_s]d} {[client]s} --host "unix:$sock" --schema {[schema]s}
+        \\rc=$?
+        \\kill "$spid" 2>/dev/null
+        \\wait "$spid" 2>/dev/null
+        \\if [ "$rc" != 0 ]; then sed 's/^/server| /' "$dir/server.log" >&2; fi
+        \\exit "$rc"
+        \\
+    , .{
+        .server = server_cmd,
+        .client = client_cmd,
+        .schema = schemaNameForBackend(unix_backend, schema),
+        .client_timeout_s = @divTrunc(case_timeout_ms, 1000),
+    });
+}
+
+fn runUnixCase(
+    allocator: Allocator,
+    io: std.Io,
+    setup: *const UnixLaneSetup,
+    role: Direction,
+    schema: Schema,
+    output_path: []const u8,
+) !RunResult {
+    const container = try std.fmt.allocPrint(allocator, "e2e-unix-{s}-{s}", .{ @tagName(role), schemaName(schema) });
+    defer allocator.free(container);
+    try dockerRmForce(allocator, io, container);
+    defer dockerRmForce(allocator, io, container) catch {};
+
+    const mount = try std.fmt.allocPrint(allocator, "{s}:/zig:ro", .{setup.bin_dir});
+    defer allocator.free(mount);
+    const script = try unixCaseScript(allocator, role, schema);
+    defer allocator.free(script);
+
+    const res = try runCaptureWithTimeout(allocator, io, &.{
+        "docker",       "run",
+        "--rm",         "--init",
+        "--pull",       "never",
+        "--network",    "none",
+        "--name",       container,
+        "-v",           mount,
+        "--entrypoint", "/bin/bash",
+        setup.image,    "-c",
+        script,
+    }, null, null, unix_case_timeout_ms);
+    try writeCombinedOutput(io, output_path, res.stdout, res.stderr);
+    return res;
+}
+
+fn runUnixLane(
+    allocator: Allocator,
+    io: std.Io,
+    environ: std.process.Environ,
+    cfg: Config,
+    paths: Paths,
+    results: *std.ArrayList(CaseResult),
+) !void {
+    std.debug.print("==> Phase: Unix-domain sockets (both peers inside the C++ reference container)\n", .{});
+
+    var setup: ?UnixLaneSetup = null;
+    defer if (setup) |*s| s.deinit(allocator);
+    var setup_error: ?anyerror = null;
+    if (cfg.isBackendSelected(unix_backend)) {
+        setup = prepareUnixLane(allocator, io, environ, paths) catch |err| blk: {
+            setup_error = err;
+            break :blk null;
+        };
+    }
+
+    const roles = [_]Direction{ .zig_client, .zig_server };
+    for (roles) |role| {
+        if (cfg.direction != .both and cfg.direction != role) continue;
+        const role_name = if (role == .zig_client) "zig-client" else "zig-server";
+
+        for (all_schemas) |schema| {
+            if (!cfg.isSchemaSelected(schema)) continue;
+            for (all_backends) |backend| {
+                if (!cfg.isBackendSelected(backend)) continue;
+
+                const key = try std.fmt.allocPrint(allocator, "unix:{s}:{s}:{s}", .{ role_name, schemaName(schema), backendName(backend) });
+                defer allocator.free(key);
+                std.debug.print("    case {s}\n", .{key});
+
+                if (unixCaseSkip(schema, backend)) |reason| {
+                    std.debug.print("      {s}\n", .{reason});
+                    try appendResult(allocator, results, key, reason);
+                    continue;
+                }
+                const lane = if (setup) |*s| s else {
+                    const status = try std.fmt.allocPrint(allocator, "FAIL(unix-setup:{s})", .{@errorName(setup_error orelse error.Unknown)});
+                    defer allocator.free(status);
+                    try appendResult(allocator, results, key, status);
+                    continue;
+                };
+
+                const output_path = try std.fmt.allocPrint(allocator, "{s}/unix_{s}_{s}_{s}.tap", .{ paths.results_dir, @tagName(role), schemaName(schema), backendName(backend) });
+                defer allocator.free(output_path);
+
+                const run = try runUnixCase(allocator, io, lane, role, schema, output_path);
+                defer allocator.free(run.stdout);
+                defer allocator.free(run.stderr);
+
+                const combined = try std.mem.concat(allocator, u8, &.{ run.stdout, "\n", run.stderr });
+                defer allocator.free(combined);
+
+                const tap = evalTap(combined);
+                const status = try statusFromRun(allocator, run.exit_code, tap);
+                defer allocator.free(status);
+                try appendResult(allocator, results, key, status);
+
+                if (!std.mem.startsWith(u8, status, "PASS")) {
+                    std.debug.print("      output:\n{s}\n", .{combined});
+                }
+            }
+        }
+    }
+}
+
+fn writeSummary(allocator: Allocator, io: std.Io, paths: Paths, results: []const CaseResult, summary_name: []const u8) !void {
     var passed: usize = 0;
     var failed: usize = 0;
     var skipped: usize = 0;
@@ -1187,10 +1482,10 @@ fn writeSummary(allocator: Allocator, io: std.Io, paths: Paths, results: []const
     std.debug.print("  Failed:      {d}\n", .{failed});
     std.debug.print("  Skipped:     {d}\n\n", .{skipped});
 
-    std.debug.print("{s: <36} {s}\n", .{ "case", "status" });
-    std.debug.print("{s: <36} {s}\n", .{ "----", "------" });
+    std.debug.print("{s: <44} {s}\n", .{ "case", "status" });
+    std.debug.print("{s: <44} {s}\n", .{ "----", "------" });
     for (results) |item| {
-        std.debug.print("{s: <36} {s}\n", .{ item.key, item.status });
+        std.debug.print("{s: <44} {s}\n", .{ item.key, item.status });
     }
 
     // Build summary JSON in memory
@@ -1213,7 +1508,7 @@ fn writeSummary(allocator: Allocator, io: std.Io, paths: Paths, results: []const
     try appendFmt(allocator, &content, "}}\n", .{});
 
     // Write to file
-    const summary_path = try std.fmt.allocPrint(allocator, "{s}/summary.json", .{paths.results_dir});
+    const summary_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ paths.results_dir, summary_name });
     defer allocator.free(summary_path);
 
     const file = try std.Io.Dir.cwd().createFile(io, summary_path, .{});
@@ -1280,6 +1575,20 @@ pub fn main(init: std.process.Init) !void {
 
     if (cfg.build_only) return;
 
+    if (cfg.transport == .unix) {
+        var unix_results = std.ArrayList(CaseResult).empty;
+        defer {
+            for (unix_results.items) |item| {
+                allocator.free(item.key);
+                allocator.free(item.status);
+            }
+            unix_results.deinit(allocator);
+        }
+        try runUnixLane(allocator, io, init.minimal.environ, cfg, paths, &unix_results);
+        try writeSummary(allocator, io, paths, unix_results.items, "summary-unix.json");
+        return;
+    }
+
     const zig_client_cmd = init.environ_map.get("E2E_ZIG_CLIENT_CMD");
     const zig_server_cmd = init.environ_map.get("E2E_ZIG_SERVER_CMD");
 
@@ -1319,5 +1628,5 @@ pub fn main(init: std.process.Init) !void {
         try runZigServerPhase(allocator, io, init.minimal.environ, cfg, paths, zig_server_cmd, &results);
     }
 
-    try writeSummary(allocator, io, paths, results.items);
+    try writeSummary(allocator, io, paths, results.items, "summary.json");
 }
