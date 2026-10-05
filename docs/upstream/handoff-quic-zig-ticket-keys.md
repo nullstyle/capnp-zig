@@ -152,6 +152,59 @@ Linux. capnp-zig's test "session ticket key: a new new_token_key after a
 crash-restart costs the early restore" pins today's late delivery, and
 will go red when the client changes.
 
+### The F8 repro at capnp-zig's seam
+
+quic-zig's finding F8 ("no 0-RTT resend after a Retry") has a repro in
+capnp-zig that asserts today's behavior:
+
+- File: `tests/rpc/transport/quic/rpc_quic_transport_test.zig`
+  (root `test-rpc-quic`, so `zig build -Dquic=true test-rpc-quic`).
+- Test: `session ticket key: after a Retry the resumed dial's restore
+  arrives at 1-RTT, not 0-RTT (quic-zig F8)`.
+- Setup: the hardened preset (Retry on, `new_token_key`, `.restore_only`)
+  with a persisted ticket key. Dial 1 earns a session ticket and a
+  NEW_TOKEN; the server crash-restarts with the same keys; dial 2 resumes
+  with both from another local port, so its NEW_TOKEN is not valid and the
+  restarted server sends a Retry. Dial 2 enqueues one RPC frame (48 bytes)
+  before its loop starts, so it goes out as 0-RTT.
+- What it counts at the server: `early_bytes`, the RPC frame bytes the
+  server dispatched before its handshake completed (a server reads no 1-RTT
+  data before then, RFC 9001 5.7, so these arrived in 0-RTT packets), and
+  `stream_saw_early_data`, quic-zig's own `streamArrivedInEarlyData(0)` on
+  the RPC stream. A same-port control in the same test gets no Retry and
+  counts the whole frame: `early_bytes == 48`, `stream_saw_early_data`.
+
+The exact flip. Today (v0.25.0) the retried dial asserts `retries_sent ==
+1`, `status == .accepted`, `early_bytes == 0`, `!stream_saw_early_data` and
+`!restored_before_handshake`. When the client sends its 0-RTT again after a
+Retry (RFC 9000 17.2.5.3; model: `requeueRejectedEarlyData()` at the end of
+`handleRetry`), the last three flip to `early_bytes == frame_len` (48),
+`stream_saw_early_data` and `restored_before_handshake`; `retries_sent`
+stays 1 and `status` stays `.accepted`. Two other capnp-zig tests go red at
+the same time, as intended:
+
+- `session ticket key: a new new_token_key after a crash-restart costs the
+  early restore` (same file): `!fresh.restored_before_handshake` fails.
+- `WarmRedialClient heal falls back to an ephemeral port when its previous
+  port is taken, and pays a Retry`
+  (`tests/rpc/transport/quic/rpc_quic_peer_test.zig`): `early_restores`
+  becomes 1 instead of 0.
+
+Checked on 2026-10-04: a scratch copy of v0.25.0 with that one-line patch,
+used through `zig build --fork=<copy>`, turns exactly these three tests red
+and nothing else, on macOS and in the arm64 Linux container
+(aarch64-linux-musl). The F8 test with the flipped assertions passes
+against the patched copy (run on macOS). When a quic-zig release fixes F8,
+capnp-zig flips these assertions and counts a retried dial whose restore
+ran early in `WarmRedialClient.Outcome.zero_rtt_generations`.
+
+capnp-zig's own half of the gap is closed (v0.20.0): `WarmRedialClient`
+redials from the local port of the connection before it, so a heal under
+the preset presents a valid NEW_TOKEN and skips the Retry. The F8 fix still
+matters for every dial that gets a Retry anyway: a heal whose old port was
+taken, a client's first dial from a new process, a new `new_token_key`, or
+an expired token.
+
 A small related ask: a public accessor such as
 `Connection.retryAccepted() bool` on the client. Because `.accepted` does
 not mean the early data rode 0-RTT, capnp-zig's `WarmRedialClient` counts a

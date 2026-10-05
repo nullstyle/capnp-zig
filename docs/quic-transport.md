@@ -990,12 +990,14 @@ The tests pin today's behavior. In the peer suite, "WarmRedialClient heal
 after a crash-restart of a hardened server with a session-ticket key rides
 0-RTT from the port that earned its NEW_TOKEN" and "WarmRedialClient heal
 falls back to an ephemeral port when its previous port is taken, and pays a
-Retry" cover the closed part. A quic-zig client that sends 0-RTT again after
-a Retry turns the transport suite's "a new new_token_key after a
-crash-restart costs the early restore" red, and the peer suite's fallback
-test too (checked against a patched v0.25.0 client). That is the signal to
-update this section and to count such a dial in
-`WarmRedialClient.Outcome.zero_rtt_generations`.
+Retry" cover the closed part. In the transport suite, "after a Retry the
+resumed dial's restore arrives at 1-RTT, not 0-RTT (quic-zig F8)" counts, at
+the server, the restore bytes that arrived in 0-RTT packets after a Retry:
+today 0. A quic-zig client that sends 0-RTT again after a Retry turns that
+test red, together with "a new new_token_key after a crash-restart costs the
+early restore" and the peer suite's fallback test (checked against a patched
+v0.25.0 client). That is the signal to update this section and to count
+such a dial in `WarmRedialClient.Outcome.zero_rtt_generations`.
 
 To see which case a client is in, compare the counters:
 `WarmRedialClient.Outcome.zero_rtt_generations` counts only the

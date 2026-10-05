@@ -2296,12 +2296,25 @@ const ResumptionSink = struct {
 const EarlyGateState = struct {
     inner: QuicEndpointState = .{},
     dispatched_before_handshake: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// RPC frame bytes dispatched before the handshake completed. A server
+    /// reads no 1-RTT data before its handshake completes (RFC 9001 5.7), so
+    /// these bytes arrived in 0-RTT packets.
+    early_bytes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    /// quic-zig's own record, read at each dispatch: some byte of the RPC
+    /// stream arrived in a 0-RTT packet (`streamArrivedInEarlyData`).
+    stream_saw_early_data: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
 
 fn echoRecordingHandshakePhase(session: *quic.ServerSession, frame: []const u8) !void {
     const st: *EarlyGateState = @ptrCast(@alignCast(session.context().?));
     if (session.activeQuicConnection()) |q| {
-        if (!q.handshakeDone()) st.dispatched_before_handshake.store(true, .release);
+        if (!q.handshakeDone()) {
+            st.dispatched_before_handshake.store(true, .release);
+            _ = st.early_bytes.fetchAdd(frame.len, .acq_rel);
+        }
+        if (q.streamArrivedInEarlyData(quic.baseline_stream_id) orelse false) {
+            st.stream_saw_early_data.store(true, .release);
+        }
     }
     try st.inner.recordMessage(frame);
     try session.sendFrame(frame);
@@ -2818,9 +2831,10 @@ const TicketServer = struct {
 const TicketRestart = struct {
     before: TicketServer,
     after: TicketServer,
-    /// Redial from the port that earned the NEW_TOKEN. Today this is the
-    /// only redial after a crash-restart that skips the Retry ("Retry and
-    /// NEW_TOKEN: an open gap" in docs/quic-transport.md).
+    /// Redial from the port that earned the NEW_TOKEN. Only such a redial
+    /// skips the restarted server's Retry ("Retry and NEW_TOKEN: an open
+    /// gap" in docs/quic-transport.md). When false, the redial comes from
+    /// another port, never the one that earned the token.
     same_client_port: bool = false,
     /// How long server 1 runs before dial 1 earns its NEW_TOKEN. The
     /// restarted server validates the token a few milliseconds into its
@@ -2837,6 +2851,13 @@ const TicketRestartOutcome = struct {
     /// The restore frame ran before the restarted server's handshake
     /// completed: the round trip that 0-RTT exists to save.
     restored_before_handshake: bool,
+    /// Bytes of the restore frame that the restarted server received in
+    /// 0-RTT packets (see `EarlyGateState.early_bytes`).
+    early_bytes: usize,
+    /// quic-zig's record that some byte of the RPC stream arrived in 0-RTT.
+    stream_saw_early_data: bool,
+    /// The restore frame's length, so a caller can compare `early_bytes`.
+    frame_len: usize,
 };
 
 /// An ephemeral loopback UDP port, free when this returns.
@@ -2863,6 +2884,9 @@ fn crashRestartResumedDial(case: TicketRestart) !TicketRestartOutcome {
         .bytes = .{ 127, 0, 0, 1 },
         .port = try reserveUdpPort(),
     } } else null;
+    // Dial 2's local address. Without `same_client_port` it is reserved
+    // while dial 1 still holds its own port, so the two always differ.
+    var redial_local = client_local;
 
     var ticket = ResumptionSink{};
     var token = NewTokenSink{};
@@ -2887,6 +2911,10 @@ fn crashRestartResumedDial(case: TicketRestart) !TicketRestartOutcome {
             .new_token_user_data = &token,
         });
         defer client.deinit();
+        if (!case.same_client_port) redial_local = .{ .ip4 = .{
+            .bytes = .{ 127, 0, 0, 1 },
+            .port = try reserveUdpPort(),
+        } };
 
         var client_state = QuicEndpointState{};
         client.start(&client_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
@@ -2935,15 +2963,15 @@ fn crashRestartResumedDial(case: TicketRestart) !TicketRestartOutcome {
     var client2 = blk: while (true) : (attempt += 1) {
         break :blk quic.Connection.initClient(allocator, std.testing.io, .{
             .remote_addr = server_addr,
-            .local_addr = client_local,
+            .local_addr = redial_local,
             .server_name = "localhost",
             .insecure_skip_verify = true,
             .receive_timeout = std.Io.Duration.fromMilliseconds(1),
             .resumption_state = ticket.slice(),
             .new_token = token.slice(),
         }) catch |err| {
-            // Only a reused client port can be briefly busy.
-            if (!case.same_client_port or attempt >= 40) return err;
+            // Only a busy client port is worth another try.
+            if (err != error.AddressInUse or attempt >= 40) return err;
             loopback.sleepMs(5);
             continue;
         };
@@ -2991,6 +3019,9 @@ fn crashRestartResumedDial(case: TicketRestart) !TicketRestartOutcome {
         .status = q2.earlyDataStatus(),
         .retries_sent = server2.listener.server.metricsSnapshot().feeds_retry_sent,
         .restored_before_handshake = server2_state.dispatched_before_handshake.load(.acquire),
+        .early_bytes = server2_state.early_bytes.load(.acquire),
+        .stream_saw_early_data = server2_state.stream_saw_early_data.load(.acquire),
+        .frame_len = frame_restore.len,
     };
 }
 
@@ -3072,6 +3103,51 @@ test "session ticket key: a new new_token_key after a crash-restart costs the ea
     // 17.2.5.3) turns `restored_before_handshake` true here: then update
     // "Retry and NEW_TOKEN: an open gap" in docs/quic-transport.md.
     try std.testing.expectEqual(quic.EarlyDataStatus.accepted, fresh.status);
+}
+
+// quic-zig finding F8 ("no 0-RTT resend after a Retry"), reproduced at
+// capnp-zig's seam and pinned at TODAY's behavior (quic-zig v0.25.0). See
+// docs/upstream/handoff-quic-zig-ticket-keys.md.
+//
+// THE ASSERTIONS ON `retried` FLIP when the quic-zig client sends its 0-RTT
+// data again after a Retry, to the Retry's connection ID (RFC 9000 17.2.5.3;
+// the model is to run `requeueRejectedEarlyData` at the end of `handleRetry`).
+// Then `retried.early_bytes` equals `retried.frame_len`,
+// `retried.stream_saw_early_data` and `retried.restored_before_handshake` are
+// true, and `retries_sent` stays 1. Flip them, update "Retry and NEW_TOKEN:
+// an open gap" in docs/quic-transport.md, and count a retried dial whose
+// restore rode 0-RTT in `WarmRedialClient.Outcome.zero_rtt_generations`.
+test "session ticket key: after a Retry the resumed dial's restore arrives at 1-RTT, not 0-RTT (quic-zig F8)" {
+    // Control: the client redials from the port that earned its NEW_TOKEN.
+    // The restarted server sends no Retry and receives the whole restore
+    // frame in 0-RTT packets, so the counters below can see early bytes.
+    const control = try crashRestartResumedDial(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key },
+        .same_client_port = true,
+    });
+    try std.testing.expectEqual(@as(u64, 0), control.retries_sent);
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, control.status);
+    try std.testing.expectEqual(control.frame_len, control.early_bytes);
+    try std.testing.expect(control.stream_saw_early_data);
+    try std.testing.expect(control.restored_before_handshake);
+
+    // The repro: the same resumed dial (same ticket key, same
+    // new_token_key) from another port. Its NEW_TOKEN is not valid from
+    // there, so the restarted server answers its first flight with a Retry
+    // and drops that flight's 0-RTT packets.
+    const retried = try crashRestartResumedDial(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key },
+    });
+    try std.testing.expectEqual(@as(u64, 1), retried.retries_sent);
+    // BoringSSL accepts the early data in the handshake after the Retry...
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, retried.status);
+    // ...but TODAY no byte of the restore arrives in 0-RTT: the client sends
+    // it again only at 1-RTT, after the handshake (F8). These flip.
+    try std.testing.expectEqual(@as(usize, 0), retried.early_bytes);
+    try std.testing.expect(!retried.stream_saw_early_data);
+    try std.testing.expect(!retried.restored_before_handshake);
 }
 
 test "session ticket key: a NEW_TOKEN from before a crash-restart skips the restarted server's Retry" {

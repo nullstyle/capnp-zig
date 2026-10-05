@@ -459,9 +459,11 @@ pub const WarmRedialClient = struct {
             // has dropped the first flight's 0-RTT packets, and this client
             // sends that data again only at 1-RTT, so BoringSSL's `.accepted`
             // verdict alone does not mean the restore rode 0-RTT. When
-            // quic-zig sends 0-RTT again after a Retry, the transport test
-            // "a new new_token_key after a crash-restart costs the early
-            // restore" goes red: count such dials here then.
+            // quic-zig sends 0-RTT again after a Retry (its finding F8), the
+            // transport tests "after a Retry the resumed dial's restore
+            // arrives at 1-RTT, not 0-RTT (quic-zig F8)" and "a new
+            // new_token_key after a crash-restart costs the early restore"
+            // go red: count such dials here then.
             const retried = quic_conn.retry_accepted;
             if (retried) self.retried_generations +|= 1;
             if (!retried and quic_conn.earlyDataStatus() == .accepted) self.zero_rtt_generations +|= 1;
