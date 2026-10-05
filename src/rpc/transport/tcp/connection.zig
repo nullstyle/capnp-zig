@@ -1102,12 +1102,13 @@ test "connection handleRead assembles fragmented frame and dispatches once compl
     var conn = Connection{
         .allocator = allocator,
         .io = std.testing.io,
-        .transport = undefined,
+        .transport = try closedTestTransport(allocator),
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
         .on_message = Harness.onMessage,
         .on_error = Harness.onError,
     };
+    defer conn.transport.deinit();
     defer conn.framer.deinit();
 
     try std.testing.expect(frame.len > 8);
@@ -1164,12 +1165,13 @@ test "connection handleRead dispatches coalesced frames in order" {
     var conn = Connection{
         .allocator = allocator,
         .io = std.testing.io,
-        .transport = undefined,
+        .transport = try closedTestTransport(allocator),
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
         .on_message = Harness.onMessage,
         .on_error = Harness.onError,
     };
+    defer conn.transport.deinit();
     defer conn.framer.deinit();
 
     try std.testing.expect(conn.handleRead(combined));
@@ -1225,12 +1227,13 @@ test "connection handleRead stops draining when message handler errors" {
     var conn = Connection{
         .allocator = allocator,
         .io = std.testing.io,
-        .transport = undefined,
+        .transport = try closedTestTransport(allocator),
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
         .on_message = Harness.onMessage,
         .on_error = Harness.onError,
     };
+    defer conn.transport.deinit();
     defer conn.framer.deinit();
 
     try std.testing.expect(conn.handleRead(combined));
@@ -1260,28 +1263,16 @@ test "connection handleRead reports malformed frame errors" {
     };
 
     var state = Harness.State{};
-    // A real Transport rather than `undefined`. `handleRead`'s terminal-error
-    // path runs `invokeTerminalError` -> `transport.shutdown()`, which reads
-    // the io vtable and closes the write queue; against an undefined transport
-    // that is a segfault dereferencing `io.vtable`. These two tests were
-    // written before `invokeTerminalError` shut the transport down, and never
-    // compiled afterwards, so nothing caught the drift.
-    //
-    // The socket is pre-marked closed so `shutdown` skips `netShutdown` and
-    // `deinit` skips `close` -- the sentinel fd is never handed to the OS.
-    var transport = try transport_mod.Transport.init(allocator, std.testing.io, .{ .handle = invalid_socket_handle }, 64);
-    transport.fd_closed.store(true, .release);
-    defer transport.deinit();
-
     var conn = Connection{
         .allocator = allocator,
         .io = std.testing.io,
-        .transport = transport,
+        .transport = try closedTestTransport(allocator),
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
         .on_message = Harness.onMessage,
         .on_error = Harness.onError,
     };
+    defer conn.transport.deinit();
     defer conn.framer.deinit();
 
     // segment_count_minus_one = max u32 overflows on +1 in framer.updateExpected()
@@ -1294,11 +1285,26 @@ test "connection handleRead reports malformed frame errors" {
     try std.testing.expect(conn.on_error == null);
 }
 
-/// A socket handle that is never handed to the OS. Used by the `handleRead`
-/// terminal-error tests, whose transports are constructed already-closed so
-/// the fd is only ever compared, never operated on. Comptime-selected because
-/// `net.Socket.Handle` is an integer fd on POSIX and a pointer HANDLE on
-/// Windows.
+/// A real Transport for the `handleRead` tests, never an `undefined` one.
+/// `handleRead` always touches the transport: its deferred
+/// `releaseFrameFds` reads the drain state, and its terminal-error path runs
+/// `invokeTerminalError` -> `transport.shutdown()`, which reads the io vtable
+/// and closes the write queue. Against an `undefined` transport both read
+/// whatever the stack slot holds: Debug happened to see zeroes, ReleaseSafe
+/// segfaulted in `releaseFrameFds`.
+///
+/// The socket is pre-marked closed so `shutdown` skips `netShutdown` and
+/// `deinit` skips `close` -- the sentinel fd is never handed to the OS, and
+/// it is no socket, so the transport has no drain state.
+fn closedTestTransport(allocator: std.mem.Allocator) !transport_mod.Transport {
+    var transport = try transport_mod.Transport.init(allocator, std.testing.io, .{ .handle = invalid_socket_handle }, 64);
+    transport.fd_closed.store(true, .release);
+    return transport;
+}
+
+/// A socket handle that is never handed to the OS (see
+/// `closedTestTransport`). Comptime-selected because `net.Socket.Handle` is
+/// an integer fd on POSIX and a pointer HANDLE on Windows.
 const invalid_socket_handle: std.Io.net.Socket.Handle = switch (@typeInfo(std.Io.net.Socket.Handle)) {
     .pointer => @ptrFromInt(std.math.maxInt(usize)),
     else => -1,
@@ -1323,28 +1329,16 @@ test "connection handleRead rejects oversized frame headers" {
     };
 
     var state = Harness.State{};
-    // A real Transport rather than `undefined`. `handleRead`'s terminal-error
-    // path runs `invokeTerminalError` -> `transport.shutdown()`, which reads
-    // the io vtable and closes the write queue; against an undefined transport
-    // that is a segfault dereferencing `io.vtable`. These two tests were
-    // written before `invokeTerminalError` shut the transport down, and never
-    // compiled afterwards, so nothing caught the drift.
-    //
-    // The socket is pre-marked closed so `shutdown` skips `netShutdown` and
-    // `deinit` skips `close` -- the sentinel fd is never handed to the OS.
-    var transport = try transport_mod.Transport.init(allocator, std.testing.io, .{ .handle = invalid_socket_handle }, 64);
-    transport.fd_closed.store(true, .release);
-    defer transport.deinit();
-
     var conn = Connection{
         .allocator = allocator,
         .io = std.testing.io,
-        .transport = transport,
+        .transport = try closedTestTransport(allocator),
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
         .on_message = Harness.onMessage,
         .on_error = Harness.onError,
     };
+    defer conn.transport.deinit();
     defer conn.framer.deinit();
 
     const oversized_words: u32 = (8 * 1024 * 1024) + 1;

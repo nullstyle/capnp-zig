@@ -785,6 +785,132 @@ test "a frame cut off by end of stream: its fds are closed when reading ends, no
     try support.expectBackAtBaseline(before);
 }
 
+/// Reads until `transport.read` fails, and fails with its error. A read
+/// that returns 0 (end of stream) fails with `error.UnexpectedEndOfStream`
+/// instead, and 64 reads without a failure with `error.ReadNeverFailed`.
+fn readUntilFailure(transport: *Transport) (Transport.ReadError || error{ UnexpectedEndOfStream, ReadNeverFailed })!void {
+    var reads: usize = 0;
+    while (reads < 64) : (reads += 1) {
+        if (try transport.read() == 0) return error.UnexpectedEndOfStream;
+    }
+    return error.ReadNeverFailed;
+}
+
+/// The protocol errors that end reading while the transport holds fds for
+/// the frame being read.
+const Violation = enum { two_batches, hostile_segment_count, oversize_header };
+
+/// One `Violation` over a `Transport` read directly (no `Connection`, which
+/// deinits before any check): the read that hits it fails with
+/// `error.ConnectionResetByPeer`, and by then every fd the transport held is
+/// closed. The peer's end is closed first, so a transport that missed the
+/// violation sees end of stream instead of blocking.
+fn expectViolationClosesHeldFds(violation: Violation) !void {
+    var peer = try RawPeer.open(3);
+    defer peer.deinit();
+    var a_buf: [small_len]u8 = undefined;
+    var b_buf: [small_len]u8 = undefined;
+    const a = frameBytes(&a_buf, small_len, 'A');
+    const b = frameBytes(&b_buf, small_len, 'B');
+    var hostile: [16 + 64]u8 = @splat(0x5a);
+    const limit = 4096;
+    const cause: anyerror = switch (violation) {
+        .two_batches => blk: {
+            // A completes with fd 0; B's head brings fd 1, which B holds when
+            // its second batch (fd 2) arrives.
+            try peer.send(a, &.{0});
+            try peer.send(b[0..30], &.{1});
+            try peer.send(b[30..], &.{2});
+            break :blk error.MultipleAttachedFdBatches;
+        },
+        .hostile_segment_count => blk: {
+            // fds 0 and 1 ride on a head whose segment count is past the
+            // Framer's limit: the frame holds them when the check fails.
+            try peer.send(a, &.{2});
+            std.mem.writeInt(u32, hostile[0..4], 512, .little);
+            std.mem.writeInt(u32, hostile[4..8], 1, .little);
+            try peer.send(&hostile, &.{ 0, 1 });
+            break :blk error.InvalidFrame;
+        },
+        .oversize_header => blk: {
+            // fds 0 and 1 ride on a one-segment header claiming 1 MiB.
+            try peer.send(a, &.{2});
+            std.mem.writeInt(u32, hostile[0..4], 0, .little);
+            std.mem.writeInt(u32, hostile[4..8], 128 * 1024, .little);
+            try peer.send(&hostile, &.{ 0, 1 });
+            break :blk error.FrameTooLarge;
+        },
+    };
+    peer.finishSending();
+
+    var recorder: support.Recorder = .{};
+    var transport = try Transport.initWithOptions(testing.allocator, testing.io, .{ .handle = peer.sp[1] }, .{
+        .read_buffer_size = 4096,
+        .observer = recorder.observer(),
+    });
+    defer transport.deinit();
+    try transport.enableFdPassing(.{ .max_fds_per_message = 8, .max_buffered_frame_bytes = limit });
+
+    try testing.expectError(error.ConnectionResetByPeer, readUntilFailure(&transport));
+    try testing.expectEqual(@as(usize, 1), recorder.protocol_count);
+    try testing.expectEqual(cause, recorder.protocol_errs[0]);
+    // Before deinit: the failed read handed what it held to the closer.
+    try peer.pipes.expectAllWritersClosed();
+    // Every later read fails the same way.
+    try testing.expectError(error.ConnectionResetByPeer, transport.read());
+}
+
+test "a protocol error closes the fds held for the frame being read at once, not at teardown" {
+    if (!support.supported) return error.SkipZigTest;
+    try warmUp();
+    const before = support.FdSnapshot.take();
+    // Every case runs, so a failure names each one that fails.
+    var failed: usize = 0;
+    for (std.enums.values(Violation)) |violation| {
+        expectViolationClosesHeldFds(violation) catch |err| {
+            std.debug.print("violation {t}: {t}\n", .{ violation, err });
+            failed += 1;
+        };
+    }
+    try testing.expectEqual(@as(usize, 0), failed);
+    try support.expectBackAtBaseline(before);
+}
+
+test "a failed recvmsg closes the fds held for the frame being read at once, not at teardown" {
+    if (!support.supported) return error.SkipZigTest;
+    try warmUp();
+    const before = support.FdSnapshot.take();
+    {
+        var peer = try RawPeer.open(2);
+        defer peer.deinit();
+        var transport = try Transport.init(testing.allocator, testing.io, .{ .handle = peer.sp[1] }, 4096);
+        defer transport.deinit();
+        try transport.enableFdPassing(.{ .max_fds_per_message = 8 });
+        var a_buf: [small_len]u8 = undefined;
+        const a = frameBytes(&a_buf, small_len, 'A');
+        try peer.send(a[0..50], &.{ 0, 1 });
+        try testing.expectEqual(@as(usize, 8), try transport.read());
+        try testing.expectEqual(@as(usize, 42), try transport.read());
+
+        // Leave data unread on the peer's side, then close it. On Linux that
+        // close resets the connection: once the queue is empty, recvmsg
+        // fails with ECONNRESET.
+        const byte = [1]u8{0x78};
+        _ = try support.check(sys.write(peer.sp[1], &byte, 1), "write");
+        peer.finishSending();
+        if (support.is_linux) {
+            try testing.expectError(error.ConnectionResetByPeer, transport.read());
+            try testing.expectError(error.ConnectionResetByPeer, transport.read());
+        } else {
+            // macOS reports a plain end of stream.
+            try testing.expectEqual(@as(usize, 0), try transport.read());
+        }
+        // Before deinit: the read that ended the stream released them.
+        try peer.pipes.expectAllWritersClosed();
+    }
+    try support.expectBackAtBaseline(before);
+}
+
 test "teardown with a frame half read closes the fds it holds" {
     if (!support.supported) return error.SkipZigTest;
     try warmUp();
