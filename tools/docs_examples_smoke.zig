@@ -29,6 +29,7 @@ const active_docs = [_][]const u8{
     "docs/reflection.md",
     "docs/generated-api.md",
     "docs/rpc_runtime_design.md",
+    "docs/rpc-unix-sockets.md",
     "docs/security-regression-matrix.md",
     "docs/stability.md",
     "docs/troubleshooting.md",
@@ -46,7 +47,10 @@ const required_paths = [_][]const u8{
     "docs/reflection.md",
     "docs/generated-api.md",
     "docs/rpc-migration-guide.md",
+    "docs/rpc-unix-sockets.md",
     "examples/rpc_pingpong.zig",
+    "examples/rpc_pingpong_unix.zig",
+    "examples/rpc_fd_passing.zig",
     "examples/pingpong.zig",
     "examples/pingpong.capnp",
 };
@@ -101,6 +105,8 @@ const required_build_steps = [_][]const u8{
     "docs-smoke",
     "example-rpc",
     "example-rpc-install",
+    "example-rpc-unix",
+    "example-rpc-fd",
     "test-docs-snippets",
     "test-rpc-wire",
     "test-rpc-caps",
@@ -117,6 +123,8 @@ const required_just_recipes = [_][]const u8{
     "docs-smoke",
     "release-tag",
     "example",
+    "example-unix",
+    "example-fd",
     "test-docs-snippets",
     "test-rpc-wire",
     "test-rpc-caps",
@@ -137,6 +145,8 @@ const required_doc_needles = [_]RequiredNeedle{
     .{ .path = "docs/quic-transport.md", .needle = "rpc.transport.quic.Server", .reason = "QUIC guide should document multi-session fanout" },
     .{ .path = "docs/rpc-migration-guide.md", .needle = "rpc.protocol", .reason = "migration guide should preserve old-name mapping coverage" },
     .{ .path = "examples/rpc_pingpong.zig", .needle = "rpc.transport.tcp.ServerSession", .reason = "RPC example should use the current one-call session transport path" },
+    .{ .path = "docs/rpc-unix-sockets.md", .needle = "## Threat table", .reason = "the Unix-socket guide must keep its threat table (the fd-passing security review)" },
+    .{ .path = "docs/rpc-unix-sockets.md", .needle = "<!-- verbatim: tests/docs/rpc_unix_snippets_test.zig -->", .reason = "the Unix-socket guide's code must come from the snippet test that runs it" },
     // The pinned-plugin recipe. A plugin found on PATH can come from any
     // revision, and with reflection on by default a mismatch is a compile
     // break, so both consumer entry points say so and show executed code.

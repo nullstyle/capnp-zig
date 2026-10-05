@@ -351,6 +351,23 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_rpc_getting_started_snippet_tests = &b.addRunArtifact(rpc_getting_started_snippet_tests).step;
     const run_serialization_getting_started_snippet_tests = addLibTest(b, "tests/docs/serialization_getting_started_snippets_test.zig", target, optimize, lib_module);
     const run_rpc_events_snippet_tests = addLibTest(b, "tests/docs/rpc_events_snippets_test.zig", target, optimize, lib_module);
+    // docs/rpc-unix-sockets.md: its snippets run over a real socket file
+    // (Linux, macOS; elsewhere the unsupported stubs are checked), and a
+    // test reads the doc to require each one word for word.
+    const rpc_unix_snippet_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/docs/rpc_unix_snippets_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "pingpong", .module = docs_pingpong_module },
+            },
+        }),
+    });
+    rpc_unix_snippet_tests.root_module.addAnonymousImport("rpc-unix-sockets-doc", .{ .root_source_file = b.path("docs/rpc-unix-sockets.md") });
+    registered_test_compile_steps.append(b.allocator, &rpc_unix_snippet_tests.step) catch @panic("OOM");
+    const run_rpc_unix_snippet_tests = &b.addRunArtifact(rpc_unix_snippet_tests).step;
     // The documented pinned-plugin recipe (docs/build-integration.md), run
     // against this checkout: the plugin, built for the host so cross-target
     // compile checks can still run it, reads the codegen consumer's checked-in
@@ -408,6 +425,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_docs_snippets_step.dependOn(run_rpc_getting_started_snippet_tests);
     test_docs_snippets_step.dependOn(run_serialization_getting_started_snippet_tests);
     test_docs_snippets_step.dependOn(run_rpc_events_snippet_tests);
+    test_docs_snippets_step.dependOn(run_rpc_unix_snippet_tests);
     test_docs_snippets_step.dependOn(run_build_integration_snippet_tests);
     test_docs_snippets_step.dependOn(run_troubleshooting_contracts_snippet_tests);
     if (run_quic_transport_disabled_snippet_tests) |step| test_docs_snippets_step.dependOn(step);
@@ -457,6 +475,27 @@ pub fn buildImpl(b: *std.Build) !void {
     run_rpc_pingpong_unix.addPassthruArgs();
     const example_rpc_unix_step = b.step("example-rpc-unix", "Run the RPC ping-pong example over a Unix-domain socket (Linux, macOS)");
     example_rpc_unix_step.dependOn(&run_rpc_pingpong_unix.step);
+
+    // Fd passing over a Unix-domain socket (Experimental, Linux and macOS):
+    // the server attaches a pipe's write end to its bootstrap capability,
+    // the client writes through `Peer.importFd`, and the run fails unless
+    // every copy of the fd is closed at the end. It compiles for every
+    // target (check-compile below); elsewhere it prints that and exits.
+    const rpc_fd_passing_example = b.addExecutable(.{
+        .name = "example-rpc-fd-passing",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/rpc_fd_passing.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+    const run_rpc_fd_passing = b.addRunArtifact(rpc_fd_passing_example);
+    run_rpc_fd_passing.addPassthruArgs();
+    const example_rpc_fd_step = b.step("example-rpc-fd", "Run the fd-passing example over a Unix-domain socket (Linux, macOS)");
+    example_rpc_fd_step.dependOn(&run_rpc_fd_passing.step);
 
     // The same ping-pong over QUIC, through `quic.serve` + `quic.connect`.
     // Gated on -Dquic=true like bench-quic; without it the step fails with
@@ -1804,6 +1843,7 @@ pub fn buildImpl(b: *std.Build) !void {
     check_compile_step.dependOn(&main_tests.step);
     check_compile_step.dependOn(&rpc_pingpong_example.step);
     check_compile_step.dependOn(&rpc_pingpong_unix_example.step);
+    check_compile_step.dependOn(&rpc_fd_passing_example.step);
     if (rpc_pingpong_quic_example) |example_exe| check_compile_step.dependOn(&example_exe.step);
     check_compile_step.dependOn(&serialization_demo_example.step);
     // The soak is a real cross-platform executable; compile it for cross

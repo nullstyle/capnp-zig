@@ -198,6 +198,12 @@ jobs:
         if: runner.os != 'Windows'
         run: zig build example-rpc-unix
 
+      - name: Fd-passing example over a Unix-domain socket
+        # Fails unless the fd arrives, works, and every copy of it is closed
+        # at the end (docs/rpc-unix-sockets.md).
+        if: runner.os != 'Windows'
+        run: zig build example-rpc-fd
+
   fmt-check:
     name: Format check
     runs-on: ubuntu-latest
