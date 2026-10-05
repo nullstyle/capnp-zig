@@ -1,10 +1,11 @@
 # HANDOFF — quic-zig: session-ticket keys as a server config
 
-> **Status: OPEN (written 2026-10-04, against quic-zig v0.25.0 and
-> boringssl-zig 0.6.7 / BoringSSL `aef0e2df`).** This is a document for
-> the quic-zig maintainers, not a filed issue. Nothing here blocks
-> capnp-zig: it ships a bridge (below) and will drop it when quic-zig
-> ships the config field.
+> **Status: DELIVERED in quic-zig v0.27.0 (tag `9d2ab6e`, 2026-10-05);
+> capnp-zig moved onto it on the same pin.** Written 2026-10-04 against
+> quic-zig v0.25.0 and boringssl-zig 0.6.7 / BoringSSL `aef0e2df`. This is
+> a document for the quic-zig maintainers, not a filed issue. The asks
+> below are kept as written; "Delivered" and "Left as candidates" at the
+> end record the outcome.
 
 For the agent working on nullstyle/quic-zig. Self-contained; the
 evidence comes from capnp-zig (same machine at
@@ -21,7 +22,7 @@ a full handshake: no resumption, no 0-RTT. Persisting the 48-byte ticket
 key (`SSL_CTX_set_tlsext_ticket_keys`) fixes that. quic-zig v0.25.0 has
 no way to configure it.
 
-## What capnp-zig ships today (the bridge)
+## What capnp-zig shipped before v0.27.0 (the bridge, removed)
 
 `ServerOptions.session_ticket_key: ?*const [48]u8` (and
 `session_ticket_lifetime_s: ?u32`). capnp-zig's `Listener.init` calls
@@ -252,3 +253,54 @@ the new config fields, deletes `session_ticket.zig`'s post-init install,
 and keeps its own refusals (all-zero key, key + anti-replay, key + Retry
 without `new_token_key`). Embedded mode (an embedder-owned quic-zig
 server) becomes in scope at the same time.
+
+*Done on the v0.27.0 pin, with one change: the key + Retry without
+`new_token_key` refusal was dropped, because after ask 5 a Retry costs a
+round trip, not the early restore.*
+
+## Delivered in quic-zig v0.27.0
+
+| Ask | quic-zig v0.27.0 | capnp-zig |
+|---|---|---|
+| 1. Config field | `Server.Config.session_ticket_key: ?SessionTicketKey` (48 bytes, by value), installed on every context the Server builds, a `.pem` reload included. `InvalidConfig` for 48 zero bytes, a key with `tls_context_override`, a key with `.with_anti_replay`. | `serverConfigFromOptions` copies `ServerOptions.session_ticket_key` into it; `Listener.init` zeroes its copy after `Server.init`. The bridge (`session_ticket.install`, the read-back) and the library's `boringssl` import are gone; a QUIC test root still imports quic's exported `boringssl` to read a ticket's lifetime. |
+| 2. Rotation that keeps the previous key | `Server.rotateSessionTicketKey(new_key, now_us)`: new tickets under `new_key`, the old key opens tickets for one lifetime from `now_us`, two keys at most, a `.pem` reload keeps both. Feed thread only; not checked. | `Server.rotateSessionTicketKey(&key)` (loop-thread check, `Listener.nowUs` as `now_us`) and `Listener.rotateSessionTicketKey`. |
+| 3. Ticket lifetime | `Server.Config.session_ticket_lifetime_s: ?u32`, 1 to 604800. | Passed through; capnp-zig keeps its 2-day maximum, because a BoringSSL client keeps a ticket 2 days at most (604800 was stored as 172800). |
+| 4. The `.override` advice | The `replaceTlsContext` note points at the config field and a `.pem` reload. | `docs/quic-transport.md` says a `.pem` reload keeps the key. |
+| 5. 0-RTT again after a Retry (F8) | The client queues its 0-RTT data again after a Retry. | The three F8-pinned assertions flipped exactly as listed above (transport: "after a Retry the resumed dial's restore still arrives in 0-RTT (quic-zig F8 fixed)", "a new new_token_key after a crash-restart costs a Retry, not the early restore"; peer: the port-fallback heal's `early_restores` 0 -> 1). `WarmRedialClient` counts such a dial in `zero_rtt_generations`. |
+| The accessor | `Connection.retryAccepted() bool`. | `warm_redial.zig` reads it; the field coupling is gone. |
+
+The same tag (and v0.26.0, which capnp-zig skipped as a pin) changed two
+more things that capnp-zig's tests saw:
+
+- A close during the handshake reaches the client (v0.26.0). capnp-zig's
+  accept-hook rejection tests now see `DisconnectCause.peer_close` instead
+  of `.handshake_timeout`. It also exposed a capnp-zig liveness gap: the
+  client loop ended a closed connection only once its outbound queue was
+  empty, and frames queued before the handshake never leave. Fixed on the
+  capnp-zig side (`connection_loop.closedForGood`).
+- A resumed client opens at most the remembered number of streams before
+  its handshake (v0.27.0). capnp-zig's native outbound queue already treats
+  `StreamLimitExceeded` as transient; a native test stages five data frames
+  against a remembered uni window of two, and all arrive.
+
+## Left as candidates (not built in v0.27.0)
+
+These stay open. None blocks capnp-zig.
+
+- **A thread check in `rotateSessionTicketKey`.** quic-zig documents "call
+  it on the thread that calls `feed`" but does not check it; a call from
+  another thread races the handshakes that read the keys. capnp-zig checks
+  on its side (`Server.assertLoopThread`, Debug always, release with
+  `runtime_thread_checks`), which does not cover an embedder that drives
+  quic-zig directly.
+- **The previous key at start.** `Config.session_ticket_key` holds one key,
+  so a process that restarts within one ticket lifetime after a rotation
+  must start with the OLD key and rotate before its first datagram, or lose
+  the old key's tickets. A `Config` field for the previous key (and the
+  time it expires) would let a restart carry both keys directly.
+- **The NEW_TOKEN clock asks** (section above): `transport/udp_server.zig`'s
+  bundled loop still feeds a clock that starts at zero, so a persisted
+  `new_token_key` does not survive a restart there; NEW_TOKEN times share
+  the monotonic timer clock; and the check allows no clock skew
+  (`new_token_max_clock_skew_us`). capnp-zig's `Listener.nowUs` anchor
+  works around the first two for capnp-zig servers only.
