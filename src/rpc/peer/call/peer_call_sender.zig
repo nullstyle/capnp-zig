@@ -26,7 +26,7 @@ pub fn sendCallToImport(
     // frame is sent: on failure the errdefer'd remove_question (which frees
     // the record) plus the effects rollback undo everything.
     record_param_exports: *const fn (*PeerType, u32, []const cap_table.OutboundEntry) anyerror!void,
-    send_builder: *const fn (*PeerType, *protocol.MessageBuilder) anyerror!void,
+    send_call: *const fn (*PeerType, *protocol.MessageBuilder, *protocol.CallBuilder) anyerror!void,
 ) !u32 {
     const question_id = try allocate_question(peer, ctx, on_return);
     errdefer remove_question(peer, question_id);
@@ -47,7 +47,7 @@ pub fn sendCallToImport(
     errdefer if (!effects_committed) effects.rollback();
     try cap_table.encodeCallPayloadCapsWithEffects(caps, &call, on_outbound_cap, &effects);
     try record_param_exports(peer, question_id, effects.callback_applied.items);
-    try send_builder(peer, &builder);
+    try send_call(peer, &builder, &call);
     cap_table.commitOutboundCapEffects(caps, &effects);
     effects_committed = true;
     return question_id;
@@ -131,7 +131,7 @@ pub fn sendCallPromised(
     allocate_question: *const fn (*PeerType, *anyopaque, QuestionCallbackType) anyerror!u32,
     remove_question: *const fn (*PeerType, u32) void,
     record_param_exports: *const fn (*PeerType, u32, []const cap_table.OutboundEntry) anyerror!void,
-    send_builder: *const fn (*PeerType, *protocol.MessageBuilder) anyerror!void,
+    send_call: *const fn (*PeerType, *protocol.MessageBuilder, *protocol.CallBuilder) anyerror!void,
 ) !u32 {
     const question_id = try allocate_question(peer, ctx, on_return);
     errdefer remove_question(peer, question_id);
@@ -152,7 +152,7 @@ pub fn sendCallPromised(
     errdefer if (!effects_committed) effects.rollback();
     try cap_table.encodeCallPayloadCapsWithEffects(caps, &call, on_outbound_cap, &effects);
     try record_param_exports(peer, question_id, effects.callback_applied.items);
-    try send_builder(peer, &builder);
+    try send_call(peer, &builder, &call);
     cap_table.commitOutboundCapEffects(caps, &effects);
     effects_committed = true;
     return question_id;
@@ -181,7 +181,7 @@ pub fn sendCallPromisedWithOps(
     allocate_question: *const fn (*PeerType, *anyopaque, QuestionCallbackType) anyerror!u32,
     remove_question: *const fn (*PeerType, u32) void,
     record_param_exports: *const fn (*PeerType, u32, []const cap_table.OutboundEntry) anyerror!void,
-    send_builder: *const fn (*PeerType, *protocol.MessageBuilder) anyerror!void,
+    send_call: *const fn (*PeerType, *protocol.MessageBuilder, *protocol.CallBuilder) anyerror!void,
 ) !u32 {
     const new_question_id = try allocate_question(peer, ctx, on_return);
     errdefer remove_question(peer, new_question_id);
@@ -202,7 +202,7 @@ pub fn sendCallPromisedWithOps(
     errdefer if (!effects_committed) effects.rollback();
     try cap_table.encodeCallPayloadCapsWithEffects(caps, &call, on_outbound_cap, &effects);
     try record_param_exports(peer, new_question_id, effects.callback_applied.items);
-    try send_builder(peer, &builder);
+    try send_call(peer, &builder, &call);
     cap_table.commitOutboundCapEffects(caps, &effects);
     effects_committed = true;
     return new_question_id;
@@ -241,7 +241,7 @@ test "peer_call_sender sendCallToImport allocates question and encodes imported 
             return id;
         }
 
-        fn sendBuilder(state: *State, builder: *protocol.MessageBuilder) !void {
+        fn sendBuilder(state: *State, builder: *protocol.MessageBuilder, _: *protocol.CallBuilder) !void {
             const frame = try builder.finish();
             defer state.allocator.free(frame);
 

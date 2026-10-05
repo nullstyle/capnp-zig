@@ -7,6 +7,13 @@ const runtime_helpers = @import("./runtime.zig");
 const message = @import("../../../serialization/message.zig");
 const events = @import("../../events.zig");
 const wake_lock = @import("../wake_lock.zig");
+const fd_io = @import("../unix/fd_io.zig");
+const fd_passing = @import("../fd_passing.zig");
+
+comptime {
+    std.debug.assert(fd_io.supported == fd_passing.supported);
+    std.debug.assert(fd_io.max_fds_per_send == fd_passing.max_fds_per_message_cap);
+}
 
 /// A framed Cap'n Proto connection over TCP.
 ///
@@ -754,6 +761,76 @@ pub const Connection = struct {
             return err;
         };
         self.last_activity_ns = nowNs(self.io);
+    }
+
+    /// `sendFrameWithFds` failures: the transport's
+    /// (`Transport.EnqueueFdsError`). On each, nothing was queued and the
+    /// caller still owns its fds.
+    pub const SendFdsError = transport_mod.Transport.EnqueueFdsError;
+
+    /// Experimental (fd passing). Enqueue a framed message with `fds`
+    /// attached, in order: the transport sends a close-on-exec dup of each
+    /// fd with the frame's first bytes (`Transport.enqueueWriteWithFds`).
+    /// The caller keeps owning `fds`. Only an AF_UNIX connection on Linux or
+    /// macOS can do it (`maxOutboundFds() > 0`); elsewhere this returns
+    /// `error.FdPassingUnsupported`. With no fds it is `sendFrame`.
+    ///
+    /// The errors `sendFrame` has (`BrokenPipe`, `OutOfMemory`,
+    /// `WriteQueueFull`, `WriteQueueBytesExceeded`) also go to `on_error`,
+    /// as there. The fd errors refuse this one message and leave the
+    /// connection healthy, so they only return: `FdQueueFull` is
+    /// backpressure (retry later; the transport emitted a `.backpressure`
+    /// event), and the rest name a bad argument.
+    pub fn sendFrameWithFds(self: *Connection, frame: []const u8, fds: []const fd_passing.FdHandle) SendFdsError!void {
+        self.assertThreadAffinity();
+        if (fds.len == 0) return self.sendFrame(frame);
+        if (comptime !fd_io.supported) return error.FdPassingUnsupported;
+        if (fds.len > fd_io.max_fds_per_send) return error.TooManyFds;
+        var raw: [fd_io.max_fds_per_send]fd_io.Fd = undefined;
+        for (fds, raw[0..fds.len]) |handle, *fd| fd.* = handle.fd;
+        self.transport.enqueueWriteWithFds(frame, raw[0..fds.len]) catch |err| {
+            log.debug("write enqueue with fds failed: {}", .{err});
+            switch (err) {
+                error.BrokenPipe,
+                error.OutOfMemory,
+                error.WriteQueueFull,
+                error.WriteQueueBytesExceeded,
+                => self.invokeOnError(err),
+                error.FdPassingUnsupported,
+                error.TooManyFds,
+                error.FdsWithoutData,
+                error.FdQueueFull,
+                error.InvalidFd,
+                error.ProcessFdQuotaExceeded,
+                error.SystemResources,
+                error.Unexpected,
+                => {},
+            }
+            return err;
+        };
+        self.last_activity_ns = nowNs(self.io);
+    }
+
+    /// Experimental (fd passing). Take fd `index` (in the order the peer
+    /// attached them) of the frame `on_message` is dispatching. The caller
+    /// owns it from then on (`Transport.takeFrameFd`). Null when fd passing
+    /// is off (`enableFdPassing`), for an index out of range, and for an fd
+    /// already taken.
+    pub fn takeFrameFd(self: *Connection, index: u8) ?fd_passing.FdHandle {
+        self.assertThreadAffinity();
+        if (comptime !fd_io.supported) return null;
+        const fd = self.transport.takeFrameFd(index) orelse return null;
+        return .{ .fd = fd };
+    }
+
+    /// Experimental (fd passing). The most fds one outbound frame of this
+    /// connection may carry: `fd_passing.max_fds_per_message_cap` (253) on
+    /// an AF_UNIX connection on Linux or macOS, 0 everywhere else (TCP). A
+    /// `Peer` attached to this connection reads it once, at attach time.
+    pub fn maxOutboundFds(self: *const Connection) u8 {
+        if (comptime !fd_io.supported) return 0;
+        if (self.transport.source != .unix) return 0;
+        return fd_passing.max_fds_per_message_cap;
     }
 
     /// Initiate connection close. This shuts down the socket, which will

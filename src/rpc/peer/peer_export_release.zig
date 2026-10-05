@@ -3,11 +3,13 @@ const log = std.log.scoped(.rpc_peer);
 
 const cap_table = @import("../caps/table.zig");
 const events = @import("../events.zig");
+const fd_passing = @import("../transport/fd_passing.zig");
 const protocol = @import("../wire/protocol.zig");
 const pending_calls = @import("../promises/pending_calls.zig");
 const promises_promised_answer = @import("../promises/promised_answer.zig");
 const peer_cap_lifecycle = @import("./peer_cap_lifecycle.zig");
 const peer_inbound_release = @import("./peer_inbound_release.zig");
+const peer_fds = @import("./peer_fds.zig");
 const peer_outbound_control = @import("./peer_outbound_control.zig");
 const resolve = @import("./resolve.zig");
 const state = @import("./state.zig");
@@ -124,7 +126,13 @@ pub fn ExportRelease(comptime Peer: type) type {
         /// recovery is closing the connection, so enqueue overflow here emits
         /// a peer-level backpressure event and initiates transport close.
         pub fn sendFrameControl(self: *Peer, frame: []const u8) !void {
-            sendFrame(self, frame) catch |err| {
+            return sendFrameControlWithFds(self, frame, &.{});
+        }
+
+        /// `sendFrameControl` for a frame with fds attached (fd passing,
+        /// `peer_fds.zig`). `fds` are borrowed.
+        pub fn sendFrameControlWithFds(self: *Peer, frame: []const u8, fds: []const fd_passing.FdHandle) !void {
+            sendFrameWithFds(self, frame, fds) catch |err| {
                 switch (err) {
                     error.WriteQueueFull, error.WriteQueueBytesExceeded => {
                         events.emitBackpressure(
@@ -146,6 +154,20 @@ pub fn ExportRelease(comptime Peer: type) type {
         }
 
         pub fn sendFrame(self: *Peer, frame: []const u8) !void {
+            return sendFrameWithFds(self, frame, &.{});
+        }
+
+        /// `sendFrame` for a frame with fds attached (fd passing,
+        /// `peer_fds.zig`), through the binding's `send_with_fds` hook.
+        /// `fds` are borrowed. The outbound pass attaches none while a
+        /// `send_frame_override` is set (it carries bytes only), so an
+        /// override sends the bytes alone.
+        pub fn sendFrameWithFds(self: *Peer, frame: []const u8, fds: []const fd_passing.FdHandle) !void {
+            if (fds.len != 0 and self.send_frame_override == null) {
+                try self.transport.sendFrameWithFds(frame, fds);
+                events.emitFrame(self.observer, .peer, .unknown, .enqueued, frame.len);
+                return;
+            }
             if (self.send_frame_override) |cb| {
                 const ctx = self.send_frame_ctx orelse {
                     log.debug("send frame override missing callback context", .{});
@@ -292,6 +314,8 @@ pub fn ExportRelease(comptime Peer: type) type {
                 );
             }
             if (self.caps.removeImportIfFullyReleased(id)) {
+                // Fd passing: the import is gone, so is its fd.
+                peer_fds.PeerFds(Peer).importReleased(self, id);
                 try releaseResolvedImport(self, id);
             }
         }
@@ -382,6 +406,8 @@ pub fn ExportRelease(comptime Peer: type) type {
                 // own wire references are owned and released separately by whoever
                 // received it as a call/return cap.
                 _ = self.caps.releasePromiseImportRef(import_id);
+                // Fd passing: when that was the last hold, the fd goes too.
+                peer_fds.PeerFds(Peer).importReleased(self, import_id);
             }
         }
 

@@ -23,6 +23,7 @@ const std = @import("std");
 
 const connection_mod = @import("./connection.zig");
 const runtime = @import("./runtime.zig");
+const client_wiring = @import("./client_wiring.zig");
 const peer_mod = @import("../../peer/mod.zig");
 const events = @import("../../events.zig");
 
@@ -114,9 +115,13 @@ pub const ServerSession = struct {
         self.conn = try Connection.init(gpa, io, .{ .handle = fd.handle }, conn_opts);
         socket_owned = false; // conn.deinit() closes the socket from here on
         errdefer self.conn.deinit();
+        // Fd passing from a `unix.listen` listener (Experimental), before
+        // anything reads the socket.
+        try client_wiring.enableFdPassing(&self.conn, listener.fd_passing);
 
         self.peer = Peer.init(gpa, &self.conn);
         self.peer.setLimits(options.limits);
+        self.peer.setMaxLiveImportedFds(listener.fd_passing.max_live_imported_fds);
         self.peer.setClockIo(io);
         // FAIL CLOSED on missing OS entropy (never a guessable fallback id),
         // mapped into the existing error set: an entropy syscall failure is a

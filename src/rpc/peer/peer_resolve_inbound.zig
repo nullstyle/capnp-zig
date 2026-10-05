@@ -8,6 +8,7 @@ const state = @import("./state.zig");
 const resolve = @import("./resolve.zig");
 const third_party = @import("./third_party.zig");
 const peer_outbound_control = @import("./peer_outbound_control.zig");
+const peer_fds = @import("./peer_fds.zig");
 
 /// Inbound Resolve handling and the L3 recipient auto-pickup, extracted from
 /// `peer/mod.zig` and made generic over the peer type (the JoinCoordinator
@@ -61,7 +62,15 @@ pub fn ResolveInbound(comptime Peer: type) type {
                 .send_disembargo_sender_loopback = peer_outbound_control.sendDisembargoSenderLoopbackViaSendFrameForPeerFn(Peer, Peer.sendFrame),
                 .store_resolved_import = storeResolvedImport,
             };
+            // A Resolve for a promise we do not hold drops its capability at
+            // once; it keeps no fd either.
+            const known_promise = self.caps.imports.contains(resolve_msg.promise_id);
             try resolve.handleResolveWithOps(Peer, self, resolve_msg, ops);
+            // Fd passing: the import the descriptor resolved to takes the fd
+            // it names (`peer_fds.zig`).
+            if (known_promise and resolve_msg.tag == .cap) {
+                if (resolve_msg.cap) |descriptor| peer_fds.PeerFds(Peer).adoptResolve(self, descriptor);
+            }
         }
 
         /// Attempt the Level-3 recipient auto-pickup for an inbound `thirdPartyHosted`

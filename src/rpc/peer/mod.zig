@@ -58,6 +58,17 @@ const peer_context_types = @import("./peer_context_types.zig");
 const peer_lifecycle = @import("./peer_lifecycle.zig");
 const vat_host = @import("../vat/host.zig");
 const promises_promised_answer = @import("../promises/promised_answer.zig");
+const peer_fds = @import("./peer_fds.zig");
+const fd_passing = @import("../transport/fd_passing.zig");
+
+/// Experimental (fd passing). A POSIX file descriptor attached to a
+/// capability on an AF_UNIX connection (`Peer.setExportFd`,
+/// `Peer.importFd`). Its `fd` is `void` where fd passing is compiled out
+/// (only Linux and macOS have it).
+pub const FdHandle = fd_passing.FdHandle;
+
+/// Experimental (fd passing). `Peer.setExportFd` failures.
+pub const SetExportFdError = peer_fds.SetExportFdError;
 
 pub const errors = @import("./errors.zig");
 pub const state = @import("./state.zig");
@@ -830,6 +841,10 @@ pub const Peer = struct {
     /// Prevent nested transport delivery from recursively retrying the same
     /// deferred Finish batch.
     finish_maintenance_in_progress: bool = false,
+    /// Experimental (fd passing): which exports carry an fd (borrowed) and
+    /// which imports hold one (owned). Outside the frozen `caps` table; see
+    /// `peer_fds.zig`. Use `setExportFd`/`importFd`, not this field.
+    fds: peer_fds.State = .{},
     /// Optional callback fired once all outstanding questions have been
     /// answered and the shutdown sequence completes.
     shutdown_callback: ?*const fn (peer: *Peer) void = null,
@@ -1448,6 +1463,57 @@ pub const Peer = struct {
         );
     }
 
+    // ================= Fd passing (Experimental) ============================
+    //
+    // Bodies, and the rules for which descriptors carry an fd, live in
+    // peer_fds.zig.
+
+    const PeerFdsImpl = peer_fds.PeerFds(Peer);
+
+    /// Experimental (fd passing, Linux and macOS). Attach `fd` to export
+    /// `export_id`: every Call, Return, Resolve or Bootstrap Return that
+    /// sends this export as a `senderHosted` capability over an AF_UNIX
+    /// connection carries a dup of the fd (`CapDescriptor.attachedFd`). The
+    /// receiver keeps it only with fd passing on (`rpc.transport.unix`
+    /// `FdPassing.max_fds_per_message > 0`); otherwise it closes it, as the
+    /// spec expects (`rpc.capnp:1118-1124`). The fd stays borrowed: keep
+    /// it open until the export is released or `clearExportFd` drops it.
+    /// Replaces an fd set before. Over TCP and QUIC, and through a
+    /// `send_frame_override`, nothing is attached (`attachedFd` stays 0xff).
+    pub fn setExportFd(self: *Peer, export_id: u32, fd: FdHandle) SetExportFdError!void {
+        self.assertThreadAffinity();
+        return PeerFdsImpl.setExportFd(self, export_id, fd);
+    }
+
+    /// Experimental (fd passing). Stop attaching an fd to export
+    /// `export_id`. A frame already queued keeps its own dup.
+    pub fn clearExportFd(self: *Peer, export_id: u32) void {
+        self.assertThreadAffinity();
+        PeerFdsImpl.clearExportFd(self, export_id);
+    }
+
+    /// Experimental (fd passing). The fd the remote attached to import
+    /// `import_id`, borrowed: it stays valid until the import is released,
+    /// and the peer closes it then. Do not close it; `dup` it to keep it
+    /// longer. Null when the import has no fd, and for a promise import
+    /// until it resolves (then the fd of what it resolved to). Received fds
+    /// can be any kind of file: check with `fstat` before use.
+    pub fn importFd(self: *const Peer, import_id: u32) ?FdHandle {
+        self.assertThreadAffinity();
+        return PeerFdsImpl.importFd(self, import_id);
+    }
+
+    /// Experimental (fd passing). The most received fds this peer keeps
+    /// attached to live imports at once (default
+    /// `rpc.transport.unix.FdPassing.max_live_imported_fds`, 64). Past it,
+    /// a capability still arrives, but its fd is closed with a
+    /// `.resource_rejection` event (`.attached_fds`,
+    /// `error.ImportedFdsOverLimit`). Fds already held are kept.
+    pub fn setMaxLiveImportedFds(self: *Peer, limit: u32) void {
+        self.assertThreadAffinity();
+        PeerFdsImpl.setMaxLiveImportedFds(self, limit);
+    }
+
     // ================= Lifecycle: deinit (P10) ==============================
     //
     // The body — teardown order is load-bearing — lives as ONE unit in
@@ -1909,6 +1975,7 @@ pub const Peer = struct {
         }
         _ = self.exports.remove(id);
         self.caps.clearExport(id);
+        PeerFdsImpl.exportRemoved(self, id);
     }
 
     /// Export a promise capability that will be resolved later via
@@ -2366,6 +2433,7 @@ pub const Peer = struct {
     pub fn releaseVineExport(self: *Peer, vine_id: u32) void {
         _ = self.exports.remove(vine_id);
         self.caps.clearExport(vine_id);
+        PeerFdsImpl.exportRemoved(self, vine_id);
     }
 
     // -- Persistence (sturdy refs, RPC level 2) -------------------------------
@@ -4092,7 +4160,7 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         if (self.transport_close_notified) return error.TransportClosed;
 
-        return self.handleFrameImpl(frame);
+        return self.handleFrameImpl(frame, .transport);
     }
 
     /// Dispatch an in-process call to one of this peer's local exports. Local
@@ -4101,10 +4169,14 @@ pub const Peer = struct {
     /// is rejected by `handleFrame` once close has been notified.
     pub fn handleLoopbackFrame(self: *Peer, frame: []const u8) !void {
         self.assertThreadAffinity();
-        return self.handleFrameImpl(frame);
+        return self.handleFrameImpl(frame, .loopback);
     }
 
-    fn handleFrameImpl(self: *Peer, frame: []const u8) !void {
+    /// Where a dispatched frame came from. Only a `.transport` frame can
+    /// give fds (fd passing: `peer_fds.zig`).
+    const FrameOrigin = enum { transport, loopback };
+
+    fn handleFrameImpl(self: *Peer, frame: []const u8, origin: FrameOrigin) !void {
         self.enterJoinOperation();
         defer self.leaveJoinOperation();
         // Drive vat-wide expiry before decoding or validation. A connection
@@ -4163,6 +4235,13 @@ pub const Peer = struct {
 
         self.last_inbound_tag = decoded.tag;
         log.debug("dispatching inbound {s}", .{@tagName(decoded.tag)});
+
+        // Fd passing: while this frame dispatches, only its own decoded
+        // message (and only when the transport delivered it) may take the
+        // fds the transport holds for it. A nested loopback dispatch masks it.
+        const outer_inbound_msg = self.fds.inbound_msg;
+        self.fds.inbound_msg = if (origin == .transport) &decoded.msg else null;
+        defer self.fds.inbound_msg = outer_inbound_msg;
 
         const automatic_third_party_dispatch = if (decoded.tag == .call and
             self.third_party_result_policy == .vat_network)
@@ -4334,7 +4413,18 @@ pub const Peer = struct {
     /// vanishing — without this, the reentrant Finish would find nothing to
     /// clean and the record afterward would strand a resolved answer (plus its
     /// answer-held export reference) that no later Finish could ever clear.
-    fn sendAndRecordBootstrapReturn(self: *Peer, question_id: u32, bytes: []const u8) anyerror!void {
+    fn sendAndRecordBootstrapReturn(self: *Peer, question_id: u32, prebuilt: []const u8) anyerror!void {
+        // Fd passing: a bootstrap export with an fd carries it, as any
+        // returned cap does (`peer_fds.zig`); the frame is rebuilt with the
+        // descriptor naming it.
+        var fds: peer_fds.OutboundFds = .{};
+        const with_fd: ?[]const u8 = if (self.bootstrap_export_id) |export_id|
+            try PeerFdsImpl.bootstrapReturnWithFd(self, question_id, export_id, &fds)
+        else
+            null;
+        defer if (with_fd) |frame| self.allocator.free(frame);
+        const bytes = with_fd orelse prebuilt;
+
         var reservation: ?ResolvedAnswerReservation = try self.reserveResolvedAnswer(question_id, bytes);
         errdefer if (reservation) |r| r.deinit(self);
         try self.resolving_answers.put(question_id, {});
@@ -4343,7 +4433,7 @@ pub const Peer = struct {
             _ = self.resolving_answers.remove(question_id);
         };
 
-        try self.sendFrame(bytes);
+        try ExportReleaseImpl.sendFrameWithFds(self, bytes, fds.slice());
         _ = self.resolving_answers.remove(question_id);
         resolving_answer = false;
 
@@ -5508,6 +5598,17 @@ pub const Peer = struct {
         return CallInboundImpl.adoptThirdPartyAnswer(self, question_id, adopted_answer_id, question);
     }
 
+    /// The inbound cap table of a Return, then the fd-passing pass over it
+    /// (`peer_fds.zig`): imports noted by `InboundCapTable.init` take the
+    /// fds their descriptors name.
+    fn initReturnInboundCaps(self: *Peer, ret: protocol.Return) anyerror!cap_table.InboundCapTable {
+        const inbound = try peer_return_orchestration.initInboundCapsForPeer(Peer, cap_table.InboundCapTable, self, ret);
+        if (ret.tag == .results) {
+            if (ret.results) |results| PeerFdsImpl.adoptPayload(self, results.cap_table);
+        }
+        return inbound;
+    }
+
     pub fn handleReturn(self: *Peer, frame: []const u8, ret: protocol.Return) anyerror!void {
         // The wire effect of a Return on our sent param caps is independent
         // of local dispatch: the moment the remote sent this frame it either
@@ -5586,7 +5687,7 @@ pub const Peer = struct {
             peer_return_orchestration.restoreQuestionForReturnForPeerFn(Peer, Question),
             peer_return_orchestration.completeQuestionRemovalForPeerFn(Peer),
             Peer.handleMissingReturnQuestion,
-            peer_return_orchestration.initInboundCapsForPeerFn(Peer, cap_table.InboundCapTable),
+            initReturnInboundCaps,
             peer_return_orchestration.deinitInboundCapsForTypeFn(cap_table.InboundCapTable),
             third_party.adoption.handleReturnAcceptFromThirdPartyForPeerFn(
                 Peer,

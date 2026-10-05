@@ -81,6 +81,12 @@ pub fn Transport(comptime quic_impl: type, comptime include_tcp: bool) type {
             pub const connect = socket.connect;
             pub const ConnectOptions = socket.ConnectOptions;
             pub const ConnectError = socket.ConnectError;
+            /// Fd passing on one connection (`ListenOptions.fd_passing`,
+            /// `ConnectOptions.fd_passing`). Experimental.
+            pub const FdPassing = socket.FdPassing;
+            /// A file descriptor attached to a capability
+            /// (`Peer.setExportFd`, `Peer.importFd`). Experimental.
+            pub const FdHandle = @import("./transport/fd_passing.zig").FdHandle;
         } else struct {};
     };
 }

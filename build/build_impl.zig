@@ -875,6 +875,11 @@ pub fn buildImpl(b: *std.Build) !void {
     // batches in one frame, CTRUNC/EMFILE, hostile headers, and a fuzz.
     // Linux and macOS run it; other targets compile it and run the TCP test.
     const run_rpc_unix_fd_boundary_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_boundary_test.zig", target, optimize, lib_module);
+    // FD passing through the Peer (sprint item 12): `setExportFd`/`importFd`,
+    // the side tables outside the frozen cap table, which descriptor keeps
+    // which fd, every close hook, TCP (0xff), and the wake fds never sent.
+    // Linux and macOS run it; other targets compile it and run the stub test.
+    const run_rpc_unix_fd_peer_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_peer_test.zig", target, optimize, lib_module);
     // `rpc.transport.unix.listen`/`connect` (sprint item 7): sessions over a
     // socket file, the path guards, the lock, stale files, permissions and
     // close. Linux and macOS run it; other targets compile it and run only
@@ -886,6 +891,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_unix_step.dependOn(run_rpc_unix_linger_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_fd_send_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_fd_boundary_tests);
+    test_rpc_unix_step.dependOn(run_rpc_unix_fd_peer_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_session_tests);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, qm)
@@ -1370,6 +1376,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_transport_step.dependOn(run_rpc_unix_linger_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_fd_send_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_fd_boundary_tests);
+    test_rpc_transport_step.dependOn(run_rpc_unix_fd_peer_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_raw_frame_security_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_kernel_semantics_tests);
@@ -1676,6 +1683,9 @@ pub fn buildImpl(b: *std.Build) !void {
             // Fd passing, receive side: the fuzz's sender thread against the
             // exact-boundary reader, and fds handed to the closer.
             "tests/rpc/transport/unix/rpc_unix_fd_boundary_test.zig",
+            // Fd passing through the Peer: session threads, the closer
+            // taking imported fds, and the wake socketpair, against glibc.
+            "tests/rpc/transport/unix/rpc_unix_fd_peer_test.zig",
             // unix.listen/connect: the session threads, racing listeners and
             // the accept wake-up, against glibc.
             "tests/rpc/transport/unix/rpc_unix_session_test.zig",

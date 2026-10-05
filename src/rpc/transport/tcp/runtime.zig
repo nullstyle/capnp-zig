@@ -4,6 +4,8 @@ const log = std.log.scoped(.rpc_runtime);
 const Connection = @import("./connection.zig").Connection;
 const events = @import("../../events.zig");
 const unix_socket_mod = @import("../unix/socket.zig");
+const fd_passing_mod = @import("../fd_passing.zig");
+const client_wiring = @import("./client_wiring.zig");
 const net = std.Io.net;
 
 /// Re-export of the platform-stable socket wrapper used by all public
@@ -56,6 +58,10 @@ pub const Listener = struct {
     /// listener owns (path, identity, held lock). Internal state; read the
     /// path with `unixPath`. Experimental.
     unix_socket: ?unix_socket_mod.SocketFile = null,
+    /// Fd passing on every connection this listener accepts
+    /// (`rpc.transport.unix.ListenOptions.fd_passing`). Experimental; only
+    /// an AF_UNIX listener may turn it on.
+    fd_passing: fd_passing_mod.FdPassing = .{},
 
     /// Bind and listen on the given address.
     pub fn init(
@@ -102,11 +108,19 @@ pub const Listener = struct {
 
         const stream = try self.server.accept(self.io);
         const client_fd = stream.socket.handle;
-        errdefer closeFd(self.io, .{ .handle = client_fd });
-
-        setTcpNoDelay(.{ .handle = client_fd });
-
-        return self.createConnection(client_fd);
+        const conn = blk: {
+            errdefer closeFd(self.io, .{ .handle = client_fd });
+            setTcpNoDelay(.{ .handle = client_fd });
+            break :blk try self.createConnection(client_fd);
+        };
+        // Before anything reads: fd passing starts at the stream's first
+        // byte. The connection owns the socket now; its deinit closes it.
+        client_wiring.enableFdPassing(conn, self.fd_passing) catch |err| {
+            conn.deinit();
+            self.allocator.destroy(conn);
+            return err;
+        };
+        return conn;
     }
 
     /// Accept a single connection and return only its socket, with Nagle

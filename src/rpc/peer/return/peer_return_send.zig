@@ -9,6 +9,8 @@ const finish = @import("../finish.zig");
 const peer_call_targets = @import("../call/peer_call_targets.zig");
 const peer_return_dispatch = @import("./peer_return_dispatch.zig");
 const state = @import("../state.zig");
+const peer_fds = @import("../peer_fds.zig");
+const peer_export_release = @import("../peer_export_release.zig");
 
 /// The outbound Return send family, extracted from `peer/mod.zig` and made
 /// generic over the peer type (the JoinCoordinator extraction contract):
@@ -67,9 +69,6 @@ pub fn ReturnSend(comptime Peer: type) type {
             try build(ctx, &ret);
             _ = try cap_table.encodeReturnPayloadCapsWithEffects(&self.caps, &ret, Peer.onOutboundCap, &effects);
 
-            const bytes = try builder.finish();
-            defer self.allocator.free(bytes);
-
             // Capture before delivery: sendReturnFrameWithLoopback consumes the
             // loopback marker. Do not record a resolved answer for loopback
             // answers: they are delivered locally, are never referenced by a
@@ -85,6 +84,15 @@ pub fn ReturnSend(comptime Peer: type) type {
             // immediately applies the Finish cleanup. Skipping the reservation
             // would strand those parked calls with no Return at all.
             const is_loopback = self.loopback_questions.contains(answer_id);
+
+            // Fd passing: a Return that goes on the wire carries the fds of
+            // its senderHosted results (`peer_fds.zig`); a loopback one never
+            // leaves the process and carries none.
+            var frame_fds: peer_fds.OutboundFds = .{};
+            if (!is_loopback) try peer_fds.PeerFds(Peer).attachPayload(self, ret.payload, &frame_fds);
+
+            const bytes = try builder.finish();
+            defer self.allocator.free(bytes);
             const should_record = !is_loopback;
 
             // Reserve the record resources (count budget, map slot, frame copy)
@@ -109,7 +117,7 @@ pub fn ReturnSend(comptime Peer: type) type {
                 false;
             const finished_before_send = self.finished_early_answers.contains(answer_id) or
                 completing_finished_before_send;
-            sendReturnFrameWithLoopback(self, answer_id, bytes) catch |err| {
+            sendReturnFrameWithFds(self, answer_id, bytes, frame_fds.slice()) catch |err| {
                 // A synchronous transport can deliver the complete Return, receive
                 // the peer's Finish reentrantly, and only then report a trailing
                 // local send error. A newly-created Finish tombstone while this
@@ -616,6 +624,16 @@ pub fn ReturnSend(comptime Peer: type) type {
                 answer_id,
                 Peer.clearSendResultsToThirdParty,
             );
+        }
+
+        /// `sendReturnFrameWithLoopback` for a Return built with fds attached
+        /// (fd passing). Only a Return that goes on the wire has any, so the
+        /// loopback branch sees none.
+        fn sendReturnFrameWithFds(self: *Peer, answer_id: u32, bytes: []const u8, fds: []const peer_fds.FdHandle) !void {
+            if (fds.len == 0) return sendReturnFrameWithLoopback(self, answer_id, bytes);
+            std.debug.assert(!self.loopback_questions.contains(answer_id));
+            try peer_export_release.ExportRelease(Peer).sendFrameControlWithFds(self, bytes, fds);
+            _ = self.active_inbound_questions.remove(answer_id);
         }
 
         pub fn sendReturnFrameWithLoopback(self: *Peer, answer_id: u32, bytes: []const u8) !void {

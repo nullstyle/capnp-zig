@@ -152,7 +152,12 @@ pub const Resource = enum(u8) {
     /// refused because the process already holds as many dups of sent fds
     /// as the closer's bound allows emits the same, with `err` =
     /// `error.FdCloseQueueFull` and `limit` = that bound
-    /// (`fd_io.closer.sentLimit`).
+    /// (`fd_io.closer.sentLimit`). A `Peer` that already keeps
+    /// `max_live_imported_fds` fds for its imports reports a capability that
+    /// arrived with one more as a `.resource_rejection` from source `.peer`
+    /// (`err` = `error.ImportedFdsOverLimit`, `attempted` = the fds it would
+    /// keep, `limit` = the cap); the capability arrives without its fd, which
+    /// the transport closes.
     attached_fds,
     _,
 };

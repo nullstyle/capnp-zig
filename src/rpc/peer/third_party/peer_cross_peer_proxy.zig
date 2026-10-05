@@ -6,6 +6,7 @@ const message = @import("../../../serialization/message.zig");
 const protocol = @import("../../wire/protocol.zig");
 const state = @import("../state.zig");
 const payload_remap = @import("../../caps/payload_remap.zig");
+const peer_fds = @import("../peer_fds.zig");
 
 /// The cross-peer proxy machinery, extracted from `peer/mod.zig` and made
 /// generic over the peer type (the JoinCoordinator extraction contract):
@@ -118,6 +119,7 @@ pub fn CrossPeerProxy(comptime Peer: type) type {
 
             const removed = self.exports.fetchRemove(id) orelse return;
             self.caps.clearExport(id);
+            peer_fds.PeerFds(Peer).exportRemoved(self, id);
             if (removed.value.deinit_ctx) |deinit_ctx| {
                 if (removed.value.handler) |handler| deinit_ctx(self.allocator, handler.ctx);
             }

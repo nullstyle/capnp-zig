@@ -1665,6 +1665,8 @@ capnpc-zig.rpc.peer.EntropySource.ctx: field *anyopaque
 capnpc-zig.rpc.peer.EntropySource.fill: field *const fn (*anyopaque, []u8) void
 capnpc-zig.rpc.peer.EntropySource.fromCsprng: fn (*Random.ChaCha) rpc.peer.mod.EntropySource
 capnpc-zig.rpc.peer.EntropySource: struct
+capnpc-zig.rpc.peer.FdHandle.fd: field i32
+capnpc-zig.rpc.peer.FdHandle: struct
 capnpc-zig.rpc.peer.HandoffPickupCallback: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, u32, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void
 capnpc-zig.rpc.peer.Introduced.completion: field []u8
 capnpc-zig.rpc.peer.Introduced.owner_allocator: field ?mem.Allocator = null
@@ -1967,6 +1969,7 @@ capnpc-zig.rpc.peer.Peer.caps: field rpc.caps.lifecycle.CapTable
 capnpc-zig.rpc.peer.Peer.captureAnyPointerPayload: fn (mem.Allocator, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) error{ElementCountTooLarge,EmptyMessage,FarPointerOffsetTooLarge,IndexOutOfBounds,InvalidFarPointer,InvalidInlineCompositePointer,InvalidMessageSize,InvalidPointer,InvalidRootPointer,InvalidSegmentId,ListTooLarge,OffsetOutOfRange,OutOfBounds,OutOfMemory,PointerDepthLimit,PointerIndexOutOfBounds,RecursionLimitExceeded,StructSizeMismatch,TextTooLong,TooManySegments,TruncatedMessage}!?[]u8
 capnpc-zig.rpc.peer.Peer.checkDeadlines: fn (*rpc.peer.mod.Peer) usize
 capnpc-zig.rpc.peer.Peer.claimRetainedQuestionForTransfer: fn (*rpc.peer.mod.Peer, u32) error{RetainedLoopbackQuestion,RetainedQuestionAlreadyTransferred,RetainedQuestionFinishInProgress,RetainedQuestionNoFinishNeeded,RetainedQuestionPending,RetainedQuestionTransferInProgress,UnknownRetainedQuestion}!u32
+capnpc-zig.rpc.peer.Peer.clearExportFd: fn (*rpc.peer.mod.Peer, u32) void
 capnpc-zig.rpc.peer.Peer.clearHandoffPickupHandler: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.clearPersistentExport: fn (*rpc.peer.mod.Peer, u32) void
 capnpc-zig.rpc.peer.Peer.clearQuestionDeadline: fn (*rpc.peer.mod.Peer, u32) error{UnknownQuestion}!void
@@ -2036,6 +2039,7 @@ capnpc-zig.rpc.peer.Peer.entropy: field ?rpc.peer.mod.EntropySource = null
 capnpc-zig.rpc.peer.Peer.exports: field hash_map.HashMap(u32,rpc.peer.state.ExportEntry(rpc.peer.mod.Export),hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.failQueuedPromisedCalls: fn (*rpc.peer.mod.Peer, u32, []const u8, rpc.wire.protocol.ExceptionType) void
 capnpc-zig.rpc.peer.Peer.failed_answers: field hash_map.HashMap(u32,rpc.peer.state.FailedAnswer,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.fds: field rpc.peer.peer_fds.State = <default>
 capnpc-zig.rpc.peer.Peer.finalizeAutomaticThirdPartyRoute: fn (*rpc.peer.mod.Peer, *rpc.peer.peer_context_types.AutomaticThirdPartyRouteOf(rpc.peer.mod.Peer), ?[]const u8) void
 capnpc-zig.rpc.peer.Peer.finishOriginatedProvide: fn (*rpc.peer.mod.Peer, *rpc.peer.mod.Peer, u32, ?u32) void
 capnpc-zig.rpc.peer.Peer.finishRetainedQuestion: fn (*rpc.peer.mod.Peer, u32, bool) anyerror!void
@@ -2061,6 +2065,7 @@ capnpc-zig.rpc.peer.Peer.handoff_pickup_ctx: field ?*anyopaque = null
 capnpc-zig.rpc.peer.Peer.handoff_pickup_links: field array_list.Aligned(*rpc.peer.mod.Peer.HandoffPickupContext,null)
 capnpc-zig.rpc.peer.Peer.hasAttachedTransport: fn (*const rpc.peer.mod.Peer) bool
 capnpc-zig.rpc.peer.Peer.hosted_joins: field hash_map.HashMap(*rpc.peer.peer_context_types.HostedJoinOf(rpc.peer.mod.Peer),void,hash_map.AutoContext(*rpc.peer.peer_context_types.HostedJoinOf(rpc.peer.mod.Peer)),80)
+capnpc-zig.rpc.peer.Peer.importFd: fn (*const rpc.peer.mod.Peer, u32) ?rpc.transport.fd_passing.FdHandle
 capnpc-zig.rpc.peer.Peer.in_deinit: field bool = false
 capnpc-zig.rpc.peer.Peer.inboundAnswerQuestionIdInUse: fn (*rpc.peer.mod.Peer, u32) error{}!bool
 capnpc-zig.rpc.peer.Peer.inboundQuestionIdInUse: fn (*rpc.peer.mod.Peer, u32) error{}!bool
@@ -2254,8 +2259,10 @@ capnpc-zig.rpc.peer.Peer.send_results_to_yourself: field hash_map.HashMap(u32,vo
 capnpc-zig.rpc.peer.Peer.setClock: fn (*rpc.peer.mod.Peer, ?rpc.time.Clock) void
 capnpc-zig.rpc.peer.Peer.setClockIo: fn (*rpc.peer.mod.Peer, ?Io) void
 capnpc-zig.rpc.peer.Peer.setEntropySource: fn (*rpc.peer.mod.Peer, rpc.peer.mod.EntropySource) void
+capnpc-zig.rpc.peer.Peer.setExportFd: fn (*rpc.peer.mod.Peer, u32, rpc.transport.fd_passing.FdHandle) error{FdPassingUnsupported,InvalidFd,OutOfMemory,UnknownExport}!void
 capnpc-zig.rpc.peer.Peer.setHandoffPickupHandler: fn (*rpc.peer.mod.Peer, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, u32, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void) void
 capnpc-zig.rpc.peer.Peer.setLimits: fn (*rpc.peer.mod.Peer, rpc.peer.state.PeerLimits) void
+capnpc-zig.rpc.peer.Peer.setMaxLiveImportedFds: fn (*rpc.peer.mod.Peer, u32) void
 capnpc-zig.rpc.peer.Peer.setObserver: fn (*rpc.peer.mod.Peer, ?rpc.events.Observer) void
 capnpc-zig.rpc.peer.Peer.setPersistentExport: fn (*rpc.peer.mod.Peer, u32, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, u32, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror![]u8) error{ExportHasNoHandler,OutOfMemory,PeerLimitExceeded,UnknownExport}!void
 capnpc-zig.rpc.peer.Peer.setQuestionDeadline: fn (*rpc.peer.mod.Peer, u32, u64) error{NoClockConfigured,QuestionCancelled,UnknownQuestion}!void
@@ -2410,10 +2417,13 @@ capnpc-zig.rpc.peer.SaveResponse.sturdy_ref: variant []const u8
 capnpc-zig.rpc.peer.SaveResponse: union
 capnpc-zig.rpc.peer.SaveResponseCallback: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.peer.mod.SaveResponse) anyerror!void
 capnpc-zig.rpc.peer.SendFrameOverride: type = *const fn (*anyopaque, []const u8) anyerror!void
+capnpc-zig.rpc.peer.SetExportFdError: type = error{FdPassingUnsupported,InvalidFd,OutOfMemory,UnknownExport}
 capnpc-zig.rpc.peer.TransportBinding.CloseFn: type = *const fn (*anyopaque) void
 capnpc-zig.rpc.peer.TransportBinding.IsClosingFn: type = *const fn (*anyopaque) bool
 capnpc-zig.rpc.peer.TransportBinding.SendFn: type = *const fn (*anyopaque, []const u8) anyerror!void
+capnpc-zig.rpc.peer.TransportBinding.SendWithFdsFn: type = *const fn (*anyopaque, []const u8, []const rpc.transport.fd_passing.FdHandle) anyerror!void
 capnpc-zig.rpc.peer.TransportBinding.StartFn: type = *const fn (*anyopaque, *rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.TransportBinding.TakeFrameFdFn: type = *const fn (*anyopaque, u8) ?rpc.transport.fd_passing.FdHandle
 capnpc-zig.rpc.peer.TransportBinding.close: field ?*const fn (*anyopaque) void = null
 capnpc-zig.rpc.peer.TransportBinding.closeIfPresent: fn (rpc.transport.binding.Binding(rpc.peer.mod.Peer)) void
 capnpc-zig.rpc.peer.TransportBinding.ctx: field ?*anyopaque = null
@@ -2421,10 +2431,16 @@ capnpc-zig.rpc.peer.TransportBinding.init: fn (*anyopaque, ?*const fn (*anyopaqu
 capnpc-zig.rpc.peer.TransportBinding.isAttached: fn (rpc.transport.binding.Binding(rpc.peer.mod.Peer)) bool
 capnpc-zig.rpc.peer.TransportBinding.isClosing: fn (rpc.transport.binding.Binding(rpc.peer.mod.Peer)) bool
 capnpc-zig.rpc.peer.TransportBinding.is_closing: field ?*const fn (*anyopaque) bool = null
+capnpc-zig.rpc.peer.TransportBinding.max_outbound_fds: field u8 = 0
+capnpc-zig.rpc.peer.TransportBinding.outboundFdLimit: fn (rpc.transport.binding.Binding(rpc.peer.mod.Peer)) u8
 capnpc-zig.rpc.peer.TransportBinding.send: field ?*const fn (*anyopaque, []const u8) anyerror!void = null
 capnpc-zig.rpc.peer.TransportBinding.sendFrame: fn (rpc.transport.binding.Binding(rpc.peer.mod.Peer), []const u8) anyerror!void
+capnpc-zig.rpc.peer.TransportBinding.sendFrameWithFds: fn (rpc.transport.binding.Binding(rpc.peer.mod.Peer), []const u8, []const rpc.transport.fd_passing.FdHandle) anyerror!void
+capnpc-zig.rpc.peer.TransportBinding.send_with_fds: field ?*const fn (*anyopaque, []const u8, []const rpc.transport.fd_passing.FdHandle) anyerror!void = null
 capnpc-zig.rpc.peer.TransportBinding.start: field ?*const fn (*anyopaque, *rpc.peer.mod.Peer) void = null
 capnpc-zig.rpc.peer.TransportBinding.startIfPresent: fn (rpc.transport.binding.Binding(rpc.peer.mod.Peer), *rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.TransportBinding.takeFrameFd: fn (rpc.transport.binding.Binding(rpc.peer.mod.Peer), u8) ?rpc.transport.fd_passing.FdHandle
+capnpc-zig.rpc.peer.TransportBinding.take_frame_fd: field ?*const fn (*anyopaque, u8) ?rpc.transport.fd_passing.FdHandle = null
 capnpc-zig.rpc.peer.TransportBinding: struct
 capnpc-zig.rpc.peer.TransportCloseFn: type = *const fn (*anyopaque) void
 capnpc-zig.rpc.peer.TransportIsClosingFn: type = *const fn (*anyopaque) bool
@@ -3981,6 +3997,7 @@ capnpc-zig.rpc.transport.tcp.Connection.win_read: field void = {}
 capnpc-zig.rpc.transport.tcp.Listener.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.Listener.close_requested: field atomic.Value(bool) = <default>
 capnpc-zig.rpc.transport.tcp.Listener.conn_options: field rpc.transport.tcp.connection.Connection.Options
+capnpc-zig.rpc.transport.tcp.Listener.fd_passing: field rpc.transport.fd_passing.FdPassing = <default>
 capnpc-zig.rpc.transport.tcp.Listener.io: field Io
 capnpc-zig.rpc.transport.tcp.Listener.server: field Io.net.Server
 capnpc-zig.rpc.transport.tcp.Listener.unix_socket: field ?rpc.transport.unix.socket.SocketFile = null
@@ -4035,6 +4052,7 @@ capnpc-zig.rpc.transport.tcp.client.ClientSession.user_on_error: field ?*const f
 capnpc-zig.rpc.transport.tcp.client.ConnectOptions.join_timeout_ms: field ?u64 = 30000
 capnpc-zig.rpc.transport.tcp.client: struct
 capnpc-zig.rpc.transport.tcp.closeFd: fn (Io, rpc.transport.tcp.stream_transport.SocketFd) void
+capnpc-zig.rpc.transport.tcp.connection.Connection.SendFdsError: type = error{BrokenPipe,FdPassingUnsupported,FdQueueFull,FdsWithoutData,InvalidFd,OutOfMemory,ProcessFdQuotaExceeded,SystemResources,TooManyFds,Unexpected,WriteQueueBytesExceeded,WriteQueueFull}
 capnpc-zig.rpc.transport.tcp.connection.Connection.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.connection.Connection.assertThreadAffinity: fn (*const rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.callback_depth: field usize = 0
@@ -4054,6 +4072,7 @@ capnpc-zig.rpc.transport.tcp.connection.Connection.io: field Io
 capnpc-zig.rpc.transport.tcp.connection.Connection.isClosing: fn (*const rpc.transport.tcp.connection.Connection) bool
 capnpc-zig.rpc.transport.tcp.connection.Connection.last_activity_ns: field i64 = 0
 capnpc-zig.rpc.transport.tcp.connection.Connection.last_error: field ?anyerror = null
+capnpc-zig.rpc.transport.tcp.connection.Connection.maxOutboundFds: fn (*const rpc.transport.tcp.connection.Connection) u8
 capnpc-zig.rpc.transport.tcp.connection.Connection.observer: field ?rpc.events.Observer = null
 capnpc-zig.rpc.transport.tcp.connection.Connection.on_close: field ?*const fn (*rpc.transport.tcp.connection.Connection) void = null
 capnpc-zig.rpc.transport.tcp.connection.Connection.on_destroy: field ?*const fn (*rpc.transport.tcp.connection.Connection) void = null
@@ -4065,7 +4084,9 @@ capnpc-zig.rpc.transport.tcp.connection.Connection.owner_thread_id: field ?u64 =
 capnpc-zig.rpc.transport.tcp.connection.Connection.requestClose: fn (*rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.runtime_thread_checks: field bool = false
 capnpc-zig.rpc.transport.tcp.connection.Connection.sendFrame: fn (*rpc.transport.tcp.connection.Connection, []const u8) error{BrokenPipe,OutOfMemory,WriteQueueBytesExceeded,WriteQueueFull}!void
+capnpc-zig.rpc.transport.tcp.connection.Connection.sendFrameWithFds: fn (*rpc.transport.tcp.connection.Connection, []const u8, []const rpc.transport.fd_passing.FdHandle) error{BrokenPipe,FdPassingUnsupported,FdQueueFull,FdsWithoutData,InvalidFd,OutOfMemory,ProcessFdQuotaExceeded,SystemResources,TooManyFds,Unexpected,WriteQueueBytesExceeded,WriteQueueFull}!void
 capnpc-zig.rpc.transport.tcp.connection.Connection.start: fn (*rpc.transport.tcp.connection.Connection, *anyopaque, *const fn (*rpc.transport.tcp.connection.Connection, []const u8) anyerror!void, *const fn (*rpc.transport.tcp.connection.Connection, anyerror) void, *const fn (*rpc.transport.tcp.connection.Connection) void) void
+capnpc-zig.rpc.transport.tcp.connection.Connection.takeFrameFd: fn (*rpc.transport.tcp.connection.Connection, u8) ?rpc.transport.fd_passing.FdHandle
 capnpc-zig.rpc.transport.tcp.connection.Connection.tick_interval_ms: field ?u32 = null
 capnpc-zig.rpc.transport.tcp.connection.Connection.transport: field rpc.transport.tcp.stream_transport.Transport
 capnpc-zig.rpc.transport.tcp.connection.Connection.wake: fn (*rpc.transport.tcp.connection.Connection) void
@@ -4082,6 +4103,7 @@ capnpc-zig.rpc.transport.tcp.runtime.Listener.acceptFd: fn (*rpc.transport.tcp.r
 capnpc-zig.rpc.transport.tcp.runtime.Listener.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.runtime.Listener.close_requested: field atomic.Value(bool) = <default>
 capnpc-zig.rpc.transport.tcp.runtime.Listener.conn_options: field rpc.transport.tcp.connection.Connection.Options
+capnpc-zig.rpc.transport.tcp.runtime.Listener.fd_passing: field rpc.transport.fd_passing.FdPassing = <default>
 capnpc-zig.rpc.transport.tcp.runtime.Listener.initFd: fn (mem.Allocator, Io, rpc.transport.tcp.stream_transport.SocketFd, rpc.transport.tcp.connection.Connection.Options) rpc.transport.tcp.runtime.Listener
 capnpc-zig.rpc.transport.tcp.runtime.Listener.io: field Io
 capnpc-zig.rpc.transport.tcp.runtime.Listener.ioBackend: fn (*const rpc.transport.tcp.runtime.Listener) Io
@@ -4179,11 +4201,18 @@ capnpc-zig.rpc.transport.tcp.stream: struct
 capnpc-zig.rpc.transport.tcp: struct
 capnpc-zig.rpc.transport.unix.ConnectError: type = error{AbstractNameUnsupported,AccessDenied,BadPathName,Canceled,ConnectionRefused,FileNotFound,NameTooLong,NotDir,OutOfMemory,ProcessFdQuotaExceeded,SymLinkLoop,SystemFdQuotaExceeded,SystemResources,Timeout,Unexpected,UnixSocketsUnsupported}
 capnpc-zig.rpc.transport.unix.ConnectOptions.connect_timeout_ms: field ?u64 = 30000
+capnpc-zig.rpc.transport.unix.ConnectOptions.fd_passing: field rpc.transport.fd_passing.FdPassing = <default>
 capnpc-zig.rpc.transport.unix.ConnectOptions.session: field rpc.transport.tcp.client.ConnectOptions = <default>
 capnpc-zig.rpc.transport.unix.ConnectOptions: struct
+capnpc-zig.rpc.transport.unix.FdHandle.fd: field i32
+capnpc-zig.rpc.transport.unix.FdHandle: struct
+capnpc-zig.rpc.transport.unix.FdPassing.max_fds_per_message: field u8 = 0
+capnpc-zig.rpc.transport.unix.FdPassing.max_live_imported_fds: field u32 = 64
+capnpc-zig.rpc.transport.unix.FdPassing: struct
 capnpc-zig.rpc.transport.unix.ListenError: type = error{AbstractNameUnsupported,AccessDenied,AddressInUse,BadPathName,FileNotFound,InvalidSocketMode,NameTooLong,NoSpaceLeft,NotDir,ProcessFdQuotaExceeded,ReadOnlyFileSystem,SocketPathChanged,SymLinkLoop,SystemFdQuotaExceeded,SystemResources,Unexpected,UnixSocketsUnsupported}
 capnpc-zig.rpc.transport.unix.ListenOptions.backlog: field u31 = 128
 capnpc-zig.rpc.transport.unix.ListenOptions.conn: field rpc.transport.tcp.connection.Connection.Options = <default>
+capnpc-zig.rpc.transport.unix.ListenOptions.fd_passing: field rpc.transport.fd_passing.FdPassing = <default>
 capnpc-zig.rpc.transport.unix.ListenOptions.reclaim_stale: field bool = false
 capnpc-zig.rpc.transport.unix.ListenOptions.socket_mode: field u32 = 384
 capnpc-zig.rpc.transport.unix.ListenOptions: struct

@@ -1,6 +1,7 @@
 const std = @import("std");
 const log = std.log.scoped(.rpc_peer);
 const protocol = @import("../wire/protocol.zig");
+const peer_fds = @import("./peer_fds.zig");
 
 pub fn handleRelease(
     comptime PeerType: type,
@@ -51,7 +52,10 @@ pub fn importRefCountForPeerFn(comptime PeerType: type) *const fn (*PeerType, u3
 }
 
 pub fn releaseImportRefForPeer(comptime PeerType: type, peer: *PeerType, import_id: u32) bool {
-    return peer.caps.releaseImport(import_id);
+    const released = peer.caps.releaseImport(import_id);
+    // Fd passing: an import that left the table closes its fd.
+    if (comptime @hasField(PeerType, "fds")) peer_fds.PeerFds(PeerType).importReleased(peer, import_id);
+    return released;
 }
 
 pub fn releaseImportRefForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) bool {
@@ -64,6 +68,8 @@ pub fn releaseImportRefForPeerFn(comptime PeerType: type) *const fn (*PeerType, 
 
 pub fn clearExportForPeer(comptime PeerType: type, peer: *PeerType, export_id: u32) void {
     peer.caps.clearExport(export_id);
+    // Fd passing: forget the export's borrowed fd with the export.
+    if (comptime @hasField(PeerType, "fds")) peer_fds.PeerFds(PeerType).exportRemoved(peer, export_id);
 }
 
 pub fn clearExportForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) void {

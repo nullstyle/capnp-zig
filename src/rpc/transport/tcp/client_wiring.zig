@@ -12,6 +12,7 @@ const client = @import("./client.zig");
 const connection_mod = @import("./connection.zig");
 const runtime = @import("./runtime.zig");
 const peer_mod = @import("../../peer/mod.zig");
+const fd_passing_mod = @import("../fd_passing.zig");
 
 const ClientSession = client.ClientSession;
 const ConnectOptions = client.ConnectOptions;
@@ -31,6 +32,19 @@ pub fn wire(
     io: std.Io,
     socket: runtime.SocketFd,
     options: ConnectOptions,
+) Error!*ClientSession {
+    return wireWithFdPassing(gpa, io, socket, options, .{});
+}
+
+/// `wire`, with fd passing configured before anything reads the socket
+/// (`rpc.transport.unix.connect`). `fd_passing.max_fds_per_message = 0` (the
+/// default) leaves the connection in drain mode.
+pub fn wireWithFdPassing(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    socket: runtime.SocketFd,
+    options: ConnectOptions,
+    fd_passing: fd_passing_mod.FdPassing,
 ) Error!*ClientSession {
     var socket_owned = true;
     errdefer if (socket_owned) runtime.closeFd(io, socket);
@@ -55,9 +69,11 @@ pub fn wire(
     self.conn = try Connection.init(gpa, io, socket, conn_opts);
     socket_owned = false; // conn.deinit() closes the socket from here on
     errdefer self.conn.deinit();
+    try enableFdPassing(&self.conn, fd_passing);
 
     self.peer = Peer.init(gpa, &self.conn);
     self.peer.setLimits(options.limits);
+    self.peer.setMaxLiveImportedFds(fd_passing.max_live_imported_fds);
     self.peer.setClockIo(io);
     // FAIL CLOSED on missing OS entropy (never a guessable fallback id),
     // mapped into the existing error set: an entropy syscall failure is a
@@ -78,6 +94,21 @@ pub fn wire(
     if (options.observer) |obs| self.peer.setObserver(obs);
     self.peer.start(self, onPeerError, onPeerClose);
     return self;
+}
+
+/// Turn fd passing on for a fresh connection, before its first read, mapped
+/// into `Error` (the frozen session error sets must not grow). Only an
+/// AF_UNIX connection on Linux or macOS can do it; anything else is a
+/// caller bug, reported as `Unexpected`.
+pub fn enableFdPassing(conn: *Connection, fd_passing: fd_passing_mod.FdPassing) Error!void {
+    if (fd_passing.max_fds_per_message == 0) return;
+    conn.enableFdPassing(fd_passing.max_fds_per_message) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.FdPassingUnsupported, error.AlreadyReading => {
+            std.log.scoped(.rpc_tcp).warn("fd passing cannot be enabled on this connection: {t}", .{err});
+            return error.Unexpected;
+        },
+    };
 }
 
 fn onPeerError(ctx: ?*anyopaque, peer: *Peer, err: anyerror) void {

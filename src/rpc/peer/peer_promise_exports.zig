@@ -8,6 +8,8 @@ const state = @import("./state.zig");
 const resolve = @import("./resolve.zig");
 const third_party = @import("./third_party.zig");
 const peer_outbound_control = @import("./peer_outbound_control.zig");
+const peer_fds = @import("./peer_fds.zig");
+const peer_export_release = @import("./peer_export_release.zig");
 
 /// Promise-export resolution senders, extracted from `peer/mod.zig` and made
 /// generic over the peer type (the JoinCoordinator extraction contract):
@@ -34,11 +36,15 @@ pub fn PromiseExports(comptime Peer: type) type {
             if (promise_entry.value_ptr.resolved != null) return error.PromiseAlreadyResolved;
             if (!self.exports.contains(export_id)) return error.UnknownExport;
 
+            const tag: protocol.CapDescriptorTag = if (self.caps.isExportPromise(export_id)) .senderPromise else .senderHosted;
+            // Fd passing: a Resolve to an export with an fd carries it, as a
+            // Call or Return descriptor would (`peer_fds.zig`).
+            var resolve_fds: peer_fds.OutboundFds = .{};
             const descriptor = protocol.CapDescriptor{
-                .tag = if (self.caps.isExportPromise(export_id)) .senderPromise else .senderHosted,
+                .tag = tag,
                 .id = export_id,
                 .promised_answer = null,
-                .attached_fd = null,
+                .attached_fd = peer_fds.PeerFds(Peer).attachExport(self, tag, export_id, &resolve_fds),
             };
 
             // The Resolve's cap descriptor hands the remote a reference to the
@@ -70,13 +76,22 @@ pub fn PromiseExports(comptime Peer: type) type {
             var rollback_promise_ref = true;
             errdefer if (rollback_promise_ref) self.rollbackPromiseExportRef(export_id);
 
-            try peer_outbound_control.sendResolveCapViaSendFrame(
-                Peer,
-                self,
-                promise_id,
-                descriptor,
-                Peer.sendFrame,
-            );
+            if (resolve_fds.len == 0) {
+                try peer_outbound_control.sendResolveCapViaSendFrame(
+                    Peer,
+                    self,
+                    promise_id,
+                    descriptor,
+                    Peer.sendFrame,
+                );
+            } else {
+                var builder = protocol.MessageBuilder.init(self.allocator);
+                defer builder.deinit();
+                try builder.buildResolveCap(promise_id, descriptor);
+                const bytes = try builder.finish();
+                defer self.allocator.free(bytes);
+                try peer_export_release.ExportRelease(Peer).sendFrameWithFds(self, bytes, resolve_fds.slice());
+            }
             rollback_wire_ref = false;
 
             promise_entry.value_ptr.resolved = .{ .exported = .{ .id = export_id } };
@@ -133,6 +148,10 @@ pub fn PromiseExports(comptime Peer: type) type {
             var rollback_import_ref = true;
             errdefer if (rollback_import_ref) {
                 _ = self.caps.releasePromiseImportRef(import_id);
+                // Undoes only the pin taken above, so the import (which had
+                // a hold before) stays; the hook keeps every removal path
+                // uniform for fd passing.
+                peer_fds.PeerFds(Peer).importReleased(self, import_id);
             };
 
             try peer_outbound_control.sendResolveCapViaSendFrame(

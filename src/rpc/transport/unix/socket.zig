@@ -10,8 +10,13 @@
 //! - `connect` returns a `*tcp.ClientSession`, wired exactly like
 //!   `tcp.connect`.
 //!
-//! Every connection reads in drain mode (`fd_io`): fds a peer attaches are
-//! closed off the reader thread, never kept. Connections report
+//! By default every connection reads in drain mode (`fd_io`): fds a peer
+//! attaches are closed off the reader thread, never kept. With
+//! `fd_passing.max_fds_per_message > 0` (`ListenOptions`, `ConnectOptions`)
+//! the connection keeps up to that many per message, and the `Peer`
+//! attaches them to the capabilities they came with (`Peer.importFd`).
+//! Sending needs no option: an export given an fd with `Peer.setExportFd`
+//! carries it on any AF_UNIX connection. Connections report
 //! `events.Source.unix`.
 //!
 //! ## The socket file
@@ -78,6 +83,7 @@ const posix = std.posix;
 const log = std.log.scoped(.rpc_unix);
 
 const fd_io = @import("fd_io.zig");
+const fd_passing_mod = @import("../fd_passing.zig");
 const runtime = @import("../tcp/runtime.zig");
 const client = @import("../tcp/client.zig");
 const client_wiring = @import("../tcp/client_wiring.zig");
@@ -121,7 +127,16 @@ pub const ListenOptions = struct {
     /// Remove a socket file that a server which is gone left at the path.
     /// See "Stale files" in the module doc.
     reclaim_stale: bool = false,
+    /// Fd passing on every accepted connection (`Listener.accept` and
+    /// `ServerSession.accept`). The default keeps no received fd.
+    /// `ServerSession.accept` also gives its peer `max_live_imported_fds`;
+    /// a `Peer` you build on a `Listener.accept` connection takes it from
+    /// `Peer.setMaxLiveImportedFds` (default 64).
+    fd_passing: FdPassing = .{},
 };
+
+/// Fd passing on one connection; see `rpc.transport.unix.FdPassing`.
+pub const FdPassing = fd_passing_mod.FdPassing;
 
 /// Every way `listen` fails.
 pub const ListenError = error{
@@ -165,6 +180,8 @@ pub const ConnectOptions = struct {
     /// server's backlog is full; macOS never waits). 0 acts as 1 ms. Null
     /// waits without a bound.
     connect_timeout_ms: ?u64 = 30_000,
+    /// Fd passing on the connection. The default keeps no received fd.
+    fd_passing: FdPassing = .{},
 };
 
 /// Every way `connect` fails.
@@ -303,6 +320,7 @@ pub fn listen(
 
     var listener = Listener.initFd(gpa, io, .{ .handle = fd }, options.conn);
     listener.unix_socket = file;
+    listener.fd_passing = options.fd_passing;
     return listener;
 }
 
@@ -325,7 +343,7 @@ pub fn connect(
         try connectSocket(fd, &addr, options.connect_timeout_ms);
     }
     // `wire` owns the socket from here, on success and on error.
-    return client_wiring.wire(gpa, io, .{ .handle = fd }, options.session);
+    return client_wiring.wireWithFdPassing(gpa, io, .{ .handle = fd }, options.session, options.fd_passing);
 }
 
 // ---------------------------------------------------------------------------
