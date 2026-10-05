@@ -38,7 +38,11 @@ pub const Listener = struct {
     /// return while the kernel still owns this buffer, so it must not borrow a
     /// different caller slice on each `receiveOne` invocation.
     udp_rx_buf: []u8,
+    /// The monotonic (`.awake`) clock at `init`. `nowUs` advances from it.
     start_timestamp: std.Io.Timestamp,
+    /// The wall clock (`.real`) at `init`, in microseconds since the Unix
+    /// epoch: the value `nowUs` starts from. See `nowUs`.
+    clock_origin_us: u64,
     receive_timeout: std.Io.Duration,
     max_concurrent_sessions: u32,
     udp_receive: udp_receive_bridge.Bridge = .{},
@@ -82,6 +86,7 @@ pub const Listener = struct {
             .server = server,
             .udp_rx_buf = udp_rx_buf,
             .start_timestamp = std.Io.Timestamp.now(io, .awake),
+            .clock_origin_us = wallClockUs(io),
             .receive_timeout = options.receive_timeout,
             .max_concurrent_sessions = options.max_concurrent_connections,
             .observer = options.observer,
@@ -287,10 +292,39 @@ pub const Listener = struct {
         return self.server.reap();
     }
 
+    /// The clock for this listener's quic-zig server, in microseconds since
+    /// the Unix epoch. `receiveOne` and the QUIC `Server` loop pass it to
+    /// every `feed`, `tick` and `pollDatagram`, and quic-zig stamps a
+    /// NEW_TOKEN's issue and expiry times with it.
+    ///
+    /// It starts at the wall clock read once at `init` and advances with the
+    /// monotonic `.awake` clock. So it never goes backwards within a
+    /// process, and a wall-clock step moves no timer. Because every process
+    /// starts it at the wall clock, a restarted listener's clock continues
+    /// from its predecessor's: it accepts the NEW_TOKENs that its predecessor
+    /// issued, within their lifetime, and enforces that lifetime in wall
+    /// time across restarts.
+    ///
+    /// quic-zig checks a NEW_TOKEN's times with no clock-skew allowance. A
+    /// successor reads its predecessor's token as not yet valid for as long
+    /// as the predecessor's clock ran ahead of the wall clock when it issued
+    /// the token: after a wall-clock step backwards between the two starts,
+    /// or after a long uptime on a monotonic clock that runs fast (on macOS
+    /// `.awake` is not NTP-disciplined; it drifts by parts per million). Time
+    /// that `.awake` does not count, such as a suspend, has the opposite
+    /// effect: a token looks older and expires sooner.
     pub fn nowUs(self: *const Listener) u64 {
         const now = std.Io.Timestamp.now(self.io, .awake);
         const delta = self.start_timestamp.durationTo(now).toMicroseconds();
-        if (delta <= 0) return 0;
-        return @intCast(delta);
+        if (delta <= 0) return self.clock_origin_us;
+        return self.clock_origin_us +| @as(u64, @intCast(delta));
     }
 };
+
+/// The wall clock in microseconds since the Unix epoch; 0 for a clock
+/// before the epoch.
+fn wallClockUs(io: std.Io) u64 {
+    const us = std.Io.Timestamp.now(io, .real).toMicroseconds();
+    if (us <= 0) return 0;
+    return @intCast(us);
+}

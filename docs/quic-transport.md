@@ -912,27 +912,36 @@ BoringSSL still accepts early data in the handshake after the Retry, so the
 client reports `.accepted`. But the restore runs only after the server's
 handshake completes, and the round trip that 0-RTT exists for is lost.
 Under the preset, a heal after a crash-restart gets a Retry even with both
-keys persisted, for two reasons:
+keys persisted, because quic-zig binds a NEW_TOKEN to the client's IP
+address and port. A capnp-zig client binds a new ephemeral port for every
+dial unless `ClientOptions.local_addr` sets one, and `WarmRedialClient`
+dials every generation from the same `base` options.
 
-- quic-zig binds a NEW_TOKEN to the client's IP address and port. A
-  capnp-zig client binds a new ephemeral port for every dial unless
-  `ClientOptions.local_addr` sets one, and `WarmRedialClient` dials every
-  generation from the same `base` options.
-- A NEW_TOKEN's issue and expiry times use the clock that the listener
-  feeds to quic-zig, and that clock counts from `Listener.init`. A restarted
-  process starts it again at zero, so it treats a token from its
-  predecessor as not yet valid until its own uptime passes the
-  predecessor's uptime when it issued the token.
+The token clock survives a restart. quic-zig stamps a NEW_TOKEN's issue
+and expiry times with the clock that the listener feeds it,
+`Listener.nowUs`. That clock starts at the wall clock when the listener
+starts, then advances on the monotonic clock, so it never goes backwards
+within a process. A restarted listener's clock continues from its
+predecessor's, and it accepts its predecessor's NEW_TOKENs within their
+lifetime (`new_token_lifetime_us`, 24 hours by default). quic-zig checks
+these times with no clock-skew allowance. If the wall clock steps backwards
+between the two starts, or the predecessor's monotonic clock ran ahead of
+the wall clock over a long uptime (on macOS it is not NTP-disciplined), the
+restarted server reads the newest tokens as not yet valid by that much, and
+those clients get a Retry. Before v0.20.0 the clock counted from
+`Listener.init`, so a restarted server read every token from its
+predecessor as not yet valid until its own uptime passed the predecessor's
+uptime at the time of issue. In embedded mode the host feeds its own clock
+to its quic-zig server, so the host's clock needs the same property.
 
 So, today, a heal after a crash-restart runs its restore early in two cases
 only. The server runs without Retry (no `retry_token_key`, which the preset
-requires). Or both keys are persisted, the client redials from the port
-that earned its NEW_TOKEN, and the restarted server has run longer than its
-predecessor had when it issued that token. Under the preset the key saves
-the certificate exchange, but usually not the round trip. The port rule
-also applies to a redial to a server process that is still running: under
-the preset, its restore runs early only when the client redials from the
-address and port that earned its NEW_TOKEN.
+requires). Or both keys are persisted and the client redials from the port
+that earned its NEW_TOKEN. Under the preset the key saves the certificate
+exchange, but usually not the round trip. The port rule also applies to a
+redial to a server process that is still running: under the preset, its
+restore runs early only when the client redials from the address and port
+that earned its NEW_TOKEN.
 
 Closing the gap needs one of these changes:
 
@@ -946,10 +955,10 @@ Closing the gap needs one of these changes:
   restore before its handshake completed. This held after a restart with
   the same ticket key, from a new port, and also with a new
   `new_token_key`.
-- The client skips the Retry. This needs a NEW_TOKEN clock that survives a
-  restart, and either a client that keeps its port or a NEW_TOKEN that binds
-  only the IP address. This also saves the round trip of the Retry, but only
-  for a client whose NEW_TOKEN is still valid.
+- The client skips the Retry. The NEW_TOKEN clock already survives a
+  restart; this also needs either a client that keeps its port or a
+  NEW_TOKEN that binds only the IP address. This also saves the round trip
+  of the Retry, but only for a client whose NEW_TOKEN is still valid.
 
 Only the first change makes an early restore after a crash-restart depend
 on the ticket key alone. Neither change is in quic-zig v0.25.0 or in

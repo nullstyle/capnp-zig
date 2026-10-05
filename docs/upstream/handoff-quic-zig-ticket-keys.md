@@ -160,14 +160,37 @@ others in `Outcome.retried_generations`. v0.25.0 has no accessor, so
 capnp-zig reads the `Connection.retry_accepted` field
 (`src/rpc/transport/quic/warm_redial.zig`); a rename breaks its build.
 
-## Not asked here
+## The NEW_TOKEN clock: fixed in capnp-zig, three small asks
 
-The NEW_TOKEN validity window is checked against the `now_us` that the
-embedder feeds (`Server/dos.zig:367`, `max_clock_skew_us = 0`). capnp-zig
-feeds a clock that counts from its listener's start, so a restarted
-process treats its predecessor's tokens as not yet valid until its own
-uptime passes the issue time. That is capnp-zig's clock to fix (or to
-document); it is listed here only so the two gaps are not confused.
+quic-zig stamps a NEW_TOKEN's issue and expiry times with the `now_us`
+that the embedder feeds, and checks them against it
+(`Server/dos.zig:367`, `max_clock_skew_us = 0`). The same `now_us` drives
+every recovery timer. capnp-zig used to feed a clock that counted from its
+listener's start, so a restarted process read its predecessor's tokens as
+not yet valid until its own uptime passed the issue time. capnp-zig now
+(v0.20.0) starts that clock at the wall clock in `Listener.init` and
+advances it on the monotonic clock, so a token survives a restart. Its
+test "a NEW_TOKEN from before a crash-restart skips the restarted server's
+Retry" pins this. What is left belongs to quic-zig:
+
+- quic-zig's own loop has the old bug. `transport/udp_server.zig` feeds a
+  `now_us` that counts from the loop's start (`:563-569`), so a restarted
+  `udp_server` sends every returning client a Retry until its uptime passes
+  the issue time. Anchor that clock to the wall clock at start, as
+  capnp-zig does, or see the next ask.
+- Stamp and check NEW_TOKEN times with a wall clock of their own (for
+  example a `Config` clock callback, or a wall-clock argument to `feed`),
+  apart from the monotonic timer clock. One `now_us` cannot be both a
+  timer clock that never jumps and a clock that agrees across processes;
+  capnp-zig's anchor is a compromise (next ask).
+- Allow clock skew when checking a NEW_TOKEN. `applyRetryGate` passes no
+  `max_clock_skew_us`, so the check allows none. A restarted server whose
+  wall clock stepped back, or whose predecessor's monotonic clock ran fast
+  over a long uptime (macOS `CLOCK_UPTIME_RAW` is not NTP-disciplined:
+  parts per million of the uptime), reads the newest tokens as not yet
+  valid and sends a Retry. A `Config.new_token_max_clock_skew_us` of a few
+  seconds would absorb that. It also extends the expiry edge by the same
+  amount, which the 24-hour default lifetime makes negligible.
 
 ## When quic-zig ships asks 1-3
 

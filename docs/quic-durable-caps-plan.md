@@ -105,14 +105,14 @@ for this repo.
     accepts a crash-restart heal's 0-RTT, but under the hardened preset the
     heal usually gets a Retry, and the quic-zig v0.25.0 client then sends its
     early data again only after the handshake, at 1-RTT (docs/quic-transport.md,
-    "Retry and NEW_TOKEN: an open gap"). Two things cause the Retry: a
+    "Retry and NEW_TOKEN: an open gap"). The Retry has one cause left: a
     capnp-zig dial binds a new port, and a NEW_TOKEN is bound to the IP and
-    port; and the listener's token clock counts from `Listener.init`, so a
-    restarted process treats its predecessor's tokens as not yet valid until
-    its uptime passes their issue time. The client-side fix (send 0-RTT again
-    after a Retry, RFC 9000 17.2.5.3) is asked of quic-zig in
-    `docs/upstream/handoff-quic-zig-ticket-keys.md`. A restart-safe token clock
-    is capnp-zig's own; it has no owner yet (an owner decision). The test
+    port (open sprint item 16f keeps `WarmRedialClient`'s port). The
+    listener's token clock used to count from `Listener.init`, so a
+    restarted process treated its predecessor's tokens as not yet valid; it
+    now starts at the wall clock (sprint item 16e). The client-side fix
+    (send 0-RTT again after a Retry, RFC 9000 17.2.5.3) is asked of quic-zig
+    in `docs/upstream/handoff-quic-zig-ticket-keys.md`. The test
     "session ticket key: a new new_token_key after a crash-restart costs the
     early restore" (`tests/rpc/transport/quic/rpc_quic_transport_test.zig`)
     pins today's behavior. Until this rung closes, a heal under the preset

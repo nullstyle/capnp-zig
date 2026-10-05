@@ -2818,11 +2818,15 @@ const TicketServer = struct {
 const TicketRestart = struct {
     before: TicketServer,
     after: TicketServer,
-    /// Redial from the port that earned the NEW_TOKEN, once the restarted
-    /// server's clock has passed the token's issue time. Today this is the
+    /// Redial from the port that earned the NEW_TOKEN. Today this is the
     /// only redial after a crash-restart that skips the Retry ("Retry and
     /// NEW_TOKEN: an open gap" in docs/quic-transport.md).
     same_client_port: bool = false,
+    /// How long server 1 runs before dial 1 earns its NEW_TOKEN. The
+    /// restarted server validates the token a few milliseconds into its
+    /// own life, so this many milliseconds separate a clock that continues
+    /// across the restart from one that starts again at zero.
+    predecessor_uptime_ms: u64 = 0,
 };
 
 const TicketRestartOutcome = struct {
@@ -2867,6 +2871,7 @@ fn crashRestartResumedDial(case: TicketRestart) !TicketRestartOutcome {
     var server1_alive = true;
     defer if (server1_alive) server1.deinit();
     const server_addr = server1.getAddress();
+    loopback.sleepMs(case.predecessor_uptime_ms);
 
     // ---- Dial 1: earn the ticket and the NEW_TOKEN from server 1. ----
     {
@@ -2909,8 +2914,6 @@ fn crashRestartResumedDial(case: TicketRestart) !TicketRestartOutcome {
     }
     try std.testing.expect(ticket.len.load(.acquire) > 0);
     try std.testing.expect(token.len.load(.acquire) > 0);
-    // Server 1 issued the NEW_TOKEN before this reading of its clock.
-    const token_issued_by_us = server1.listener.nowUs();
 
     // ---- CRASH, then RESTART on the same port. ----
     server1.deinit();
@@ -2924,15 +2927,8 @@ fn crashRestartResumedDial(case: TicketRestart) !TicketRestartOutcome {
         };
     };
     defer server2.deinit();
-    if (case.same_client_port) {
-        // The NEW_TOKEN's issue time is on server 1's clock, which counts
-        // from its own start; server 2's clock starts again at zero and
-        // treats the token as not yet valid until it passes that time.
-        // 300 ms of margin on top (Windows timers).
-        while (server2.listener.nowUs() <= token_issued_by_us + 300 * std.time.us_per_ms) {
-            loopback.sleepMs(loopback.loopback_poll_ms);
-        }
-    }
+    // No wait for server 2's clock: it continues from server 1's, so the
+    // NEW_TOKEN that server 1 issued is already valid.
 
     // ---- Dial 2: resume with the ticket and the NEW_TOKEN. ----
     attempt = 0;
@@ -3076,6 +3072,56 @@ test "session ticket key: a new new_token_key after a crash-restart costs the ea
     // 17.2.5.3) turns `restored_before_handshake` true here: then update
     // "Retry and NEW_TOKEN: an open gap" in docs/quic-transport.md.
     try std.testing.expectEqual(quic.EarlyDataStatus.accepted, fresh.status);
+}
+
+test "session ticket key: a NEW_TOKEN from before a crash-restart skips the restarted server's Retry" {
+    // Server 1 runs 600 ms before it issues the NEW_TOKEN, and server 2
+    // checks the token a few milliseconds after its own start. quic-zig
+    // checks a token's issue time with no clock-skew allowance, so the dial
+    // skips the Retry only when the listener clock continues across the
+    // restart. A clock that starts again at zero reads the token as not yet
+    // valid and sends a Retry, which costs the early restore.
+    const outcome = try crashRestartResumedDial(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key },
+        .same_client_port = true,
+        .predecessor_uptime_ms = 600,
+    });
+    try std.testing.expectEqual(@as(u64, 0), outcome.retries_sent);
+    try std.testing.expect(outcome.restored_before_handshake);
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, outcome.status);
+}
+
+test "Listener.nowUs continues across a restart instead of starting again at zero" {
+    // quic-zig stamps NEW_TOKEN issue and expiry times with this clock. A
+    // restarted listener must not read time from before its predecessor's
+    // last reading.
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const options: quic.ServerOptions = .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+    };
+    var first = try quic.Listener.init(allocator, io, options);
+    var first_alive = true;
+    defer if (first_alive) first.deinit();
+    loopback.sleepMs(400);
+    const before_restart = first.nowUs();
+    first.deinit();
+    first_alive = false;
+    // The successor starts from the wall clock and the predecessor advanced
+    // on the monotonic clock. 10 ms covers any drift between the two over
+    // the predecessor's 400 ms; a clock that restarts at zero is 400 ms
+    // behind.
+    loopback.sleepMs(10);
+
+    var second = try quic.Listener.init(allocator, io, options);
+    defer second.deinit();
+    const after_restart = second.nowUs();
+    try std.testing.expect(after_restart >= before_restart);
+    // Monotonic within the process.
+    try std.testing.expect(second.nowUs() >= after_restart);
 }
 
 test "serverConfigFromOptions refuses session-ticket settings it cannot install" {
