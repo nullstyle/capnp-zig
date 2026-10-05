@@ -140,6 +140,24 @@ fn buildRights(buf: []align(cmsg_align) u8, fds: []const Fd) []align(cmsg_align)
 
 /// One raw `sendmsg`; a non-empty `fds` goes out as one SCM_RIGHTS cmsg.
 fn sendOnce(sock: Fd, bytes: []const u8, fds: []const Fd) !usize {
+    return switch (sendFlagsErrno(sock, bytes, fds, 0)) {
+        .ok => |n| n,
+        .err => |err| {
+            std.debug.print("sendmsg failed with errno {d}\n", .{@backingInt(err)});
+            return error.SyscallFailed;
+        },
+    };
+}
+
+/// The outcome of one `sendFlagsErrno`.
+pub const SendOutcome = union(enum) {
+    ok: usize,
+    err: posix.E,
+};
+
+/// One raw `sendmsg` with `flags` (for example `MSG_OOB`), `fds` as one
+/// SCM_RIGHTS cmsg; the bytes sent or the errno, which the caller judges.
+pub fn sendFlagsErrno(sock: Fd, bytes: []const u8, fds: []const Fd, flags: u32) SendOutcome {
     var control_buf: [cmsg.space(max_send_fds * @sizeOf(Fd))]u8 align(cmsg_align) = undefined;
     const control: []const u8 = if (fds.len == 0) &.{} else buildRights(&control_buf, fds);
     var iov = [1]posix.iovec_const{.{ .base = bytes.ptr, .len = bytes.len }};
@@ -153,14 +171,11 @@ fn sendOnce(sock: Fd, bytes: []const u8, fds: []const Fd) !usize {
         .flags = 0,
     };
     while (true) {
-        const rc = sys.sendmsg(sock, &msg, 0);
+        const rc = sys.sendmsg(sock, &msg, flags);
         switch (posix.errno(rc)) {
-            .SUCCESS => return @intCast(ival(rc)),
+            .SUCCESS => return .{ .ok = @intCast(ival(rc)) },
             .INTR => continue,
-            else => |err| {
-                std.debug.print("sendmsg failed with errno {d}\n", .{@backingInt(err)});
-                return error.SyscallFailed;
-            },
+            else => |err| return .{ .err = err },
         }
     }
 }
@@ -468,6 +483,62 @@ pub const LingeringSocket = struct {
         closeFd(self.listener);
     }
 };
+
+var private_dir_counter: std.atomic.Value(u32) = .init(0);
+
+/// A private (0700) directory under /tmp for one socket file, removed with
+/// everything in it. Short names: `sun_path` is 104 bytes on Darwin.
+pub const PrivateDir = struct {
+    buf: [48]u8 = undefined,
+    dir: []const u8 = &.{},
+    path_buf: [64]u8 = undefined,
+
+    pub fn init(self: *PrivateDir) !void {
+        const n = private_dir_counter.fetchAdd(1, .monotonic);
+        self.dir = try std.fmt.bufPrint(&self.buf, "/tmp/czfd-{d}-{d}", .{ sys.getpid(), n });
+        std.Io.Dir.cwd().deleteTree(testing.io, self.dir) catch {};
+        var z: [49]u8 = undefined;
+        @memcpy(z[0..self.dir.len], self.dir);
+        z[self.dir.len] = 0;
+        _ = try check(sys.mkdir(@ptrCast(&z), 0o700), "mkdir");
+    }
+
+    pub fn deinit(self: *PrivateDir) void {
+        std.Io.Dir.cwd().deleteTree(testing.io, self.dir) catch {};
+    }
+
+    /// `<dir>/s`: the socket file's path.
+    pub fn socketPath(self: *PrivateDir) []const u8 {
+        return std.fmt.bufPrint(&self.path_buf, "{s}/s", .{self.dir}) catch unreachable;
+    }
+};
+
+/// A raw blocking client connect to the AF_UNIX socket file at `path`.
+pub fn rawConnect(path: []const u8) !Fd {
+    const fd: Fd = @intCast(try check(sys.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0), "socket"));
+    errdefer closeFd(fd);
+    var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
+    @memset(&addr.path, 0);
+    @memcpy(addr.path[0..path.len], path);
+    _ = try check(sys.connect(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)), "connect");
+    return fd;
+}
+
+/// Raise the soft RLIMIT_NOFILE to `want` (at most the hard limit) for a
+/// test that installs many fds; null when the hard limit is below `need`.
+/// Give the returned limit back to `restoreFdLimit`.
+pub fn raiseFdLimit(want: u64, need: u64) !?posix.rlimit {
+    const previous = try posix.getrlimit(.NOFILE);
+    if (previous.max < need) return null;
+    var next = previous;
+    next.cur = @max(previous.cur, @min(want, previous.max));
+    try posix.setrlimit(.NOFILE, next);
+    return previous;
+}
+
+pub fn restoreFdLimit(previous: posix.rlimit) void {
+    posix.setrlimit(.NOFILE, previous) catch {};
+}
 
 /// True once `fd` is closed, within `timeout_ms`. Only for an fd number
 /// nothing else in the process can reuse in the meantime.

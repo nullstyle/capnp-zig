@@ -56,7 +56,16 @@
 //! torn down stops this lane for as long as that close blocks. Every socket
 //! close queued meanwhile holds one fd until then, and on Darwin a reader
 //! blocked in a transport whose `shutdown` is queued there wakes only on its
-//! own poll tick (see `Transport.shutdown`).
+//! own poll tick (see `Transport.shutdown`). Darwin sends every AF_UNIX
+//! close there (and the read half of every `shutdown`), Linux every close
+//! with bytes unread, which a peer can force. So a listener from
+//! `rpc.transport.unix.listen` takes no connection while this lane holds
+//! `socketLaneBound()` jobs or more (`Listener.accept` and `acceptFd` wait):
+//! a peer that stalls one close and then reconnects in a loop leaves its
+//! connections in the kernel's backlog, not in this process's fd table.
+//! That listener's own final close runs here too: the connections still in
+//! its accept queue are released inside it, with the fds on their unread
+//! messages.
 //!
 //! ## The process fd budget
 //!
@@ -74,18 +83,25 @@
 //!   (a frame's, an import's). Moving them here does not change the count,
 //!   so they are not arrivals, and a burst of them (a `Peer` torn down with
 //!   every import, a frame's fds after dispatch) closes no connection.
-//!   Before each `recvmsg`, once its socket is readable, a reader checks
-//!   `admission()`. While the lane holds `fd_budget.limit()` arrivals or
-//!   more (`full()`: a close that blocks has stopped the lane) the reader
-//!   takes nothing: the transport closes that connection with a typed
-//!   cause. A hand-off that leaves more than the limit of arrivals in the
-//!   lane reports `over_limit`, and the transport closes the connection
-//!   that sent those fds. The fds already received still go to the lane:
-//!   closing them anywhere else could block. So the lane holds at most the
-//!   limit of arrivals plus one read (at most 254 fds: the most one send
-//!   carries) for each reader that passed its check before the lane filled
-//!   and had not handed off yet. Its counted fds come on top, and the
-//!   budget keeps those under its limit when it lets them in.
+//!   Before each `recvmsg`, once its socket is readable, a reader takes a
+//!   read claim (`claimRead`): room for one read's worst case,
+//!   `max_fds_per_recv` (254: the most one send carries). It reads nothing,
+//!   and the transport closes that connection with a typed cause, while the
+//!   lane holds `fd_budget.limit()` arrivals or more (`full`: a close that
+//!   blocks has stopped the lane), or when no claim came back within its
+//!   wait. A claim is granted only while the arrivals plus the outstanding
+//!   claims leave room under the limit; the first reader always gets one.
+//!   So however many readers wake at once, the lane ends at most one read
+//!   past the limit (a peer used to get one read in for every reader that
+//!   passed a plain check before the lane filled: measured, 16 readers put
+//!   4063 fds in a lane bounded at 16). A claim lasts one non-blocking
+//!   `recvmsg` and its hand-off, so the readers it holds back wait
+//!   microseconds. A hand-off that leaves more than the limit of arrivals
+//!   in the lane reports `over_limit`, and the transport closes the
+//!   connection that sent those fds. The fds already received still go to
+//!   the lane: closing them anywhere else could block. Its counted fds come
+//!   on top, and the budget keeps those under its limit when it lets them
+//!   in.
 //! - `.sent`: a transport counts each dup before it makes it, by reserving
 //!   a `.sent` slot (`reserveSent`), which succeeds only while the dups fit
 //!   in the budget (`fd_budget.tryAcquire`). Otherwise the transport refuses
@@ -139,7 +155,7 @@ comptime {
 pub const Lane = enum(u8) {
     /// Fds a peer attached. Counted in the process fd budget; a reader stops
     /// once this lane holds the budget's limit of fds that arrived
-    /// (`handOff`, not `handOffCounted`; see `admission`).
+    /// (`handOff`, not `handOffCounted`; see `claimRead`).
     received,
     /// A transport's own socket: its final close, and on Darwin the read
     /// half of its shutdown. Not counted.
@@ -197,8 +213,8 @@ pub const Admission = struct {
     /// The transport closes the connection that sent those fds.
     over_limit: bool,
 
-    /// `pending >= limit`: the lane takes no more fds. A reader that sees
-    /// this before `recvmsg` reads nothing and closes its connection.
+    /// `pending >= limit`: the lane takes no more fds. A reader whose
+    /// `claimRead` finds this reads nothing and closes its connection.
     pub fn full(self: Admission) bool {
         return self.pending >= self.limit;
     }
@@ -217,6 +233,12 @@ const Job = struct {
 const LaneState = struct {
     mu: std.Io.Mutex = .init,
     work: std.Io.Condition = .init,
+    /// Broadcast whenever the lane gets room: a job done, or (`.received`)
+    /// a read claim given back. `claimRead` and `waitSocketLane` wait on it.
+    room: std.Io.Condition = .init,
+    /// `.received` only: reads between `claimRead` and `endRead`, each of
+    /// which may still hand off up to `max_fds_per_recv` arrivals.
+    read_claims: usize = 0,
     /// FIFO: `jobs.items[head..]` are queued, `jobs.items[0..head]` are
     /// taken (compacted away as the thread catches up).
     jobs: std.ArrayListUnmanaged(Job) = .empty,
@@ -540,8 +562,9 @@ fn injectedFailure() bool {
 }
 
 /// The `.received` lane's arrivals right now, against the process fd
-/// budget's limit. A reader checks `full()` once its socket is readable and
-/// before `recvmsg` (see "The process fd budget" in the module doc).
+/// budget's limit (see "The process fd budget" in the module doc). Readers
+/// take a claim (`claimRead`) instead; this is a snapshot, for events and
+/// tests.
 pub fn admission() Admission {
     if (comptime !supported) return .{ .pending = 0, .limit = 0, .over_limit = false };
     const cap = budget.limit();
@@ -550,6 +573,127 @@ pub fn admission() Admission {
     const arrivals = s.arrivals;
     s.unlock();
     return .{ .pending = arrivals, .limit = cap, .over_limit = arrivals > cap };
+}
+
+/// The most fds one `recvmsg` can install: one send's fds (Linux's
+/// `SCM_MAX_FD` is 253; macOS takes 254). A read claim stands for this many
+/// arrivals.
+pub const max_fds_per_recv: usize = 254;
+
+/// How long `claimRead` waits at most, in one wait, before it looks at the
+/// caller's cancel flag again.
+const claim_wait_slice_ms: i64 = 50;
+
+/// What `claimRead` found.
+pub const ReadClaim = enum {
+    /// The read may go ahead. Call `endRead` once its fds were handed off
+    /// (or none came).
+    granted,
+    /// The lane holds the budget's limit of arrivals or more
+    /// (`Admission.full`): a close that blocks has stopped it. Read nothing.
+    full,
+    /// The claims of other reads left no room, and none came back within
+    /// the wait. A claim lasts one non-blocking `recvmsg`, so this means one
+    /// of them is stuck inside the kernel (a close the kernel does inside
+    /// `recvmsg` at the fd limit). Read nothing.
+    timed_out,
+    /// The cancel flag was set while waiting.
+    canceled,
+};
+
+/// Claim room in the `.received` lane for one read, before its `recvmsg`
+/// (see "The process fd budget" in the module doc).
+///
+/// A claim stands for `max_fds_per_recv` arrivals that the read may still
+/// hand off. It is granted while the arrivals plus the outstanding claims
+/// stay below the budget's limit: the first reader always gets one (unless
+/// the lane is `full`), and further readers only while the limit has room
+/// for their worst case too. So however many readers wake at once, the lane
+/// ends at most one read (`max_fds_per_recv - 1`) past the limit. Others
+/// wait, up to `max_wait_ms`, for a claim to come back or an arrival to be
+/// closed; a claim lasts one non-blocking `recvmsg` and a hand-off, so the
+/// wait is short. Checks `cancel` (when given) at least every 50 ms.
+pub fn claimRead(cancel: ?*const std.atomic.Value(bool), max_wait_ms: u32) ReadClaim {
+    if (comptime !supported) return .granted;
+    const io = syncIo();
+    const s = laneState(.received);
+    const wait_start = std.Io.Clock.awake.now(io).nanoseconds;
+    const max_wait_ns: i96 = @as(i96, max_wait_ms) * std.time.ns_per_ms;
+    s.lock();
+    defer s.unlock();
+    while (true) {
+        const cap = budget.limit();
+        if (s.arrivals >= cap) return .full;
+        // `read_claims` is at most the number of reader threads, so the
+        // product cannot overflow.
+        if (s.arrivals + s.read_claims * max_fds_per_recv < cap) {
+            s.read_claims += 1;
+            return .granted;
+        }
+        if (cancel) |flag| {
+            if (flag.load(.acquire)) return .canceled;
+        }
+        const waited = std.Io.Clock.awake.now(io).nanoseconds - wait_start;
+        if (waited >= max_wait_ns) return .timed_out;
+        const slice_ns = @min(max_wait_ns - waited, @as(i96, claim_wait_slice_ms) * std.time.ns_per_ms);
+        const slice: std.Io.Timeout = .{ .duration = .{ .raw = .fromNanoseconds(slice_ns), .clock = .awake } };
+        // Unlocks while it waits. A timeout or a cancel just loops.
+        s.room.waitTimeout(io, &s.mu, slice) catch {};
+    }
+}
+
+/// Give back a claim `claimRead` granted, after the read's fds (if any)
+/// were handed off, so they already count as arrivals.
+pub fn endRead() void {
+    if (comptime !supported) return;
+    const s = laneState(.received);
+    s.lock();
+    defer s.unlock();
+    std.debug.assert(s.read_claims != 0);
+    s.read_claims -= 1;
+    s.room.broadcast(syncIo());
+}
+
+/// Read claims granted and not given back (`claimRead`, `endRead`).
+pub fn readClaims() usize {
+    if (comptime !supported) return 0;
+    const s = laneState(.received);
+    s.lock();
+    defer s.unlock();
+    return s.read_claims;
+}
+
+/// The smallest `socketLaneBound`.
+pub const min_socket_lane_bound: usize = 16;
+
+/// The `.socket` lane jobs (queued or running) at which a listener from
+/// `rpc.transport.unix.listen` stops accepting: a quarter of the process fd
+/// budget's limit, at least `min_socket_lane_bound`. Each job holds one
+/// socket fd until it runs, and a close there can block (see "Three lanes"
+/// in the module doc); a peer that stalls one would otherwise make every
+/// later AF_UNIX teardown hold its fd.
+pub fn socketLaneBound() usize {
+    if (comptime !supported) return 0;
+    return @max(budget.limit() / 4, min_socket_lane_bound);
+}
+
+/// Whether the `.socket` lane holds `socketLaneBound()` jobs or more.
+pub fn socketLaneFull() bool {
+    if (comptime !supported) return false;
+    return pendingIn(.socket) >= socketLaneBound();
+}
+
+/// Wait until a `.socket` job finishes, or `max_wait_ms` passes. Returns at
+/// once if the lane is not `socketLaneFull`.
+pub fn waitSocketLane(max_wait_ms: u32) void {
+    if (comptime !supported) return;
+    const io = syncIo();
+    const s = laneState(.socket);
+    s.lock();
+    defer s.unlock();
+    if (s.pendingLocked() < socketLaneBound()) return;
+    const wait: std.Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(max_wait_ms), .clock = .awake } };
+    s.room.waitTimeout(io, &s.mu, wait) catch {};
 }
 
 /// Jobs handed off and not yet done, in every lane.
@@ -589,6 +733,8 @@ fn closerMain(lane: Lane) void {
             s.lock();
             s.running -= 1;
             if (job.arrival) s.arrivals -= 1;
+            // Cheap without waiters: one atomic load.
+            s.room.broadcast(syncIo());
             s.unlock();
         }
     }

@@ -4,6 +4,7 @@ const log = std.log.scoped(.rpc_runtime);
 const Connection = @import("./connection.zig").Connection;
 const events = @import("../../events.zig");
 const unix_socket_mod = @import("../unix/socket.zig");
+const fd_io = @import("../unix/fd_io.zig");
 const fd_passing_mod = @import("../fd_passing.zig");
 const client_wiring = @import("./client_wiring.zig");
 const net = std.Io.net;
@@ -46,8 +47,10 @@ pub const Runtime = struct {
 /// ## AF_UNIX
 ///
 /// `rpc.transport.unix.listen` returns a `Listener` too (Experimental,
-/// Linux and Darwin). It accepts the same way; `unixPath` returns its path,
-/// and `close` also removes its socket file and releases its lock.
+/// Linux and Darwin). It accepts the same way, except that it waits while
+/// the fd closer's `.socket` lane is full (`awaitSocketCloses`); `unixPath`
+/// returns its path, and `close` also removes its socket file and releases
+/// its lock, and leaves the socket's final close to that lane.
 pub const Listener = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -103,8 +106,12 @@ pub const Listener = struct {
 
     /// Accept a single connection. Blocks until a client connects.
     /// Returns a heap-allocated Connection.
+    ///
+    /// A listener from `rpc.transport.unix.listen` also waits while the fd
+    /// closer's `.socket` lane is full (see `awaitSocketCloses`).
     pub fn accept(self: *Listener) !*Connection {
         if (self.close_requested.load(.acquire)) return error.ListenerClosed;
+        try self.awaitSocketCloses();
 
         const stream = try self.server.accept(self.io);
         const client_fd = stream.socket.handle;
@@ -130,10 +137,41 @@ pub const Listener = struct {
     /// produces.
     pub fn acceptFd(self: *Listener) !SocketFd {
         if (self.close_requested.load(.acquire)) return error.ListenerClosed;
+        try self.awaitSocketCloses();
         const stream = try self.server.accept(self.io);
         const client_fd = stream.socket.handle;
         setTcpNoDelay(.{ .handle = client_fd });
         return .{ .handle = client_fd };
+    }
+
+    /// How often a listener waiting in `awaitSocketCloses` looks for
+    /// `close`, at most.
+    const socket_lane_wait_ms: u32 = 50;
+
+    /// A listener from `rpc.transport.unix.listen` takes no connection
+    /// while the fd closer's `.socket` lane holds
+    /// `fd_io.closer.socketLaneBound()` jobs or more. Each of them holds one
+    /// socket fd, and a close there blocks while that socket still carries
+    /// a peer's fd whose close blocks; every AF_UNIX close queued behind it
+    /// keeps its fd until then (macOS sends every AF_UNIX close there, Linux
+    /// every close with unread bytes). A peer that stalls one close and then
+    /// reconnects in a loop would otherwise fill the fd table. Waiting
+    /// leaves its connections in the kernel's backlog, outside this
+    /// process's fd table. Emits one `.backpressure` event per wait
+    /// (`resource = .attached_fds`, `err = error.SocketCloseQueueFull`).
+    /// Returns `error.ListenerClosed` once `close` is called.
+    fn awaitSocketCloses(self: *Listener) error{ListenerClosed}!void {
+        if (comptime !fd_io.supported) return;
+        if (self.unix_socket == null) return;
+        if (!fd_io.closer.socketLaneFull()) return;
+        const bound = fd_io.closer.socketLaneBound();
+        log.warn("fd closer: {d} AF_UNIX socket job(s) pending (bound {d}); accept waits", .{ fd_io.closer.pendingIn(.socket), bound });
+        events.emitBackpressure(self.conn_options.observer, .unix, .server, .attached_fds, fd_io.closer.pendingIn(.socket), bound, error.SocketCloseQueueFull);
+        while (fd_io.closer.socketLaneFull()) {
+            if (self.close_requested.load(.acquire)) return error.ListenerClosed;
+            fd_io.closer.waitSocketLane(socket_lane_wait_ms);
+        }
+        if (self.close_requested.load(.acquire)) return error.ListenerClosed;
     }
 
     /// The `std.Io` this listener accepts on. A `ServerSession` built from
@@ -148,6 +186,11 @@ pub const Listener = struct {
     /// A listener from `rpc.transport.unix.listen` first removes its socket
     /// file (only while the path still names that file) and releases its
     /// lock last, so no other `unix.listen` can bind the path in between.
+    /// Its socket's final close runs on the fd closer's `.socket` lane: the
+    /// connections still in its accept queue are released inside that
+    /// close, with any fds riding on their unread messages, and one of those
+    /// can block (see `SocketFile.closeListenSocket`). A thread parked in
+    /// `accept` still wakes at once.
     pub fn close(self: *Listener) void {
         if (self.close_requested.swap(true, .acq_rel)) return;
         if (self.unix_socket) |*file| file.unlinkIfOurs();
@@ -165,6 +208,12 @@ pub const Listener = struct {
         // unnecessary.
         if (comptime builtin.target.os.tag != .windows) {
             shutdownFd(self.io, .{ .handle = self.server.socket.handle });
+        }
+        if (comptime fd_io.supported) {
+            if (self.unix_socket) |*file| {
+                file.closeListenSocket(self.server.socket.handle);
+                return;
+            }
         }
         closeFd(self.io, .{ .handle = self.server.socket.handle });
     }

@@ -57,9 +57,20 @@
 //!   else can swap it.
 //! - **Close.** `Listener.close` removes the path only while it still
 //!   names this listener's file (same dev and ino), then closes the socket
-//!   and releases the lock. A relative path resolves against the current
+//!   and releases the lock. The socket's final close runs on the fd closer's
+//!   `.socket` lane (`SocketFile.closeListenSocket`): connections still in
+//!   the accept queue are released inside it, with the fds on their unread
+//!   messages, and one of those can block. A thread parked in `accept`
+//!   still wakes at once. A relative path resolves against the current
 //!   directory at each step: after a `chdir`, `close` finds a different file
 //!   (or none) and leaves the socket file in place.
+//! - **Accept waits while socket closes are stuck.** `Listener.accept`,
+//!   `Listener.acceptFd` and `ServerSession.accept` on this listener wait
+//!   while the fd closer's `.socket` lane holds
+//!   `fd_io.closer.socketLaneBound()` jobs or more (a close there that
+//!   blocks holds every AF_UNIX close queued behind it, each with its fd).
+//!   New connections then wait in the kernel's backlog. `close` ends the
+//!   wait with `error.ListenerClosed`.
 //! - **Flags.** The listening and client sockets are close-on-exec (std
 //!   already makes accepted sockets close-on-exec). No `TCP_NODELAY`: these
 //!   are not TCP sockets.
@@ -229,10 +240,43 @@ pub const SocketFile = struct {
     ino: u64,
     /// The open `<path>.lock` with the flock held; -1 once released.
     lock_fd: Fd,
+    /// The closer's `.socket`-lane slot for the listening socket's final
+    /// close (`closeListenSocket`), taken by `listen`, so that close never
+    /// allocates or runs inline.
+    close_reservation: fd_io.closer.Reservation = .{ .lane = .socket },
 
     /// The path `listen` bound.
     pub fn path(self: *const SocketFile) []const u8 {
         return self.path_buf[0..self.path_len];
+    }
+
+    /// Close the listening socket `fd` without waiting for its final close.
+    ///
+    /// Connections still in the accept queue are released inside the final
+    /// close of the listening socket, and with them the fds riding on their
+    /// unread messages: a peer that connected, attached a lingering socket
+    /// and left would block that close for the linger time (measured: 3 s
+    /// on Linux and macOS). So the final close goes to the closer's
+    /// `.socket` lane. The caller has already done the `shutdown` that
+    /// wakes a Linux `accept`. On Darwin a thread parked in `accept` wakes
+    /// only on `close` of the fd: so this closes `fd` inline after taking a
+    /// dup, which keeps the socket alive (that close is never the final
+    /// one), and hands the dup to the lane. Without a dup (EMFILE) it hands
+    /// off `fd` itself, and a Darwin acceptor wakes when the lane gets to
+    /// it.
+    pub fn closeListenSocket(self: *SocketFile, fd: Fd) void {
+        if (comptime !supported) return;
+        const dup = fd_io.dupCloexec(fd) catch {
+            fd_io.closer.handOffSocketClose(&self.close_reservation, fd);
+            return;
+        };
+        closeRaw(fd);
+        fd_io.closer.handOffSocketClose(&self.close_reservation, dup);
+    }
+
+    /// Give back the `.socket`-lane slot (`listen`'s error paths).
+    fn releaseReservation(self: *SocketFile) void {
+        fd_io.closer.release(&self.close_reservation);
     }
 
     /// Remove the path if it still names the file `bind` created. Holding
@@ -295,6 +339,12 @@ pub fn listen(
     file.lock_fd = try openLock(lock_z);
     errdefer file.releaseLock();
     try takeLock(file.lock_fd);
+
+    fd_io.closer.reserve(&file.close_reservation, 1) catch |err| return switch (err) {
+        error.OutOfMemory => error.SystemResources,
+        error.UnixSocketsUnsupported => error.UnixSocketsUnsupported,
+    };
+    errdefer file.releaseReservation();
 
     const fd = try openSocket(ListenError);
     errdefer closeRaw(fd);

@@ -36,14 +36,22 @@
 //!   final close of a lingering TCP socket blocks that thread for the linger
 //!   time.
 //!
-//! So the transport reads every AF_UNIX connection with `recvWithFds` and a
-//! control buffer of `max_fds_per_read` slots, and hands every fd it gets to
+//! So the transport reads every AF_UNIX connection with `tryRecvWithFds` (once
+//! `poll` says the socket is readable, and the closer gave the read a claim) and
+//! a control buffer of `max_fds_per_read` slots, and hands every fd it gets to
 //! the closer (`closer`, its `.received` lane). macOS delivers at most one
 //! send's fds (254) per `recvmsg`, so 512 slots never truncate there. With
 //! fd passing on (`Transport.enableFdPassing`) it keeps up to
 //! `max_fds_per_message` of a message's fds for its consumer instead, and
 //! reads one frame at a time so that each fd lands in its own message;
 //! every fd it does not hand out still goes to the closer.
+//!
+//! On Linux 5.15+ a peer can also send a byte out of band (`MSG_OOB`) with
+//! fds attached. A normal `recvmsg` skips that message and the kernel frees
+//! it, closing its fds inside the read, on the reading thread. So every
+//! drain-mode transport sets `SO_OOBINLINE` (`setOobInline`) before its first
+//! read: the byte is then read in line and its fds come through the control
+//! buffer like any other. If the option cannot be set, every read fails.
 //!
 //! ## The process fd budget
 //!
@@ -83,10 +91,14 @@
 //!   process fd budget: first fd passing stops keeping and sending fds in
 //!   the whole process, and once the lane holds the budget's limit of fds
 //!   that arrived there uncounted (see `closer`), every AF_UNIX read that
-//!   finds data reads nothing and closes its connection. A peer that can stall a close can deny service
-//!   on every AF_UNIX connection that receives data meanwhile, but cannot
-//!   fill the fd table. TCP and QUIC connections, and AF_UNIX socket closes
-//!   and shutdowns (the `.socket` lane), do not wait for it.
+//!   finds data reads nothing and closes its connection. Read claims keep
+//!   the lane within one read (254 fds) of that limit, however many
+//!   readers wake at once. A peer that can stall a close can deny service
+//!   on every AF_UNIX connection that receives data meanwhile. It cannot
+//!   fill the fd table while `RLIMIT_NOFILE` is 1024 or more; at the macOS
+//!   default (256) one message of 254 fds can (see `budget`). TCP and QUIC
+//!   connections, and AF_UNIX socket closes and shutdowns (the `.socket`
+//!   lane), do not wait for it.
 //! - The same holds on the send side for an fd this process sends whose
 //!   close blocks, once the app and the receiver have closed their copies:
 //!   the transport's dup of it stops the closer's `.sent` lane. Every dup
@@ -112,8 +124,19 @@
 //!   own connection when that connection is torn down stops that lane for
 //!   as long as the close blocks. The socket closes queued behind it each
 //!   hold one fd until then: on Linux only connections torn down with unread
-//!   data, on macOS every AF_UNIX connection closed meanwhile. On macOS a
-//!   reader whose `shutdown` waits there notices on its 250 ms poll tick.
+//!   data, on macOS every AF_UNIX connection closed meanwhile. A listener
+//!   from `unix.listen` takes no connection while the lane holds
+//!   `closer.socketLaneBound()` jobs, so a peer that reconnects in a loop
+//!   waits in the kernel's backlog instead of adding fds. On macOS a reader
+//!   whose `shutdown` waits there notices on its 250 ms poll tick, and a
+//!   close of the other end of that socket waits while its
+//!   `shutdown(SHUT_RD)` is stuck disposing of a lingering fd (measured:
+//!   the full linger; a stuck `close` does not hold it, and Linux never
+//!   waits), which matters only when both ends are in this process.
+//! - A listening socket: the connections still in its accept queue are
+//!   released inside its final close, with the fds on their unread
+//!   messages. A listener from `unix.listen` does that close on the
+//!   `.socket` lane (`SocketFile.closeListenSocket`).
 //! - Older Linux kernels (before 6.8, by our reading of the kernel source)
 //!   run the AF_UNIX fd garbage collector inside socket close. There the
 //!   final close of a peer's unreachable in-flight fds can happen inside any
@@ -193,6 +216,59 @@ const recv_flags: u32 = if (supported and @hasDecl(posix.MSG, "CMSG_CLOEXEC")) p
 /// and through `fcntl` right after the call on macOS.
 pub fn recvWithFds(socket: Fd, data: []u8, control: []u8, fds_out: []Fd) RecvError!Received {
     if (comptime !supported) return error.UnixSocketsUnsupported;
+    while (true) {
+        if (try recvOnce(socket, data, control, fds_out, recv_flags)) |got| return got;
+        try waitReadable(socket);
+    }
+}
+
+/// `recvWithFds` that never waits: one `recvmsg` with `MSG_DONTWAIT`, null
+/// when there is nothing to read (EAGAIN). The transport reads this way
+/// after `poll` reported the socket readable, so a wakeup with nothing to
+/// read (an out-of-band byte skipped, say) sends it back to `poll` and to
+/// the closer's check instead of into a `recvmsg` that blocks.
+pub fn tryRecvWithFds(socket: Fd, data: []u8, control: []u8, fds_out: []Fd) RecvError!?Received {
+    if (comptime !supported) return error.UnixSocketsUnsupported;
+    return recvOnce(socket, data, control, fds_out, recv_flags | posix.MSG.DONTWAIT);
+}
+
+/// `setOobInline` failures.
+pub const OobInlineError = error{
+    Unexpected,
+    UnixSocketsUnsupported,
+};
+
+/// Linux: set `SO_OOBINLINE` on `socket`. Since Linux 5.15 an AF_UNIX
+/// stream socket takes `MSG_OOB`: the out-of-band byte, and the fds the
+/// peer attached to it, ride on their own message. Without this option a
+/// normal `recvmsg` skips that message and the kernel frees it, so its fds
+/// are closed inside that `recvmsg`, on the reading thread (measured: a
+/// lingering socket sent that way blocked the read for the 3 s linger, in
+/// drain mode and with fd passing on). With it the byte is read in line,
+/// as stream data, and its fds come through the control buffer like any
+/// other. Older kernels keep the fds on the out-of-band message instead,
+/// for the socket's final close; in line, they come through the control
+/// buffer there too.
+///
+/// Darwin: nothing to do (it refuses `MSG_OOB` on AF_UNIX sockets with
+/// EOPNOTSUPP, measured on macOS 27).
+pub fn setOobInline(socket: Fd) OobInlineError!void {
+    if (comptime !supported) return error.UnixSocketsUnsupported;
+    if (comptime builtin.target.os.tag != .linux) return;
+    const on: c_int = 1;
+    const rc = posix.system.setsockopt(socket, posix.SOL.SOCKET, posix.SO.OOBINLINE, std.mem.asBytes(&on), @sizeOf(c_int));
+    switch (posix.errno(rc)) {
+        .SUCCESS => {},
+        // Log the number, never the tag: `posix.E` does not name every errno.
+        else => |err| {
+            log.debug("setsockopt(SO_OOBINLINE) failed: errno {d}", .{@backingInt(err)});
+            return error.Unexpected;
+        },
+    }
+}
+
+/// One `recvmsg` with `flags`; null on EAGAIN. EINTR is retried.
+fn recvOnce(socket: Fd, data: []u8, control: []u8, fds_out: []Fd, flags: u32) RecvError!?Received {
     const offered = @min(control.len, controlLen(fds_out.len));
     var iov = [1]posix.iovec{.{ .base = data.ptr, .len = data.len }};
     while (true) {
@@ -205,7 +281,7 @@ pub fn recvWithFds(socket: Fd, data: []u8, control: []u8, fds_out: []Fd) RecvErr
             .controllen = @intCast(offered),
             .flags = 0,
         };
-        const rc = posix.system.recvmsg(socket, &msg, recv_flags);
+        const rc = posix.system.recvmsg(socket, &msg, flags);
         switch (posix.errno(rc)) {
             .SUCCESS => {
                 const control_len = @min(@as(usize, @intCast(msg.controllen)), offered);
@@ -218,10 +294,7 @@ pub fn recvWithFds(socket: Fd, data: []u8, control: []u8, fds_out: []Fd) RecvErr
                 };
             },
             .INTR => continue,
-            .AGAIN => {
-                try waitReadable(socket);
-                continue;
-            },
+            .AGAIN => return null,
             .CONNRESET => return error.ConnectionResetByPeer,
             .TIMEDOUT => return error.ConnectionTimedOut,
             .NOTCONN => return error.SocketUnconnected,

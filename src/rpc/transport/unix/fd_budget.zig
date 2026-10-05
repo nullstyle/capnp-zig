@@ -41,12 +41,21 @@
 //! (`fd_closer.handOff`) are the one thing that may pass the limit: an fd
 //! that already arrived has nowhere else to go. While that lane holds
 //! `limit()` of them (a close that blocks has stopped it), every AF_UNIX
-//! read that finds data closes its connection instead (see `fd_closer`).
-//! Fds this budget already counts that move to the lane (a frame's after
+//! read that finds data closes its connection instead, and read claims
+//! (`fd_closer.claimRead`) keep readers that wake together from all
+//! passing that check at once: the lane ends at most one read (254 fds)
+//! past the limit, however many readers there are (see `fd_closer`). Fds
+//! this budget already counts that move to the lane (a frame's after
 //! dispatch, a `Peer`'s imports) never trip that stop: the move does not
-//! change the count. So the fds counted here stay below about twice the
-//! limit, plus one read (254 fds) per reader: half of `RLIMIT_NOFILE` by
-//! default.
+//! change the count. So the fds counted here stay below twice the limit
+//! plus 254: half of `RLIMIT_NOFILE`, plus 254, by default.
+//!
+//! That is well below `RLIMIT_NOFILE` only from a soft limit of about 1024
+//! up (2 * 1024 / 4 + 254 = 766). At the macOS default (256) a single
+//! message of 254 fds can take the fd table to its limit on its own, and
+//! keep it there for as long as a close in the lane blocks. A process that
+//! serves AF_UNIX peers should raise its soft `RLIMIT_NOFILE` to 1024 or
+//! more before its first connection; this module never changes it.
 //!
 //! The count is one atomic integer; every call is safe from any thread.
 

@@ -51,13 +51,18 @@ pub const SocketFd = struct {
 /// On Linux and macOS, `initWithOptions` reads the socket family once (with
 /// `getsockname`). On an AF_UNIX socket, and on any socket whose family it
 /// cannot read, the transport runs in drain mode: a read waits until the
-/// socket is readable, checks the closer's bound, then does one `recvmsg`
-/// with a control buffer (`rpc.transport.unix.fd_io.recvWithFds`), and every
-/// file descriptor the peer attached goes to the process-wide closer
-/// (`fd_io.closer`, its `.received` lane), never closed on the reading
-/// thread. Each read that brought fds emits a `.resource_rejection` event
-/// (`resource = .attached_fds`), and the transport reports
-/// `events.Source.unix`.
+/// socket is readable, takes a read claim in the closer
+/// (`fd_io.closer.claimRead`), then does one non-blocking `recvmsg` with a
+/// control buffer (`rpc.transport.unix.fd_io.tryRecvWithFds`; nothing to
+/// read sends it back to the wait), and every file descriptor the peer
+/// attached goes to the process-wide closer (`fd_io.closer`, its `.received`
+/// lane), never closed on the reading thread. On Linux `initWithOptions`
+/// also sets `SO_OOBINLINE` (`fd_io.setOobInline`), so fds a peer attaches
+/// to an out-of-band byte come through the control buffer too, instead of
+/// being closed by the kernel inside the read; if it cannot, every read
+/// fails with `error.Unexpected`. Each read that brought fds emits a
+/// `.resource_rejection` event (`resource = .attached_fds`), and the
+/// transport reports `events.Source.unix`.
 ///
 /// Fds still riding on unread messages are closed by the kernel inside the
 /// final close of this socket, and on macOS already inside
@@ -543,6 +548,15 @@ pub const Transport = struct {
                 // family costs nothing but the drain state.
                 .unknown => drain = try FdDrain.create(allocator),
             }
+            if (drain) |d| {
+                // Before the first read: an out-of-band message read past
+                // would have its fds closed inside that read, on the reader
+                // thread (`fd_io.setOobInline`). If the option cannot be
+                // set, every read fails rather than risk that.
+                fd_io.setOobInline(socket.handle) catch {
+                    d.unsafe_to_read = true;
+                };
+            }
         }
         return .{
             .allocator = allocator,
@@ -706,16 +720,20 @@ pub const Transport = struct {
     /// read, or 0 on EOF or if the transport is closed.
     ///
     /// In drain mode (AF_UNIX) this waits until the socket is readable,
-    /// then does one `recvmsg` with a control buffer, and every attached fd
-    /// goes to the closer. Three conditions there close the connection with
+    /// takes a read claim in the closer, then does one non-blocking
+    /// `recvmsg` with a control buffer, and every attached fd goes to the
+    /// closer. Three conditions there close the connection with
     /// `error.SystemResources`, each after a `.resource_rejection` event that
-    /// names the cause in `err`: the closer's `.received` lane already held
-    /// as many fds that arrived uncounted (`fd_io.closer.admission`) as the
-    /// process fd budget's limit when data arrived (nothing is read;
-    /// `error.FdCloseQueueFull`), this read's fds pushed those past that
-    /// limit (`error.FdCloseQueueFull`), or the process fd table
-    /// stayed full for a read and its one retry
-    /// (`error.ProcessFdQuotaExceeded` or `error.SystemFdQuotaExceeded`).
+    /// names the cause in `err`: the closer gave no read claim (nothing is
+    /// read; `error.FdCloseQueueFull`): its `.received` lane already held as
+    /// many fds that arrived uncounted (`fd_io.closer.admission`) as the
+    /// process fd budget's limit, or other readers' claims left no room for
+    /// a second (`fd_io.closer.claimRead`) and none came back within 1 s;
+    /// this read's fds pushed those past that limit
+    /// (`error.FdCloseQueueFull`); or the process fd table stayed full for a
+    /// read and its one retry (`error.ProcessFdQuotaExceeded` or
+    /// `error.SystemFdQuotaExceeded`). Without `SO_OOBINLINE` (Linux, see
+    /// the type doc) every read fails with `error.Unexpected`.
     ///
     /// With fd passing on (`enableFdPassing`) a read returns at most the
     /// rest of one part of one frame, and keeps that frame's fds (see
@@ -733,6 +751,8 @@ pub const Transport = struct {
 
     fn readDrain(self: *Transport, drain: *FdDrain) ReadError!usize {
         drain.reads_started = true;
+        // `setOobInline` failed at init: a read could close fds here.
+        if (drain.unsafe_to_read) return self.failDrainRead(drain, error.Unexpected);
         // A thread must exist before any fd can arrive: received fds are
         // never closed on this one.
         fd_io.closer.ensureStarted() catch |err| {
@@ -746,24 +766,27 @@ pub const Transport = struct {
             return self.failDrainRead(drain, error.SystemResources);
         if (drain.frames) |frames| return self.readFramePart(drain, frames);
 
-        // Wait for data first, then check the closer's bound, then take the
-        // fds. A reader parked inside a blocking recvmsg would take the next
-        // message's fds however full the closer is by then: an idle
-        // connection would carry a check made when it went idle.
-        if (!try self.waitDrainReadable()) return 0;
-        const before = fd_io.closer.admission();
-        if (before.full()) {
-            // The closer is behind (a close that blocks). Read nothing: any
-            // fds on the waiting message stay in flight in the kernel,
-            // outside this process's fd table, until this socket's close
-            // disposes of them (on the closer's socket lane).
-            self.emitAttachedFds(before.pending, before.limit, error.FdCloseQueueFull);
-            return error.SystemResources;
-        }
-
         var fd_quota_retried = false;
+        var spurious: usize = 0;
         while (true) {
-            const got = fd_io.recvWithFds(self.fd, self.read_buf, &drain.control, &drain.fds) catch |err| switch (err) {
+            // Wait for data first, then claim room in the closer, then take
+            // the fds, without blocking. A reader parked inside a blocking
+            // recvmsg would take the next message's fds however full the
+            // closer is by then: an idle connection would carry a check
+            // made when it went idle.
+            if (!try self.waitDrainReadable()) return 0;
+            switch (self.claimRead()) {
+                .granted => {},
+                // The closer is behind (a close that blocks). Read nothing:
+                // any fds on the waiting message stay in flight in the
+                // kernel, outside this process's fd table, until this
+                // socket's close disposes of them (on the closer's socket
+                // lane).
+                .refused => return error.SystemResources,
+                .closing => return 0,
+            }
+            defer fd_io.closer.endRead();
+            const got = (fd_io.tryRecvWithFds(self.fd, self.read_buf, &drain.control, &drain.fds) catch |err| switch (err) {
                 error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => {
                     // macOS fails the read and installs nothing. The retry
                     // returns the data, and the kernel drops the fds. A
@@ -778,6 +801,10 @@ pub const Transport = struct {
                 error.SocketUnconnected => return error.SocketUnconnected,
                 error.SystemResources => return error.SystemResources,
                 error.Unexpected, error.UnixSocketsUnsupported => return error.Unexpected,
+            }) orelse {
+                // Readable, then nothing to read: wait and check again.
+                spurious = self.backOffSpurious(spurious);
+                continue;
             };
             if (got.fd_count != 0) {
                 const fds = drain.fds[0..got.fd_count];
@@ -793,6 +820,34 @@ pub const Transport = struct {
             }
             return got.data_len;
         }
+    }
+
+    /// How a drain-mode reader's claim on the closer went (`claimRead`).
+    const ReadAdmit = enum { granted, refused, closing };
+
+    /// Claim room in the closer's `.received` lane for one read, once the
+    /// socket is readable (`fd_io.closer.claimRead`). Refused when the lane
+    /// is full or no claim came back in time; the event says so.
+    fn claimRead(self: *Transport) ReadAdmit {
+        switch (fd_io.closer.claimRead(&self.close_requested, FdDrain.claim_wait_ms)) {
+            .granted => return .granted,
+            .canceled => return .closing,
+            .full, .timed_out => {
+                const now = fd_io.closer.admission();
+                self.emitAttachedFds(now.pending, now.limit, error.FdCloseQueueFull);
+                return .refused;
+            },
+        }
+    }
+
+    /// A wakeup with nothing to read. One is normal; a run of them backs
+    /// off 1 ms per wait, so a socket that stays readable without data
+    /// cannot spin this thread. Returns the new count.
+    fn backOffSpurious(self: *Transport, spurious: usize) usize {
+        if (spurious >= FdDrain.spurious_before_backoff) {
+            std.Io.sleep(self.io, .fromMilliseconds(1), .awake) catch {};
+        }
+        return spurious +| 1;
     }
 
     fn emitAttachedFds(self: *const Transport, attempted: ?usize, limit: ?usize, err: anyerror) void {
@@ -817,23 +872,27 @@ pub const Transport = struct {
         const len = @min(frames.part_left, self.read_buf.len);
         if (len == 0) return 0;
 
-        const readable = self.waitDrainReadable() catch |err| return self.failFrames(drain, frames, err);
-        if (!readable) {
-            // Closing: the frame being read will not complete.
-            self.endFrames(drain, frames, .report);
-            return 0;
-        }
-        const before = fd_io.closer.admission();
-        if (before.full()) {
-            self.emitAttachedFds(before.pending, before.limit, error.FdCloseQueueFull);
-            return self.failFrames(drain, frames, error.SystemResources);
-        }
-
         // Set once the kernel dropped this read's fds (EMFILE): the retry
         // returns the data of the same message, which keeps no fds.
         var quota_dropped = false;
+        var spurious: usize = 0;
         while (true) {
-            const got = fd_io.recvWithFds(self.fd, self.read_buf[0..len], &drain.control, &drain.fds) catch |err| switch (err) {
+            const readable = self.waitDrainReadable() catch |err| return self.failFrames(drain, frames, err);
+            if (!readable) {
+                // Closing: the frame being read will not complete.
+                self.endFrames(drain, frames, .report);
+                return 0;
+            }
+            switch (self.claimRead()) {
+                .granted => {},
+                .refused => return self.failFrames(drain, frames, error.SystemResources),
+                .closing => {
+                    self.endFrames(drain, frames, .report);
+                    return 0;
+                },
+            }
+            defer fd_io.closer.endRead();
+            const got = (fd_io.tryRecvWithFds(self.fd, self.read_buf[0..len], &drain.control, &drain.fds) catch |err| switch (err) {
                 error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => {
                     // macOS fails the read and installs nothing; the retry
                     // returns the data, and the kernel drops the fds. A
@@ -851,6 +910,10 @@ pub const Transport = struct {
                 error.SocketUnconnected => return self.failFrames(drain, frames, error.SocketUnconnected),
                 error.SystemResources => return self.failFrames(drain, frames, error.SystemResources),
                 error.Unexpected, error.UnixSocketsUnsupported => return self.failFrames(drain, frames, error.Unexpected),
+            }) orelse {
+                // Readable, then nothing to read: wait and check again.
+                spurious = self.backOffSpurious(spurious);
+                continue;
             };
             const fds = drain.fds[0..got.fd_count];
             if (quota_dropped) {
@@ -1366,9 +1429,23 @@ const FdDrain = struct {
     frames: ?*FrameReader = null,
     /// Set by the first read: fd passing can no longer start.
     reads_started: bool = false,
+    /// `fd_io.setOobInline` failed at init: every read fails
+    /// (`error.Unexpected`) instead of reading past out-of-band messages.
+    unsafe_to_read: bool = false,
 
     const control_bytes = fd_io.controlSpace(fd_io.max_fds_per_read);
     const read_slots = fd_io.max_fds_per_read;
+
+    /// How long a reader waits for room in the closer's `.received` lane
+    /// (`fd_io.closer.claimRead`) before it gives up and closes its
+    /// connection. A claim lasts one non-blocking `recvmsg`, so only a
+    /// `recvmsg` stuck in the kernel (a close it does at the fd limit) makes
+    /// another reader wait this long.
+    const claim_wait_ms: u32 = 1000;
+
+    /// Wakeups with nothing to read in a row before each further one waits
+    /// 1 ms (`Transport.backOffSpurious`).
+    const spurious_before_backoff: usize = 8;
 
     /// The `.received` slots the reader keeps reserved: one read's worth,
     /// plus with fd passing on the fds the transport may hold for frames.
