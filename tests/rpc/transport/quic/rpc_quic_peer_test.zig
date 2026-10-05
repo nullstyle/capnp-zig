@@ -3242,11 +3242,13 @@ test "WarmRedialClient heal falls back to an ephemeral port when its previous po
     // sends a Retry. The quic-zig v0.27.0 client sends its 0-RTT data again
     // after the Retry, so the restarted server still runs the restore before
     // its handshake completes, one round trip later (through v0.25.0 it ran
-    // only after the handshake: quic-zig finding F8).
+    // only after the handshake: quic-zig finding F8). The client counts the
+    // heal in both counters: 0-RTT, behind a Retry. The cold first
+    // generation is the other retried one.
     try std.testing.expectEqual(@as(u64, 1), heal.restarted_retries);
     try std.testing.expectEqual(quic.EarlyDataStatus.accepted, heal.healed_status);
     try std.testing.expectEqual(@as(u32, 1), heal.early_restores);
-    try std.testing.expectEqual(@as(u32, 0), heal.outcome.zero_rtt_generations);
+    try std.testing.expectEqual(@as(u32, 1), heal.outcome.zero_rtt_generations);
     try std.testing.expectEqual(@as(u32, 2), heal.outcome.retried_generations);
 }
 

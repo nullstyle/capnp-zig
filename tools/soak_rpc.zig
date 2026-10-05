@@ -172,9 +172,9 @@ const Config = struct {
     // Ticket-key mode (QUIC, with abrupt deaths and healing workers): the
     // server runs the hardened preset with `.restore_only` 0-RTT and loads
     // the same session-ticket key and `new_token_key` on every restart, so
-    // a heal from the port that earned its NEW_TOKEN skips the Retry and
-    // its restore rides 0-RTT. Gates a 0-RTT heal per death (see the file
-    // header).
+    // a heal's restore rides 0-RTT, and a heal from the port that earned
+    // its NEW_TOKEN also skips the Retry. Gates a 0-RTT heal per death (see
+    // the file header).
     ticket_key: bool = false,
     // Memory-curve sampling interval and the steady-state growth ceiling.
     mem_sample_ms: u64 = 100,
@@ -671,8 +671,9 @@ const ZeroRttVerdict = struct {
 /// its `zero_rtt_generations` (`zero_rtt_heals[d] >= 1`) and incarnation `d`
 /// ran a restore before that session's handshake completed
 /// (`early_restores[d] >= 1`). The two are separate witnesses: the client's
-/// count says the dial got no Retry and BoringSSL accepted its early data;
-/// the server's says the restore actually ran inside the 0-RTT window.
+/// count says BoringSSL accepted the dial's early data (with or without a
+/// Retry, since quic-zig v0.27.0 resends 0-RTT after one); the server's
+/// says the restore actually ran inside the 0-RTT window.
 /// Deaths after `judge_until_ns` are not judged: the healing clients stopped
 /// before they had time to heal onto them. A run with no judged death fails,
 /// because it proved nothing.
@@ -715,7 +716,7 @@ test "assessZeroRttHeals: every judged death with a 0-RTT heal and an early rest
 
 test "assessZeroRttHeals: one death without a 0-RTT heal fails, and is named" {
     const deaths = [_]u64{ 2_000, 4_000, 6_000 };
-    // Every heal onto incarnation 2 got a Retry (or a refused ticket).
+    // Every heal onto incarnation 2 had its ticket refused.
     const v = assessZeroRttHeals(&deaths, 10_000, &.{ 0, 8, 0, 8 }, &.{ 0, 8, 6, 8 });
     try std.testing.expect(!v.ok);
     try std.testing.expectEqual(@as(usize, 1), v.missing_zero_rtt);
