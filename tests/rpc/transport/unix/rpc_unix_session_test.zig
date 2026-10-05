@@ -368,11 +368,22 @@ test "a stale socket file with reclaim_stale on is replaced and the listener ser
 
     try makeStaleSocketFile(path);
     const stale = lstatPath(path).?;
+    // Keep a second name on the stale inode. Without it the reclaim frees
+    // the inode, and Linux may give its number straight to the new socket
+    // file (seen on ubuntu CI), so equal numbers would not prove a reuse.
+    var keep_buf: [96]u8 = undefined;
+    const keep = dir.path(&keep_buf, "s.keep");
+    var z_old: [256]u8 = undefined;
+    var z_new: [256]u8 = undefined;
+    _ = try support.check(sys.linkat(posix.AT.FDCWD, nulTerminated(&z_old, path), posix.AT.FDCWD, nulTerminated(&z_new, keep), 0), "linkat");
     var listener = try unix.listen(testing.allocator, testing.io, path, .{ .reclaim_stale = true });
     defer listener.close();
     const fresh = lstatPath(path).?;
     try testing.expect(isSocket(fresh));
     try testing.expect(fresh.ino != stale.ino or fresh.dev != stale.dev);
+    // The kept name still points at the stale inode: the reclaim unlinked
+    // the path, it did not reuse the file.
+    try testing.expectEqual(stale.ino, lstatPath(keep).?.ino);
     try expectServes(&listener, path);
 }
 
