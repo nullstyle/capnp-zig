@@ -322,6 +322,16 @@ pub fn listen(
     errdefer file.releaseLock();
     try takeLock(file.lock_fd);
 
+    // Start the closer threads now. `close` hands the final close to the
+    // `.socket` lane under this reservation; if the threads did not exist
+    // yet, that hand-off would have to spawn them inside `close`, and a
+    // failed spawn would run the close inline, where a lingering backlog fd
+    // blocks it. A transport starts them the same way before it reserves.
+    fd_io.closer.ensureStarted() catch |err| return switch (err) {
+        error.UnixSocketsUnsupported => error.UnixSocketsUnsupported,
+        error.ThreadQuotaExceeded, error.SystemResources, error.OutOfMemory, error.LockedMemoryLimitExceeded => error.SystemResources,
+        error.Unexpected => error.Unexpected,
+    };
     fd_io.closer.reserve(&file.close_reservation, 1) catch |err| return switch (err) {
         error.OutOfMemory => error.SystemResources,
         error.UnixSocketsUnsupported => error.UnixSocketsUnsupported,

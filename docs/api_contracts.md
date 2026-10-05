@@ -108,9 +108,12 @@ Internal helper behavior may change, but exported type semantics and error class
   an AF_UNIX socket), a worker takes no connection while the closer's
   `.socket` lane holds `fd_io.closer.socketLaneBound()` jobs or more,
   exactly as `Listener.accept` does (`tcp.runtime.awaitSocketLane`):
-  one `.backpressure` event (`error.SocketCloseQueueFull`) per wait goes to
-  `Config.connection_options.observer`, new connections wait in the
-  kernel's backlog, and shutdown ends the wait.
+  one `.backpressure` event (`error.SocketCloseQueueFull`) per waiting
+  worker goes to `Config.connection_options.observer`, new connections wait
+  in the kernel's backlog, and shutdown ends the wait. Workers check the
+  lane on their own, so up to `concurrency` of them can pass the check
+  together: the lane can pass its bound by one teardown per worker (1 job
+  on Linux, up to 2 on macOS).
 - The listener's `fd_passing` applies to every connection the pool
   accepts, as with `ServerSession.accept`: the transport keeps fds from the
   first byte, and each `Peer` gets its `max_live_imported_fds`.

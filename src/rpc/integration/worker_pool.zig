@@ -214,10 +214,12 @@ pub const WorkerPool = struct {
     /// (`unix.listen`, or `Listener.initFd` on an AF_UNIX socket) take no
     /// connection while the fd closer's `.socket` lane is full
     /// (`tcp.runtime.awaitSocketLane`, with one `.backpressure` event per
-    /// wait to `config.connection_options.observer`): a peer that stalls a
-    /// socket close and reconnects in a loop then waits in the kernel's
-    /// backlog instead of growing this process's fds. Shutdown ends that
-    /// wait too.
+    /// waiting worker to `config.connection_options.observer`): a peer that
+    /// stalls a socket close and reconnects in a loop then waits in the
+    /// kernel's backlog instead of growing this process's fds. Shutdown ends
+    /// that wait too. Each worker checks the lane on its own, so up to
+    /// `concurrency` workers can pass together and the lane can pass its
+    /// bound by one teardown each (1 job on Linux, up to 2 on macOS).
     ///
     /// How the workers wait: each one parks in `poll` on the listen socket
     /// and on a wake door (a pipe the pool owns), then makes a non-blocking
