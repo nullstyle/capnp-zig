@@ -220,10 +220,11 @@ pub const Server = struct {
     /// - Returning an error rejects the session: the server logs it and
     ///   closes the session normally in the same step. If the hook attached
     ///   callbacks before failing, their `on_close` still fires exactly once.
-    ///   The handshake has not completed at this point, and quic-zig sends
-    ///   that close only under 1-RTT keys the client does not have yet, so
-    ///   the client learns of the refusal from its own handshake timeout,
-    ///   exactly as for a dial the server's flood gates drop.
+    ///   The handshake has not completed at this point; quic-zig sends the
+    ///   close in packets the client can already read (RFC 9000 10.2.3), so
+    ///   the client records the refusal as `DisconnectCause.peer_close`. A
+    ///   lost close is not sent again: then the client waits for its own
+    ///   handshake timeout, as for a dial the server's flood gates drop.
     /// - Sessions adopted before the hook is installed are not replayed, so
     ///   install it before the first step.
     ///

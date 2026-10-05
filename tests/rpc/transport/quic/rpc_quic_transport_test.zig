@@ -1216,13 +1216,12 @@ test "quic Server on_session_accepted rejecting a session closes it and keeps se
     try std.testing.expect(refused_session.isClosing());
     try std.testing.expectEqual(@as(usize, 0), refused_state.messages.load(.acquire));
     try std.testing.expectEqual(@as(usize, 1), refused_state.closes.load(.acquire));
-    // Tripwire for a documented transport limit: the server's close went out
-    // under 1-RTT keys the client did not have yet, so the client only learns
-    // of the refusal from its own handshake timeout, as for a dial the
-    // server's flood gates drop. If this becomes `.peer_close`, quic-zig now
-    // sends a pre-confirmation close the client can read (RFC 9000 10.2.3);
-    // update `Server.setOnSessionAccepted` and docs/quic-transport.md.
-    try std.testing.expectEqual(events.DisconnectCause.handshake_timeout, refused.closeCause());
+    // The server's close reaches the client during the handshake (quic-zig
+    // v0.26.0 sends it in packets the client can read, RFC 9000 10.2.3), so
+    // the client records the refusal as a close from the peer. Through
+    // quic-zig v0.25.0 the client never read that close, and this was its
+    // own `.handshake_timeout`.
+    try std.testing.expectEqual(events.DisconnectCause.peer_close, refused.closeCause());
 
     // The refusal was per session: the next dial is accepted and echoed.
     var accepted = try quic.Connection.initClient(allocator, std.testing.io, .{
@@ -3073,7 +3072,7 @@ test "session ticket key: a crash-restart with another early_dispatch refuses 0-
     });
 }
 
-test "session ticket key: a new new_token_key after a crash-restart costs the early restore" {
+test "session ticket key: a new new_token_key after a crash-restart costs a Retry, not the early restore" {
     // Control: the same key and the same new_token_key, and the client
     // redials from the port that earned its NEW_TOKEN. No Retry, and the
     // restore runs before the restarted server's handshake completes.
@@ -3087,37 +3086,28 @@ test "session ticket key: a new new_token_key after a crash-restart costs the ea
     try std.testing.expect(kept.restored_before_handshake);
 
     // A new new_token_key invalidates the NEW_TOKEN, so the restarted server
-    // answers with a Retry, which drops the first flight's 0-RTT packets, and
-    // the restore runs only after the handshake.
+    // answers with a Retry, which drops the first flight's 0-RTT packets.
+    // The client sends its 0-RTT data again after the Retry (quic-zig
+    // v0.27.0, RFC 9000 17.2.5.3), so the restore still runs before the
+    // handshake completes, one round trip later. Through quic-zig v0.25.0
+    // the client sent it again only at 1-RTT, after the handshake (F8).
     const fresh = try crashRestartResumedDial(.{
         .before = .{ .key = &ticket_key },
         .after = .{ .key = &ticket_key, .new_token_key = @splat(0x84) },
         .same_client_port = true,
     });
     try std.testing.expectEqual(@as(u64, 1), fresh.retries_sent);
-    try std.testing.expect(!fresh.restored_before_handshake);
-    // BoringSSL still reports the early data as accepted: the quic-zig
-    // v0.25.0 client keeps the dropped 0-RTT data in flight and sends it
-    // again at 1-RTT after the handshake. The verdict does not prove an early
-    // restore. A client that sends 0-RTT again after a Retry (RFC 9000
-    // 17.2.5.3) turns `restored_before_handshake` true here: then update
-    // "Retry and NEW_TOKEN: an open gap" in docs/quic-transport.md.
+    try std.testing.expect(fresh.restored_before_handshake);
     try std.testing.expectEqual(quic.EarlyDataStatus.accepted, fresh.status);
 }
 
 // quic-zig finding F8 ("no 0-RTT resend after a Retry"), reproduced at
-// capnp-zig's seam and pinned at TODAY's behavior (quic-zig v0.25.0). See
-// docs/upstream/handoff-quic-zig-ticket-keys.md.
-//
-// THE ASSERTIONS ON `retried` FLIP when the quic-zig client sends its 0-RTT
-// data again after a Retry, to the Retry's connection ID (RFC 9000 17.2.5.3;
-// the model is to run `requeueRejectedEarlyData` at the end of `handleRetry`).
-// Then `retried.early_bytes` equals `retried.frame_len`,
-// `retried.stream_saw_early_data` and `retried.restored_before_handshake` are
-// true, and `retries_sent` stays 1. Flip them, update "Retry and NEW_TOKEN:
-// an open gap" in docs/quic-transport.md, and count a retried dial whose
-// restore rode 0-RTT in `WarmRedialClient.Outcome.zero_rtt_generations`.
-test "session ticket key: after a Retry the resumed dial's restore arrives at 1-RTT, not 0-RTT (quic-zig F8)" {
+// capnp-zig's seam. quic-zig v0.27.0 fixed it: after a Retry the client sends
+// its 0-RTT data again, to the Retry's connection ID (RFC 9000 17.2.5.3). See
+// docs/upstream/handoff-quic-zig-ticket-keys.md. Through v0.25.0 the retried
+// dial below counted `early_bytes == 0`, `!stream_saw_early_data` and
+// `!restored_before_handshake` while BoringSSL still said `.accepted`.
+test "session ticket key: after a Retry the resumed dial's restore still arrives in 0-RTT (quic-zig F8 fixed)" {
     // Control: the client redials from the port that earned its NEW_TOKEN.
     // The restarted server sends no Retry and receives the whole restore
     // frame in 0-RTT packets, so the counters below can see early bytes.
@@ -3141,13 +3131,13 @@ test "session ticket key: after a Retry the resumed dial's restore arrives at 1-
         .after = .{ .key = &ticket_key },
     });
     try std.testing.expectEqual(@as(u64, 1), retried.retries_sent);
-    // BoringSSL accepts the early data in the handshake after the Retry...
+    // BoringSSL accepts the early data in the handshake after the Retry, and
+    // the client sent it again in 0-RTT packets: the whole restore frame
+    // arrives early, and the server runs it before its handshake completes.
     try std.testing.expectEqual(quic.EarlyDataStatus.accepted, retried.status);
-    // ...but TODAY no byte of the restore arrives in 0-RTT: the client sends
-    // it again only at 1-RTT, after the handshake (F8). These flip.
-    try std.testing.expectEqual(@as(usize, 0), retried.early_bytes);
-    try std.testing.expect(!retried.stream_saw_early_data);
-    try std.testing.expect(!retried.restored_before_handshake);
+    try std.testing.expectEqual(retried.frame_len, retried.early_bytes);
+    try std.testing.expect(retried.stream_saw_early_data);
+    try std.testing.expect(retried.restored_before_handshake);
 }
 
 test "session ticket key: a NEW_TOKEN from before a crash-restart skips the restarted server's Retry" {

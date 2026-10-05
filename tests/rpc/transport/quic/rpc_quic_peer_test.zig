@@ -1016,11 +1016,10 @@ test "QUIC PeerServer on_accept error discards the session's peer, leaks nothing
         server_thread.join();
     };
 
-    // First dial: refused inside on_accept. The server closes the session
-    // under 1-RTT keys this client never gets (see
-    // `Server.setOnSessionAccepted`), so the client learns of the refusal
-    // from its own handshake timeout. Every retransmitted Initial is
-    // refused too while the gate is set.
+    // First dial: refused inside on_accept. The server's close reaches the
+    // client during the handshake (see `Server.setOnSessionAccepted`), so
+    // the client records the refusal as a close from the peer. Every
+    // retransmitted Initial is refused too while the gate is set.
     var refused_counters = ClientCounters{};
     var refused_options = lifecycleConnectOptions(server.getAddress(), &refused_counters);
     refused_options.conn.handshake_timeout_ms = 500;
@@ -1048,7 +1047,8 @@ test "QUIC PeerServer on_accept error discards the session's peer, leaks nothing
     try std.testing.expectEqual(@as(usize, 1), served_client.closes);
 
     try std.testing.expectEqual(@as(usize, 1), refused_counters.closes.load(.acquire));
-    try std.testing.expectEqual(capnpc.rpc.events.DisconnectCause.handshake_timeout, refused_cause);
+    // Through quic-zig v0.25.0 this was the client's own `.handshake_timeout`.
+    try std.testing.expectEqual(capnpc.rpc.events.DisconnectCause.peer_close, refused_cause);
     try std.testing.expectEqual(@as(usize, 1), refused_waiter.fired);
     try std.testing.expectEqual(@as(usize, 1), refused_waiter.disconnected);
 
@@ -3228,15 +3228,13 @@ test "WarmRedialClient heal falls back to an ephemeral port when its previous po
     try std.testing.expectEqual(@as(u32, 2), heal.outcome.generations);
     try std.testing.expectEqual(@as(u32, 2), heal.outcome.rebinds);
     // From the new port the NEW_TOKEN is invalid, so the restarted server
-    // sends a Retry. BoringSSL still accepts the early data, but the quic-zig
-    // v0.25.0 client sends it again only at 1-RTT after a Retry (quic-zig
-    // finding F8), so the restore runs after the handshake and the client
-    // counts the dial as retried, not as 0-RTT. When quic-zig sends 0-RTT
-    // again after a Retry, `early_restores` becomes 1 here (checked against a
-    // patched v0.25.0): then count such a dial as 0-RTT in warm_redial.zig.
+    // sends a Retry. The quic-zig v0.27.0 client sends its 0-RTT data again
+    // after the Retry, so the restarted server still runs the restore before
+    // its handshake completes, one round trip later (through v0.25.0 it ran
+    // only after the handshake: quic-zig finding F8).
     try std.testing.expectEqual(@as(u64, 1), heal.restarted_retries);
     try std.testing.expectEqual(quic.EarlyDataStatus.accepted, heal.healed_status);
-    try std.testing.expectEqual(@as(u32, 0), heal.early_restores);
+    try std.testing.expectEqual(@as(u32, 1), heal.early_restores);
     try std.testing.expectEqual(@as(u32, 0), heal.outcome.zero_rtt_generations);
     try std.testing.expectEqual(@as(u32, 2), heal.outcome.retried_generations);
 }

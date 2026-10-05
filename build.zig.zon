@@ -6,31 +6,44 @@
         // Pinned to a TAG, not a raw commit: tags are immutable release
         // points, so the pin is auditable and reproducible.
         //
-        // v0.25.0 (commit 67f0fea): the SECURITY fix. Every earlier tag let
-        // one unauthenticated datagram (12 bytes: a short-header first
-        // byte, the connection ID, 3 more bytes) end a connection, because
-        // `Connection.handle` returned an error that `Server.feed` and our
-        // own client loop (`try conn.handle(...)`) treat as fatal. v0.25.0
-        // drops every packet that fails before it authenticates; `handle`
-        // still returns only fatal errors, so our `try` stays correct.
-        // Build options are those of v0.24.1, which added an `optimize`
-        // option; we keep passing `.release`, the map nest/qmsg/qmesh use
-        // too. qmsg still pins
-        // v0.21.2; the coordinated release moves it here, so a process
-        // linking both packages can resolve ONE quic module (both parents
-        // must pass the same dependency options). The jump from v0.19.0:
-        // 0.21.1 frees the BoringSSL AEAD context leaked per handshake key
-        // derivation (~780 KB per handshake; the QUIC heal soak's RSS went
-        // 5 MB -> 26.6 GB in 10 minutes on v0.19.0), and 0.24.0 (BREAKING)
-        // removes the 4096 lifetime stream cap: `initial_max_streams_*` is
-        // now an open-at-once window and `StreamLimitExceeded` is always
-        // temporary (see quic/options.zig `defaultTransportParams`).
-        // boringssl-zig moves b47af8ce -> ff30fe99 (0.6.7, same BoringSSL
-        // source aef0e2df); it still links Windows ws2_32 with pkg-config
-        // lookup disabled.
+        // v0.27.0 (commit 9d2ab6e): session tickets that live through a
+        // restart. `Server.Config.session_ticket_key` and
+        // `session_ticket_lifetime_s` replace the post-init install that
+        // capnp-zig used to do on quic's TLS context, a `.pem` reload keeps
+        // the key, `Server.rotateSessionTicketKey` changes it with no lost
+        // ticket, and a client sends its 0-RTT data again after a Retry, so
+        // a warm restore behind a Retry still runs before the handshake
+        // completes (one round trip later). `Connection.retryAccepted()`
+        // replaces our read of the `retry_accepted` field. A resumed client
+        // can no longer open more early streams than the ticket remembers
+        // (`StreamLimitExceeded`, transient, before the handshake).
+        //
+        // v0.26.0 (skipped as a pin, included here) repairs RFC 9000/9001
+        // rules: Retry and NEW_TOKEN tokens are 114 bytes (were 96; an older
+        // token reads as `.malformed`, which a server treats as no token:
+        // one Retry, nothing closed); a server's close during the handshake
+        // now reaches the client, so a refused session ends with
+        // `DisconnectCause.peer_close`, not `.handshake_timeout`; and every
+        // handshake datagram is at most 1200 bytes (a client Initial
+        // exactly 1200).
+        //
+        // v0.25.0 was the SECURITY fix (one unauthenticated 12-byte
+        // datagram could end a connection); v0.24.0 removed the 4096
+        // lifetime stream cap (`initial_max_streams_*` is an open-at-once
+        // window, see quic/options.zig `defaultTransportParams`); v0.21.1
+        // freed the BoringSSL AEAD context leaked per handshake.
+        //
+        // ONE quic module per process: every package that links quic into
+        // one build must pin the same tag and pass the same option map, or
+        // the build makes two quic modules (and two BoringSSLs). The map is
+        // `.target`, `.release`, `.@"sanitize-c" = "trap"` (build/modules.zig),
+        // the one nest/qmsg/qmesh/http3-zig use; the coordinated set is on
+        // v0.26/v0.27. boringssl-zig is unchanged since v0.25.0: ff30fe99
+        // (0.6.7, BoringSSL aef0e2df), which links Windows ws2_32 with
+        // pkg-config lookup disabled.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.25.0.tar.gz",
-            .hash = "quic-0.25.0-DnSYvcRANgAnmiJVo3UPd3XOuezmr8Ia1mXeqXgow4vw",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.27.0.tar.gz",
+            .hash = "quic-0.27.0-DnSYvdkEOQDHm_pJQOp6Vo47gQ1Cm7-0c2sgVV0M6Xht",
             .lazy = true,
         },
     },
