@@ -1017,19 +1017,25 @@ test "QUIC PeerServer on_accept error discards the session's peer, leaks nothing
     };
 
     // First dial: refused inside on_accept. The server's close reaches the
-    // client during the handshake (see `Server.setOnSessionAccepted`), so
-    // the client records the refusal as a close from the peer. Every
-    // retransmitted Initial is refused too while the gate is set.
+    // client during the handshake (see `Server.setOnSessionAccepted`), and
+    // the client ends on it although its Bootstrap still waits for 1-RTT
+    // keys. The handshake timeout and the call deadline (10 s, from
+    // `lifecycleConnectOptions`) are far away, so the bootstrap settles as
+    // "disconnected" only if the client ends on the server's close.
     var refused_counters = ClientCounters{};
     var refused_options = lifecycleConnectOptions(server.getAddress(), &refused_counters);
-    refused_options.conn.handshake_timeout_ms = 500;
+    refused_options.conn.handshake_timeout_ms = 20_000;
+    refused_options.default_call_timeout_ms = 20_000;
+    var refused_elapsed_ms: i64 = 0;
     var refused_waiter = ReturnWaiter{};
     var refused_cause: capnpc.rpc.events.DisconnectCause = .unknown;
     {
         const refused = try quic.connect(allocator, std.testing.io, refused_options);
         defer refused.deinit();
         _ = try refused.peer.sendBootstrap(&refused_waiter, ReturnWaiter.onReturn);
+        const started_ns = std.Io.Clock.awake.now(std.testing.io).nanoseconds;
         refused.run();
+        refused_elapsed_ms = @intCast(@divFloor(std.Io.Clock.awake.now(std.testing.io).nanoseconds - started_ns, std.time.ns_per_ms));
         refused_cause = refused.closeCause();
     }
 
@@ -1051,6 +1057,11 @@ test "QUIC PeerServer on_accept error discards the session's peer, leaks nothing
     try std.testing.expectEqual(capnpc.rpc.events.DisconnectCause.peer_close, refused_cause);
     try std.testing.expectEqual(@as(usize, 1), refused_waiter.fired);
     try std.testing.expectEqual(@as(usize, 1), refused_waiter.disconnected);
+    // The client ended on the close, not on a timer: half the handshake
+    // timeout leaves room for the close's draining period (three probe
+    // timeouts) on a slow runner.
+    errdefer std.debug.print("refused dial ran {d} ms\n", .{refused_elapsed_ms});
+    try std.testing.expect(refused_elapsed_ms < 10_000);
 
     try std.testing.expect(gate.refused >= 1);
     try std.testing.expectEqual(@as(usize, 1), gate.accepted);

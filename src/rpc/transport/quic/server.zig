@@ -222,9 +222,11 @@ pub const Server = struct {
     ///   callbacks before failing, their `on_close` still fires exactly once.
     ///   The handshake has not completed at this point; quic-zig sends the
     ///   close in packets the client can already read (RFC 9000 10.2.3), so
-    ///   the client records the refusal as `DisconnectCause.peer_close`. A
-    ///   lost close is not sent again: then the client waits for its own
-    ///   handshake timeout, as for a dial the server's flood gates drop.
+    ///   a capnp-zig client ends within a round trip with
+    ///   `DisconnectCause.peer_close`, frames it queued before the handshake
+    ///   included. A lost close is not sent again: then the client waits for
+    ///   its own handshake timeout, as for a dial the server's flood gates
+    ///   drop.
     /// - Sessions adopted before the hook is installed are not replayed, so
     ///   install it before the first step.
     ///

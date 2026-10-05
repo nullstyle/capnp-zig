@@ -1189,13 +1189,15 @@ test "quic Server on_session_accepted rejecting a session closes it and keeps se
     const frame = try buildBootstrapFrame(allocator, 9);
     defer allocator.free(frame);
 
-    // Single-threaded: both endpoints step on this thread.
+    // Single-threaded: both endpoints step on this thread. The handshake
+    // timeout is longer than the loop below waits, so only the server's
+    // close can end this dial in time.
     var refused = try quic.Connection.initClient(allocator, std.testing.io, .{
         .remote_addr = server.getAddress(),
         .server_name = "localhost",
         .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
-        .handshake_timeout_ms = 300,
+        .handshake_timeout_ms = 2 * loopback.loopback_timeout_ms,
     });
     defer refused.deinit();
     var refused_state = QuicEndpointState{};
@@ -1217,10 +1219,11 @@ test "quic Server on_session_accepted rejecting a session closes it and keeps se
     try std.testing.expectEqual(@as(usize, 0), refused_state.messages.load(.acquire));
     try std.testing.expectEqual(@as(usize, 1), refused_state.closes.load(.acquire));
     // The server's close reaches the client during the handshake (quic-zig
-    // v0.26.0 sends it in packets the client can read, RFC 9000 10.2.3), so
-    // the client records the refusal as a close from the peer. Through
-    // quic-zig v0.25.0 the client never read that close, and this was its
-    // own `.handshake_timeout`.
+    // v0.26.0 sends it in packets the client can read, RFC 9000 10.2.3), and
+    // the client ends on it although its frame still waits for 1-RTT keys:
+    // the refusal is a close from the peer. Through quic-zig v0.25.0 the
+    // client never read that close, and this was its own
+    // `.handshake_timeout`.
     try std.testing.expectEqual(events.DisconnectCause.peer_close, refused.closeCause());
 
     // The refusal was per session: the next dial is accepted and echoed.

@@ -67,9 +67,7 @@ pub fn run(owner: Owner) void {
             break;
         };
         if (owner.driver(owner.ptr).quicConnection()) |conn| {
-            if (conn.isClosed() and owner.selected_outbound_empty(owner.ptr)) {
-                owner.request_close(owner.ptr);
-            }
+            if (closedForGood(owner, conn)) owner.request_close(owner.ptr);
         }
     }
 
@@ -167,7 +165,19 @@ fn nextTimerDeadlineUs(driver: endpoint_mod.EndpointDriver, now_us: u64) ?u64 {
 
 fn isTransportDrainedClosed(owner: Owner, driver: endpoint_mod.EndpointDriver) bool {
     const conn = driver.quicConnection() orelse return false;
-    return conn.isClosed() and owner.selected_outbound_empty(owner.ptr);
+    return closedForGood(owner, conn);
+}
+
+/// A closed QUIC connection ends the transport once the selected engine's
+/// queued frames are out. When the handshake never completed, it ends it at
+/// once: those frames wait for 1-RTT keys that a closed connection never
+/// gets. That case is the peer's close during the handshake (a server whose
+/// accept hook refuses the session), which quic-zig delivers since v0.26.0.
+/// A client that queued its Bootstrap before `run` would otherwise wait for
+/// its own handshake timeout after the refusal had arrived.
+fn closedForGood(owner: Owner, conn: anytype) bool {
+    if (!conn.isClosed()) return false;
+    return owner.selected_outbound_empty(owner.ptr) or !conn.handshakeDone();
 }
 
 fn advanceActive(driver: endpoint_mod.EndpointDriver) !void {

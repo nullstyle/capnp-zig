@@ -261,8 +261,11 @@ drives `Server` directly, and `serve` is built on it. The contract:
   cause adoptions, up to `max_concurrent_connections` at once and subject to
   the listener rate gates, so keep the hook's work bounded.
 - Returning an error rejects the session; the server closes it in the same
-  step. The client cannot read that close yet (see
-  [Current Limits](#current-limits)).
+  step. The close reaches the client during the handshake, and a capnp-zig
+  client ends with `DisconnectCause.peer_close` within a round trip, also
+  when it queued frames (its Bootstrap) before the handshake. Through
+  quic-zig v0.25.0 the client could not read that close and waited for its
+  own handshake timeout.
 - The hook must not step, run or deinit the server.
 
 `Server.runWithAfterStep(ctx, after_step)` is `run()` with a callback after
@@ -1053,13 +1056,11 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
 - One server `rpc.transport.quic.Connection` owns one listener and represents one active
   QUIC session. Use `rpc.transport.quic.serve` (or `rpc.transport.quic.Server`)
   for multi-session fanout.
-- A session rejected from the accept hook is closed before its handshake
-  completes. quic-zig sends that close only under 1-RTT keys, which the client
-  does not have yet, so the client sees the refusal as its own handshake
-  timeout (`ClientOptions.handshake_timeout_ms`, 30 s by default), the same as
-  a dial the server's flood gates drop. RFC 9000 section 10.2.3 asks a server
-  to also send the close in Initial and Handshake packets; the rejection test
-  certifies today's behavior so that a quic-zig fix shows up.
+- A lost CONNECTION_CLOSE is not sent again (quic-zig v0.26.0 and later). A
+  client whose refusal close is lost during the handshake waits for its own
+  handshake timeout (`ClientOptions.handshake_timeout_ms`, 30 s by default),
+  the same as a dial the server's flood gates drop; after the handshake the
+  peer waits for its idle timeout. Keep both timeouts.
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.
 - Mode mismatch is treated as malformed transport input and closes cleanly.
