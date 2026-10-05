@@ -1,5 +1,5 @@
 //! Self-interop e2e: drive the Zig e2e client against the Zig e2e server
-//! over real loopback TCP for every schema, with TAP accounting.
+//! for every schema, with TAP accounting.
 //!
 //! This is the no-docker complement to tools/e2e_runner.zig: it needs no
 //! reference-implementation containers, builds on `std.Io` only, and runs
@@ -8,14 +8,30 @@
 //! platform's real socket stack (listener, accept, framing, writer
 //! thread, peer dispatch).
 //!
-//! Usage: e2e-self <server-binary> <client-binary>
+//! Two transports:
+//! - TCP over loopback (the default; `zig build e2e-self`, every OS).
+//! - `--transport=unix`: an AF_UNIX socket file in a private (0700)
+//!   directory under /tmp, through `--host unix:/path` on both binaries
+//!   (`rpc.transport.unix.listen` and `.connect`; `zig build e2e-self-unix`).
+//!   Linux and macOS only, like `rpc.transport.unix`. On any other target
+//!   it fails with `error.UnixSocketsUnsupported` rather than passing
+//!   having run nothing.
+//!
+//! Usage: e2e-self <server-binary> <client-binary> [--transport=tcp|unix]
 //! (The build system passes both artifact paths; see `zig build e2e-self`.)
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const schemas = [_][]const u8{ "game_world", "chat", "inventory", "matchmaking" };
 const server_ready_timeout_ms: i64 = 30_000;
 const client_timeout_ms: i64 = 60_000;
+
+const Transport = enum { tcp, unix };
+
+/// Where `rpc.transport.unix` works (`unix.supported`): this tool imports
+/// only std, so it restates that predicate.
+const unix_supported = builtin.os.tag == .linux or builtin.os.tag.isDarwin();
 
 fn nowMs(io: std.Io) i64 {
     return @intCast(@divTrunc(std.Io.Clock.awake.now(io).nanoseconds, std.time.ns_per_ms));
@@ -58,6 +74,24 @@ fn waitForServer(io: std.Io, port: u16) bool {
     return false;
 }
 
+/// Wait until the server accepts on its socket file. The file appears at
+/// `bind`, before the server listens, and a connect in between is refused,
+/// so a connect probe (not the file's existence) proves readiness.
+fn waitForUnixServer(io: std.Io, path: []const u8) bool {
+    const deadline = nowMs(io) + server_ready_timeout_ms;
+    const addr = std.Io.net.UnixAddress.init(path) catch return false;
+    while (nowMs(io) < deadline) {
+        if (addr.connect(io)) |stream| {
+            var socket = stream.socket;
+            socket.close(io);
+            return true;
+        } else |_| {
+            sleepMs(io, 100);
+        }
+    }
+    return false;
+}
+
 const TapCount = struct {
     pass: usize = 0,
     fail: usize = 0,
@@ -73,27 +107,76 @@ fn countTap(output: []const u8) TapCount {
     return counts;
 }
 
+/// The `--host` (and, for TCP, `--port`) arguments both binaries get.
+const Endpoint = struct {
+    /// `127.0.0.1`, or `unix:<path>`.
+    host: []const u8,
+    /// TCP only: the loopback port, also passed as `--port`.
+    port: ?u16,
+    port_text: []const u8,
+
+    fn argv(self: *const Endpoint, buf: *[7][]const u8, bin: []const u8, schema: []const u8) []const []const u8 {
+        buf[0] = bin;
+        buf[1] = "--host";
+        buf[2] = self.host;
+        var n: usize = 3;
+        if (self.port != null) {
+            buf[n] = "--port";
+            buf[n + 1] = self.port_text;
+            n += 2;
+        }
+        buf[n] = "--schema";
+        buf[n + 1] = schema;
+        return buf[0 .. n + 2];
+    }
+
+    fn waitReady(self: *const Endpoint, io: std.Io) bool {
+        if (self.port) |port| return waitForServer(io, port);
+        return waitForUnixServer(io, self.host[unix_host_prefix.len..]);
+    }
+};
+
+const unix_host_prefix = "unix:";
+
 fn runSchema(
     allocator: std.mem.Allocator,
     io: std.Io,
     server_bin: []const u8,
     client_bin: []const u8,
     schema: []const u8,
+    transport: Transport,
+    unix_dir: []const u8,
 ) !TapCount {
-    const port = try findFreePort(io);
     var port_buf: [8]u8 = undefined;
-    const port_text = try std.fmt.bufPrint(&port_buf, "{d}", .{port});
+    var host_buf: [128]u8 = undefined;
+    const endpoint: Endpoint = switch (transport) {
+        .tcp => blk: {
+            const port = try findFreePort(io);
+            break :blk .{
+                .host = "127.0.0.1",
+                .port = port,
+                .port_text = try std.fmt.bufPrint(&port_buf, "{d}", .{port}),
+            };
+        },
+        // One socket file per schema in the private directory.
+        .unix => .{
+            .host = try std.fmt.bufPrint(&host_buf, unix_host_prefix ++ "{s}/{s}.sock", .{ unix_dir, schema }),
+            .port = null,
+            .port_text = "",
+        },
+    };
 
+    var server_argv_buf: [7][]const u8 = undefined;
     var server = try std.process.spawn(io, .{
-        .argv = &.{ server_bin, "--host", "127.0.0.1", "--port", port_text, "--schema", schema },
+        .argv = endpoint.argv(&server_argv_buf, server_bin, schema),
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
     });
     defer server.kill(io);
 
-    if (!waitForServer(io, port)) {
-        std.debug.print("not ok - {s}: server did not become ready\n", .{schema});
+    if (!endpoint.waitReady(io)) {
+        std.debug.print("not ok - {s}: server did not become ready on {s}\n", .{ schema, endpoint.host });
         return .{ .fail = 1 };
     }
 
@@ -108,8 +191,9 @@ fn runSchema(
         .raw = std.Io.Duration.fromMilliseconds(client_timeout_ms),
         .clock = .awake,
     }) };
+    var client_argv_buf: [7][]const u8 = undefined;
     const result = std.process.run(allocator, io, .{
-        .argv = &.{ client_bin, "--host", "127.0.0.1", "--port", port_text, "--schema", schema },
+        .argv = endpoint.argv(&client_argv_buf, client_bin, schema),
         .stdout_limit = .limited(1024 * 1024),
         .stderr_limit = .limited(1024 * 1024),
         .timeout = client_deadline,
@@ -140,6 +224,44 @@ fn runSchema(
     return counts;
 }
 
+fn runAll(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    server_bin: []const u8,
+    client_bin: []const u8,
+    transport: Transport,
+    unix_dir: []const u8,
+) !void {
+    var total = TapCount{};
+    for (schemas) |schema| {
+        const counts = try runSchema(allocator, io, server_bin, client_bin, schema, transport, unix_dir);
+        total.pass += counts.pass;
+        total.fail += counts.fail;
+        std.debug.print("self-interop ({t}) {s}: {d} pass, {d} fail\n", .{ transport, schema, counts.pass, counts.fail });
+    }
+
+    std.debug.print("self-interop ({t}) total: {d} pass, {d} fail across {d} schemas\n", .{ transport, total.pass, total.fail, schemas.len });
+    if (total.fail != 0 or total.pass == 0) return error.SelfInteropFailed;
+}
+
+/// Run every schema over Unix sockets in a fresh private directory, removed
+/// afterwards (the killed servers leave their socket and lock files).
+fn runAllUnix(allocator: std.mem.Allocator, io: std.Io, server_bin: []const u8, client_bin: []const u8) !void {
+    if (comptime !unix_supported) {
+        std.debug.print("e2e-self --transport=unix: Unix-domain sockets are not supported on this target\n", .{});
+        return error.UnixSocketsUnsupported;
+    }
+    // Short and private: `sun_path` is 104 bytes on macOS, and the 0700
+    // directory is the layout `unix.listen` documents.
+    var dir_buf: [64]u8 = undefined;
+    const dir = try std.fmt.bufPrint(&dir_buf, "/tmp/capnp-e2e-self-{d}", .{std.posix.system.getpid()});
+    const cwd = std.Io.Dir.cwd();
+    cwd.deleteTree(io, dir) catch {};
+    try cwd.createDir(io, dir, .fromMode(0o700));
+    defer cwd.deleteTree(io, dir) catch {};
+    return runAll(allocator, io, server_bin, client_bin, .unix, dir);
+}
+
 pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
@@ -151,15 +273,18 @@ pub fn main(init: std.process.Init) !void {
     _ = iter.skip();
     const server_bin = iter.next() orelse return error.MissingServerBinaryArg;
     const client_bin = iter.next() orelse return error.MissingClientBinaryArg;
-
-    var total = TapCount{};
-    for (schemas) |schema| {
-        const counts = try runSchema(allocator, io, server_bin, client_bin, schema);
-        total.pass += counts.pass;
-        total.fail += counts.fail;
-        std.debug.print("self-interop {s}: {d} pass, {d} fail\n", .{ schema, counts.pass, counts.fail });
+    var transport: Transport = .tcp;
+    while (iter.next()) |arg| {
+        if (std.mem.startsWith(u8, arg, "--transport=")) {
+            transport = std.meta.stringToEnum(Transport, arg["--transport=".len..]) orelse return error.InvalidTransport;
+            continue;
+        }
+        std.debug.print("unknown option: {s}\n", .{arg});
+        return error.InvalidOption;
     }
 
-    std.debug.print("self-interop total: {d} pass, {d} fail across {d} schemas\n", .{ total.pass, total.fail, schemas.len });
-    if (total.fail != 0 or total.pass == 0) return error.SelfInteropFailed;
+    switch (transport) {
+        .tcp => try runAll(allocator, io, server_bin, client_bin, .tcp, ""),
+        .unix => try runAllUnix(allocator, io, server_bin, client_bin),
+    }
 }

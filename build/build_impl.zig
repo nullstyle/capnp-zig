@@ -690,6 +690,17 @@ pub fn buildImpl(b: *std.Build) !void {
     const e2e_self_step = b.step("e2e-self", "Run self-interop e2e (zig client vs zig server over loopback)");
     e2e_self_step.dependOn(&run_e2e_self.step);
 
+    // The same lane over an AF_UNIX socket file (`--host unix:/path` on both
+    // binaries: rpc.transport.unix.listen/connect). Linux and macOS only, like
+    // rpc.transport.unix; elsewhere the tool fails rather than passing having
+    // run nothing.
+    const run_e2e_self_unix = b.addRunArtifact(e2e_self);
+    run_e2e_self_unix.addArtifactArg(e2e_zig_server);
+    run_e2e_self_unix.addArtifactArg(e2e_zig_client);
+    run_e2e_self_unix.addArg("--transport=unix");
+    const e2e_self_unix_step = b.step("e2e-self-unix", "Run self-interop e2e (zig client vs zig server over a Unix-domain socket; Linux and macOS)");
+    e2e_self_unix_step.dependOn(&run_e2e_self_unix.step);
+
     // Unit tests for main
     const main_tests = b.addTest(.{
         .root_module = b.createModule(.{

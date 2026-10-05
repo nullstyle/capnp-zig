@@ -1955,8 +1955,88 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, _: *rpc.transport.tcp.Con
 
 fn usage() void {
     std.debug.print(
-        \\Usage: e2e-zig-server [--host 0.0.0.0] [--port 4700] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo]\n
+        \\Usage: e2e-zig-server [--host 0.0.0.0|unix:/path] [--port 4700] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo]
+        \\  --host unix:/path serves on an AF_UNIX socket at /path (Linux and macOS; --port is ignored)
+        \\
     , .{});
+}
+
+/// `--host unix:/path` names an AF_UNIX socket path instead of an IP host.
+const unix_host_prefix = "unix:";
+
+fn unixPathFromHost(host: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, host, unix_host_prefix)) return null;
+    return host[unix_host_prefix.len..];
+}
+
+/// Serve the schema on an AF_UNIX socket at `path` (`--host unix:/path`).
+///
+/// `WorkerPool` takes an IP address only, so this is the pool's worker loop
+/// with `.concurrency = 1`, on a listener from `rpc.transport.unix.listen`:
+/// one connection at a time, each set up exactly as a pool worker sets it up
+/// (the pool's default `Config` timeouts, limits and accept entropy), then
+/// handed to the same `onAccept` the TCP server uses. The process runs until
+/// it is killed, like the TCP server.
+fn serveUnix(allocator: Allocator, io: std.Io, path: []const u8, app: *App) !void {
+    const WorkerPool = rpc.integration.worker_pool.WorkerPool;
+    const Connection = rpc.transport.tcp.Connection;
+    // The defaults the TCP server's `WorkerPool.init(..., .{ .concurrency = 1 })` runs with.
+    const pool_config: WorkerPool.Config = .{ .concurrency = 1 };
+
+    var conn_options = pool_config.connection_options;
+    if (pool_config.join_timeout_ms != null and conn_options.tick_interval_ms == null) {
+        conn_options.tick_interval_ms = 100;
+    }
+    if (conn_options.idle_timeout_ms == null) conn_options.idle_timeout_ms = pool_config.idle_timeout_ms;
+
+    var listener = try rpc.transport.unix.listen(allocator, io, path, .{
+        .conn = conn_options,
+        .backlog = pool_config.listen_backlog,
+    });
+    defer listener.close();
+
+    // One accept-embargo CSPRNG for the one serving thread, as each pool
+    // worker keeps one. Fail closed: no connection is served without it.
+    var rng = try rpc.peer.seedEntropyCsprng(io);
+
+    std.debug.print("READY\n", .{});
+
+    while (true) {
+        const conn: *Connection = listener.accept() catch |err| {
+            std.log.err("unix accept failed: {s}", .{@errorName(err)});
+            const backoff: std.Io.Clock.Duration = .{
+                .raw = .{ .nanoseconds = 20 * std.time.ns_per_ms },
+                .clock = .awake,
+            };
+            backoff.sleep(io) catch {};
+            continue;
+        };
+        conn.first_frame_timeout_ms = pool_config.first_frame_timeout_ms;
+
+        const peer = allocator.create(rpc.peer.Peer) catch {
+            conn.deinit();
+            allocator.destroy(conn);
+            continue;
+        };
+        peer.* = rpc.peer.Peer.init(allocator, conn);
+        peer.setLimits(pool_config.peer_limits);
+        peer.setClockIo(io);
+        peer.setTimeouts(.{ .join_timeout_ms = pool_config.join_timeout_ms });
+        peer.setEntropySource(rpc.peer.EntropySource.fromCsprng(&rng));
+
+        const decision = onAccept(app, peer, conn, 0) catch |err| blk: {
+            std.log.err("on_accept failed: {s}", .{@errorName(err)});
+            break :blk .reject;
+        };
+        if (decision == .accept) conn.run();
+
+        // WorkerPool.destroyAccepted: detach, then peer, then connection.
+        _ = peer.takeAttachedConnection(*Connection);
+        peer.deinit();
+        allocator.destroy(peer);
+        conn.deinit();
+        allocator.destroy(conn);
+    }
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -1992,6 +2072,8 @@ pub fn main(init: std.process.Init) !void {
     var app = try App.init(allocator, args.schema);
     defer app.deinit();
     app.bind();
+
+    if (unixPathFromHost(args.host)) |path| return serveUnix(allocator, io, path, &app);
 
     const address = try std.Io.net.IpAddress.parse(args.host, args.port);
 

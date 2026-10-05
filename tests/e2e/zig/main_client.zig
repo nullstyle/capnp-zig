@@ -1128,8 +1128,18 @@ fn onDisconnectNowReturn(
 
 fn usage() void {
     std.debug.print(
-        \\Usage: e2e-zig-client [--host 127.0.0.1] [--port 4000] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo]\n
+        \\Usage: e2e-zig-client [--host 127.0.0.1|unix:/path] [--port 4000] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo]
+        \\  --host unix:/path dials the AF_UNIX socket at /path (Linux and macOS; --port is ignored)
+        \\
     , .{});
+}
+
+/// `--host unix:/path` names an AF_UNIX socket path instead of an IP host.
+const unix_host_prefix = "unix:";
+
+fn unixPathFromHost(host: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, host, unix_host_prefix)) return null;
+    return host[unix_host_prefix.len..];
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -1167,13 +1177,17 @@ pub fn main(init: std.process.Init) !void {
         .args = args,
     };
 
-    const address = try std.Io.net.IpAddress.parse(args.host, args.port);
-
-    const session = try rpc.transport.tcp.connect(allocator, io, address, .{
+    const session_options: rpc.transport.tcp.ConnectOptions = .{
         .ctx = &app,
         .on_error = onSessionError,
         .on_close = onSessionClose,
-    });
+    };
+    // `--host unix:/path` dials an AF_UNIX socket; the session is the same
+    // `tcp.ClientSession` either way, so every scenario below is unchanged.
+    const session = if (unixPathFromHost(args.host)) |path|
+        try rpc.transport.unix.connect(allocator, io, path, .{ .session = session_options })
+    else
+        try rpc.transport.tcp.connect(allocator, io, try std.Io.net.IpAddress.parse(args.host, args.port), session_options);
     defer session.deinit();
     const peer = &session.peer;
 
