@@ -198,6 +198,20 @@ jobs:
       - name: QUIC self-healing soak (abrupt deaths + healing workers)
         run: zig build -Dquic=true -Doptimize=ReleaseSafe soak -- --transport quic --abrupt-death-every-ms 2000 --seconds 20 --workers 16 --heal-workers 8 --rss-gate enforce
 
+      # The same soak against the hardened preset (Retry on) with .restore_only
+      # 0-RTT, where every restart loads the same session-ticket key and
+      # new_token_key, as a server that persists them does. --ticket-key adds
+      # the 0-RTT gate (sprint 2026-10-04 item 17): every death must be healed
+      # by at least one client whose zero_rtt_generations counted that heal,
+      # and the restarted server must have run that restore before its
+      # handshake completed. Deaths in the last second before the healers
+      # stop are not judged. Proven locally (macOS, ReleaseSafe): 21 of 21
+      # deaths healed 8/8 over 0-RTT; the --inject-ticket-key-rotation hook,
+      # heals from a new port (no 16f) and a token clock that restarts at zero
+      # (no 16e) each turn the gate red. Same binary as the step above.
+      - name: QUIC self-healing soak with a persisted ticket key (0-RTT heals)
+        run: zig build -Dquic=true -Doptimize=ReleaseSafe soak -- --transport quic --abrupt-death-every-ms 2000 --seconds 20 --workers 16 --heal-workers 8 --ticket-key --rss-gate enforce
+
       - name: ReleaseSafe hardening tests
         run: zig build test-release-safe --summary all
 

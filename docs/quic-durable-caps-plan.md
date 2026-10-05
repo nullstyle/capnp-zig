@@ -11,7 +11,9 @@ BoringSSL accepts its 0-RTT data; the restore rides 0-RTT only when the heal
 gets no Retry. Under the hardened preset a heal now skips the Retry when it
 can reuse its previous local port and the server persists `new_token_key`
 (sprint items 16e and 16f); a dial that does get a Retry still restores
-late (open rung 12).
+late (open rung 12). The Nightly soak now gates that heal at churn scale:
+against the preset with both keys persisted, every abrupt death must get at
+least one heal that rode 0-RTT (sprint item 17).
 "Ledger" below lists what landed (each commit checked with
 `git log`), and "Open rungs" lists what is left, with file:line anchors. The
 sections after them are the original 2026-08-20 plan and its running notes,
@@ -45,6 +47,7 @@ for this repo.
 | Hardened preset carries the death certificate; consecutive redial budget | this sprint (item 8) | `ServerProductionHardening.stateless_reset_key` is required; `.early_data = .restore_only` is the explicit 0-RTT opt-in (sets `.without_replay_protection` + `.restore_only` together); `WarmRedialClient.Policy.min_healthy_ms` (10 s) resets `redials` only when an authenticated packet from the server arrives that long after the rebind (`Connection.lastAuthenticatedReceiveNs`), so detection latency (a rare caller's late reset, an idle timeout) never counts as health. Crash-restart e2e against the preset; crash-loop e2es with late detection and with idle generations still give up. |
 | **Persisted session-ticket key** (was open rung 1) | sprint 2026-10-04 (item 16) | `ServerOptions.session_ticket_key` / `ServerProductionHardening.session_ticket_key` (48 bytes, opt-in) is installed by `Listener.init` on quic-zig's TLS context through `boringssl.raw` and read back; `session_ticket_lifetime_s`; `quic.loadTicketKeyFile` (exactly 48 bytes, POSIX refuses group/other access); refusals (all-zero key, key + anti-replay, key + Retry without `new_token_key`; `serverConfigFromOptions` refuses any key); `early_data_application_context` binds the transport mode and `early_dispatch`; `WarmRedialClient.Outcome.zero_rtt_generations` (accepted 0-RTT and no Retry) and `retried_generations`. E2e: a crash-restart with the same key gives `.accepted`; restarts with no key, another key name, another HMAC key, another AES key or another `early_dispatch` give `.rejected`; a restart with a new `new_token_key` still gives `.accepted`, but with a Retry and a restore after the handshake (the plan's fifth negative, `.rejected`, does not hold on quic v0.25.0). A heal's second generation rides 0-RTT against a no-Retry server with the key; against the hardened preset it is `.accepted` with the key but retried, and `.rejected` without the key. The upstream asks are in `docs/upstream/handoff-quic-zig-ticket-keys.md`. What a key still does not buy is open rung 12. |
 | **A heal skips the preset's Retry** (capnp-zig's half of rung 12) | sprint 2026-10-04 (items 16e, 16f) | 16e: `Listener.nowUs` starts at the wall clock and advances on the monotonic clock, so a restarted server accepts its predecessor's NEW_TOKENs. 16f: `WarmRedialClient` redials from the previous generation's local port (a NEW_TOKEN is bound to the address and port), and falls back to an ephemeral port when that port is taken, counted in `Outcome.port_fallback_generations`. E2e against the hardened preset with both keys persisted: the heal gets no Retry, restores before the restarted server's handshake completes and counts in `zero_rtt_generations`; with its old port taken it falls back, gets one Retry and restores late (quic-zig F8). The transport suite's F8 repro counts the 0-RTT bytes at the server after a Retry (today 0). |
+| **Ticket-key soak on Nightly** (was open rung 9) | sprint 2026-10-04 (item 17) | `tools/soak_rpc.zig --ticket-key`: the abrupt-death soak's server runs `withProductionServerHardening` (Retry on, the preset's rate gates) with `.restore_only` 0-RTT and loads the same session-ticket key, `new_token_key`, Retry key and reset key on every restart. Gate (`assessZeroRttHeals`): every death, except those in the last second before the healers stop, needs a heal that a client counted in `zero_rtt_generations`, and a restore that the restarted server ran before that session's handshake completed. Nightly `extended-gates` runs it at the heal soak's shape (20 s, 16 workers, 8 healing, deaths every 2 s, `--rss-gate enforce`). Local evidence (ReleaseSafe): macOS 4/4 runs and the arm64 Linux container green, every death healed 8/8 over 0-RTT; `--inject-ticket-key-rotation`, heals from a new port (16f off) and a token clock that restarts at zero (16e off) turn it red. |
 
 ## Open rungs (as of 2026-10-04)
 
@@ -82,11 +85,10 @@ for this repo.
    `src/rpc/transport/quic/options.zig:486`), because quic-zig's
    `AntiReplayTracker` is single-process. A fleet-wide tracker would allow
    `.with_anti_replay` and early dispatch of more than the restore prefix.
-9. **The soak does not run the hardened preset.** The abrupt-death soak
-   builds raw `ServerOptions` with a fixed reset key
-   (`tools/soak_rpc.zig:1241-1263`), so Retry, NEW_TOKEN and the rate gates
-   are not exercised under churn. The preset's crash-restart behavior is
-   proven only by the e2e in `tests/rpc/transport/quic/rpc_quic_peer_test.zig`.
+9. *Closed 2026-10-04: moved to the ledger ("Ticket-key soak on Nightly").
+   With `--ticket-key` the abrupt-death soak runs the hardened preset, so
+   Retry, NEW_TOKEN and the rate gates run under churn. Without the flag
+   the soak still builds raw `ServerOptions` with a fixed reset key.*
 10. **Idle generations never prove health.** A generation is healthy only when
     an authenticated packet from the server arrives `min_healthy_ms` after the
     rebind (`src/rpc/transport/quic/warm_redial.zig:296`,
@@ -123,8 +125,9 @@ for this repo.
     9000 17.2.5.3) is asked of quic-zig in
     `docs/upstream/handoff-quic-zig-ticket-keys.md`, with the F8 repro test
     and its exact expected flip. Item 17's acceptance (a heal per death with
-    `zero_rtt_generations >= 1`) can now pass against the preset, provided
-    the soak persists both keys and its heals reuse their ports.
+    `zero_rtt_generations >= 1`) now gates Nightly (`--ticket-key`; ledger
+    row "Ticket-key soak on Nightly"). Its heals keep their ports, so it does
+    not exercise the Retry paths above.
 
 ## The design in one paragraph
 

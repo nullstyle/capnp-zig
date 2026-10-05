@@ -280,7 +280,10 @@ resident set runs through the same steady-state trend check as the Zig heap.
 The RSS check — the one that sees C-side memory such as BoringSSL's under
 QUIC — gates the nightly QUIC self-healing soak (`--rss-gate enforce`) since
 the quic v0.24.0 pin, which no longer leaks a BoringSSL AEAD context per
-handshake; the TCP soak lanes stay report-only for now.
+handshake; the TCP soak lanes stay report-only for now. A second Nightly run
+of that soak (`--ticket-key`) uses the hardened preset with a persisted
+session-ticket key and `new_token_key`, and fails unless every abrupt death
+gets at least one heal that rode 0-RTT.
 In CI the *pipelined throughput* case is enforced; the *sequential latency*
 cases are advisory (a shared runner cannot measure a serialized round-trip
 reliably — see [`stability.md`](stability.md)), and gate on a quiet machine via

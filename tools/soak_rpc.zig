@@ -65,6 +65,16 @@
 //!     max(8, sessions / 500) (0.2%). Before this bound existed, a Windows
 //!     64-worker lane passed with 22130 transport errors against 1110 chaos
 //!     closes: its last ~60% was dials failing on port exhaustion.
+//!   * 0-RTT HEALS PER DEATH (--ticket-key only). The server runs the
+//!     hardened preset (`withProductionServerHardening`: Retry on) with
+//!     `.restore_only` 0-RTT and loads the same session-ticket key,
+//!     `new_token_key`, Retry key and reset key on every restart, as a
+//!     server that persists them does. Each death must then be healed by at
+//!     least one healing client whose `zero_rtt_generations` counted that
+//!     heal (`assessZeroRttHeals`), and the restarted server must have run
+//!     at least one restore before that session's handshake completed. A
+//!     death in the last `zero_rtt_judge_grace_ns` before the healers stop
+//!     is not judged, and a run that judged no death fails.
 //!
 //! Memory has two instruments sharing one steady-state trend check
 //! (`assessMemory`): the live Zig heap (counting allocator; enforcing) and
@@ -87,6 +97,10 @@
 //!                          [--heal-workers K]  (quic only: K workers run
 //!                           persistent WarmRedialClients that auto-heal
 //!                           across abrupt deaths instead of churn sessions)
+//!                          [--ticket-key]  (quic, with --abrupt-death-every-ms
+//!                           and --heal-workers: the hardened server persists
+//!                           its session-ticket key and new_token_key across
+//!                           deaths; gates a 0-RTT heal per death)
 //!                          [--nagle]  (tcp: leave Nagle on in the client, the
 //!                           pre-TCP_NODELAY behaviour, for A/B latency runs)
 //!                          [--transport-error-tolerance N]
@@ -102,6 +116,9 @@
 //!                          [--inject-rss-growth-kib-per-s N]  (touch N KiB/s
 //!                           of page memory outside the Zig heap: RSS grows,
 //!                           the heap counter does not)
+//!                          [--inject-ticket-key-rotation]  (with --ticket-key:
+//!                           every restart loads a new session-ticket key, so
+//!                           no heal can resume and the 0-RTT gate must fail)
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -152,6 +169,13 @@ const Config = struct {
     // churn session loop. Pair with --abrupt-death-every-ms for the
     // churn-scale self-healing proof.
     heal_workers: u32 = 0,
+    // Ticket-key mode (QUIC, with abrupt deaths and healing workers): the
+    // server runs the hardened preset with `.restore_only` 0-RTT and loads
+    // the same session-ticket key and `new_token_key` on every restart, so
+    // a heal from the port that earned its NEW_TOKEN skips the Retry and
+    // its restore rides 0-RTT. Gates a 0-RTT heal per death (see the file
+    // header).
+    ticket_key: bool = false,
     // Memory-curve sampling interval and the steady-state growth ceiling.
     mem_sample_ms: u64 = 100,
     mem_growth_pct: f64 = 25.0,
@@ -176,6 +200,7 @@ const Config = struct {
     // Ablation hooks; see the file header.
     inject_transport_error_every: ?u64 = null,
     inject_rss_growth_kib_per_s: ?u64 = null,
+    inject_ticket_key_rotation: bool = false,
 };
 
 const RssGate = enum { report, enforce };
@@ -500,6 +525,249 @@ test "assessTransport: abrupt deaths widen the bound by their allowance only" {
     // Nightly QUIC heal soak: 299 errors, 243 chaos, 10 deaths x 8 churn.
     try std.testing.expect(assessTransport(299, 243, 10 * 8, defaultTransportTolerance(1285)).ok);
     try std.testing.expect(!assessTransport(299, 243, 0, defaultTransportTolerance(1285)).ok);
+}
+
+// -- 0-RTT heals per death (--ticket-key) ------------------------------------
+
+/// A death is judged only when the healing clients kept running at least
+/// this long after it. A heal needs the restarted server's stateless reset
+/// (one probe timeout after the client's next send), the soak's 25 ms redial
+/// backoff and one loopback handshake; 1 s leaves a wide margin for a loaded
+/// runner, and with deaths every 2 s it leaves at most one death unjudged.
+const zero_rtt_judge_grace_ns: u64 = 1_000 * std.time.ns_per_ms;
+
+/// The --ticket-key evidence, shared by the server loop and the healing
+/// clients. Incarnation 0 is the first server; death `d` (1-based) starts
+/// incarnation `d`. Sized once before the run; a death past the capacity is
+/// counted but not recorded, and so never judged.
+const ZeroRttLedger = struct {
+    /// The server's current incarnation. The loop thread publishes it after
+    /// each restart; a healing client reads it when it rebinds.
+    incarnation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    /// Awake-clock time of death `d` at `death_ns[d - 1]`. Loop thread only;
+    /// main reads it after the server thread has joined.
+    death_ns: []u64,
+    deaths: usize = 0,
+    /// Per incarnation: restores the server ran before that session's
+    /// handshake completed, which only a restore that rode 0-RTT can do.
+    /// Loop thread only.
+    early_restores: []usize,
+    /// Per incarnation: heals onto it that a healing client counted in its
+    /// `zero_rtt_generations`. Written by the healing client threads.
+    zero_rtt_heals: []std.atomic.Value(usize),
+    /// 0-RTT generations a client could not pin to one incarnation (see
+    /// `zeroRttCreditTarget`). Reported, never credited.
+    unattributed: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+
+    fn init(allocator: std.mem.Allocator, max_deaths: usize) error{OutOfMemory}!ZeroRttLedger {
+        const death_ns = try allocator.alloc(u64, max_deaths);
+        errdefer allocator.free(death_ns);
+        const early = try allocator.alloc(usize, max_deaths + 1);
+        errdefer allocator.free(early);
+        const heals = try allocator.alloc(std.atomic.Value(usize), max_deaths + 1);
+        @memset(death_ns, 0);
+        @memset(early, 0);
+        for (heals) |*h| h.* = std.atomic.Value(usize).init(0);
+        return .{ .death_ns = death_ns, .early_restores = early, .zero_rtt_heals = heals };
+    }
+
+    fn deinit(self: *ZeroRttLedger, allocator: std.mem.Allocator) void {
+        allocator.free(self.death_ns);
+        allocator.free(self.early_restores);
+        allocator.free(self.zero_rtt_heals);
+        self.* = undefined;
+    }
+
+    /// Loop thread, once the restarted server is up.
+    fn recordDeath(self: *ZeroRttLedger, now_ns: u64) void {
+        if (self.deaths < self.death_ns.len) self.death_ns[self.deaths] = now_ns;
+        self.deaths += 1;
+        self.incarnation.store(self.deaths, .release);
+    }
+
+    /// Loop thread: the current incarnation ran a restore before the
+    /// session's handshake completed.
+    fn noteEarlyRestore(self: *ZeroRttLedger) void {
+        const i = self.incarnation.load(.monotonic);
+        if (i < self.early_restores.len) self.early_restores[i] += 1;
+    }
+
+    /// Healing client thread: a heal onto `incarnation` rode 0-RTT.
+    fn creditZeroRttHeal(self: *ZeroRttLedger, incarnation: usize) void {
+        if (incarnation < self.zero_rtt_heals.len) {
+            _ = self.zero_rtt_heals[incarnation].fetchAdd(1, .monotonic);
+        } else {
+            _ = self.unattributed.fetchAdd(1, .monotonic);
+        }
+    }
+
+    /// The recorded deaths (main thread, after the server thread joined).
+    fn recordedDeathTimes(self: *const ZeroRttLedger) []const u64 {
+        return self.death_ns[0..@min(self.deaths, self.death_ns.len)];
+    }
+};
+
+/// A healing client's rebind: its `WarmRedialClient.generations` at the time
+/// and the server incarnation that ran the restore.
+const Rebind = struct { generation: u32, incarnation: usize };
+
+/// Which incarnation a growth of `delta` in a client's `zero_rtt_generations`
+/// belongs to, or null when it cannot be pinned to one. The client counts a
+/// generation's verdict when the generation ends, so growth seen at a rebind
+/// of generation `current_generation` (or, after the run, with
+/// `current_generation` one past the last generation) belongs to the
+/// generations from `last`'s up to `current_generation - 1`. It is pinned only
+/// when that is `last`'s generation alone, and so `delta` is 1. Otherwise a
+/// generation that finished a handshake but never rebound came in between,
+/// and the growth is unattributed, never guessed.
+fn zeroRttCreditTarget(delta: u32, last: ?Rebind, current_generation: u32) ?usize {
+    const rebind = last orelse return null;
+    if (delta != 1 or current_generation != rebind.generation +| 1) return null;
+    return rebind.incarnation;
+}
+
+test "zeroRttCreditTarget: a 0-RTT verdict is pinned to the rebind of its own generation" {
+    // Generation 4 rebound onto incarnation 3; at generation 5's rebind (or
+    // after a run whose last generation was 4) the counter has grown by one.
+    try std.testing.expectEqual(@as(?usize, 3), zeroRttCreditTarget(1, .{ .generation = 4, .incarnation = 3 }, 5));
+}
+
+test "zeroRttCreditTarget: growth that may belong to another generation is not credited" {
+    // Generation 5 finished a handshake but never rebound: either 4 or 5 rode
+    // 0-RTT, so neither incarnation is credited.
+    try std.testing.expectEqual(@as(?usize, null), zeroRttCreditTarget(1, .{ .generation = 4, .incarnation = 3 }, 6));
+    // Two generations' verdicts at once.
+    try std.testing.expectEqual(@as(?usize, null), zeroRttCreditTarget(2, .{ .generation = 4, .incarnation = 3 }, 6));
+    // No rebind yet: the generation that rode 0-RTT never restored.
+    try std.testing.expectEqual(@as(?usize, null), zeroRttCreditTarget(1, null, 2));
+}
+
+/// Deaths the ledger records. The server keeps dying on schedule until it
+/// shuts down, after the churn workers join and the healers stop, so a run
+/// lasts longer than its window (a 10 s window ran 32 s locally); eight
+/// windows' worth leaves room for that.
+fn zeroRttLedgerCapacity(seconds: u64, death_every_ms: u64) usize {
+    const per_window = seconds *| std.time.ms_per_s / @max(death_every_ms, 1);
+    return @intCast(@min(per_window *| 8 +| 16, 1 << 16));
+}
+
+const ZeroRttVerdict = struct {
+    /// Deaths old enough to judge, and the rest.
+    judged: usize = 0,
+    unjudged: usize = 0,
+    /// Judged deaths that no healing client counted as a 0-RTT heal, and
+    /// the first of them (1-based death number).
+    missing_zero_rtt: usize = 0,
+    first_missing_zero_rtt: ?usize = null,
+    /// Judged deaths whose server incarnation ran no restore before the
+    /// handshake completed, and the first of them.
+    missing_early_restore: usize = 0,
+    first_missing_early_restore: ?usize = null,
+    ok: bool = false,
+};
+
+/// Death `d` (1-based, at `death_ns[d - 1]`) starts server incarnation `d`.
+/// It passes when some healing client counted a heal onto incarnation `d` in
+/// its `zero_rtt_generations` (`zero_rtt_heals[d] >= 1`) and incarnation `d`
+/// ran a restore before that session's handshake completed
+/// (`early_restores[d] >= 1`). The two are separate witnesses: the client's
+/// count says the dial got no Retry and BoringSSL accepted its early data;
+/// the server's says the restore actually ran inside the 0-RTT window.
+/// Deaths after `judge_until_ns` are not judged: the healing clients stopped
+/// before they had time to heal onto them. A run with no judged death fails,
+/// because it proved nothing.
+fn assessZeroRttHeals(
+    death_ns: []const u64,
+    judge_until_ns: u64,
+    zero_rtt_heals: []const usize,
+    early_restores: []const usize,
+) ZeroRttVerdict {
+    var v: ZeroRttVerdict = .{};
+    for (death_ns, 1..) |at_ns, d| {
+        if (at_ns > judge_until_ns) {
+            v.unjudged += 1;
+            continue;
+        }
+        v.judged += 1;
+        const heals = if (d < zero_rtt_heals.len) zero_rtt_heals[d] else 0;
+        const early = if (d < early_restores.len) early_restores[d] else 0;
+        if (heals == 0) {
+            v.missing_zero_rtt += 1;
+            if (v.first_missing_zero_rtt == null) v.first_missing_zero_rtt = d;
+        }
+        if (early == 0) {
+            v.missing_early_restore += 1;
+            if (v.first_missing_early_restore == null) v.first_missing_early_restore = d;
+        }
+    }
+    v.ok = v.judged > 0 and v.missing_zero_rtt == 0 and v.missing_early_restore == 0;
+    return v;
+}
+
+test "assessZeroRttHeals: every judged death with a 0-RTT heal and an early restore passes" {
+    // Incarnation 0 (the cold first dials) is never judged; deaths 1..3 are.
+    const deaths = [_]u64{ 2_000, 4_000, 6_000 };
+    const v = assessZeroRttHeals(&deaths, 10_000, &.{ 0, 8, 7, 8 }, &.{ 0, 8, 6, 8 });
+    try std.testing.expect(v.ok);
+    try std.testing.expectEqual(@as(usize, 3), v.judged);
+    try std.testing.expectEqual(@as(usize, 0), v.unjudged);
+}
+
+test "assessZeroRttHeals: one death without a 0-RTT heal fails, and is named" {
+    const deaths = [_]u64{ 2_000, 4_000, 6_000 };
+    // Every heal onto incarnation 2 got a Retry (or a refused ticket).
+    const v = assessZeroRttHeals(&deaths, 10_000, &.{ 0, 8, 0, 8 }, &.{ 0, 8, 6, 8 });
+    try std.testing.expect(!v.ok);
+    try std.testing.expectEqual(@as(usize, 1), v.missing_zero_rtt);
+    try std.testing.expectEqual(@as(?usize, 2), v.first_missing_zero_rtt);
+    try std.testing.expectEqual(@as(usize, 0), v.missing_early_restore);
+}
+
+test "assessZeroRttHeals: a 0-RTT verdict without an early restore fails" {
+    // The clients counted 0-RTT heals, but incarnation 3 ran every restore
+    // after its handshake: the early data never reached the restorer early.
+    const deaths = [_]u64{ 2_000, 4_000, 6_000 };
+    const v = assessZeroRttHeals(&deaths, 10_000, &.{ 0, 8, 8, 8 }, &.{ 0, 8, 6, 0 });
+    try std.testing.expect(!v.ok);
+    try std.testing.expectEqual(@as(usize, 0), v.missing_zero_rtt);
+    try std.testing.expectEqual(@as(?usize, 3), v.first_missing_early_restore);
+}
+
+test "assessZeroRttHeals: deaths after the judge cut-off are not judged" {
+    // Death 3 came after the healers' grace began: no heal is expected.
+    const deaths = [_]u64{ 2_000, 4_000, 6_000 };
+    const v = assessZeroRttHeals(&deaths, 5_000, &.{ 0, 8, 7 }, &.{ 0, 8, 6 });
+    try std.testing.expect(v.ok);
+    try std.testing.expectEqual(@as(usize, 2), v.judged);
+    try std.testing.expectEqual(@as(usize, 1), v.unjudged);
+}
+
+test "assessZeroRttHeals: a run with no judged death fails" {
+    try std.testing.expect(!assessZeroRttHeals(&.{}, 10_000, &.{0}, &.{0}).ok);
+    const late = [_]u64{9_000};
+    const v = assessZeroRttHeals(&late, 5_000, &.{ 0, 8 }, &.{ 0, 8 });
+    try std.testing.expect(!v.ok);
+    try std.testing.expectEqual(@as(usize, 0), v.judged);
+}
+
+test "ZeroRttLedger: deaths publish incarnations, and evidence lands on the current one" {
+    var ledger = try ZeroRttLedger.init(std.testing.allocator, 2);
+    defer ledger.deinit(std.testing.allocator);
+    ledger.noteEarlyRestore();
+    ledger.recordDeath(100);
+    ledger.noteEarlyRestore();
+    ledger.creditZeroRttHeal(ledger.incarnation.load(.acquire));
+    ledger.recordDeath(200);
+    // A death past the capacity is counted, publishes its incarnation, and
+    // is never judged; its evidence is unattributed, not misfiled.
+    ledger.recordDeath(300);
+    ledger.noteEarlyRestore();
+    ledger.creditZeroRttHeal(ledger.incarnation.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 3), ledger.deaths);
+    try std.testing.expectEqualSlices(u64, &.{ 100, 200 }, ledger.recordedDeathTimes());
+    try std.testing.expectEqualSlices(usize, &.{ 1, 1, 0 }, ledger.early_restores);
+    try std.testing.expectEqual(@as(usize, 1), ledger.zero_rtt_heals[1].load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), ledger.unattributed.load(.acquire));
 }
 
 fn nowNs(io: std.Io) i64 {
@@ -1162,11 +1430,44 @@ const HealApp = if (quic.enabled) struct {
     // Run-thread-only within a generation.
     last_cap: ?cap_table.ResolvedCap = null,
     outcome: ?quic.WarmRedialClient.Outcome = null,
+    // --ticket-key attribution, run thread only (see creditZeroRtt). The
+    // client's counters are run-thread bookkeeping, and both onRebind and
+    // threadMain run on that thread.
+    client: ?*quic.WarmRedialClient = null,
+    ledger: ?*ZeroRttLedger = null,
+    last_rebind: ?Rebind = null,
+    seen_zero_rtt: u32 = 0,
 
     fn onRebind(ctx: ?*anyopaque, peer: *Peer, cap: cap_table.ResolvedCap) void {
         const self: *HealApp = @ptrCast(@alignCast(ctx.?));
+        if (self.ledger) |ledger| {
+            const client = self.client.?;
+            // At the rebind of generation N, generations before N have ended
+            // and been counted; N itself is counted when it ends.
+            self.creditZeroRtt(client.zero_rtt_generations, client.generations);
+            // The server publishes a new incarnation only after a restart,
+            // so the one read here is the one that ran this restore, unless
+            // a death and its restart both landed between the Return leaving
+            // the server and this callback: one loopback delivery, against
+            // deaths seconds apart.
+            self.last_rebind = .{ .generation = client.generations, .incarnation = ledger.incarnation.load(.acquire) };
+        }
         self.last_cap = cap;
         self.sendEcho(peer, cap);
+    }
+
+    /// Credit the growth of `zero_rtt_generations` since the last rebind
+    /// (see `zeroRttCreditTarget`).
+    fn creditZeroRtt(self: *HealApp, zero_rtt_now: u32, current_generation: u32) void {
+        const delta = zero_rtt_now -| self.seen_zero_rtt;
+        self.seen_zero_rtt = zero_rtt_now;
+        if (delta == 0) return;
+        const ledger = self.ledger orelse return;
+        if (zeroRttCreditTarget(delta, self.last_rebind, current_generation)) |incarnation| {
+            ledger.creditZeroRttHeal(incarnation);
+        } else {
+            _ = ledger.unattributed.fetchAdd(delta, .monotonic);
+        }
     }
 
     fn sendEcho(self: *HealApp, peer: *Peer, cap: cap_table.ResolvedCap) void {
@@ -1189,6 +1490,8 @@ const HealApp = if (quic.enabled) struct {
 
     fn threadMain(self: *HealApp, client: *quic.WarmRedialClient) void {
         self.outcome = client.run() catch null;
+        // The stop ended the last generation: count its verdict too.
+        if (self.outcome) |o| self.creditZeroRtt(o.zero_rtt_generations, client.generations +| 1);
     }
 } else void;
 
@@ -1239,6 +1542,15 @@ const QuicServerHarness = struct {
     feed_counts: if (quic.enabled) [quic.Server.feed_outcome_count]u64 else void =
         if (quic.enabled) @splat(0) else {},
     rebind_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    // Ticket-key mode (set before `start`): the hardened preset with
+    // `.restore_only` 0-RTT and persisted keys; `ledger` collects the
+    // per-incarnation evidence. `ticket_key_bytes` is the key every
+    // incarnation loads (Listener.init reads it once, at each start);
+    // `rotate_ticket_key` is the ablation that changes it at every restart.
+    ticket_key: bool = false,
+    rotate_ticket_key: bool = false,
+    ticket_key_bytes: [48]u8 = @splat(0x54),
+    ledger: ?*ZeroRttLedger = null,
 
     fn makeOptions(self: *QuicServerHarness, listen_addr: net.IpAddress) quic.ServerOptions {
         if (comptime !quic.enabled) unreachable;
@@ -1270,6 +1582,23 @@ const QuicServerHarness = struct {
             .log_user_data = self,
         };
         applyCc(&server_options.congestion_control, self.cc);
+        if (self.ticket_key) {
+            // The documented production shape (docs/quic-transport.md,
+            // "Session-ticket key"): Retry on, 0-RTT limited to the restore
+            // prefix, and every key loaded byte-identical on each restart,
+            // as a server that persists them does. The preset keeps the
+            // connection cap, handshake timeout and congestion control set
+            // above; its own rate gates apply (quic-zig's per-source gates
+            // key on the address and port, and each soak client dials from
+            // its own UDP port).
+            server_options = quic.withProductionServerHardening(server_options, .{
+                .retry_token_key = @as(quic.ServerRetryTokenKey, @splat(0x52)),
+                .stateless_reset_key = @as(quic.StatelessResetKey, @splat(0x51)),
+                .new_token_key = @as(quic.ServerNewTokenKey, @splat(0x53)),
+                .early_data = .restore_only,
+                .session_ticket_key = &self.ticket_key_bytes,
+            });
+        }
         return server_options;
     }
 
@@ -1346,6 +1675,11 @@ const QuicServerHarness = struct {
         // Clear the whole map: a fresh server can reissue overlapping
         // session ids, and stale entries would alias them.
         self.bound.clearRetainingCapacity();
+        // Ablation (--inject-ticket-key-rotation): the restarted server loads
+        // a new session-ticket key, as a rotation does, so it cannot decrypt
+        // the tickets its predecessor issued and every heal pays a full
+        // handshake.
+        if (self.rotate_ticket_key) std.mem.writeInt(u64, self.ticket_key_bytes[0..8], self.deaths + 1, .little);
         // Bounded rebind retry: the freed port transiently returns to the
         // kernel pool (same shape as the crash-restart e2e's 20x5ms loop).
         var attempt: u32 = 0;
@@ -1364,6 +1698,7 @@ const QuicServerHarness = struct {
             break;
         }
         self.deaths += 1;
+        if (self.ledger) |ledger| ledger.recordDeath(nowNsU(self.io));
     }
 
     fn threadMain(self: *QuicServerHarness) void {
@@ -1425,7 +1760,7 @@ const QuicServerHarness = struct {
                 self.allocator.destroy(peer);
                 continue;
             };
-            peer.setRestorer(@ptrCast(&EchoServer.ctx_anchor), EchoServer.onRestore) catch {
+            peer.setRestorer(@ptrCast(self), QuicServerHarness.onRestore) catch {
                 _ = peer.takeAttachedConnection(*quic.ServerSession);
                 peer.deinit();
                 self.allocator.destroy(peer);
@@ -1436,8 +1771,42 @@ const QuicServerHarness = struct {
                 _ = peer.takeAttachedConnection(*quic.ServerSession);
                 peer.deinit();
                 self.allocator.destroy(peer);
+                continue;
             };
+            // Ticket-key mode: dispatch the frames that buffered before the
+            // peer was bound NOW, as a server that binds its peer in the
+            // accept hook does, so a restore that rode 0-RTT runs before the
+            // next receive can complete the handshake. Without this step the
+            // restore still runs early while other clients' datagrams wake
+            // the next pass first (it did in every death of a loaded local
+            // run), but on a quiet server the next datagram can be this
+            // client's Finished, and the early-restore evidence would then
+            // depend on load. A step that reaps a closed session shifts the
+            // indices: a session skipped by that is bound on the next pass,
+            // as before.
+            if (self.ticket_key) {
+                server.stepSession(i) catch |err| {
+                    std.debug.print("soak: quic session step after bind failed: {}\n", .{err});
+                };
+            }
         }
+    }
+
+    /// The soak's restorer (loop thread): the echo convention, plus, in
+    /// ticket-key mode, the evidence that a restore ran inside the 0-RTT
+    /// window. A server reads no 1-RTT data before its handshake completes
+    /// (RFC 9001 5.7), so a restore that runs before then rode 0-RTT.
+    fn onRestore(ctx: *anyopaque, peer: *Peer, ref: []const u8) anyerror!rpc.peer.RestoreOutcome {
+        if (comptime !quic.enabled) unreachable;
+        const self: *QuicServerHarness = @ptrCast(@alignCast(ctx));
+        if (self.ledger) |ledger| {
+            if (peer.getAttachedConnection(*quic.ServerSession)) |session| {
+                if (session.activeQuicConnection()) |quic_conn| {
+                    if (!quic_conn.handshakeDone()) ledger.noteEarlyRestore();
+                }
+            }
+        }
+        return EchoServer.onRestore(@ptrCast(&EchoServer.ctx_anchor), peer, ref);
     }
 
     fn sweepDeadPeers(self: *QuicServerHarness) void {
@@ -1764,6 +2133,10 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Config {
             cfg.abrupt_death_every_ms = try std.fmt.parseUnsigned(u64, iter.next() orelse return error.InvalidArgument, 10);
         } else if (std.mem.eql(u8, arg, "--heal-workers")) {
             cfg.heal_workers = try std.fmt.parseUnsigned(u32, iter.next() orelse return error.InvalidArgument, 10);
+        } else if (std.mem.eql(u8, arg, "--ticket-key")) {
+            cfg.ticket_key = true;
+        } else if (std.mem.eql(u8, arg, "--inject-ticket-key-rotation")) {
+            cfg.inject_ticket_key_rotation = true;
         } else if (std.mem.eql(u8, arg, "--no-chaos")) {
             cfg.chaos = false;
         } else if (std.mem.eql(u8, arg, "--no-deadlines")) {
@@ -1825,6 +2198,15 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Config {
             std.debug.print("soak: --heal-workers must not exceed --workers\n", .{});
             return error.InvalidArgument;
         }
+    }
+    // The 0-RTT gate is per death and per heal, so the mode needs both.
+    if (cfg.ticket_key and (cfg.transport != .quic or cfg.abrupt_death_every_ms == null or cfg.heal_workers == 0)) {
+        std.debug.print("soak: --ticket-key requires --transport quic, --abrupt-death-every-ms and --heal-workers\n", .{});
+        return error.InvalidArgument;
+    }
+    if (cfg.inject_ticket_key_rotation and !cfg.ticket_key) {
+        std.debug.print("soak: --inject-ticket-key-rotation requires --ticket-key\n", .{});
+        return error.InvalidArgument;
     }
     return cfg;
 }
@@ -1891,6 +2273,16 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
     const latency_hists = try telemetry_allocator.alloc(LatencyHist, cfg.workers);
     for (latency_hists) |*h| h.* = .{};
 
+    // Ticket-key evidence: harness telemetry, so it comes from the telemetry
+    // allocator and the memory gates never see it. Freed before the leak
+    // check below.
+    var zero_rtt_ledger: ?ZeroRttLedger = if (cfg.ticket_key)
+        try ZeroRttLedger.init(telemetry_allocator, zeroRttLedgerCapacity(cfg.seconds, cfg.abrupt_death_every_ms.?))
+    else
+        null;
+    defer if (zero_rtt_ledger) |*ledger| ledger.deinit(telemetry_allocator);
+    const ledger_ptr: ?*ZeroRttLedger = if (zero_rtt_ledger) |*ledger| ledger else null;
+
     var pool: WorkerPool = undefined;
     var pool_runner: PoolRunner = undefined;
     var pool_thread: std.Thread = undefined;
@@ -1923,10 +2315,13 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
             // parseArgs already rejected .quic on a non-QUIC build, so this
             // branch is only reachable when the harness compiles for real.
             if (comptime quic.enabled) {
+                quic_srv.ticket_key = cfg.ticket_key;
+                quic_srv.rotate_ticket_key = cfg.inject_ticket_key_rotation;
+                quic_srv.ledger = ledger_ptr;
                 address = try quic_srv.start(allocator, io, cfg.workers, cfg.cc, cfg.abrupt_death_every_ms);
                 std.debug.print(
-                    "soak: quic server listening on port {} (workers {}, inflight {})\n",
-                    .{ address.getPort(), cfg.workers, cfg.inflight },
+                    "soak: quic server listening on port {} (workers {}, inflight {}{s})\n",
+                    .{ address.getPort(), cfg.workers, cfg.inflight, if (cfg.ticket_key) ", hardened preset with a persisted ticket key and new_token_key, .restore_only" else "" },
                 );
             } else unreachable;
         },
@@ -1992,6 +2387,8 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
                 HealApp.onRebind,
                 HealApp.onGiveUp,
             );
+            heal_apps[i].client = client;
+            heal_apps[i].ledger = ledger_ptr;
         }
     }
 
@@ -2038,7 +2435,14 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
     var heal_give_ups: usize = 0;
     var heal_echo: usize = 0;
     var heal_min_rebinds: usize = std.math.maxInt(usize);
+    var heal_zero_rtt: usize = 0;
+    var heal_retried: usize = 0;
+    var heal_port_fallback: usize = 0;
+    // When the healers stop healing: deaths later than the grace before it
+    // are not judged by the 0-RTT gate.
+    var heal_stop_ns: u64 = 0;
     if (comptime quic.enabled) {
+        heal_stop_ns = nowNsU(io);
         for (heal_clients) |*client| client.requestStop();
         for (worker_threads[0..heal_count]) |t| t.join();
         for (heal_apps, heal_clients) |*app, *client| {
@@ -2048,6 +2452,9 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
                 // healthy generation resets; the report wants every redial.
                 heal_redials += o.total_redials;
                 heal_min_rebinds = @min(heal_min_rebinds, o.rebinds);
+                heal_zero_rtt += o.zero_rtt_generations;
+                heal_retried += o.retried_generations;
+                heal_port_fallback += o.port_fallback_generations;
             } else {
                 heal_min_rebinds = 0;
             }
@@ -2091,6 +2498,23 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
                         "soak-heal: clients={} rebinds={} redials={} give_ups={} echo_ok={} min_rebinds={}\n",
                         .{ cfg.heal_workers, heal_rebinds, heal_redials, heal_give_ups, heal_echo, heal_min_rebinds },
                     );
+                }
+                if (ledger_ptr) |ledger| {
+                    std.debug.print(
+                        "soak-0rtt: generations zero_rtt={} retried={} port_fallback={} (unattributed 0-RTT generations={})\n",
+                        .{ heal_zero_rtt, heal_retried, heal_port_fallback, ledger.unattributed.load(.acquire) },
+                    );
+                    // One entry per recorded death d: the heals onto its
+                    // incarnation that rode 0-RTT, and the restores that
+                    // incarnation ran before the handshake completed.
+                    std.debug.print("soak-0rtt: per death (0-RTT heals/early restores):", .{});
+                    for (1..ledger.recordedDeathTimes().len + 1) |d| {
+                        std.debug.print(" d{}={}/{}", .{ d, ledger.zero_rtt_heals[d].load(.acquire), ledger.early_restores[d] });
+                    }
+                    std.debug.print("\n", .{});
+                    if (cfg.inject_ticket_key_rotation) {
+                        std.debug.print("soak: ablation: every restart loaded a new session-ticket key (--inject-ticket-key-rotation)\n", .{});
+                    }
                 }
                 // Client handshakes started: one per churn session (setup
                 // failures never got that far), plus each healing client's
@@ -2240,6 +2664,43 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
             }
         } else unreachable;
     }
+    // 0-RTT heals per death (see the file header and assessZeroRttHeals).
+    if (ledger_ptr) |ledger| {
+        const heals = try telemetry_allocator.alloc(usize, ledger.zero_rtt_heals.len);
+        defer telemetry_allocator.free(heals);
+        for (heals, ledger.zero_rtt_heals) |*h, *a| h.* = a.load(.acquire);
+        const deaths_recorded = ledger.recordedDeathTimes();
+        const zero_rtt_verdict = assessZeroRttHeals(deaths_recorded, heal_stop_ns -| zero_rtt_judge_grace_ns, heals, ledger.early_restores);
+        std.debug.print(
+            "soak-0rtt: judged {} of {} deaths ({} not judged: in the last {}ms before the healers stopped, or past the ledger's {}) -> {s}\n",
+            .{
+                zero_rtt_verdict.judged,
+                ledger.deaths,
+                ledger.deaths - zero_rtt_verdict.judged,
+                zero_rtt_judge_grace_ns / std.time.ns_per_ms,
+                ledger.death_ns.len,
+                if (zero_rtt_verdict.ok) "ok" else "FAILED",
+            },
+        );
+        if (zero_rtt_verdict.judged == 0) {
+            std.debug.print("soak: FAIL — --ticket-key judged no death, so it proved no 0-RTT heal\n", .{});
+            failed = true;
+        }
+        if (zero_rtt_verdict.missing_zero_rtt > 0) {
+            std.debug.print(
+                "soak: FAIL — {} judged death(s) had no heal that counted in zero_rtt_generations (first: death {})\n",
+                .{ zero_rtt_verdict.missing_zero_rtt, zero_rtt_verdict.first_missing_zero_rtt.? },
+            );
+            failed = true;
+        }
+        if (zero_rtt_verdict.missing_early_restore > 0) {
+            std.debug.print(
+                "soak: FAIL — {} judged death(s) restarted a server that ran no restore before its handshake completed (first: death {})\n",
+                .{ zero_rtt_verdict.missing_early_restore, zero_rtt_verdict.first_missing_early_restore.? },
+            );
+            failed = true;
+        }
+    }
     // Mid-session transport errors: bounded (see the file header).
     const churn_workers: usize = cfg.workers - cfg.heal_workers;
     const deaths: usize = @intCast(quic_srv.deaths);
@@ -2373,6 +2834,8 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
     mem_samples = .empty;
     rss_samples.deinit(telemetry_allocator);
     rss_samples = .empty;
+    if (zero_rtt_ledger) |*ledger| ledger.deinit(telemetry_allocator);
+    zero_rtt_ledger = null;
     if (gpa.deinit() != .ok) {
         std.debug.print("soak: FAIL — client-side allocation leaks detected\n", .{});
         failed = true;
