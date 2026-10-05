@@ -1066,6 +1066,29 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_codegen_streaming_cpp = addLibTest(b, "tests/serialization/codegen_streaming_cpp_test.zig", target, optimize, lib_module);
     b.step("test-codegen-streaming-cpp", "Run C++ and Zig deferred streaming interoperability").dependOn(run_codegen_streaming_cpp);
     b.step("test-codegen-generic-rpc-cpp", "Run C++ and Zig typed generic RPC interoperability").dependOn(addLibTest(b, "tests/serialization/generic_rpc_cpp_test.zig", target, optimize, lib_module));
+    // Fd passing against the C++ reference (sprint item 15): the reference's
+    // fd tests ported to a C++ <-> Zig connection over a socketpair, both
+    // directions, through the real Connection and Peer. Linux and macOS (other
+    // targets compile it and skip); it needs the reference found by
+    // `pkg-config capnp`, so CI runs it in the reflection-conformance job,
+    // not in `test`.
+    const rpc_fd_cpp_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc/transport/unix/rpc_unix_fd_cpp_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "capnp-cli", .module = b.createModule(.{
+                    .root_source_file = b.path("tests/serialization/support/capnp_cli.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                }) },
+            },
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &rpc_fd_cpp_tests.step) catch @panic("OOM");
+    b.step("test-rpc-fd-cpp", "Run fd passing between the C++ reference and capnp-zig over AF_UNIX (Linux, macOS; needs pkg-config capnp)").dependOn(&b.addRunArtifact(rpc_fd_cpp_tests).step);
     const fuzz_filter = b.option([]const u8, "fuzz-filter", "Select one wire/RPC fuzz target");
     const selected_fuzz = b.addTest(.{
         .root_module = b.createModule(.{ .root_source_file = b.path("tests/fuzz/fuzz_targets.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "capnpc-zig", .module = lib_module }} }),

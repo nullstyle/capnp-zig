@@ -73,6 +73,18 @@ jobs:
           mise exec -- zig build test-reflection test-reflection-wasi test-reflection-cpp --summary all -j4
           mise exec -- zig build -Doptimize=ReleaseSafe test-reflection test-reflection-wasi test-reflection-cpp --summary all -j4
           mise exec -- zig build test-reflection-oracle-ablation test-codegen-streaming-cpp test-codegen-generic-rpc-cpp --summary all -j2
+      - name: Fd passing against the C++ reference
+        # Sprint item 15: the reference's "send FD over RPC" and "FD per
+        # message limit" tests, C++ <-> Zig over an AF_UNIX socketpair, in
+        # both directions. Built against the pinned reference above.
+        shell: bash
+        run: |
+          export PATH="$RUNNER_TEMP/capnp-reference/bin:$PATH"
+          export PKG_CONFIG_LIBDIR="$RUNNER_TEMP/capnp-reference/lib/pkgconfig"
+          unset PKG_CONFIG_PATH
+          test "$(command -v capnp)" = "$RUNNER_TEMP/capnp-reference/bin/capnp"
+          test "$(pkg-config --variable=prefix capnp)" = "$RUNNER_TEMP/capnp-reference"
+          mise exec -- zig build test-rpc-fd-cpp --summary all
 
   test:
     name: Test (${{ matrix.os }})

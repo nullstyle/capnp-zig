@@ -248,6 +248,13 @@ it near 327 s. A tty, FUSE or NFS file can block a close for longer. See the
 Fd passing attaches an fd to a capability (`CapDescriptor.attachedFd`), as
 C++ does with `ClientHook::getFd` and `Capability::Server::getFd`.
 
+It works with the C++ implementation in both directions.
+`zig build test-rpc-fd-cpp` runs the reference's two fd tests
+(`rpc-twoparty-test.c++`: "send FD over RPC" with 1 MiB, 64 KiB, 8 KiB and
+empty fills, and "FD per message limit") with C++ on one end of a socketpair
+and this library on the other. CI runs it on Linux. On macOS it runs against
+the `capnp` that `pkg-config` finds.
+
 ### Turn it on, on both ends
 
 `rpc.transport.unix.FdPassing` goes on `ListenOptions.fd_passing` and on
@@ -581,4 +588,5 @@ then) came from the security review of this table (2026-10-05).
 - Windows AF_UNIX, FreeBSD fd passing, abstract socket names.
 - Peer credentials (`SO_PEERCRED`, `getpeereid`).
 - A generated `Client.fd()` helper: use `client.peer.importFd(client.cap_id)`.
-- Fd passing against the C++ implementation is not yet run in CI.
+- Fd passing against the C++ implementation on macOS in CI. CI runs it on
+  Linux only (`zig build test-rpc-fd-cpp`).
