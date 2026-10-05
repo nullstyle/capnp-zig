@@ -671,6 +671,64 @@ Item 16 touches only `src/rpc/transport/quic/` and `build/`. It runs in its own 
 
 **Agent environment:** the agent sandbox refuses `source wt-setup.sh` and `git -c protocol.file.allow`. Agents copied the submodule trees by hand. Full-suite counts differ between worktrees, so the merge gate on main is the count of record.
 
+## Week 2 results (2026-10-05)
+
+**Owner decisions (2026-10-05):**
+- **D-A = A.** FD passing (items 10-15) ships in v0.20.0: Experimental, Linux and macOS.
+- **D-B = A.** A small soft `RLIMIT_NOFILE` is an app contract (threat-table row 41 in `docs/rpc-unix-sockets.md`). The app raises its own soft limit, to 1024 or more, before its first AF_UNIX connection. The library never changes process limits. The security review had asked the library to raise the limit when the closer starts, or to refuse drain mode below a minimum limit. Both are rejected: a library must not change a process-wide limit, and a refused drain mode brings back the macOS fd leak.
+
+**Landed on main.** The week-2 lanes through `1b6e510` are pushed. Local `main` is at `e416dd3`: the FD-passing merge and its three follow-ups are not pushed yet, so no CI run covers them.
+- Item 8, e2e over Unix sockets (Zig to Zig, Zig to C++): `56c0666`, `53b4e53`.
+- Item 9, `WorkerPool.initListener`: `f9b987c`, `20381cf`.
+- Items 16e and 16f, the restart-safe NEW_TOKEN clock and a `WarmRedialClient` that keeps its port: `5f5b677`, `6a00b0b`. The F8 pin at our seam: `018a90d`.
+- Item 17, the ticket-key soak on Nightly: `3581f07`.
+- Week-1 follow-ups: macOS EMSGSIZE at the fd limit is the fd-quota drop (`4bdc628`), a reclaim-test fix (`9eaec21`), and the QUIC evidence steps under the stall watchdog (`4c822b4`).
+- Items 10-15, FD passing, on `sprint/fd-passing` (forked from `4bdc628`). They merged as one unit through `sprint/fd-merge`: merge `236550d`, then `0774aff`, `2406b68` and `e416dd3`.
+
+  | Item | Commits |
+  |---|---|
+  | 10, send path | `182e47e`, `44bd530`, `1f1c3fa` |
+  | 11, exact-boundary reads | `5474814`, `73a519c` |
+  | 12, Peer seam | `aeb506e`, `327bbdb` |
+  | 13, limits and fault injection | `efe3f1f`, `8779565` |
+  | 14, security review, guide, example | `23bf853`, `af04ec0`, `fe03765`, `979de11`, `78db26c` |
+  | 15, C++ fd e2e (Linux) | `e7158dd`, `375df17` |
+
+- `CHANGELOG.md` `[Unreleased]` records all of it. The release drift hook against v0.19.1, as a minor bump, reports OK with no warnings. No Stable line is removed or changed (`docs/api-snapshot.txt` is identical, and `docs/generated-shape.txt` is new in this cycle). FD passing adds Experimental lines only, so it needs no new Breaking entry.
+
+**The item-14 security review: 6 high findings.** Two defects were each found twice, so the 6 findings name four defects. All four were on main before FD passing: three in week-1 drain mode, and one in `Listener.close`. `979de11` fixes all four, each with a red-first test and an ablation. The merge and its follow-ups extend two of the fixes.
+
+| # | High finding | Fix | Threat-table row |
+|---|---|---|---|
+| 1, 2 | `MSG_OOB` bypasses drain mode on Linux 5.15 and later. A normal `recvmsg` skips the out-of-band byte, and the kernel closes its fds inside the read, on the reader thread, outside the closer and its bound (measured: 3 s for a 3 s linger). | `SO_OOBINLINE` on every drain-mode socket before its first read (`fd_io.setOobInline`). If it cannot be set, every read fails. | 39 |
+| 3 | `Listener.close` closes an AF_UNIX listening socket inline. Its final close disposes of the fds on the backlog's unread messages, so a lingering fd blocks the closing thread (3 s on Linux and macOS). | The final close runs on the closer's `.socket` lane, through a close-on-exec dup. `unix.listen` reserves the slot for it. The merge extends this to every AF_UNIX listener (`236550d`). `e416dd3` starts the closer threads before `listen` reserves the slot. | 40 |
+| 4, 5 | The `.socket` lane has no bound (row 8 was OPEN). Behind one stuck close, a peer that reconnects in a loop fills the fd table. | An accept gate: an AF_UNIX listener takes no connection while the lane holds `socketLaneBound()` jobs, with a `SocketCloseQueueFull` backpressure event. The merge adds the `WorkerPool` workers (`236550d`), and `2406b68` adds `Listener.initFd` on an AF_UNIX socket. | 8 (now Bounded) |
+| 6 | The closer's check takes no headroom for the read that follows it, so readers that wake together all pass it (measured without the fix: 16 readers put 4063 fds in a lane bounded at 16). | Read claims (`closer.claimRead`, `endRead`): each read claims 254 fds' worth, granted only while the limit has room, so the lane ends at most one read past its limit. The suggested RLIMIT change became D-B. | 7 |
+
+The review's medium findings added two more fixes:
+- A reader parked inside a blocking `recvmsg` skipped the closer's check. The read after `poll` is now non-blocking (`fd_io.tryRecvWithFds`, `979de11`, row 42).
+- After a promise-pinned import's Release, a capability that reused the import id got the old capability's fd. An imported fd now closes when its Release goes out, even under a promise pin (`fe03765`, row 43).
+
+The fix work also found row 44: on macOS a close of the other end of a socket whose `shutdown(SHUT_RD)` is stuck waits for it.
+
+**The merge reconciliation (`236550d`).** Main (`20381cf`, item 9) and the branch (`979de11`) fixed the same `Listener.close` defect in two ways. Main's fix covered every AF_UNIX listener (found with `getsockname`), but its hand-off allocated. The branch's fix covered only `unix.listen` listeners, under a slot reserved at `listen`. The merge keeps one implementation, `closeListenSocket` in `src/rpc/transport/tcp/runtime.zig`, with main's reach and the branch's reservation.
+- The branch's accept gate became `tcp.runtime.awaitSocketLane`. That is the merge's only new API line.
+- `WorkerPool.initListener` accepts with raw syscalls, so it skipped the gate and ignored the listener's `fd_passing`. The merge closes both gaps.
+- No test from either side was dropped, and no two tests pinned contradictory behavior.
+- Three follow-ups fix what the gates and the merge review found. `0774aff`: the hardening gate flagged an unreviewed `.?` unwrap in `WorkerPool.acceptParked`. `2406b68` (merge review, medium): `Listener.initFd` on an AF_UNIX socket got the off-thread close but not the accept gate; the new Experimental field `Listener.non_ip_socket` selects the gate. `e416dd3` (merge review, two lows): `unix.listen` now starts the closer threads before it reserves its slot, and the docs now say that each pool worker checks the lane on its own (the lane can pass its bound by one teardown per worker, with one event per waiting worker).
+
+**Corrections to this plan:**
+- **macOS-to-C++ fd passing is lossy.** Item 15 said "Not on macOS" with a guess ([I]). The first item-15 commit (`e7158dd`) ran the test on macOS anyway, on the claim that kj reads a message's fds exactly. That claim is false. `TwoPartyVatNetwork` reads through kj's `BufferedMessageStream`, which reads in bulk and gives a read's fds to the message that holds the read's last byte. macOS anchors fds to a read's first byte, so kj can give a frame's fds to the next frame and drop them. Measured 16 runs at a time: 5% to 44% of runs failed on macOS, and 0 of 640 on Linux arm64. `375df17` makes the test Linux-only. The guide (`docs/rpc-unix-sockets.md`, "Fd passing") says: do not send fds to a C++ peer on macOS. capnp-zig's sender cannot prevent the loss. The other direction (C++ sends, capnp-zig receives) did not fail. This also settles the Risks line "The C++ macOS fd interop is not run".
+- **The quic-zig v0.26.0 bump flips two tests.** Week 1 expected no code change. A trial bump makes two tests see `DisconnectCause.peer_close` where they expect `.handshake_timeout`: "quic Server on_session_accepted rejecting a session closes it and keeps serving" (`rpc_quic_transport_test.zig`) and "QUIC PeerServer on_accept error discards the session's peer, leaks nothing, and the next dial is served" (`rpc_quic_peer_test.zig`). The pin stays at v0.25.0 for v0.20.0. The bump after the sprint must update those two assertions.
+- **quic-zig built our five asks.** Its `sprint/ticket-keys` branch (`fbf7fa1`) implements the five asks in `docs/upstream/handoff-quic-zig-ticket-keys.md`: a ticket-key config field, rotation that keeps the previous key, a ticket-lifetime setting, the `.override` advice fix, and a client that resends 0-RTT after a Retry. Our QUIC suite passed against that branch, except the three F8 flips that the handoff predicts (and the two v0.26.0 flips above). When quic-zig releases it, capnp-zig flips those three assertions and moves `session_ticket_key` onto the new config fields ("When quic-zig ships asks 1-3" in the handoff).
+
+**What remains: item 18, the v0.20.0 release candidate.**
+- Push main, and get a green CI run on it. No CI run covers the FD-passing merge yet: x86_64 Linux, the CI TSan lane, `macos-latest`, native Windows, and the `test-rpc-fd-cpp` step in the reflection-conformance job.
+- Two green Nightly runs on the RC commit, dispatched against the RC ref.
+- `just release-preflight 0.20.0` green, including the drift hook.
+- `docs/supported-surface.md` rows for the Unix transport and FD passing (`docs/stability.md` has them).
+- The owner approves the tag. Then `just release-tag 0.20.0`, `just verify-release-hash 0.20.0`, a real `zig fetch`, the consumer builds and the handoffs, as item 18 lists.
+
 ## Owner decisions
 
 **Decided by the owner (2026-10-04): D1 (a), D3 (A), D4 (B).** The owner also took the defaults listed below. For the D1 closure list, the default is to carve out each member that names an Experimental type (keep it Experimental). Promoting the named runtime type to Stable is the alternative. The owner can veto per item when the day-1 list is ready.
