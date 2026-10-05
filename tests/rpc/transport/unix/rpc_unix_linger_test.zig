@@ -241,8 +241,8 @@ test "while a received fd's close blocks, reconnecting peers cannot grow this pr
     {
         const limit = 8;
         const per_message = 20;
-        const previous_limit = fd_io.closer.setQueueLimit(limit);
-        defer _ = fd_io.closer.setQueueLimit(previous_limit);
+        const previous_limit = fd_io.budget.setLimit(limit);
+        defer _ = fd_io.budget.setLimit(previous_limit);
 
         var lingering = try LingeringSocket.open(stall_linger_seconds);
         defer lingering.deinit();
@@ -295,8 +295,8 @@ test "a reader already waiting for data takes no fds once the received lane is f
     const before = support.FdSnapshot.take();
     {
         const limit = 8;
-        const previous_limit = fd_io.closer.setQueueLimit(limit);
-        defer _ = fd_io.closer.setQueueLimit(previous_limit);
+        const previous_limit = fd_io.budget.setLimit(limit);
+        defer _ = fd_io.budget.setLimit(previous_limit);
 
         const p = try support.pipePair();
         defer support.closeFd(p[0]);

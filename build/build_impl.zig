@@ -880,18 +880,28 @@ pub fn buildImpl(b: *std.Build) !void {
     // which fd, every close hook, TCP (0xff), and the wake fds never sent.
     // Linux and macOS run it; other targets compile it and run the stub test.
     const run_rpc_unix_fd_peer_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_peer_test.zig", target, optimize, lib_module);
+    // FD passing limits and fault injection (sprint item 13): the process fd
+    // budget, N connections at their per-connection cap with accept still
+    // working, OOM at every allocation of the Peer's and the transport's fd
+    // paths (and of the closer's queues), EMFILE on a sent fd's dup, and
+    // Linux ETOOMANYREFS. Part of the Hardening gate (`test-oom`,
+    // `test-resource-budgets` and its own step). Linux and macOS run it;
+    // other targets compile it and skip.
+    const run_rpc_unix_fd_limits_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_limits_test.zig", target, optimize, lib_module);
+    b.step("test-rpc-unix-fd-limits", "Run the fd-passing limit and fault-injection suite (process fd budget, OOM sweeps, EMFILE, ETOOMANYREFS; Linux and macOS)").dependOn(run_rpc_unix_fd_limits_tests);
     // `rpc.transport.unix.listen`/`connect` (sprint item 7): sessions over a
     // socket file, the path guards, the lock, stale files, permissions and
     // close. Linux and macOS run it; other targets compile it and run only
     // the unsupported-target stub test.
     const run_rpc_unix_session_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_session_test.zig", target, optimize, lib_module);
-    const test_rpc_unix_step = b.step("test-rpc-unix", "Run the AF_UNIX transport suites (regressions, fd drain, lingering close, fd send, fd boundary reads, listen/connect)");
+    const test_rpc_unix_step = b.step("test-rpc-unix", "Run the AF_UNIX transport suites (regressions, fd drain, lingering close, fd send, fd boundary reads, fd limits, listen/connect)");
     test_rpc_unix_step.dependOn(run_rpc_unix_regression_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_fd_drain_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_linger_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_fd_send_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_fd_boundary_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_fd_peer_tests);
+    test_rpc_unix_step.dependOn(run_rpc_unix_fd_limits_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_session_tests);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, qm)
@@ -1377,6 +1387,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_transport_step.dependOn(run_rpc_unix_fd_send_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_fd_boundary_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_fd_peer_tests);
+    test_rpc_transport_step.dependOn(run_rpc_unix_fd_limits_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_raw_frame_security_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_kernel_semantics_tests);
@@ -1484,6 +1495,7 @@ pub fn buildImpl(b: *std.Build) !void {
     if (run_rpc_quic_connection_internal_tests) |step| test_resource_budgets_step.dependOn(step);
     if (run_rpc_quic_peer_tests) |step| test_resource_budgets_step.dependOn(step);
     test_resource_budgets_step.dependOn(run_rpc_raw_frame_security_tests);
+    test_resource_budgets_step.dependOn(run_rpc_unix_fd_limits_tests);
     test_resource_budgets_step.dependOn(&run_wasm_host_abi_tests.step);
 
     const test_oom_step = b.step("test-oom", "Run OOM and failing allocator regression tests");
@@ -1500,6 +1512,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_oom_step.dependOn(run_rpc_persistence_tests);
     test_oom_step.dependOn(run_rpc_three_party_handoff_vatc_tests);
     test_oom_step.dependOn(run_rpc_raw_frame_security_tests);
+    test_oom_step.dependOn(run_rpc_unix_fd_limits_tests);
     test_oom_step.dependOn(&run_wasm_host_abi_tests.step);
 
     const test_lib_step = b.step("test-lib", "Run source module tests from src/lib.zig");
@@ -1686,6 +1699,9 @@ pub fn buildImpl(b: *std.Build) !void {
             // Fd passing through the Peer: session threads, the closer
             // taking imported fds, and the wake socketpair, against glibc.
             "tests/rpc/transport/unix/rpc_unix_fd_peer_test.zig",
+            // Fd passing limits: the process fd budget's atomic count, shared
+            // by readers, writers, session threads and the closer.
+            "tests/rpc/transport/unix/rpc_unix_fd_limits_test.zig",
             // unix.listen/connect: the session threads, racing listeners and
             // the accept wake-up, against glibc.
             "tests/rpc/transport/unix/rpc_unix_session_test.zig",

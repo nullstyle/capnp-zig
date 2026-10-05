@@ -8,16 +8,16 @@
 //! that each pipe's read end sees EOF (every copy of the write end is
 //! closed) and that the fd table returns to its baseline.
 //!
-//! The closer bounds the dups of the whole process, queued or waiting for
-//! their close (`fd_io.closer.sentLimit`). The last tests keep the closer's
-//! `.sent` lane stuck in a lingering close on purpose and check that the
-//! dups piling up behind it stop at that bound, across many transports.
+//! The dups of the whole process, queued or waiting for their close, count
+//! against the process fd budget (`fd_io.budget`). The last tests keep the
+//! closer's `.sent` lane stuck in a lingering close on purpose and check that
+//! the dups piling up behind it stop at the budget, across many transports.
 //!
 //! Linux and macOS run the tests; other targets compile the file and run
 //! only the stub and TCP tests. Tests that hold more than a few dozen fds
 //! raise the soft RLIMIT_NOFILE themselves (the macOS default is 256), and
-//! set the `.sent` bound they need (its default is a quarter of the soft
-//! limit, read at first use).
+//! set the budget they need (its default is a quarter of the soft limit,
+//! read at first use).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -62,22 +62,22 @@ const FdHeadroom = struct {
     }
 };
 
-/// Sets the closer's process-wide bound on sent dups for one test, and
-/// restores the previous one.
+/// Sets the process fd budget (which bounds the sent dups) for one test,
+/// and restores the previous one.
 const SentLimit = struct {
     previous: usize,
 
     fn set(limit: usize) SentLimit {
-        return .{ .previous = fd_io.closer.setSentLimit(limit) };
+        return .{ .previous = fd_io.budget.setLimit(limit) };
     }
 
     fn restore(self: SentLimit) void {
-        _ = fd_io.closer.setSentLimit(self.previous);
+        _ = fd_io.budget.setLimit(self.previous);
     }
 };
 
-/// A `.sent` bound far above what the tests that set it hold at once: they
-/// test something else.
+/// A budget far above what the tests that set it hold at once: they test
+/// something else.
 const roomy_sent_limit = 4096;
 
 /// A message larger than any AF_UNIX socket buffer, so the writer blocks in
@@ -171,14 +171,14 @@ const BackpressureRecorder = struct {
     }
 
     /// Fails unless the recorded events are exactly `n` `.attached_fds`
-    /// refusals by the closer's bound: `err` = `error.FdCloseQueueFull`,
+    /// refusals by the process fd budget: `err` = `error.FdBudgetExceeded`,
     /// `limit` = `limit`, one fd attempted each.
     fn expectCloserRefusals(self: *const BackpressureRecorder, n: usize, limit: usize) !void {
         try testing.expectEqual(n, self.count);
         for (self.seen[0..self.count]) |event| {
             try testing.expectEqual(events.Resource.attached_fds, event.resource);
             try testing.expectEqual(events.Source.unix, event.source);
-            try testing.expectEqual(@as(anyerror, error.FdCloseQueueFull), event.err);
+            try testing.expectEqual(@as(anyerror, error.FdBudgetExceeded), event.err);
             try testing.expectEqual(@as(?usize, limit), event.limit);
             try testing.expectEqual(@as(?usize, 1), event.attempted_bytes);
         }
@@ -860,10 +860,10 @@ test "enqueueWriteWithFds fails cleanly at every allocation" {
 }
 
 // ---------------------------------------------------------------------------
-// The closer's bound on sent dups
+// The process fd budget on sent dups
 // ---------------------------------------------------------------------------
 
-test "a failed fd enqueue gives back what it counted against the closer's bound" {
+test "a failed fd enqueue gives back what it counted against the process fd budget" {
     if (!support.supported) return error.SkipZigTest;
     try warmUp();
     const before = support.FdSnapshot.take();
@@ -907,7 +907,7 @@ test "a failed fd enqueue gives back what it counted against the closer's bound"
         try tb.enqueueWrite(big);
         try waitBatchTaken(&tb);
 
-        // Nothing of A's failure still counts: B gets the whole bound, and
+        // Nothing of A's failure still counts: B gets the whole budget, and
         // the message after that is refused.
         for (0..limit) |_| try tb.enqueueWriteWithFds("held", &.{w});
         try testing.expectEqual(@as(usize, limit), tb.queueStats().fds);
@@ -1011,7 +1011,7 @@ fn waitSentPending(want: usize, timeout_ms: i64) !void {
     }
 }
 
-test "while a sent dup's close blocks, the dups behind it stop at the closer's bound across many transports" {
+test "while a sent dup's close blocks, the dups behind it stop at the process fd budget across many transports" {
     if (!support.supported) return error.SkipZigTest;
     try warmUp();
     const before = support.FdSnapshot.take();

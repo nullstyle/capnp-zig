@@ -218,6 +218,28 @@ pub const Pipes = struct {
         self.count = 0;
     }
 
+    /// Fails unless pipe `i` sees EOF within `closed_wait_ms`, for each `i`
+    /// in `indexes`: every copy of its write end is closed.
+    pub fn expectClosed(self: *const Pipes, indexes: []const usize) !void {
+        for (indexes) |i| {
+            if (!pipeWritersClosed(self.read_ends[i], closed_wait_ms)) {
+                std.debug.print("pipe {d}: a copy of its write end is still open\n", .{i});
+                return error.AttachedFdStillOpen;
+            }
+        }
+    }
+
+    /// Fails unless pipe `i` still has a copy of its write end open, for
+    /// each `i` in `indexes`.
+    pub fn expectOpen(self: *const Pipes, indexes: []const usize) !void {
+        for (indexes) |i| {
+            if (pipeWritersClosed(self.read_ends[i], still_open_wait_ms)) {
+                std.debug.print("pipe {d}: every copy of its write end is closed\n", .{i});
+                return error.AttachedFdClosedEarly;
+            }
+        }
+    }
+
     /// Fails unless every pipe sees EOF within `closed_wait_ms`: the
     /// receiver closed every write end it got.
     pub fn expectAllWritersClosed(self: *const Pipes) !void {
@@ -236,9 +258,11 @@ pub const max_scanned_fd = 2048;
 
 pub const FdSnapshot = struct {
     open: std.StaticBitSet(max_scanned_fd),
+    /// The process fd budget's count (`fd_io.budget.inUse()`) when taken.
+    budget_in_use: usize = 0,
 
     pub fn take() FdSnapshot {
-        var snapshot: FdSnapshot = .{ .open = .empty };
+        var snapshot: FdSnapshot = .{ .open = .empty, .budget_in_use = fd_io.budget.inUse() };
         var fd: usize = 0;
         while (fd < max_scanned_fd) : (fd += 1) {
             if (isOpen(@intCast(fd))) snapshot.open.set(fd);
@@ -265,7 +289,8 @@ pub const FdSnapshot = struct {
 };
 
 /// Waits (up to `closed_wait_ms`, for the closer thread) until the fd table
-/// is exactly `before` again; prints the difference and fails otherwise.
+/// is exactly `before` again, and the process fd budget counts what it did
+/// then; prints the difference and fails otherwise.
 pub fn expectBackAtBaseline(before: FdSnapshot) !void {
     const start = nowNs();
     while (true) {
@@ -274,16 +299,46 @@ pub fn expectBackAtBaseline(before: FdSnapshot) !void {
         const n_leaked = after.added(before, &leaked);
         var lost: [16]Fd = undefined;
         const n_lost = before.added(after, &lost);
-        if (n_leaked == 0 and n_lost == 0) return;
+        if (n_leaked == 0 and n_lost == 0 and after.budget_in_use == before.budget_in_use) return;
         if (msSince(start) >= closed_wait_ms) {
             std.debug.print("fd table not back at baseline: {d} new fd(s) {any}, {d} closed fd(s) {any}\n", .{
                 n_leaked, leaked[0..@min(n_leaked, leaked.len)], n_lost, lost[0..@min(n_lost, lost.len)],
             });
+            if (after.budget_in_use != before.budget_in_use) {
+                std.debug.print("process fd budget counts {d} fd(s), {d} at the baseline\n", .{ after.budget_in_use, before.budget_in_use });
+                return error.FdBudgetNotAtBaseline;
+            }
             return error.FdTableNotAtBaseline;
         }
         sleepMs(10);
     }
 }
+
+/// Waits (up to `closed_wait_ms`, for the closer thread) until the process
+/// fd budget counts exactly `want`.
+pub fn expectBudgetInUse(want: usize) !void {
+    const start = nowNs();
+    while (fd_io.budget.inUse() != want) {
+        if (msSince(start) >= closed_wait_ms) {
+            std.debug.print("process fd budget counts {d} fd(s), expected {d}\n", .{ fd_io.budget.inUse(), want });
+            return error.FdBudgetMismatch;
+        }
+        sleepMs(5);
+    }
+}
+
+/// Sets the process fd budget's limit for one test, and restores it.
+pub const BudgetLimit = struct {
+    previous: usize,
+
+    pub fn set(limit: usize) BudgetLimit {
+        return .{ .previous = fd_io.budget.setLimit(limit) };
+    }
+
+    pub fn restore(self: BudgetLimit) void {
+        _ = fd_io.budget.setLimit(self.previous);
+    }
+};
 
 /// Waits until the closer threads have done everything handed to them.
 pub fn waitCloserIdle(timeout_ms: i64) !void {

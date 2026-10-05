@@ -45,6 +45,15 @@
 //! reads one frame at a time so that each fd lands in its own message;
 //! every fd it does not hand out still goes to the closer.
 //!
+//! ## The process fd budget
+//!
+//! Every fd fd passing keeps alive counts against one process-wide budget
+//! (`budget`, `RLIMIT_NOFILE / 4` by default): the fds a transport keeps
+//! for a frame, the fds a `Peer` keeps for its imports, the dups of fds the
+//! transport sends, and every fd in the closer's queues. Over it, received
+//! fds go to the closer (with an event) and fd sends are refused with a
+//! backpressure error; the connections stay up. See `fd_budget`.
+//!
 //! ## What is left
 //!
 //! - EMFILE (process fd table full), both kernels: the kernel itself closes
@@ -70,19 +79,30 @@
 //!   or NFS file) stops the closer's `.received` lane for as long as it
 //!   blocks: on Linux without end while the socket's far end keeps its
 //!   window shut, on macOS up to the linger time (near 327 s at most), and a
-//!   peer can chain them. The lane keeps its bound (see `closer`): once it is
-//!   full, every AF_UNIX read that finds data reads nothing and closes its
-//!   connection. A peer that can stall a close can deny service on every
-//!   AF_UNIX connection that receives data meanwhile, but cannot fill the
-//!   fd table. TCP and QUIC connections, and AF_UNIX socket closes and
-//!   shutdowns (the `.socket` lane), do not wait for it.
+//!   peer can chain them. The fds piling up behind it count against the
+//!   process fd budget: first fd passing stops keeping and sending fds in
+//!   the whole process, and once the lane alone holds the budget's limit
+//!   (see `closer`), every AF_UNIX read that finds data reads nothing and
+//!   closes its connection. A peer that can stall a close can deny service
+//!   on every AF_UNIX connection that receives data meanwhile, but cannot
+//!   fill the fd table. TCP and QUIC connections, and AF_UNIX socket closes
+//!   and shutdowns (the `.socket` lane), do not wait for it.
 //! - The same holds on the send side for an fd this process sends whose
 //!   close blocks, once the app and the receiver have closed their copies:
-//!   the transport's dup of it stops the closer's `.sent` lane. That lane
-//!   counts every dup alive, queued or waiting for its close, against its
-//!   own bound (see `closer`). Once the bound is reached every transport
-//!   refuses fd messages with `error.FdQueueFull` until the close ends;
-//!   messages without fds still go, and the fd table does not fill.
+//!   the transport's dup of it stops the closer's `.sent` lane. Every dup
+//!   alive, queued or waiting for its close, counts against the process fd
+//!   budget. Once it is reached every transport refuses fd messages with
+//!   `error.FdQueueFull` (and no fd is kept on receipt) until the close
+//!   ends; messages without fds still go, and the fd table does not fill.
+//! - ETOOMANYREFS (Linux): a user may have at most its `RLIMIT_NOFILE` fds
+//!   in flight on AF_UNIX sockets (sent, not yet received), across all its
+//!   processes; root and `CAP_SYS_RESOURCE` are exempt. A receiver that
+//!   stops reading can push the user there. `sendWithFds` then sends
+//!   nothing and returns `error.TooManyFdsInFlight`. A transport sending
+//!   from its write queue sends that message without its fds instead (the
+//!   receiver finds `attachedFd` past the message's fds, which the spec
+//!   reads as no fd) and reports it with a backpressure event; the
+//!   connection stays up.
 //! - A transport's own socket: the kernel closes the fds still in flight on
 //!   it inside its final close, and on macOS inside `shutdown(SHUT_RD)`.
 //!   Linux closes the socket inline when nothing can be in flight (an empty
@@ -110,6 +130,11 @@ const log = std.log.scoped(.rpc_fd_io);
 /// The process-wide threads that close received fds and the transport's
 /// own sockets.
 pub const closer = @import("fd_closer.zig");
+
+/// The process fd budget: one count of the fds fd passing holds (frame fds,
+/// imports, sent dups, the closer's queues) and one limit for all of them
+/// (`RLIMIT_NOFILE / 4` by default).
+pub const budget = @import("fd_budget.zig");
 
 /// True where fd reads are compiled in: Linux and Darwin.
 pub const supported: bool = closer.supported;

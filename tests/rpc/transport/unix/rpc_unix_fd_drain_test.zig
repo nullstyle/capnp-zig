@@ -458,8 +458,8 @@ test "fds past the closer-queue bound close the connection that sent them, with 
     try warmUp();
     const before = support.FdSnapshot.take();
     {
-        const previous_limit = fd_io.closer.setQueueLimit(2);
-        defer _ = fd_io.closer.setQueueLimit(previous_limit);
+        const previous_limit = fd_io.budget.setLimit(2);
+        defer _ = fd_io.budget.setLimit(previous_limit);
 
         const sp = try support.socketPair();
         var pipes = try support.Pipes.open(4);

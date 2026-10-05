@@ -37,7 +37,8 @@
 //! use and never exit.
 //!
 //! - `.received` closes the fds peers attached. Any of them can block for as
-//!   long as its sender likes, so this lane is bounded (below).
+//!   long as its sender likes, so this lane is bounded (see the budget
+//!   below).
 //! - `.socket` does the transport's own socket work: the final close of a
 //!   socket that may still hold unread fds, and on Darwin the read half of
 //!   `shutdown`. One of these blocks only when that very socket still holds
@@ -48,10 +49,7 @@
 //!   app may send one whose close blocks (a TCP socket handed to a worker,
 //!   say), and once the app and the receiver have closed their copies the
 //!   dup's close is the final one. A dup whose close blocks delays only
-//!   other sent dups, never a received fd or a socket close. A transport
-//!   stops counting a dup when it hands the dup here, so its own cap
-//!   (`Transport.max_queued_fds`) does not bound this lane: the lane has a
-//!   bound of its own (below).
+//!   other sent dups, never a received fd or a socket close.
 //!
 //! A `.socket` job still waits behind a blocked `.socket` job: a peer that
 //! leaves a blocking fd unread on its own connection when the connection is
@@ -60,51 +58,38 @@
 //! blocked in a transport whose `shutdown` is queued there wakes only on its
 //! own poll tick (see `Transport.shutdown`).
 //!
-//! ## The bounds
+//! ## The process fd budget
 //!
-//! Every fd in the `.received` lane still holds a slot in the process fd
-//! table until the thread closes it. A stuck close stops the thread, and a
-//! peer that keeps sending fds would then fill the table. So the lane has a
-//! bound: `RLIMIT_NOFILE / 4` (the soft limit, read at first use, at least
-//! `min_queue_limit`).
+//! Every fd in the `.received` and `.sent` lanes counts against the process
+//! fd budget (`fd_budget`, re-exported as `fd_io.budget`) until its thread
+//! has closed it, and so do the fds the runtime keeps alive for fd passing
+//! (frame fds, imports, sent dups). A stuck close stops its thread, so a
+//! peer that keeps sending fds, or an app that keeps sending them, would
+//! otherwise fill the fd table.
 //!
-//! - Before each `recvmsg`, once its socket is readable, a reader checks
-//!   `admission()`. While the lane is `full()` (it holds `queueLimit()` fds
-//!   or more) the reader takes nothing: the transport closes that connection
-//!   with a typed cause.
-//! - A hand-off that leaves more than the bound pending reports
+//! - `.received`: an fd that arrived must go somewhere, so `handOff` always
+//!   takes it. `handOff` counts the fds it is given; `handOffCounted` takes
+//!   fds already counted (a frame's, an import's). Before each `recvmsg`,
+//!   once its socket is readable, a reader checks `admission()`. While the
+//!   lane alone holds `fd_budget.limit()` fds or more (`full()`) the reader
+//!   takes nothing: the transport closes that connection with a typed cause.
+//!   A hand-off that leaves more than the limit pending in the lane reports
 //!   `over_limit`, and the transport closes the connection that sent those
 //!   fds. The fds already received still go to the lane: closing them
-//!   anywhere else could block.
-//!
-//! So the lane holds at most the bound plus one read (at most 254 fds: the
-//! most one send carries) for each reader that passed its check before the
-//! lane filled and had not handed off yet.
-//!
-//! The `.sent` lane has the same kind of bound (`sentLimit`, the same
-//! default, read at first use), and it counts every dup alive in the
-//! process: the dups transports hold for sending (their `.sent`
-//! reservations) and the dups handed off and not yet closed. Without it, a
-//! sent dup whose close blocks would stop the thread while every transport
-//! kept sending and tearing down, each dup holding an fd-table slot, until
-//! the process ran out of fds.
-//!
-//! - A transport reserves a slot for each dup before it makes the dup
-//!   (`reserveSent`). While the lane is at or past its bound the reservation
-//!   fails: the transport refuses that message (`error.FdQueueFull` and a
-//!   backpressure event) and makes no dup. Sends without fds, and the
-//!   connection, are not affected.
-//! - Hand-offs never fail and never wait: every dup a transport holds is
-//!   already counted.
-//!
-//! A message is admitted while the lane is below the bound, so the process
-//! holds at most the bound plus 252 of these dups (one 253-fd message
-//! admitted just below it). A `.sent` close that never ends stops fd sends
-//! in the whole process (each one refused, never queued), but it cannot
-//! fill the fd table.
-//!
-//! Item 13 of the 2026-10-04 sprint plan replaces both bounds with one
-//! process fd budget, which counts these same dups.
+//!   anywhere else could block. So the lane holds at most the limit plus
+//!   one read (at most 254 fds: the most one send carries) for each reader
+//!   that passed its check before the lane filled and had not handed off
+//!   yet.
+//! - `.sent`: a transport counts each dup before it makes it, by reserving
+//!   a `.sent` slot (`reserveSent`), which succeeds only while the dups fit
+//!   in the budget (`fd_budget.tryAcquire`). Otherwise the transport refuses
+//!   that message (`error.FdQueueFull` and a backpressure event) and makes
+//!   no dup; sends without fds, and the connection, are not affected. A
+//!   reserved slot and the dup handed off under it are one unit of the
+//!   budget; the closer gives it back when it has closed the dup, and
+//!   `trim` gives back the unit of a slot no dup used. A `.sent` close that
+//!   never ends stops fd sends in the whole process (each one refused, never
+//!   queued), but it cannot fill the fd table.
 //!
 //! ## Allocation
 //!
@@ -115,6 +100,10 @@
 //! hand-off whose allocation fails, or one made when the thread cannot
 //! start, does its work inline on the caller's thread, and it logs a warning
 //! when it does.
+//!
+//! The queues outlive every connection, so no caller's allocator (and no
+//! `std.testing.FailingAllocator`) reaches them. `injectAllocationFailure`
+//! makes one of their allocations fail instead, for fault-injection tests.
 //!
 //! ## Synchronization
 //!
@@ -127,6 +116,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 const log = std.log.scoped(.rpc_fd_closer);
+const budget = @import("fd_budget.zig");
 
 /// True where the closer is compiled in: Linux and Darwin.
 pub const supported: bool = builtin.target.os.tag == .linux or builtin.target.os.tag.isDarwin();
@@ -138,27 +128,17 @@ comptime {
     if (supported and posix.fd_t != Fd) @compileError("fd_closer expects a 32-bit int fd");
 }
 
-/// The smallest bound the default can produce.
-pub const min_queue_limit: usize = 16;
-
-/// The default bound counts at most this many fds of RLIMIT_NOFILE. A soft
-/// limit of `RLIM_INFINITY` would otherwise give a bound that never applies.
-pub const max_counted_fd_limit: usize = 1 << 20;
-
-/// The default bound when RLIMIT_NOFILE cannot be read: a quarter of the
-/// macOS default soft limit (256).
-pub const fallback_queue_limit: usize = 64;
-
 /// Which thread and queue a job goes to (see "Three lanes" in the module
 /// doc).
 pub const Lane = enum(u8) {
-    /// Fds a peer attached. Bounded (`queueLimit`).
+    /// Fds a peer attached. Counted in the process fd budget; a reader stops
+    /// once this lane alone holds the budget's limit (`admission`).
     received,
     /// A transport's own socket: its final close, and on Darwin the read
-    /// half of its shutdown.
+    /// half of its shutdown. Not counted.
     socket,
     /// A transport's dups of fds this process sends (`handOffSent`).
-    /// Bounded, with the dups transports still hold (`sentLimit`).
+    /// Counted in the process fd budget from `reserveSent` on.
     sent,
 };
 
@@ -178,29 +158,31 @@ pub const ReserveError = error{
     UnixSocketsUnsupported,
 };
 
-/// `reserveSent` failures. Nothing was reserved.
+/// `reserveSent` failures. Nothing was reserved or counted.
 pub const ReserveSentError = error{
-    /// The `.sent` lane already counts `sentLimit()` dups or more (see "The
-    /// bounds" in the module doc). Retry once the closer has caught up.
-    FdCloseQueueFull,
+    /// The dups do not fit in the process fd budget (`fd_io.budget`; see
+    /// the module doc). Retry once fds held for fd passing were closed.
+    FdBudgetExceeded,
     OutOfMemory,
     UnixSocketsUnsupported,
 };
 
 /// Queue capacity in one lane held free for one caller, so its next
 /// hand-off of up to `slots` jobs there never allocates. One thread uses a
-/// reservation at a time. Give it back with `release`.
+/// reservation at a time. Give it back with `release`. In the `.sent` lane
+/// each slot is also one unit of the process fd budget (`reserveSent`).
 pub const Reservation = struct {
     lane: Lane = .received,
     slots: usize = 0,
 };
 
-/// The `.received` lane at one moment (see "The bound" in the module doc).
+/// The `.received` lane at one moment (see "The process fd budget" in the
+/// module doc).
 pub const Admission = struct {
     /// Fds handed off and not yet closed, including a hand-off that
     /// returned this.
     pending: usize,
-    /// The bound in force.
+    /// The process fd budget's limit in force (`fd_io.budget.limit()`).
     limit: usize,
     /// `pending > limit`: the hand-off that returned this crossed the bound.
     /// The transport closes the connection that sent those fds.
@@ -253,12 +235,11 @@ const LaneState = struct {
 };
 
 var lanes: [std.enums.values(Lane).len]LaneState = @splat(.{});
-/// The `.received` bound; 0 until first use. Guarded by that lane's `mu`.
-var limit: usize = 0;
-/// The `.sent` bound; 0 until first use. Guarded by that lane's `mu`.
-var sent_limit: usize = 0;
 var start_mu: std.Io.Mutex = .init;
 var started: std.atomic.Value(bool) = .init(false);
+/// `injectAllocationFailure`: the queue allocations still to go before the
+/// one that fails; -1 when none is armed.
+var inject_countdown: std.atomic.Value(isize) = .init(-1);
 
 fn syncIo() std.Io {
     return std.Io.Threaded.global_single_threaded.io();
@@ -291,8 +272,11 @@ pub fn ensureStarted() StartError!void {
 /// when the queue capacity is short.
 pub fn reserve(r: *Reservation, slots: usize) ReserveError!void {
     if (comptime !supported) return error.UnixSocketsUnsupported;
+    // A `.sent` slot is a unit of the process fd budget: `reserveSent`.
+    std.debug.assert(r.lane != .sent);
     if (r.slots >= slots) return;
     const extra = slots - r.slots;
+    if (injectedFailure()) return error.OutOfMemory;
     const s = laneState(r.lane);
     s.lock();
     defer s.unlock();
@@ -302,37 +286,45 @@ pub fn reserve(r: *Reservation, slots: usize) ReserveError!void {
     r.slots = slots;
 }
 
-/// `reserve` for a `.sent` reservation, under that lane's bound: grow `r`
-/// to `slots` only while the lane counts fewer than `sentLimit()` dups
-/// (reserved by any transport, or handed off and not yet closed). A request
-/// that `r` already covers always succeeds. One admitted request may take
-/// the lane past the bound; every later one then fails until the closer
-/// catches up (see "The bounds" in the module doc).
+/// `reserve` for a `.sent` reservation, counted in the process fd budget:
+/// grow `r` to `slots` only while the extra slots fit in the budget
+/// (`fd_budget.tryAcquire`). Each slot stays one unit of the budget until
+/// `trim` gives it back, or until the dup handed off under it is closed
+/// (see "The process fd budget" in the module doc). A request that `r`
+/// already covers always succeeds.
 pub fn reserveSent(r: *Reservation, slots: usize) ReserveSentError!void {
     if (comptime !supported) return error.UnixSocketsUnsupported;
     std.debug.assert(r.lane == .sent);
     if (r.slots >= slots) return;
     const extra = slots - r.slots;
+    if (!budget.tryAcquire(extra)) return error.FdBudgetExceeded;
+    if (injectedFailure()) {
+        budget.release(extra);
+        return error.OutOfMemory;
+    }
     const s = laneState(.sent);
     s.lock();
     defer s.unlock();
-    initSentLimitLocked();
-    if (s.reserved + s.pendingLocked() >= sent_limit) return error.FdCloseQueueFull;
-    s.jobs.ensureTotalCapacity(std.heap.page_allocator, s.jobs.items.len + s.reserved + extra) catch
+    s.jobs.ensureTotalCapacity(std.heap.page_allocator, s.jobs.items.len + s.reserved + extra) catch {
+        budget.release(extra);
         return error.OutOfMemory;
+    };
     s.reserved += extra;
     r.slots = slots;
 }
 
-/// Give back the slots `r` holds above `slots`.
+/// Give back the slots `r` holds above `slots` (and, in the `.sent` lane,
+/// their units of the process fd budget).
 pub fn trim(r: *Reservation, slots: usize) void {
     if (comptime !supported) return;
     if (r.slots <= slots) return;
+    const freed = r.slots - slots;
     const s = laneState(r.lane);
     s.lock();
-    s.reserved -= r.slots - slots;
+    s.reserved -= freed;
     s.unlock();
     r.slots = slots;
+    if (r.lane == .sent) budget.release(freed);
 }
 
 /// Give back every slot `r` still holds.
@@ -341,13 +333,24 @@ pub fn release(r: *Reservation) void {
 }
 
 /// Hand `fds` (fds a peer attached) to the `.received` lane, which closes
-/// each one. The caller must not touch them again.
+/// each one. The caller must not touch them again. They start counting
+/// against the process fd budget now, whatever its limit, and stop once
+/// closed (see "The process fd budget" in the module doc).
 ///
 /// The fds covered by `r` (a `.received` reservation; up to `r.slots`) use
 /// reserved capacity and cannot fail; `r.slots` drops by that many. The rest
 /// need an allocation; if it fails, or the thread cannot start, those fds
 /// are closed inline on the calling thread, with a warning. Never fails.
 pub fn handOff(r: ?*Reservation, fds: []const Fd) Admission {
+    if (comptime !supported) return .{ .pending = 0, .limit = 0, .over_limit = false };
+    budget.acquire(fds.len);
+    return handOffCounted(r, fds);
+}
+
+/// `handOff` for fds already counted in the process fd budget: the fds a
+/// transport kept for a frame, or a `Peer` for its imports. Their units
+/// pass to the closer, which gives them back once it has closed the fds.
+pub fn handOffCounted(r: ?*Reservation, fds: []const Fd) Admission {
     if (comptime !supported) return .{ .pending = 0, .limit = 0, .over_limit = false };
     if (r) |res| std.debug.assert(res.lane == .received);
     if (fds.len == 0) return admission();
@@ -356,12 +359,18 @@ pub fn handOff(r: ?*Reservation, fds: []const Fd) Admission {
 
 /// Hand `fds` (a transport's dups of fds it sent, or gave up sending) to the
 /// `.sent` lane, which closes each one. The caller must not touch them
-/// again. Covered by `r` (a `.sent` reservation) like `handOff`. Never
-/// fails.
+/// again. Covered by `r` (a `.sent` reservation) like `handOff`: each
+/// covered fd takes over its slot's unit of the process fd budget, and an
+/// fd no slot covers starts counting now. The closer gives each unit back
+/// once it has closed the fd. Never fails.
 pub fn handOffSent(r: ?*Reservation, fds: []const Fd) void {
     if (comptime !supported) return;
     if (r) |res| std.debug.assert(res.lane == .sent);
     if (fds.len == 0) return;
+    // A reservation is used by one thread at a time (its owner's), so its
+    // slot count is stable here.
+    const covered = if (r) |res| @min(res.slots, fds.len) else 0;
+    budget.acquire(fds.len - covered);
     _ = handOffCloses(.sent, r, fds);
 }
 
@@ -407,7 +416,9 @@ pub fn handOffShutdown(r: ?*Reservation, socket: Fd) void {
 fn enqueue(lane: Lane, r: ?*Reservation, jobs: []const Job) Admission {
     ensureStarted() catch |err| {
         log.warn("fd closer thread unavailable ({t}); running {d} job(s) on the calling thread", .{ err, jobs.len });
-        runAll(jobs);
+        // Use up the reservation as a queued hand-off would have.
+        if (r) |res| takeCovered(res, jobs.len);
+        runAll(lane, jobs);
         return admission();
     };
 
@@ -426,7 +437,9 @@ fn enqueue(lane: Lane, r: ?*Reservation, jobs: []const Job) Admission {
         s.jobs.appendSliceAssumeCapacity(jobs[0..covered]);
         const rest = jobs[covered..];
         if (rest.len != 0) {
-            if (s.jobs.ensureTotalCapacity(std.heap.page_allocator, s.jobs.items.len + s.reserved + rest.len)) |_| {
+            if (injectedFailure()) {
+                inline_jobs = rest;
+            } else if (s.jobs.ensureTotalCapacity(std.heap.page_allocator, s.jobs.items.len + s.reserved + rest.len)) |_| {
                 s.jobs.appendSliceAssumeCapacity(rest);
             } else |_| {
                 inline_jobs = rest;
@@ -434,33 +447,74 @@ fn enqueue(lane: Lane, r: ?*Reservation, jobs: []const Job) Admission {
         }
         s.work.signal(syncIo());
         const pending_now = s.pendingLocked();
-        // `limit` is guarded by the `.received` lane's lock: read it only
-        // under that one.
         after = switch (lane) {
             .received => blk: {
-                initLimitLocked();
-                break :blk .{ .pending = pending_now, .limit = limit, .over_limit = pending_now > limit };
+                const cap = budget.limit();
+                break :blk .{ .pending = pending_now, .limit = cap, .over_limit = pending_now > cap };
             },
             .socket, .sent => .{ .pending = pending_now, .limit = 0, .over_limit = false },
         };
     }
     if (inline_jobs.len != 0) {
         log.warn("fd closer queue could not grow; running {d} job(s) on the calling thread", .{inline_jobs.len});
-        runAll(inline_jobs);
+        runAll(lane, inline_jobs);
     }
     return after;
 }
 
-/// The `.received` lane right now. A reader checks `full()` once its socket
-/// is readable and before `recvmsg` (see "The bound" in the module doc).
+/// `jobs` jobs of a hand-off under `r` run inline (no thread): take the
+/// slots they would have used from `r` and its lane, as `enqueue` does for
+/// a queued hand-off. The jobs keep their budget units; `runAll` gives them
+/// back.
+fn takeCovered(r: *Reservation, jobs: usize) void {
+    const covered = @min(r.slots, jobs);
+    if (covered == 0) return;
+    const s = laneState(r.lane);
+    s.lock();
+    s.reserved -= covered;
+    s.unlock();
+    r.slots -= covered;
+}
+
+/// Fault injection, for tests: make the queue allocation `nth` from now
+/// fail as if out of memory (0: the next one), once; null disarms it. Every
+/// `reserve`, every `reserveSent` and every hand-off that a reservation does
+/// not wholly cover counts as one allocation, whether or not its queue would
+/// have grown, so a test can reach each of their failure paths. Returns
+/// whether an earlier injection was still armed (it is replaced).
+pub fn injectAllocationFailure(nth: ?usize) bool {
+    const value: isize = if (nth) |n| @intCast(n) else -1;
+    return inject_countdown.swap(value, .acq_rel) >= 0;
+}
+
+/// Whether an `injectAllocationFailure` is armed and has not fired yet.
+pub fn allocationFailureArmed() bool {
+    return inject_countdown.load(.acquire) >= 0;
+}
+
+/// One queue allocation is about to happen: true when it is the one
+/// `injectAllocationFailure` armed.
+fn injectedFailure() bool {
+    var current = inject_countdown.load(.monotonic);
+    while (current >= 0) {
+        const next: isize = if (current == 0) -1 else current - 1;
+        if (inject_countdown.cmpxchgWeak(current, next, .acq_rel, .monotonic)) |actual| {
+            current = actual;
+            continue;
+        }
+        return current == 0;
+    }
+    return false;
+}
+
+/// The `.received` lane right now, against the process fd budget's limit.
+/// A reader checks `full()` once its socket is readable and before
+/// `recvmsg` (see "The process fd budget" in the module doc).
 pub fn admission() Admission {
     if (comptime !supported) return .{ .pending = 0, .limit = 0, .over_limit = false };
-    const s = laneState(.received);
-    s.lock();
-    defer s.unlock();
-    initLimitLocked();
-    const pending_now = s.pendingLocked();
-    return .{ .pending = pending_now, .limit = limit, .over_limit = pending_now > limit };
+    const cap = budget.limit();
+    const pending_now = pendingIn(.received);
+    return .{ .pending = pending_now, .limit = cap, .over_limit = pending_now > cap };
 }
 
 /// Jobs handed off and not yet done, in every lane.
@@ -480,70 +534,6 @@ pub fn pendingIn(lane: Lane) usize {
     return s.pendingLocked();
 }
 
-/// The `.received` bound in force (see the module doc).
-pub fn queueLimit() usize {
-    if (comptime !supported) return 0;
-    const s = laneState(.received);
-    s.lock();
-    defer s.unlock();
-    initLimitLocked();
-    return limit;
-}
-
-/// Replace the `.received` bound (at least 1) and return the previous one.
-/// For tests, and for processes that set their own fd budget.
-pub fn setQueueLimit(new_limit: usize) usize {
-    if (comptime !supported) return 0;
-    const s = laneState(.received);
-    s.lock();
-    defer s.unlock();
-    initLimitLocked();
-    const previous = limit;
-    limit = @max(new_limit, 1);
-    return previous;
-}
-
-/// Under the `.received` lane's `mu`.
-fn initLimitLocked() void {
-    if (limit != 0) return;
-    limit = defaultQueueLimit();
-}
-
-/// The `.sent` bound in force (see "The bounds" in the module doc).
-pub fn sentLimit() usize {
-    if (comptime !supported) return 0;
-    const s = laneState(.sent);
-    s.lock();
-    defer s.unlock();
-    initSentLimitLocked();
-    return sent_limit;
-}
-
-/// Replace the `.sent` bound (at least 1) and return the previous one. For
-/// tests, and for processes that set their own fd budget.
-pub fn setSentLimit(new_limit: usize) usize {
-    if (comptime !supported) return 0;
-    const s = laneState(.sent);
-    s.lock();
-    defer s.unlock();
-    initSentLimitLocked();
-    const previous = sent_limit;
-    sent_limit = @max(new_limit, 1);
-    return previous;
-}
-
-/// Under the `.sent` lane's `mu`.
-fn initSentLimitLocked() void {
-    if (sent_limit != 0) return;
-    sent_limit = defaultQueueLimit();
-}
-
-fn defaultQueueLimit() usize {
-    const limits = posix.getrlimit(.NOFILE) catch return fallback_queue_limit;
-    const soft: usize = @intCast(@min(limits.cur, max_counted_fd_limit));
-    return @max(soft / 4, min_queue_limit);
-}
-
 fn closerMain(lane: Lane) void {
     const s = laneState(lane);
     var batch: [64]Job = undefined;
@@ -560,7 +550,7 @@ fn closerMain(lane: Lane) void {
         // Count each job done as it finishes, so `pending` drops past a
         // job that returned while a later one in the batch blocks.
         for (batch[0..n]) |job| {
-            runOne(job);
+            runOne(lane, job);
             s.lock();
             s.running -= 1;
             s.unlock();
@@ -583,13 +573,21 @@ fn compactLocked(s: *LaneState) void {
     s.head = 0;
 }
 
-fn runAll(jobs: []const Job) void {
-    for (jobs) |job| runOne(job);
+fn runAll(lane: Lane, jobs: []const Job) void {
+    for (jobs) |job| runOne(lane, job);
 }
 
-fn runOne(job: Job) void {
+/// One job. A closed fd of the `.received` or `.sent` lane stops counting
+/// against the process fd budget.
+fn runOne(lane: Lane, job: Job) void {
     switch (job.op) {
-        .close => closeOne(job.fd),
+        .close => {
+            closeOne(job.fd);
+            switch (lane) {
+                .received, .sent => budget.release(1),
+                .socket => {},
+            }
+        },
         .shutdown => shutdownOne(job.fd),
     }
 }

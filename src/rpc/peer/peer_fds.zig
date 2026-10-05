@@ -51,9 +51,13 @@
 //! - `thirdPartyHosted`, `receiverHosted` and `receiverAnswer`: never
 //!   attached (`rpc.capnp:1137-1146` makes the third-party case optional; it
 //!   is deferred), so the transport closes the fd.
-//! - Past `max_live_imports` fds, the fd stays with the transport and a
+//! - Past `max_live_imports` fds (the per-connection live-fd cap,
+//!   `Peer.setMaxLiveImportedFds`), the fd stays with the transport and a
 //!   `.resource_rejection` event (`.attached_fds`,
 //!   `error.ImportedFdsOverLimit`) reports it.
+//! The process fd budget (`fd_io.budget`) is checked earlier, by the
+//! transport, when the fd arrives: a frame keeps only the fds that fit in
+//! it, so every fd offered here already counts.
 //! Only the transport frame being dispatched can give fds: a frame the peer
 //! replays or delivers to itself (a stashed loopback Return, a buffered
 //! third-party Return, a loopback Call) is a different decoded message, and
@@ -70,6 +74,9 @@
 //! never allocates and never closes inline. In Debug builds every release
 //! checks that each id in the table is still an import.
 //!
+//! Every fd held here counts as one unit of the process fd budget
+//! (`fd_budget`), from adoption until the closer has closed it.
+//!
 //! `Peer.importFd` lends the fd: it stays valid until the import is
 //! released (C++ `ClientHook::getFd`, `capability.h:278-288`). A promise
 //! import gives null until it resolves, then the fd of what it resolved to.
@@ -81,6 +88,7 @@ const message = @import("../../serialization/message.zig");
 const protocol = @import("../wire/protocol.zig");
 const fd_passing = @import("../transport/fd_passing.zig");
 const closer = @import("../transport/unix/fd_closer.zig");
+const budget = @import("../transport/unix/fd_budget.zig");
 const peer_export_release = @import("./peer_export_release.zig");
 
 comptime {
@@ -373,7 +381,14 @@ pub fn PeerFds(comptime Peer: type) type {
                 closer.trim(&peer.fds.reservation, live);
                 return;
             };
+            // The fd's unit of the process fd budget, taken before the fd:
+            // a transport stops counting the fds it hands out
+            // (`Transport.takeFrameFd`), and this order never lets the count
+            // dip below what the process holds. The transport already let
+            // the fd in under the budget, so this never refuses.
+            budget.acquire(1);
             const handle = peer.transport.takeFrameFd(index) orelse {
+                budget.release(1);
                 closer.trim(&peer.fds.reservation, live);
                 return;
             };
@@ -388,7 +403,7 @@ pub fn PeerFds(comptime Peer: type) type {
             if (comptime !fd_passing.supported) return;
             if (!peer.caps.hasImport(import_id)) {
                 if (peer.fds.imports.fetchRemove(import_id)) |removed| {
-                    _ = closer.handOff(&peer.fds.reservation, &.{removed.value.fd});
+                    _ = closer.handOffCounted(&peer.fds.reservation, &.{removed.value.fd});
                 }
             }
             debugCheck(peer);
@@ -410,11 +425,11 @@ pub fn PeerFds(comptime Peer: type) type {
                     batch[n] = entry.fd;
                     n += 1;
                     if (n == batch.len) {
-                        _ = closer.handOff(&peer.fds.reservation, batch[0..n]);
+                        _ = closer.handOffCounted(&peer.fds.reservation, batch[0..n]);
                         n = 0;
                     }
                 }
-                if (n != 0) _ = closer.handOff(&peer.fds.reservation, batch[0..n]);
+                if (n != 0) _ = closer.handOffCounted(&peer.fds.reservation, batch[0..n]);
                 closer.release(&peer.fds.reservation);
             }
             peer.fds.imports.deinit(peer.allocator);

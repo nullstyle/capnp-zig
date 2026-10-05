@@ -819,9 +819,10 @@ pub const Connection = struct {
 
     /// Experimental (fd passing). Take fd `index` (in the order the peer
     /// attached them) of the frame `on_message` is dispatching. The caller
-    /// owns it from then on (`Transport.takeFrameFd`). Null when fd passing
-    /// is off (`enableFdPassing`), for an index out of range, and for an fd
-    /// already taken.
+    /// owns it from then on (`Transport.takeFrameFd`), and it no longer
+    /// counts against the process fd budget (`fd_io.budget`). Null when fd
+    /// passing is off (`enableFdPassing`), for an index out of range, and
+    /// for an fd already taken.
     pub fn takeFrameFd(self: *Connection, index: u8) ?fd_passing.FdHandle {
         self.assertThreadAffinity();
         if (comptime !fd_io.supported) return null;

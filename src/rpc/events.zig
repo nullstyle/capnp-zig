@@ -142,22 +142,28 @@ pub const Resource = enum(u8) {
     /// batches in one frame are a `.protocol_error`
     /// (`error.MultipleAttachedFdBatches`). The same resource reports the
     /// kernel dropping fds (`error.AttachedFdsTruncated`, or the fd-table errors
-    /// `error.ProcessFdQuotaExceeded` / `error.SystemFdQuotaExceeded`) and a
-    /// closer queue past its bound (`error.FdCloseQueueFull`: `attempted` =
-    /// fds pending, `limit` = the bound; the connection is closed). On the
-    /// send side, a message whose fds would take a transport's write queue
-    /// past `Transport.max_queued_fds` emits a `.backpressure`
-    /// (`err` = `error.FdQueueFull`, `attempted_bytes` = the message's fd
-    /// count, `limit` = the cap); the connection stays open. A message
-    /// refused because the process already holds as many dups of sent fds
-    /// as the closer's bound allows emits the same, with `err` =
-    /// `error.FdCloseQueueFull` and `limit` = that bound
-    /// (`fd_io.closer.sentLimit`). A `Peer` that already keeps
-    /// `max_live_imported_fds` fds for its imports reports a capability that
-    /// arrived with one more as a `.resource_rejection` from source `.peer`
-    /// (`err` = `error.ImportedFdsOverLimit`, `attempted` = the fds it would
-    /// keep, `limit` = the cap); the capability arrives without its fd, which
-    /// the transport closes.
+    /// `error.ProcessFdQuotaExceeded` / `error.SystemFdQuotaExceeded`), fds a
+    /// frame could not keep because the process fd budget
+    /// (`fd_io.budget`) was full (`error.FdBudgetExceeded`: `attempted` = the
+    /// fds the budget would count with them, `limit` = its limit; the frame
+    /// arrives without them and the connection stays), and the closer's
+    /// `.received` queue alone at that limit (`error.FdCloseQueueFull`:
+    /// `attempted` = fds pending, `limit` = the budget's limit; the
+    /// connection is closed). On the send side, a message whose fds would
+    /// take a transport's write queue past `Transport.max_queued_fds` emits a
+    /// `.backpressure` (`err` = `error.FdQueueFull`, `attempted_bytes` = the
+    /// message's fd count, `limit` = the cap); the connection stays open. A
+    /// message refused because its dups do not fit in the process fd budget
+    /// emits the same, with `err` = `error.FdBudgetExceeded` and `limit` =
+    /// the budget's limit. A Linux ETOOMANYREFS (the user has
+    /// `RLIMIT_NOFILE` fds in flight on AF_UNIX sockets) emits it with
+    /// `err` = `error.TooManyFdsInFlight` and `limit` = null: a direct send
+    /// is refused, a queued message goes without its fds. A `Peer` that
+    /// already keeps `max_live_imported_fds` fds for its imports reports a
+    /// capability that arrived with one more as a `.resource_rejection` from
+    /// source `.peer` (`err` = `error.ImportedFdsOverLimit`, `attempted` =
+    /// the fds it would keep, `limit` = the cap); the capability arrives
+    /// without its fd, which the transport closes.
     attached_fds,
     _,
 };

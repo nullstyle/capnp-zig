@@ -522,6 +522,16 @@ jobs:
       - name: Run OOM regression tests
         run: zig build test-oom --summary all
 
+      - name: Run fd-passing limit and fault-injection tests
+        # Sprint item 13: the process fd budget, N connections at their
+        # per-connection fd cap with accept still working, OOM at every
+        # allocation of the fd paths (the fd-passing merge needs it green),
+        # EMFILE, and Linux ETOOMANYREFS (the runner is not root). The suite
+        # is also part of test-oom and test-resource-budgets, so this step is
+        # usually a cache hit; it names the gate. Windows compiles it and
+        # skips.
+        run: zig build test-rpc-unix-fd-limits --summary all
+
       - name: Run raw-frame security e2e tests
         run: zig build test-e2e-security --summary all
 
