@@ -317,14 +317,24 @@ jobs:
         run: zig build -Dquic=true -Doptimize=Debug test-rpc-quic-evidence-compile --summary all
 
       - name: Run native QUIC transport evidence (Debug, no skips)
-        run: zig build -Dquic=true -Doptimize=Debug test-rpc-quic-evidence --summary all ${{ runner.os == 'Windows' && '-j1' || '' }}
+        # The stall watchdog records which test binary is stuck (and its
+        # threads) if the step goes quiet; it never stops the command. A
+        # Windows ReleaseSafe run hung once on 2026-10-05 (run 37248467342,
+        # attempt 1) and passed on rerun, with no evidence of where.
+        shell: bash
+        run: bash tools/stall_watchdog.sh zig build -Dquic=true -Doptimize=Debug test-rpc-quic-evidence --summary all ${{ runner.os == 'Windows' && '-j1' || '' }}
 
       - name: Compile Windows QUIC evidence binaries (ReleaseSafe)
         if: runner.os == 'Windows'
         run: zig build -Dquic=true -Doptimize=ReleaseSafe test-rpc-quic-evidence-compile --summary all
 
       - name: Run native QUIC transport evidence (ReleaseSafe, no skips)
-        run: zig build -Dquic=true -Doptimize=ReleaseSafe test-rpc-quic-evidence --summary all ${{ runner.os == 'Windows' && '-j1' || '' }}
+        # The stall watchdog records which test binary is stuck (and its
+        # threads) if the step goes quiet; it never stops the command. A
+        # Windows ReleaseSafe run hung once on 2026-10-05 (run 37248467342,
+        # attempt 1) and passed on rerun, with no evidence of where.
+        shell: bash
+        run: bash tools/stall_watchdog.sh zig build -Dquic=true -Doptimize=ReleaseSafe test-rpc-quic-evidence --summary all ${{ runner.os == 'Windows' && '-j1' || '' }}
 
       # One real ping-pong round trip through the API docs/quic-transport.md
       # teaches (`quic.serve` + `quic.connect`); the example exits non-zero on
