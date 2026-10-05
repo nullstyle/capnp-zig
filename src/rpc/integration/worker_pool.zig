@@ -173,7 +173,7 @@ pub const WorkerPool = struct {
     }
 
     /// Every way `initListener` fails. On each of them the caller still
-    /// owns `listener`, unchanged.
+    /// owns `listener.*`, unchanged.
     pub const InitListenerError = error{
         /// `Config.concurrency` is 0.
         InvalidConcurrency,
@@ -193,11 +193,17 @@ pub const WorkerPool = struct {
     /// one from `rpc.transport.unix.listen`. Experimental. Linux and Darwin
     /// only; elsewhere this returns `error.UnixSocketsUnsupported`.
     ///
-    /// The pool takes ownership of `listener`: do not accept on it or close
-    /// it after this returns. Shutdown (`shutdown`, `shutdownGraceful` or
-    /// `deinit`) closes it with `Listener.close` once no worker waits on it,
-    /// so a socket file from `unix.listen` is removed and its lock released.
-    /// The pool runs on the listener's `std.Io` (`Listener.ioBackend`).
+    /// On success the pool takes the listener: it moves `listener.*` into
+    /// the pool and marks the caller's copy closed, so `close` on that copy
+    /// does nothing (a `defer listener.close()` left in place is harmless)
+    /// and `accept` on it returns `error.ListenerClosed`. On error the
+    /// caller still owns `listener.*`, unchanged. Shutdown (`shutdown`,
+    /// `shutdownGraceful` or `deinit`) closes the pool's listener with
+    /// `Listener.close` once no worker waits on it, so a socket file from
+    /// `unix.listen` is removed and its lock released. That close never
+    /// blocks on an AF_UNIX listener (see `Listener.close`), so shutdown
+    /// does not wait for fds riding on connections nobody accepted. The
+    /// pool runs on the listener's `std.Io` (`Listener.ioBackend`).
     /// `config.connection_options` applies to every connection; the
     /// listener's own `conn_options` and `config.listen_backlog` are not
     /// used.
@@ -214,7 +220,7 @@ pub const WorkerPool = struct {
     /// O_NONBLOCK from the listener; the pool clears it).
     pub fn initListener(
         allocator: std.mem.Allocator,
-        listener: Listener,
+        listener: *Listener,
         ctx: *anyopaque,
         on_accept: AcceptFn,
         config: Config,
@@ -241,11 +247,18 @@ pub const WorkerPool = struct {
         // listener is still blocking and still theirs.
         try park.setNonBlocking(listener.server.socket.handle, true);
 
+        // Move it: the pool's copy is the live one, and the caller's is
+        // marked closed. A leftover `close` on the caller's copy would
+        // otherwise unlink the path, close the listen fd under the parked
+        // workers, and close the lock fd's number a second time later.
+        const owned = listener.*;
+        listener.close_requested.store(true, .release);
+
         return .{
             .allocator = allocator,
-            .io = listener.io,
+            .io = owned.io,
             .workers = workers,
-            .server = listener.server,
+            .server = owned.server,
             .ctx = ctx,
             .on_accept = on_accept,
             .conn_options = poolConnectionOptions(config),
@@ -258,7 +271,7 @@ pub const WorkerPool = struct {
             .should_stop = std.atomic.Value(bool).init(false),
             .fd_closed = std.atomic.Value(bool).init(false),
             .acceptors_parked = std.atomic.Value(u32).init(0),
-            .listener = listener,
+            .listener = owned,
             .park_door = door,
         };
     }
@@ -381,6 +394,12 @@ pub const WorkerPool = struct {
             if (self.park_door == null) self.nudgeAcceptors();
             if (self.acceptors_parked.load(.acquire) != 0) sleepMs(self.io, drain_poll_interval_ms);
         }
+        // The close runs under the lock, so a second `stopAccepting` (say,
+        // `deinit` on another thread) cannot return, and free the pool,
+        // while this one is still closing. That is only sound because the
+        // close is short: `Listener.close` never does an AF_UNIX listener's
+        // final close here, where the kernel would close the fds riding on
+        // connections still in the backlog (a lingering one blocks).
         self.active_mu.lockUncancelable(self.io);
         defer self.active_mu.unlock(self.io);
         if (!self.fd_closed.swap(true, .acq_rel)) {

@@ -1,5 +1,6 @@
 //! Raw-syscall helpers shared by the AF_UNIX fd suites
-//! (`rpc_unix_fd_drain_test.zig`, `rpc_unix_linger_test.zig`).
+//! (`rpc_unix_fd_drain_test.zig`, `rpc_unix_linger_test.zig`,
+//! `rpc_unix_worker_pool_test.zig`).
 //!
 //! The "peer" in these suites is a raw socket that attaches fds with
 //! `sendmsg`, the way a hostile local process would. Everything here calls
@@ -167,6 +168,167 @@ pub fn sendWithFds(sock: Fd, bytes: []const u8, fds: []const Fd) !void {
         offset += try sendOnce(sock, bytes[offset..], if (first) fds else &.{});
         first = false;
     }
+}
+
+/// A raw AF_UNIX stream socket connected to the listener at `path`. The
+/// caller closes it.
+pub fn connectPath(path: []const u8) !Fd {
+    var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
+    @memset(&addr.path, 0);
+    if (path.len >= addr.path.len) return error.NameTooLong;
+    @memcpy(addr.path[0..path.len], path);
+    const fd: Fd = @intCast(try check(sys.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0), "socket"));
+    errdefer closeFd(fd);
+    _ = try check(sys.connect(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)), "connect");
+    return fd;
+}
+
+var dir_counter: std.atomic.Value(u32) = .init(0);
+
+/// A private (0700) directory under /tmp for socket files, removed with
+/// everything in it. Short names: `sun_path` is 104 bytes on Darwin.
+pub const TestDir = struct {
+    buf: [64]u8 = undefined,
+    dir: []const u8 = &.{},
+
+    pub fn init(self: *TestDir) !void {
+        const n = dir_counter.fetchAdd(1, .monotonic);
+        self.dir = try std.fmt.bufPrint(&self.buf, "/tmp/czfd-{d}-{d}", .{ sys.getpid(), n });
+        std.Io.Dir.cwd().deleteTree(testing.io, self.dir) catch {};
+        var z: [65]u8 = undefined;
+        _ = try check(sys.mkdir(nulTerminated(&z, self.dir), 0o700), "mkdir");
+    }
+
+    pub fn deinit(self: *TestDir) void {
+        std.Io.Dir.cwd().deleteTree(testing.io, self.dir) catch {};
+    }
+
+    /// `<dir>/<name>` in `out`.
+    pub fn path(self: *const TestDir, out: []u8, name: []const u8) []const u8 {
+        return std.fmt.bufPrint(out, "{s}/{s}", .{ self.dir, name }) catch unreachable;
+    }
+};
+
+pub fn nulTerminated(buf: []u8, bytes: []const u8) [*:0]const u8 {
+    @memcpy(buf[0..bytes.len], bytes);
+    buf[bytes.len] = 0;
+    return @ptrCast(buf.ptr);
+}
+
+/// Whether anything is at `path` (`lstat`).
+pub fn pathExists(path: []const u8) bool {
+    var z: [256]u8 = undefined;
+    const path_z = nulTerminated(&z, path);
+    if (is_linux) {
+        const linux = std.os.linux;
+        var stx: linux.Statx = undefined;
+        const rc = linux.statx(linux.AT.FDCWD, path_z, linux.AT.SYMLINK_NOFOLLOW, .{ .TYPE = true }, &stx);
+        return linux.errno(rc) == .SUCCESS;
+    } else {
+        var st: std.c.Stat = undefined;
+        return posix.errno(std.c.fstatat(std.c.AT.FDCWD, path_z, &st, std.c.AT.SYMLINK_NOFOLLOW)) == .SUCCESS;
+    }
+}
+
+/// A TCP client socket whose final close lingers: the accepting side never
+/// reads, so unsent data stays queued, and SO_LINGER is on. Attach `client`
+/// to a message and close it here (`closeClient`): the receiver's copy is
+/// then the last one, and its final close blocks for the linger time, or
+/// until `endLinger`.
+pub const LingeringSocket = struct {
+    listener: Fd,
+    server_side: Fd,
+    client: Fd,
+
+    var chunk: [64 * 1024]u8 = @splat(0xab);
+
+    pub fn open(seconds: i32) !LingeringSocket {
+        const listener: Fd = @intCast(try check(sys.socket(posix.AF.INET, posix.SOCK.STREAM, 0), "socket"));
+        errdefer closeFd(listener);
+        var addr: posix.sockaddr.in = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f00_0001) };
+        _ = try check(sys.bind(listener, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)), "bind");
+        _ = try check(sys.listen(listener, 1), "listen");
+        var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.in);
+        _ = try check(sys.getsockname(listener, @ptrCast(&addr), &addr_len), "getsockname");
+        const client: Fd = @intCast(try check(sys.socket(posix.AF.INET, posix.SOCK.STREAM, 0), "socket"));
+        errdefer closeFd(client);
+        _ = try check(sys.connect(client, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)), "connect");
+        const server_side: Fd = @intCast(try check(sys.accept(listener, null, null), "accept"));
+        errdefer closeFd(server_side);
+
+        // Fill the send queue; the accepting side never reads. One pass is
+        // not enough on macOS: receive-buffer autotuning drains it and the
+        // close then does not linger. Refill until two passes 10 ms apart
+        // add nothing.
+        try setNonBlocking(client, true);
+        var queued = try fillSendQueue(client);
+        try testing.expect(queued > 0);
+        var quiet_passes: usize = 0;
+        var passes: usize = 0;
+        while (quiet_passes < 2) : (passes += 1) {
+            if (passes == 200) return error.SendQueueNeverSettled;
+            sleepMs(10);
+            const more = try fillSendQueue(client);
+            queued += more;
+            quiet_passes = if (more == 0) quiet_passes + 1 else 0;
+        }
+        try setNonBlocking(client, false);
+
+        // Darwin's SO_LINGER counts clock ticks; SO_LINGER_SEC counts
+        // seconds, as Linux's SO_LINGER does.
+        const linger_opt = if (is_macos) posix.SO.LINGER_SEC else posix.SO.LINGER;
+        const lg: posix.linger = .{ .onoff = 1, .linger = seconds };
+        _ = try check(sys.setsockopt(client, posix.SOL.SOCKET, linger_opt, std.mem.asBytes(&lg), @sizeOf(posix.linger)), "setsockopt(SO_LINGER)");
+        return .{ .listener = listener, .server_side = server_side, .client = client };
+    }
+
+    /// Sends on the non-blocking `client` until EAGAIN; returns the bytes sent.
+    fn fillSendQueue(client: Fd) !usize {
+        var queued: usize = 0;
+        while (queued < 64 * 1024 * 1024) {
+            const rc = sys.write(client, &chunk, chunk.len);
+            switch (posix.errno(rc)) {
+                .SUCCESS => queued += @intCast(rc),
+                .INTR => {},
+                .AGAIN => return queued,
+                else => |err| {
+                    std.debug.print("filling the TCP send queue failed with errno {d}\n", .{@backingInt(err)});
+                    return error.SyscallFailed;
+                },
+            }
+        }
+        return error.SendQueueNeverFilled;
+    }
+
+    /// Our own copy of the lingering socket, after it was attached.
+    pub fn closeClient(self: *LingeringSocket) void {
+        if (self.client >= 0) closeFd(self.client);
+        self.client = -1;
+    }
+
+    /// Close the accepting side. That resets the connection, which ends
+    /// any linger still running on the closer thread.
+    pub fn endLinger(self: *LingeringSocket) void {
+        if (self.server_side >= 0) closeFd(self.server_side);
+        self.server_side = -1;
+    }
+
+    pub fn deinit(self: *LingeringSocket) void {
+        self.closeClient();
+        self.endLinger();
+        closeFd(self.listener);
+    }
+};
+
+/// A connection to the listener at `path` that nobody accepts, carrying
+/// `lingering.client`. The peer's own copies are closed, so the copy riding
+/// in the listener's backlog is the last: the kernel's final close of it
+/// happens inside the listener's final close, and lingers.
+pub fn queueLingeringInBacklog(path: []const u8, lingering: *LingeringSocket) !void {
+    const peer = try connectPath(path);
+    defer closeFd(peer);
+    try sendWithFds(peer, "x", &.{lingering.client});
+    lingering.closeClient();
 }
 
 /// A valid one-segment Cap'n Proto frame whose root holds `value`. The

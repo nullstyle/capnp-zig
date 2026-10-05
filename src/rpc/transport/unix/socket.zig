@@ -53,7 +53,12 @@
 //!   names this listener's file (same dev and ino), then closes the socket
 //!   and releases the lock. A relative path resolves against the current
 //!   directory at each step: after a `chdir`, `close` finds a different file
-//!   (or none) and leaves the socket file in place.
+//!   (or none) and leaves the socket file in place. The socket's final
+//!   close runs on the closer's `.socket` lane (see `fd_io`): the kernel
+//!   closes the fds riding on connections still in the backlog inside it,
+//!   and one of those closes can block. `close` still closes the listener's
+//!   own fd before it returns, which wakes a thread parked in `accept`, and
+//!   it releases the lock without waiting for that lane.
 //! - **Flags.** The listening and client sockets are close-on-exec (std
 //!   already makes accepted sockets close-on-exec). No `TCP_NODELAY`: these
 //!   are not TCP sockets.

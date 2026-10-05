@@ -21,6 +21,13 @@
 //! blocking fd still unread stalls only the socket lane (Linux still closes
 //! orderly sockets inline; a blocked reader still notices `shutdown`).
 //!
+//! The last part is the listening socket. The kernel does the final close of
+//! the fds riding on connections still in a listener's backlog inside the
+//! listener's own final close. `Listener.close` must return at once anyway,
+//! and while that close holds the socket lane, closing another listener must
+//! still wake a thread parked in its `accept` (macOS wakes it only through
+//! the close itself).
+//!
 //! Linux and macOS run the tests; other targets skip them but compile the
 //! file.
 
@@ -33,6 +40,7 @@ const posix = support.posix;
 const sys = support.sys;
 const fd_io = support.fd_io;
 const tcp = capnpc.rpc.transport.tcp;
+const unix = capnpc.rpc.transport.unix;
 const Connection = tcp.Connection;
 const Fd = support.Fd;
 
@@ -51,93 +59,7 @@ const stall_linger_seconds = 60;
 /// How long a stuck lane must stay stuck before a stall test trusts it.
 const stall_settle_ms = 200;
 
-/// A TCP client socket whose final close lingers: the accepting side never
-/// reads, so unsent data stays queued, and SO_LINGER is on.
-const LingeringSocket = struct {
-    listener: Fd,
-    server_side: Fd,
-    client: Fd,
-
-    var chunk: [64 * 1024]u8 = @splat(0xab);
-
-    fn open(seconds: i32) !LingeringSocket {
-        const listener: Fd = @intCast(try support.check(sys.socket(posix.AF.INET, posix.SOCK.STREAM, 0), "socket"));
-        errdefer support.closeFd(listener);
-        var addr: posix.sockaddr.in = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f00_0001) };
-        _ = try support.check(sys.bind(listener, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)), "bind");
-        _ = try support.check(sys.listen(listener, 1), "listen");
-        var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.in);
-        _ = try support.check(sys.getsockname(listener, @ptrCast(&addr), &addr_len), "getsockname");
-        const client: Fd = @intCast(try support.check(sys.socket(posix.AF.INET, posix.SOCK.STREAM, 0), "socket"));
-        errdefer support.closeFd(client);
-        _ = try support.check(sys.connect(client, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)), "connect");
-        const server_side: Fd = @intCast(try support.check(sys.accept(listener, null, null), "accept"));
-        errdefer support.closeFd(server_side);
-
-        // Fill the send queue; the accepting side never reads. One pass is
-        // not enough on macOS: receive-buffer autotuning drains it and the
-        // close then does not linger. Refill until two passes 10 ms apart
-        // add nothing.
-        try support.setNonBlocking(client, true);
-        var queued = try fillSendQueue(client);
-        try testing.expect(queued > 0);
-        var quiet_passes: usize = 0;
-        var passes: usize = 0;
-        while (quiet_passes < 2) : (passes += 1) {
-            if (passes == 200) return error.SendQueueNeverSettled;
-            support.sleepMs(10);
-            const more = try fillSendQueue(client);
-            queued += more;
-            quiet_passes = if (more == 0) quiet_passes + 1 else 0;
-        }
-        try support.setNonBlocking(client, false);
-
-        // Darwin's SO_LINGER counts clock ticks; SO_LINGER_SEC counts
-        // seconds, as Linux's SO_LINGER does.
-        const linger_opt = if (support.is_macos) posix.SO.LINGER_SEC else posix.SO.LINGER;
-        const lg: posix.linger = .{ .onoff = 1, .linger = seconds };
-        _ = try support.check(sys.setsockopt(client, posix.SOL.SOCKET, linger_opt, std.mem.asBytes(&lg), @sizeOf(posix.linger)), "setsockopt(SO_LINGER)");
-        return .{ .listener = listener, .server_side = server_side, .client = client };
-    }
-
-    /// Sends on the non-blocking `client` until EAGAIN; returns the bytes sent.
-    fn fillSendQueue(client: Fd) !usize {
-        var queued: usize = 0;
-        while (queued < 64 * 1024 * 1024) {
-            const rc = sys.write(client, &chunk, chunk.len);
-            switch (posix.errno(rc)) {
-                .SUCCESS => queued += @intCast(rc),
-                .INTR => {},
-                .AGAIN => return queued,
-                else => |err| {
-                    std.debug.print("filling the TCP send queue failed with errno {d}\n", .{@backingInt(err)});
-                    return error.SyscallFailed;
-                },
-            }
-        }
-        return error.SendQueueNeverFilled;
-    }
-
-    /// Our own copy of the lingering socket, after it was attached.
-    fn closeClient(self: *LingeringSocket) void {
-        if (self.client >= 0) support.closeFd(self.client);
-        self.client = -1;
-    }
-
-    /// Close the accepting side. That resets the connection, which ends
-    /// any linger still running on the closer thread.
-    fn endLinger(self: *LingeringSocket) void {
-        if (self.server_side >= 0) support.closeFd(self.server_side);
-        self.server_side = -1;
-    }
-
-    fn deinit(self: *LingeringSocket) void {
-        self.closeClient();
-        self.endLinger();
-        support.closeFd(self.listener);
-    }
-};
-
+const LingeringSocket = support.LingeringSocket;
 const Inbox = support.Inbox;
 
 fn onMessage(conn: *Connection, _: []const u8) anyerror!void {
@@ -486,6 +408,162 @@ test "a connection torn down with a blocking fd still unread stalls only the soc
         tf.shutdown();
         try testing.expect(reader.waitDone(teardown_max_ms));
         try testing.expectEqual(@as(usize, 0), try reader.result.?);
+
+        lingering.endLinger();
+        try support.waitCloserIdle(closer_drain_ms);
+    }
+    try support.expectBackAtBaseline(before);
+}
+
+// ---------------------------------------------------------------------------
+// A listener whose backlog holds a blocking fd
+// ---------------------------------------------------------------------------
+
+/// `listener.close()` on a helper thread, timed. A close still running after
+/// `teardown_max_ms` is ended with `lingering.endLinger()`, so a failure
+/// never hangs the suite, and fails the test.
+fn timedListenerClose(listener: *tcp.Listener, lingering: *LingeringSocket) !i64 {
+    const Closer = struct {
+        done: std.atomic.Value(bool) = .init(false),
+
+        fn run(self: *@This(), l: *tcp.Listener) void {
+            l.close();
+            self.done.store(true, .release);
+        }
+    };
+    var closer: Closer = .{};
+    const start = support.nowNs();
+    const thread = try std.Thread.spawn(.{}, Closer.run, .{ &closer, listener });
+    while (!closer.done.load(.acquire) and support.msSince(start) < teardown_max_ms) support.sleepMs(1);
+    const elapsed = support.msSince(start);
+    if (!closer.done.load(.acquire)) {
+        lingering.endLinger();
+        thread.join();
+        std.debug.print("Listener.close was still running after {d} ms: the backlog's lingering close ran on its thread\n", .{elapsed});
+        return error.ListenerCloseBlocked;
+    }
+    thread.join();
+    return elapsed;
+}
+
+/// A thread parked in `acceptFd` on `listener`.
+const Acceptor = struct {
+    listener: *tcp.Listener,
+    parked: std.atomic.Value(bool) = .init(false),
+    done: std.atomic.Value(bool) = .init(false),
+    result: ?anyerror = null,
+
+    fn run(self: *Acceptor) void {
+        self.parked.store(true, .release);
+        if (self.listener.acceptFd()) |fd| {
+            tcp.closeFd(testing.io, fd);
+            self.result = error.UnexpectedConnection;
+        } else |err| {
+            self.result = err;
+        }
+        self.done.store(true, .release);
+    }
+};
+
+test "Listener.close returns at once while a connection in its backlog carries a lingering socket" {
+    if (!support.supported) return error.SkipZigTest;
+    try warmUp();
+    var dir: support.TestDir = .{};
+    try dir.init();
+    defer dir.deinit();
+    var path_buf: [96]u8 = undefined;
+    const path = dir.path(&path_buf, "s");
+
+    const before = support.FdSnapshot.take();
+    {
+        var lingering = try LingeringSocket.open(stall_linger_seconds);
+        defer lingering.deinit();
+        var listener = try unix.listen(testing.allocator, testing.io, path, .{});
+        defer listener.close();
+        // Nobody accepts: the connection, and the lingering socket riding
+        // on it, stay in the backlog until the listener's final close.
+        try support.queueLingeringInBacklog(path, &lingering);
+
+        const close_ms = try timedListenerClose(&listener, &lingering);
+        errdefer std.debug.print("Listener.close took {d} ms\n", .{close_ms});
+        try testing.expect(close_ms < teardown_max_ms);
+        // Setup check: the final close really blocks, on the socket lane.
+        try expectStuck(.socket);
+
+        // While it runs, the path is gone and its lock is free: a new
+        // listener binds the path at once.
+        try testing.expect(!support.pathExists(path));
+        var again = try unix.listen(testing.allocator, testing.io, path, .{});
+        again.close();
+
+        lingering.endLinger();
+        try support.waitCloserIdle(closer_drain_ms);
+    }
+    try support.expectBackAtBaseline(before);
+}
+
+test "while a listener's final close blocks the socket lane, closing another listener still wakes its parked accept" {
+    if (!support.supported) return error.SkipZigTest;
+    try warmUp();
+    var dir: support.TestDir = .{};
+    try dir.init();
+    defer dir.deinit();
+    var a_buf: [96]u8 = undefined;
+    const path_a = dir.path(&a_buf, "a");
+    var b_buf: [96]u8 = undefined;
+    const path_b = dir.path(&b_buf, "b");
+
+    const before = support.FdSnapshot.take();
+    {
+        var lingering = try LingeringSocket.open(stall_linger_seconds);
+        defer lingering.deinit();
+
+        // A: its final close holds the socket lane until endLinger.
+        var a = try unix.listen(testing.allocator, testing.io, path_a, .{});
+        defer a.close();
+        try support.queueLingeringInBacklog(path_a, &lingering);
+        _ = try timedListenerClose(&a, &lingering);
+        try expectStuck(.socket);
+
+        // B: a thread parked in accept. Linux wakes it through `shutdown`,
+        // macOS only through the close of B's fd, which must not wait
+        // behind A on the lane.
+        var b = try unix.listen(testing.allocator, testing.io, path_b, .{});
+        defer b.close();
+        var acceptor: Acceptor = .{ .listener = &b };
+        const thread = try std.Thread.spawn(.{}, Acceptor.run, .{&acceptor});
+        var joined = false;
+        // On failure: close B, then free the lane, so the thread wakes.
+        defer if (!joined) {
+            b.close();
+            lingering.endLinger();
+            thread.join();
+        };
+        while (!acceptor.parked.load(.acquire)) std.atomic.spinLoopHint();
+        // Give the thread time to enter accept(2).
+        support.sleepMs(300);
+        try testing.expect(!acceptor.done.load(.acquire));
+
+        const start = support.nowNs();
+        b.close();
+        while (!acceptor.done.load(.acquire) and support.msSince(start) < teardown_max_ms) support.sleepMs(5);
+        const woke = acceptor.done.load(.acquire);
+        // A's close was still running on the lane when B's accept woke.
+        const lane_busy = fd_io.closer.pendingIn(.socket) != 0;
+        if (!woke) std.debug.print("accept did not wake within {d} ms of close while the socket lane was stuck\n", .{teardown_max_ms});
+        try testing.expect(woke);
+        try testing.expect(lane_busy);
+        thread.join();
+        joined = true;
+
+        // Linux: EINVAL from shutdown; macOS: ECONNABORTED from the close.
+        // ListenerClosed: the thread had not reached accept(2) yet.
+        const woken_by: anyerror = if (support.is_linux) error.SocketNotListening else error.ConnectionAborted;
+        const result = acceptor.result orelse return error.NoAcceptResult;
+        if (result != woken_by and result != error.ListenerClosed) {
+            std.debug.print("accept returned {s}\n", .{@errorName(result)});
+            return error.UnexpectedAcceptResult;
+        }
 
         lingering.endLinger();
         try support.waitCloserIdle(closer_drain_ms);

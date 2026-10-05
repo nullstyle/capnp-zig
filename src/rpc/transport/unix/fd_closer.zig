@@ -34,13 +34,16 @@
 //!   long as its sender likes, so this lane is bounded (below).
 //! - `.socket` does the transport's own socket work: the final close of a
 //!   socket that may still hold unread fds, and on Darwin the read half of
-//!   `shutdown`. One of these blocks only when that very socket still holds
-//!   fds whose close blocks, so a received fd that blocks never delays
-//!   another connection's close or shutdown.
+//!   `shutdown`. It also does the final close of an AF_UNIX listening socket
+//!   (`tcp.Listener.close`), whose backlog can hold connections that carry
+//!   fds. One of these blocks only when that very socket still holds fds
+//!   whose close blocks, so a received fd that blocks never delays another
+//!   connection's close or shutdown.
 //!
 //! A `.socket` job still waits behind a blocked `.socket` job: a peer that
 //! leaves a blocking fd unread on its own connection when the connection is
-//! torn down stops this lane for as long as that close blocks. Every socket
+//! torn down, or on a connection nobody accepted when its listener closes,
+//! stops this lane for as long as that close blocks. Every socket
 //! close queued meanwhile holds one fd until then, and on Darwin a reader
 //! blocked in a transport whose `shutdown` is queued there wakes only on its
 //! own poll tick (see `Transport.shutdown`).
@@ -117,7 +120,7 @@ pub const Lane = enum(u8) {
     /// Fds a peer attached. Bounded (`queueLimit`).
     received,
     /// A transport's own socket: its final close, and on Darwin the read
-    /// half of its shutdown.
+    /// half of its shutdown. Also an AF_UNIX listening socket's final close.
     socket,
 };
 
@@ -284,9 +287,9 @@ pub fn handOff(r: ?*Reservation, fds: []const Fd) Admission {
     return after;
 }
 
-/// Hand a transport's own `socket` to the `.socket` lane for its final
-/// close. Covered by `r` (a `.socket` reservation) like `handOff`. Never
-/// fails.
+/// Hand a transport's own `socket` (or a listening socket's last fd, see
+/// `tcp.Listener.close`) to the `.socket` lane for its final close. Covered
+/// by `r` (a `.socket` reservation) like `handOff`. Never fails.
 pub fn handOffSocketClose(r: ?*Reservation, socket: Fd) void {
     if (comptime !supported) return;
     if (r) |res| std.debug.assert(res.lane == .socket);

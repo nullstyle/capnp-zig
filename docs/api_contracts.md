@@ -89,9 +89,21 @@ Internal helper behavior may change, but exported type semantics and error class
   every other target it returns `error.UnixSocketsUnsupported` (use `init`
   for TCP there). On every error the caller still owns the listener,
   unchanged.
+- It takes `*Listener`. On success it moves the listener into the pool and
+  marks the caller's copy closed: `close` on that copy does nothing, and
+  `accept` on it returns `error.ListenerClosed`. So a server that kept its
+  `defer listener.close()` does not close the socket under the pool.
 - The pool owns the listener from then on. Shutdown closes it with
   `Listener.close` once no worker waits on it, so a socket file from
   `unix.listen` is removed and its lock released.
+- That close never blocks. The kernel closes the fds riding on connections
+  still in the listener's backlog inside the listener's final close, and a
+  local peer can attach a socket whose close lingers (Linux without end,
+  macOS up to about 327 s). `Listener.close` closes the listener's own fd
+  and leaves the final close to the closer's `.socket` lane (see
+  `rpc.transport.unix.fd_io`). Residual: while that close blocks, the
+  `.socket` lane waits too, and AF_UNIX socket closes queued behind it each
+  hold one fd until it ends.
 - Workers park in `poll` on the listen socket and on a wake door (a pipe the
   pool owns). Shutdown writes the door, which wakes every parked worker. It
   never dials the listener, so it finishes even after the socket file was

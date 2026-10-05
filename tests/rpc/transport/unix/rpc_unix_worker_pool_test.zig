@@ -8,6 +8,13 @@
 //! nudge loop would retry forever). Every shutdown runs under a watchdog,
 //! so a stuck one fails the suite with a message instead of hanging it.
 //!
+//! Shutdown also stays prompt when every worker is busy and a connection
+//! nobody accepted carries a lingering socket: the kernel does that
+//! socket's final close inside the listener's final close, which
+//! `Listener.close` leaves to the closer. And `initListener` takes the
+//! listener by pointer and marks the caller's copy closed, so a leftover
+//! `defer listener.close()` cannot close it under the pool.
+//!
 //! Every case runs in its own private directory (mode 0700) under /tmp,
 //! with short names (`sun_path` is 104 bytes on Darwin). Linux and macOS
 //! run the suite; every other target compiles it and runs only the
@@ -47,55 +54,9 @@ const parked_workers: u32 = 4;
 // Fixtures
 // ---------------------------------------------------------------------------
 
-var dir_counter: std.atomic.Value(u32) = .init(0);
-
-/// A private (0700) directory under /tmp, removed with everything in it.
-const TestDir = struct {
-    buf: [64]u8 = undefined,
-    dir: []const u8 = &.{},
-
-    fn init(self: *TestDir) !void {
-        const n = dir_counter.fetchAdd(1, .monotonic);
-        self.dir = try std.fmt.bufPrint(&self.buf, "/tmp/czwp-{d}-{d}", .{ sys.getpid(), n });
-        std.Io.Dir.cwd().deleteTree(testing.io, self.dir) catch {};
-        var z: [65]u8 = undefined;
-        _ = try support.check(sys.mkdir(nulTerminated(&z, self.dir), 0o700), "mkdir");
-    }
-
-    fn deinit(self: *TestDir) void {
-        std.Io.Dir.cwd().deleteTree(testing.io, self.dir) catch {};
-    }
-
-    /// `<dir>/<name>` in `out`.
-    fn path(self: *const TestDir, out: []u8, name: []const u8) []const u8 {
-        return std.fmt.bufPrint(out, "{s}/{s}", .{ self.dir, name }) catch unreachable;
-    }
-};
-
-fn nulTerminated(buf: []u8, bytes: []const u8) [*:0]const u8 {
-    @memcpy(buf[0..bytes.len], bytes);
-    buf[bytes.len] = 0;
-    return @ptrCast(buf.ptr);
-}
-
-/// Whether anything is at `path` (`lstat`).
-fn pathExists(path: []const u8) bool {
-    var z: [256]u8 = undefined;
-    const path_z = nulTerminated(&z, path);
-    if (is_linux) {
-        const linux = std.os.linux;
-        var stx: linux.Statx = undefined;
-        const rc = linux.statx(linux.AT.FDCWD, path_z, linux.AT.SYMLINK_NOFOLLOW, .{ .TYPE = true }, &stx);
-        return linux.errno(rc) == .SUCCESS;
-    } else {
-        var st: std.c.Stat = undefined;
-        return posix.errno(std.c.fstatat(std.c.AT.FDCWD, path_z, &st, std.c.AT.SYMLINK_NOFOLLOW)) == .SUCCESS;
-    }
-}
-
 fn unlinkPath(path: []const u8) !void {
     var z: [256]u8 = undefined;
-    _ = try support.check(sys.unlink(nulTerminated(&z, path)), "unlink");
+    _ = try support.check(sys.unlink(support.nulTerminated(&z, path)), "unlink");
 }
 
 fn fcntlGet(fd: Fd, cmd: i32) !usize {
@@ -150,25 +111,43 @@ fn waitParked(pool: *WorkerPool, count: u32) !void {
 /// Panics if `done` is still false `shutdown_bound_ms` after `start`. A
 /// shutdown that never ends would otherwise hang the suite, and CI would
 /// report only a job timeout.
+///
+/// With `rescue`, the first time the bound passes it ends that linger
+/// instead (the shutdown then finishes, late, and the test fails on its
+/// time) and panics only if the shutdown is still running one more bound
+/// later.
 const Watchdog = struct {
     done: std.atomic.Value(bool) = .init(false),
     what: []const u8,
+    rescue: ?*support.LingeringSocket = null,
 
     fn main(self: *Watchdog) void {
         const start = support.nowNs();
+        var bound_ms = shutdown_bound_ms;
         while (!self.done.load(.acquire)) {
-            if (support.msSince(start) > shutdown_bound_ms) {
-                std.debug.panic("{s}: still running after {d} ms (bound {d} ms)", .{ self.what, support.msSince(start), shutdown_bound_ms });
+            if (support.msSince(start) > bound_ms) {
+                if (self.rescue) |lingering| {
+                    std.debug.print("{s}: still running after {d} ms (bound {d} ms); ending the linger\n", .{ self.what, support.msSince(start), shutdown_bound_ms });
+                    lingering.endLinger();
+                    self.rescue = null;
+                    bound_ms += shutdown_bound_ms;
+                } else {
+                    std.debug.panic("{s}: still running after {d} ms (bound {d} ms)", .{ self.what, support.msSince(start), shutdown_bound_ms });
+                }
             }
             support.sleepMs(5);
         }
     }
 };
 
-/// Shut the pool down and join the thread running it, under a watchdog.
-/// Returns the milliseconds that took.
+/// Shut the pool down and join the thread running it, under a watchdog
+/// (see `Watchdog` for `rescue`). Returns the milliseconds that took.
 fn timedShutdown(pool: *WorkerPool, run_thread: std.Thread, what: []const u8) !i64 {
-    var watchdog: Watchdog = .{ .what = what };
+    return timedShutdownRescuing(pool, run_thread, what, null);
+}
+
+fn timedShutdownRescuing(pool: *WorkerPool, run_thread: std.Thread, what: []const u8, rescue: ?*support.LingeringSocket) !i64 {
+    var watchdog: Watchdog = .{ .what = what, .rescue = rescue };
     const watchdog_thread = try std.Thread.spawn(.{}, Watchdog.main, .{&watchdog});
     const start = support.nowNs();
     pool.shutdown();
@@ -181,9 +160,15 @@ fn timedShutdown(pool: *WorkerPool, run_thread: std.Thread, what: []const u8) !i
 
 /// A pool of `parked_workers` on a fresh `unix.listen` listener at `path`.
 fn initUnixPool(path: []const u8, ctx: *anyopaque, on_accept: WorkerPool.AcceptFn) !WorkerPool {
+    return initUnixPoolOf(path, ctx, on_accept, parked_workers);
+}
+
+fn initUnixPoolOf(path: []const u8, ctx: *anyopaque, on_accept: WorkerPool.AcceptFn, concurrency: u32) !WorkerPool {
     var listener = try unix.listen(testing.allocator, testing.io, path, .{});
-    errdefer listener.close();
-    return WorkerPool.initListener(testing.allocator, listener, ctx, on_accept, .{ .concurrency = parked_workers });
+    // On success the pool owns it and this copy is marked closed, so the
+    // close here does nothing; on error it closes the caller's listener.
+    defer listener.close();
+    return WorkerPool.initListener(testing.allocator, &listener, ctx, on_accept, .{ .concurrency = concurrency });
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +178,7 @@ fn initUnixPool(path: []const u8, ctx: *anyopaque, on_accept: WorkerPool.AcceptF
 test "WorkerPool.initListener: 4 workers parked on a Unix listener shut down in under 2 s" {
     if (comptime !supported) return error.SkipZigTest;
 
-    var dir: TestDir = .{};
+    var dir: support.TestDir = .{};
     try dir.init();
     defer dir.deinit();
     var path_buf: [96]u8 = undefined;
@@ -214,7 +199,7 @@ test "WorkerPool.initListener: 4 workers parked on a Unix listener shut down in 
 
     // The pool closed the listener with `Listener.close`: the socket file is
     // gone and the lock is free, so the path binds again.
-    try testing.expect(!pathExists(path));
+    try testing.expect(!support.pathExists(path));
     var again = try unix.listen(testing.allocator, testing.io, path, .{});
     again.close();
 }
@@ -222,7 +207,7 @@ test "WorkerPool.initListener: 4 workers parked on a Unix listener shut down in 
 test "WorkerPool.initListener: unlinking the socket file, then shutting down, still takes under 2 s" {
     if (comptime !supported) return error.SkipZigTest;
 
-    var dir: TestDir = .{};
+    var dir: support.TestDir = .{};
     try dir.init();
     defer dir.deinit();
     var path_buf: [96]u8 = undefined;
@@ -237,13 +222,13 @@ test "WorkerPool.initListener: unlinking the socket file, then shutting down, st
     // Nothing at the path any more: a dial to it fails (ENOENT), so only a
     // wake that does not go through the path can end the wait.
     try unlinkPath(path);
-    try testing.expect(!pathExists(path));
+    try testing.expect(!support.pathExists(path));
 
     const elapsed = try timedShutdown(&pool, run_thread, "shutdown of 4 parked workers after unlink");
     try testing.expect(elapsed < shutdown_bound_ms);
     try testing.expectEqual(@as(u32, 0), pool.acceptors_parked.load(.acquire));
     // `Listener.close` leaves the path alone: it no longer names our file.
-    try testing.expect(!pathExists(path));
+    try testing.expect(!support.pathExists(path));
 }
 
 test "WorkerPool.initListener: a TCP listener with no known address also shuts down in under 2 s" {
@@ -252,12 +237,12 @@ test "WorkerPool.initListener: a TCP listener with no known address also shuts d
     // `Listener.initFd` records no address (0.0.0.0:0), so a dial nudge
     // could not reach it either. The wake door does not need one.
     var bound = try tcp.Listener.init(testing.allocator, testing.io, .{ .ip4 = .loopback(0) }, .{});
-    const listener = tcp.Listener.initFd(testing.allocator, testing.io, bound.listenHandle(), .{});
+    var listener = tcp.Listener.initFd(testing.allocator, testing.io, bound.listenHandle(), .{});
     // From here the pool owns that fd, so `bound` is closed only if the pool
     // was never made.
 
     var ctx: u8 = 0;
-    var pool = WorkerPool.initListener(testing.allocator, listener, &ctx, onAcceptStart, .{ .concurrency = parked_workers }) catch |err| {
+    var pool = WorkerPool.initListener(testing.allocator, &listener, &ctx, onAcceptStart, .{ .concurrency = parked_workers }) catch |err| {
         bound.close();
         return err;
     };
@@ -341,7 +326,7 @@ const ClientApp = struct {
 test "WorkerPool.initListener: serves bootstrap and one call over a Unix socket, on a blocking close-on-exec socket" {
     if (comptime !supported) return error.SkipZigTest;
 
-    var dir: TestDir = .{};
+    var dir: support.TestDir = .{};
     try dir.init();
     defer dir.deinit();
     var path_buf: [96]u8 = undefined;
@@ -401,7 +386,7 @@ const RejectCounter = struct {
 test "WorkerPool.initListener: workers that lose the race for a burst of connections park again" {
     if (comptime !supported) return error.SkipZigTest;
 
-    var dir: TestDir = .{};
+    var dir: support.TestDir = .{};
     try dir.init();
     defer dir.deinit();
     var path_buf: [96]u8 = undefined;
@@ -444,13 +429,85 @@ test "WorkerPool.initListener: workers that lose the race for a burst of connect
 }
 
 // ---------------------------------------------------------------------------
+// A blocking fd in the backlog
+// ---------------------------------------------------------------------------
+
+/// Long enough that the linger never ends by itself during the test; the
+/// test ends it by closing the accepting side.
+const stall_linger_seconds = 60;
+
+/// How long the closer may take to finish once the linger is ended.
+const closer_drain_ms = 6000;
+
+/// Counts accepts and serves each connection until it closes.
+const AcceptCounter = struct {
+    count: std.atomic.Value(u32) = .init(0),
+
+    fn onAccept(ctx: *anyopaque, peer: *Peer, _: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
+        const self: *AcceptCounter = @ptrCast(@alignCast(ctx));
+        peer.start(null, onPeerError, onPeerClose);
+        _ = self.count.fetchAdd(1, .acq_rel);
+        return .accept;
+    }
+};
+
+test "WorkerPool.initListener: a backlog connection carrying a lingering socket does not hold up shutdown while every worker is busy" {
+    if (comptime !supported) return error.SkipZigTest;
+    try support.fd_io.closer.ensureStarted();
+    try support.waitCloserIdle(closer_drain_ms);
+
+    var dir: support.TestDir = .{};
+    try dir.init();
+    defer dir.deinit();
+    var path_buf: [96]u8 = undefined;
+    const path = dir.path(&path_buf, "s");
+
+    var counter: AcceptCounter = .{};
+    var pool = try initUnixPoolOf(path, &counter, AcceptCounter.onAccept, 1);
+    defer pool.deinit();
+    const run_thread = try std.Thread.spawn(.{}, runPool, .{&pool});
+    var run_joined = false;
+    defer if (!run_joined) {
+        pool.shutdown();
+        run_thread.join();
+    };
+
+    // The only worker serves a client that never speaks.
+    const idle = try support.connectPath(path);
+    defer support.closeFd(idle);
+    const start = support.nowNs();
+    while (counter.count.load(.acquire) < 1 and support.msSince(start) < 2000) support.sleepMs(1);
+    try testing.expectEqual(@as(u32, 1), counter.count.load(.acquire));
+
+    // Nobody is left to accept the next connection: it stays in the backlog
+    // with a lingering socket riding on it, until the listener's final close.
+    var lingering = try support.LingeringSocket.open(stall_linger_seconds);
+    defer lingering.deinit();
+    try support.queueLingeringInBacklog(path, &lingering);
+
+    run_joined = true;
+    const elapsed = try timedShutdownRescuing(&pool, run_thread, "shutdown with a lingering fd in the backlog", &lingering);
+    errdefer std.debug.print("shutdown took {d} ms\n", .{elapsed});
+    try testing.expect(elapsed < shutdown_bound_ms);
+    try testing.expectEqual(@as(u32, 1), counter.count.load(.acquire));
+    try testing.expect(!support.pathExists(path));
+    // Setup check: the listener's final close really blocks (on the
+    // closer's socket lane), so the bound above means something.
+    support.sleepMs(200);
+    try testing.expect(support.fd_io.closer.pendingIn(.socket) != 0);
+
+    lingering.endLinger();
+    try support.waitCloserIdle(closer_drain_ms);
+}
+
+// ---------------------------------------------------------------------------
 // Ownership and errors
 // ---------------------------------------------------------------------------
 
 test "WorkerPool.initListener: deinit without run closes the listener and frees the path" {
     if (comptime !supported) return error.SkipZigTest;
 
-    var dir: TestDir = .{};
+    var dir: support.TestDir = .{};
     try dir.init();
     defer dir.deinit();
     var path_buf: [96]u8 = undefined;
@@ -458,10 +515,10 @@ test "WorkerPool.initListener: deinit without run closes the listener and frees 
 
     var ctx: u8 = 0;
     var pool = try initUnixPool(path, &ctx, onAcceptStart);
-    try testing.expect(pathExists(path));
+    try testing.expect(support.pathExists(path));
     pool.deinit();
 
-    try testing.expect(!pathExists(path));
+    try testing.expect(!support.pathExists(path));
     var again = try unix.listen(testing.allocator, testing.io, path, .{});
     again.close();
 }
@@ -469,7 +526,7 @@ test "WorkerPool.initListener: deinit without run closes the listener and frees 
 test "WorkerPool.initListener: refused setups leave the listener with the caller" {
     if (comptime !supported) return error.SkipZigTest;
 
-    var dir: TestDir = .{};
+    var dir: support.TestDir = .{};
     try dir.init();
     defer dir.deinit();
     var path_buf: [96]u8 = undefined;
@@ -479,17 +536,53 @@ test "WorkerPool.initListener: refused setups leave the listener with the caller
     var ctx: u8 = 0;
     try testing.expectError(
         error.InvalidConcurrency,
-        WorkerPool.initListener(testing.allocator, listener, &ctx, onAcceptStart, .{ .concurrency = 0 }),
+        WorkerPool.initListener(testing.allocator, &listener, &ctx, onAcceptStart, .{ .concurrency = 0 }),
     );
-    // Still the caller's, still blocking, still serving.
+    // Still the caller's, still open, still blocking, still serving.
+    try testing.expect(!listener.close_requested.load(.acquire));
     try testing.expect(!try isNonBlocking(listener.listenHandle().handle));
-    try testing.expect(pathExists(path));
+    try testing.expect(support.pathExists(path));
     listener.close();
 
     try testing.expectError(
         error.ListenerClosed,
-        WorkerPool.initListener(testing.allocator, listener, &ctx, onAcceptStart, .{ .concurrency = 1 }),
+        WorkerPool.initListener(testing.allocator, &listener, &ctx, onAcceptStart, .{ .concurrency = 1 }),
     );
+}
+
+test "WorkerPool.initListener: the caller's copy is marked closed, so a leftover close is harmless" {
+    if (comptime !supported) return error.SkipZigTest;
+
+    var dir: support.TestDir = .{};
+    try dir.init();
+    defer dir.deinit();
+    var path_buf: [96]u8 = undefined;
+    const path = dir.path(&path_buf, "s");
+
+    {
+        var listener = try unix.listen(testing.allocator, testing.io, path, .{});
+        // The pattern of a server without a pool (examples/rpc_pingpong_unix.zig).
+        // Once the pool owns the listener it must do nothing.
+        defer listener.close();
+        var ctx: u8 = 0;
+        var pool = try WorkerPool.initListener(testing.allocator, &listener, &ctx, onAcceptStart, .{ .concurrency = 1 });
+        defer pool.deinit();
+        const listen_fd = pool.server.socket.handle;
+
+        // A stray close of the caller's copy: the path stays, the listen fd
+        // stays open, and the pool still holds the path's lock.
+        listener.close();
+        try testing.expectError(error.ListenerClosed, listener.accept());
+        try testing.expect(support.pathExists(path));
+        try testing.expect(support.isOpen(listen_fd));
+        try testing.expectError(error.AddressInUse, unix.listen(testing.allocator, testing.io, path, .{}));
+        // The pool's own copy is live.
+        try testing.expect(!pool.listener.?.close_requested.load(.acquire));
+    }
+    // The pool's shutdown closed it: the path is gone and binds again.
+    try testing.expect(!support.pathExists(path));
+    var again = try unix.listen(testing.allocator, testing.io, path, .{});
+    again.close();
 }
 
 test "WorkerPool.initListener: unsupported targets return UnixSocketsUnsupported" {
@@ -500,6 +593,6 @@ test "WorkerPool.initListener: unsupported targets return UnixSocketsUnsupported
     var ctx: u8 = 0;
     try testing.expectError(
         error.UnixSocketsUnsupported,
-        WorkerPool.initListener(testing.allocator, listener, &ctx, onAcceptStart, .{ .concurrency = 1 }),
+        WorkerPool.initListener(testing.allocator, &listener, &ctx, onAcceptStart, .{ .concurrency = 1 }),
     );
 }

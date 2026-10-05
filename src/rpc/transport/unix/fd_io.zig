@@ -66,6 +66,16 @@
 //!   hold one fd until then: on Linux only connections torn down with unread
 //!   data, on macOS every AF_UNIX connection closed meanwhile. On macOS a
 //!   reader whose `shutdown` waits there notices on its 250 ms poll tick.
+//! - A listening socket: the kernel closes the fds riding on connections
+//!   still in its backlog (nobody accepted them) inside its final close, on
+//!   both kernels (measured with a 3 s linger: 3006 ms on Linux, 3001 ms on
+//!   macOS; its `shutdown` disposes of nothing). `tcp.Listener.close` closes
+//!   an AF_UNIX listener's fd inline but leaves the final close, through a
+//!   duplicate, to the `.socket` lane, so it never blocks, and neither does a
+//!   `WorkerPool` shutdown. A peer that queues such a connection and is
+//!   never accepted stops that lane, as above, once the listener closes. A
+//!   caller that closes an AF_UNIX listen fd itself still does that final
+//!   close on its own thread.
 //! - Older Linux kernels (before 6.8, by our reading of the kernel source)
 //!   run the AF_UNIX fd garbage collector inside socket close. There the
 //!   final close of a peer's unreachable in-flight fds can happen inside any

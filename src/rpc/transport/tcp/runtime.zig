@@ -4,6 +4,7 @@ const log = std.log.scoped(.rpc_runtime);
 const Connection = @import("./connection.zig").Connection;
 const events = @import("../../events.zig");
 const unix_socket_mod = @import("../unix/socket.zig");
+const fd_io = @import("../unix/fd_io.zig");
 const net = std.Io.net;
 
 /// Re-export of the platform-stable socket wrapper used by all public
@@ -134,6 +135,13 @@ pub const Listener = struct {
     /// A listener from `rpc.transport.unix.listen` first removes its socket
     /// file (only while the path still names that file) and releases its
     /// lock last, so no other `unix.listen` can bind the path in between.
+    ///
+    /// On Linux and Darwin, an AF_UNIX listener (any socket that is not
+    /// IPv4 or IPv6) never does its final close on the calling thread: the
+    /// kernel closes the fds riding on connections still in its backlog
+    /// inside that close, and a peer can make one of those closes block. See
+    /// `closeListenSocket`. This fd is still closed before `close` returns,
+    /// and the lock is released without waiting for that final close.
     pub fn close(self: *Listener) void {
         if (self.close_requested.swap(true, .acq_rel)) return;
         if (self.unix_socket) |*file| file.unlinkIfOurs();
@@ -152,7 +160,7 @@ pub const Listener = struct {
         if (comptime builtin.target.os.tag != .windows) {
             shutdownFd(self.io, .{ .handle = self.server.socket.handle });
         }
-        closeFd(self.io, .{ .handle = self.server.socket.handle });
+        closeListenSocket(self.io, .{ .handle = self.server.socket.handle });
     }
 
     /// Return the bound address. Useful for resolving ephemeral ports (port 0).
@@ -279,6 +287,50 @@ pub fn closeFd(io: std.Io, socket: SocketFd) void {
     // same shape the transport already uses for handle-only close/shutdown).
     const sockets = [_]net.Socket{.{ .handle = socket.handle, .address = undefined }};
     io.vtable.netClose(io.userdata, &sockets);
+}
+
+/// The close of `Listener.close`. An IP listener (and every listener on
+/// Windows) closes inline, as before.
+///
+/// On Linux and Darwin an AF_UNIX listener (any socket `getsockname` reports
+/// as neither IPv4 nor IPv6) never does its final close on this thread. The
+/// kernel closes the fds riding on connections still in a listener's backlog
+/// inside the listener's final close, on the closing thread, and `shutdown`
+/// disposes of none of them (measured with a 3 s linger: close 3006 ms on
+/// Linux and 3001 ms on macOS, shutdown 0 ms on both). A peer that connects,
+/// attaches a lingering TCP socket and is never accepted would otherwise
+/// block this thread for the linger time (without end on Linux).
+///
+/// So this takes a close-on-exec duplicate first, closes the listener's own
+/// fd here, and hands the duplicate to the closer's `.socket` lane, which
+/// does the final close. The close here drops a reference that is not the
+/// last, so it cannot block, and on macOS it is what wakes a thread parked
+/// in `accept` (shutdown does not): that wake never waits for the lane. If
+/// the duplicate cannot be made (fd table full), the listener's own fd goes
+/// to the lane instead, and on macOS a parked `accept` then wakes when the
+/// lane gets to it.
+fn closeListenSocket(io: std.Io, socket: SocketFd) void {
+    if (comptime fd_io.supported) {
+        if (isNonIpSocket(socket)) {
+            const posix = std.posix;
+            const rc = posix.system.fcntl(socket.handle, posix.F.DUPFD_CLOEXEC, @as(usize, 0));
+            switch (posix.errno(rc)) {
+                .SUCCESS => {
+                    const duplicate: fd_io.Fd = @intCast(rc);
+                    closeFd(io, socket);
+                    fd_io.closer.handOffSocketClose(null, duplicate);
+                },
+                else => |err| {
+                    // The number, never the tag: `posix.E` does not name
+                    // every errno.
+                    log.debug("duplicating a listening socket failed: errno {d}; the closer closes it", .{@backingInt(err)});
+                    fd_io.closer.handOffSocketClose(null, socket.handle);
+                },
+            }
+            return;
+        }
+    }
+    closeFd(io, socket);
 }
 
 /// Shut down a socket for both directions via Io, ignoring errors. On POSIX a
