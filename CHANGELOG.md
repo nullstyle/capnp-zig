@@ -25,10 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     unread did those final closes on the tearing-down thread, inside the
     socket's `close` (Linux, 3019 ms) or already inside `shutdown(SHUT_RD)`
     (macOS, 3002 ms).
+  - Both: closing an AF_UNIX listener (`tcp.Listener.close`) did those final
+    closes for the connections still in its backlog, inside the listener's
+    `close` (3006 ms on Linux, 3001 ms on macOS, for a 3 s linger). A peer
+    that connected, attached a lingering socket and was never accepted
+    blocked the thread closing the listener, for example a `WorkerPool`
+    shutdown.
   - **Who is exposed:** applications that run capnp-zig RPC over an AF_UNIX
     stream socket, through v0.19.1: `tcp.Connection`, `tcp.Transport`
     (including callers that drive it directly), `tcp.Listener.initFd` with
-    `accept`/`acceptFd`, `tcp.ServerSession.accept`, and `tcp.ClientSession`
+    `accept`/`acceptFd`/`close`, `tcp.ServerSession.accept`, and `tcp.ClientSession`
     on such a socket. TCP and QUIC connections are not affected.
   - **What an attacker needs:** the ability to connect to the application's
     Unix socket (or to be its peer), and one `sendmsg`. No handshake or
@@ -51,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       received fd whose close blocks therefore never holds another
       connection's socket open or delays its shutdown. On Linux a socket
       whose receive queue is empty after `shutdown(SHUT_RD)` is closed inline.
+    - `tcp.Listener.close` of an AF_UNIX listener closes the listener's fd
+      inline, which still wakes a thread parked in `accept`. It hands the
+      final close, through a close-on-exec duplicate, to the `.socket` lane,
+      and releases a `unix.listen` lock without waiting for that close.
     - EMFILE is reported and the read retried once; a second EMFILE closes
       the connection.
   - **Residuals (documented in `fd_io`):**
@@ -66,7 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       once the bound is reached, every AF_UNIX connection that receives data
       is closed until the lane drains: that denies service on the Unix
       sockets, but cannot fill the fd table. On the `.socket` lane (a
-      connection torn down with such an fd still unread), later socket closes
+      connection torn down with such an fd still unread, or a connection
+      nobody accepted when its listener closes), later socket closes
       wait, each holding one fd. On macOS a blocked reader notices `shutdown`
       on a 250 ms poll tick instead of at once.
     - Linux kernels before 6.8 run the AF_UNIX fd garbage collector inside
@@ -102,6 +113,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     needs a `SessionTicketKeyInstallFailed` arm (or an `else` arm). It is
     returned only when `ServerOptions.session_ticket_key` is set and
     BoringSSL does not read the key back as installed.
+
+- **`quic.Listener.nowUs` returns microseconds since the Unix epoch, not
+  since `Listener.init` (Experimental).** The listener clock now starts at
+  the wall clock in `init` and advances on the monotonic clock, so a
+  restarted server accepts its predecessor's NEW_TOKENs (see Fixed). New
+  field: `Listener.clock_origin_us`.
+  - **Migration:** code that read `nowUs()` as an uptime must subtract its
+    own first reading (or `clock_origin_us`). Code that only feeds the value
+    back to quic-zig, or takes differences, needs no change. Embedded-mode
+    hosts that feed their own clock to quic-zig need the same property for
+    NEW_TOKENs to survive a restart.
 
 ### Added
 
@@ -241,14 +263,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     server accepted the dial's early data and the dial got no Retry.
     **`Outcome.retried_generations`** counts the generations whose dial got
     a Retry.
-  - **Known gap:** under the hardened preset a heal almost always gets a
-    Retry, because each dial binds a new port and a NEW_TOKEN is valid only
-    from the port that earned it. The quic-zig v0.25.0 client then sends its
-    early data again only after the handshake, so the restore runs late
-    although BoringSSL reports `.accepted`. Such a heal counts in
-    `retried_generations`, not in `zero_rtt_generations`
-    (`docs/quic-transport.md`, "Retry and NEW_TOKEN: an open gap"). The asks
-    to quic-zig are in `docs/upstream/handoff-quic-zig-ticket-keys.md`.
+  - **Known gap:** a dial that gets a Retry restores late, because the
+    quic-zig v0.25.0 client sends its 0-RTT data again only at 1-RTT after a
+    Retry (quic-zig finding F8), although BoringSSL reports `.accepted`.
+    Such a dial counts in `retried_generations`, not in
+    `zero_rtt_generations`. A `WarmRedialClient` heal now avoids the Retry
+    by keeping its port (see Changed). A Retry still comes when the old port
+    is taken, on a client's first dial from a new process, or with a new
+    `new_token_key` or an expired token (`docs/quic-transport.md`, "Retry
+    and NEW_TOKEN: an open gap").
+
+- **`WorkerPool.initListener` serves a listener you already have, such as
+  one from `rpc.transport.unix.listen` (Experimental; Linux and macOS,
+  `error.UnixSocketsUnsupported` on every other target).** `WorkerPool.init`
+  takes an IP address only, so until now no pool could serve a Unix socket.
+  - `initListener(allocator, &listener, ctx, on_accept, config)` takes a
+    `*tcp.Listener`. On success it moves the listener into the pool and
+    marks the caller's copy closed: `close` on that copy does nothing and
+    `accept` returns `ListenerClosed`, so a leftover `defer listener.close()`
+    is harmless. On every error (named set `InitListenerError`) the caller
+    still owns the listener, unchanged.
+  - Shutdown closes the listener once no worker waits on it, which removes a
+    `unix.listen` socket file and releases its lock. Workers park in `poll`
+    on the listen socket and on a wake door, a pipe the pool owns; shutdown
+    writes the door and never dials the listener, so it finishes even after
+    the socket file was unlinked or another server took the path (10-12 ms
+    with 4 parked workers on macOS and Linux).
+  - The pool makes the listen socket non-blocking and accepts with raw
+    syscalls, because `std.Io`'s accept treats EAGAIN as a bug. Accepted
+    sockets are close-on-exec and blocking.
+  - `config.connection_options` applies to every connection. New
+    Experimental fields `WorkerPool.listener` and `WorkerPool.park_door`.
+- **e2e over Unix-domain sockets, Zig to Zig and Zig to C++.** The e2e
+  server and client take `--host unix:/path`. `zig build e2e-self-unix` runs
+  the Zig-to-Zig self-interop over a socket file on the Linux and macOS CI
+  Test legs. `tools/e2e_runner.zig --transport=unix` (`just e2e-unix`, in
+  the `Zig e2e interop` CI job) runs game_world, chat, inventory,
+  matchmaking and resolve_disembargo against the C++ reference in both
+  directions, with both peers inside the cpp-rpc container. Go, Python and
+  Rust record `SKIP(unix: reference harness TCP-only)`. A case whose client
+  cannot connect reads FAIL, never SKIP.
+- **Nightly ticket-key soak (`tools/soak_rpc.zig --ticket-key`).** The
+  abrupt-death QUIC soak can run the hardened preset (Retry on) with
+  `.restore_only` 0-RTT, loading the same session-ticket key,
+  `new_token_key`, Retry key and reset key on every restart. It fails unless
+  every abrupt death gets at least one heal that a client counted in
+  `zero_rtt_generations` and that the restarted server restored before its
+  handshake completed. Nightly `extended-gates` runs it with `--rss-gate
+  enforce`. `--inject-ticket-key-rotation` is an ablation hook that makes
+  the gate fail.
 
 ### Changed
 
@@ -273,6 +336,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against), so the library can call `boringssl.raw`. Package consumers need
   no change.
 
+- **`WarmRedialClient` redials from the local port of the generation before
+  it (Experimental QUIC transport).** A NEW_TOKEN is valid only from the
+  address and port that earned it, and each dial used to bind a new
+  ephemeral port, so under the hardened preset every heal got a Retry. Now
+  each generation after the first binds the previous generation's port,
+  with `base.local_addr`'s IP address or the unspecified address; a
+  `base.local_addr` that names a port is used as it is. With the ticket key
+  and `new_token_key` both persisted, a heal after a crash-restart skips
+  the Retry, runs its restore before the restarted server's handshake
+  completes, and counts in `Outcome.zero_rtt_generations`. When the old
+  port cannot be bound, the heal dials from an ephemeral port and counts it
+  in the new **`Outcome.port_fallback_generations`**; such a dial still gets
+  a Retry and restores late.
+
 ### Fixed
 
 - **Accepting on an AF_UNIX listener no longer panics a Debug build on
@@ -289,6 +366,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code captured its settled flag as `|flag|`, which shadowed the
   declaration. The capture is now `@"settled flag"`, which no schema name can
   match. Regenerating bindings changes only that capture name.
+
+- **A crash-restarted QUIC server accepts the NEW_TOKENs its predecessor
+  issued (Experimental).** quic-zig stamps a NEW_TOKEN's issue and expiry
+  times with `Listener.nowUs` and checks them with no clock-skew allowance.
+  That clock counted from `Listener.init`, so a restarted server read every
+  token from its predecessor as not yet valid and sent those clients a
+  Retry, which on quic-zig v0.25.0 also costs the early restore. The clock
+  now continues across restarts (see Breaking). It never goes backwards
+  within a process, and a wall-clock step moves no timer. Remaining: a
+  wall-clock step backwards between the two starts, or a monotonic clock
+  that ran fast over a long uptime (macOS `.awake` is not NTP-disciplined),
+  still costs the newest tokens a Retry, because quic-zig allows no skew.
 
 ### Documentation
 
@@ -330,6 +419,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.override` advice, and a client that resends 0-RTT after a Retry.
   `docs/quic-durable-caps-plan.md` moves rung 1 to the ledger and adds rung
   12 (the Retry gap).
+
+- `docs/upstream/handoff-quic-zig-ticket-keys.md` records the NEW_TOKEN
+  clock fix with three asks to quic-zig (`transport/udp_server.zig` has the
+  same process-start clock; stamp NEW_TOKEN times with a separate wall
+  clock; add `new_token_max_clock_skew_us`), and the F8 repro: the
+  transport test "after a Retry the resumed dial's restore arrives at
+  1-RTT, not 0-RTT (quic-zig F8)" and the assertions that flip when
+  quic-zig resends 0-RTT after a Retry. `docs/quic-transport.md` says which
+  half of "Retry and NEW_TOKEN: an open gap" is closed.
 
 ## [0.19.1] - 2026-10-04
 
