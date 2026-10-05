@@ -579,7 +579,10 @@ pub const WorkerPool = struct {
     /// wake-door wait for `initListener`.
     fn acceptNext(pool: *WorkerPool, listener: *Listener) !*Connection {
         if (comptime park_door_supported) {
-            if (pool.park_door) |door| return pool.acceptParked(door);
+            // `initListener` sets both, together.
+            if (pool.park_door) |door| {
+                if (pool.listener) |*owned| return pool.acceptParked(door, owned);
+            }
         }
         return listener.accept();
     }
@@ -588,12 +591,11 @@ pub const WorkerPool = struct {
     /// is accepted (or the door says stop: `error.ListenerClosed`), then
     /// wrap it exactly as `Listener.accept` does.
     ///
-    /// Only workers of an `initListener` pool get here, and the pool closes
-    /// its listener only once none of them is parked (`stopAccepting`), so
-    /// reading `pool.listener` here never races that close.
-    fn acceptParked(pool: *WorkerPool, door: [2]i32) !*Connection {
+    /// `owned` is the pool's own listener (`initListener`). The pool closes
+    /// it only once no worker is parked here (`stopAccepting`), so reading
+    /// it here never races that close.
+    fn acceptParked(pool: *WorkerPool, door: [2]i32, owned: *const Listener) !*Connection {
         const listen_fd = pool.server.socket.handle;
-        const listener = &pool.listener.?;
         const fd = while (true) {
             switch (try park.wait(listen_fd, door[0])) {
                 .stop => return error.ListenerClosed,
@@ -601,7 +603,7 @@ pub const WorkerPool = struct {
                     // The accept gate of a `unix.listen` listener, as in
                     // `Listener.accept`: take nothing while the closer's
                     // `.socket` lane is full. Shutdown ends the wait.
-                    if (listener.unix_socket != null) {
+                    if (owned.unix_socket != null) {
                         try runtime_helpers.awaitSocketLane(pool.conn_options.observer, &pool.should_stop);
                     }
                     // Null: another worker took the connection, or its
@@ -622,7 +624,7 @@ pub const WorkerPool = struct {
         // Before anything reads, as `Listener.accept` and
         // `ServerSession.accept` do: fd passing starts at the stream's first
         // byte. The connection owns the socket now.
-        client_wiring.enableFdPassing(conn_ptr, listener.fd_passing) catch |err| {
+        client_wiring.enableFdPassing(conn_ptr, owned.fd_passing) catch |err| {
             destroyConnection(pool.allocator, conn_ptr);
             return err;
         };
