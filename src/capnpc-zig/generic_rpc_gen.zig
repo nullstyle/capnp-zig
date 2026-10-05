@@ -447,10 +447,14 @@ pub fn Emitter(comptime G: type) type {
                     \\            }
                     \\
                 );
+                // A schema can name a type `Ancestor` or `Adapter`, and Zig
+                // rejects a local that shadows a declaration. A type cannot be
+                // renamed (other files name it), so these type-valued locals
+                // are quoted: no schema name can hold a space.
                 if (!pipelined and branded_ancestors.len > 0) {
-                    try writer.writeAll("            pub fn asAncestor(self: @This(), comptime Ancestor: type) Ancestor.Client {\n                if (comptime !(false");
-                    for (branded_ancestors, 0..) |_, index| try writer.print(" or Ancestor == _Ancestor{}", .{index});
-                    try writer.writeAll(")) @compileError(\"requested type is not an ancestor application\");\n                return Ancestor.Client.init(self.raw.peer, self.raw.cap_id);\n            }\n");
+                    try writer.writeAll("            pub fn asAncestor(self: @This(), comptime @\"ancestor type\": type) @\"ancestor type\".Client {\n                if (comptime !(false");
+                    for (branded_ancestors, 0..) |_, index| try writer.print(" or @\"ancestor type\" == _Ancestor{}", .{index});
+                    try writer.writeAll(")) @compileError(\"requested type is not an ancestor application\");\n                return @\"ancestor type\".Client.init(self.raw.peer, self.raw.cap_id);\n            }\n");
                 }
                 for (methods.items) |entry| {
                     if (entry.ambiguous) continue;
@@ -461,8 +465,8 @@ pub fn Emitter(comptime G: type) type {
                     defer self.allocator.free(method_type);
                     try writer.print(
                         \\            pub fn call{s}(self: @This(), {s}ctx: *anyopaque, comptime build: ?{s}.BuildFn, comptime callback: {s}.Callback) !u32 {{
-                        \\                const Adapter = {s}.ClientAdapter(build, callback);
-                        \\                return self.raw.call{s}(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                        \\                const @"client adapter" = {s}.ClientAdapter(build, callback);
+                        \\                return self.raw.call{s}(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                         \\            }}
                         \\
                     , .{ entry.name, if (entry.method.implicit_parameters.len > 0) "comptime _method_bindings: anytype, " else "", method_type, method_type, method_type, entry.name });

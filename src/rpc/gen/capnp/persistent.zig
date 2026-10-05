@@ -813,8 +813,8 @@ pub const Persistent = struct {
                     self.raw.release();
                 }
                 pub fn callSave(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Save.BuildFn, comptime callback: _Applied.Save.Callback) !u32 {
-                    const Adapter = _Applied.Save.ClientAdapter(build, callback);
-                    return self.raw.callSave(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Save.ClientAdapter(build, callback);
+                    return self.raw.callSave(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSavePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Save.BuildFn, comptime callback: _Applied.Save.Callback) !_Applied.Save.Results.Pipeline {
                     const qid = try self.callSave(ctx, build, callback);
@@ -824,8 +824,8 @@ pub const Persistent = struct {
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callSave(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Save.BuildFn, comptime callback: _Applied.Save.Callback) !u32 {
-                    const Adapter = _Applied.Save.ClientAdapter(build, callback);
-                    return self.raw.callSave(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Save.ClientAdapter(build, callback);
+                    return self.raw.callSave(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {

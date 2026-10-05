@@ -8,6 +8,7 @@ const interface_gen = @import("interface_gen.zig");
 const validation_ns = @import("name_validation.zig");
 const types = @import("types.zig");
 const reflection_metadata = @import("reflection_metadata.zig");
+const local_shadowing = @import("local_shadowing.zig");
 const zig_layout = @import("layout.zig");
 const codegen_abi = @import("../codegen_abi.zig");
 pub const TypeGenerator = types.TypeGenerator;
@@ -95,6 +96,13 @@ pub const Generator = struct {
     /// Resource limits for hostile or accidentally enormous schemas.
     codegen_budget: CodegenBudget = .{},
     shape_share_map: std.StringHashMap([]const u8),
+    /// Schema constants and annotations that a generated local would shadow,
+    /// with the number of underscores their names take. Set per file by
+    /// `renameShadowedDeclarations`.
+    shadowed_value_decls: std.AutoHashMapUnmanaged(schema.Id, u8) = .empty,
+    /// Import aliases that a generated local would shadow (owned keys).
+    /// `uniqueImportModuleName` gives such an import the next free suffix.
+    shadowed_import_aliases: std.StringHashMapUnmanaged(void) = .empty,
 
     pub const GeneratedNameScope = struct {
         allocator: std.mem.Allocator,
@@ -151,6 +159,9 @@ pub const Generator = struct {
 
     pub fn deinit(self: *Generator) void {
         if (self.encoded_schema_request) |bytes| self.allocator.free(bytes);
+        self.clearShadowedDeclarations();
+        self.shadowed_value_decls.deinit(self.allocator);
+        self.shadowed_import_aliases.deinit(self.allocator);
         self.clearShapeShareMap();
         self.shape_share_map.deinit();
         self.clearImportModules();
@@ -211,6 +222,13 @@ pub const Generator = struct {
         self.import_modules.clearRetainingCapacity();
     }
 
+    fn clearShadowedDeclarations(self: *Generator) void {
+        self.shadowed_value_decls.clearRetainingCapacity();
+        var it = self.shadowed_import_aliases.keyIterator();
+        while (it.next()) |key| self.allocator.free(key.*);
+        self.shadowed_import_aliases.clearRetainingCapacity();
+    }
+
     fn clearShapeShareMap(self: *Generator) void {
         var it = self.shape_share_map.iterator();
         while (it.next()) |entry| {
@@ -236,7 +254,120 @@ pub const Generator = struct {
     /// Walks the file node's nested declarations, emitting struct/enum/const
     /// definitions. Returns an allocator-owned byte slice containing the
     /// generated `.zig` source.
+    ///
+    /// Generated functions name their locals plainly (`self`, `value`,
+    /// `ctx`), and Zig rejects a local that shadows a declaration of an
+    /// enclosing container. A schema names some of those declarations, so
+    /// each generated file is checked: a schema constant or annotation that a
+    /// local would shadow takes a trailing underscore (`ctx_`), a shadowed
+    /// import alias takes the next free numeric suffix (`user_ctx_2`), and the
+    /// file is generated again. Output that has no such collision does not
+    /// change.
     pub fn generateFile(self: *Generator, requested_file: schema.RequestedFile) ![]const u8 {
+        self.clearShadowedDeclarations();
+        defer self.clearShadowedDeclarations();
+        var output = try self.generateFileOnce(requested_file);
+        // Each pass renames at least one declaration. A new name could be
+        // shadowed too, so allow a few passes.
+        var pass: usize = 0;
+        while (pass < max_shadow_rename_passes) : (pass += 1) {
+            const renamed = self.renameShadowedDeclarations(requested_file, output) catch |err| {
+                self.allocator.free(output);
+                return err;
+            };
+            if (!renamed) break;
+            self.allocator.free(output);
+            output = try self.generateFileOnce(requested_file);
+        }
+        return output;
+    }
+
+    const max_shadow_rename_passes = 4;
+
+    /// Rename the schema declarations of `requested_file` that a parameter,
+    /// local or capture in `output` shadows. Returns whether anything was
+    /// renamed, in which case the file must be generated again. Only schema
+    /// constants, annotations and import aliases are renamed. A type cannot
+    /// be: the files that import it name it too. So emitters give their
+    /// type-valued locals quoted names (`@"client adapter"`) instead.
+    fn renameShadowedDeclarations(self: *Generator, requested_file: schema.RequestedFile, output: []const u8) !bool {
+        const file_node = self.getNode(requested_file.id) orelse return false;
+        // Skip the parse when the file has nothing to rename.
+        if (self.used_import_file_ids.count() == 0 and !self.hasValueDecls(file_node)) return false;
+
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const shadowed = try local_shadowing.findShadowedDeclarations(arena, try arena.dupeSentinel(u8, output, 0));
+
+        var renamed = false;
+        for (shadowed) |entry| {
+            if (entry.container.len == 0 and self.isUsedImportAlias(requested_file, entry.name) and
+                !self.shadowed_import_aliases.contains(entry.name))
+            {
+                const owned = try self.allocator.dupe(u8, entry.name);
+                errdefer self.allocator.free(owned);
+                try self.shadowed_import_aliases.put(self.allocator, owned, {});
+                renamed = true;
+            }
+            if (try self.renameShadowedValueDecl(file_node, entry.container, entry.name)) renamed = true;
+        }
+        return renamed;
+    }
+
+    /// Count one more underscore for each constant or annotation named `name`
+    /// in the container at `path` below `scope` (dot-separated type names).
+    fn renameShadowedValueDecl(self: *Generator, scope: *const schema.Node, path: []const u8, name: []const u8) !bool {
+        const head_end = std.mem.indexOfScalar(u8, path, '.') orelse path.len;
+        var renamed = false;
+        for (scope.nested_nodes) |nested| {
+            const node = self.getNode(nested.id) orelse continue;
+            switch (node.kind) {
+                .@"const", .annotation => {
+                    if (path.len != 0) continue;
+                    const decl_name = try self.allocValueDeclName(node);
+                    defer self.allocator.free(decl_name);
+                    if (!std.mem.eql(u8, decl_name, name)) continue;
+                    const gop = try self.shadowed_value_decls.getOrPut(self.allocator, node.id);
+                    gop.value_ptr.* = if (gop.found_existing) gop.value_ptr.* + 1 else 1;
+                    renamed = true;
+                },
+                .@"struct", .interface => {
+                    if (path.len == 0) continue;
+                    const type_name = try self.allocTypeDeclName(node);
+                    defer self.allocator.free(type_name);
+                    if (!std.mem.eql(u8, type_name, path[0..head_end])) continue;
+                    const rest = if (head_end == path.len) "" else path[head_end + 1 ..];
+                    if (try self.renameShadowedValueDecl(node, rest, name)) renamed = true;
+                },
+                else => {},
+            }
+        }
+        return renamed;
+    }
+
+    fn hasValueDecls(self: *const Generator, scope: *const schema.Node) bool {
+        for (scope.nested_nodes) |nested| {
+            const node = self.getNode(nested.id) orelse continue;
+            switch (node.kind) {
+                .@"const", .annotation => return true,
+                .@"struct", .interface => if (self.hasValueDecls(node)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn isUsedImportAlias(self: *const Generator, requested_file: schema.RequestedFile, name: []const u8) bool {
+        for (requested_file.imports) |imp| {
+            if (!self.used_import_file_ids.contains(imp.id)) continue;
+            const alias = self.import_modules.get(imp.id) orelse continue;
+            if (std.mem.eql(u8, alias, name)) return true;
+        }
+        return false;
+    }
+
+    fn generateFileOnce(self: *Generator, requested_file: schema.RequestedFile) ![]const u8 {
         try validateRelativeSchemaPath(requested_file.filename);
         try self.validateCodegenBudget(requested_file);
 
@@ -324,6 +455,7 @@ pub const Generator = struct {
             const mod_name = self.import_modules.get(imp.id) orelse continue;
             const import_path = try self.importPathRelativeToFile(imp.name, requested_file.filename);
             defer self.allocator.free(import_path);
+            try self.writeShadowedImportNote(imp.name, writer);
             try writer.print("pub const {s} = @import(\"{f}\");\n", .{ mod_name, std.zig.fmtString(import_path) });
         }
         try writer.writeByte('\n');
@@ -1417,6 +1549,7 @@ pub const Generator = struct {
         const const_info = node.const_node orelse return error.InvalidConstNode;
         const name = try self.allocValueDeclName(node);
         defer self.allocator.free(name);
+        try self.writeShadowedValueDeclNote(node, writer);
 
         switch (const_info.value) {
             .text => |text| {
@@ -1449,6 +1582,7 @@ pub const Generator = struct {
         const annotation_info = node.annotation_node orelse return error.InvalidAnnotationNode;
         const name = try self.allocValueDeclName(node);
         defer self.allocator.free(name);
+        try self.writeShadowedValueDeclNote(node, writer);
 
         const type_name = try self.typeNameForConst(annotation_info.type);
         defer self.allocator.free(type_name);
@@ -1485,7 +1619,27 @@ pub const Generator = struct {
     }
 
     pub fn allocValueDeclName(self: *Generator, node: *const schema.Node) ![]const u8 {
-        return types.normalizeAndEscapeValueIdentifier(self.allocator, self.getSimpleName(node));
+        const underscores = self.shadowed_value_decls.get(node.id) orelse 0;
+        if (underscores == 0) return types.normalizeAndEscapeValueIdentifier(self.allocator, self.getSimpleName(node));
+        // A generated local has this name (see `generateFile`). A name that
+        // ends in `_` is never a keyword, so it needs no quotes.
+        const normalized = try types.identToZigValueName(self.allocator, self.getSimpleName(node));
+        defer self.allocator.free(normalized);
+        const renamed = try self.allocator.alloc(u8, normalized.len + underscores);
+        @memcpy(renamed[0..normalized.len], normalized);
+        @memset(renamed[normalized.len..], '_');
+        return renamed;
+    }
+
+    /// Say why a schema constant or annotation has a different name in Zig.
+    fn writeShadowedValueDeclNote(self: *Generator, node: *const schema.Node, writer: anytype) !void {
+        if (!self.shadowed_value_decls.contains(node.id)) return;
+        const local_name = try types.identToZigValueName(self.allocator, self.getSimpleName(node));
+        defer self.allocator.free(local_name);
+        try writer.print(
+            "/// The schema names this `{s}`. Generated code in this file declares a local named `{s}`, and Zig rejects a local that shadows a declaration, so this name takes a trailing underscore.\n",
+            .{ self.getSimpleName(node), local_name },
+        );
     }
 
     fn allocAnnotationUseBaseName(self: *Generator, node: *const schema.Node) ![]u8 {
@@ -1651,6 +1805,21 @@ pub const Generator = struct {
         return types.identToZigTypeName(self.allocator, name);
     }
 
+    /// Say why an import alias has a numeric suffix that no other import
+    /// explains.
+    fn writeShadowedImportNote(self: *Generator, filename: []const u8, writer: anytype) !void {
+        if (self.shadowed_import_aliases.count() == 0) return;
+        const base = try self.moduleNameFromFilename(filename);
+        defer self.allocator.free(base);
+        const alias = try types.escapeZigKeyword(self.allocator, base);
+        defer self.allocator.free(alias);
+        if (!self.shadowed_import_aliases.contains(alias)) return;
+        try writer.print(
+            "/// Generated code in this file declares a local named `{s}`, and Zig rejects a local that shadows a declaration, so this alias takes a numeric suffix.\n",
+            .{alias},
+        );
+    }
+
     fn moduleNameFromFilename(self: *Generator, filename: []const u8) ![]const u8 {
         const stem = std.fs.path.stem(filename);
         return self.toSnakeCaseLower(stem);
@@ -1675,8 +1844,11 @@ pub const Generator = struct {
             const candidate = try types.escapeZigKeyword(self.allocator, candidate_raw);
             errdefer self.allocator.free(candidate);
 
-            const gop = try used_aliases.getOrPut(candidate);
-            if (!gop.found_existing) return candidate;
+            // A generated local has this name (see `generateFile`).
+            if (!self.shadowed_import_aliases.contains(candidate)) {
+                const gop = try used_aliases.getOrPut(candidate);
+                if (!gop.found_existing) return candidate;
+            }
 
             self.allocator.free(candidate);
         }

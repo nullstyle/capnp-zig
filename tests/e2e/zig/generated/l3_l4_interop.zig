@@ -3801,15 +3801,15 @@ pub const Number = struct {
                     self.raw.release();
                 }
                 pub fn callGetNumber(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetNumber.BuildFn, comptime callback: _Applied.GetNumber.Callback) !u32 {
-                    const Adapter = _Applied.GetNumber.ClientAdapter(build, callback);
-                    return self.raw.callGetNumber(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetNumber.ClientAdapter(build, callback);
+                    return self.raw.callGetNumber(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callGetNumber(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetNumber.BuildFn, comptime callback: _Applied.GetNumber.Callback) !u32 {
-                    const Adapter = _Applied.GetNumber.ClientAdapter(build, callback);
-                    return self.raw.callGetNumber(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetNumber.ClientAdapter(build, callback);
+                    return self.raw.callGetNumber(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {

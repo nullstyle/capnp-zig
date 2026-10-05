@@ -7199,71 +7199,71 @@ pub const GameWorld = struct {
                     self.raw.release();
                 }
                 pub fn callSpawnEntity(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SpawnEntity.BuildFn, comptime callback: _Applied.SpawnEntity.Callback) !u32 {
-                    const Adapter = _Applied.SpawnEntity.ClientAdapter(build, callback);
-                    return self.raw.callSpawnEntity(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.SpawnEntity.ClientAdapter(build, callback);
+                    return self.raw.callSpawnEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSpawnEntityPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SpawnEntity.BuildFn, comptime callback: _Applied.SpawnEntity.Callback) !_Applied.SpawnEntity.Results.Pipeline {
                     const qid = try self.callSpawnEntity(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callDespawnEntity(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.DespawnEntity.BuildFn, comptime callback: _Applied.DespawnEntity.Callback) !u32 {
-                    const Adapter = _Applied.DespawnEntity.ClientAdapter(build, callback);
-                    return self.raw.callDespawnEntity(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.DespawnEntity.ClientAdapter(build, callback);
+                    return self.raw.callDespawnEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetEntity(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetEntity.BuildFn, comptime callback: _Applied.GetEntity.Callback) !u32 {
-                    const Adapter = _Applied.GetEntity.ClientAdapter(build, callback);
-                    return self.raw.callGetEntity(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetEntity.ClientAdapter(build, callback);
+                    return self.raw.callGetEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetEntityPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetEntity.BuildFn, comptime callback: _Applied.GetEntity.Callback) !_Applied.GetEntity.Results.Pipeline {
                     const qid = try self.callGetEntity(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callMoveEntity(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.MoveEntity.BuildFn, comptime callback: _Applied.MoveEntity.Callback) !u32 {
-                    const Adapter = _Applied.MoveEntity.ClientAdapter(build, callback);
-                    return self.raw.callMoveEntity(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.MoveEntity.ClientAdapter(build, callback);
+                    return self.raw.callMoveEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callMoveEntityPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.MoveEntity.BuildFn, comptime callback: _Applied.MoveEntity.Callback) !_Applied.MoveEntity.Results.Pipeline {
                     const qid = try self.callMoveEntity(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callDamageEntity(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.DamageEntity.BuildFn, comptime callback: _Applied.DamageEntity.Callback) !u32 {
-                    const Adapter = _Applied.DamageEntity.ClientAdapter(build, callback);
-                    return self.raw.callDamageEntity(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.DamageEntity.ClientAdapter(build, callback);
+                    return self.raw.callDamageEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callDamageEntityPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.DamageEntity.BuildFn, comptime callback: _Applied.DamageEntity.Callback) !_Applied.DamageEntity.Results.Pipeline {
                     const qid = try self.callDamageEntity(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callQueryArea(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.QueryArea.BuildFn, comptime callback: _Applied.QueryArea.Callback) !u32 {
-                    const Adapter = _Applied.QueryArea.ClientAdapter(build, callback);
-                    return self.raw.callQueryArea(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.QueryArea.ClientAdapter(build, callback);
+                    return self.raw.callQueryArea(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callSpawnEntity(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SpawnEntity.BuildFn, comptime callback: _Applied.SpawnEntity.Callback) !u32 {
-                    const Adapter = _Applied.SpawnEntity.ClientAdapter(build, callback);
-                    return self.raw.callSpawnEntity(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.SpawnEntity.ClientAdapter(build, callback);
+                    return self.raw.callSpawnEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callDespawnEntity(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.DespawnEntity.BuildFn, comptime callback: _Applied.DespawnEntity.Callback) !u32 {
-                    const Adapter = _Applied.DespawnEntity.ClientAdapter(build, callback);
-                    return self.raw.callDespawnEntity(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.DespawnEntity.ClientAdapter(build, callback);
+                    return self.raw.callDespawnEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetEntity(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetEntity.BuildFn, comptime callback: _Applied.GetEntity.Callback) !u32 {
-                    const Adapter = _Applied.GetEntity.ClientAdapter(build, callback);
-                    return self.raw.callGetEntity(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetEntity.ClientAdapter(build, callback);
+                    return self.raw.callGetEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callMoveEntity(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.MoveEntity.BuildFn, comptime callback: _Applied.MoveEntity.Callback) !u32 {
-                    const Adapter = _Applied.MoveEntity.ClientAdapter(build, callback);
-                    return self.raw.callMoveEntity(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.MoveEntity.ClientAdapter(build, callback);
+                    return self.raw.callMoveEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callDamageEntity(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.DamageEntity.BuildFn, comptime callback: _Applied.DamageEntity.Callback) !u32 {
-                    const Adapter = _Applied.DamageEntity.ClientAdapter(build, callback);
-                    return self.raw.callDamageEntity(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.DamageEntity.ClientAdapter(build, callback);
+                    return self.raw.callDamageEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callQueryArea(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.QueryArea.BuildFn, comptime callback: _Applied.QueryArea.Callback) !u32 {
-                    const Adapter = _Applied.QueryArea.ClientAdapter(build, callback);
-                    return self.raw.callQueryArea(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.QueryArea.ClientAdapter(build, callback);
+                    return self.raw.callQueryArea(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {

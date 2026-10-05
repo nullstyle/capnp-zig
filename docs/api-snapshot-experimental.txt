@@ -61,6 +61,8 @@ capnpc-zig.codegen.Generator.qualifiedTypeName: fn (*capnpc-zig.generator.Genera
 capnpc-zig.codegen.Generator.resolveMethodStructName: fn (*capnpc-zig.generator.Generator, *const serialization.schema.Node, u64) error{OutOfMemory}![]const u8
 capnpc-zig.codegen.Generator.setEmitReflection: fn (*capnpc-zig.generator.Generator, bool) void
 capnpc-zig.codegen.Generator.setSchemaRequest: fn (*capnpc-zig.generator.Generator, []const u8) error{CannotCanonicalizeCapability,CannotUpgradeBitList,DuplicateSchemaNode,ElementCountTooLarge,EmptyMessage,FarPointerOffsetTooLarge,IndexOutOfBounds,InvalidFarPointer,InvalidInlineCompositePointer,InvalidMessageSize,InvalidPointer,InvalidRootPointer,InvalidSegmentCount,InvalidSegmentId,ListTooLarge,MessageTooLarge,NestingLimitExceeded,OffsetOutOfRange,OutOfBounds,OutOfMemory,PointerDepthLimit,PointerIndexOutOfBounds,RecursionLimitExceeded,SegmentCountLimitExceeded,StructSizeMismatch,TextTooLong,TooManySegments,TraversalLimitExceeded,TruncatedMessage}!void
+capnpc-zig.codegen.Generator.shadowed_import_aliases: field hash_map.Custom([]const u8,void,hash_map.StringContext,80) = <default>
+capnpc-zig.codegen.Generator.shadowed_value_decls: field hash_map.Custom(u64,u8,hash_map.AutoContext(u64),80) = <default>
 capnpc-zig.codegen.Generator.shape_share_map: field hash_map.HashMap([]const u8,[]const u8,hash_map.StringContext,80)
 capnpc-zig.codegen.Generator.shape_sharing: field bool = false
 capnpc-zig.codegen.Generator.structLayout: fn (*capnpc-zig.generator.Generator, u64) ?capnpc-zig.generator.Generator.structLayout__struct_*

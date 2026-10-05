@@ -670,15 +670,15 @@ pub const PingPong = struct {
                     self.raw.release();
                 }
                 pub fn callPing(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Ping.BuildFn, comptime callback: _Applied.Ping.Callback) !u32 {
-                    const Adapter = _Applied.Ping.ClientAdapter(build, callback);
-                    return self.raw.callPing(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Ping.ClientAdapter(build, callback);
+                    return self.raw.callPing(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callPing(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Ping.BuildFn, comptime callback: _Applied.Ping.Callback) !u32 {
-                    const Adapter = _Applied.Ping.ClientAdapter(build, callback);
-                    return self.raw.callPing(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Ping.ClientAdapter(build, callback);
+                    return self.raw.callPing(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {

@@ -225,6 +225,28 @@ proxy-ID list and must clean up unreferenced proxies if delivery is abandoned.
 The automatic redirected-result flow performs that ownership bookkeeping,
 including invocation, pipelining, release, and allocation-failure cleanup.
 
+## Schema names that generated code uses for locals
+
+Generated functions name their parameters, locals and captures plainly:
+`self`, `value`, `msg`, `ctx`, `peer` and so on. Zig rejects a local that has
+the name of a declaration in an enclosing container, and a schema names some
+of those declarations: its constants and annotations, and the aliases of the
+files it imports. So the generator checks each file it generates:
+
+- A constant or annotation that a generated local would shadow takes a
+  trailing underscore. `const ctx :UInt32 = 1;` beside an interface gives
+  `pub const ctx_: u32 = 1;`.
+- An import alias that a generated local would shadow takes the next free
+  numeric suffix. An import of `user_ctx.capnp` gives
+  `pub const user_ctx_2 = @import("user_ctx.zig");`.
+- A doc comment on the renamed declaration says why.
+
+The check is per container. A declaration that no local in its scope shadows
+keeps its name, and a file with no collision does not change. Types are never
+renamed, because other files name them. The type-valued locals in generated
+code have quoted names with a space (`@"client adapter"`), which no schema
+name can match.
+
 ## What is frozen in generated code
 
 The plugin's output has its own freeze gate, apart from the library's

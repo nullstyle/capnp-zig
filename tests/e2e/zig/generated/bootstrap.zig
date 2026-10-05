@@ -4623,32 +4623,32 @@ pub const Bootstrap = struct {
                     self.raw.release();
                 }
                 pub fn callGameWorld(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GameWorld.BuildFn, comptime callback: _Applied.GameWorld.Callback) !u32 {
-                    const Adapter = _Applied.GameWorld.ClientAdapter(build, callback);
-                    return self.raw.callGameWorld(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GameWorld.ClientAdapter(build, callback);
+                    return self.raw.callGameWorld(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGameWorldPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GameWorld.BuildFn, comptime callback: _Applied.GameWorld.Callback) !_Applied.GameWorld.Results.Pipeline {
                     const qid = try self.callGameWorld(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callChatService(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ChatService.BuildFn, comptime callback: _Applied.ChatService.Callback) !u32 {
-                    const Adapter = _Applied.ChatService.ClientAdapter(build, callback);
-                    return self.raw.callChatService(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.ChatService.ClientAdapter(build, callback);
+                    return self.raw.callChatService(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callChatServicePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ChatService.BuildFn, comptime callback: _Applied.ChatService.Callback) !_Applied.ChatService.Results.Pipeline {
                     const qid = try self.callChatService(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callInventoryService(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.InventoryService.BuildFn, comptime callback: _Applied.InventoryService.Callback) !u32 {
-                    const Adapter = _Applied.InventoryService.ClientAdapter(build, callback);
-                    return self.raw.callInventoryService(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.InventoryService.ClientAdapter(build, callback);
+                    return self.raw.callInventoryService(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callInventoryServicePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.InventoryService.BuildFn, comptime callback: _Applied.InventoryService.Callback) !_Applied.InventoryService.Results.Pipeline {
                     const qid = try self.callInventoryService(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callMatchmakingService(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.MatchmakingService.BuildFn, comptime callback: _Applied.MatchmakingService.Callback) !u32 {
-                    const Adapter = _Applied.MatchmakingService.ClientAdapter(build, callback);
-                    return self.raw.callMatchmakingService(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.MatchmakingService.ClientAdapter(build, callback);
+                    return self.raw.callMatchmakingService(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callMatchmakingServicePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.MatchmakingService.BuildFn, comptime callback: _Applied.MatchmakingService.Callback) !_Applied.MatchmakingService.Results.Pipeline {
                     const qid = try self.callMatchmakingService(ctx, build, callback);
@@ -4658,20 +4658,20 @@ pub const Bootstrap = struct {
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callGameWorld(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GameWorld.BuildFn, comptime callback: _Applied.GameWorld.Callback) !u32 {
-                    const Adapter = _Applied.GameWorld.ClientAdapter(build, callback);
-                    return self.raw.callGameWorld(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GameWorld.ClientAdapter(build, callback);
+                    return self.raw.callGameWorld(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callChatService(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ChatService.BuildFn, comptime callback: _Applied.ChatService.Callback) !u32 {
-                    const Adapter = _Applied.ChatService.ClientAdapter(build, callback);
-                    return self.raw.callChatService(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.ChatService.ClientAdapter(build, callback);
+                    return self.raw.callChatService(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callInventoryService(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.InventoryService.BuildFn, comptime callback: _Applied.InventoryService.Callback) !u32 {
-                    const Adapter = _Applied.InventoryService.ClientAdapter(build, callback);
-                    return self.raw.callInventoryService(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.InventoryService.ClientAdapter(build, callback);
+                    return self.raw.callInventoryService(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callMatchmakingService(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.MatchmakingService.BuildFn, comptime callback: _Applied.MatchmakingService.Callback) !u32 {
-                    const Adapter = _Applied.MatchmakingService.ClientAdapter(build, callback);
-                    return self.raw.callMatchmakingService(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.MatchmakingService.ClientAdapter(build, callback);
+                    return self.raw.callMatchmakingService(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {

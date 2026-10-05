@@ -3267,15 +3267,15 @@ pub const CallSequence = struct {
                     self.raw.release();
                 }
                 pub fn callGetNumber(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetNumber.BuildFn, comptime callback: _Applied.GetNumber.Callback) !u32 {
-                    const Adapter = _Applied.GetNumber.ClientAdapter(build, callback);
-                    return self.raw.callGetNumber(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetNumber.ClientAdapter(build, callback);
+                    return self.raw.callGetNumber(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callGetNumber(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetNumber.BuildFn, comptime callback: _Applied.GetNumber.Callback) !u32 {
-                    const Adapter = _Applied.GetNumber.ClientAdapter(build, callback);
-                    return self.raw.callGetNumber(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetNumber.ClientAdapter(build, callback);
+                    return self.raw.callGetNumber(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {
@@ -4976,43 +4976,43 @@ pub const Reflector = struct {
                     self.raw.release();
                 }
                 pub fn callReflect(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Reflect.BuildFn, comptime callback: _Applied.Reflect.Callback) !u32 {
-                    const Adapter = _Applied.Reflect.ClientAdapter(build, callback);
-                    return self.raw.callReflect(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Reflect.ClientAdapter(build, callback);
+                    return self.raw.callReflect(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callReflectPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Reflect.BuildFn, comptime callback: _Applied.Reflect.Callback) !_Applied.Reflect.Results.Pipeline {
                     const qid = try self.callReflect(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callResolveNow(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ResolveNow.BuildFn, comptime callback: _Applied.ResolveNow.Callback) !u32 {
-                    const Adapter = _Applied.ResolveNow.ClientAdapter(build, callback);
-                    return self.raw.callResolveNow(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.ResolveNow.ClientAdapter(build, callback);
+                    return self.raw.callResolveNow(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callInvokeCap(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.InvokeCap.BuildFn, comptime callback: _Applied.InvokeCap.Callback) !u32 {
-                    const Adapter = _Applied.InvokeCap.ClientAdapter(build, callback);
-                    return self.raw.callInvokeCap(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.InvokeCap.ClientAdapter(build, callback);
+                    return self.raw.callInvokeCap(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callDisconnectNow(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.DisconnectNow.BuildFn, comptime callback: _Applied.DisconnectNow.Callback) !u32 {
-                    const Adapter = _Applied.DisconnectNow.ClientAdapter(build, callback);
-                    return self.raw.callDisconnectNow(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.DisconnectNow.ClientAdapter(build, callback);
+                    return self.raw.callDisconnectNow(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callReflect(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Reflect.BuildFn, comptime callback: _Applied.Reflect.Callback) !u32 {
-                    const Adapter = _Applied.Reflect.ClientAdapter(build, callback);
-                    return self.raw.callReflect(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Reflect.ClientAdapter(build, callback);
+                    return self.raw.callReflect(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callResolveNow(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ResolveNow.BuildFn, comptime callback: _Applied.ResolveNow.Callback) !u32 {
-                    const Adapter = _Applied.ResolveNow.ClientAdapter(build, callback);
-                    return self.raw.callResolveNow(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.ResolveNow.ClientAdapter(build, callback);
+                    return self.raw.callResolveNow(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callInvokeCap(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.InvokeCap.BuildFn, comptime callback: _Applied.InvokeCap.Callback) !u32 {
-                    const Adapter = _Applied.InvokeCap.ClientAdapter(build, callback);
-                    return self.raw.callInvokeCap(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.InvokeCap.ClientAdapter(build, callback);
+                    return self.raw.callInvokeCap(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callDisconnectNow(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.DisconnectNow.BuildFn, comptime callback: _Applied.DisconnectNow.Callback) !u32 {
-                    const Adapter = _Applied.DisconnectNow.ClientAdapter(build, callback);
-                    return self.raw.callDisconnectNow(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.DisconnectNow.ClientAdapter(build, callback);
+                    return self.raw.callDisconnectNow(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {

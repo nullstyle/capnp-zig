@@ -5650,59 +5650,59 @@ pub const ChatRoom = struct {
                     self.raw.release();
                 }
                 pub fn callSendMessage(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SendMessage.BuildFn, comptime callback: _Applied.SendMessage.Callback) !u32 {
-                    const Adapter = _Applied.SendMessage.ClientAdapter(build, callback);
-                    return self.raw.callSendMessage(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.SendMessage.ClientAdapter(build, callback);
+                    return self.raw.callSendMessage(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSendMessagePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SendMessage.BuildFn, comptime callback: _Applied.SendMessage.Callback) !_Applied.SendMessage.Results.Pipeline {
                     const qid = try self.callSendMessage(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callSendEmote(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SendEmote.BuildFn, comptime callback: _Applied.SendEmote.Callback) !u32 {
-                    const Adapter = _Applied.SendEmote.ClientAdapter(build, callback);
-                    return self.raw.callSendEmote(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.SendEmote.ClientAdapter(build, callback);
+                    return self.raw.callSendEmote(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSendEmotePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SendEmote.BuildFn, comptime callback: _Applied.SendEmote.Callback) !_Applied.SendEmote.Results.Pipeline {
                     const qid = try self.callSendEmote(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callGetHistory(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetHistory.BuildFn, comptime callback: _Applied.GetHistory.Callback) !u32 {
-                    const Adapter = _Applied.GetHistory.ClientAdapter(build, callback);
-                    return self.raw.callGetHistory(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetHistory.ClientAdapter(build, callback);
+                    return self.raw.callGetHistory(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetInfo(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInfo.BuildFn, comptime callback: _Applied.GetInfo.Callback) !u32 {
-                    const Adapter = _Applied.GetInfo.ClientAdapter(build, callback);
-                    return self.raw.callGetInfo(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetInfo.ClientAdapter(build, callback);
+                    return self.raw.callGetInfo(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetInfoPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInfo.BuildFn, comptime callback: _Applied.GetInfo.Callback) !_Applied.GetInfo.Results.Pipeline {
                     const qid = try self.callGetInfo(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callLeave(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Leave.BuildFn, comptime callback: _Applied.Leave.Callback) !u32 {
-                    const Adapter = _Applied.Leave.ClientAdapter(build, callback);
-                    return self.raw.callLeave(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Leave.ClientAdapter(build, callback);
+                    return self.raw.callLeave(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callSendMessage(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SendMessage.BuildFn, comptime callback: _Applied.SendMessage.Callback) !u32 {
-                    const Adapter = _Applied.SendMessage.ClientAdapter(build, callback);
-                    return self.raw.callSendMessage(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.SendMessage.ClientAdapter(build, callback);
+                    return self.raw.callSendMessage(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSendEmote(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SendEmote.BuildFn, comptime callback: _Applied.SendEmote.Callback) !u32 {
-                    const Adapter = _Applied.SendEmote.ClientAdapter(build, callback);
-                    return self.raw.callSendEmote(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.SendEmote.ClientAdapter(build, callback);
+                    return self.raw.callSendEmote(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetHistory(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetHistory.BuildFn, comptime callback: _Applied.GetHistory.Callback) !u32 {
-                    const Adapter = _Applied.GetHistory.ClientAdapter(build, callback);
-                    return self.raw.callGetHistory(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetHistory.ClientAdapter(build, callback);
+                    return self.raw.callGetHistory(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetInfo(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInfo.BuildFn, comptime callback: _Applied.GetInfo.Callback) !u32 {
-                    const Adapter = _Applied.GetInfo.ClientAdapter(build, callback);
-                    return self.raw.callGetInfo(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetInfo.ClientAdapter(build, callback);
+                    return self.raw.callGetInfo(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callLeave(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Leave.BuildFn, comptime callback: _Applied.Leave.Callback) !u32 {
-                    const Adapter = _Applied.Leave.ClientAdapter(build, callback);
-                    return self.raw.callLeave(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Leave.ClientAdapter(build, callback);
+                    return self.raw.callLeave(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {
@@ -8118,28 +8118,28 @@ pub const ChatService = struct {
                     self.raw.release();
                 }
                 pub fn callCreateRoom(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CreateRoom.BuildFn, comptime callback: _Applied.CreateRoom.Callback) !u32 {
-                    const Adapter = _Applied.CreateRoom.ClientAdapter(build, callback);
-                    return self.raw.callCreateRoom(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.CreateRoom.ClientAdapter(build, callback);
+                    return self.raw.callCreateRoom(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callCreateRoomPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CreateRoom.BuildFn, comptime callback: _Applied.CreateRoom.Callback) !_Applied.CreateRoom.Results.Pipeline {
                     const qid = try self.callCreateRoom(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callJoinRoom(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.JoinRoom.BuildFn, comptime callback: _Applied.JoinRoom.Callback) !u32 {
-                    const Adapter = _Applied.JoinRoom.ClientAdapter(build, callback);
-                    return self.raw.callJoinRoom(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.JoinRoom.ClientAdapter(build, callback);
+                    return self.raw.callJoinRoom(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callJoinRoomPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.JoinRoom.BuildFn, comptime callback: _Applied.JoinRoom.Callback) !_Applied.JoinRoom.Results.Pipeline {
                     const qid = try self.callJoinRoom(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callListRooms(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ListRooms.BuildFn, comptime callback: _Applied.ListRooms.Callback) !u32 {
-                    const Adapter = _Applied.ListRooms.ClientAdapter(build, callback);
-                    return self.raw.callListRooms(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.ListRooms.ClientAdapter(build, callback);
+                    return self.raw.callListRooms(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callWhisper(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Whisper.BuildFn, comptime callback: _Applied.Whisper.Callback) !u32 {
-                    const Adapter = _Applied.Whisper.ClientAdapter(build, callback);
-                    return self.raw.callWhisper(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Whisper.ClientAdapter(build, callback);
+                    return self.raw.callWhisper(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callWhisperPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Whisper.BuildFn, comptime callback: _Applied.Whisper.Callback) !_Applied.Whisper.Results.Pipeline {
                     const qid = try self.callWhisper(ctx, build, callback);
@@ -8149,20 +8149,20 @@ pub const ChatService = struct {
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callCreateRoom(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CreateRoom.BuildFn, comptime callback: _Applied.CreateRoom.Callback) !u32 {
-                    const Adapter = _Applied.CreateRoom.ClientAdapter(build, callback);
-                    return self.raw.callCreateRoom(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.CreateRoom.ClientAdapter(build, callback);
+                    return self.raw.callCreateRoom(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callJoinRoom(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.JoinRoom.BuildFn, comptime callback: _Applied.JoinRoom.Callback) !u32 {
-                    const Adapter = _Applied.JoinRoom.ClientAdapter(build, callback);
-                    return self.raw.callJoinRoom(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.JoinRoom.ClientAdapter(build, callback);
+                    return self.raw.callJoinRoom(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callListRooms(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ListRooms.BuildFn, comptime callback: _Applied.ListRooms.Callback) !u32 {
-                    const Adapter = _Applied.ListRooms.ClientAdapter(build, callback);
-                    return self.raw.callListRooms(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.ListRooms.ClientAdapter(build, callback);
+                    return self.raw.callListRooms(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callWhisper(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Whisper.BuildFn, comptime callback: _Applied.Whisper.Callback) !u32 {
-                    const Adapter = _Applied.Whisper.ClientAdapter(build, callback);
-                    return self.raw.callWhisper(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Whisper.ClientAdapter(build, callback);
+                    return self.raw.callWhisper(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {

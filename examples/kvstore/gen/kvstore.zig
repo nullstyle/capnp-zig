@@ -1902,23 +1902,23 @@ pub const KvClientNotifier = struct {
                     self.raw.release();
                 }
                 pub fn callKeysChanged(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.KeysChanged.BuildFn, comptime callback: _Applied.KeysChanged.Callback) !u32 {
-                    const Adapter = _Applied.KeysChanged.ClientAdapter(build, callback);
-                    return self.raw.callKeysChanged(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.KeysChanged.ClientAdapter(build, callback);
+                    return self.raw.callKeysChanged(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callStateResetRequired(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.StateResetRequired.BuildFn, comptime callback: _Applied.StateResetRequired.Callback) !u32 {
-                    const Adapter = _Applied.StateResetRequired.ClientAdapter(build, callback);
-                    return self.raw.callStateResetRequired(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.StateResetRequired.ClientAdapter(build, callback);
+                    return self.raw.callStateResetRequired(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callKeysChanged(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.KeysChanged.BuildFn, comptime callback: _Applied.KeysChanged.Callback) !u32 {
-                    const Adapter = _Applied.KeysChanged.ClientAdapter(build, callback);
-                    return self.raw.callKeysChanged(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.KeysChanged.ClientAdapter(build, callback);
+                    return self.raw.callKeysChanged(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callStateResetRequired(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.StateResetRequired.BuildFn, comptime callback: _Applied.StateResetRequired.Callback) !u32 {
-                    const Adapter = _Applied.StateResetRequired.ClientAdapter(build, callback);
-                    return self.raw.callStateResetRequired(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.StateResetRequired.ClientAdapter(build, callback);
+                    return self.raw.callStateResetRequired(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {
@@ -5082,79 +5082,79 @@ pub const KvStore = struct {
                     self.raw.release();
                 }
                 pub fn callGet(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Get.BuildFn, comptime callback: _Applied.Get.Callback) !u32 {
-                    const Adapter = _Applied.Get.ClientAdapter(build, callback);
-                    return self.raw.callGet(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Get.ClientAdapter(build, callback);
+                    return self.raw.callGet(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Get.BuildFn, comptime callback: _Applied.Get.Callback) !_Applied.Get.Results.Pipeline {
                     const qid = try self.callGet(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callWriteBatch(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.WriteBatch.BuildFn, comptime callback: _Applied.WriteBatch.Callback) !u32 {
-                    const Adapter = _Applied.WriteBatch.ClientAdapter(build, callback);
-                    return self.raw.callWriteBatch(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.WriteBatch.ClientAdapter(build, callback);
+                    return self.raw.callWriteBatch(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callList(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.List.BuildFn, comptime callback: _Applied.List.Callback) !u32 {
-                    const Adapter = _Applied.List.ClientAdapter(build, callback);
-                    return self.raw.callList(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.List.ClientAdapter(build, callback);
+                    return self.raw.callList(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSubscribe(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Subscribe.BuildFn, comptime callback: _Applied.Subscribe.Callback) !u32 {
-                    const Adapter = _Applied.Subscribe.ClientAdapter(build, callback);
-                    return self.raw.callSubscribe(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Subscribe.ClientAdapter(build, callback);
+                    return self.raw.callSubscribe(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSetWatchedKeys(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SetWatchedKeys.BuildFn, comptime callback: _Applied.SetWatchedKeys.Callback) !u32 {
-                    const Adapter = _Applied.SetWatchedKeys.ClientAdapter(build, callback);
-                    return self.raw.callSetWatchedKeys(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.SetWatchedKeys.ClientAdapter(build, callback);
+                    return self.raw.callSetWatchedKeys(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callCreateBackup(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CreateBackup.BuildFn, comptime callback: _Applied.CreateBackup.Callback) !u32 {
-                    const Adapter = _Applied.CreateBackup.ClientAdapter(build, callback);
-                    return self.raw.callCreateBackup(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.CreateBackup.ClientAdapter(build, callback);
+                    return self.raw.callCreateBackup(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callCreateBackupPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CreateBackup.BuildFn, comptime callback: _Applied.CreateBackup.Callback) !_Applied.CreateBackup.Results.Pipeline {
                     const qid = try self.callCreateBackup(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callListBackups(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ListBackups.BuildFn, comptime callback: _Applied.ListBackups.Callback) !u32 {
-                    const Adapter = _Applied.ListBackups.ClientAdapter(build, callback);
-                    return self.raw.callListBackups(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.ListBackups.ClientAdapter(build, callback);
+                    return self.raw.callListBackups(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callRestoreFromBackup(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.RestoreFromBackup.BuildFn, comptime callback: _Applied.RestoreFromBackup.Callback) !u32 {
-                    const Adapter = _Applied.RestoreFromBackup.ClientAdapter(build, callback);
-                    return self.raw.callRestoreFromBackup(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.RestoreFromBackup.ClientAdapter(build, callback);
+                    return self.raw.callRestoreFromBackup(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callGet(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Get.BuildFn, comptime callback: _Applied.Get.Callback) !u32 {
-                    const Adapter = _Applied.Get.ClientAdapter(build, callback);
-                    return self.raw.callGet(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Get.ClientAdapter(build, callback);
+                    return self.raw.callGet(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callWriteBatch(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.WriteBatch.BuildFn, comptime callback: _Applied.WriteBatch.Callback) !u32 {
-                    const Adapter = _Applied.WriteBatch.ClientAdapter(build, callback);
-                    return self.raw.callWriteBatch(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.WriteBatch.ClientAdapter(build, callback);
+                    return self.raw.callWriteBatch(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callList(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.List.BuildFn, comptime callback: _Applied.List.Callback) !u32 {
-                    const Adapter = _Applied.List.ClientAdapter(build, callback);
-                    return self.raw.callList(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.List.ClientAdapter(build, callback);
+                    return self.raw.callList(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSubscribe(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Subscribe.BuildFn, comptime callback: _Applied.Subscribe.Callback) !u32 {
-                    const Adapter = _Applied.Subscribe.ClientAdapter(build, callback);
-                    return self.raw.callSubscribe(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Subscribe.ClientAdapter(build, callback);
+                    return self.raw.callSubscribe(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSetWatchedKeys(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SetWatchedKeys.BuildFn, comptime callback: _Applied.SetWatchedKeys.Callback) !u32 {
-                    const Adapter = _Applied.SetWatchedKeys.ClientAdapter(build, callback);
-                    return self.raw.callSetWatchedKeys(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.SetWatchedKeys.ClientAdapter(build, callback);
+                    return self.raw.callSetWatchedKeys(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callCreateBackup(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CreateBackup.BuildFn, comptime callback: _Applied.CreateBackup.Callback) !u32 {
-                    const Adapter = _Applied.CreateBackup.ClientAdapter(build, callback);
-                    return self.raw.callCreateBackup(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.CreateBackup.ClientAdapter(build, callback);
+                    return self.raw.callCreateBackup(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callListBackups(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ListBackups.BuildFn, comptime callback: _Applied.ListBackups.Callback) !u32 {
-                    const Adapter = _Applied.ListBackups.ClientAdapter(build, callback);
-                    return self.raw.callListBackups(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.ListBackups.ClientAdapter(build, callback);
+                    return self.raw.callListBackups(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callRestoreFromBackup(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.RestoreFromBackup.BuildFn, comptime callback: _Applied.RestoreFromBackup.Callback) !u32 {
-                    const Adapter = _Applied.RestoreFromBackup.ClientAdapter(build, callback);
-                    return self.raw.callRestoreFromBackup(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.RestoreFromBackup.ClientAdapter(build, callback);
+                    return self.raw.callRestoreFromBackup(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {

@@ -5802,43 +5802,43 @@ pub const MatchController = struct {
                     self.raw.release();
                 }
                 pub fn callGetInfo(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInfo.BuildFn, comptime callback: _Applied.GetInfo.Callback) !u32 {
-                    const Adapter = _Applied.GetInfo.ClientAdapter(build, callback);
-                    return self.raw.callGetInfo(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetInfo.ClientAdapter(build, callback);
+                    return self.raw.callGetInfo(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetInfoPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInfo.BuildFn, comptime callback: _Applied.GetInfo.Callback) !_Applied.GetInfo.Results.Pipeline {
                     const qid = try self.callGetInfo(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callSignalReady(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SignalReady.BuildFn, comptime callback: _Applied.SignalReady.Callback) !u32 {
-                    const Adapter = _Applied.SignalReady.ClientAdapter(build, callback);
-                    return self.raw.callSignalReady(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.SignalReady.ClientAdapter(build, callback);
+                    return self.raw.callSignalReady(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callReportResult(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ReportResult.BuildFn, comptime callback: _Applied.ReportResult.Callback) !u32 {
-                    const Adapter = _Applied.ReportResult.ClientAdapter(build, callback);
-                    return self.raw.callReportResult(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.ReportResult.ClientAdapter(build, callback);
+                    return self.raw.callReportResult(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callCancelMatch(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CancelMatch.BuildFn, comptime callback: _Applied.CancelMatch.Callback) !u32 {
-                    const Adapter = _Applied.CancelMatch.ClientAdapter(build, callback);
-                    return self.raw.callCancelMatch(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.CancelMatch.ClientAdapter(build, callback);
+                    return self.raw.callCancelMatch(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callGetInfo(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInfo.BuildFn, comptime callback: _Applied.GetInfo.Callback) !u32 {
-                    const Adapter = _Applied.GetInfo.ClientAdapter(build, callback);
-                    return self.raw.callGetInfo(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetInfo.ClientAdapter(build, callback);
+                    return self.raw.callGetInfo(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSignalReady(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SignalReady.BuildFn, comptime callback: _Applied.SignalReady.Callback) !u32 {
-                    const Adapter = _Applied.SignalReady.ClientAdapter(build, callback);
-                    return self.raw.callSignalReady(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.SignalReady.ClientAdapter(build, callback);
+                    return self.raw.callSignalReady(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callReportResult(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ReportResult.BuildFn, comptime callback: _Applied.ReportResult.Callback) !u32 {
-                    const Adapter = _Applied.ReportResult.ClientAdapter(build, callback);
-                    return self.raw.callReportResult(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.ReportResult.ClientAdapter(build, callback);
+                    return self.raw.callReportResult(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callCancelMatch(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CancelMatch.BuildFn, comptime callback: _Applied.CancelMatch.Callback) !u32 {
-                    const Adapter = _Applied.CancelMatch.ClientAdapter(build, callback);
-                    return self.raw.callCancelMatch(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.CancelMatch.ClientAdapter(build, callback);
+                    return self.raw.callCancelMatch(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {
@@ -8528,32 +8528,32 @@ pub const MatchmakingService = struct {
                     self.raw.release();
                 }
                 pub fn callEnqueue(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Enqueue.BuildFn, comptime callback: _Applied.Enqueue.Callback) !u32 {
-                    const Adapter = _Applied.Enqueue.ClientAdapter(build, callback);
-                    return self.raw.callEnqueue(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Enqueue.ClientAdapter(build, callback);
+                    return self.raw.callEnqueue(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callEnqueuePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Enqueue.BuildFn, comptime callback: _Applied.Enqueue.Callback) !_Applied.Enqueue.Results.Pipeline {
                     const qid = try self.callEnqueue(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callDequeue(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Dequeue.BuildFn, comptime callback: _Applied.Dequeue.Callback) !u32 {
-                    const Adapter = _Applied.Dequeue.ClientAdapter(build, callback);
-                    return self.raw.callDequeue(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Dequeue.ClientAdapter(build, callback);
+                    return self.raw.callDequeue(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callFindMatch(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.FindMatch.BuildFn, comptime callback: _Applied.FindMatch.Callback) !u32 {
-                    const Adapter = _Applied.FindMatch.ClientAdapter(build, callback);
-                    return self.raw.callFindMatch(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.FindMatch.ClientAdapter(build, callback);
+                    return self.raw.callFindMatch(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callFindMatchPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.FindMatch.BuildFn, comptime callback: _Applied.FindMatch.Callback) !_Applied.FindMatch.Results.Pipeline {
                     const qid = try self.callFindMatch(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callGetQueueStats(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetQueueStats.BuildFn, comptime callback: _Applied.GetQueueStats.Callback) !u32 {
-                    const Adapter = _Applied.GetQueueStats.ClientAdapter(build, callback);
-                    return self.raw.callGetQueueStats(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetQueueStats.ClientAdapter(build, callback);
+                    return self.raw.callGetQueueStats(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetMatchResult(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetMatchResult.BuildFn, comptime callback: _Applied.GetMatchResult.Callback) !u32 {
-                    const Adapter = _Applied.GetMatchResult.ClientAdapter(build, callback);
-                    return self.raw.callGetMatchResult(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetMatchResult.ClientAdapter(build, callback);
+                    return self.raw.callGetMatchResult(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetMatchResultPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetMatchResult.BuildFn, comptime callback: _Applied.GetMatchResult.Callback) !_Applied.GetMatchResult.Results.Pipeline {
                     const qid = try self.callGetMatchResult(ctx, build, callback);
@@ -8563,24 +8563,24 @@ pub const MatchmakingService = struct {
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callEnqueue(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Enqueue.BuildFn, comptime callback: _Applied.Enqueue.Callback) !u32 {
-                    const Adapter = _Applied.Enqueue.ClientAdapter(build, callback);
-                    return self.raw.callEnqueue(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Enqueue.ClientAdapter(build, callback);
+                    return self.raw.callEnqueue(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callDequeue(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Dequeue.BuildFn, comptime callback: _Applied.Dequeue.Callback) !u32 {
-                    const Adapter = _Applied.Dequeue.ClientAdapter(build, callback);
-                    return self.raw.callDequeue(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Dequeue.ClientAdapter(build, callback);
+                    return self.raw.callDequeue(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callFindMatch(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.FindMatch.BuildFn, comptime callback: _Applied.FindMatch.Callback) !u32 {
-                    const Adapter = _Applied.FindMatch.ClientAdapter(build, callback);
-                    return self.raw.callFindMatch(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.FindMatch.ClientAdapter(build, callback);
+                    return self.raw.callFindMatch(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetQueueStats(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetQueueStats.BuildFn, comptime callback: _Applied.GetQueueStats.Callback) !u32 {
-                    const Adapter = _Applied.GetQueueStats.ClientAdapter(build, callback);
-                    return self.raw.callGetQueueStats(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetQueueStats.ClientAdapter(build, callback);
+                    return self.raw.callGetQueueStats(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetMatchResult(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetMatchResult.BuildFn, comptime callback: _Applied.GetMatchResult.Callback) !u32 {
-                    const Adapter = _Applied.GetMatchResult.ClientAdapter(build, callback);
-                    return self.raw.callGetMatchResult(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetMatchResult.ClientAdapter(build, callback);
+                    return self.raw.callGetMatchResult(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {

@@ -885,6 +885,80 @@ test "Codegen call-return captures cannot collide with a schema-named flag" {
     );
 }
 
+// The general case of the two above. tests/test_schemas/generated_local_names
+// .capnp names a file-scope constant or annotation after every single-word
+// local, parameter and capture that generated code declares, nests two more
+// in a struct and an interface, names two types after the type-valued
+// locals, and imports a file whose alias is a client-call parameter. A
+// schema declaration that a generated local would shadow takes a trailing
+// underscore (an import alias, the next free numeric suffix); one that no
+// local shadows keeps its name. Taking each function's address makes the
+// compiler analyze its body.
+test "Codegen locals cannot collide with schema-named declarations" {
+    try runMultiFileHarness(std.testing.allocator, &.{
+        "tests/test_schemas/generated_local_names.capnp",
+        "tests/test_schemas/user_ctx.capnp",
+    },
+        \\const std = @import("std");
+        \\const capnpc = @import("capnpc-zig");
+        \\const message = capnpc.message;
+        \\const generated = @import("generated_local_names.zig");
+        \\
+        \\test "schema declarations beside generated locals" {
+        \\    try std.testing.expectEqual(@as(u32, 11), generated.ctx_);
+        \\    try std.testing.expectEqual(@as(u32, 43), generated.self_);
+        \\    try std.testing.expectEqual(@as(u32, 50), generated.value_);
+        \\    try std.testing.expect(!@hasDecl(generated, "ctx"));
+        \\    try std.testing.expect(!@hasDecl(generated, "self"));
+        \\    try std.testing.expect(generated.peer_.Type == bool);
+        \\    try std.testing.expect(generated.settled_.Type == bool);
+        \\    try std.testing.expectEqual(@as(u32, 100), generated.Holder.builder_);
+        \\    try std.testing.expectEqual(@as(u32, 200), generated.Pinger.results_);
+        \\    try std.testing.expectEqual(@as(u32, 300), generated.Quiet.ctx);
+        \\    try std.testing.expect(generated.user_ctx_2 == @import("user_ctx.zig"));
+        \\    try std.testing.expect(!@hasDecl(generated, "user_ctx"));
+        \\
+        \\    _ = &generated.Pinger.Ping.callBuild;
+        \\    _ = &generated.Pinger.Ping.callReturn;
+        \\    _ = &generated.Pinger.Ping.handleCallDirect;
+        \\    _ = &generated.Pinger.Ping.ReturnSender.sendResults;
+        \\    _ = &generated.Pinger.Ping.CallContext.deinitCtx;
+        \\    _ = &generated.Pinger.Push.streamCallReturn;
+        \\    _ = &generated.Pinger.Push.handleCallDeferred;
+        \\    _ = &generated.Pinger.Push.StreamCallContext.deinitCtx;
+        \\    _ = &generated.Pinger.Client.callPing;
+        \\    _ = &generated.Pinger.Client.callPingPipelined;
+        \\    _ = &generated.Pinger.Client.fromBootstrap;
+        \\    _ = &generated.Pinger.StreamClient.callPush;
+        \\    _ = &generated.Pinger.PipelinedClient.callPing;
+        \\    _ = &generated.Pinger.exportServer;
+        \\    _ = &generated.Pinger.bootstrap;
+        \\    const Typed = generated.Pinger.Apply(.{});
+        \\    _ = &Typed.Client.callPing;
+        \\    _ = &Typed.Client.callPush;
+        \\    _ = &Typed.Client.asAncestor;
+        \\
+        \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+        \\    defer builder.deinit();
+        \\    var holder = try generated.Holder.Builder.init(&builder);
+        \\    try holder.setCount(42);
+        \\    try holder.setName("named");
+        \\    var thing = try holder.initThing();
+        \\    try thing.setValue(9);
+        \\    const bytes = try builder.toBytes();
+        \\    defer std.testing.allocator.free(bytes);
+        \\
+        \\    var msg = try message.Message.init(std.testing.allocator, bytes, .{});
+        \\    defer msg.deinit();
+        \\    const reader = try generated.Holder.Reader.init(&msg);
+        \\    try std.testing.expectEqual(@as(u32, 42), try reader.getCount());
+        \\    try std.testing.expectEqualStrings("named", try reader.getName());
+        \\    try std.testing.expectEqual(@as(u32, 9), try (try reader.getThing()).getValue());
+        \\}
+        \\
+    );
+}
+
 // Importing `type.capnp` gives the binding a file-scope alias declared as
 // `pub const @"type"`. Typed applications anchor imported types at the file
 // namespace, and behind `_capnp_file.` the alias is a field access, where zig

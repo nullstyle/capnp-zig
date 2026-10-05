@@ -775,6 +775,22 @@ by step.
   code captured its settled flag as `|flag|`, which shadowed the
   declaration. The capture is now `@"settled flag"`, which no schema name can
   match. Regenerating bindings changes only that capture name.
+- **Generated code compiles when a schema names a constant, an annotation or
+  an import after a generated local.** Generated functions name their
+  parameters, locals and captures plainly (`self`, `value`, `msg`, `ctx`,
+  `peer`, ...), and Zig rejects a local that shadows a declaration of an
+  enclosing container. So `const ctx` beside an interface, `const value` in a
+  file with a struct, or an import of `user_ctx.capnp` gave a binding that
+  did not compile ("function parameter shadows declaration of 'ctx'"). The
+  generator now checks each file it generates with the compiler's rule. A
+  schema constant or annotation that a local would shadow takes a trailing
+  underscore (`ctx_`), a shadowed import alias takes the next free numeric
+  suffix (`user_ctx_2`), and a doc comment on the declaration says why. The
+  check is per container, so output with no collision does not change. A type
+  is never renamed: the generic-RPC client's type-valued locals are now
+  `@"client adapter"` and `@"ancestor type"`, because a schema type named
+  `Adapter` or `Ancestor` collided with them. Regenerating bindings changes
+  only those lines.
 
 - **A crash-restarted QUIC server accepts the NEW_TOKENs its predecessor
   issued (Experimental).** quic-zig stamps a NEW_TOKEN's issue and expiry

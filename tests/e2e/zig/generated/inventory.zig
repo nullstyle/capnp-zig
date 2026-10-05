@@ -6179,75 +6179,75 @@ pub const TradeSession = struct {
                     self.raw.release();
                 }
                 pub fn callOfferItems(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.OfferItems.BuildFn, comptime callback: _Applied.OfferItems.Callback) !u32 {
-                    const Adapter = _Applied.OfferItems.ClientAdapter(build, callback);
-                    return self.raw.callOfferItems(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.OfferItems.ClientAdapter(build, callback);
+                    return self.raw.callOfferItems(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callOfferItemsPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.OfferItems.BuildFn, comptime callback: _Applied.OfferItems.Callback) !_Applied.OfferItems.Results.Pipeline {
                     const qid = try self.callOfferItems(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callRemoveItems(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.RemoveItems.BuildFn, comptime callback: _Applied.RemoveItems.Callback) !u32 {
-                    const Adapter = _Applied.RemoveItems.ClientAdapter(build, callback);
-                    return self.raw.callRemoveItems(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.RemoveItems.ClientAdapter(build, callback);
+                    return self.raw.callRemoveItems(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callRemoveItemsPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.RemoveItems.BuildFn, comptime callback: _Applied.RemoveItems.Callback) !_Applied.RemoveItems.Results.Pipeline {
                     const qid = try self.callRemoveItems(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callAccept(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Accept.BuildFn, comptime callback: _Applied.Accept.Callback) !u32 {
-                    const Adapter = _Applied.Accept.ClientAdapter(build, callback);
-                    return self.raw.callAccept(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Accept.ClientAdapter(build, callback);
+                    return self.raw.callAccept(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callConfirm(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Confirm.BuildFn, comptime callback: _Applied.Confirm.Callback) !u32 {
-                    const Adapter = _Applied.Confirm.ClientAdapter(build, callback);
-                    return self.raw.callConfirm(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Confirm.ClientAdapter(build, callback);
+                    return self.raw.callConfirm(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callCancel(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Cancel.BuildFn, comptime callback: _Applied.Cancel.Callback) !u32 {
-                    const Adapter = _Applied.Cancel.ClientAdapter(build, callback);
-                    return self.raw.callCancel(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Cancel.ClientAdapter(build, callback);
+                    return self.raw.callCancel(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callViewOtherOffer(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ViewOtherOffer.BuildFn, comptime callback: _Applied.ViewOtherOffer.Callback) !u32 {
-                    const Adapter = _Applied.ViewOtherOffer.ClientAdapter(build, callback);
-                    return self.raw.callViewOtherOffer(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.ViewOtherOffer.ClientAdapter(build, callback);
+                    return self.raw.callViewOtherOffer(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callViewOtherOfferPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ViewOtherOffer.BuildFn, comptime callback: _Applied.ViewOtherOffer.Callback) !_Applied.ViewOtherOffer.Results.Pipeline {
                     const qid = try self.callViewOtherOffer(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callGetState(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetState.BuildFn, comptime callback: _Applied.GetState.Callback) !u32 {
-                    const Adapter = _Applied.GetState.ClientAdapter(build, callback);
-                    return self.raw.callGetState(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetState.ClientAdapter(build, callback);
+                    return self.raw.callGetState(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callOfferItems(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.OfferItems.BuildFn, comptime callback: _Applied.OfferItems.Callback) !u32 {
-                    const Adapter = _Applied.OfferItems.ClientAdapter(build, callback);
-                    return self.raw.callOfferItems(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.OfferItems.ClientAdapter(build, callback);
+                    return self.raw.callOfferItems(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callRemoveItems(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.RemoveItems.BuildFn, comptime callback: _Applied.RemoveItems.Callback) !u32 {
-                    const Adapter = _Applied.RemoveItems.ClientAdapter(build, callback);
-                    return self.raw.callRemoveItems(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.RemoveItems.ClientAdapter(build, callback);
+                    return self.raw.callRemoveItems(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callAccept(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Accept.BuildFn, comptime callback: _Applied.Accept.Callback) !u32 {
-                    const Adapter = _Applied.Accept.ClientAdapter(build, callback);
-                    return self.raw.callAccept(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Accept.ClientAdapter(build, callback);
+                    return self.raw.callAccept(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callConfirm(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Confirm.BuildFn, comptime callback: _Applied.Confirm.Callback) !u32 {
-                    const Adapter = _Applied.Confirm.ClientAdapter(build, callback);
-                    return self.raw.callConfirm(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Confirm.ClientAdapter(build, callback);
+                    return self.raw.callConfirm(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callCancel(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Cancel.BuildFn, comptime callback: _Applied.Cancel.Callback) !u32 {
-                    const Adapter = _Applied.Cancel.ClientAdapter(build, callback);
-                    return self.raw.callCancel(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.Cancel.ClientAdapter(build, callback);
+                    return self.raw.callCancel(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callViewOtherOffer(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ViewOtherOffer.BuildFn, comptime callback: _Applied.ViewOtherOffer.Callback) !u32 {
-                    const Adapter = _Applied.ViewOtherOffer.ClientAdapter(build, callback);
-                    return self.raw.callViewOtherOffer(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.ViewOtherOffer.ClientAdapter(build, callback);
+                    return self.raw.callViewOtherOffer(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetState(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetState.BuildFn, comptime callback: _Applied.GetState.Callback) !u32 {
-                    const Adapter = _Applied.GetState.ClientAdapter(build, callback);
-                    return self.raw.callGetState(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetState.ClientAdapter(build, callback);
+                    return self.raw.callGetState(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {
@@ -9182,59 +9182,59 @@ pub const InventoryService = struct {
                     self.raw.release();
                 }
                 pub fn callGetInventory(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInventory.BuildFn, comptime callback: _Applied.GetInventory.Callback) !u32 {
-                    const Adapter = _Applied.GetInventory.ClientAdapter(build, callback);
-                    return self.raw.callGetInventory(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetInventory.ClientAdapter(build, callback);
+                    return self.raw.callGetInventory(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetInventoryPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInventory.BuildFn, comptime callback: _Applied.GetInventory.Callback) !_Applied.GetInventory.Results.Pipeline {
                     const qid = try self.callGetInventory(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callAddItem(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.AddItem.BuildFn, comptime callback: _Applied.AddItem.Callback) !u32 {
-                    const Adapter = _Applied.AddItem.ClientAdapter(build, callback);
-                    return self.raw.callAddItem(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.AddItem.ClientAdapter(build, callback);
+                    return self.raw.callAddItem(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callAddItemPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.AddItem.BuildFn, comptime callback: _Applied.AddItem.Callback) !_Applied.AddItem.Results.Pipeline {
                     const qid = try self.callAddItem(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callRemoveItem(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.RemoveItem.BuildFn, comptime callback: _Applied.RemoveItem.Callback) !u32 {
-                    const Adapter = _Applied.RemoveItem.ClientAdapter(build, callback);
-                    return self.raw.callRemoveItem(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.RemoveItem.ClientAdapter(build, callback);
+                    return self.raw.callRemoveItem(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callStartTrade(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.StartTrade.BuildFn, comptime callback: _Applied.StartTrade.Callback) !u32 {
-                    const Adapter = _Applied.StartTrade.ClientAdapter(build, callback);
-                    return self.raw.callStartTrade(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.StartTrade.ClientAdapter(build, callback);
+                    return self.raw.callStartTrade(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callStartTradePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.StartTrade.BuildFn, comptime callback: _Applied.StartTrade.Callback) !_Applied.StartTrade.Results.Pipeline {
                     const qid = try self.callStartTrade(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
                 pub fn callFilterByRarity(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.FilterByRarity.BuildFn, comptime callback: _Applied.FilterByRarity.Callback) !u32 {
-                    const Adapter = _Applied.FilterByRarity.ClientAdapter(build, callback);
-                    return self.raw.callFilterByRarity(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.FilterByRarity.ClientAdapter(build, callback);
+                    return self.raw.callFilterByRarity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub const PipelinedClient = struct {
                 raw: Raw.PipelinedClient,
                 pub fn callGetInventory(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInventory.BuildFn, comptime callback: _Applied.GetInventory.Callback) !u32 {
-                    const Adapter = _Applied.GetInventory.ClientAdapter(build, callback);
-                    return self.raw.callGetInventory(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.GetInventory.ClientAdapter(build, callback);
+                    return self.raw.callGetInventory(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callAddItem(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.AddItem.BuildFn, comptime callback: _Applied.AddItem.Callback) !u32 {
-                    const Adapter = _Applied.AddItem.ClientAdapter(build, callback);
-                    return self.raw.callAddItem(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.AddItem.ClientAdapter(build, callback);
+                    return self.raw.callAddItem(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callRemoveItem(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.RemoveItem.BuildFn, comptime callback: _Applied.RemoveItem.Callback) !u32 {
-                    const Adapter = _Applied.RemoveItem.ClientAdapter(build, callback);
-                    return self.raw.callRemoveItem(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.RemoveItem.ClientAdapter(build, callback);
+                    return self.raw.callRemoveItem(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callStartTrade(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.StartTrade.BuildFn, comptime callback: _Applied.StartTrade.Callback) !u32 {
-                    const Adapter = _Applied.StartTrade.ClientAdapter(build, callback);
-                    return self.raw.callStartTrade(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.StartTrade.ClientAdapter(build, callback);
+                    return self.raw.callStartTrade(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callFilterByRarity(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.FilterByRarity.BuildFn, comptime callback: _Applied.FilterByRarity.Callback) !u32 {
-                    const Adapter = _Applied.FilterByRarity.ClientAdapter(build, callback);
-                    return self.raw.callFilterByRarity(ctx, if (build != null) Adapter.build else null, Adapter.callback);
+                    const @"client adapter" = _Applied.FilterByRarity.ClientAdapter(build, callback);
+                    return self.raw.callFilterByRarity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
             };
             pub fn ServerAdapter(comptime handlers: anytype) type {
