@@ -241,6 +241,21 @@ pub const Server = struct {
         self.on_session_accepted = callback;
     }
 
+    /// Change the session-ticket key with no restart and no lost ticket; see
+    /// `Listener.rotateSessionTicketKey` for the contract (new tickets under
+    /// `new_key`, the previous key still opens tickets for one ticket
+    /// lifetime, `error.InvalidConfig` without a configured key).
+    ///
+    /// Loop-thread only (or before the first step): quic-zig reads the keys
+    /// inside handshakes on this thread and takes no lock. Call it from the
+    /// `after_step` hook of `runWithAfterStep`, from the accept hook, or
+    /// before `run` starts. To rotate on a signal from another thread, set
+    /// a flag there, call `wake`, and rotate from `after_step`.
+    pub fn rotateSessionTicketKey(self: *Server, new_key: *const quic_options.SessionTicketKey) !void {
+        self.assertLoopThread();
+        try self.listener.rotateSessionTicketKey(new_key);
+    }
+
     /// Receive and feed at most one datagram.
     ///
     /// `null` means nothing was fed to QUIC this call — a timeout, a wake, or

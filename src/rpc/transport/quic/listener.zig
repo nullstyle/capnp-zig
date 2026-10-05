@@ -291,6 +291,28 @@ pub const Listener = struct {
         return self.server.reap();
     }
 
+    /// Change the key that session tickets are sealed under, with no
+    /// restart and no lost ticket (quic-zig `Server.rotateSessionTicketKey`).
+    /// New tickets are sealed under `new_key` at once. The key that sealed
+    /// until now still opens tickets, 0-RTT included, for one ticket
+    /// lifetime (`ServerOptions.session_ticket_lifetime_s`, or 2 days)
+    /// counted on this listener's clock (`nowUs`); then quic-zig clears it.
+    /// A second rotation before that drops it at once: two keys, not more.
+    /// The key is read once; nothing keeps the pointer.
+    ///
+    /// Call it on the thread that feeds this listener (`receiveOne`,
+    /// `feedDatagram`, `tick`), or before the first datagram: quic-zig takes
+    /// no lock, and a call from another thread races the handshakes that
+    /// read the keys. `Server.rotateSessionTicketKey` checks that thread.
+    ///
+    /// `error.InvalidConfig`, and nothing changes: the listener was built
+    /// with no `ServerOptions.session_ticket_key`, `new_key` is all zero, or
+    /// `new_key` has the same key name (its first 16 bytes) as the current
+    /// key.
+    pub fn rotateSessionTicketKey(self: *Listener, new_key: *const quic_options.SessionTicketKey) !void {
+        try self.server.rotateSessionTicketKey(new_key.*, self.nowUs());
+    }
+
     /// The clock for this listener's quic-zig server, in microseconds since
     /// the Unix epoch. `receiveOne` and the QUIC `Server` loop pass it to
     /// every `feed`, `tick` and `pollDatagram`, and quic-zig stamps a

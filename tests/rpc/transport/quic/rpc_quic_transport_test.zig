@@ -3450,6 +3450,226 @@ test "session_ticket_lifetime_s sets the lifetime of the tickets a server issues
     try expectTicketLifetime(quic.max_session_ticket_lifetime_s, try issuedTicketLifetime(null));
 }
 
+// ---------------------------------------------------------------------------
+// Session-ticket key rotation (`Server.rotateSessionTicketKey`) and the key
+// across a `.pem` reload. One server process, stepped on the test thread (its
+// loop thread), with `.restore_only` 0-RTT and no Retry.
+// ---------------------------------------------------------------------------
+
+/// A 48-byte ticket key whose three 16-byte parts (name, HMAC key, AES key)
+/// differ from each other and from every other seed's.
+fn rotationTicketKey(seed: u8) quic.SessionTicketKey {
+    var key: quic.SessionTicketKey = undefined;
+    for (&key, 0..) |*b, i| b.* = seed ^ @as(u8, @intCast((i * 7 + (i / 16) * 31) & 0xff));
+    return key;
+}
+
+/// Starts every accepted session with its own gate state, so a later dial
+/// never reads the state of an earlier session.
+const RotationGateHook = struct {
+    states: [8]EarlyGateState = @splat(.{}),
+    count: usize = 0,
+
+    fn onAccepted(ctx: ?*anyopaque, _: *quic.Server, session: *quic.ServerSession) anyerror!void {
+        const self: *RotationGateHook = @ptrCast(@alignCast(ctx.?));
+        if (self.count >= self.states.len) return error.TestTooManySessions;
+        session.start(&self.states[self.count], echoRecordingHandshakePhase, earlyGateServerError, earlyGateServerClose);
+        self.count += 1;
+    }
+};
+
+const RotationDial = struct {
+    status: quic.EarlyDataStatus,
+    restored_before_handshake: bool,
+    early_bytes: usize,
+    frame_len: usize,
+};
+
+fn expectRotationDialEarly(dial: RotationDial) !void {
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, dial.status);
+    try std.testing.expect(dial.restored_before_handshake);
+    try std.testing.expectEqual(dial.frame_len, dial.early_bytes);
+}
+
+fn expectRotationDialRefused(dial: RotationDial) !void {
+    try std.testing.expectEqual(quic.EarlyDataStatus.rejected, dial.status);
+    try std.testing.expect(!dial.restored_before_handshake);
+}
+
+const RotationServer = struct {
+    server: quic.Server,
+    hook: RotationGateHook = .{},
+
+    /// In place: the accept hook keeps a pointer to `hook`.
+    fn init(self: *RotationServer, key: ?*const quic.SessionTicketKey) !void {
+        self.* = .{ .server = try quic.Server.init(std.testing.allocator, std.testing.io, .{
+            .listen_addr = testListenAddr(),
+            .tls_cert_pem = loopback_cert_pem,
+            .tls_key_pem = loopback_key_pem,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .max_concurrent_connections = 8,
+            .stateless_reset_key = ticket_reset_key,
+            .early_data = .without_replay_protection,
+            .early_dispatch = .restore_only,
+            .session_ticket_key = key,
+        }) };
+        self.server.setOnSessionAccepted(&self.hook, RotationGateHook.onAccepted);
+    }
+
+    fn deinit(self: *RotationServer) void {
+        self.server.deinit();
+    }
+
+    /// quic-zig's `.pem` reload, through the public `Listener.server`.
+    fn reloadPem(self: *RotationServer) !void {
+        try self.server.listener.server.replaceTlsContext(.{ .pem = .{ .cert_pem = loopback_cert_pem, .key_pem = loopback_key_pem } });
+    }
+
+    /// One dial: resume with `resume_ticket` when set, enqueue one Bootstrap
+    /// frame before the client loop starts (so a resumed dial sends it in
+    /// 0-RTT), and wait for its echo, and for a new ticket into
+    /// `out_ticket` when set.
+    fn dial(self: *RotationServer, resume_ticket: ?[]const u8, out_ticket: ?*ResumptionSink) !RotationDial {
+        const allocator = std.testing.allocator;
+        const frame = try buildBootstrapFrame(allocator, 0x5C5C);
+        defer allocator.free(frame);
+        const index = self.hook.count;
+        var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+            .remote_addr = self.server.getAddress(),
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .resumption_state = resume_ticket,
+            .new_session_callback = if (out_ticket != null) &ResumptionSink.capture else null,
+            .new_session_user_data = if (out_ticket) |sink| @as(?*anyopaque, @ptrCast(sink)) else null,
+        });
+        defer client.deinit();
+        var client_state = QuicEndpointState{};
+        client.start(&client_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
+        try client.sendFrame(frame);
+        var thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+        var joined = false;
+        defer if (!joined) {
+            client.requestClose();
+            thread.join();
+        };
+        var waited_ms: u64 = 0;
+        while (true) : (waited_ms += loopback.loopback_poll_ms) {
+            if (waited_ms >= loopback.loopback_timeout_ms) return error.QuicLoopbackTimedOut;
+            _ = try self.server.stepOnce(.wait);
+            const have_ticket = if (out_ticket) |sink| sink.len.load(.acquire) > 0 else true;
+            if (client_state.messages.load(.acquire) > 0 and have_ticket) break;
+            if (client_state.errors.load(.acquire) > 0) return error.QuicLoopbackUnexpectedError;
+            loopback.sleepMs(loopback.loopback_poll_ms);
+        }
+        client.requestClose();
+        thread.join();
+        joined = true;
+        // Accepted or refused, the staged frame arrives exactly once.
+        try std.testing.expectEqual(@as(usize, 1), client_state.messages.load(.acquire));
+        if (self.hook.count <= index) return error.TestNoSession;
+        const state = &self.hook.states[index];
+        const q = client.endpoint.activeQuicConnection() orelse return error.QuicConnectionGone;
+        return .{
+            .status = q.earlyDataStatus(),
+            .restored_before_handshake = state.dispatched_before_handshake.load(.acquire),
+            .early_bytes = state.early_bytes.load(.acquire),
+            .frame_len = frame.len,
+        };
+    }
+};
+
+test "Server.rotateSessionTicketKey: an old-key ticket still resumes in 0-RTT, and new tickets carry the new key" {
+    const key_a = rotationTicketKey(0x51);
+    const key_b = rotationTicketKey(0x62);
+    var ticket_a = ResumptionSink{};
+    var ticket_b = ResumptionSink{};
+    {
+        var s: RotationServer = undefined;
+        try s.init(&key_a);
+        defer s.deinit();
+        const cold = try s.dial(null, &ticket_a);
+        try std.testing.expect(cold.status != .accepted);
+        try s.server.rotateSessionTicketKey(&key_b);
+        // Key A still opens its ticket, for one ticket lifetime counted on
+        // the listener's clock; the resumed dial leaves with a ticket under
+        // key B.
+        try expectRotationDialEarly(try s.dial(ticket_a.slice(), &ticket_b));
+    }
+    // Ticket B is sealed under key B: a server that starts with key B opens
+    // it, one that starts with key A does not.
+    {
+        var s: RotationServer = undefined;
+        try s.init(&key_b);
+        defer s.deinit();
+        try expectRotationDialEarly(try s.dial(ticket_b.slice(), null));
+    }
+    {
+        var s: RotationServer = undefined;
+        try s.init(&key_a);
+        defer s.deinit();
+        try expectRotationDialRefused(try s.dial(ticket_b.slice(), null));
+    }
+}
+
+test "Server.rotateSessionTicketKey: a second rotation drops the first key" {
+    const key_a = rotationTicketKey(0x53);
+    var ticket_a = ResumptionSink{};
+    var s: RotationServer = undefined;
+    try s.init(&key_a);
+    defer s.deinit();
+    _ = try s.dial(null, &ticket_a);
+    const key_b = rotationTicketKey(0x64);
+    try s.server.rotateSessionTicketKey(&key_b);
+    try expectRotationDialEarly(try s.dial(ticket_a.slice(), null));
+    // Two keys, not more: key A is gone.
+    const key_c = rotationTicketKey(0x75);
+    try s.server.rotateSessionTicketKey(&key_c);
+    try expectRotationDialRefused(try s.dial(ticket_a.slice(), null));
+}
+
+test "Server.rotateSessionTicketKey refuses without a configured key, an all-zero key and the current key's name, and changes nothing" {
+    {
+        var s: RotationServer = undefined;
+        try s.init(null);
+        defer s.deinit();
+        const key = rotationTicketKey(0x01);
+        try std.testing.expectError(error.InvalidConfig, s.server.rotateSessionTicketKey(&key));
+    }
+    const key_a = rotationTicketKey(0x5a);
+    var ticket_a = ResumptionSink{};
+    var s: RotationServer = undefined;
+    try s.init(&key_a);
+    defer s.deinit();
+    _ = try s.dial(null, &ticket_a);
+    const zero: quic.SessionTicketKey = @splat(0);
+    try std.testing.expectError(error.InvalidConfig, s.server.rotateSessionTicketKey(&zero));
+    try std.testing.expectError(error.InvalidConfig, s.server.rotateSessionTicketKey(&key_a));
+    var same_name = rotationTicketKey(0x03);
+    @memcpy(same_name[0..16], key_a[0..16]);
+    try std.testing.expectError(error.InvalidConfig, s.server.rotateSessionTicketKey(&same_name));
+    // Key A still seals and opens, and a real rotation still keeps it as the
+    // previous key.
+    try expectRotationDialEarly(try s.dial(ticket_a.slice(), null));
+    const key_b = rotationTicketKey(0x04);
+    try s.server.rotateSessionTicketKey(&key_b);
+    try expectRotationDialEarly(try s.dial(ticket_a.slice(), null));
+}
+
+test "a .pem reload through Listener.server keeps the configured session-ticket key" {
+    // quic-zig installs `Server.Config.session_ticket_key` on the context it
+    // builds for a `.pem` reload too, so a certificate change costs no
+    // client its 0-RTT.
+    const key = rotationTicketKey(0x57);
+    var ticket = ResumptionSink{};
+    var s: RotationServer = undefined;
+    try s.init(&key);
+    defer s.deinit();
+    _ = try s.dial(null, &ticket);
+    try s.reloadPem();
+    try expectRotationDialEarly(try s.dial(ticket.slice(), null));
+}
+
 /// Write `bytes` to `sub_path` in `dir` and, where files have POSIX mode
 /// bits, set them to `mode`.
 fn writeTicketKeyFile(dir: std.Io.Dir, sub_path: []const u8, bytes: []const u8, mode: u32) !void {
