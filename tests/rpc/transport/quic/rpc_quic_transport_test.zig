@@ -3295,7 +3295,9 @@ test "session ticket key: a NEW_TOKEN from before a crash-restart skips the rest
     // checks a token's issue time with no clock-skew allowance, so the dial
     // skips the Retry only when the listener clock continues across the
     // restart. A clock that starts again at zero reads the token as not yet
-    // valid and sends a Retry, which costs the early restore.
+    // valid and sends a Retry: one more round trip (since quic-zig v0.27.0
+    // the restore still runs early behind it, so `retries_sent` is the
+    // witness here).
     const outcome = try crashRestartResumedDial(.{
         .before = .{ .key = &ticket_key },
         .after = .{ .key = &ticket_key },
