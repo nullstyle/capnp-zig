@@ -87,6 +87,13 @@ const KernelExpect = struct {
     /// pass, and its SO_LINGER counts clock ticks, not seconds. A probe
     /// that missed either measured 0 ms there.
     final_close_lingers: bool,
+    /// A blocking `sendmsg` that carries fds, on a socket whose path to the
+    /// peer has no room for the control message, fails at once with
+    /// EMSGSIZE instead of blocking (macOS). Linux blocks as for plain
+    /// bytes. Item 10's `sendWithFds` waits until the socket is writable
+    /// and retries that EMSGSIZE; without it, a busy peer would break the
+    /// connection.
+    full_path_rejects_fds: bool,
 };
 
 const linux_expect: KernelExpect = .{
@@ -99,6 +106,7 @@ const linux_expect: KernelExpect = .{
     .max_fds_per_sendmsg = 253,
     .emfile_fails_recvmsg = false,
     .final_close_lingers = true,
+    .full_path_rejects_fds = false,
 };
 
 const macos_expect: KernelExpect = .{
@@ -111,6 +119,7 @@ const macos_expect: KernelExpect = .{
     .max_fds_per_sendmsg = 254,
     .emfile_fails_recvmsg = true,
     .final_close_lingers = true,
+    .full_path_rejects_fds = true,
 };
 
 const expect: KernelExpect = if (is_linux) linux_expect else macos_expect;
@@ -1136,6 +1145,83 @@ test "FD-0 the per-sendmsg fd limit is 253 on Linux and 254 on macOS" {
             .sent => return error.LimitNotEnforced,
             .failed => |err| try testing.expectEqual(posix.E.INVAL, err),
         }
+    }
+    try expectNoFdDelta(before);
+}
+
+/// How long a blocked `sendmsg` waits in the full-path test (SO_SNDTIMEO).
+const full_path_send_timeout_ms = 400;
+
+test "FD-0 a blocking sendmsg with fds on a full path: Linux blocks, macOS fails at once with EMSGSIZE" {
+    if (!supported) return error.SkipZigTest;
+    const before = FdSnapshot.take();
+    {
+        const sp = try socketPair();
+        defer closeFd(sp[0]);
+        defer closeFd(sp[1]);
+        const p = try pipePair();
+        defer closeFd(p[0]);
+        defer closeFd(p[1]);
+
+        // Fill the path from sp[0] to sp[1] until a non-blocking send would
+        // block, then make sp[0] blocking again.
+        try setNonBlocking(sp[0], true);
+        var chunk: [4096]u8 = undefined;
+        @memset(&chunk, 0xF0);
+        var filled: usize = 0;
+        while (true) {
+            switch (sendRights(sp[0], &chunk, &.{}, 0)) {
+                .sent => |n| filled += n,
+                .failed => |err| {
+                    try testing.expectEqual(posix.E.AGAIN, err);
+                    break;
+                },
+            }
+        }
+        try testing.expect(filled != 0);
+        try setNonBlocking(sp[0], false);
+        // Bound the wait where the send does block.
+        const timeout: posix.timeval = .{ .sec = 0, .usec = full_path_send_timeout_ms * 1000 };
+        _ = try check(sys.setsockopt(sp[0], posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&timeout), @sizeOf(posix.timeval)), "setsockopt(SO_SNDTIMEO)");
+
+        const start = nowNs();
+        const outcome = sendRights(sp[0], "F", &.{p[1]}, 0);
+        const elapsed = msSince(start);
+        switch (outcome) {
+            .sent => return error.FullPathAcceptedFds,
+            .failed => |err| if (expect.full_path_rejects_fds) {
+                // No wait for room: EMSGSIZE at once.
+                try testing.expectEqual(posix.E.MSGSIZE, err);
+                try testing.expect(elapsed < full_path_send_timeout_ms / 2);
+            } else {
+                // A blocking send: it waited out the send timeout.
+                try testing.expectEqual(posix.E.AGAIN, err);
+                try testing.expect(elapsed >= full_path_send_timeout_ms / 2);
+            },
+        }
+
+        // Nothing but the fill reached the peer, and no fd.
+        try setNonBlocking(sp[1], true);
+        var data: [8192]u8 = undefined;
+        var control: [cmsg.space(4 * @sizeOf(posix.fd_t))]u8 align(cmsg_align) = undefined;
+        var got: [4]i32 = undefined;
+        var read: usize = 0;
+        while (true) {
+            switch (recvRaw(sp[1], &data, &control, recv_flags | posix.MSG.DONTWAIT)) {
+                .received => |r| {
+                    if (r.len == 0) break;
+                    read += r.len;
+                    const n = receivedFds(&control, r, &got);
+                    closeAll(got[0..@min(n, got.len)]);
+                    try testing.expectEqual(@as(usize, 0), n);
+                },
+                .failed => |err| {
+                    try testing.expectEqual(posix.E.AGAIN, err);
+                    break;
+                },
+            }
+        }
+        try testing.expectEqual(filled, read);
     }
     try expectNoFdDelta(before);
 }
