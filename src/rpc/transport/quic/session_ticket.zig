@@ -1,62 +1,16 @@
-//! Persisted BoringSSL session-ticket key for the QUIC server (Experimental).
+//! Persisted session-ticket key file for the QUIC server (Experimental).
 //!
 //! Design and security trade-off: "Session-ticket key" in
-//! docs/quic-transport.md. quic-zig v0.25.0 has no ticket-key config field,
-//! so `Listener.init` installs the key on the TLS context that quic-zig built
-//! (`quic_zig.Server.tls_ctx`), right after `quic_zig.Server.init` and before
-//! the first datagram is fed: BoringSSL's ticket-key setter takes no lock.
-//! The calls go through `boringssl.raw` of the boringssl module that quic-zig
-//! exports (build/helpers.zig `addQuicLibImports`), so `tls_ctx.inner` and
-//! the setter's `SSL_CTX` are one type.
-//!
-//! Coupling: this reaches quic-zig's `Server.tls_ctx` field. A rename fails
-//! to compile. A change in meaning is caught by the ticket-key tests in
-//! tests/rpc/transport/quic/ (the `.accepted` resumption after a restart).
-//! A TLS-context reload (`quic_zig.Server.replaceTlsContext`) builds a
-//! context without the key; capnp-zig never reloads, and the docs tell a
-//! caller who does to install the key again.
+//! docs/quic-transport.md. The key reaches quic-zig through its
+//! `Server.Config.session_ticket_key` (`serverConfigFromOptions`), and
+//! quic-zig installs it on every TLS context it builds. This file only reads
+//! the key from disk, with the checks that a secret of that rank needs.
 
 const std = @import("std");
-const builtin = @import("builtin");
-const boringssl = @import("boringssl");
-const quic_zig = @import("quic");
 
 const quic_options = @import("options.zig");
 
-const raw = boringssl.raw;
 const SessionTicketKey = quic_options.SessionTicketKey;
-
-pub const InstallError = error{
-    /// BoringSSL refused the key, or reading it back did not return the
-    /// installed bytes.
-    SessionTicketKeyInstallFailed,
-};
-
-/// Install `key` (when set) and the ticket lifetime (when set) on the TLS
-/// context of a freshly initialized `server`. Call it before the server
-/// handles its first datagram. Reads the key back and compares it, so a
-/// change in what quic-zig's `tls_ctx` points at fails here, not silently.
-pub fn install(
-    server: *quic_zig.Server,
-    key: ?*const SessionTicketKey,
-    lifetime_s: ?u32,
-) InstallError!void {
-    const ctx = server.tls_ctx.inner;
-    if (key) |k| {
-        if (raw.zbssl_SSL_CTX_set_tlsext_ticket_keys(ctx, k, k.len) != 1) {
-            return error.SessionTicketKeyInstallFailed;
-        }
-        var back: SessionTicketKey = undefined;
-        defer std.crypto.secureZero(u8, &back);
-        if (raw.zbssl_SSL_CTX_get_tlsext_ticket_keys(ctx, &back, back.len) != 1) {
-            return error.SessionTicketKeyInstallFailed;
-        }
-        if (!std.crypto.timing_safe.eql(SessionTicketKey, back, k.*)) {
-            return error.SessionTicketKeyInstallFailed;
-        }
-    }
-    if (lifetime_s) |seconds| raw.zbssl_SSL_CTX_set_session_psk_dhe_timeout(ctx, seconds);
-}
 
 pub const LoadTicketKeyFileError = std.Io.File.OpenError ||
     std.Io.File.StatError ||
@@ -106,23 +60,3 @@ pub fn loadTicketKeyFile(
     @memcpy(&key, buf[0..key.len]);
     return key;
 }
-
-pub const testing = if (builtin.is_test) struct {
-    /// The lifetime, in seconds, of the TLS session inside a quic-zig
-    /// resumption envelope (what a client captures through
-    /// `new_session_callback`). A TLS 1.3 client caps it at the lifetime the
-    /// server advertised with the ticket, so it shows the server's
-    /// `session_ticket_lifetime_s`.
-    pub fn ticketLifetimeSeconds(envelope: []const u8) !u32 {
-        const decoded = try quic_zig.tls.resumption_state.decode(envelope);
-        var ctx = try boringssl.tls.Context.initClient(.{ .verify = .none });
-        defer ctx.deinit();
-        const session = raw.zbssl_SSL_SESSION_from_bytes(
-            decoded.session_ticket.ptr,
-            decoded.session_ticket.len,
-            ctx.inner,
-        ) orelse return error.InvalidResumptionState;
-        defer raw.zbssl_SSL_SESSION_free(session);
-        return raw.zbssl_SSL_SESSION_get_timeout(session);
-    }
-} else struct {};

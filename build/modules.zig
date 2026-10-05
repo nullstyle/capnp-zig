@@ -26,10 +26,10 @@ pub const Graph = struct {
     lib_module: *std.Build.Module,
     core_module: *std.Build.Module,
     quic_zig_module: ?*std.Build.Module,
-    /// The `boringssl` module quic-zig exports: the exact instance quic is
-    /// compiled against. Library roots import it (see
-    /// `helpers.addQuicLibImports`). Null without `-Dquic=true`.
-    quic_boringssl_module: ?*std.Build.Module,
+    /// What a QUIC test root imports from the same quic-zig dependency
+    /// (`helpers.addQuicLibTest`). Null without `-Dquic=true`. Library roots
+    /// import only `quic`.
+    quic_test_imports: ?helpers.QuicTestImports,
     wasm_host_module: *std.Build.Step.Compile,
 };
 
@@ -112,12 +112,7 @@ pub fn setup(b: *std.Build) !Graph {
     else
         null;
     const quic_zig_module: ?*std.Build.Module = if (quic_dep) |dep| dep.module("quic") else null;
-    // quic-zig exports the boringssl module it is compiled against (quic
-    // build.zig: "Export the exact boringssl module instance"). The library
-    // calls `boringssl.raw` to install a session-ticket key on quic's TLS
-    // context, so it must name that instance, not a boringssl of its own.
-    const quic_boringssl_module: ?*std.Build.Module = if (quic_dep) |dep| dep.module("boringssl") else null;
-    helpers.addQuicLibImports(lib_module, quic_zig_module, quic_boringssl_module);
+    helpers.addQuicImport(lib_module, quic_zig_module);
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
@@ -184,7 +179,7 @@ pub fn setup(b: *std.Build) !Graph {
         .lib_module = lib_module,
         .core_module = core_module,
         .quic_zig_module = quic_zig_module,
-        .quic_boringssl_module = quic_boringssl_module,
+        .quic_test_imports = helpers.QuicTestImports.of(quic_dep),
         .wasm_host_module = wasm_host_module,
     };
 }

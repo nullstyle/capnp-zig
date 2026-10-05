@@ -150,14 +150,31 @@ pub fn addPersistenceLibTest(
     return &b.addRunArtifact(t).step;
 }
 
-/// Create a QUIC-only test step that imports capnpc-zig and quic_zig.
+/// The modules a QUIC test root imports, both from ONE quic-zig dependency.
+pub const QuicTestImports = struct {
+    quic: *std.Build.Module,
+    boringssl: *std.Build.Module,
+
+    /// Both modules of `dep`, or null without `-Dquic=true`.
+    pub fn of(dep: ?*std.Build.Dependency) ?QuicTestImports {
+        const d = dep orelse return null;
+        return .{ .quic = d.module("quic"), .boringssl = d.module("boringssl") };
+    }
+};
+
+/// Create a QUIC-only test step that imports capnpc-zig, quic_zig, and the
+/// `boringssl` module quic-zig exports (the exact instance quic is compiled
+/// against, so a test binary never links a second BoringSSL). The library
+/// itself does not import BoringSSL; the transport suite reads a captured
+/// ticket's lifetime through it, and the import costs the other roots
+/// nothing.
 pub fn addQuicLibTest(
     b: *std.Build,
     path: []const u8,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     lib_module: *std.Build.Module,
-    quic_zig_module: *std.Build.Module,
+    quic: QuicTestImports,
 ) *std.Build.Step {
     const t = b.addTest(.{
         .root_module = b.createModule(.{
@@ -166,7 +183,8 @@ pub fn addQuicLibTest(
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "capnpc-zig", .module = lib_module },
-                .{ .name = "quic", .module = quic_zig_module },
+                .{ .name = "quic", .module = quic.quic },
+                .{ .name = "boringssl", .module = quic.boringssl },
             },
         }),
     });
@@ -197,22 +215,4 @@ pub fn addMainTest(
 
 pub fn addQuicImport(module: *std.Build.Module, quic_zig_module: ?*std.Build.Module) void {
     if (quic_zig_module) |m| module.addImport("quic", m);
-}
-
-/// Wire a library-root module (rooted at `src/lib_quic.zig` when
-/// `-Dquic=true`) to quic-zig AND to the exact `boringssl` module instance
-/// quic-zig is compiled against, which quic exports under that name. The
-/// QUIC transport installs a persisted session-ticket key through
-/// `boringssl.raw` (src/rpc/transport/quic/session_ticket.zig). A
-/// `boringssl` dependency of our own would be a second module instance
-/// whose `SSL_CTX` type does not unify with quic's `tls_ctx.inner`.
-/// Test, bench and example roots keep `addQuicImport`: they reach BoringSSL
-/// only through the library.
-pub fn addQuicLibImports(
-    module: *std.Build.Module,
-    quic_zig_module: ?*std.Build.Module,
-    quic_boringssl_module: ?*std.Build.Module,
-) void {
-    addQuicImport(module, quic_zig_module);
-    if (quic_boringssl_module) |m| module.addImport("boringssl", m);
 }

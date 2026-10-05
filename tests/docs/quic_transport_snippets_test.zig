@@ -335,8 +335,8 @@ fn warmRestartOptions(
     return quic.withProductionServerHardening(base_options, .{
         .retry_token_key = retry_key,
         .stateless_reset_key = reset_key,
-        // Required with a ticket key while Retry is on. Persist it too: a
-        // new one at each start sends every restarted client a Retry.
+        // Persist it with the ticket key: a returning client with a valid
+        // NEW_TOKEN skips the Retry and its round trip.
         .new_token_key = new_token_key,
         .early_data = .restore_only,
         .session_ticket_key = ticket_key,
@@ -372,6 +372,9 @@ test "quic transport guide session-ticket key wiring" {
     try std.testing.expectEqual(new_token_key, options.new_token_key.?);
     try std.testing.expect(options.early_data == .without_replay_protection);
     try std.testing.expectEqual(quic.early_dispatch.Mode.restore_only, options.early_dispatch);
-    // A config cannot carry a key: only `Listener.init` installs one.
-    try std.testing.expectError(error.InvalidConfig, quic.serverConfigFromOptions(std.testing.allocator, options));
+    // quic-zig's config carries a copy of the key, by value: zero it once
+    // the quic-zig server is built (`Listener.init` does).
+    var config = try quic.serverConfigFromOptions(std.testing.allocator, options);
+    defer if (config.session_ticket_key) |*copy| std.crypto.secureZero(u8, copy);
+    try std.testing.expectEqualSlices(u8, &on_disk, &config.session_ticket_key.?);
 }

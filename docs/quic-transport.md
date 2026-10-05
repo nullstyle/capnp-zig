@@ -763,8 +763,8 @@ fn warmRestartOptions(
     return quic.withProductionServerHardening(base_options, .{
         .retry_token_key = retry_key,
         .stateless_reset_key = reset_key,
-        // Required with a ticket key while Retry is on. Persist it too: a
-        // new one at each start sends every restarted client a Retry.
+        // Persist it with the ticket key: a returning client with a valid
+        // NEW_TOKEN skips the Retry and its round trip.
         .new_token_key = new_token_key,
         .early_data = .restore_only,
         .session_ticket_key = ticket_key,

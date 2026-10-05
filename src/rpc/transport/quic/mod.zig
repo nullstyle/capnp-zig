@@ -121,10 +121,6 @@ pub const testing = if (builtin.is_test) struct {
     /// that depth. Verified by ablation — an inverted assertion there left
     /// `test-rpc-quic`, `test-lib` and `test` all exiting 0.
     pub const isTransientPeerFault = datagram_io.isTransientPeerFault;
-    /// The ticket lifetime inside a captured resumption envelope, so the
-    /// suite can see `ServerOptions.session_ticket_key`'s companion
-    /// `session_ticket_lifetime_s` take effect on the wire.
-    pub const ticketLifetimeSeconds = session_ticket.testing.ticketLifetimeSeconds;
 } else struct {};
 
 pub const alpn = options.alpn;
@@ -167,8 +163,8 @@ pub const ServerAntiReplayTracker = options.ServerAntiReplayTracker;
 pub const NewSessionCallback = options.NewSessionCallback;
 pub const NewTokenCallback = options.NewTokenCallback;
 pub const EarlyDataStatus = options.EarlyDataStatus;
-/// Persisted BoringSSL session-ticket key; see
-/// `ServerOptions.session_ticket_key`. Experimental.
+/// Persisted session-ticket key (quic-zig's `SessionTicketKey`, 48 bytes);
+/// see `ServerOptions.session_ticket_key`. Experimental.
 pub const SessionTicketKey = options.SessionTicketKey;
 pub const max_session_ticket_lifetime_s = options.max_session_ticket_lifetime_s;
 /// Read a 48-byte session-ticket key file; refuses group/other access on

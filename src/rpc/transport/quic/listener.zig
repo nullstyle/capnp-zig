@@ -9,7 +9,6 @@ const quic_zig_adapter = @import("quic_zig_adapter.zig");
 const non_windows_receive = @import("non_windows_receive.zig");
 const quic_options = @import("options.zig");
 const session_mod = @import("session.zig");
-const session_ticket = @import("session_ticket.zig");
 const udp_receive_bridge = @import("udp_receive_bridge.zig");
 
 const Net = std.Io.net;
@@ -60,7 +59,11 @@ pub const Listener = struct {
         io: std.Io,
         options: quic_options.ServerOptions,
     ) !Listener {
-        const server_config = try quic_options.listenerServerConfig(allocator, options);
+        var server_config = try quic_options.serverConfigFromOptions(allocator, options);
+        // The config holds the session-ticket key by value. quic-zig keeps
+        // its own copy (and clears it at deinit), so ours goes as soon as
+        // `quic_zig.Server.init` has read it, on every path.
+        defer if (server_config.session_ticket_key) |*key| std.crypto.secureZero(u8, key);
 
         const udp_rx_buf = try allocator.alloc(u8, options.udp_rx_buffer_size);
         errdefer allocator.free(udp_rx_buf);
@@ -74,10 +77,6 @@ pub const Listener = struct {
 
         var server = try quic_zig.Server.init(server_config);
         errdefer server.deinit();
-        // The one place a ticket key reaches a TLS context: here, before the
-        // first datagram is fed, because BoringSSL's key setter takes no lock.
-        // The key is read once; nothing keeps the caller's pointer.
-        try session_ticket.install(&server, options.session_ticket_key, options.session_ticket_lifetime_s);
 
         return .{
             .allocator = allocator,

@@ -9,7 +9,6 @@ const addPersistenceLibTest = helpers.addPersistenceLibTest;
 const addQuicLibTest = helpers.addQuicLibTest;
 const addMainTest = helpers.addMainTest;
 const addQuicImport = helpers.addQuicImport;
-const addQuicLibImports = helpers.addQuicLibImports;
 
 /// Returns `!void` so `error.LazyDependencyNeeded` can propagate.
 ///
@@ -34,7 +33,7 @@ pub fn buildImpl(b: *std.Build) !void {
     const lib_module = graph.lib_module;
     const core_module = graph.core_module;
     const quic_zig_module = graph.quic_zig_module;
-    const quic_boringssl_module = graph.quic_boringssl_module;
+    const quic_test_imports = graph.quic_test_imports;
     const wasm_host_module = graph.wasm_host_module;
 
     // Expected-fail canary for std.Io.Evented; self-contained in its own file.
@@ -68,7 +67,7 @@ pub fn buildImpl(b: *std.Build) !void {
         .imports = &.{},
     });
     docs_module.addImport("capnpc-zig", docs_module);
-    addQuicLibImports(docs_module, quic_zig_module, quic_boringssl_module);
+    addQuicImport(docs_module, quic_zig_module);
     const docs_obj = b.addObject(.{
         .name = "capnpc-zig-docs",
         .root_module = docs_module,
@@ -417,8 +416,8 @@ pub fn buildImpl(b: *std.Build) !void {
         addLibTest(b, "tests/docs/quic_transport_disabled_snippets_test.zig", target, optimize, lib_module)
     else
         null;
-    const run_quic_transport_snippet_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
-        addQuicLibTest(b, "tests/docs/quic_transport_snippets_test.zig", target, optimize, lib_module, qm)
+    const run_quic_transport_snippet_tests: ?*std.Build.Step = if (quic_test_imports) |qi|
+        addQuicLibTest(b, "tests/docs/quic_transport_snippets_test.zig", target, optimize, lib_module, qi)
     else
         null;
     const test_docs_snippets_step = b.step("test-docs-snippets", "Compile documentation snippet fixtures");
@@ -757,7 +756,7 @@ pub fn buildImpl(b: *std.Build) !void {
         .optimize = optimize,
         .imports = &.{},
     });
-    addQuicLibImports(lib_tests_module, quic_zig_module, quic_boringssl_module);
+    addQuicImport(lib_tests_module, quic_zig_module);
     // The checked-in generated code under src/rpc/gen/ imports the library by
     // its MODULE name (`@import("capnpc-zig")`), the way a consumer would. The
     // self-import makes that resolve when the library is its own test root --
@@ -958,20 +957,20 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_unix_step.dependOn(run_rpc_unix_fd_limits_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_session_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_worker_pool_tests);
-    const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
-        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, qm)
+    const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_test_imports) |qi|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, qi)
     else
         null;
-    const run_rpc_quic_public_api_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
-        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_public_api_test.zig", target, optimize, lib_module, qm)
+    const run_rpc_quic_public_api_tests: ?*std.Build.Step = if (quic_test_imports) |qi|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_public_api_test.zig", target, optimize, lib_module, qi)
     else
         null;
-    const run_rpc_quic_connection_internal_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
-        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, optimize, lib_module, qm)
+    const run_rpc_quic_connection_internal_tests: ?*std.Build.Step = if (quic_test_imports) |qi|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, optimize, lib_module, qi)
     else
         null;
-    const run_rpc_quic_peer_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
-        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_peer_test.zig", target, optimize, lib_module, qm)
+    const run_rpc_quic_peer_tests: ?*std.Build.Step = if (quic_test_imports) |qi|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_peer_test.zig", target, optimize, lib_module, qi)
     else
         null;
     const run_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, optimize, lib_module);
@@ -1615,9 +1614,7 @@ pub fn buildImpl(b: *std.Build) !void {
     else
         null;
     const release_safe_quic_zig_module: ?*std.Build.Module = if (release_safe_quic_dep) |dep| dep.module("quic") else null;
-    // See build/modules.zig: the library root also imports the boringssl
-    // module instance this quic dependency exports.
-    const release_safe_quic_boringssl_module: ?*std.Build.Module = if (release_safe_quic_dep) |dep| dep.module("boringssl") else null;
+    const release_safe_quic_test_imports = helpers.QuicTestImports.of(release_safe_quic_dep);
     const release_safe_lib_module = b.addModule("capnpc-zig-release-safe", .{
         .root_source_file = b.path(lib_root),
         .target = target,
@@ -1625,7 +1622,7 @@ pub fn buildImpl(b: *std.Build) !void {
         .imports = &.{},
     });
     release_safe_lib_module.addImport("capnpc-zig", release_safe_lib_module);
-    addQuicLibImports(release_safe_lib_module, release_safe_quic_zig_module, release_safe_quic_boringssl_module);
+    addQuicImport(release_safe_lib_module, release_safe_quic_zig_module);
 
     const run_release_safe_main_tests = addMainTest(b, "src/main.zig", target, release_safe_optimize);
     const run_release_safe_message_tests = addLibTest(b, "tests/serialization/message_test.zig", target, release_safe_optimize, release_safe_lib_module);
@@ -1641,20 +1638,20 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_release_safe_rpc_framing_tests = addLibTest(b, "tests/rpc/wire/rpc_framing_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_vatc_tests = addLibTest(b, "tests/rpc/peer/rpc_three_party_handoff_vatc_test.zig", target, release_safe_optimize, release_safe_lib_module);
-    const run_release_safe_rpc_quic_transport_tests: ?*std.Build.Step = if (release_safe_quic_zig_module) |qm|
-        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module, qm)
+    const run_release_safe_rpc_quic_transport_tests: ?*std.Build.Step = if (release_safe_quic_test_imports) |qi|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module, qi)
     else
         null;
-    const run_release_safe_rpc_quic_public_api_tests: ?*std.Build.Step = if (release_safe_quic_zig_module) |qm|
-        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_public_api_test.zig", target, release_safe_optimize, release_safe_lib_module, qm)
+    const run_release_safe_rpc_quic_public_api_tests: ?*std.Build.Step = if (release_safe_quic_test_imports) |qi|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_public_api_test.zig", target, release_safe_optimize, release_safe_lib_module, qi)
     else
         null;
-    const run_release_safe_rpc_quic_connection_internal_tests: ?*std.Build.Step = if (release_safe_quic_zig_module) |qm|
-        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, release_safe_optimize, release_safe_lib_module, qm)
+    const run_release_safe_rpc_quic_connection_internal_tests: ?*std.Build.Step = if (release_safe_quic_test_imports) |qi|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, release_safe_optimize, release_safe_lib_module, qi)
     else
         null;
-    const run_release_safe_rpc_quic_peer_tests: ?*std.Build.Step = if (release_safe_quic_zig_module) |qm|
-        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_peer_test.zig", target, release_safe_optimize, release_safe_lib_module, qm)
+    const run_release_safe_rpc_quic_peer_tests: ?*std.Build.Step = if (release_safe_quic_test_imports) |qi|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_peer_test.zig", target, release_safe_optimize, release_safe_lib_module, qi)
     else
         null;
     const run_release_safe_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, release_safe_optimize, release_safe_lib_module);
@@ -1749,7 +1746,7 @@ pub fn buildImpl(b: *std.Build) !void {
             .imports = &.{},
         });
         tsan_lib_module.addImport("capnpc-zig", tsan_lib_module);
-        addQuicLibImports(tsan_lib_module, quic_zig_module, quic_boringssl_module);
+        addQuicImport(tsan_lib_module, quic_zig_module);
 
         const tsan_suites = [_][]const u8{
             "tests/rpc/transport/rpc_cross_thread_stress_test.zig",

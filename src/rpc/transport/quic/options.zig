@@ -154,18 +154,22 @@ pub const ServerRetryTokenKey = quic_zig.conn.RetryTokenKey;
 pub const ServerNewTokenKey = quic_zig.conn.NewTokenKey;
 pub const ServerAntiReplayTracker = quic_zig.tls.AntiReplayTracker;
 
-/// A persisted BoringSSL session-ticket key: a 16-byte key name (sent in
-/// clear at the front of every ticket), a 16-byte HMAC-SHA256 key and a
-/// 16-byte AES-128 key, in that order (`SSL_CTX_set_tlsext_ticket_keys`).
-/// Generate all 48 bytes from a CSPRNG and keep them in a file of their own
-/// (`loadTicketKeyFile`). See `ServerOptions.session_ticket_key` and
-/// "Session-ticket key" in docs/quic-transport.md for what a stolen key
+/// A persisted session-ticket key, quic-zig's `SessionTicketKey`: a 16-byte
+/// key name (sent in clear at the front of every ticket), a 16-byte
+/// HMAC-SHA256 key and a 16-byte AES-128 key, in that order (BoringSSL's
+/// layout). Generate all 48 bytes from a CSPRNG and keep them in a file of
+/// their own (`loadTicketKeyFile`). See `ServerOptions.session_ticket_key`
+/// and "Session-ticket key" in docs/quic-transport.md for what a stolen key
 /// costs.
-pub const SessionTicketKey = [48]u8;
+pub const SessionTicketKey = quic_zig.SessionTicketKey;
 
-/// Upper bound of `ServerOptions.session_ticket_lifetime_s`: BoringSSL's
-/// default TLS 1.3 ticket lifetime (`SSL_DEFAULT_SESSION_PSK_DHE_TIMEOUT`,
-/// 2 days). The option only shortens it.
+/// Upper bound of `ServerOptions.session_ticket_lifetime_s`: 2 days,
+/// BoringSSL's default TLS 1.3 ticket lifetime
+/// (`SSL_DEFAULT_SESSION_PSK_DHE_TIMEOUT`). quic-zig accepts up to 7 days,
+/// but a BoringSSL client (every quic-zig client, so every capnp-zig client)
+/// keeps a ticket for 2 days at most: a longer server lifetime buys those
+/// clients nothing, and it keeps a ticket that a stolen key opens valid for
+/// longer. The option only shortens the default.
 pub const max_session_ticket_lifetime_s: u32 = 2 * 24 * 60 * 60;
 
 /// Ticket-capture callback for warm restore. Fires once quic-zig has a
@@ -411,30 +415,32 @@ pub const ServerOptions = struct {
     /// same key on every start, that redial resumes, and with `early_data`
     /// enabled BoringSSL accepts its 0-RTT data.
     ///
-    /// `Listener.init` (and so `Server.init`, `serve` and
-    /// `Connection.initServer`) reads the key once and installs it on the
-    /// TLS context before the first datagram is fed; the caller may zero
-    /// its copy after that. A thief who copies the key can decrypt recorded
+    /// `serverConfigFromOptions` copies the key into quic-zig's
+    /// `Server.Config.session_ticket_key`, and quic-zig installs it on every
+    /// TLS context it builds, also on a `.pem` reload
+    /// (`replaceTlsContext`). `Listener.init` (and so `Server.init`, `serve`
+    /// and `Connection.initServer`) zeroes its own copy once quic-zig's
+    /// server is built and keeps no pointer to yours: you may zero your
+    /// copy when `init` returns. A thief who copies the key can decrypt recorded
     /// 0-RTT data (sturdy refs included) and impersonate the server to
     /// resuming clients until their tickets expire, but cannot read 1-RTT
     /// traffic. Read "Session-ticket key" in docs/quic-transport.md before
     /// setting it.
     ///
-    /// Refused with `error.InvalidConfig`: an all-zero key; a key together
-    /// with `early_data = .with_anti_replay` (the tracker is per-process
-    /// memory, and a persisted key lets a pre-crash flight replay after the
-    /// restart); a key with Retry on (`retry_token_key`) and
-    /// `new_token_key == null`. `serverConfigFromOptions` refuses any key,
-    /// because it builds a config, not a server, and cannot install one.
-    /// Embedded mode is out of scope: the host owns the TLS context there.
+    /// Refused with `error.InvalidConfig`: an all-zero key, and a key
+    /// together with `early_data = .with_anti_replay` (the tracker is
+    /// per-process memory, and a persisted key lets a pre-crash flight
+    /// replay after the restart). With Retry on (`retry_token_key`) also
+    /// persist `new_token_key`: a returning client with a valid NEW_TOKEN
+    /// skips the Retry, and one without pays a round trip for it (its
+    /// 0-RTT restore still runs before the handshake completes).
     session_ticket_key: ?*const SessionTicketKey = null,
     /// Lifetime, in seconds, of the TLS 1.3 session tickets this server
-    /// issues (`SSL_CTX_set_session_psk_dhe_timeout`). Null keeps
-    /// BoringSSL's 2 days. Valid range 1..`max_session_ticket_lifetime_s`:
-    /// the option only shortens the window in which a stolen
-    /// `session_ticket_key` lets a thief impersonate the server. Installed
-    /// by `Listener.init` like the key; `serverConfigFromOptions` refuses
-    /// it.
+    /// issues (quic-zig's `Server.Config.session_ticket_lifetime_s`). Null
+    /// keeps BoringSSL's 2 days. Valid range 1..`max_session_ticket_lifetime_s`
+    /// (2 days, the most a capnp-zig client keeps a ticket): the option only
+    /// shortens the window in which a stolen `session_ticket_key` lets a
+    /// thief impersonate the server.
     session_ticket_lifetime_s: ?u32 = null,
     /// Sweep out sessions whose handshake has not completed within this
     /// window (certified cause `DisconnectCause.handshake_timeout`).
@@ -528,9 +534,10 @@ pub const ServerProductionHardening = struct {
     early_data: ProductionEarlyData = .disabled,
     /// Opt-in persisted session-ticket key; see
     /// `ServerOptions.session_ticket_key`. Null by default: the preset
-    /// never sets one. The preset always sets `retry_token_key`, so a key
-    /// here also needs `new_token_key`, persisted with it (`Listener.init`
-    /// refuses the key without one).
+    /// never sets one. The preset always sets `retry_token_key`, so persist
+    /// `new_token_key` with the key: without a valid NEW_TOKEN every
+    /// restarted client pays a Retry (one round trip) before its 0-RTT
+    /// restore runs.
     session_ticket_key: ?*const SessionTicketKey = null,
     initial_source_rate_limit: RateLimit = .{ .limit = default_quic_initial_source_rate_cap },
     vn_source_rate_limit: RateLimit = .default,
@@ -576,25 +583,14 @@ pub fn withProductionServerHardening(
     return out;
 }
 
-/// Build the quic-zig server config for `options`. Refuses
-/// `session_ticket_key` and `session_ticket_lifetime_s` with
-/// `error.InvalidConfig`: both are installed on the TLS context of a server
-/// after `quic_zig.Server.init`, and a config cannot carry them. Use
-/// `Listener.init` (or `Server.init`) for a server with a ticket key.
+/// Build the quic-zig server config for `options`, the one `Listener.init`
+/// hands to `quic_zig.Server.init`.
+///
+/// With `session_ticket_key` set, the returned config holds a COPY of the
+/// key, by value (`Server.Config.session_ticket_key`): a secret. Zero it
+/// (`std.crypto.secureZero` on the config's key) once `quic_zig.Server.init`
+/// has returned, as `Listener.init` does, and keep the config out of logs.
 pub fn serverConfigFromOptions(
-    allocator: std.mem.Allocator,
-    options: ServerOptions,
-) !quic_zig.Server.Config {
-    if (options.session_ticket_key != null or options.session_ticket_lifetime_s != null) {
-        return error.InvalidConfig;
-    }
-    return try listenerServerConfig(allocator, options);
-}
-
-/// `serverConfigFromOptions` for `Listener.init`, which installs the
-/// session-ticket settings itself (session_ticket.zig) right after
-/// `quic_zig.Server.init`. Not exported from the package.
-pub fn listenerServerConfig(
     allocator: std.mem.Allocator,
     options: ServerOptions,
 ) !quic_zig.Server.Config {
@@ -623,6 +619,8 @@ pub fn listenerServerConfig(
         .new_token_lifetime_us = options.new_token_lifetime_us,
         .early_data = options.early_data,
         .early_data_application_context = earlyDataApplicationContext(options.mode, options.early_dispatch),
+        .session_ticket_key = if (options.session_ticket_key) |key| key.* else null,
+        .session_ticket_lifetime_s = options.session_ticket_lifetime_s,
         .congestion_control = options.congestion_control,
         .reveal_close_reason_on_wire = options.reveal_close_reason_on_wire,
         .max_connection_memory = options.max_connection_memory,
@@ -676,6 +674,8 @@ fn validateServerOptions(options: ServerOptions) !void {
         }
     }
     if (options.new_token_key != null and options.new_token_lifetime_us == 0) return error.InvalidConfig;
+    // quic-zig's `Server.init` refuses both of these too; checking here keeps
+    // the refusal at the capnp-zig boundary, where the reason is documented.
     if (options.session_ticket_key) |key| {
         // A zeroed buffer is a missing key, never a secret.
         if (std.mem.allEqual(u8, key, 0)) return error.InvalidConfig;
@@ -684,11 +684,11 @@ fn validateServerOptions(options: ServerOptions) !void {
         // restart, where the empty tracker calls it fresh and every early
         // call runs twice (docs/quic-transport.md).
         if (std.meta.activeTag(options.early_data) == .with_anti_replay) return error.InvalidConfig;
-        // With Retry on, only a valid NEW_TOKEN skips the Retry, and a
-        // Retry drops the first flight's 0-RTT packets. Without a
-        // new_token_key no client ever holds one, so the key would buy no
-        // early restore.
-        if (options.retry_token_key != null and options.new_token_key == null) return error.InvalidConfig;
+        // A key with Retry on and no `new_token_key` is allowed: every
+        // returning client then pays a Retry, and its 0-RTT data still
+        // arrives before the handshake completes (quic-zig v0.27.0 sends
+        // it again after the Retry). The trade-off is documented in
+        // "Session-ticket key", docs/quic-transport.md.
     }
     if (options.session_ticket_lifetime_s) |lifetime_s| {
         if (lifetime_s == 0 or lifetime_s > max_session_ticket_lifetime_s) return error.InvalidConfig;
