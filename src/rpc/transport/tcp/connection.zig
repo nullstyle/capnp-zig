@@ -422,6 +422,25 @@ pub const Connection = struct {
         return self.ctx;
     }
 
+    /// Experimental. Keep the fds a peer attaches to inbound messages, at
+    /// most `max_fds_per_message` per message (0 turns it off again), on an
+    /// AF_UNIX connection on Linux or macOS. Call before `run`. The
+    /// transport then reads one frame at a time and checks each header
+    /// against this connection's `max_buffered_frame_bytes` before it reads
+    /// the rest (see "Receiving fds" on `Transport`).
+    ///
+    /// While `on_message` runs, `transport.frameFdCount()` and
+    /// `transport.takeFrameFd(i)` give the fds of the frame being
+    /// dispatched. When it returns, every fd it did not take goes to the
+    /// closer thread. So does every fd of a frame that is never dispatched.
+    pub fn enableFdPassing(self: *Connection, max_fds_per_message: u8) transport_mod.Transport.EnableFdPassingError!void {
+        self.assertThreadAffinity();
+        return self.transport.enableFdPassing(.{
+            .max_fds_per_message = max_fds_per_message,
+            .max_buffered_frame_bytes = self.framer.max_buffered_bytes,
+        });
+    }
+
     /// Blocking read loop. Reads from the transport, pushes data through
     /// the framer, and dispatches complete message frames to callbacks.
     ///
@@ -785,6 +804,11 @@ pub const Connection = struct {
     }
 
     fn handleRead(self: *Connection, data: []const u8) bool {
+        // With fd passing on, a read completes at most one frame, and its
+        // fds stay with the transport until here: whether the frame was
+        // dispatched or dropped, every fd `on_message` did not take goes to
+        // the closer now, not at the next read (which may be far off).
+        defer self.transport.releaseFrameFds();
         if (self.on_message == null or self.on_error == null) return false;
 
         const push_result = self.framer.push(data);

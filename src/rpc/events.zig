@@ -133,8 +133,15 @@ pub const Resource = enum(u8) {
     /// stream connection. A transport that accepts none (drain mode) hands
     /// each to the closer thread and emits a `.resource_rejection` per read
     /// that carried any: `attempted` = the fds received, `limit` = 0, `err` =
-    /// `error.AttachedFdsRejected`. The same resource reports the kernel
-    /// dropping fds (`error.AttachedFdsTruncated`, or the fd-table errors
+    /// `error.AttachedFdsRejected`. With fd passing on
+    /// (`Transport.enableFdPassing`) the same event reports the fds of a
+    /// frame that nobody took, or that was never dispatched, once they go to
+    /// the closer; and a batch with more fds than `max_fds_per_message`
+    /// reports its extras with `err` = `error.AttachedFdsOverLimit`
+    /// (`attempted` = the fds in the batch, `limit` = the cap). Two fd
+    /// batches in one frame are a `.protocol_error`
+    /// (`error.MultipleAttachedFdBatches`). The same resource reports the
+    /// kernel dropping fds (`error.AttachedFdsTruncated`, or the fd-table errors
     /// `error.ProcessFdQuotaExceeded` / `error.SystemFdQuotaExceeded`) and a
     /// closer queue past its bound (`error.FdCloseQueueFull`: `attempted` =
     /// fds pending, `limit` = the bound; the connection is closed). On the

@@ -39,7 +39,11 @@
 //! So the transport reads every AF_UNIX connection with `recvWithFds` and a
 //! control buffer of `max_fds_per_read` slots, and hands every fd it gets to
 //! the closer (`closer`, its `.received` lane). macOS delivers at most one
-//! send's fds (254) per `recvmsg`, so 512 slots never truncate there.
+//! send's fds (254) per `recvmsg`, so 512 slots never truncate there. With
+//! fd passing on (`Transport.enableFdPassing`) it keeps up to
+//! `max_fds_per_message` of a message's fds for its consumer instead, and
+//! reads one frame at a time so that each fd lands in its own message;
+//! every fd it does not hand out still goes to the closer.
 //!
 //! ## What is left
 //!

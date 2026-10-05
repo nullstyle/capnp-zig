@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_transport);
 const net = std.Io.net;
 const events = @import("../../events.zig");
+const framing = @import("../../wire/framing.zig");
 const fd_io = @import("../unix/fd_io.zig");
 
 /// Opaque platform-stable socket handle wrapper passed into the transport
@@ -87,6 +88,49 @@ pub const SocketFd = struct {
 /// the dups behind it pile up to that bound, and then every transport
 /// refuses fd messages with `error.FdQueueFull` until the closer catches
 /// up. Messages without fds still go.
+///
+/// ## Receiving fds (AF_UNIX): exact-boundary reads
+///
+/// `enableFdPassing`, called before the first read with
+/// `max_fds_per_message > 0`, makes the transport keep the fds a peer
+/// attaches to a message instead of closing them. It then reads one Cap'n
+/// Proto frame at a time: the first 8 bytes of the header, the rest of the
+/// segment table, then the body. Each `recvmsg` asks for at most the bytes
+/// left in the current part, so no read crosses a frame boundary, and every
+/// fd belongs to the frame whose bytes carried it. Bulk reads cannot give
+/// that rule: they attach an fd to a read's last bytes on Linux and to its
+/// first byte on macOS (FD-0). It costs about two `recvmsg` calls per frame,
+/// on these connections only.
+///
+/// Each header is checked against the frozen `framing.Framer`'s limits
+/// before the next part is read: at most `Framer.max_segment_count`
+/// segments, `Framer.max_frame_words` words and `max_buffered_frame_bytes`
+/// in all. So no byte of a body past the limits is read, and nothing past
+/// them is buffered. One `read` returns at most the rest of one part.
+///
+/// The fds of a frame:
+/// - It keeps at most `max_fds_per_message`; the extras go to the closer
+///   (`error.AttachedFdsOverLimit`).
+/// - Fds that arrive in two batches (two `recvmsg` calls) within one frame
+///   are a protocol error: every fd the transport holds goes to the closer,
+///   and the connection ends.
+/// - A batch the kernel cut short (MSG_CTRUNC: Linux at RLIMIT_NOFILE) or
+///   dropped (EMFILE: macOS) leaves the frame with no fds. The fds of that
+///   read go to the closer, an event reports it, and the connection stays.
+///   A second EMFILE in a row ends the connection, as in drain mode.
+/// - After the read that completes a frame, `frameFdCount` and
+///   `takeFrameFd` give its fds, until the next read. `releaseFrameFds`
+///   (the `Connection` calls it after dispatch), the next read and
+///   `deinit` hand every fd nobody took to the closer.
+/// - A frame that never completes (the stream ends or fails mid-frame)
+///   gives its fds to the closer when reading ends, and at `deinit`.
+///
+/// No fd is closed on the reading thread: every one goes to the closer's
+/// `.received` lane. A protocol error (a bad header, a frame too large, two
+/// fd batches in one frame) emits a `.protocol_error` event naming the
+/// cause (`error.InvalidFrame`, `error.FrameTooLarge` or
+/// `error.MultipleAttachedFdBatches`), and `read` then fails with
+/// `error.ConnectionResetByPeer`, on that call and every later one.
 pub const Transport = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -169,6 +213,37 @@ pub const Transport = struct {
         write_queue_max_items: usize = default_max_queued_items,
         write_queue_max_bytes: usize = default_max_queued_bytes,
         observer: ?events.Observer = null,
+    };
+
+    /// The most fds one inbound message keeps, whatever
+    /// `FdPassingOptions.max_fds_per_message` asks for: Linux's
+    /// `SCM_MAX_FD`, the most one `sendmsg` carries there (`fd_io`).
+    pub const max_fds_per_message_cap: u8 = @intCast(fd_io.max_fds_per_send);
+
+    /// See `enableFdPassing`.
+    pub const FdPassingOptions = struct {
+        /// The most fds one inbound message keeps; the extras are closed.
+        /// 0 turns fd passing off (drain mode: every fd closed). Values
+        /// above `max_fds_per_message_cap` (253) count as 253.
+        max_fds_per_message: u8,
+        /// The frame limit each header is checked against before the rest
+        /// of the frame is read: header plus body, in bytes. Give it the
+        /// same value as the `framing.Framer` the bytes go to
+        /// (`Connection.enableFdPassing` does).
+        max_buffered_frame_bytes: usize = framing.Framer.default_max_buffered_bytes,
+    };
+
+    /// `enableFdPassing` failures. On each, nothing changed.
+    pub const EnableFdPassingError = error{
+        /// The socket is not AF_UNIX, or fd passing is not compiled in for
+        /// this target (only Linux and macOS have it).
+        FdPassingUnsupported,
+        /// The transport has already read: fd passing must start at the
+        /// first byte of the stream, so frames and their fds line up.
+        AlreadyReading,
+        /// The closer-queue reservation for the fds a frame holds, or the
+        /// frame state, could not be allocated.
+        OutOfMemory,
     };
 
     /// Thread-safe write queue. The queue state and condition wait use the
@@ -482,10 +557,106 @@ pub const Transport = struct {
             self.closeSocket();
         }
         if (self.drain) |drain| {
+            if (comptime fd_io.supported) {
+                if (drain.frames) |frames| {
+                    // The fds of a frame never dispatched, or never taken.
+                    // No events here: the observer may already be gone.
+                    self.endFrames(drain, frames, .quiet);
+                    self.allocator.destroy(frames);
+                    drain.frames = null;
+                }
+            }
             drain.destroy(self.allocator);
             self.drain = null;
         }
         self.allocator.free(self.read_buf);
+    }
+
+    /// Keep the fds a peer attaches to inbound messages, at most
+    /// `options.max_fds_per_message` per message, instead of closing them
+    /// all (drain mode). See "Receiving fds" on the type. Call it before
+    /// the first read, on the thread that reads. With
+    /// `max_fds_per_message = 0` it turns fd passing off again (still
+    /// before the first read).
+    ///
+    /// Only an AF_UNIX transport on Linux or macOS can do it. TCP and other
+    /// targets return `error.FdPassingUnsupported`.
+    pub fn enableFdPassing(self: *Transport, options: FdPassingOptions) EnableFdPassingError!void {
+        if (comptime !fd_io.supported) return error.FdPassingUnsupported;
+        if (self.source != .unix) return error.FdPassingUnsupported;
+        const drain = self.drain orelse return error.FdPassingUnsupported;
+        if (drain.reads_started) return error.AlreadyReading;
+        const max_fds: usize = @min(options.max_fds_per_message, max_fds_per_message_cap);
+        if (max_fds == 0) {
+            if (drain.frames) |frames| {
+                self.allocator.destroy(frames);
+                drain.frames = null;
+                fd_io.closer.trim(&drain.read_reservation, FdDrain.read_slots);
+            }
+            return;
+        }
+        // Room in the closer for the fds the transport may hold (the frame
+        // being read and the last completed one), on top of one read's
+        // worth: handing them off can then never allocate or fail.
+        fd_io.closer.reserve(&drain.read_reservation, FdDrain.read_slots + FrameReader.heldSlots(max_fds)) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.UnixSocketsUnsupported => return error.FdPassingUnsupported,
+        };
+        const frames = drain.frames orelse blk: {
+            const created = self.allocator.create(FrameReader) catch {
+                fd_io.closer.trim(&drain.read_reservation, FdDrain.read_slots);
+                return error.OutOfMemory;
+            };
+            drain.frames = created;
+            break :blk created;
+        };
+        frames.* = .{
+            .max_fds = max_fds,
+            .max_frame_bytes = options.max_buffered_frame_bytes,
+        };
+        // A smaller cap than before keeps only what it needs.
+        fd_io.closer.trim(&drain.read_reservation, drain.readSlots());
+    }
+
+    /// The number of fds attached to the frame the last read completed:
+    /// `takeFrameFd` takes indexes below it. 0 when fd passing is off, and
+    /// once that frame's fds were released (`releaseFrameFds`, or the next
+    /// read). On the thread that reads.
+    pub fn frameFdCount(self: *const Transport) usize {
+        if (comptime !fd_io.supported) return 0;
+        const drain = self.drain orelse return 0;
+        const frames = drain.frames orelse return 0;
+        return frames.completed.count;
+    }
+
+    /// Take fd `index` (in the order the peer attached them) of the frame
+    /// the last read completed. The caller owns it from now on and must
+    /// close it; closing it off the reading thread (for example through
+    /// `fd_io.closer.handOff`) keeps a close that blocks from stalling the
+    /// reader. Null for an index out of range or already taken, and when fd
+    /// passing is off. On the thread that reads, before its next read.
+    pub fn takeFrameFd(self: *Transport, index: usize) ?fd_io.Fd {
+        if (comptime !fd_io.supported) return null;
+        const drain = self.drain orelse return null;
+        const frames = drain.frames orelse return null;
+        const slot = &frames.completed;
+        if (index >= slot.count) return null;
+        const fd = slot.fds[index];
+        if (fd < 0) return null;
+        slot.fds[index] = -1;
+        return fd;
+    }
+
+    /// Hand every fd of the frame the last read completed that nobody took
+    /// to the closer, with a `.resource_rejection` event
+    /// (`error.AttachedFdsRejected`). `Connection` calls it once a frame
+    /// is dispatched; the next read does it anyway. On the thread that
+    /// reads. A no-op when fd passing is off.
+    pub fn releaseFrameFds(self: *Transport) void {
+        if (comptime !fd_io.supported) return;
+        const drain = self.drain orelse return;
+        const frames = drain.frames orelse return;
+        self.releaseFds(drain, &frames.completed, .report);
     }
 
     /// The final close of the socket. The kernel closes any fds still
@@ -515,6 +686,12 @@ pub const Transport = struct {
     /// this read's fds pushed it past its bound (`error.FdCloseQueueFull`),
     /// or the process fd table stayed full for a read and its one retry
     /// (`error.ProcessFdQuotaExceeded` or `error.SystemFdQuotaExceeded`).
+    ///
+    /// With fd passing on (`enableFdPassing`) a read returns at most the
+    /// rest of one part of one frame, and keeps that frame's fds (see
+    /// "Receiving fds" on the type). The same three conditions end the
+    /// connection, and so does a protocol error (`error.ConnectionResetByPeer`
+    /// after a `.protocol_error` event).
     pub fn read(self: *Transport) ReadError!usize {
         if (self.close_requested.load(.acquire)) return 0;
         if (comptime fd_io.supported) {
@@ -525,15 +702,19 @@ pub const Transport = struct {
     }
 
     fn readDrain(self: *Transport, drain: *FdDrain) ReadError!usize {
+        drain.reads_started = true;
         // A thread must exist before any fd can arrive: received fds are
         // never closed on this one.
         fd_io.closer.ensureStarted() catch |err| {
             log.debug("fd closer thread unavailable: {}", .{err});
-            return error.SystemResources;
+            return self.failDrainRead(drain, error.SystemResources);
         };
-        // Top the reservation back up, so handing this read's fds to the
-        // closer cannot allocate (or fail) while this thread holds them.
-        fd_io.closer.reserve(&drain.read_reservation, FdDrain.read_slots) catch return error.SystemResources;
+        // Top the reservation back up, so handing this read's fds (and the
+        // fds a frame holds) to the closer cannot allocate (or fail) while
+        // this thread holds them.
+        fd_io.closer.reserve(&drain.read_reservation, drain.readSlots()) catch
+            return self.failDrainRead(drain, error.SystemResources);
+        if (drain.frames) |frames| return self.readFramePart(drain, frames);
 
         // Wait for data first, then check the closer's bound, then take the
         // fds. A reader parked inside a blocking recvmsg would take the next
@@ -586,6 +767,190 @@ pub const Transport = struct {
 
     fn emitAttachedFds(self: *const Transport, attempted: ?usize, limit: ?usize, err: anyerror) void {
         events.emitResourceRejection(self.observer, self.source, .unknown, .attached_fds, attempted, limit, err);
+    }
+
+    /// A drain-mode read that ends the connection: with fd passing on, the
+    /// fds the transport holds for frames go to the closer first.
+    fn failDrainRead(self: *Transport, drain: *FdDrain, err: ReadError) ReadError {
+        if (drain.frames) |frames| self.endFrames(drain, frames, .report);
+        return err;
+    }
+
+    /// Fd passing: one exact-boundary read (see "Receiving fds" on the
+    /// type). The closer is started and the reservation topped up.
+    fn readFramePart(self: *Transport, drain: *FdDrain, frames: *FrameReader) ReadError!usize {
+        // The consumer of the last completed frame is done with it.
+        self.releaseFds(drain, &frames.completed, .report);
+        if (frames.failure) |err| return err;
+        // The one line that keeps a read inside the current part, and so
+        // inside the current frame.
+        const len = @min(frames.part_left, self.read_buf.len);
+        if (len == 0) return 0;
+
+        const readable = self.waitDrainReadable() catch |err| return self.failFrames(drain, frames, err);
+        if (!readable) {
+            // Closing: the frame being read will not complete.
+            self.endFrames(drain, frames, .report);
+            return 0;
+        }
+        const before = fd_io.closer.admission();
+        if (before.full()) {
+            self.emitAttachedFds(before.pending, before.limit, error.FdCloseQueueFull);
+            return self.failFrames(drain, frames, error.SystemResources);
+        }
+
+        // Set once the kernel dropped this read's fds (EMFILE): the retry
+        // returns the data of the same message, which keeps no fds.
+        var quota_dropped = false;
+        while (true) {
+            const got = fd_io.recvWithFds(self.fd, self.read_buf[0..len], &drain.control, &drain.fds) catch |err| switch (err) {
+                error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => {
+                    // macOS fails the read and installs nothing; the retry
+                    // returns the data, and the kernel drops the fds. A
+                    // second failure ends the connection: never spin.
+                    self.emitAttachedFds(null, null, err);
+                    if (quota_dropped) return self.failFrames(drain, frames, error.SystemResources);
+                    quota_dropped = true;
+                    // Those fds were one batch of the frame being read.
+                    frames.reading.batches += 1;
+                    if (frames.reading.batches > 1) return self.frameViolation(drain, frames, error.MultipleAttachedFdBatches);
+                    continue;
+                },
+                error.ConnectionResetByPeer => return self.failFrames(drain, frames, error.ConnectionResetByPeer),
+                error.ConnectionTimedOut => return self.failFrames(drain, frames, error.ConnectionTimedOut),
+                error.SocketUnconnected => return self.failFrames(drain, frames, error.SocketUnconnected),
+                error.SystemResources => return self.failFrames(drain, frames, error.SystemResources),
+                error.Unexpected, error.UnixSocketsUnsupported => return self.failFrames(drain, frames, error.Unexpected),
+            };
+            const fds = drain.fds[0..got.fd_count];
+            if (quota_dropped) {
+                // The retry after EMFILE. The frame keeps none of this
+                // message's fds, even any a kernel still delivered.
+                if (self.handOffRead(drain, frames, fds)) |err| return err;
+            } else if (fds.len != 0 or got.control_truncated) {
+                frames.reading.batches += 1;
+                if (frames.reading.batches > 1) {
+                    if (self.handOffRead(drain, frames, fds)) |err| return err;
+                    return self.frameViolation(drain, frames, error.MultipleAttachedFdBatches);
+                }
+                if (got.control_truncated) {
+                    // The kernel dropped some (Linux at RLIMIT_NOFILE): the
+                    // frame keeps none.
+                    if (self.handOffRead(drain, frames, fds)) |err| return err;
+                    self.emitAttachedFds(got.fd_count, drain.fds.len, error.AttachedFdsTruncated);
+                } else {
+                    const keep = @min(fds.len, frames.max_fds);
+                    @memcpy(frames.reading.fds[0..keep], fds[0..keep]);
+                    frames.reading.count = keep;
+                    if (keep < fds.len) {
+                        if (self.handOffRead(drain, frames, fds[keep..])) |err| return err;
+                        self.emitAttachedFds(fds.len, frames.max_fds, error.AttachedFdsOverLimit);
+                    }
+                }
+            }
+            if (got.data_len == 0) {
+                // End of stream: the frame being read never completes.
+                self.endFrames(drain, frames, .report);
+                return 0;
+            }
+            self.advanceFrames(drain, frames, self.read_buf[0..got.data_len]) catch |err|
+                return self.frameViolation(drain, frames, err);
+            return got.data_len;
+        }
+    }
+
+    /// Hand fds of the current read that no frame keeps to the closer.
+    /// Returns the error that ends the connection when that took the
+    /// closer past its bound (as in drain mode), after the fds the
+    /// transport holds went to the closer too.
+    fn handOffRead(self: *Transport, drain: *FdDrain, frames: *FrameReader, fds: []const fd_io.Fd) ?ReadError {
+        if (fds.len == 0) return null;
+        const admission = fd_io.closer.handOff(&drain.read_reservation, fds);
+        if (!admission.over_limit) return null;
+        self.emitAttachedFds(admission.pending, admission.limit, error.FdCloseQueueFull);
+        return self.failFrames(drain, frames, error.SystemResources);
+    }
+
+    /// A protocol error in fd-passing mode: report `cause`, give every fd
+    /// the transport holds to the closer, and fail this read and every
+    /// later one.
+    fn frameViolation(self: *Transport, drain: *FdDrain, frames: *FrameReader, cause: anyerror) ReadError {
+        log.debug("fd-passing read: protocol error {t}", .{cause});
+        events.emitProtocolError(self.observer, self.source, .unknown, cause, null);
+        return self.failFrames(drain, frames, error.ConnectionResetByPeer);
+    }
+
+    /// End reading for good with `err`: every fd the transport holds for
+    /// frames goes to the closer, and every later read fails with `err`.
+    fn failFrames(self: *Transport, drain: *FdDrain, frames: *FrameReader, err: ReadError) ReadError {
+        self.endFrames(drain, frames, .report);
+        frames.failure = err;
+        return err;
+    }
+
+    /// Hand the fds of the frame being read and of the last completed one
+    /// to the closer: neither will be dispatched.
+    fn endFrames(self: *Transport, drain: *FdDrain, frames: *FrameReader, report: FdReport) void {
+        self.releaseFds(drain, &frames.completed, report);
+        self.releaseFds(drain, &frames.reading, report);
+    }
+
+    const FdReport = enum { report, quiet };
+
+    /// Hand the fds in `slot` that nobody took to the closer, and empty it.
+    /// Covered by the read reservation (`FrameReader.heldSlots`), so it
+    /// cannot allocate or fail.
+    fn releaseFds(self: *Transport, drain: *FdDrain, slot: *FrameFds, report: FdReport) void {
+        var live: usize = 0;
+        for (slot.fds[0..slot.count]) |fd| {
+            if (fd < 0) continue;
+            slot.fds[live] = fd;
+            live += 1;
+        }
+        slot.count = 0;
+        slot.batches = 0;
+        if (live == 0) return;
+        _ = fd_io.closer.handOff(&drain.read_reservation, slot.fds[0..live]);
+        if (report == .report) self.emitAttachedFds(live, 0, error.AttachedFdsRejected);
+    }
+
+    /// Move the part state over `bytes`, the next bytes of the stream,
+    /// checking each header as it comes in: the segment count as soon as
+    /// its 4 bytes are there, the frame's size when the header is complete.
+    /// A read returns its bytes only after this, so a caller's framer never
+    /// holds a bad segment count, nor a whole header of a frame past the
+    /// limits. With the exact-boundary read `bytes` never runs past the
+    /// current part; the loop still handles any split.
+    fn advanceFrames(self: *Transport, drain: *FdDrain, frames: *FrameReader, bytes: []const u8) error{ InvalidFrame, FrameTooLarge }!void {
+        var rest = bytes;
+        while (rest.len != 0) {
+            const n = @min(rest.len, frames.part_left);
+            if (frames.part != .body) {
+                const had = frames.header_len;
+                @memcpy(frames.header[had..][0..n], rest[0..n]);
+                frames.header_len += n;
+                if (had < 4 and frames.header_len >= 4) try frames.checkSegmentCount();
+            }
+            frames.part_left -= n;
+            rest = rest[n..];
+            if (frames.part_left != 0) continue;
+            switch (frames.part) {
+                .head => try frames.endHead(),
+                .segment_table => try frames.endHeader(),
+                .body => {},
+            }
+            if (frames.part == .body and frames.part_left == 0) self.completeFrame(drain, frames);
+        }
+    }
+
+    /// The last byte of a frame was read: its fds become the completed
+    /// frame's, and the next frame starts.
+    fn completeFrame(self: *Transport, drain: *FdDrain, frames: *FrameReader) void {
+        // A consumer that read on without taking the previous frame's fds.
+        self.releaseFds(drain, &frames.completed, .report);
+        frames.completed = frames.reading;
+        frames.reading = .{};
+        frames.startFrame();
     }
 
     /// Drain mode: block until the socket is readable (or hung up). Returns
@@ -937,9 +1302,21 @@ const FdDrain = struct {
     read_reservation: fd_io.closer.Reservation = .{ .lane = .received },
     shutdown_reservation: fd_io.closer.Reservation = .{ .lane = .socket },
     close_reservation: fd_io.closer.Reservation = .{ .lane = .socket },
+    /// Fd-passing state (`Transport.enableFdPassing`); null in drain mode.
+    /// Owned by the transport.
+    frames: ?*FrameReader = null,
+    /// Set by the first read: fd passing can no longer start.
+    reads_started: bool = false,
 
     const control_bytes = fd_io.controlSpace(fd_io.max_fds_per_read);
     const read_slots = fd_io.max_fds_per_read;
+
+    /// The `.received` slots the reader keeps reserved: one read's worth,
+    /// plus with fd passing on the fds the transport may hold for frames.
+    fn readSlots(self: *const FdDrain) usize {
+        const frames = self.frames orelse return read_slots;
+        return read_slots + FrameReader.heldSlots(frames.max_fds);
+    }
 
     /// Darwin disposes of the fds on unread messages inside
     /// `shutdown(SHUT_RD)`, on the calling thread, so the read half of the
@@ -1035,6 +1412,117 @@ const FdDrain = struct {
     fn destroy(self: *FdDrain, allocator: std.mem.Allocator) void {
         self.releaseAll();
         allocator.destroy(self);
+    }
+};
+
+/// The fds a peer attached to one frame (fd passing).
+const FrameFds = struct {
+    /// `fds[0..count]`, in the order the peer attached them. A slot whose
+    /// fd was taken (`Transport.takeFrameFd`) holds -1.
+    fds: [Transport.max_fds_per_message_cap]fd_io.Fd = undefined,
+    count: usize = 0,
+    /// `recvmsg` calls that brought fds for the frame, or whose fds the
+    /// kernel dropped. More than one is a protocol error.
+    batches: usize = 0,
+};
+
+/// Fd-passing state of one `Transport` (see "Receiving fds" on
+/// `Transport`): where the exact-boundary reader is in the current frame,
+/// and the fds of that frame and of the last completed one. Created by
+/// `Transport.enableFdPassing`. Only the reading thread uses it, and
+/// `deinit` after reading has stopped.
+const FrameReader = struct {
+    /// The most fds a frame keeps: 1 to `Transport.max_fds_per_message_cap`.
+    max_fds: usize,
+    /// Header plus body, in bytes, the largest frame read.
+    max_frame_bytes: usize,
+    part: Part = .head,
+    /// Bytes of the current part still to read. Never 0 between reads.
+    part_left: usize = head_len,
+    /// The current frame's header so far: `header[0..header_len]`.
+    header: [framing.Framer.max_header_bytes]u8 = undefined,
+    header_len: usize = 0,
+    /// The fds of the frame being read.
+    reading: FrameFds = .{},
+    /// The fds of the frame the last read completed, until taken or
+    /// released.
+    completed: FrameFds = .{},
+    /// Set when reading ended for good (a protocol error, or the closer
+    /// past its bound): every later read fails with it.
+    failure: ?Transport.ReadError = null,
+
+    /// A frame in three parts, each read without crossing its end.
+    const Part = enum {
+        /// The first 8 bytes: the segment count and the first segment's
+        /// size. Every frame has them.
+        head,
+        /// The other segment sizes and the padding word, if any.
+        segment_table,
+        body,
+    };
+
+    const head_len = 8;
+
+    /// Closer slots for the fds the transport may hold at once: the frame
+    /// being read and the last completed one.
+    fn heldSlots(max_fds: usize) usize {
+        return 2 * max_fds;
+    }
+
+    fn startFrame(self: *FrameReader) void {
+        self.part = .head;
+        self.part_left = head_len;
+        self.header_len = 0;
+    }
+
+    fn segmentCount(self: *const FrameReader) error{InvalidFrame}!usize {
+        const raw = std.mem.readInt(u32, self.header[0..4], .little);
+        const count = std.math.add(u32, raw, 1) catch return error.InvalidFrame;
+        if (count > framing.Framer.max_segment_count) return error.InvalidFrame;
+        return count;
+    }
+
+    /// The segment count's 4 bytes are in: check it (the frozen `Framer`'s
+    /// rule) and the size of the header it implies.
+    fn checkSegmentCount(self: *const FrameReader) error{ InvalidFrame, FrameTooLarge }!void {
+        if (self.headerBytes(try self.segmentCount()) > self.max_frame_bytes) return error.FrameTooLarge;
+    }
+
+    /// Header bytes for `count` segments: the count, the sizes and the
+    /// padding word that keeps the header a whole number of words.
+    fn headerBytes(_: *const FrameReader, count: usize) usize {
+        const padding: usize = if (count % 2 == 0) 4 else 0;
+        return 4 + 4 * count + padding;
+    }
+
+    /// The head is in (its segment count already checked): read the rest
+    /// of the segment table, or go on to the body.
+    fn endHead(self: *FrameReader) error{ InvalidFrame, FrameTooLarge }!void {
+        const header_bytes = self.headerBytes(try self.segmentCount());
+        if (header_bytes > head_len) {
+            self.part = .segment_table;
+            self.part_left = header_bytes - head_len;
+            return;
+        }
+        return self.endHeader();
+    }
+
+    /// The whole header is in: check the frame's size against the frozen
+    /// `Framer`'s word limit and `max_frame_bytes`, before any byte of the
+    /// body is read. Sets up the body (possibly empty).
+    fn endHeader(self: *FrameReader) error{ InvalidFrame, FrameTooLarge }!void {
+        const count = try self.segmentCount();
+        var words: usize = 0;
+        for (0..count) |i| {
+            const size = std.mem.readInt(u32, self.header[4 + 4 * i ..][0..4], .little);
+            words = std.math.add(usize, words, size) catch return error.InvalidFrame;
+        }
+        if (words > framing.Framer.max_frame_words) return error.FrameTooLarge;
+        const body_bytes = std.math.mul(usize, words, 8) catch return error.InvalidFrame;
+        const frame_bytes = std.math.add(usize, self.header_len, body_bytes) catch return error.InvalidFrame;
+        if (frame_bytes > self.max_frame_bytes) return error.FrameTooLarge;
+        self.part = .body;
+        self.part_left = body_bytes;
     }
 };
 

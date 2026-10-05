@@ -1,6 +1,6 @@
 //! Raw-syscall helpers shared by the AF_UNIX fd suites
 //! (`rpc_unix_fd_drain_test.zig`, `rpc_unix_linger_test.zig`,
-//! `rpc_unix_fd_send_test.zig`).
+//! `rpc_unix_fd_send_test.zig`, `rpc_unix_fd_boundary_test.zig`).
 //!
 //! The "peer" in these suites is a raw socket that attaches fds with
 //! `sendmsg`, the way a hostile local process would. Everything here calls
@@ -467,6 +467,8 @@ pub const Recorder = struct {
     connection_count: usize = 0,
     close_err: ?anyerror = null,
     closed: bool = false,
+    protocol_errs: [8]anyerror = undefined,
+    protocol_count: usize = 0,
 
     pub fn observer(self: *Recorder) events.Observer {
         return events.Observer.init(self, onEvent);
@@ -486,6 +488,10 @@ pub const Recorder = struct {
             .close => |c| {
                 self.closed = true;
                 self.close_err = c.err;
+            },
+            .protocol_error => |p| if (self.protocol_count < self.protocol_errs.len) {
+                self.protocol_errs[self.protocol_count] = p.err;
+                self.protocol_count += 1;
             },
             else => {},
         }
