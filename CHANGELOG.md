@@ -140,13 +140,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
         1024 or more it cannot fill the fd table.
       - On the `.socket` lane (a connection torn down with such an fd still
         unread, or a connection nobody accepted when its listener closes):
-        later socket closes wait, and each holds one fd, up to the accept
-        gate's bound. That denies new AF_UNIX connections. With N
-        acceptors (a pool's `concurrency`, or N threads in `accept`), up to
-        N pass the gate together, so the lane can pass the bound by one
-        teardown per acceptor (1 job on Linux, up to 2 on macOS). Sockets
-        that the app accepts itself, from a listen fd it never wrapped in a
-        `Listener`, are not gated.
+        later socket closes wait, and each holds one fd. For connections
+        that a gated listener accepts, the accept gate stops this growth at
+        its bound: the listener then accepts nothing. That denies new
+        AF_UNIX connections on that listener. With N acceptors (a pool's
+        `concurrency`, or N threads in `accept`), up to N pass the gate
+        together, so the lane can pass the bound by one teardown per
+        acceptor (1 job on Linux, up to 2 on macOS).
+      - No gate applies to connections that the app opens itself
+        (`unix.connect`, or `Connection.init` on its own fd), or to sockets
+        that it accepts from a listen fd it never wrapped in a `Listener`.
+        Their closes go to the same `.socket` lane (on macOS every close,
+        on Linux every close with unread bytes), with no bound. For
+        example, a client that redials a hostile server in a loop adds one
+        held fd per teardown while the lane is stuck.
       - On macOS a blocked reader notices `shutdown` on a 250 ms poll tick
         instead of at once. A close of the other end of such a socket also
         waits, but only when both ends are in this process.
