@@ -321,6 +321,16 @@ test "embedded native seat keeps a data stream's bytes past its end, tick then s
     try stream_end.runEmbedded(.reset, .tick_then_service);
 }
 
+test "embedded native seat judges a reset data stream by the final size of the RESET, as the owned server does" {
+    // A RESET whose final size is larger than the announced length fails the
+    // frame with `InvalidFrame`; a RESET with bytes missing fails it with
+    // `DataStreamReset`. Ablation: when the seat ignores the RESET (its final
+    // size is then the bytes in hand), the longer RESET completes the frame
+    // and the cut one fails with `InvalidFrame`.
+    try stream_end.runEmbeddedReset(.longer_than_announced);
+    try stream_end.runEmbeddedReset(.cut);
+}
+
 fn countEmbeddedClientMessage(conn: *quic.Connection, frame: []const u8) anyerror!void {
     const state: *loopback.QuicEndpointState = @ptrCast(@alignCast(conn.context().?));
     try state.recordMessage(frame);

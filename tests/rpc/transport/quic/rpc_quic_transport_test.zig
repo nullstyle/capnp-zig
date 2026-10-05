@@ -1973,6 +1973,14 @@ test "quic native server fails at once when a data stream is reset before its by
     try stream_end.runServerResetBeforeRead();
 }
 
+test "quic native server judges a reset data stream by the final size of the RESET" {
+    // The embedded seat must give the same results ("embedded native seat
+    // judges a reset data stream ..."). Ablation: without the final-size
+    // check in `readComplete`, the longer RESET completes the frame.
+    try stream_end.runServerReset(.longer_than_announced);
+    try stream_end.runServerReset(.cut);
+}
+
 test "quic server refuses peer streams it never uses, so they do not fill its stream window" {
     // Since quic v0.24.0 a stream holds its place in the peer's window
     // until it is fully closed. A stream the server never reads, finishes

@@ -98,6 +98,13 @@ const Recorder = struct {
         try std.testing.expectEqual(@as(usize, 1), self.messages);
         try std.testing.expectEqualSlices(u8, &payload, self.received[0..self.received_len]);
     }
+
+    /// No frame arrived, and the session failed once, with `err`.
+    fn expectFailure(self: *const Recorder, err: anyerror) !void {
+        try std.testing.expectEqual(@as(usize, 0), self.messages);
+        try std.testing.expectEqual(@as(usize, 1), self.errors);
+        try std.testing.expectEqual(@as(?anyerror, err), self.last_error);
+    }
 };
 
 fn writePreamble(writer: anytype) !void {
@@ -144,6 +151,34 @@ const ServerHooks = struct {
     }
 };
 
+fn initServer(allocator: std.mem.Allocator) !quic.Server {
+    return quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    });
+}
+
+/// Step the raw client and the server until the handshake is done on both
+/// sides. Returns the server's one session.
+fn handshakeServer(raw: *RawFaultClient, server: *quic.Server) !*quic.ServerSession {
+    const patience = Patience.begin();
+    while (true) {
+        try raw.step(std.Io.Duration.zero);
+        _ = try server.stepOnce(.poll);
+        if (raw.client.conn.handshakeDone() and server.sessionCount() == 1) {
+            const session = server.sessionAt(0).?;
+            if (session.activeQuicConnection()) |server_conn| {
+                if (server_conn.handshakeDone()) return session;
+            }
+        }
+        try patience.wait();
+    }
+}
+
 /// The raw client's half of the native wire: the preamble and announcement
 /// on stream 0, every payload byte on its unidirectional stream 2.
 pub fn runServerDirection(end: End, order: Order) !void {
@@ -152,14 +187,7 @@ pub fn runServerDirection(end: End, order: Order) !void {
     quic.testing.knobs.setTickBeforeService(order == .tick_then_service);
     defer quic.testing.knobs.setTickBeforeService(false);
 
-    var server = try quic.Server.init(allocator, io, .{
-        .listen_addr = loopback.testListenAddr(),
-        .tls_cert_pem = loopback.loopback_cert_pem,
-        .tls_key_pem = loopback.loopback_key_pem,
-        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
-        .mode = .native,
-        .native = native_options,
-    });
+    var server = try initServer(allocator);
     defer server.deinit();
     var recorder = Recorder{};
     server.setOnSessionAccepted(&recorder, ServerHooks.onAccepted);
@@ -168,18 +196,7 @@ pub fn runServerDirection(end: End, order: Order) !void {
     defer raw.deinit();
 
     // 1. The handshake, on both sides.
-    var patience = Patience.begin();
-    while (true) {
-        try raw.step(std.Io.Duration.zero);
-        _ = try server.stepOnce(.poll);
-        if (raw.client.conn.handshakeDone() and server.sessionCount() == 1) {
-            if (server.sessionAt(0).?.activeQuicConnection()) |server_conn| {
-                if (server_conn.handshakeDone()) break;
-            }
-        }
-        try patience.wait();
-    }
-    const session = server.sessionAt(0).?;
+    const session = try handshakeServer(&raw, &server);
     const data_stream: u64 = 2;
 
     // 2. The frame without its end.
@@ -191,7 +208,7 @@ pub fn runServerDirection(end: End, order: Order) !void {
 
     // 3. Step until the server has read every byte. The frame then waits
     //    for its end only.
-    patience = Patience.begin();
+    var patience = Patience.begin();
     while (true) {
         _ = try server.stepOnce(.poll);
         if (session.native.pending_data) |pending| {
@@ -476,6 +493,119 @@ const HostLoop = struct {
     }
 };
 
+/// One `quic.app.Driver` with its seat on a `Listener`, a host loop on the
+/// test thread, and a raw quic client that talks to it. It lives on the
+/// heap: the Driver, the listener and the loop point at each other.
+const SeatRig = struct {
+    recorder: Recorder,
+    host: SeatHost,
+    driver: HostDriver,
+    listener: quic.Listener,
+    loop: HostLoop,
+    raw: RawFaultClient,
+
+    fn create(allocator: std.mem.Allocator, order: Order) !*SeatRig {
+        const rig = try allocator.create(SeatRig);
+        errdefer allocator.destroy(rig);
+        rig.recorder = .{};
+        rig.host = .{ .allocator = allocator, .recorder = &rig.recorder };
+        rig.driver = try HostDriver.init(.{
+            .allocator = allocator,
+            .app = &rig.host,
+            .max_tracked_streams = 16,
+            .hooks = .{
+                .on_connect = SeatHost.onConnect,
+                .on_stream_open = SeatHost.onStreamOpen,
+                .on_stream_data = SeatHost.onStreamData,
+                .on_stream_end = SeatHost.onStreamEnd,
+                .on_disconnect = SeatHost.onDisconnect,
+            },
+        });
+        errdefer rig.driver.deinit();
+        rig.listener = try quic.Listener.init(allocator, std.testing.io, .{
+            .listen_addr = loopback.testListenAddr(),
+            .tls_cert_pem = loopback.loopback_cert_pem,
+            .tls_key_pem = loopback.loopback_key_pem,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .mode = .native,
+            .native = native_options,
+        });
+        // The Driver must outlive the server: `listener.deinit` fires the
+        // Driver's will-close hook.
+        errdefer rig.listener.deinit();
+        rig.driver.attach(&rig.listener.server);
+        rig.loop = .{ .host = &rig.host, .listener = &rig.listener, .driver = &rig.driver, .order = order };
+        rig.raw = try RawFaultClient.init(allocator, std.testing.io, rig.listener.getAddress());
+        return rig;
+    }
+
+    fn destroy(self: *SeatRig) void {
+        const allocator = self.host.allocator;
+        self.raw.deinit();
+        self.listener.deinit();
+        self.driver.deinit();
+        allocator.destroy(self);
+    }
+
+    /// Step both sides until the handshake is done on both. Returns the
+    /// seat.
+    fn handshake(self: *SeatRig) !*quic.EmbeddedSession {
+        const patience = Patience.begin();
+        while (true) {
+            try self.raw.step(std.Io.Duration.zero);
+            try self.loop.step();
+            if (self.raw.client.conn.handshakeDone()) {
+                if (self.host.seat) |seat| {
+                    if (seat.conn.handshakeDone()) return seat;
+                }
+            }
+            try patience.wait();
+        }
+    }
+
+    fn step(self: *SeatRig) !void {
+        try self.loop.step();
+        try self.raw.step(std.Io.Duration.zero);
+    }
+
+    /// Step until the seat holds `len` bytes of `stream_id`. Then let the
+    /// raw client send its acknowledgements, so that what the test sends
+    /// next goes alone.
+    fn waitForSeatBytes(self: *SeatRig, seat: *quic.EmbeddedSession, stream_id: u64, len: usize) !void {
+        const patience = Patience.begin();
+        while (true) {
+            try self.loop.step();
+            if (seat.streams.get(stream_id)) |buf| {
+                if (buf.total == len) break;
+            }
+            try self.raw.step(std.Io.Duration.zero);
+            try patience.wait();
+        }
+        for (0..4) |_| {
+            try self.raw.step(std.Io.Duration.zero);
+            try self.loop.step();
+        }
+    }
+
+    /// Step until quic-zig has freed `stream_id`. By then the Driver has
+    /// passed the end of the stream to the seat.
+    fn waitForReap(self: *SeatRig, seat: *quic.EmbeddedSession, stream_id: u64) !void {
+        const patience = Patience.begin();
+        while (!seat.conn.streamRecvWasReaped(stream_id)) {
+            try self.step();
+            try patience.wait();
+        }
+    }
+
+    fn waitForRecorder(self: *SeatRig) !void {
+        const patience = Patience.begin();
+        while (!self.recorder.done()) {
+            try self.step();
+            try patience.wait();
+        }
+    }
+};
+
 /// The case the seat must survive: the data stream's bytes reach the seat
 /// before the announcement, so the engine has read none of them when the
 /// end comes. In the trap order the end comes as `.reaped`, in the safe
@@ -483,102 +613,36 @@ const HostLoop = struct {
 /// frame when the announcement arrives, and then free the stream's buffer.
 pub fn runEmbedded(end: End, order: Order) !void {
     const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var recorder = Recorder{};
-    var host = SeatHost{ .allocator = allocator, .recorder = &recorder };
-    var driver = try HostDriver.init(.{
-        .allocator = allocator,
-        .app = &host,
-        .max_tracked_streams = 16,
-        .hooks = .{
-            .on_connect = SeatHost.onConnect,
-            .on_stream_open = SeatHost.onStreamOpen,
-            .on_stream_data = SeatHost.onStreamData,
-            .on_stream_end = SeatHost.onStreamEnd,
-            .on_disconnect = SeatHost.onDisconnect,
-        },
-    });
-    var listener = quic.Listener.init(allocator, io, .{
-        .listen_addr = loopback.testListenAddr(),
-        .tls_cert_pem = loopback.loopback_cert_pem,
-        .tls_key_pem = loopback.loopback_key_pem,
-        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
-        .mode = .native,
-        .native = native_options,
-    }) catch |err| {
-        driver.deinit();
-        return err;
-    };
-    driver.attach(&listener.server);
-    // The Driver must outlive the server: `listener.deinit` fires the
-    // Driver's will-close hook. LIFO defers run this one last.
-    defer driver.deinit();
-    defer listener.deinit();
-
-    var loop = HostLoop{ .host = &host, .listener = &listener, .driver = &driver, .order = order };
-    var raw = try RawFaultClient.init(allocator, io, listener.getAddress());
-    defer raw.deinit();
+    const rig = try SeatRig.create(allocator, order);
+    defer rig.destroy();
 
     // 1. The handshake, on both sides.
-    var patience = Patience.begin();
-    while (true) {
-        try raw.step(std.Io.Duration.zero);
-        try loop.step();
-        if (raw.client.conn.handshakeDone() and host.seat != null) {
-            if (host.seat.?.conn.handshakeDone()) break;
-        }
-        try patience.wait();
-    }
-    const seat = host.seat.?;
-    const host_conn = seat.conn;
+    const seat = try rig.handshake();
     const data_stream: u64 = 2;
 
     // 2. The preamble, and every payload byte with no end and no
     //    announcement yet.
-    try raw.ensureControlStream();
-    try writePreamble(&raw);
-    try raw.ensureUniStream(data_stream);
-    try raw.writeAll(data_stream, &payload);
+    try rig.raw.ensureControlStream();
+    try writePreamble(&rig.raw);
+    try rig.raw.ensureUniStream(data_stream);
+    try rig.raw.writeAll(data_stream, &payload);
 
     // 3. Step until the seat holds every byte. The engine reads none: it has
     //    no announcement.
-    patience = Patience.begin();
-    while (true) {
-        try loop.step();
-        if (seat.streams.get(data_stream)) |buf| {
-            if (buf.total == payload_len) break;
-        }
-        try raw.step(std.Io.Duration.zero);
-        try patience.wait();
-    }
-    for (0..4) |_| {
-        try raw.step(std.Io.Duration.zero);
-        try loop.step();
-    }
+    try rig.waitForSeatBytes(seat, data_stream, payload_len);
 
     // 4. The end, alone in a later datagram. Step until quic-zig has freed
-    //    the stream; by then the Driver has passed the end to the seat.
-    try sendEnd(raw.client.conn, data_stream, end);
-    try raw.drainOutgoing(raw.nowUs());
-    patience = Patience.begin();
-    while (!host_conn.streamRecvWasReaped(data_stream)) {
-        try loop.step();
-        try raw.step(std.Io.Duration.zero);
-        try patience.wait();
-    }
-    try std.testing.expectEqual(@as(usize, 0), recorder.messages);
-    try std.testing.expectEqual(@as(usize, 0), recorder.errors);
+    //    the stream.
+    try sendEnd(rig.raw.client.conn, data_stream, end);
+    try rig.raw.drainOutgoing(rig.raw.nowUs());
+    try rig.waitForReap(seat, data_stream);
+    try std.testing.expectEqual(@as(usize, 0), rig.recorder.messages);
+    try std.testing.expectEqual(@as(usize, 0), rig.recorder.errors);
 
     // 5. The announcement. The frame completes from the bytes the seat kept.
-    try writeAnnouncement(allocator, &raw, data_stream);
-    patience = Patience.begin();
-    while (!recorder.done()) {
-        try loop.step();
-        try raw.step(std.Io.Duration.zero);
-        try patience.wait();
-    }
-    try recorder.expectWholeFrame();
+    try writeAnnouncement(allocator, &rig.raw, data_stream);
+    try rig.waitForRecorder();
+    try rig.recorder.expectWholeFrame();
 
     // 6. The seat freed the data stream's buffer. Stream 0 is all it holds.
     try std.testing.expectEqual(@as(usize, 1), seat.streams.count());
@@ -600,14 +664,7 @@ pub fn runServerResetBeforeRead() !void {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var server = try quic.Server.init(allocator, io, .{
-        .listen_addr = loopback.testListenAddr(),
-        .tls_cert_pem = loopback.loopback_cert_pem,
-        .tls_key_pem = loopback.loopback_key_pem,
-        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
-        .mode = .native,
-        .native = native_options,
-    });
+    var server = try initServer(allocator);
     defer server.deinit();
     var recorder = Recorder{};
     server.setOnSessionAccepted(&recorder, ServerHooks.onAccepted);
@@ -615,18 +672,7 @@ pub fn runServerResetBeforeRead() !void {
     var raw = try RawFaultClient.init(allocator, io, server.getAddress());
     defer raw.deinit();
 
-    var patience = Patience.begin();
-    while (true) {
-        try raw.step(std.Io.Duration.zero);
-        _ = try server.stepOnce(.poll);
-        if (raw.client.conn.handshakeDone() and server.sessionCount() == 1) {
-            if (server.sessionAt(0).?.activeQuicConnection()) |server_conn| {
-                if (server_conn.handshakeDone()) break;
-            }
-        }
-        try patience.wait();
-    }
-    const session = server.sessionAt(0).?;
+    const session = try handshakeServer(&raw, &server);
     const server_conn = session.activeQuicConnection().?;
     const data_stream: u64 = 2;
 
@@ -636,7 +682,7 @@ pub fn runServerResetBeforeRead() !void {
     try writePreamble(&raw);
     try raw.ensureUniStream(data_stream);
     try raw.writeAll(data_stream, &payload);
-    patience = Patience.begin();
+    var patience = Patience.begin();
     while (true) {
         _ = try server.stepOnce(.poll);
         if (server_conn.stream(data_stream)) |stream| {
@@ -666,10 +712,155 @@ pub fn runServerResetBeforeRead() !void {
         _ = try server.stepOnce(.poll);
         try patience.wait();
     }
-    try std.testing.expectEqual(@as(usize, 0), recorder.messages);
-    try std.testing.expectEqual(@as(usize, 1), recorder.errors);
-    try std.testing.expectEqual(@as(?anyerror, error.DataStreamReset), recorder.last_error);
+    try recorder.expectFailure(error.DataStreamReset);
     const status = session.closeStatus() orelse return error.QuicLoopbackMissingCloseStatus;
     try std.testing.expectEqual(quic.ApplicationCloseCode.protocol_error, status.code);
     try std.testing.expectEqual(@as(?anyerror, error.DataStreamReset), status.err);
+}
+
+// ---------------------------------------------------------------------------
+// The final size of a RESET: the seat judges it as the owned loops do.
+// ---------------------------------------------------------------------------
+
+/// The peer sends part of the data stream, queues more bytes, and resets the
+/// stream before they leave. quic-zig sends only the RESET_STREAM, and its
+/// final size counts the queued bytes.
+pub const ResetShape = enum {
+    /// Every announced byte arrives. The final size of the RESET is 10 bytes
+    /// more than the announced length, so the frame fails with
+    /// `InvalidFrame` (`frame_error`).
+    longer_than_announced,
+    /// Half the announced bytes arrive. The final size of the RESET is the
+    /// announced length, so the frame can never complete. It fails with
+    /// `DataStreamReset` (`protocol_error`).
+    cut,
+
+    fn sentBytes(self: ResetShape) usize {
+        return switch (self) {
+            .longer_than_announced => payload_len,
+            .cut => payload_len / 2,
+        };
+    }
+
+    /// The bytes queued before the reset, which never leave the peer.
+    fn queuedBytes(self: ResetShape) usize {
+        return switch (self) {
+            .longer_than_announced => 10,
+            .cut => payload_len - payload_len / 2,
+        };
+    }
+
+    fn expectedError(self: ResetShape) anyerror {
+        return switch (self) {
+            .longer_than_announced => error.InvalidFrame,
+            .cut => error.DataStreamReset,
+        };
+    }
+
+    fn expectedCode(self: ResetShape) quic.ApplicationCloseCode {
+        return switch (self) {
+            .longer_than_announced => .frame_error,
+            .cut => .protocol_error,
+        };
+    }
+};
+
+/// Queue the bytes of `shape` that never leave, then reset the stream.
+fn resetWithQueuedBytes(conn: *quic_zig.Connection, stream_id: u64, shape: ResetShape) !void {
+    const filler: [payload_len]u8 = @splat(0xcd);
+    const queued = filler[0..shape.queuedBytes()];
+    try std.testing.expectEqual(queued.len, try conn.streamWrite(stream_id, queued));
+    try conn.streamReset(stream_id, reset_code);
+    const reset = conn.stream(stream_id).?.send.reset orelse return error.TestExpectedReset;
+    try std.testing.expectEqual(@as(u64, shape.sentBytes() + queued.len), reset.final_size);
+}
+
+/// The owned server. The announcement comes first, so the engine reads the
+/// sent bytes before the RESET arrives.
+pub fn runServerReset(shape: ResetShape) !void {
+    const allocator = std.testing.allocator;
+
+    var server = try initServer(allocator);
+    defer server.deinit();
+    var recorder = Recorder{};
+    server.setOnSessionAccepted(&recorder, ServerHooks.onAccepted);
+
+    var raw = try RawFaultClient.init(allocator, std.testing.io, server.getAddress());
+    defer raw.deinit();
+
+    const session = try handshakeServer(&raw, &server);
+    const data_stream: u64 = 2;
+
+    // 1. The announcement, and the bytes sent before the reset.
+    try raw.ensureControlStream();
+    try writePreamble(&raw);
+    try writeAnnouncement(allocator, &raw, data_stream);
+    try raw.ensureUniStream(data_stream);
+    try raw.writeAll(data_stream, payload[0..shape.sentBytes()]);
+    var patience = Patience.begin();
+    while (true) {
+        _ = try server.stepOnce(.poll);
+        if (session.native.pending_data) |pending| {
+            if (pending.offset == shape.sentBytes()) break;
+        }
+        if (recorder.done()) break;
+        try raw.step(std.Io.Duration.zero);
+        try patience.wait();
+    }
+    try std.testing.expectEqual(@as(usize, 0), recorder.messages);
+    try std.testing.expectEqual(@as(usize, 0), recorder.errors);
+    for (0..4) |_| try raw.step(std.Io.Duration.zero);
+
+    // 2. The reset.
+    try resetWithQueuedBytes(raw.client.conn, data_stream, shape);
+    try raw.drainOutgoing(raw.nowUs());
+
+    // 3. The final size of the RESET settles the frame at once.
+    patience = Patience.begin();
+    while (!recorder.done()) {
+        _ = try server.stepOnce(.poll);
+        try raw.step(std.Io.Duration.zero);
+        try patience.wait();
+    }
+    try recorder.expectFailure(shape.expectedError());
+    const status = session.closeStatus() orelse return error.QuicLoopbackMissingCloseStatus;
+    try std.testing.expectEqual(shape.expectedCode(), status.code);
+    try std.testing.expectEqual(@as(?anyerror, shape.expectedError()), status.err);
+}
+
+/// The seat, in the safe order. The sent bytes reach the seat before the
+/// announcement, so the engine reads none of them before the RESET. The
+/// seat must give the error that the owned server gives.
+pub fn runEmbeddedReset(shape: ResetShape) !void {
+    const allocator = std.testing.allocator;
+    const rig = try SeatRig.create(allocator, .service_then_tick);
+    defer rig.destroy();
+
+    const seat = try rig.handshake();
+    const data_stream: u64 = 2;
+
+    // 1. The bytes sent before the reset, with no announcement yet.
+    try rig.raw.ensureControlStream();
+    try writePreamble(&rig.raw);
+    try rig.raw.ensureUniStream(data_stream);
+    try rig.raw.writeAll(data_stream, payload[0..shape.sentBytes()]);
+    try rig.waitForSeatBytes(seat, data_stream, shape.sentBytes());
+
+    // 2. The reset. The Driver passes `.reset` to the seat, then the tick
+    //    frees the stream. The seat holds the sent bytes only.
+    try resetWithQueuedBytes(rig.raw.client.conn, data_stream, shape);
+    try rig.raw.drainOutgoing(rig.raw.nowUs());
+    try rig.waitForReap(seat, data_stream);
+    const buf = seat.streams.get(data_stream) orelse return error.TestExpectedSeatStream;
+    try std.testing.expectEqual(shape.sentBytes(), buf.total);
+    try std.testing.expectEqual(@as(usize, 0), rig.recorder.messages);
+    try std.testing.expectEqual(@as(usize, 0), rig.recorder.errors);
+
+    // 3. The announcement. The final size of the RESET settles the frame.
+    try writeAnnouncement(allocator, &rig.raw, data_stream);
+    try rig.waitForRecorder();
+    try rig.recorder.expectFailure(shape.expectedError());
+    const status = seat.closeStatus() orelse return error.QuicLoopbackMissingCloseStatus;
+    try std.testing.expectEqual(shape.expectedCode(), status.code);
+    try std.testing.expectEqual(@as(?anyerror, shape.expectedError()), status.err);
 }

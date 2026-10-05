@@ -451,8 +451,10 @@ capnp-zig survives the wrong order. A native data frame announces its length
 on the control stream (stream 0). The seat keeps the bytes of a data stream
 after its end, also after `.reaped`. When every announced byte is in hand,
 the frame completes. When bytes are missing, the session closes at once with
-`InvalidFrame`. Obey the rule all the same: other protocols on the same
-Driver cannot always recover the end of a stream.
+`InvalidFrame`. Obey the rule all the same. In the wrong order the seat does
+not get the final size of a RESET, so it cannot see a RESET that claims more
+bytes than the announcement. Other protocols on the same Driver cannot
+always recover the end of a stream.
 
 **2. One socket for a `Server` and your own dials: give each datagram to your
 dials first.** Since quic-zig v0.26.0, the first flight of a server is 1200

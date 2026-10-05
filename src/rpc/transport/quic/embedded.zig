@@ -134,12 +134,16 @@ pub const EmbeddedSession = struct {
         /// Bytes already consumed by `streamRead`; `data[consumed..]` unread.
         consumed: usize = 0,
         /// Total bytes ever pushed on this stream (the final size once
-        /// `ended`).
+        /// `ended`, unless `reset` gives it).
         total: usize = 0,
         /// No more bytes come on this stream: the peer sent FIN or RESET, or
         /// quic-zig reaped the stream. The bytes already pushed stay here
         /// until the engine reads them.
         ended: bool = false,
+        /// The peer's RESET_STREAM, when the Driver reported `.reset`. Its
+        /// final size can be larger than `total`: quic-zig drops the bytes
+        /// it held unread when the reset arrives.
+        reset: ?PeerReset = null,
 
         fn drained(self: *const StreamBuffer) bool {
             return self.consumed == self.data.items.len;
@@ -160,6 +164,12 @@ pub const EmbeddedSession = struct {
             self.data.items.len = live;
             self.consumed = 0;
         }
+    };
+
+    /// The two values of a RESET_STREAM frame that the engines read.
+    const PeerReset = struct {
+        final_size: u64,
+        error_code: u64,
     };
 
     pub fn create(
@@ -354,13 +364,20 @@ pub const EmbeddedSession = struct {
     ///
     /// A native data stream keeps the bytes the Driver delivered and is
     /// marked as ended, for `.fin`, for `.reset`, and for `.reaped` when
-    /// quic-zig's stream GC reaped it. The bytes in hand then settle the
-    /// announced message: all of them complete it, fewer fail it at once
-    /// (`InvalidFrame`), with no wait for the completion deadline. A
-    /// `.reaped` is how the end arrives when the host ticks before it
+    /// quic-zig's stream GC reaped it. The end then settles the announced
+    /// message at once, with no wait for the completion deadline. For
+    /// `.reset` the seat also keeps the peer's final size and error code, so
+    /// the engine judges the message as the owned loops do: a final size
+    /// other than the announced length fails it (`InvalidFrame`), missing
+    /// bytes fail it (`DataStreamReset`), and all the bytes complete it. For
+    /// `.fin` and `.reaped` the bytes in hand are the final size: fewer than
+    /// announced fail the message (`InvalidFrame`).
+    ///
+    /// A `.reaped` is how the end arrives when the host ticks before it
     /// services the Driver (see "Embedder rules" in docs/quic-transport.md).
-    /// A `.reaped` for a stream that is still live is the Driver's teardown
-    /// pass before `onDisconnect`; it drops the entry.
+    /// quic-zig has then freed the final size of a RESET too. A `.reaped`
+    /// for a stream that is still live is the Driver's teardown pass before
+    /// `onDisconnect`; it drops the entry.
     pub fn onStreamEnd(self: *EmbeddedSession, stream_id: u64, end: quic_zig.app.StreamEnd) void {
         if (stream_id == quic_options.baseline_stream_id) {
             switch (end) {
@@ -375,18 +392,29 @@ pub const EmbeddedSession = struct {
             return;
         }
         switch (end) {
-            .fin, .reset => self.markDataStreamEnded(stream_id),
+            .fin => self.markDataStreamEnded(stream_id, null),
+            .reset => self.markDataStreamEnded(stream_id, self.peerReset(stream_id)),
             .reaped => if (self.conn.streamRecvWasReaped(stream_id))
-                self.markDataStreamEnded(stream_id)
+                self.markDataStreamEnded(stream_id, null)
             else
                 self.dropStream(stream_id),
         }
     }
 
-    fn markDataStreamEnded(self: *EmbeddedSession, stream_id: u64) void {
+    /// The RESET_STREAM that the peer sent on `stream_id`. The Driver
+    /// reports `.reset` before it releases the stream, and quic-zig frees a
+    /// stream only in `tick`, so the stream is still live here.
+    fn peerReset(self: *EmbeddedSession, stream_id: u64) ?PeerReset {
+        const stream = self.conn.stream(stream_id) orelse return null;
+        const info = stream.recv.reset orelse return null;
+        return .{ .final_size = info.final_size, .error_code = info.error_code };
+    }
+
+    fn markDataStreamEnded(self: *EmbeddedSession, stream_id: u64, reset: ?PeerReset) void {
         const buf = self.streams.getPtr(stream_id) orelse return;
         if (buf.ended) return;
         buf.ended = true;
+        buf.reset = reset;
         self.ended_data_streams += 1;
     }
 
@@ -522,19 +550,23 @@ pub const EmbeddedSession = struct {
             return self.session.conn.streamArrivedInEarlyData(stream_id);
         }
 
-        /// The part of quic-zig's `Stream` the engines read. `reset` is
-        /// always null: the seat keeps the bytes a reset stream delivered and
-        /// reports the end as a final size (the bytes in hand), so a cut
-        /// message fails the final-size check at once.
+        /// The part of quic-zig's `Stream` the engines read, with the same
+        /// values quic-zig gives. After a RESET, `final_size` is the final
+        /// size of the RESET and `reset` holds its error code. After a FIN
+        /// or a stream-GC reap, `final_size` is the bytes in hand.
         const StreamView = struct {
             recv: struct {
-                final_size: ?usize,
+                final_size: ?u64,
                 reset: ?struct { error_code: u64 } = null,
             },
         };
 
         pub fn stream(self: BufferedConn, stream_id: u64) ?StreamView {
             const buf = self.session.streams.getPtr(stream_id) orelse return null;
+            if (buf.reset) |reset| return .{ .recv = .{
+                .final_size = reset.final_size,
+                .reset = .{ .error_code = reset.error_code },
+            } };
             return .{ .recv = .{ .final_size = if (buf.ended) buf.total else null } };
         }
 
