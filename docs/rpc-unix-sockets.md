@@ -248,12 +248,32 @@ it near 327 s. A tty, FUSE or NFS file can block a close for longer. See the
 Fd passing attaches an fd to a capability (`CapDescriptor.attachedFd`), as
 C++ does with `ClientHook::getFd` and `Capability::Server::getFd`.
 
-It works with the C++ implementation in both directions.
+On Linux it works with the C++ implementation in both directions.
 `zig build test-rpc-fd-cpp` runs the reference's two fd tests
 (`rpc-twoparty-test.c++`: "send FD over RPC" with 1 MiB, 64 KiB, 8 KiB and
 empty fills, and "FD per message limit") with C++ on one end of a socketpair
-and this library on the other. CI runs it on Linux. On macOS it runs against
-the `capnp` that `pkg-config` finds.
+and this library on the other. CI runs it on Linux. The test does not run on
+other targets.
+
+**On macOS, do not send fds to a C++ peer.** The C++ peer can lose them, and
+this library cannot prevent it:
+
+- kj's `BufferedMessageStream` (under `TwoPartyVatNetwork`) reads in bulk. It
+  gives a read's fds to the message that holds the read's last byte.
+- macOS anchors the fds to the read's first byte (see the [platform
+  matrix](#platform-matrix)). When a frame with fds and the next frame
+  arrive in one read, kj gives the fds to the next frame. That frame has no
+  capability for them, so they are dropped, and the capability arrives
+  without its fd (`getFd()` is none).
+- It depends on timing. Measured with the test's driver and endpoint against
+  Homebrew capnp 1.5.0 (2026-10-05): one run at a time, 0 of 300 runs
+  failed. 16 runs at a time, 5% to 44% of runs failed (four measurements of
+  320 or 640 runs, depending on load), each on the C++ receiving side. On
+  Linux arm64, 0 of 640 runs failed 16 at a time, and 0 of 960 runs 32 at a
+  time.
+- The other direction did not fail on macOS: in the same runs, every fd
+  that C++ sent to this library arrived. This library reads one frame at a
+  time (below), so the kernels' difference does not reach it.
 
 ### Turn it on, on both ends
 
@@ -443,6 +463,7 @@ const FdEvents = struct {
 | Received fds close-on-exec | Atomic (`MSG_CMSG_CLOEXEC`) | `fcntl` right after `recvmsg` (a race window) | n/a |
 | Fds per `sendmsg` | 253 (`SCM_MAX_FD`) | 254 (this library sends at most 253) | n/a |
 | Bulk-read fd anchor | The read's last bytes | The read's first byte | n/a |
+| Fds sent to a C++ (kj) peer | Arrive (`zig build test-rpc-fd-cpp`, in CI) | Can be lost: kj gives them to the next frame ([Fd passing](#fd-passing)) | n/a |
 | A plain read of a message with fds | Closes them inside the read | Installs and leaks them | n/a |
 | Control buffer too small | Closes what does not fit, sets `MSG_CTRUNC` | Installs every fd; only those that fit are visible | n/a |
 | `recvmsg` at the fd limit | Delivers the fds that fit, sets `MSG_CTRUNC`, closes the rest | Fails with EMFILE (macOS 26: EMSGSIZE), closes the fds; a retry returns the data | n/a |
@@ -588,5 +609,7 @@ then) came from the security review of this table (2026-10-05).
 - Windows AF_UNIX, FreeBSD fd passing, abstract socket names.
 - Peer credentials (`SO_PEERCRED`, `getpeereid`).
 - A generated `Client.fd()` helper: use `client.peer.importFd(client.cap_id)`.
-- Fd passing against the C++ implementation on macOS in CI. CI runs it on
-  Linux only (`zig build test-rpc-fd-cpp`).
+- Fd passing to a C++ peer on macOS. kj's `BufferedMessageStream` can give
+  a frame's fds to the frame after it, and then drop them ([Fd
+  passing](#fd-passing)). Do not send fds to a C++ peer on macOS. The C++
+  e2e (`zig build test-rpc-fd-cpp`) runs on Linux only.

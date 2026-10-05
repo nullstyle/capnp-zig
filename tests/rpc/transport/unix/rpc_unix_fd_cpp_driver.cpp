@@ -6,8 +6,11 @@
 // For each case this driver makes an AF_UNIX socketpair, forks, and execs
 // the Zig endpoint (rpc_unix_fd_cpp_endpoint.zig) with one end. It then
 // runs the C++ side on the other end: TwoPartyClient(stream, maxFds) or
-// TwoPartyServer::accept(stream, maxFds). Linux only: there the kernel
-// gives a message's fds with its first byte, which kj relies on.
+// TwoPartyServer::accept(stream, maxFds). Linux only: kj's
+// BufferedMessageStream gives a read's fds to the message that holds the
+// read's last byte, and only Linux ends a read with fds there. macOS
+// anchors them to the read's first byte, so kj can give a frame's fds to
+// the frame after it (see rpc_unix_fd_cpp_test.zig).
 //
 // Usage: driver <path to the Zig endpoint>
 

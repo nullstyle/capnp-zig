@@ -1,8 +1,7 @@
 //! Fd passing between capnp-zig and the C++ reference (sprint item 15):
-//! `zig build test-rpc-fd-cpp`. CI runs it on Linux, in the
+//! `zig build test-rpc-fd-cpp`. Linux only: CI runs it in the
 //! reflection-conformance job, which builds the pinned C++ reference.
-//! macOS runs it too, against whatever `pkg-config capnp` finds; other
-//! targets compile it and skip.
+//! Other targets compile it and skip (macOS: see the end of this comment).
 //!
 //! Ports the reference's "send FD over RPC" and "FD per message limit"
 //! (`c++/src/capnp/rpc-twoparty-test.c++`) to a C++ <-> Zig connection,
@@ -22,11 +21,17 @@
 //! for its data and EOF, and the endpoint checks that its fd table is back
 //! at its baseline after teardown.
 //!
-//! The reference works on both kernels too. kj takes a message's fds with
-//! an exact read of its first word (`AsyncMessageReader::readWithFds`) and
-//! reads the rest exactly, so none of its reads crosses into the next
-//! message. Only such a read meets the kernels' difference ("Bulk-read fd
-//! anchor" in docs/rpc-unix-sockets.md).
+//! Not on macOS: there the reference itself loses fds. `TwoPartyVatNetwork`
+//! reads through kj's `BufferedMessageStream`, which reads in bulk and gives
+//! a read's fds to the message that holds the read's last byte
+//! (`serialize-async.c++`). Linux ends a read that takes fds at the end of
+//! their segment, so that rule holds. macOS anchors them to the read's first
+//! byte ("Bulk-read fd anchor" in docs/rpc-unix-sockets.md): when a frame
+//! with fds and the next frame arrive in one read, kj gives the fds to the
+//! next frame, and the capability arrives without its fd. Measured with this
+//! test's driver and endpoint against Homebrew capnp 1.5.0, 16 runs at a
+//! time: 5% to 44% of runs failed, each on the C++ receiving side; on Linux
+//! arm64 none did ("Fd passing" in docs/rpc-unix-sockets.md).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -51,9 +56,10 @@ fn writeFile(dir: std.Io.Dir, path: []const u8, bytes: []const u8) !void {
 }
 
 test "C++ reference and capnp-zig pass fds on capabilities over AF_UNIX, in both directions" {
-    // Linux and macOS: the targets with fd passing. Windows has no AF_UNIX
-    // transport.
-    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
+    // Linux only. Windows has no AF_UNIX transport, and on macOS the C++
+    // reference drops fds on its own receiving side (see the top of this
+    // file), so the test would be flaky there.
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
