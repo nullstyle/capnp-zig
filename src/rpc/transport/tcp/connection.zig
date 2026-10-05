@@ -440,6 +440,9 @@ pub const Connection = struct {
     /// `transport.takeFrameFd(i)` give the fds of the frame being
     /// dispatched. When it returns, every fd it did not take goes to the
     /// closer thread. So does every fd of a frame that is never dispatched.
+    ///
+    /// It also lets this connection send fds (`maxOutboundFds`,
+    /// `sendFrameWithFds`): without it, an attached `Peer` sends none.
     pub fn enableFdPassing(self: *Connection, max_fds_per_message: u8) transport_mod.Transport.EnableFdPassingError!void {
         self.assertThreadAffinity();
         return self.transport.enableFdPassing(.{
@@ -772,7 +775,8 @@ pub const Connection = struct {
     /// attached, in order: the transport sends a close-on-exec dup of each
     /// fd with the frame's first bytes (`Transport.enqueueWriteWithFds`).
     /// The caller keeps owning `fds`. Only an AF_UNIX connection on Linux or
-    /// macOS can do it (`maxOutboundFds() > 0`); elsewhere this returns
+    /// macOS with fd passing on can do it (`maxOutboundFds() > 0`); before
+    /// `enableFdPassing` and elsewhere this returns
     /// `error.FdPassingUnsupported`. With no fds it is `sendFrame`.
     ///
     /// The errors `sendFrame` has (`BrokenPipe`, `OutOfMemory`,
@@ -785,7 +789,9 @@ pub const Connection = struct {
         self.assertThreadAffinity();
         if (fds.len == 0) return self.sendFrame(frame);
         if (comptime !fd_io.supported) return error.FdPassingUnsupported;
-        if (fds.len > fd_io.max_fds_per_send) return error.TooManyFds;
+        const limit = self.maxOutboundFds();
+        if (limit == 0) return error.FdPassingUnsupported;
+        if (fds.len > limit) return error.TooManyFds;
         var raw: [fd_io.max_fds_per_send]fd_io.Fd = undefined;
         for (fds, raw[0..fds.len]) |handle, *fd| fd.* = handle.fd;
         self.transport.enqueueWriteWithFds(frame, raw[0..fds.len]) catch |err| {
@@ -824,12 +830,22 @@ pub const Connection = struct {
     }
 
     /// Experimental (fd passing). The most fds one outbound frame of this
-    /// connection may carry: `fd_passing.max_fds_per_message_cap` (253) on
-    /// an AF_UNIX connection on Linux or macOS, 0 everywhere else (TCP). A
-    /// `Peer` attached to this connection reads it once, at attach time.
+    /// connection may carry: `fd_passing.max_fds_per_message_cap` (253) once
+    /// fd passing is on (`enableFdPassing` with `max_fds_per_message > 0`,
+    /// on an AF_UNIX connection on Linux or macOS), 0 before that and
+    /// everywhere else (TCP). The cap does not follow this side's
+    /// `max_fds_per_message`, which bounds only what it keeps.
+    ///
+    /// A connection sends fds only when it also takes them, as C++ does
+    /// (`rpc-twoparty.c++`, `OutgoingMessageImpl::setFds`): the spec expects
+    /// a receiver that did not ask for fds to drop them
+    /// (`rpc.capnp:1118-1124`), but macOS installs them in its fd table
+    /// anyway. A `Peer` attached to this connection asks for every frame it
+    /// sends.
     pub fn maxOutboundFds(self: *const Connection) u8 {
         if (comptime !fd_io.supported) return 0;
         if (self.transport.source != .unix) return 0;
+        if (self.transport.maxFdsPerMessage() == 0) return 0;
         return fd_passing.max_fds_per_message_cap;
     }
 

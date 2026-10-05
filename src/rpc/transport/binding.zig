@@ -31,6 +31,11 @@ pub fn Binding(comptime PeerType: type) type {
         /// in progress). The caller owns it from then on. Null when the frame
         /// has no fd at `index`, or it was already taken.
         pub const TakeFrameFdFn = *const fn (ctx: *anyopaque, index: u8) ?FdHandle;
+        /// Transport callback (Experimental, fd passing): the most fds one
+        /// outbound frame may carry right now. The peer asks for every frame
+        /// it sends, so a transport may turn fd passing on after the peer
+        /// attached.
+        pub const MaxOutboundFdsFn = *const fn (ctx: *anyopaque) u8;
 
         /// Opaque pointer to the attached transport/connection. Must remain
         /// valid until the peer detaches the binding or is deinitialized.
@@ -46,10 +51,10 @@ pub fn Binding(comptime PeerType: type) type {
         /// fds.
         take_frame_fd: ?TakeFrameFdFn = null,
         /// Experimental (fd passing). The most fds one outbound frame may
-        /// carry through `send_with_fds`: 0 for TCP and QUIC, at most
-        /// `fd_passing.max_fds_per_message_cap` (253) on an AF_UNIX
-        /// connection.
-        max_outbound_fds: u8 = 0,
+        /// carry through `send_with_fds`. Null (no fds) for TCP and QUIC; a
+        /// `Connection` reports 0 until fd passing is on and at most
+        /// `fd_passing.max_fds_per_message_cap` (253) after.
+        max_outbound_fds: ?MaxOutboundFdsFn = null,
 
         pub fn init(
             ctx: *anyopaque,
@@ -95,13 +100,16 @@ pub fn Binding(comptime PeerType: type) type {
             return is_closing(ctx);
         }
 
-        /// Experimental. The most fds one outbound frame may carry: 0 unless
-        /// the binding has a `send_with_fds` hook, and never more than
+        /// Experimental. The most fds one outbound frame may carry right now:
+        /// 0 unless the binding has both a `send_with_fds` and a
+        /// `max_outbound_fds` hook, and never more than
         /// `fd_passing.max_fds_per_message_cap`.
         pub fn outboundFdLimit(self: Self) u8 {
             if (comptime !fd_passing.supported) return 0;
-            if (self.ctx == null or self.send_with_fds == null) return 0;
-            return @min(self.max_outbound_fds, fd_passing.max_fds_per_message_cap);
+            const ctx = self.ctx orelse return 0;
+            if (self.send_with_fds == null) return 0;
+            const max_outbound_fds = self.max_outbound_fds orelse return 0;
+            return @min(max_outbound_fds(ctx), fd_passing.max_fds_per_message_cap);
         }
 
         /// Experimental. Send `frame` with `fds` attached through the

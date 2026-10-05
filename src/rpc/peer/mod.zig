@@ -1472,14 +1472,26 @@ pub const Peer = struct {
 
     /// Experimental (fd passing, Linux and macOS). Attach `fd` to export
     /// `export_id`: every Call, Return, Resolve or Bootstrap Return that
-    /// sends this export as a `senderHosted` capability over an AF_UNIX
-    /// connection carries a dup of the fd (`CapDescriptor.attachedFd`). The
-    /// receiver keeps it only with fd passing on (`rpc.transport.unix`
-    /// `FdPassing.max_fds_per_message > 0`); otherwise it closes it, as the
-    /// spec expects (`rpc.capnp:1118-1124`). The fd stays borrowed: keep
-    /// it open until the export is released or `clearExportFd` drops it.
-    /// Replaces an fd set before. Over TCP and QUIC, and through a
-    /// `send_frame_override`, nothing is attached (`attachedFd` stays 0xff).
+    /// sends this export as a `senderHosted` capability carries a dup of the
+    /// fd (`CapDescriptor.attachedFd`), but only over an AF_UNIX connection
+    /// with fd passing on: `max_fds_per_message` above 0 in
+    /// `rpc.transport.unix.FdPassing`, or `Connection.enableFdPassing`. A
+    /// connection that takes no fds sends none, as C++ does
+    /// (`rpc-twoparty.c++`, `setFds`): a receiver that did not ask for fds
+    /// does not reliably drop them, whatever `rpc.capnp:1118-1124` says
+    /// (macOS installs them in its fd table, and Linux closes them on the
+    /// receiving thread). The remote keeps the fd only with fd passing on at
+    /// its end too.
+    ///
+    /// When the connection refuses a message over its fds (for example
+    /// `error.FdQueueFull`), only that message fails and the connection
+    /// stays up: a Call or Resolve returns the error, `sendReturnResults`
+    /// returns it to the handler, and a Bootstrap gets an exception Return.
+    ///
+    /// The fd stays borrowed: keep it open until the export is released or
+    /// `clearExportFd` drops it. Replaces an fd set before. Over TCP and
+    /// QUIC, and through a `send_frame_override`, nothing is attached
+    /// (`attachedFd` stays 0xff).
     pub fn setExportFd(self: *Peer, export_id: u32, fd: FdHandle) SetExportFdError!void {
         self.assertThreadAffinity();
         return PeerFdsImpl.setExportFd(self, export_id, fd);
@@ -4413,18 +4425,34 @@ pub const Peer = struct {
     /// vanishing — without this, the reentrant Finish would find nothing to
     /// clean and the record afterward would strand a resolved answer (plus its
     /// answer-held export reference) that no later Finish could ever clear.
+    ///
+    /// Fd passing: a bootstrap export with an fd carries it, as any returned
+    /// cap does (`peer_fds.zig`); the frame is rebuilt with the descriptor
+    /// naming it. When the connection refuses that frame over its fds
+    /// (`peer_fds.isFdRefusal`, for example `error.FdQueueFull`), nothing
+    /// went out and the connection is fine: the Bootstrap gets an exception
+    /// Return instead (`overloaded` when the fds lacked room), as a Return
+    /// whose handler passes the error on does, and the export ref
+    /// `handleBootstrap` noted is undone. The error never leaves dispatch,
+    /// so it never aborts the connection.
     fn sendAndRecordBootstrapReturn(self: *Peer, question_id: u32, prebuilt: []const u8) anyerror!void {
-        // Fd passing: a bootstrap export with an fd carries it, as any
-        // returned cap does (`peer_fds.zig`); the frame is rebuilt with the
-        // descriptor naming it.
+        const export_id = self.bootstrap_export_id orelse
+            return self.sendAndRecordBootstrapReturnFrame(question_id, prebuilt, &.{});
         var fds: peer_fds.OutboundFds = .{};
-        const with_fd: ?[]const u8 = if (self.bootstrap_export_id) |export_id|
-            try PeerFdsImpl.bootstrapReturnWithFd(self, question_id, export_id, &fds)
-        else
-            null;
-        defer if (with_fd) |frame| self.allocator.free(frame);
-        const bytes = with_fd orelse prebuilt;
+        const with_fd = (try PeerFdsImpl.bootstrapReturnWithFd(self, question_id, export_id, &fds)) orelse
+            return self.sendAndRecordBootstrapReturnFrame(question_id, prebuilt, &.{});
+        defer self.allocator.free(with_fd);
+        self.sendAndRecordBootstrapReturnFrame(question_id, with_fd, fds.slice()) catch |err| {
+            if (!peer_fds.isFdRefusal(err)) return err;
+            log.debug("bootstrap Return {} refused over its fd: {}; answering with an exception", .{ question_id, err });
+            // On failure `handleBootstrap` undoes the export ref itself, so
+            // undo it here only once the exception is out.
+            try self.sendReturnExceptionTyped(question_id, @errorName(err), peer_fds.refusalExceptionType(err));
+            self.rollbackExportRef(export_id);
+        };
+    }
 
+    fn sendAndRecordBootstrapReturnFrame(self: *Peer, question_id: u32, bytes: []const u8, fds: []const FdHandle) anyerror!void {
         var reservation: ?ResolvedAnswerReservation = try self.reserveResolvedAnswer(question_id, bytes);
         errdefer if (reservation) |r| r.deinit(self);
         try self.resolving_answers.put(question_id, {});
@@ -4433,7 +4461,7 @@ pub const Peer = struct {
             _ = self.resolving_answers.remove(question_id);
         };
 
-        try ExportReleaseImpl.sendFrameWithFds(self, bytes, fds.slice());
+        try ExportReleaseImpl.sendFrameWithFds(self, bytes, fds);
         _ = self.resolving_answers.remove(question_id);
         resolving_answer = false;
 

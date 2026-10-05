@@ -36,13 +36,18 @@ pub const default_max_live_imported_fds: u32 = 64;
 /// Fd passing on one AF_UNIX connection (`rpc.transport.unix.ListenOptions`
 /// and `ConnectOptions`). Experimental, Linux and macOS.
 ///
-/// Sending needs no option: on an AF_UNIX connection, every export given an
-/// fd with `Peer.setExportFd` carries it whenever it is sent. These options
-/// govern what this side accepts.
+/// One switch for both directions, as in C++ (`rpc-twoparty.c++`,
+/// `setFds`): a connection with `max_fds_per_message = 0` neither keeps nor
+/// sends fds. Sending needs the switch too because a receiver that did not
+/// ask for fds does not reliably drop them: the spec expects it to
+/// (`rpc.capnp:1118-1124`), but macOS installs them in its fd table anyway.
 pub const FdPassing = struct {
     /// The most fds one inbound message keeps; the extras are closed. 0
     /// (the default) keeps none: every fd a peer attaches is closed (drain
-    /// mode). Values above `max_fds_per_message_cap` (253) count as 253.
+    /// mode), and this side sends none either. Above 0, every export given
+    /// an fd with `Peer.setExportFd` also carries it whenever it is sent
+    /// (up to `max_fds_per_message_cap` per message, whatever this value).
+    /// Values above `max_fds_per_message_cap` (253) count as 253.
     max_fds_per_message: u8 = 0,
     /// The most received fds the connection's `Peer` keeps attached to live
     /// imports at once. A capability that arrives with an fd past this limit

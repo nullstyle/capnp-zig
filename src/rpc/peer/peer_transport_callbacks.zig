@@ -68,11 +68,17 @@ pub fn bindingForConnection(
         }.call,
     );
     // Fd passing (Experimental): a connection that can carry fds says how
-    // many one frame may carry (0 for TCP), and hands the peer the fds of the
-    // frame it is dispatching.
+    // many one frame may carry (0 for TCP, and until fd passing is on: it
+    // is asked for every frame, so `enableFdPassing` may come after the
+    // attach), and hands the peer the fds of the frame it is dispatching.
     const Conn = @typeInfo(ConnPtr).pointer.child;
     if (comptime @hasDecl(Conn, "sendFrameWithFds") and @hasDecl(Conn, "takeFrameFd") and @hasDecl(Conn, "maxOutboundFds")) {
-        binding.max_outbound_fds = conn.maxOutboundFds();
+        binding.max_outbound_fds = struct {
+            fn call(ctx: *anyopaque) u8 {
+                const typed: ConnPtr = castCtx(ConnPtr, ctx);
+                return typed.maxOutboundFds();
+            }
+        }.call;
         binding.send_with_fds = struct {
             fn call(ctx: *anyopaque, frame: []const u8, fds: []const fd_passing.FdHandle) anyerror!void {
                 const typed: ConnPtr = castCtx(ConnPtr, ctx);

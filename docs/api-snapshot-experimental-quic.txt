@@ -2420,6 +2420,7 @@ capnpc-zig.rpc.peer.SendFrameOverride: type = *const fn (*anyopaque, []const u8)
 capnpc-zig.rpc.peer.SetExportFdError: type = error{FdPassingUnsupported,InvalidFd,OutOfMemory,UnknownExport}
 capnpc-zig.rpc.peer.TransportBinding.CloseFn: type = *const fn (*anyopaque) void
 capnpc-zig.rpc.peer.TransportBinding.IsClosingFn: type = *const fn (*anyopaque) bool
+capnpc-zig.rpc.peer.TransportBinding.MaxOutboundFdsFn: type = *const fn (*anyopaque) u8
 capnpc-zig.rpc.peer.TransportBinding.SendFn: type = *const fn (*anyopaque, []const u8) anyerror!void
 capnpc-zig.rpc.peer.TransportBinding.SendWithFdsFn: type = *const fn (*anyopaque, []const u8, []const rpc.transport.fd_passing.FdHandle) anyerror!void
 capnpc-zig.rpc.peer.TransportBinding.StartFn: type = *const fn (*anyopaque, *rpc.peer.mod.Peer) void
@@ -2431,7 +2432,7 @@ capnpc-zig.rpc.peer.TransportBinding.init: fn (*anyopaque, ?*const fn (*anyopaqu
 capnpc-zig.rpc.peer.TransportBinding.isAttached: fn (rpc.transport.binding.Binding(rpc.peer.mod.Peer)) bool
 capnpc-zig.rpc.peer.TransportBinding.isClosing: fn (rpc.transport.binding.Binding(rpc.peer.mod.Peer)) bool
 capnpc-zig.rpc.peer.TransportBinding.is_closing: field ?*const fn (*anyopaque) bool = null
-capnpc-zig.rpc.peer.TransportBinding.max_outbound_fds: field u8 = 0
+capnpc-zig.rpc.peer.TransportBinding.max_outbound_fds: field ?*const fn (*anyopaque) u8 = null
 capnpc-zig.rpc.peer.TransportBinding.outboundFdLimit: fn (rpc.transport.binding.Binding(rpc.peer.mod.Peer)) u8
 capnpc-zig.rpc.peer.TransportBinding.send: field ?*const fn (*anyopaque, []const u8) anyerror!void = null
 capnpc-zig.rpc.peer.TransportBinding.sendFrame: fn (rpc.transport.binding.Binding(rpc.peer.mod.Peer), []const u8) anyerror!void
@@ -4180,6 +4181,7 @@ capnpc-zig.rpc.transport.tcp.stream.Transport.init: fn (mem.Allocator, Io, rpc.t
 capnpc-zig.rpc.transport.tcp.stream.Transport.initWithOptions: fn (mem.Allocator, Io, rpc.transport.tcp.stream_transport.SocketFd, rpc.transport.tcp.stream_transport.Transport.Options) error{OutOfMemory}!rpc.transport.tcp.stream_transport.Transport
 capnpc-zig.rpc.transport.tcp.stream.Transport.io: field Io
 capnpc-zig.rpc.transport.tcp.stream.Transport.isClosing: fn (*const rpc.transport.tcp.stream_transport.Transport) bool
+capnpc-zig.rpc.transport.tcp.stream.Transport.maxFdsPerMessage: fn (*const rpc.transport.tcp.stream_transport.Transport) u8
 capnpc-zig.rpc.transport.tcp.stream.Transport.max_fds_per_message_cap: const u8
 capnpc-zig.rpc.transport.tcp.stream.Transport.max_queued_fds: const usize
 capnpc-zig.rpc.transport.tcp.stream.Transport.observer: field ?rpc.events.Observer = null

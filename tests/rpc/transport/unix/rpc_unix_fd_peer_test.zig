@@ -10,8 +10,9 @@
 //!   once the test closes its own write end proves every copy was closed.
 //! - Real sockets: two peers over `unix.listen`/`unix.connect` sessions
 //!   pass a pipe write end and write through it; TCP leaves `attachedFd` at
-//!   0xff; a raw AF_UNIX client checks that only the attached fd ever
-//!   crosses the socket while the server's wake socketpair is open.
+//!   0xff, and so does an AF_UNIX connection without fd passing on; a raw
+//!   AF_UNIX client checks that only the attached fd ever crosses the
+//!   socket while the server's wake socketpair is open.
 //!
 //! Linux and macOS run it; other targets compile it and skip.
 
@@ -119,13 +120,28 @@ const FakeTransport = struct {
     frame_fds: [8]Fd = @splat(-1),
     frame_fd_count: usize = 0,
     sent: std.ArrayListUnmanaged(Sent) = .empty,
+    /// When set, every send with fds fails with it and sends nothing, as
+    /// `Connection.sendFrameWithFds` does on an fd error.
+    fds_error: ?anyerror = null,
+    /// How many times the peer closed the transport.
+    closes: usize = 0,
 
     fn binding(self: *FakeTransport) rpc_peer.TransportBinding {
-        var b = rpc_peer.TransportBinding.init(self, null, send, null, null);
+        var b = rpc_peer.TransportBinding.init(self, null, send, close, null);
         b.send_with_fds = sendWithFds;
         b.take_frame_fd = take;
-        b.max_outbound_fds = self.max_outbound_fds;
+        b.max_outbound_fds = maxOutboundFds;
         return b;
+    }
+
+    fn maxOutboundFds(ctx: *anyopaque) u8 {
+        const self: *FakeTransport = @ptrCast(@alignCast(ctx));
+        return self.max_outbound_fds;
+    }
+
+    fn close(ctx: *anyopaque) void {
+        const self: *FakeTransport = @ptrCast(@alignCast(ctx));
+        self.closes += 1;
     }
 
     fn deinit(self: *FakeTransport) void {
@@ -153,6 +169,7 @@ const FakeTransport = struct {
     fn sendWithFds(ctx: *anyopaque, frame: []const u8, fds: []const FdHandle) anyerror!void {
         const self: *FakeTransport = @ptrCast(@alignCast(ctx));
         try testing.expect(fds.len != 0);
+        if (self.fds_error) |err| return err;
         try self.record(frame, fds);
     }
 
@@ -857,6 +874,88 @@ test "outbound Bootstrap Return: a bootstrap export with an fd carries it" {
     try testing.expectEqual(seam.bootstrap_id, cap.id.?);
 }
 
+fn deliverBootstrap(seam: *SeamPeer, question_id: u32) !void {
+    var mb = protocol.MessageBuilder.init(seam.fake.allocator);
+    defer mb.deinit();
+    try mb.buildBootstrap(question_id);
+    try seam.deliver(try mb.finish(), &.{});
+}
+
+test "outbound Bootstrap Return: an fd error answers with an exception Return and the connection stays up" {
+    if (comptime !supported) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var pipes = try support.Pipes.open(1);
+    defer pipes.closeAll();
+    var seam: SeamPeer = undefined;
+    try seam.init(gpa, 253);
+    defer seam.deinit();
+    try seam.peer.setExportFd(seam.bootstrap_id, .{ .fd = pipes.write_ends[0] });
+    const refs_before = seam.peer.exports.get(seam.bootstrap_id).?.ref_count;
+
+    // An fd error refuses only this Return (`Connection.sendFrameWithFds`):
+    // the Bootstrap gets an exception instead, typed for a retry when the
+    // fds lacked room.
+    const Case = struct { err: anyerror, kind: protocol.ExceptionType };
+    const cases = [_]Case{
+        .{ .err = error.FdQueueFull, .kind = .overloaded },
+        .{ .err = error.ProcessFdQuotaExceeded, .kind = .overloaded },
+        .{ .err = error.InvalidFd, .kind = .failed },
+    };
+    for (cases, 0..) |case, i| {
+        const question_id: u32 = @intCast(10 + i);
+        const sent_before = seam.fake.sent.items.len;
+        seam.fake.fds_error = case.err;
+        try deliverBootstrap(&seam, question_id);
+
+        try testing.expectEqual(sent_before + 1, seam.fake.sent.items.len);
+        const sent = seam.fake.last();
+        try testing.expectEqual(@as(usize, 0), sent.fd_count);
+        var decoded = try protocol.DecodedMessage.init(gpa, sent.bytes);
+        defer decoded.deinit();
+        const ret = try decoded.asReturn();
+        try testing.expectEqual(question_id, ret.answer_id);
+        try testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+        try testing.expectEqualStrings(@errorName(case.err), ret.exception.?.reason);
+        try testing.expectEqual(case.kind, ret.exception.?.kind());
+        // Nothing went out naming the export: its ref is undone, and no
+        // results answer is recorded.
+        try testing.expectEqual(refs_before, seam.peer.exports.get(seam.bootstrap_id).?.ref_count);
+        try testing.expect(!seam.peer.resolved_answers.contains(question_id));
+        try testing.expectEqual(@as(usize, 0), seam.fake.closes);
+    }
+
+    // A send error that is not about the fds still leaves dispatch, as for
+    // a frame without fds (a `Connection` reports it to `on_error`, and the
+    // sessions close on that).
+    seam.fake.fds_error = error.BrokenPipe;
+    try testing.expectError(error.BrokenPipe, deliverBootstrap(&seam, 20));
+    try testing.expectEqual(refs_before, seam.peer.exports.get(seam.bootstrap_id).?.ref_count);
+}
+
+test "outbound Bootstrap Return: after an fd error, the next Bootstrap carries the fd" {
+    if (comptime !supported) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var pipes = try support.Pipes.open(1);
+    defer pipes.closeAll();
+    var seam: SeamPeer = undefined;
+    try seam.init(gpa, 253);
+    defer seam.deinit();
+    try seam.peer.setExportFd(seam.bootstrap_id, .{ .fd = pipes.write_ends[0] });
+
+    seam.fake.fds_error = error.FdQueueFull;
+    try deliverBootstrap(&seam, 1);
+    seam.fake.fds_error = null;
+    try deliverBootstrap(&seam, 2);
+
+    const sent = seam.fake.last();
+    var indexes: [1]?u8 = undefined;
+    try testing.expectEqual(@as(usize, 1), try returnFdIndexes(gpa, sent, &indexes));
+    try testing.expectEqual(@as(?u8, 0), indexes[0]);
+    try testing.expectEqual(@as(usize, 1), sent.fd_count);
+    try testing.expectEqual(pipes.write_ends[0], sent.fds[0]);
+    try testing.expectEqual(@as(usize, 0), seam.fake.closes);
+}
+
 test "outbound: clearExportFd and a released export stop attaching; setExportFd checks its arguments" {
     if (comptime !supported) return error.SkipZigTest;
     const gpa = testing.allocator;
@@ -1159,9 +1258,19 @@ test "Connection.sendFrameWithFds: an fd error refuses the message and leaves th
     defer conn.deinit();
     ConnErrors.count = 0;
     conn.on_error = ConnErrors.onError;
-    try conn.transport.startWriter();
     const frame = try support.buildFrame(gpa, 7);
     defer gpa.free(frame);
+
+    // Fd passing off: an AF_UNIX connection sends no fds (as C++), and
+    // refusing them is no connection error either.
+    var pipes = try support.Pipes.open(1);
+    defer pipes.closeAll();
+    try testing.expectError(error.FdPassingUnsupported, conn.sendFrameWithFds(frame, &.{.{ .fd = pipes.write_ends[0] }}));
+    try testing.expectEqual(@as(usize, 0), ConnErrors.count);
+    try testing.expectEqual(@as(u8, 0), conn.maxOutboundFds());
+    try conn.enableFdPassing(4);
+    try testing.expectEqual(@as(u8, 253), conn.maxOutboundFds());
+    try conn.transport.startWriter();
 
     // Not an open fd: the queue's dup fails, and only this message is refused.
     try testing.expectError(error.InvalidFd, conn.sendFrameWithFds(frame, &.{.{ .fd = 4000 }}));
@@ -1211,9 +1320,27 @@ const fd_passing_control_bytes = 256;
 
 fn onWakeNoop(_: *tcp.Connection) void {}
 
-test "the wake socketpair's fds never cross the socket: only the attached fd does" {
-    if (comptime !supported) return error.SkipZigTest;
-    const gpa = testing.allocator;
+/// What a raw AF_UNIX client saw of the Return to its call (`rawPipeCall`).
+const RawSeen = struct {
+    /// The returned cap's `attachedFd` (null = 0xff).
+    attached_fd: ?u8,
+    /// How many fds crossed the socket, over both Returns.
+    fd_count: usize,
+    /// The first fd that crossed is a copy of the pipe's write end.
+    is_pipe: bool,
+    /// The server's outbound fd limit, from its connection and from its
+    /// peer's binding: before `fd_passing` is applied, and after.
+    conn_limit: [2]u8,
+    peer_limit: [2]u8,
+};
+
+/// A server `Peer` on one end of an AF_UNIX socketpair, with its wake
+/// socketpair open and `PipeServer` (which attaches a pipe write end to the
+/// cap it returns) as bootstrap. A raw client on the other end bootstraps
+/// and calls method 0. With `fd_passing` set, the server's connection turns
+/// fd passing on after the `Peer` is attached, before it runs: the peer
+/// reads the connection's outbound limit per frame, not once at attach.
+fn rawPipeCall(gpa: std.mem.Allocator, fd_passing: ?u8) !RawSeen {
     const io = testing.io;
     var pipes = try support.Pipes.open(1);
     defer pipes.closeAll();
@@ -1227,7 +1354,6 @@ test "the wake socketpair's fds never cross the socket: only the attached fd doe
     defer server_conn.deinit();
     defer support.closeFd(pair[1]);
     try server_conn.enableWake(onWakeNoop);
-    try testing.expectEqual(@as(u8, 253), server_conn.maxOutboundFds());
 
     var handler = PipeServer{ .pipe_w = pipes.write_ends[0] };
     var server_peer = Peer.init(gpa, &server_conn);
@@ -1240,6 +1366,14 @@ test "the wake socketpair's fds never cross the socket: only the attached fd doe
         server_peer.deinit();
     }
     _ = try server_peer.setBootstrap(.{ .ctx = &handler, .on_call = PipeServer.onCall });
+
+    var conn_limit: [2]u8 = undefined;
+    var peer_limit: [2]u8 = undefined;
+    conn_limit[0] = server_conn.maxOutboundFds();
+    peer_limit[0] = server_peer.transport.outboundFdLimit();
+    if (fd_passing) |max| try server_conn.enableFdPassing(max);
+    conn_limit[1] = server_conn.maxOutboundFds();
+    peer_limit[1] = server_peer.transport.outboundFdLimit();
 
     const Runner = struct {
         conn: *tcp.Connection,
@@ -1286,7 +1420,7 @@ test "the wake socketpair's fds never cross the socket: only the attached fd doe
         defer gpa.free(bytes);
         try raw.send(bytes);
     }
-    {
+    const attached_fd = blk: {
         const frame = try raw.next();
         defer gpa.free(frame);
         var decoded = try protocol.DecodedMessage.init(gpa, frame);
@@ -1294,12 +1428,40 @@ test "the wake socketpair's fds never cross the socket: only the attached fd doe
         const ret = try decoded.asReturn();
         try testing.expectEqual(@as(u32, 1), ret.answer_id);
         const list = ret.results.?.cap_table.?;
-        try testing.expectEqual(@as(?u8, 0), (try protocol.CapDescriptor.fromReader(try list.get(0))).attached_fd);
-    }
+        break :blk (try protocol.CapDescriptor.fromReader(try list.get(0))).attached_fd;
+    };
+    const is_pipe = raw.fd_count != 0 and try inodeOf(pipes.write_ends[0]) == try inodeOf(raw.fds[0]);
+    return .{
+        .attached_fd = attached_fd,
+        .fd_count = raw.fd_count,
+        .is_pipe = is_pipe,
+        .conn_limit = conn_limit,
+        .peer_limit = peer_limit,
+    };
+}
 
+test "the wake socketpair's fds never cross the socket: only the attached fd does" {
+    if (comptime !supported) return error.SkipZigTest;
+    const seen = try rawPipeCall(testing.allocator, 4);
+    try testing.expectEqual(@as(?u8, 0), seen.attached_fd);
     // Exactly one fd crossed, and it is the pipe, not a wake fd.
-    try testing.expectEqual(@as(usize, 1), raw.fd_count);
-    try testing.expectEqual(try inodeOf(pipes.write_ends[0]), try inodeOf(raw.fds[0]));
+    try testing.expectEqual(@as(usize, 1), seen.fd_count);
+    try testing.expect(seen.is_pipe);
+    // Fd passing came on after the peer attached; the peer saw it.
+    try testing.expectEqual([2]u8{ 0, 253 }, seen.conn_limit);
+    try testing.expectEqual([2]u8{ 0, 253 }, seen.peer_limit);
+}
+
+test "an AF_UNIX connection without fd passing on sends no fds: attachedFd stays 0xff" {
+    if (comptime !supported) return error.SkipZigTest;
+    // A receiver that did not ask for fds still gets them installed on
+    // macOS, so a sender holds them back unless its own connection opted
+    // in, as C++ does.
+    const seen = try rawPipeCall(testing.allocator, null);
+    try testing.expectEqual(@as(?u8, null), seen.attached_fd);
+    try testing.expectEqual(@as(usize, 0), seen.fd_count);
+    try testing.expectEqual([2]u8{ 0, 0 }, seen.conn_limit);
+    try testing.expectEqual([2]u8{ 0, 0 }, seen.peer_limit);
 }
 
 // ---------------------------------------------------------------------------

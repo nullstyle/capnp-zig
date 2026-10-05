@@ -618,6 +618,17 @@ pub const Transport = struct {
         fd_io.closer.trim(&drain.read_reservation, drain.readSlots());
     }
 
+    /// The most fds this transport keeps per inbound message
+    /// (`enableFdPassing`): 0 in drain mode, on a socket that is not
+    /// AF_UNIX, and where fd passing is not compiled in. It changes only
+    /// before the first read.
+    pub fn maxFdsPerMessage(self: *const Transport) u8 {
+        if (comptime !fd_io.supported) return 0;
+        const drain = self.drain orelse return 0;
+        const frames = drain.frames orelse return 0;
+        return @intCast(frames.max_fds);
+    }
+
     /// The number of fds attached to the frame the last read completed:
     /// `takeFrameFd` takes indexes below it. 0 when fd passing is off, and
     /// once that frame's fds were released (`releaseFrameFds`, or the next

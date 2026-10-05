@@ -15,9 +15,10 @@
 //! `fd_passing.max_fds_per_message > 0` (`ListenOptions`, `ConnectOptions`)
 //! the connection keeps up to that many per message, and the `Peer`
 //! attaches them to the capabilities they came with (`Peer.importFd`).
-//! Sending needs no option: an export given an fd with `Peer.setExportFd`
-//! carries it on any AF_UNIX connection. Connections report
-//! `events.Source.unix`.
+//! The same option turns sending on: only then does an export given an fd
+//! with `Peer.setExportFd` carry it. A connection in drain mode sends no
+//! fds, as in C++, because a receiver that did not ask for them still gets
+//! them installed on macOS. Connections report `events.Source.unix`.
 //!
 //! ## The socket file
 //!
@@ -128,7 +129,8 @@ pub const ListenOptions = struct {
     /// See "Stale files" in the module doc.
     reclaim_stale: bool = false,
     /// Fd passing on every accepted connection (`Listener.accept` and
-    /// `ServerSession.accept`). The default keeps no received fd.
+    /// `ServerSession.accept`). The default keeps no received fd and sends
+    /// none.
     /// `ServerSession.accept` also gives its peer `max_live_imported_fds`;
     /// a `Peer` you build on a `Listener.accept` connection takes it from
     /// `Peer.setMaxLiveImportedFds` (default 64).
@@ -180,7 +182,8 @@ pub const ConnectOptions = struct {
     /// server's backlog is full; macOS never waits). 0 acts as 1 ms. Null
     /// waits without a bound.
     connect_timeout_ms: ?u64 = 30_000,
-    /// Fd passing on the connection. The default keeps no received fd.
+    /// Fd passing on the connection. The default keeps no received fd and
+    /// sends none.
     fd_passing: FdPassing = .{},
 };
 

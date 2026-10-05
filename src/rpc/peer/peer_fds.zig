@@ -18,11 +18,14 @@
 //! list, and the frame goes out with that list. A Resolve to such an export,
 //! and the Bootstrap Return for a bootstrap export with an fd, carry it the
 //! same way. The rules:
-//! - only when the transport binding can carry fds (`outboundFdLimit`: 0 for
-//!   TCP and QUIC, so their descriptors keep `attachedFd = 0xff`), and never
-//!   through a `send_frame_override`. On an AF_UNIX connection it needs no
-//!   option: a peer that does not take fds closes them (drain mode), as the
-//!   spec expects of a receiver that did not ask (`rpc.capnp:1118-1124`);
+//! - only when the transport binding can carry fds (`outboundFdLimit`, read
+//!   for every frame: 0 for TCP and QUIC, and for an AF_UNIX connection
+//!   without fd passing on, so their descriptors keep `attachedFd = 0xff`),
+//!   and never through a `send_frame_override`. A connection sends fds only
+//!   when it also takes them, as C++ does (`rpc-twoparty.c++`, `setFds`):
+//!   the spec expects a receiver that did not ask to drop them
+//!   (`rpc.capnp:1118-1124`), but macOS installs them in its fd table
+//!   anyway;
 //! - at most `max_fds_per_message_cap` (253) fds per frame; later
 //!   descriptors go without one;
 //! - each fd index on at most one descriptor (`rpc.capnp:1149-1150`): two
@@ -101,6 +104,36 @@ pub const SetExportFdError = error{
 
 /// The built cap table could not be read back.
 pub const AttachError = error{InvalidCapTable};
+
+/// Whether `err`, from a send that carried fds, refused only that message
+/// over its fds: nothing was queued and the connection is fine
+/// (`Connection.sendFrameWithFds`, which keeps these errors from
+/// `on_error`). Every other error of such a send is the plain send's
+/// (`BrokenPipe`, `WriteQueueFull`, ...), as for a frame without fds.
+pub fn isFdRefusal(err: anyerror) bool {
+    return switch (err) {
+        error.FdPassingUnsupported,
+        error.TooManyFds,
+        error.FdsWithoutData,
+        error.FdQueueFull,
+        error.InvalidFd,
+        error.ProcessFdQuotaExceeded,
+        error.SystemResources,
+        error.Unexpected,
+        => true,
+        else => false,
+    };
+}
+
+/// The exception type of the exception Return the peer sends in place of
+/// a Return its fds refused (`isFdRefusal`): `overloaded` (retry later)
+/// when the fds lacked room, `failed` for the rest.
+pub fn refusalExceptionType(err: anyerror) protocol.ExceptionType {
+    return switch (err) {
+        error.FdQueueFull, error.ProcessFdQuotaExceeded, error.SystemResources => .overloaded,
+        else => .failed,
+    };
+}
 
 /// How many resolution steps `importFd` follows (a promise that resolved to
 /// a promise that resolved ...).
