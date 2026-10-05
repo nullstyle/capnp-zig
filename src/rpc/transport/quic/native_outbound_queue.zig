@@ -215,7 +215,9 @@ pub const OutboundQueue = struct {
                 // The peer's stream window is full: it lets us have only
                 // `initial_max_streams_uni` streams open at once, and gives
                 // an id back each time one of ours is fully closed (quic
-                // v0.24.0 and later; there is no lifetime cap). Always
+                // v0.24.0 and later; there is no lifetime cap). Before the
+                // handshake of a resumed dial the window is the one the
+                // ticket remembers (quic v0.27.0, RFC 9000 7.4.1). Always
                 // temporary, at any stream index: the id is not consumed,
                 // quic has told the peer (STREAMS_BLOCKED), so keep the
                 // frame at the head of the queue and retry after the next

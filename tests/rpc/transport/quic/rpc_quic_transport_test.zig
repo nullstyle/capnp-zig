@@ -2609,6 +2609,140 @@ test "quic warm restore: stale ticket is rejected but the staged frame still arr
     try std.testing.expectEqual(quic.EarlyDataStatus.rejected, q2.earlyDataStatus());
 }
 
+/// Starts every accepted session with its own echo state.
+const NativeEchoHook = struct {
+    states: [4]QuicEndpointState = @splat(.{}),
+    count: usize = 0,
+
+    fn onAccepted(ctx: ?*anyopaque, _: *quic.Server, session: *quic.ServerSession) anyerror!void {
+        const self: *NativeEchoHook = @ptrCast(@alignCast(ctx.?));
+        if (self.count >= self.states.len) return error.TestTooManySessions;
+        session.start(&self.states[self.count], echoQuicServerMessage, recordQuicServerError, recordQuicServerClose);
+        self.count += 1;
+    }
+};
+
+test "quic native warm restore: more staged data frames than the ticket's uni stream window all arrive, in order" {
+    // In native mode a frame above `inline_frame_threshold` rides its own
+    // uni stream. A resumed client may open, before its handshake, only as
+    // many streams as the ticket remembers (quic-zig v0.27.0; RFC 9000
+    // 7.4.1); one more is `StreamLimitExceeded`, which the outbound queue
+    // keeps as transient and retries once the window opens. Through quic-zig
+    // v0.26.0 the client opened all five early, past the server's limit of
+    // two, and the server closed the connection (`.peer_close`).
+    const allocator = std.testing.allocator;
+    const native_options = quic.NativeOptions{
+        .inline_frame_threshold = 128,
+        .max_control_frame_bytes = 256,
+        .max_pending_data_streams = 8,
+        .max_pending_data_bytes = 64 * 1024,
+    };
+    var params = quic.defaultTransportParams();
+    // The server allows 2 uni streams at once, and the ticket remembers it.
+    params.initial_max_streams_uni = 2;
+
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = 4,
+        .mode = .native,
+        .native = native_options,
+        .transport_params = params,
+        .early_data = .without_replay_protection,
+    });
+    defer server.deinit();
+    var hook = NativeEchoHook{};
+    server.setOnSessionAccepted(&hook, NativeEchoHook.onAccepted);
+
+    // ---- Dial 1: cold, earns the ticket. ----
+    var sink = ResumptionSink{};
+    {
+        const first = try buildBootstrapFrame(allocator, 0x7001);
+        defer allocator.free(first);
+        var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+            .remote_addr = server.getAddress(),
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .mode = .native,
+            .native = native_options,
+            .new_session_callback = ResumptionSink.capture,
+            .new_session_user_data = &sink,
+        });
+        defer client.deinit();
+        var state = QuicEndpointState{};
+        client.start(&state, recordQuicClientFrame, recordQuicError, recordQuicClose);
+        try client.sendFrame(first);
+        var thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+        var joined = false;
+        defer if (!joined) {
+            client.requestClose();
+            thread.join();
+        };
+        var waited_ms: u64 = 0;
+        while (true) : (waited_ms += loopback.loopback_poll_ms) {
+            if (waited_ms >= loopback.loopback_timeout_ms) return error.QuicLoopbackTimedOut;
+            _ = try server.stepOnce(.wait);
+            if (state.messages.load(.acquire) > 0 and sink.len.load(.acquire) > 0) break;
+            if (state.errors.load(.acquire) > 0) return error.QuicLoopbackUnexpectedError;
+            loopback.sleepMs(loopback.loopback_poll_ms);
+        }
+        client.requestClose();
+        thread.join();
+        joined = true;
+    }
+
+    // ---- Dial 2: resumed, five data frames staged before the loop. ----
+    var frames: [5][]const u8 = undefined;
+    var built: usize = 0;
+    defer for (frames[0..built]) |frame| allocator.free(frame);
+    while (built < frames.len) : (built += 1) {
+        frames[built] = try buildCallFrameWithData(allocator, @intCast(0x7100 + built), 1536);
+        try std.testing.expect(frames[built].len > native_options.inline_frame_threshold);
+    }
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+        .resumption_state = sink.slice(),
+    });
+    defer client.deinit();
+    var state = OrderedQuicEndpointState{ .expected = &frames };
+    client.start(&state, captureOrderedQuicMessage, recordOrderedQuicError, recordOrderedQuicClose);
+    for (frames) |frame| try client.sendFrame(frame);
+    var thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        thread.join();
+    };
+    var waited_ms: u64 = 0;
+    while (waited_ms < 2 * loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        _ = try server.stepOnce(.wait);
+        if (state.messages.load(.acquire) >= frames.len) break;
+        if (state.errors.load(.acquire) > 0 or state.closes.load(.acquire) > 0) break;
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+    const status: ?quic.EarlyDataStatus = if (client.endpoint.activeQuicConnection()) |q| q.earlyDataStatus() else null;
+    client.requestClose();
+    thread.join();
+    joined = true;
+
+    errdefer std.debug.print("echoed {d}/{d}, errors {d} (last {?}), close cause {}\n", .{
+        state.messages.load(.acquire), frames.len, state.errors.load(.acquire), state.last_error, client.closeCause(),
+    });
+    try std.testing.expectEqual(@as(usize, 0), state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(?quic.EarlyDataStatus, .accepted), status);
+    try std.testing.expectEqual(frames.len, state.messages.load(.acquire));
+    try state.expectOrder(&.{ 0, 1, 2, 3, 4 });
+}
+
 /// Captures the FIRST NEW_TOKEN the server issues, with the same
 /// release/acquire contract as `ResumptionSink`.
 const NewTokenSink = struct {
