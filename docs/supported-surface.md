@@ -284,7 +284,8 @@ the quic v0.24.0 pin, which no longer leaks a BoringSSL AEAD context per
 handshake; the TCP soak lanes stay report-only for now. A second Nightly run
 of that soak (`--ticket-key`) uses the hardened preset with a persisted
 session-ticket key and `new_token_key`, and fails unless every abrupt death
-gets at least one heal that rode 0-RTT.
+gets at least one heal that rode 0-RTT and skipped the Retry, and every Retry
+a healing client gets is its first dial or a port fallback.
 In CI the *pipelined throughput* case is enforced; the *sequential latency*
 cases are advisory (a shared runner cannot measure a serialized round-trip
 reliably — see [`stability.md`](stability.md)), and gate on a quiet machine via

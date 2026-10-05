@@ -71,10 +71,17 @@
 //!     `new_token_key`, Retry key and reset key on every restart, as a
 //!     server that persists them does. Each death must then be healed by at
 //!     least one healing client whose `zero_rtt_generations` counted that
-//!     heal (`assessZeroRttHeals`), and the restarted server must have run
+//!     heal and whose `retried_generations` did not
+//!     (`assessZeroRttHeals`): the ticket resumed AND a NEW_TOKEN that an
+//!     earlier incarnation issued skipped the Retry, which needs the client
+//!     to dial from its previous port and the restarted listener's clock to
+//!     continue its predecessor's. The restarted server must also have run
 //!     at least one restore before that session's handshake completed. A
 //!     death in the last `zero_rtt_judge_grace_ns` before the healers stop
-//!     is not judged, and a run that judged no death fails.
+//!     is not judged, and a run that judged no death fails. Across the
+//!     whole run, every Retry a healing client got must be explained by its
+//!     first dial or by a port fallback (`assessHealRetries`): one that is
+//!     not means a heal's NEW_TOKEN did not validate.
 //!
 //! Memory has two instruments sharing one steady-state trend check
 //! (`assessMemory`): the live Zig heap (counting allocator; enforcing) and
@@ -173,8 +180,8 @@ const Config = struct {
     // server runs the hardened preset with `.restore_only` 0-RTT and loads
     // the same session-ticket key and `new_token_key` on every restart, so
     // a heal's restore rides 0-RTT, and a heal from the port that earned
-    // its NEW_TOKEN also skips the Retry. Gates a 0-RTT heal per death (see
-    // the file header).
+    // its NEW_TOKEN also skips the Retry. Gates a 0-RTT heal with no Retry
+    // per death (see the file header).
     ticket_key: bool = false,
     // Memory-curve sampling interval and the steady-state growth ceiling.
     mem_sample_ms: u64 = 100,
@@ -553,8 +560,14 @@ const ZeroRttLedger = struct {
     /// Loop thread only.
     early_restores: []usize,
     /// Per incarnation: heals onto it that a healing client counted in its
-    /// `zero_rtt_generations`. Written by the healing client threads.
+    /// `zero_rtt_generations`, with or without a Retry. Written by the
+    /// healing client threads.
     zero_rtt_heals: []std.atomic.Value(usize),
+    /// Per incarnation: the subset of `zero_rtt_heals` whose dial got no
+    /// Retry (the client did not count it in `retried_generations`): a
+    /// NEW_TOKEN that an earlier incarnation issued validated. Written by
+    /// the healing client threads.
+    retry_free_heals: []std.atomic.Value(usize),
     /// 0-RTT generations a client could not pin to one incarnation (see
     /// `zeroRttCreditTarget`). Reported, never credited.
     unattributed: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
@@ -565,16 +578,20 @@ const ZeroRttLedger = struct {
         const early = try allocator.alloc(usize, max_deaths + 1);
         errdefer allocator.free(early);
         const heals = try allocator.alloc(std.atomic.Value(usize), max_deaths + 1);
+        errdefer allocator.free(heals);
+        const retry_free = try allocator.alloc(std.atomic.Value(usize), max_deaths + 1);
         @memset(death_ns, 0);
         @memset(early, 0);
         for (heals) |*h| h.* = std.atomic.Value(usize).init(0);
-        return .{ .death_ns = death_ns, .early_restores = early, .zero_rtt_heals = heals };
+        for (retry_free) |*h| h.* = std.atomic.Value(usize).init(0);
+        return .{ .death_ns = death_ns, .early_restores = early, .zero_rtt_heals = heals, .retry_free_heals = retry_free };
     }
 
     fn deinit(self: *ZeroRttLedger, allocator: std.mem.Allocator) void {
         allocator.free(self.death_ns);
         allocator.free(self.early_restores);
         allocator.free(self.zero_rtt_heals);
+        allocator.free(self.retry_free_heals);
         self.* = undefined;
     }
 
@@ -592,10 +609,12 @@ const ZeroRttLedger = struct {
         if (i < self.early_restores.len) self.early_restores[i] += 1;
     }
 
-    /// Healing client thread: a heal onto `incarnation` rode 0-RTT.
-    fn creditZeroRttHeal(self: *ZeroRttLedger, incarnation: usize) void {
+    /// Healing client thread: a heal onto `incarnation` rode 0-RTT;
+    /// `retried` says its dial got a Retry first.
+    fn creditZeroRttHeal(self: *ZeroRttLedger, incarnation: usize, retried: bool) void {
         if (incarnation < self.zero_rtt_heals.len) {
             _ = self.zero_rtt_heals[incarnation].fetchAdd(1, .monotonic);
+            if (!retried) _ = self.retry_free_heals[incarnation].fetchAdd(1, .monotonic);
         } else {
             _ = self.unattributed.fetchAdd(1, .monotonic);
         }
@@ -659,6 +678,11 @@ const ZeroRttVerdict = struct {
     /// the first of them (1-based death number).
     missing_zero_rtt: usize = 0,
     first_missing_zero_rtt: ?usize = null,
+    /// Judged deaths whose every 0-RTT heal got a Retry first (no NEW_TOKEN
+    /// from an earlier incarnation validated), and the first of them. A
+    /// death with no 0-RTT heal at all counts in `missing_zero_rtt` only.
+    missing_retry_free: usize = 0,
+    first_missing_retry_free: ?usize = null,
     /// Judged deaths whose server incarnation ran no restore before the
     /// handshake completed, and the first of them.
     missing_early_restore: usize = 0,
@@ -668,12 +692,23 @@ const ZeroRttVerdict = struct {
 
 /// Death `d` (1-based, at `death_ns[d - 1]`) starts server incarnation `d`.
 /// It passes when some healing client counted a heal onto incarnation `d` in
-/// its `zero_rtt_generations` (`zero_rtt_heals[d] >= 1`) and incarnation `d`
-/// ran a restore before that session's handshake completed
-/// (`early_restores[d] >= 1`). The two are separate witnesses: the client's
-/// count says BoringSSL accepted the dial's early data (with or without a
-/// Retry, since quic-zig v0.27.0 resends 0-RTT after one); the server's
-/// says the restore actually ran inside the 0-RTT window.
+/// its `zero_rtt_generations` and not in its `retried_generations`
+/// (`retry_free_heals[d] >= 1`, a subset of `zero_rtt_heals[d]`), and
+/// incarnation `d` ran a restore before that session's handshake completed
+/// (`early_restores[d] >= 1`). The witnesses are separate:
+/// - the client's 0-RTT count says BoringSSL accepted the dial's early
+///   data, so the ticket key survived the restart. Since quic-zig v0.27.0
+///   the client sends its 0-RTT data again after a Retry, so this count
+///   alone no longer says that the dial skipped the Retry;
+/// - the Retry-free subset says a NEW_TOKEN from an earlier incarnation
+///   validated: the heal dialed from its previous port (`WarmRedialClient`
+///   keeps it) and the restarted listener's clock continued its
+///   predecessor's (`Listener.nowUs`). Without port reuse every heal gets a
+///   Retry, and this witness fails every death. A clock that restarts at
+///   zero costs only some heals a Retry, so most deaths keep a Retry-free
+///   heal; `assessHealRetries` counts every lost one;
+/// - the server's count says the restore actually ran inside the 0-RTT
+///   window.
 /// Deaths after `judge_until_ns` are not judged: the healing clients stopped
 /// before they had time to heal onto them. A run with no judged death fails,
 /// because it proved nothing.
@@ -681,6 +716,7 @@ fn assessZeroRttHeals(
     death_ns: []const u64,
     judge_until_ns: u64,
     zero_rtt_heals: []const usize,
+    retry_free_heals: []const usize,
     early_restores: []const usize,
 ) ZeroRttVerdict {
     var v: ZeroRttVerdict = .{};
@@ -691,24 +727,28 @@ fn assessZeroRttHeals(
         }
         v.judged += 1;
         const heals = if (d < zero_rtt_heals.len) zero_rtt_heals[d] else 0;
+        const retry_free = if (d < retry_free_heals.len) retry_free_heals[d] else 0;
         const early = if (d < early_restores.len) early_restores[d] else 0;
         if (heals == 0) {
             v.missing_zero_rtt += 1;
             if (v.first_missing_zero_rtt == null) v.first_missing_zero_rtt = d;
+        } else if (retry_free == 0) {
+            v.missing_retry_free += 1;
+            if (v.first_missing_retry_free == null) v.first_missing_retry_free = d;
         }
         if (early == 0) {
             v.missing_early_restore += 1;
             if (v.first_missing_early_restore == null) v.first_missing_early_restore = d;
         }
     }
-    v.ok = v.judged > 0 and v.missing_zero_rtt == 0 and v.missing_early_restore == 0;
+    v.ok = v.judged > 0 and v.missing_zero_rtt == 0 and v.missing_retry_free == 0 and v.missing_early_restore == 0;
     return v;
 }
 
 test "assessZeroRttHeals: every judged death with a 0-RTT heal and an early restore passes" {
     // Incarnation 0 (the cold first dials) is never judged; deaths 1..3 are.
     const deaths = [_]u64{ 2_000, 4_000, 6_000 };
-    const v = assessZeroRttHeals(&deaths, 10_000, &.{ 0, 8, 7, 8 }, &.{ 0, 8, 6, 8 });
+    const v = assessZeroRttHeals(&deaths, 10_000, &.{ 0, 8, 7, 8 }, &.{ 0, 8, 6, 8 }, &.{ 0, 8, 6, 8 });
     try std.testing.expect(v.ok);
     try std.testing.expectEqual(@as(usize, 3), v.judged);
     try std.testing.expectEqual(@as(usize, 0), v.unjudged);
@@ -717,10 +757,23 @@ test "assessZeroRttHeals: every judged death with a 0-RTT heal and an early rest
 test "assessZeroRttHeals: one death without a 0-RTT heal fails, and is named" {
     const deaths = [_]u64{ 2_000, 4_000, 6_000 };
     // Every heal onto incarnation 2 had its ticket refused.
-    const v = assessZeroRttHeals(&deaths, 10_000, &.{ 0, 8, 0, 8 }, &.{ 0, 8, 6, 8 });
+    const v = assessZeroRttHeals(&deaths, 10_000, &.{ 0, 8, 0, 8 }, &.{ 0, 8, 0, 8 }, &.{ 0, 8, 6, 8 });
     try std.testing.expect(!v.ok);
     try std.testing.expectEqual(@as(usize, 1), v.missing_zero_rtt);
     try std.testing.expectEqual(@as(?usize, 2), v.first_missing_zero_rtt);
+    try std.testing.expectEqual(@as(usize, 0), v.missing_retry_free);
+    try std.testing.expectEqual(@as(usize, 0), v.missing_early_restore);
+}
+
+test "assessZeroRttHeals: a death healed in 0-RTT only behind Retries fails" {
+    // Every heal onto incarnation 2 rode 0-RTT, but each got a Retry first:
+    // no NEW_TOKEN validated (a heal from a new port, or a restarted clock).
+    const deaths = [_]u64{ 2_000, 4_000, 6_000 };
+    const v = assessZeroRttHeals(&deaths, 10_000, &.{ 0, 8, 8, 8 }, &.{ 0, 8, 0, 7 }, &.{ 0, 8, 6, 8 });
+    try std.testing.expect(!v.ok);
+    try std.testing.expectEqual(@as(usize, 0), v.missing_zero_rtt);
+    try std.testing.expectEqual(@as(usize, 1), v.missing_retry_free);
+    try std.testing.expectEqual(@as(?usize, 2), v.first_missing_retry_free);
     try std.testing.expectEqual(@as(usize, 0), v.missing_early_restore);
 }
 
@@ -728,7 +781,7 @@ test "assessZeroRttHeals: a 0-RTT verdict without an early restore fails" {
     // The clients counted 0-RTT heals, but incarnation 3 ran every restore
     // after its handshake: the early data never reached the restorer early.
     const deaths = [_]u64{ 2_000, 4_000, 6_000 };
-    const v = assessZeroRttHeals(&deaths, 10_000, &.{ 0, 8, 8, 8 }, &.{ 0, 8, 6, 0 });
+    const v = assessZeroRttHeals(&deaths, 10_000, &.{ 0, 8, 8, 8 }, &.{ 0, 8, 8, 8 }, &.{ 0, 8, 6, 0 });
     try std.testing.expect(!v.ok);
     try std.testing.expectEqual(@as(usize, 0), v.missing_zero_rtt);
     try std.testing.expectEqual(@as(?usize, 3), v.first_missing_early_restore);
@@ -737,18 +790,63 @@ test "assessZeroRttHeals: a 0-RTT verdict without an early restore fails" {
 test "assessZeroRttHeals: deaths after the judge cut-off are not judged" {
     // Death 3 came after the healers' grace began: no heal is expected.
     const deaths = [_]u64{ 2_000, 4_000, 6_000 };
-    const v = assessZeroRttHeals(&deaths, 5_000, &.{ 0, 8, 7 }, &.{ 0, 8, 6 });
+    const v = assessZeroRttHeals(&deaths, 5_000, &.{ 0, 8, 7 }, &.{ 0, 8, 7 }, &.{ 0, 8, 6 });
     try std.testing.expect(v.ok);
     try std.testing.expectEqual(@as(usize, 2), v.judged);
     try std.testing.expectEqual(@as(usize, 1), v.unjudged);
 }
 
 test "assessZeroRttHeals: a run with no judged death fails" {
-    try std.testing.expect(!assessZeroRttHeals(&.{}, 10_000, &.{0}, &.{0}).ok);
+    try std.testing.expect(!assessZeroRttHeals(&.{}, 10_000, &.{0}, &.{0}, &.{0}).ok);
     const late = [_]u64{9_000};
-    const v = assessZeroRttHeals(&late, 5_000, &.{ 0, 8 }, &.{ 0, 8 });
+    const v = assessZeroRttHeals(&late, 5_000, &.{ 0, 8 }, &.{ 0, 8 }, &.{ 0, 8 });
     try std.testing.expect(!v.ok);
     try std.testing.expectEqual(@as(usize, 0), v.judged);
+}
+
+const HealRetryVerdict = struct {
+    /// Healing dials that got a Retry beyond the first dials and the port
+    /// fallbacks.
+    unexplained: usize,
+    ok: bool,
+};
+
+/// The healing clients' Retries, all of them explained or the run fails.
+/// Under the hardened preset a dial gets a Retry only when it holds no
+/// NEW_TOKEN that validates from where it dials, which a healing client
+/// explains in two ways: its first dial (it has no token yet; one per
+/// client) and a dial that fell back to a new port because its old one was
+/// taken (`port_fallback_generations`, counted in `retried_generations`
+/// too). Every other heal dials from the port that earned its token, at a
+/// restarted server that holds the same `new_token_key` and continues its
+/// predecessor's clock, so it skips the Retry. An unexplained Retry means
+/// one of those broke. The per-death Retry-free witness in
+/// `assessZeroRttHeals` can miss a partial loss: a listener clock that
+/// restarts at zero still accepts every token issued earlier in its
+/// predecessor's uptime than the heal arrives in its own, so most deaths
+/// keep a Retry-free heal. This count sees every lost one.
+fn assessHealRetries(retried: usize, healing_clients: usize, port_fallbacks: usize) HealRetryVerdict {
+    const unexplained = retried -| (healing_clients +| port_fallbacks);
+    return .{ .unexplained = unexplained, .ok = unexplained == 0 };
+}
+
+test "assessHealRetries: first dials and port fallbacks explain every Retry" {
+    // 8 healing clients, each first dial got a Retry; no port fallback.
+    try std.testing.expect(assessHealRetries(8, 8, 0).ok);
+    // Two heals fell back to a new port and got a Retry each.
+    try std.testing.expect(assessHealRetries(10, 8, 2).ok);
+    // A client that never dialed leaves the bound looser, never negative.
+    try std.testing.expect(assessHealRetries(7, 8, 0).ok);
+}
+
+test "assessHealRetries: an unexplained Retry fails, and is counted" {
+    // A restarted listener clock (16e off): 104 heals got a Retry although
+    // they dialed from their old port with a token.
+    const clock = assessHealRetries(112, 8, 0);
+    try std.testing.expect(!clock.ok);
+    try std.testing.expectEqual(@as(usize, 104), clock.unexplained);
+    // A single unexplained Retry is enough.
+    try std.testing.expect(!assessHealRetries(11, 8, 2).ok);
 }
 
 test "ZeroRttLedger: deaths publish incarnations, and evidence lands on the current one" {
@@ -757,17 +855,20 @@ test "ZeroRttLedger: deaths publish incarnations, and evidence lands on the curr
     ledger.noteEarlyRestore();
     ledger.recordDeath(100);
     ledger.noteEarlyRestore();
-    ledger.creditZeroRttHeal(ledger.incarnation.load(.acquire));
+    ledger.creditZeroRttHeal(ledger.incarnation.load(.acquire), false);
+    ledger.creditZeroRttHeal(ledger.incarnation.load(.acquire), true);
     ledger.recordDeath(200);
     // A death past the capacity is counted, publishes its incarnation, and
     // is never judged; its evidence is unattributed, not misfiled.
     ledger.recordDeath(300);
     ledger.noteEarlyRestore();
-    ledger.creditZeroRttHeal(ledger.incarnation.load(.acquire));
+    ledger.creditZeroRttHeal(ledger.incarnation.load(.acquire), false);
     try std.testing.expectEqual(@as(usize, 3), ledger.deaths);
     try std.testing.expectEqualSlices(u64, &.{ 100, 200 }, ledger.recordedDeathTimes());
     try std.testing.expectEqualSlices(usize, &.{ 1, 1, 0 }, ledger.early_restores);
-    try std.testing.expectEqual(@as(usize, 1), ledger.zero_rtt_heals[1].load(.acquire));
+    // Two 0-RTT heals onto incarnation 1, one of them behind a Retry.
+    try std.testing.expectEqual(@as(usize, 2), ledger.zero_rtt_heals[1].load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), ledger.retry_free_heals[1].load(.acquire));
     try std.testing.expectEqual(@as(usize, 1), ledger.unattributed.load(.acquire));
 }
 
@@ -1438,6 +1539,7 @@ const HealApp = if (quic.enabled) struct {
     ledger: ?*ZeroRttLedger = null,
     last_rebind: ?Rebind = null,
     seen_zero_rtt: u32 = 0,
+    seen_retried: u32 = 0,
 
     fn onRebind(ctx: ?*anyopaque, peer: *Peer, cap: cap_table.ResolvedCap) void {
         const self: *HealApp = @ptrCast(@alignCast(ctx.?));
@@ -1445,7 +1547,7 @@ const HealApp = if (quic.enabled) struct {
             const client = self.client.?;
             // At the rebind of generation N, generations before N have ended
             // and been counted; N itself is counted when it ends.
-            self.creditZeroRtt(client.zero_rtt_generations, client.generations);
+            self.creditZeroRtt(client.zero_rtt_generations, client.retried_generations, client.generations);
             // The server publishes a new incarnation only after a restart,
             // so the one read here is the one that ran this restore, unless
             // a death and its restart both landed between the Return leaving
@@ -1458,14 +1560,19 @@ const HealApp = if (quic.enabled) struct {
     }
 
     /// Credit the growth of `zero_rtt_generations` since the last rebind
-    /// (see `zeroRttCreditTarget`).
-    fn creditZeroRtt(self: *HealApp, zero_rtt_now: u32, current_generation: u32) void {
+    /// (see `zeroRttCreditTarget`). The client bumps both counters when a
+    /// generation ends, so when the growth is pinned to one generation, the
+    /// growth of `retried_generations` over the same window says whether
+    /// that generation's dial got a Retry.
+    fn creditZeroRtt(self: *HealApp, zero_rtt_now: u32, retried_now: u32, current_generation: u32) void {
         const delta = zero_rtt_now -| self.seen_zero_rtt;
+        const retried_delta = retried_now -| self.seen_retried;
         self.seen_zero_rtt = zero_rtt_now;
+        self.seen_retried = retried_now;
         if (delta == 0) return;
         const ledger = self.ledger orelse return;
         if (zeroRttCreditTarget(delta, self.last_rebind, current_generation)) |incarnation| {
-            ledger.creditZeroRttHeal(incarnation);
+            ledger.creditZeroRttHeal(incarnation, retried_delta != 0);
         } else {
             _ = ledger.unattributed.fetchAdd(delta, .monotonic);
         }
@@ -1492,7 +1599,7 @@ const HealApp = if (quic.enabled) struct {
     fn threadMain(self: *HealApp, client: *quic.WarmRedialClient) void {
         self.outcome = client.run() catch null;
         // The stop ended the last generation: count its verdict too.
-        if (self.outcome) |o| self.creditZeroRtt(o.zero_rtt_generations, client.generations +| 1);
+        if (self.outcome) |o| self.creditZeroRtt(o.zero_rtt_generations, o.retried_generations, client.generations +| 1);
     }
 } else void;
 
@@ -2506,11 +2613,12 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
                         .{ heal_zero_rtt, heal_retried, heal_port_fallback, ledger.unattributed.load(.acquire) },
                     );
                     // One entry per recorded death d: the heals onto its
-                    // incarnation that rode 0-RTT, and the restores that
-                    // incarnation ran before the handshake completed.
-                    std.debug.print("soak-0rtt: per death (0-RTT heals/early restores):", .{});
+                    // incarnation that rode 0-RTT, those of them whose dial
+                    // got no Retry, and the restores that incarnation ran
+                    // before the handshake completed.
+                    std.debug.print("soak-0rtt: per death (0-RTT heals/of them without a Retry/early restores):", .{});
                     for (1..ledger.recordedDeathTimes().len + 1) |d| {
-                        std.debug.print(" d{}={}/{}", .{ d, ledger.zero_rtt_heals[d].load(.acquire), ledger.early_restores[d] });
+                        std.debug.print(" d{}={}/{}/{}", .{ d, ledger.zero_rtt_heals[d].load(.acquire), ledger.retry_free_heals[d].load(.acquire), ledger.early_restores[d] });
                     }
                     std.debug.print("\n", .{});
                     if (cfg.inject_ticket_key_rotation) {
@@ -2670,8 +2778,11 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
         const heals = try telemetry_allocator.alloc(usize, ledger.zero_rtt_heals.len);
         defer telemetry_allocator.free(heals);
         for (heals, ledger.zero_rtt_heals) |*h, *a| h.* = a.load(.acquire);
+        const retry_free = try telemetry_allocator.alloc(usize, ledger.retry_free_heals.len);
+        defer telemetry_allocator.free(retry_free);
+        for (retry_free, ledger.retry_free_heals) |*h, *a| h.* = a.load(.acquire);
         const deaths_recorded = ledger.recordedDeathTimes();
-        const zero_rtt_verdict = assessZeroRttHeals(deaths_recorded, heal_stop_ns -| zero_rtt_judge_grace_ns, heals, ledger.early_restores);
+        const zero_rtt_verdict = assessZeroRttHeals(deaths_recorded, heal_stop_ns -| zero_rtt_judge_grace_ns, heals, retry_free, ledger.early_restores);
         std.debug.print(
             "soak-0rtt: judged {} of {} deaths ({} not judged: in the last {}ms before the healers stopped, or past the ledger's {}) -> {s}\n",
             .{
@@ -2694,10 +2805,30 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
             );
             failed = true;
         }
+        if (zero_rtt_verdict.missing_retry_free > 0) {
+            std.debug.print(
+                "soak: FAIL — {} judged death(s) were healed in 0-RTT only behind a Retry: no NEW_TOKEN from an earlier incarnation validated (first: death {})\n",
+                .{ zero_rtt_verdict.missing_retry_free, zero_rtt_verdict.first_missing_retry_free.? },
+            );
+            failed = true;
+        }
         if (zero_rtt_verdict.missing_early_restore > 0) {
             std.debug.print(
                 "soak: FAIL — {} judged death(s) restarted a server that ran no restore before its handshake completed (first: death {})\n",
                 .{ zero_rtt_verdict.missing_early_restore, zero_rtt_verdict.first_missing_early_restore.? },
+            );
+            failed = true;
+        }
+        // Every Retry a healing client got, explained (see assessHealRetries).
+        const retry_verdict = assessHealRetries(heal_retried, cfg.heal_workers, heal_port_fallback);
+        std.debug.print(
+            "soak-0rtt: healing dials that got a Retry: {} (first dials {}, port fallbacks {}, unexplained {}) -> {s}\n",
+            .{ heal_retried, cfg.heal_workers, heal_port_fallback, retry_verdict.unexplained, if (retry_verdict.ok) "ok" else "FAILED" },
+        );
+        if (!retry_verdict.ok) {
+            std.debug.print(
+                "soak: FAIL — {} healing dial(s) got a Retry that neither a first dial nor a port fallback explains: a NEW_TOKEN from the previous port did not validate at the restarted server\n",
+                .{retry_verdict.unexplained},
             );
             failed = true;
         }

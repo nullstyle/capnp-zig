@@ -202,13 +202,20 @@ jobs:
       # 0-RTT, where every restart loads the same session-ticket key and
       # new_token_key, as a server that persists them does. --ticket-key adds
       # the 0-RTT gate (sprint 2026-10-04 item 17): every death must be healed
-      # by at least one client whose zero_rtt_generations counted that heal,
-      # and the restarted server must have run that restore before its
-      # handshake completed. Deaths in the last second before the healers
-      # stop are not judged. Proven locally (macOS, ReleaseSafe): 21 of 21
-      # deaths healed 8/8 over 0-RTT; the --inject-ticket-key-rotation hook,
-      # heals from a new port (no 16f) and a token clock that restarts at zero
-      # (no 16e) each turn the gate red. Same binary as the step above.
+      # by at least one client whose zero_rtt_generations counted that heal
+      # and whose retried_generations did not (its NEW_TOKEN skipped the
+      # Retry), and the restarted server must have run that restore before
+      # its handshake completed. Deaths in the last second before the healers
+      # stop are not judged. Across the run, every healing Retry must be a
+      # first dial or a port fallback. The Retry checks exist because since
+      # quic-zig v0.27.0 a heal behind a Retry still restores in 0-RTT, so
+      # the 0-RTT counts alone no longer see a lost NEW_TOKEN. Proven locally
+      # (ReleaseSafe, quic-zig v0.27.0; macOS and the arm64 Linux container):
+      # every death healed 8/8 over 0-RTT with no Retry, the only Retries the
+      # 8 first dials. Red: the --inject-ticket-key-rotation hook (no 0-RTT
+      # heal), heals from a new port (no 16f: every heal retried) and a token
+      # clock that restarts at zero (no 16e: over 100 unexplained Retries).
+      # Same binary as the step above.
       - name: QUIC self-healing soak with a persisted ticket key (0-RTT heals)
         run: zig build -Dquic=true -Doptimize=ReleaseSafe soak -- --transport quic --abrupt-death-every-ms 2000 --seconds 20 --workers 16 --heal-workers 8 --ticket-key --rss-gate enforce
 
