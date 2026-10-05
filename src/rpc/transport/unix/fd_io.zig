@@ -1,8 +1,25 @@
 //! Raw reads on an AF_UNIX stream socket that take the file descriptors a
-//! peer attaches (SCM_RIGHTS).
+//! peer attaches (SCM_RIGHTS), and raw sends that attach them.
 //!
 //! Experimental. Linux and Darwin only (`supported`); on every other target
 //! the calls return `error.UnixSocketsUnsupported` and parse nothing.
+//!
+//! ## Sending fds
+//!
+//! `sendWithFds` writes a whole message and attaches its fds, as one
+//! SCM_RIGHTS control message, to the first `sendmsg` only: the receiver
+//! gets them with the first bytes of the message. It never raises SIGPIPE:
+//! it passes `MSG_NOSIGNAL`, and on Darwin it also sets `SO_NOSIGPIPE` on
+//! the socket first (the documented Darwin way; macOS 27 honors either one
+//! alone, measured). One message carries at most `max_fds_per_send` fds
+//! (Linux's `SCM_MAX_FD`; macOS takes one more).
+//!
+//! A blocking `sendmsg` with fds does not always block on macOS: when the
+//! path to the peer has less room than the control message (any room below
+//! about 1 KiB for 253 fds, measured on macOS 27), XNU fails it with
+//! EMSGSIZE at once. `sendWithFds` then waits until the socket is writable
+//! and retries, so a busy peer delays the message instead of breaking the
+//! connection. Linux blocks as usual.
 //!
 //! ## Why the transport reads AF_UNIX sockets this way
 //!
@@ -281,4 +298,207 @@ fn waitReadable(socket: Fd) RecvError!void {
 /// Byte count of a successful syscall. Linux returns `usize`, libc `isize`.
 fn syscallCount(rc: anytype) usize {
     return @intCast(rc);
+}
+
+/// The most fds one `sendWithFds` attaches: Linux's `SCM_MAX_FD`. macOS
+/// takes 254 and fails 255 with EINVAL; both are refused here before the
+/// syscall.
+pub const max_fds_per_send: usize = 253;
+
+/// `sendWithFds` failures. EINTR and EAGAIN never surface: an interrupted
+/// call is retried, and a non-blocking socket is polled until writable. On
+/// Darwin neither does the EMSGSIZE that XNU returns, instead of blocking,
+/// when the fds do not fit the room left on the path to the peer: the call
+/// waits until the socket is writable and retries.
+pub const SendError = error{
+    /// More than `max_fds_per_send` fds. Nothing was sent.
+    TooManyFds,
+    /// Fds with no bytes to carry them. A stream socket cannot send fds on
+    /// their own (Linux queues nothing for a zero-byte send). Nothing was
+    /// sent.
+    FdsWithoutData,
+    /// EPIPE: the socket is shut down for writing, or the peer closed it.
+    BrokenPipe,
+    ConnectionResetByPeer,
+    SocketUnconnected,
+    /// ENOBUFS or ENOMEM; on Darwin also EMSGSIZE that waiting for room
+    /// did not cure (a socket buffer too small for the fds).
+    SystemResources,
+    /// ETOOMANYREFS (Linux): this user already has as many fds in flight on
+    /// AF_UNIX sockets as its RLIMIT_NOFILE. Backpressure: the receivers
+    /// have not taken them yet. Nothing was sent.
+    TooManyFdsInFlight,
+    Unexpected,
+    UnixSocketsUnsupported,
+};
+
+/// `dupCloexec` failures.
+pub const DupError = error{
+    /// EBADF: `fd` is not an open fd.
+    InvalidFd,
+    /// EMFILE: the process fd table is full.
+    ProcessFdQuotaExceeded,
+    Unexpected,
+    UnixSocketsUnsupported,
+};
+
+const send_flags: u32 = if (supported and @hasDecl(posix.MSG, "NOSIGNAL")) posix.MSG.NOSIGNAL else 0;
+
+/// Bytes of control buffer for one SCM_RIGHTS message of `max_fds_per_send`
+/// fds.
+const max_send_control_bytes = if (supported) std.Io.net.cmsg.space(max_fds_per_send * @sizeOf(Fd)) else 0;
+
+/// Write all of `bytes` to `socket`, a connected AF_UNIX stream socket,
+/// with `fds` attached as one SCM_RIGHTS message to the first `sendmsg`
+/// only. Retries partial writes. The caller keeps owning `fds`: the kernel
+/// takes its own reference to each file for the message in flight.
+///
+/// Never raises SIGPIPE (see the module doc). On Darwin this sets
+/// `SO_NOSIGPIPE` on `socket`, which stays set. An error after the first
+/// `sendmsg` succeeded leaves the message partly sent, with its fds already
+/// delivered; the connection is then unusable for framed messages.
+pub fn sendWithFds(socket: Fd, bytes: []const u8, fds: []const Fd) SendError!void {
+    if (comptime !supported) return error.UnixSocketsUnsupported;
+    if (fds.len > max_fds_per_send) return error.TooManyFds;
+    if (fds.len != 0 and bytes.len == 0) return error.FdsWithoutData;
+    try suppressSigpipe(socket);
+    var control_buf: [max_send_control_bytes]u8 align(std.Io.net.cmsg_align) = undefined;
+    var control: []const u8 = buildRights(&control_buf, fds);
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        offset += try sendOnce(socket, bytes[offset..], control);
+        // The fds ride on the first chunk only.
+        control = &.{};
+    }
+}
+
+/// `fcntl(F_DUPFD_CLOEXEC)`: a new close-on-exec fd for the file `fd`
+/// refers to. The caller owns the result.
+pub fn dupCloexec(fd: Fd) DupError!Fd {
+    if (comptime !supported) return error.UnixSocketsUnsupported;
+    while (true) {
+        const rc = if (builtin.target.os.tag == .linux and !builtin.link_libc)
+            std.os.linux.fcntl(fd, posix.F.DUPFD_CLOEXEC, 0)
+        else
+            std.c.fcntl(fd, posix.F.DUPFD_CLOEXEC, @as(c_int, 0));
+        switch (posix.errno(rc)) {
+            .SUCCESS => return @intCast(rc),
+            .INTR => continue,
+            .BADF => return error.InvalidFd,
+            .MFILE => return error.ProcessFdQuotaExceeded,
+            else => |err| {
+                log.debug("fcntl(F_DUPFD_CLOEXEC) failed: errno {d}", .{@backingInt(err)});
+                return error.Unexpected;
+            },
+        }
+    }
+}
+
+/// One SCM_RIGHTS message holding `fds`, at the front of `buf`; empty when
+/// there are no fds.
+fn buildRights(buf: *align(std.Io.net.cmsg_align) [max_send_control_bytes]u8, fds: []const Fd) []const u8 {
+    if (fds.len == 0) return &.{};
+    const data_len = fds.len * @sizeOf(Fd);
+    const total = std.Io.net.cmsg.space(data_len);
+    @memset(buf[0..total], 0);
+    const header: *align(std.Io.net.cmsg_align) posix.cmsghdr = @ptrCast(buf);
+    header.len = @intCast(std.Io.net.cmsg.len(@intCast(data_len)));
+    header.level = posix.SOL.SOCKET;
+    header.type = posix.SCM.RIGHTS;
+    const data_offset = std.mem.alignForward(usize, @sizeOf(posix.cmsghdr), std.Io.net.cmsg_align);
+    for (fds, 0..) |fd, i| {
+        std.mem.writeInt(Fd, buf[data_offset + i * @sizeOf(Fd) ..][0..@sizeOf(Fd)], fd, builtin.cpu.arch.endian());
+    }
+    return buf[0..total];
+}
+
+/// One `sendmsg` of `bytes`, with `control` attached when it is not empty.
+/// Returns the bytes the kernel took.
+fn sendOnce(socket: Fd, bytes: []const u8, control: []const u8) SendError!usize {
+    var iov = [1]posix.iovec_const{.{ .base = bytes.ptr, .len = bytes.len }};
+    const msg: posix.msghdr_const = .{
+        .name = null,
+        .namelen = 0,
+        .iov = &iov,
+        .iovlen = 1,
+        .control = if (control.len == 0) null else control.ptr,
+        .controllen = @intCast(control.len),
+        .flags = 0,
+    };
+    var waited_for_room = false;
+    while (true) {
+        const rc = posix.system.sendmsg(socket, &msg, send_flags);
+        switch (posix.errno(rc)) {
+            .SUCCESS => return syscallCount(rc),
+            .INTR => continue,
+            .AGAIN => {
+                try waitWritable(socket);
+                continue;
+            },
+            // XNU refuses a control message larger than the room left on
+            // the path to the peer with EMSGSIZE, on a blocking socket too,
+            // where it does not wait (measured on macOS 27: any room below
+            // about the control message's size). The socket is not writable
+            // then. Once it is (the low-water mark, 2048 bytes, is more room
+            // than 253 fds take) the retry fits; a second EMSGSIZE right
+            // after that wait means the fds can never fit.
+            .MSGSIZE => if (comptime builtin.target.os.tag.isDarwin()) {
+                if (control.len == 0 or waited_for_room) return error.SystemResources;
+                waited_for_room = true;
+                try waitWritable(socket);
+                continue;
+            } else {
+                log.debug("sendmsg failed: errno {d}", .{@backingInt(posix.E.MSGSIZE)});
+                return error.Unexpected;
+            },
+            .PIPE => return error.BrokenPipe,
+            .CONNRESET => return error.ConnectionResetByPeer,
+            .NOTCONN => return error.SocketUnconnected,
+            .NOMEM, .NOBUFS => return error.SystemResources,
+            .TOOMANYREFS => return error.TooManyFdsInFlight,
+            // Log the number, never the tag: `posix.E` does not name every errno.
+            else => |err| {
+                log.debug("sendmsg failed: errno {d}", .{@backingInt(err)});
+                return error.Unexpected;
+            },
+        }
+    }
+}
+
+/// On Darwin, also set `SO_NOSIGPIPE` on the socket: the documented way
+/// there, kept in case an XNU release ignores `MSG_NOSIGNAL`.
+fn suppressSigpipe(socket: Fd) SendError!void {
+    if (comptime !builtin.target.os.tag.isDarwin()) return;
+    const one: c_int = 1;
+    const rc = std.c.setsockopt(socket, posix.SOL.SOCKET, posix.SO.NOSIGPIPE, &one, @sizeOf(c_int));
+    switch (posix.errno(rc)) {
+        .SUCCESS => {},
+        // XNU refuses socket options once a socket is shut down both ways;
+        // a send there fails with EPIPE (and would raise SIGPIPE).
+        .INVAL => return error.BrokenPipe,
+        else => |err| {
+            log.debug("setsockopt(SO_NOSIGPIPE) failed: errno {d}", .{@backingInt(err)});
+            return error.Unexpected;
+        },
+    }
+}
+
+/// Block until `socket` is writable (or hung up). Reached for a
+/// non-blocking socket, and on Darwin after EMSGSIZE (see `sendOnce`). A
+/// `shutdown(SHUT_WR)` of `socket` makes it writable, so the transport's
+/// `shutdown` wakes this wait, and the retry fails with EPIPE.
+fn waitWritable(socket: Fd) SendError!void {
+    var fds = [1]posix.pollfd{.{ .fd = socket, .events = posix.POLL.OUT, .revents = 0 }};
+    while (true) {
+        const rc = posix.system.poll(&fds, 1, -1);
+        switch (posix.errno(rc)) {
+            .SUCCESS => return,
+            .INTR => continue,
+            .NOMEM => return error.SystemResources,
+            else => |err| {
+                log.debug("poll failed: errno {d}", .{@backingInt(err)});
+                return error.Unexpected;
+            },
+        }
+    }
 }

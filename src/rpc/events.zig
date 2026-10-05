@@ -137,7 +137,11 @@ pub const Resource = enum(u8) {
     /// dropping fds (`error.AttachedFdsTruncated`, or the fd-table errors
     /// `error.ProcessFdQuotaExceeded` / `error.SystemFdQuotaExceeded`) and a
     /// closer queue past its bound (`error.FdCloseQueueFull`: `attempted` =
-    /// fds pending, `limit` = the bound; the connection is closed).
+    /// fds pending, `limit` = the bound; the connection is closed). On the
+    /// send side, a message whose fds would take a transport's write queue
+    /// past `Transport.max_queued_fds` emits a `.backpressure`
+    /// (`err` = `error.FdQueueFull`, `attempted_bytes` = the message's fd
+    /// count, `limit` = the cap); the connection stays open.
     attached_fds,
     _,
 };

@@ -866,15 +866,20 @@ pub fn buildImpl(b: *std.Build) !void {
     // macOS run them; other targets compile them and skip.
     const run_rpc_unix_fd_drain_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_drain_test.zig", target, optimize, lib_module);
     const run_rpc_unix_linger_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_linger_test.zig", target, optimize, lib_module);
+    // FD passing, send side (sprint item 10): `fd_io.sendWithFds` and fds in
+    // the write queue; every dup the queue makes is closed exactly once.
+    // Linux and macOS run it; other targets compile it and run the stubs.
+    const run_rpc_unix_fd_send_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_send_test.zig", target, optimize, lib_module);
     // `rpc.transport.unix.listen`/`connect` (sprint item 7): sessions over a
     // socket file, the path guards, the lock, stale files, permissions and
     // close. Linux and macOS run it; other targets compile it and run only
     // the unsupported-target stub test.
     const run_rpc_unix_session_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_session_test.zig", target, optimize, lib_module);
-    const test_rpc_unix_step = b.step("test-rpc-unix", "Run the AF_UNIX transport suites (regressions, fd drain, lingering close, listen/connect)");
+    const test_rpc_unix_step = b.step("test-rpc-unix", "Run the AF_UNIX transport suites (regressions, fd drain, lingering close, fd send, listen/connect)");
     test_rpc_unix_step.dependOn(run_rpc_unix_regression_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_fd_drain_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_linger_tests);
+    test_rpc_unix_step.dependOn(run_rpc_unix_fd_send_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_session_tests);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, qm)
@@ -1357,6 +1362,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_transport_step.dependOn(run_rpc_unix_regression_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_fd_drain_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_linger_tests);
+    test_rpc_transport_step.dependOn(run_rpc_unix_fd_send_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_raw_frame_security_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_kernel_semantics_tests);
@@ -1657,6 +1663,9 @@ pub fn buildImpl(b: *std.Build) !void {
             // cmsghdr layout.
             "tests/rpc/transport/unix/rpc_unix_fd_drain_test.zig",
             "tests/rpc/transport/unix/rpc_unix_linger_test.zig",
+            // Fd passing, send side: the owner thread queues dups, the writer
+            // and the owner hand them to the closer's `.sent` lane.
+            "tests/rpc/transport/unix/rpc_unix_fd_send_test.zig",
             // unix.listen/connect: the session threads, racing listeners and
             // the accept wake-up, against glibc.
             "tests/rpc/transport/unix/rpc_unix_session_test.zig",

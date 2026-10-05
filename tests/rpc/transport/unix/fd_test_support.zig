@@ -1,5 +1,6 @@
 //! Raw-syscall helpers shared by the AF_UNIX fd suites
-//! (`rpc_unix_fd_drain_test.zig`, `rpc_unix_linger_test.zig`).
+//! (`rpc_unix_fd_drain_test.zig`, `rpc_unix_linger_test.zig`,
+//! `rpc_unix_fd_send_test.zig`).
 //!
 //! The "peer" in these suites is a raw socket that attaches fds with
 //! `sendmsg`, the way a hostile local process would. Everything here calls

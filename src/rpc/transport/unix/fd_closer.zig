@@ -25,9 +25,15 @@
 //! `shutdown(SHUT_RD)` that may dispose of fds there either.
 //! `Connection.deinit` never waits for a pending close.
 //!
-//! ## Two lanes
+//! The same holds for the copies of fds this process sends. The transport
+//! queues a dup of each fd it is asked to send, and closes the dup once the
+//! send is done or abandoned. By then the app may have closed its own fd and
+//! the receiver its copy, so the dup's close can be the final one, and it
+//! blocks if the file is one of the kinds above.
 //!
-//! Each `Lane` is one thread and one FIFO queue. Both threads start on first
+//! ## Three lanes
+//!
+//! Each `Lane` is one thread and one FIFO queue. The threads start on first
 //! use and never exit.
 //!
 //! - `.received` closes the fds peers attached. Any of them can block for as
@@ -37,6 +43,11 @@
 //!   `shutdown`. One of these blocks only when that very socket still holds
 //!   fds whose close blocks, so a received fd that blocks never delays
 //!   another connection's close or shutdown.
+//! - `.sent` closes a transport's dups of the fds this process sent (or
+//!   gave up sending). They are the app's own files, not a peer's, and each
+//!   transport holds at most `Transport.max_queued_fds` of them, so this
+//!   lane has no bound of its own. A dup whose close blocks delays only
+//!   other sent dups, never a received fd or a socket close.
 //!
 //! A `.socket` job still waits behind a blocked `.socket` job: a peer that
 //! leaves a blocking fd unread on its own connection when the connection is
@@ -119,6 +130,8 @@ pub const Lane = enum(u8) {
     /// A transport's own socket: its final close, and on Darwin the read
     /// half of its shutdown.
     socket,
+    /// A transport's dups of fds this process sends (`handOffSent`).
+    sent,
 };
 
 /// `ensureStarted` failures: a thread could not be spawned.
@@ -202,7 +215,7 @@ const LaneState = struct {
     }
 };
 
-var lanes: [2]LaneState = .{ .{}, .{} };
+var lanes: [std.enums.values(Lane).len]LaneState = @splat(.{});
 /// The `.received` bound; 0 until first use. Guarded by that lane's `mu`.
 var limit: usize = 0;
 var start_mu: std.Io.Mutex = .init;
@@ -216,7 +229,7 @@ fn laneState(lane: Lane) *LaneState {
     return &lanes[@backingInt(lane)];
 }
 
-/// Start both closer threads if they are not running. Cheap after the first
+/// Start every closer thread that is not running. Cheap after the first
 /// success. Readers call it before `recvmsg`, so they never hold received fds
 /// without a thread to hand them to.
 pub fn ensureStarted() StartError!void {
@@ -272,13 +285,28 @@ pub fn handOff(r: ?*Reservation, fds: []const Fd) Admission {
     if (comptime !supported) return .{ .pending = 0, .limit = 0, .over_limit = false };
     if (r) |res| std.debug.assert(res.lane == .received);
     if (fds.len == 0) return admission();
+    return handOffCloses(.received, r, fds);
+}
+
+/// Hand `fds` (a transport's dups of fds it sent, or gave up sending) to the
+/// `.sent` lane, which closes each one. The caller must not touch them
+/// again. Covered by `r` (a `.sent` reservation) like `handOff`. Never
+/// fails.
+pub fn handOffSent(r: ?*Reservation, fds: []const Fd) void {
+    if (comptime !supported) return;
+    if (r) |res| std.debug.assert(res.lane == .sent);
+    if (fds.len == 0) return;
+    _ = handOffCloses(.sent, r, fds);
+}
+
+fn handOffCloses(lane: Lane, r: ?*Reservation, fds: []const Fd) Admission {
     var jobs: [64]Job = undefined;
     var after: Admission = undefined;
     var rest = fds;
     while (rest.len != 0) {
         const n = @min(rest.len, jobs.len);
         for (jobs[0..n], rest[0..n]) |*job, fd| job.* = .{ .fd = fd, .op = .close };
-        after = enqueue(.received, r, jobs[0..n]);
+        after = enqueue(lane, r, jobs[0..n]);
         rest = rest[n..];
     }
     return after;
@@ -347,7 +375,7 @@ fn enqueue(lane: Lane, r: ?*Reservation, jobs: []const Job) Admission {
                 initLimitLocked();
                 break :blk .{ .pending = pending_now, .limit = limit, .over_limit = pending_now > limit };
             },
-            .socket => .{ .pending = pending_now, .limit = 0, .over_limit = false },
+            .socket, .sent => .{ .pending = pending_now, .limit = 0, .over_limit = false },
         };
     }
     if (inline_jobs.len != 0) {
