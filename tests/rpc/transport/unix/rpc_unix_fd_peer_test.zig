@@ -648,6 +648,19 @@ test "inbound: a frame the peer feeds itself cannot take the fds of the transpor
 // Release: every path that drops an import closes its fd
 // ---------------------------------------------------------------------------
 
+/// The Release frames the peer sent for import `id`, summed.
+fn releasedCount(gpa: std.mem.Allocator, fake: *const FakeTransport, id: u32) !u32 {
+    var total: u32 = 0;
+    for (fake.sent.items) |s| {
+        var decoded = try protocol.DecodedMessage.init(gpa, s.bytes);
+        defer decoded.deinit();
+        if (decoded.tag != .release) continue;
+        const release = try decoded.asRelease();
+        if (release.id == id) total += release.reference_count;
+    }
+    return total;
+}
+
 test "close hook: a handoff-pinned import keeps its fd past its last wire ref, until the unpin" {
     if (comptime !supported) return error.SkipZigTest;
     const gpa = testing.allocator;
@@ -660,16 +673,22 @@ test "close hook: a handoff-pinned import keeps its fd past its last wire ref, u
 
     try seam.deliverCall(0, &.{.{ .kind = .sender_hosted, .id = 7, .fd = 0 }}, pipes.writers());
     pipes.closeWriters();
+    // The handler wrote through the fd; read that byte, so the checks below
+    // see only whether a write end is open.
+    try expectPipeData(pipes.read_ends[0], "x");
     try seam.peer.noteHandoffImportPin(7);
     try seam.peer.releaseImport(7, 1);
+    // The pin withholds the Release, so the remote cannot reuse the id yet.
+    try testing.expectEqual(@as(u32, 0), try releasedCount(gpa, &seam.fake, 7));
     try testing.expect(seam.peer.caps.hasImport(7));
     try expectOpen(&pipes, 0);
     try seam.peer.releaseHandoffImportPin(7);
+    try testing.expectEqual(@as(u32, 1), try releasedCount(gpa, &seam.fake, 7));
     try testing.expect(!seam.peer.caps.hasImport(7));
     try expectClosed(&pipes, 0);
 }
 
-test "close hook: an import pinned by a resolved promise export keeps its fd until that export is released" {
+test "close hook: an import pinned by a resolved promise export closes its fd with its last wire ref, since the Release lets the remote reuse the id" {
     if (comptime !supported) return error.SkipZigTest;
     const gpa = testing.allocator;
     var pipes = try support.Pipes.open(1);
@@ -681,17 +700,83 @@ test "close hook: an import pinned by a resolved promise export keeps its fd unt
 
     try seam.deliverCall(0, &.{.{ .kind = .sender_hosted, .id = 7, .fd = 0 }}, pipes.writers());
     pipes.closeWriters();
+    try expectPipeData(pipes.read_ends[0], "x");
     const promise_id = try seam.peer.addPromiseExport();
     try seam.peer.resolvePromiseExportToImport(promise_id, 7);
-    try seam.peer.releaseImport(7, 1);
-    try testing.expect(seam.peer.caps.hasImport(7));
     try expectOpen(&pipes, 0);
+    try seam.peer.releaseImport(7, 1);
+    // The promise pin keeps the entry (the promise still routes to it), but
+    // the Release for the last wire ref went out: the fd goes with it.
+    try testing.expectEqual(@as(u32, 1), try releasedCount(gpa, &seam.fake, 7));
+    try testing.expect(seam.peer.caps.hasImport(7));
+    try testing.expect(seam.peer.importFd(7) == null);
+    try expectClosed(&pipes, 0);
     // The remote held the promise once; its Release destroys the promise
     // export, which drops its pin on import 7.
     try seam.peer.noteExportRef(promise_id);
     try seam.deliver(try buildRelease(gpa, promise_id, 1), &.{});
     try testing.expect(!seam.peer.caps.hasImport(7));
+}
+
+test "close hook: an import under a handoff pin and a promise pin keeps its fd while the Release is withheld, and closes it when the unpin sends the Release" {
+    if (comptime !supported) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var pipes = try support.Pipes.open(1);
+    defer pipes.closeAll();
+    var seam: SeamPeer = undefined;
+    try seam.init(gpa, 253);
+    defer seam.deinit();
+    seam.recorder.retain = true;
+
+    try seam.deliverCall(0, &.{.{ .kind = .sender_hosted, .id = 7, .fd = 0 }}, pipes.writers());
+    pipes.closeWriters();
+    try expectPipeData(pipes.read_ends[0], "x");
+    try seam.peer.noteHandoffImportPin(7);
+    const promise_id = try seam.peer.addPromiseExport();
+    try seam.peer.resolvePromiseExportToImport(promise_id, 7);
+    try seam.peer.releaseImport(7, 1);
+    try testing.expectEqual(@as(u32, 0), try releasedCount(gpa, &seam.fake, 7));
+    try expectOpen(&pipes, 0);
+    // The unpin sends the withheld Release; the promise pin keeps the entry.
+    try seam.peer.releaseHandoffImportPin(7);
+    try testing.expectEqual(@as(u32, 1), try releasedCount(gpa, &seam.fake, 7));
+    try testing.expect(seam.peer.caps.hasImport(7));
     try expectClosed(&pipes, 0);
+}
+
+test "inbound: after the Release of a promise-pinned import, a new capability that reuses its id gets its own fd, not the old one" {
+    // The remote may give a released export id to a new capability at once
+    // (C++ does). A promise pin keeps our import entry for that id after
+    // the Release, so the new capability lands on the same entry: its fd
+    // must not lose to the old capability's.
+    if (comptime !supported) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var pipes = try support.Pipes.open(2);
+    defer pipes.closeAll();
+    var seam: SeamPeer = undefined;
+    try seam.init(gpa, 253);
+    defer seam.deinit();
+    seam.recorder.retain = true;
+
+    // Capability A arrives as import 7 with pipe 0. The app forwards a
+    // promise export to it, then drops its own reference.
+    try seam.deliverCall(0, &.{.{ .kind = .sender_hosted, .id = 7, .fd = 0 }}, pipes.writers()[0..1]);
+    const promise_id = try seam.peer.addPromiseExport();
+    try seam.peer.resolvePromiseExportToImport(promise_id, 7);
+    try seam.peer.releaseImport(7, 1);
+    try testing.expectEqual(@as(u32, 1), try releasedCount(gpa, &seam.fake, 7));
+
+    // The remote reuses export id 7 for capability B, with pipe 1.
+    seam.recorder.tag = 'B';
+    try seam.deliverCall(1, &.{.{ .kind = .sender_hosted, .id = 7, .fd = 0 }}, pipes.writers()[1..2]);
+    const got = seam.recorder.fds[0] orelse return error.NoFdForTheNewCapability;
+    try testing.expectEqual(try inodeOf(pipes.write_ends[1]), try inodeOf(got));
+    pipes.closeWriters();
+    // A's data went to A's pipe, B's to B's; A's fd is closed.
+    try expectPipeData(pipes.read_ends[0], "x");
+    try expectClosed(&pipes, 0);
+    try expectPipeData(pipes.read_ends[1], "B");
+    try expectOpen(&pipes, 1);
 }
 
 test "close hook: Peer.deinit closes the fd of every import still live" {

@@ -65,14 +65,20 @@
 //!
 //! ## Ownership and close
 //!
-//! An imported fd belongs to its import and is closed when the import
-//! leaves `CapTable.imports`: the peer's release paths (`releaseImport`,
-//! the inbound-cap release, the handoff unpin, the promise-pin release) and
+//! An imported fd belongs to its import and is closed once the import's
+//! wire side is released: when the import leaves `CapTable.imports`, and
+//! also when its last wire reference is gone while a promise pin
+//! (`resolvePromiseExportToImport`) keeps the entry. The peer has sent the
+//! Release then, so the remote may give the id to a new capability at once
+//! (C++ does), and that capability's fd must not lose to the old one ("the
+//! first fd wins"). A handoff pin withholds the Release, so the fd stays
+//! until the unpin sends it. The peer's release paths (`releaseImport`, the
+//! inbound-cap release, the handoff unpin, the promise-pin release) and
 //! `Peer.deinit` call `importReleased`, which hands the fd to the closer
-//! thread (`fd_closer`, `.received` lane) when the import is gone. A
-//! reservation in that lane covers every fd held here, so that hand-off
-//! never allocates and never closes inline. In Debug builds every release
-//! checks that each id in the table is still an import.
+//! thread (`fd_closer`, `.received` lane). A reservation in that lane covers
+//! every fd held here, so that hand-off never allocates and never closes
+//! inline. In Debug builds every release checks that each id in the table
+//! is still an import.
 //!
 //! Every fd held here counts as one unit of the process fd budget
 //! (`fd_budget`), from adoption until the closer has closed it.
@@ -397,11 +403,24 @@ pub fn PeerFds(comptime Peer: type) type {
 
         // -- Release ----------------------------------------------------------
 
-        /// Call after anything that may have removed import `import_id` from
-        /// `CapTable.imports`: once it is gone, its fd goes to the closer.
+        /// Call after anything that may have released import `import_id`:
+        /// once its wire side is released, its fd goes to the closer.
+        ///
+        /// That is when the import left `CapTable.imports`, and also when
+        /// the entry stays only for a promise pin (`resolvePromiseExportToImport`)
+        /// with no wire reference left: the peer has sent the Release for
+        /// its last one, so the remote may give the id to a new capability,
+        /// and that capability's fd must not find this one in its place.
+        /// While a handoff pin lives the Release is withheld
+        /// (`deferReleaseWhilePinned`), the id cannot be reused, and the fd
+        /// stays until the unpin.
         pub fn importReleased(peer: *Peer, import_id: u32) void {
             if (comptime !fd_passing.supported) return;
-            if (!peer.caps.hasImport(import_id)) {
+            const wire_released = if (peer.caps.imports.get(import_id)) |entry|
+                entry.ref_count == 0 and entry.handoff_pin_count == 0
+            else
+                true;
+            if (wire_released) {
                 if (peer.fds.imports.fetchRemove(import_id)) |removed| {
                     _ = closer.handOffCounted(&peer.fds.reservation, &.{removed.value.fd});
                 }

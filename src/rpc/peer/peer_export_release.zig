@@ -304,6 +304,10 @@ pub fn ExportRelease(comptime Peer: type) type {
         pub fn releaseHandoffImportPin(self: *Peer, id: u32) anyerror!void {
             const unpin = self.caps.releaseHandoffImportPin(id);
             if (!unpin.last_pin_released) return;
+            // Fd passing: with no wire reference left, the Release below
+            // lets the remote reuse the id, so the fd goes now, even if a
+            // promise pin keeps the entry.
+            peer_fds.PeerFds(Peer).importReleased(self, id);
             if (unpin.deferred_release > 0) {
                 try peer_outbound_control.sendReleaseViaSendFrame(
                     Peer,
@@ -314,7 +318,7 @@ pub fn ExportRelease(comptime Peer: type) type {
                 );
             }
             if (self.caps.removeImportIfFullyReleased(id)) {
-                // Fd passing: the import is gone, so is its fd.
+                // The send above may have reentered the table: check again.
                 peer_fds.PeerFds(Peer).importReleased(self, id);
                 try releaseResolvedImport(self, id);
             }
