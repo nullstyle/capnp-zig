@@ -17,8 +17,9 @@
 //!
 //! The pool accepts with its own raw syscalls, so it keeps the listener's
 //! other promises itself: its workers take no connection while the fd
-//! closer's `.socket` lane is at its bound (as `Listener.accept` does), and
-//! every connection gets the listener's fd passing (as from
+//! closer's `.socket` lane is at its bound (as `Listener.accept` does, on a
+//! `unix.listen` listener and on `Listener.initFd` over an AF_UNIX socket),
+//! and every connection gets the listener's fd passing (as from
 //! `ServerSession.accept`).
 //!
 //! Every case runs in its own private directory (mode 0700) under /tmp,
@@ -546,11 +547,13 @@ const LaneEvents = struct {
     }
 };
 
-test "WorkerPool.initListener: behind a stuck socket-lane close, the workers stop accepting at the lane's bound, and shutdown still ends the wait" {
-    // The accept gate of `Listener.accept` (threat table row 8), on the
-    // pool's own raw accept: each AF_UNIX close queued behind a stuck one
-    // keeps its fd, so a peer that reconnects in a loop must wait in the
-    // kernel's backlog once the lane holds `socketLaneBound()` jobs.
+/// How the pool's AF_UNIX listener was made: by `unix.listen`, or raw and
+/// wrapped with `Listener.initFd` (a service manager's socket activation).
+const GatedListener = enum { unix_listen, init_fd };
+
+/// Behind a stuck socket-lane close, a pool on the AF_UNIX listener `kind`
+/// stops accepting at the lane's bound, and shutdown still ends the wait.
+fn poolGateCase(kind: GatedListener) !void {
     if (comptime !supported) return error.SkipZigTest;
     try support.fd_io.closer.ensureStarted();
     try support.waitCloserIdle(closer_drain_ms);
@@ -572,7 +575,10 @@ test "WorkerPool.initListener: behind a stuck socket-lane close, the workers sto
         // `.socket` lane.
         var counter: RejectCounter = .{};
         var lane_events: LaneEvents = .{};
-        var listener = try unix.listen(testing.allocator, testing.io, path, .{});
+        var listener = switch (kind) {
+            .unix_listen => try unix.listen(testing.allocator, testing.io, path, .{}),
+            .init_fd => tcp.Listener.initFd(testing.allocator, testing.io, .{ .handle = try support.listenPath(path) }, .{}),
+        };
         defer listener.close();
         var pool = try WorkerPool.initListener(testing.allocator, &listener, &counter, RejectCounter.onAccept, .{
             .concurrency = 1,
@@ -632,13 +638,28 @@ test "WorkerPool.initListener: behind a stuck socket-lane close, the workers sto
         const elapsed = try timedShutdown(&pool, run_thread, "shutdown of a pool waiting at the socket lane's bound");
         try testing.expect(elapsed < shutdown_bound_ms);
         try testing.expectEqual(fit, counter.count.load(.acquire));
-        try testing.expect(!support.pathExists(path));
+        // `Listener.close` removes only a `unix.listen` listener's file.
+        try testing.expectEqual(kind == .init_fd, support.pathExists(path));
 
         // Every fd is released once the blocked close ends.
         lingering.endLinger();
         try support.waitCloserIdle(closer_drain_ms);
     }
     try support.expectBackAtBaseline(before);
+}
+
+test "WorkerPool.initListener: behind a stuck socket-lane close, the workers stop accepting at the lane's bound, and shutdown still ends the wait" {
+    // The accept gate of `Listener.accept` (threat table row 8), on the
+    // pool's own raw accept: each AF_UNIX close queued behind a stuck one
+    // keeps its fd, so a peer that reconnects in a loop must wait in the
+    // kernel's backlog once the lane holds `socketLaneBound()` jobs.
+    try poolGateCase(.unix_listen);
+}
+
+test "WorkerPool.initListener: on a Listener.initFd AF_UNIX socket the workers also stop accepting at the socket lane's bound" {
+    // A service manager's socket reaches the app as a raw fd: the pool
+    // gates it as it gates a `unix.listen` listener.
+    try poolGateCase(.init_fd);
 }
 
 /// Records what fd passing an accepted connection got, then rejects it.

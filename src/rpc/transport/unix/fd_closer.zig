@@ -61,13 +61,13 @@
 //! in a transport whose `shutdown` is queued there wakes only on its own
 //! poll tick (see `Transport.shutdown`). Darwin sends every AF_UNIX close
 //! there (and the read half of every `shutdown`), Linux every close with
-//! bytes unread, which a peer can force. So a listener from
-//! `rpc.transport.unix.listen` takes no connection while this lane holds
-//! `socketLaneBound()` jobs or more (`Listener.accept` and `acceptFd`, and
-//! the workers of a `WorkerPool` serving it, wait in
-//! `tcp.runtime.awaitSocketLane`): a peer that stalls one close and then
-//! reconnects in a loop leaves its connections in the kernel's backlog, not
-//! in this process's fd table.
+//! bytes unread, which a peer can force. So an AF_UNIX listener (one from
+//! `rpc.transport.unix.listen`, or `tcp.Listener.initFd` on an AF_UNIX
+//! socket) takes no connection while this lane holds `socketLaneBound()`
+//! jobs or more (`Listener.accept` and `acceptFd`, and the workers of a
+//! `WorkerPool` serving it, wait in `tcp.runtime.awaitSocketLane`): a peer
+//! that stalls one close and then reconnects in a loop leaves its
+//! connections in the kernel's backlog, not in this process's fd table.
 //!
 //! ## The process fd budget
 //!
@@ -669,8 +669,9 @@ pub fn readClaims() usize {
 /// The smallest `socketLaneBound`.
 pub const min_socket_lane_bound: usize = 16;
 
-/// The `.socket` lane jobs (queued or running) at which a listener from
-/// `rpc.transport.unix.listen` stops accepting: a quarter of the process fd
+/// The `.socket` lane jobs (queued or running) at which an AF_UNIX listener
+/// (`rpc.transport.unix.listen`, or `tcp.Listener.initFd` on an AF_UNIX
+/// socket) stops accepting: a quarter of the process fd
 /// budget's limit, at least `min_socket_lane_bound`. Each job holds one
 /// socket fd until it runs, and a close there can block (see "Three lanes"
 /// in the module doc); a peer that stalls one would otherwise make every

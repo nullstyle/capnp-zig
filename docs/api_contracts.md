@@ -104,9 +104,10 @@ Internal helper behavior may change, but exported type semantics and error class
   `rpc.transport.unix.fd_io`). Residual: while that close blocks, the
   `.socket` lane waits too, and AF_UNIX socket closes queued behind it each
   hold one fd until it ends. That is why the next rule exists.
-- On a `unix.listen` listener, a worker takes no connection while the
-  closer's `.socket` lane holds `fd_io.closer.socketLaneBound()` jobs or
-  more, exactly as `Listener.accept` does (`tcp.runtime.awaitSocketLane`):
+- On an AF_UNIX listener (one from `unix.listen`, or `Listener.initFd` on
+  an AF_UNIX socket), a worker takes no connection while the closer's
+  `.socket` lane holds `fd_io.closer.socketLaneBound()` jobs or more,
+  exactly as `Listener.accept` does (`tcp.runtime.awaitSocketLane`):
   one `.backpressure` event (`error.SocketCloseQueueFull`) per wait goes to
   `Config.connection_options.observer`, new connections wait in the
   kernel's backlog, and shutdown ends the wait.

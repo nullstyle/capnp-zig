@@ -124,11 +124,13 @@
 //!   own connection when that connection is torn down stops that lane for
 //!   as long as the close blocks. The socket closes queued behind it each
 //!   hold one fd until then: on Linux only connections torn down with unread
-//!   data, on macOS every AF_UNIX connection closed meanwhile. A listener
-//!   from `unix.listen` takes no connection while the lane holds
+//!   data, on macOS every AF_UNIX connection closed meanwhile. An AF_UNIX
+//!   listener (from `unix.listen`, or `tcp.Listener.initFd` on an AF_UNIX
+//!   socket) takes no connection while the lane holds
 //!   `closer.socketLaneBound()` jobs (nor does a `WorkerPool` serving one),
 //!   so a peer that reconnects in a loop waits in the kernel's backlog
-//!   instead of adding fds. On macOS a reader whose `shutdown` waits there
+//!   instead of adding fds. Sockets this process accepts some other way (a
+//!   raw `accept` on a listen fd it never wrapped) are not gated. On macOS a reader whose `shutdown` waits there
 //!   notices on its 250 ms poll tick, and a close of the other end of that
 //!   socket waits while its `shutdown(SHUT_RD)` is stuck disposing of a
 //!   lingering fd (measured: the full linger; a stuck `close` does not hold

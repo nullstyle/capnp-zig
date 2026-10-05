@@ -47,11 +47,12 @@ pub const Runtime = struct {
 /// ## AF_UNIX
 ///
 /// `rpc.transport.unix.listen` returns a `Listener` too (Experimental,
-/// Linux and Darwin). It accepts the same way, except that it waits while
-/// the fd closer's `.socket` lane is full (`awaitSocketLane`); `unixPath`
-/// returns its path, and `close` also removes its socket file and releases
-/// its lock. The final close of any AF_UNIX listener (this one, or
-/// `initFd` on an AF_UNIX socket) runs on that lane (see `close`).
+/// Linux and Darwin). It accepts the same way; `unixPath` returns its path,
+/// and `close` also removes its socket file and releases its lock. Any
+/// AF_UNIX listener (this one, or `initFd` on an AF_UNIX socket, such as one
+/// a service manager hands over) waits to accept while the fd closer's
+/// `.socket` lane is full (`awaitSocketLane`), and its final close runs on
+/// that lane (see `close`).
 pub const Listener = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -66,6 +67,14 @@ pub const Listener = struct {
     /// (`rpc.transport.unix.ListenOptions.fd_passing`). Experimental; only
     /// an AF_UNIX listener may turn it on.
     fd_passing: fd_passing_mod.FdPassing = .{},
+    /// True for an AF_UNIX listener on Linux and Darwin: every listener from
+    /// `rpc.transport.unix.listen`, and `initFd` on any socket `getsockname`
+    /// reports as neither IPv4 nor IPv6 (`initFd` reads the family once).
+    /// Its connections read in drain mode, and their socket closes can queue
+    /// on the fd closer's `.socket` lane, so it accepts behind that lane's
+    /// gate (`awaitSocketLane`), as does a `WorkerPool` serving it. Internal
+    /// state. Experimental.
+    non_ip_socket: bool = false,
 
     /// Bind and listen on the given address.
     pub fn init(
@@ -87,7 +96,12 @@ pub const Listener = struct {
     ///
     /// Use this when the parent process creates the listening socket and
     /// passes the fd to the child (e.g., to avoid ephemeral port races
-    /// in test harnesses).
+    /// in test harnesses, or a service manager's socket activation).
+    ///
+    /// On Linux and Darwin this reads the socket's family once
+    /// (`getsockname`). An AF_UNIX socket (any family but IPv4 and IPv6)
+    /// gets the accept gate of a `rpc.transport.unix.listen` listener
+    /// (`awaitSocketLane`) and its off-thread final close (`close`).
     pub fn initFd(
         allocator: std.mem.Allocator,
         io: std.Io,
@@ -102,14 +116,16 @@ pub const Listener = struct {
                 .options = if (net.Server.AcceptOptions != void) .{ .mode = .stream, .protocol = .tcp } else {},
             },
             .conn_options = conn_options,
+            .non_ip_socket = if (comptime fd_io.supported) isNonIpSocket(socket) else false,
         };
     }
 
     /// Accept a single connection. Blocks until a client connects.
     /// Returns a heap-allocated Connection.
     ///
-    /// A listener from `rpc.transport.unix.listen` also waits while the fd
-    /// closer's `.socket` lane is full (see `awaitSocketLane`).
+    /// An AF_UNIX listener (from `rpc.transport.unix.listen`, or `initFd` on
+    /// an AF_UNIX socket) also waits while the fd closer's `.socket` lane is
+    /// full (see `awaitSocketLane`).
     pub fn accept(self: *Listener) !*Connection {
         if (self.close_requested.load(.acquire)) return error.ListenerClosed;
         try self.awaitSocketCloses();
@@ -145,11 +161,13 @@ pub const Listener = struct {
         return .{ .handle = client_fd };
     }
 
-    /// A listener from `rpc.transport.unix.listen` takes no connection
-    /// while the fd closer's `.socket` lane is full (`awaitSocketLane`).
-    /// Returns `error.ListenerClosed` once `close` is called.
+    /// An AF_UNIX listener (`non_ip_socket`: one from
+    /// `rpc.transport.unix.listen`, or `initFd` on an AF_UNIX socket) takes
+    /// no connection while the fd closer's `.socket` lane is full
+    /// (`awaitSocketLane`). Returns `error.ListenerClosed` once `close` is
+    /// called.
     fn awaitSocketCloses(self: *Listener) error{ListenerClosed}!void {
-        if (self.unix_socket == null) return;
+        if (!self.non_ip_socket) return;
         return awaitSocketLane(self.conn_options.observer, &self.close_requested);
     }
 
@@ -284,10 +302,13 @@ pub fn setTcpNoDelay(socket: SocketFd) void {
 
 /// True only when `getsockname` reports a family other than IPv4 or IPv6.
 /// When the family cannot be read (the call fails, or returns too few
-/// bytes), this returns false and the caller makes its best-effort attempt
-/// anyway. The failure is never propagated: `setTcpNoDelay` returns void,
-/// so `Listener.acceptFd`'s error set (which feeds the frozen
-/// `ServerSession.accept`) stays as it is.
+/// bytes), this returns false: `setTcpNoDelay` makes its best-effort
+/// attempt anyway, `Listener.initFd` treats the socket as IP (no accept
+/// gate; `rpc.transport.unix.listen` sets its own listener's flag itself),
+/// and `closeListenSocket` closes inline. The failure is never propagated:
+/// `setTcpNoDelay` returns void, so `Listener.acceptFd`'s error set (which
+/// feeds the frozen `ServerSession.accept`) stays as it is, and `initFd`
+/// stays infallible.
 fn isNonIpSocket(socket: SocketFd) bool {
     var addr: std.posix.sockaddr.storage = undefined;
     var len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.storage);
@@ -372,10 +393,11 @@ fn closeListenSocket(io: std.Io, socket: SocketFd, unix_file: ?*unix_socket_mod.
 /// flag, at most.
 const socket_lane_wait_ms: u32 = 50;
 
-/// The accept gate of a listener from `rpc.transport.unix.listen`
-/// (`Listener.accept`, `Listener.acceptFd`, and a `WorkerPool` serving one
-/// through `initListener`). Experimental; Linux and Darwin (elsewhere it
-/// returns at once).
+/// The accept gate of an AF_UNIX listener: one from
+/// `rpc.transport.unix.listen`, or `Listener.initFd` on an AF_UNIX socket
+/// (`Listener.accept`, `Listener.acceptFd`, and a `WorkerPool` serving
+/// either through `initListener`). Experimental; Linux and Darwin
+/// (elsewhere it returns at once).
 ///
 /// Returns at once while the fd closer's `.socket` lane holds fewer than
 /// `fd_io.closer.socketLaneBound()` jobs; otherwise waits until it does.

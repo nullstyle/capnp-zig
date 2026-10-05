@@ -21,7 +21,8 @@
 //! blocking fd still unread stalls only the socket lane (Linux still closes
 //! orderly sockets inline; a blocked reader still notices `shutdown`).
 //!
-//! Behind a stuck socket-lane close, a `unix.listen` listener stops
+//! Behind a stuck socket-lane close, an AF_UNIX listener (from
+//! `unix.listen`, or `Listener.initFd` on an AF_UNIX socket) stops
 //! accepting at the lane's bound, so reconnecting peers cannot grow this
 //! process's fds past it.
 //!
@@ -490,13 +491,13 @@ const ListenerEvents = struct {
     }
 };
 
-test "behind a stuck socket-lane close, a Unix listener stops accepting at the lane's bound, so reconnecting peers cannot grow this process's fds past it" {
-    // Each AF_UNIX close queued behind a stuck one keeps its socket fd until
-    // the stuck close ends: on macOS every AF_UNIX close goes to the
-    // `.socket` lane, on Linux every close with bytes unread (a peer forces
-    // that by tearing down mid-frame, or by filling the `.received` lane).
-    // A listener from `unix.listen` takes no connection while the lane holds
-    // `socketLaneBound()` jobs; the rest wait in the kernel's backlog.
+/// How a gated listener's socket was made: by `unix.listen`, or raw and
+/// wrapped with `Listener.initFd` (a service manager's socket activation).
+const GatedListener = enum { unix_listen, init_fd };
+
+/// Behind a stuck socket-lane close, the AF_UNIX listener `kind` stops
+/// accepting at the lane's bound.
+fn listenerGateCase(kind: GatedListener) !void {
     if (!support.supported) return error.SkipZigTest;
     try warmUp();
     const before = support.FdSnapshot.take();
@@ -510,9 +511,11 @@ test "behind a stuck socket-lane close, a Unix listener stops accepting at the l
         try dir.init();
         defer dir.deinit();
         var listener_events: ListenerEvents = .{};
-        var listener = try capnpc.rpc.transport.unix.listen(testing.allocator, testing.io, dir.socketPath(), .{
-            .conn = .{ .observer = listener_events.observer() },
-        });
+        const conn_options: Connection.Options = .{ .observer = listener_events.observer() };
+        var listener = switch (kind) {
+            .unix_listen => try unix.listen(testing.allocator, testing.io, dir.socketPath(), .{ .conn = conn_options }),
+            .init_fd => tcp.Listener.initFd(testing.allocator, testing.io, .{ .handle = try support.listenPath(dir.socketPath()) }, conn_options),
+        };
         var listener_open = true;
         defer if (listener_open) listener.close();
 
@@ -576,6 +579,24 @@ test "behind a stuck socket-lane close, a Unix listener stops accepting at the l
     }
     try support.expectBackAtBaseline(before);
 }
+
+test "behind a stuck socket-lane close, a Unix listener stops accepting at the lane's bound, so reconnecting peers cannot grow this process's fds past it" {
+    // Each AF_UNIX close queued behind a stuck one keeps its socket fd until
+    // the stuck close ends: on macOS every AF_UNIX close goes to the
+    // `.socket` lane, on Linux every close with bytes unread (a peer forces
+    // that by tearing down mid-frame, or by filling the `.received` lane).
+    // A listener from `unix.listen` takes no connection while the lane holds
+    // `socketLaneBound()` jobs; the rest wait in the kernel's backlog.
+    try listenerGateCase(.unix_listen);
+}
+
+test "behind a stuck socket-lane close, a Listener.initFd on an AF_UNIX socket also stops accepting at the lane's bound" {
+    // A socket a service manager hands over reaches the app as a raw fd.
+    // Its connections read in drain mode and close on the same lane, so
+    // `initFd` reads the family and gates the listener the same way.
+    try listenerGateCase(.init_fd);
+}
+
 // ---------------------------------------------------------------------------
 // A listener whose backlog holds a blocking fd
 // ---------------------------------------------------------------------------
@@ -732,19 +753,6 @@ test "while a listener's final close blocks the socket lane, closing another lis
     try support.expectBackAtBaseline(before);
 }
 
-/// A raw AF_UNIX listening socket bound at `path`, as a parent process
-/// would hand one to `Listener.initFd`. The caller closes it.
-fn rawUnixListener(path: []const u8) !Fd {
-    var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
-    @memset(&addr.path, 0);
-    @memcpy(addr.path[0..path.len], path);
-    const fd: Fd = @intCast(try support.check(sys.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0), "socket"));
-    errdefer support.closeFd(fd);
-    _ = try support.check(sys.bind(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)), "bind");
-    _ = try support.check(sys.listen(fd, 8), "listen");
-    return fd;
-}
-
 test "Listener.close of a Listener.initFd on an AF_UNIX socket also leaves the final close to the socket lane" {
     // `initFd` knows nothing of the socket: `close` asks `getsockname`, and
     // any socket that is not IPv4 or IPv6 gets the same off-thread final
@@ -762,7 +770,7 @@ test "Listener.close of a Listener.initFd on an AF_UNIX socket also leaves the f
     {
         var lingering = try LingeringSocket.open(stall_linger_seconds);
         defer lingering.deinit();
-        var listener = tcp.Listener.initFd(testing.allocator, testing.io, .{ .handle = try rawUnixListener(path) }, .{});
+        var listener = tcp.Listener.initFd(testing.allocator, testing.io, .{ .handle = try support.listenPath(path) }, .{});
         defer listener.close();
         try support.queueLingeringInBacklog(path, &lingering);
 

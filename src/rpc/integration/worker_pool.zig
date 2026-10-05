@@ -210,13 +210,14 @@ pub const WorkerPool = struct {
     /// used. The listener's `fd_passing` (`unix.ListenOptions.fd_passing`)
     /// applies to every connection, as with `ServerSession.accept`.
     ///
-    /// Like `Listener.accept`, the workers of a pool on a `unix.listen`
-    /// listener take no connection while the fd closer's `.socket` lane is
-    /// full (`tcp.runtime.awaitSocketLane`, with one `.backpressure` event
-    /// per wait to `config.connection_options.observer`): a peer that
-    /// stalls a socket close and reconnects in a loop then waits in the
-    /// kernel's backlog instead of growing this process's fds. Shutdown
-    /// ends that wait too.
+    /// Like `Listener.accept`, the workers of a pool on an AF_UNIX listener
+    /// (`unix.listen`, or `Listener.initFd` on an AF_UNIX socket) take no
+    /// connection while the fd closer's `.socket` lane is full
+    /// (`tcp.runtime.awaitSocketLane`, with one `.backpressure` event per
+    /// wait to `config.connection_options.observer`): a peer that stalls a
+    /// socket close and reconnects in a loop then waits in the kernel's
+    /// backlog instead of growing this process's fds. Shutdown ends that
+    /// wait too.
     ///
     /// How the workers wait: each one parks in `poll` on the listen socket
     /// and on a wake door (a pipe the pool owns), then makes a non-blocking
@@ -600,10 +601,11 @@ pub const WorkerPool = struct {
             switch (try park.wait(listen_fd, door[0])) {
                 .stop => return error.ListenerClosed,
                 .listener => {
-                    // The accept gate of a `unix.listen` listener, as in
+                    // The accept gate of an AF_UNIX listener (`unix.listen`,
+                    // or `Listener.initFd` on an AF_UNIX socket), as in
                     // `Listener.accept`: take nothing while the closer's
                     // `.socket` lane is full. Shutdown ends the wait.
-                    if (owned.unix_socket != null) {
+                    if (owned.non_ip_socket) {
                         try runtime_helpers.awaitSocketLane(pool.conn_options.observer, &pool.should_stop);
                     }
                     // Null: another worker took the connection, or its

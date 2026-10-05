@@ -74,7 +74,9 @@
 //!   or more (`tcp.runtime.awaitSocketLane`; a close there that blocks
 //!   holds every AF_UNIX close queued behind it, each with its fd). New
 //!   connections then wait in the kernel's backlog. `close` (or the pool's
-//!   shutdown) ends the wait with `error.ListenerClosed`.
+//!   shutdown) ends the wait with `error.ListenerClosed`. A
+//!   `tcp.Listener.initFd` on an AF_UNIX socket (a service manager's, say)
+//!   waits the same way.
 //! - **Flags.** The listening and client sockets are close-on-exec (std
 //!   already makes accepted sockets close-on-exec). No `TCP_NODELAY`: these
 //!   are not TCP sockets.
@@ -354,6 +356,10 @@ pub fn listen(
     var listener = Listener.initFd(gpa, io, .{ .handle = fd }, options.conn);
     listener.unix_socket = file;
     listener.fd_passing = options.fd_passing;
+    // `initFd` already read the family; this listener is AF_UNIX whatever
+    // `getsockname` said, so its accepts always wait at the socket lane's
+    // bound.
+    listener.non_ip_socket = true;
     return listener;
 }
 

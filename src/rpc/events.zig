@@ -150,12 +150,13 @@ pub const Resource = enum(u8) {
     /// `.received` queue at that limit of fds that arrived uncounted, or
     /// with no room for one more read's claim in time
     /// (`error.FdCloseQueueFull`: `attempted` = those fds pending, `limit` =
-    /// the budget's limit; the connection is closed). A listener from
-    /// `rpc.transport.unix.listen` that stops accepting because the
-    /// closer's `.socket` lane is at its bound emits a `.backpressure`
-    /// (source `.unix`, role `.server`, `err` = `error.SocketCloseQueueFull`,
-    /// `attempted_bytes` = the lane's pending jobs, `limit` = its bound),
-    /// once per wait. On the send side, a message whose fds would
+    /// the budget's limit; the connection is closed). An AF_UNIX listener
+    /// (`rpc.transport.unix.listen`, or `tcp.Listener.initFd` on an AF_UNIX
+    /// socket) that stops accepting because the closer's `.socket` lane is
+    /// at its bound emits a `.backpressure` (source `.unix`, role `.server`,
+    /// `err` = `error.SocketCloseQueueFull`, `attempted_bytes` = the lane's
+    /// pending jobs, `limit` = its bound), once per wait. On the send side,
+    /// a message whose fds would
     /// take a transport's write queue past `Transport.max_queued_fds` emits a
     /// `.backpressure` (`err` = `error.FdQueueFull`, `attempted_bytes` = the
     /// message's fd count, `limit` = the cap); the connection stays open. A

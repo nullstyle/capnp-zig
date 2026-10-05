@@ -205,6 +205,21 @@ pub fn connectPath(path: []const u8) !Fd {
     return fd;
 }
 
+/// A raw AF_UNIX listening socket bound at `path`, with `unix.listen`'s
+/// default backlog (128), as a parent process or a service manager would
+/// hand one to `tcp.Listener.initFd`. The caller closes it.
+pub fn listenPath(path: []const u8) !Fd {
+    var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
+    @memset(&addr.path, 0);
+    if (path.len >= addr.path.len) return error.NameTooLong;
+    @memcpy(addr.path[0..path.len], path);
+    const fd: Fd = @intCast(try check(sys.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0), "socket"));
+    errdefer closeFd(fd);
+    _ = try check(sys.bind(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)), "bind");
+    _ = try check(sys.listen(fd, 128), "listen");
+    return fd;
+}
+
 var dir_counter: std.atomic.Value(u32) = .init(0);
 
 /// A private (0700) directory under /tmp for socket files, removed with

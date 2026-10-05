@@ -4013,6 +4013,7 @@ capnpc-zig.rpc.transport.tcp.Listener.close_requested: field atomic.Value(bool) 
 capnpc-zig.rpc.transport.tcp.Listener.conn_options: field rpc.transport.tcp.connection.Connection.Options
 capnpc-zig.rpc.transport.tcp.Listener.fd_passing: field rpc.transport.fd_passing.FdPassing = <default>
 capnpc-zig.rpc.transport.tcp.Listener.io: field Io
+capnpc-zig.rpc.transport.tcp.Listener.non_ip_socket: field bool = false
 capnpc-zig.rpc.transport.tcp.Listener.server: field Io.net.Server
 capnpc-zig.rpc.transport.tcp.Listener.unix_socket: field ?rpc.transport.unix.socket.SocketFile = null
 capnpc-zig.rpc.transport.tcp.Runtime.allocator: field mem.Allocator
@@ -4122,6 +4123,7 @@ capnpc-zig.rpc.transport.tcp.runtime.Listener.initFd: fn (mem.Allocator, Io, rpc
 capnpc-zig.rpc.transport.tcp.runtime.Listener.io: field Io
 capnpc-zig.rpc.transport.tcp.runtime.Listener.ioBackend: fn (*const rpc.transport.tcp.runtime.Listener) Io
 capnpc-zig.rpc.transport.tcp.runtime.Listener.listenHandle: fn (*const rpc.transport.tcp.runtime.Listener) rpc.transport.tcp.stream_transport.SocketFd
+capnpc-zig.rpc.transport.tcp.runtime.Listener.non_ip_socket: field bool = false
 capnpc-zig.rpc.transport.tcp.runtime.Listener.server: field Io.net.Server
 capnpc-zig.rpc.transport.tcp.runtime.Listener.unixPath: fn (*const rpc.transport.tcp.runtime.Listener) ?[]const u8
 capnpc-zig.rpc.transport.tcp.runtime.Listener.unix_socket: field ?rpc.transport.unix.socket.SocketFile = null
