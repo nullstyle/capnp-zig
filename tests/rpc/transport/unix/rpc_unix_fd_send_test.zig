@@ -96,6 +96,8 @@ const PeerRead = struct {
     /// Offset in the stream of the first byte of the read that brought the
     /// first fds.
     first_fd_offset: ?usize = null,
+    /// Offset just past the last byte of that read.
+    first_fd_read_end: ?usize = null,
 
     fn readExactly(sock: Fd, want: usize) !PeerRead {
         var out: PeerRead = .{};
@@ -115,7 +117,10 @@ const PeerRead = struct {
             if (got.data_len == 0) return error.UnexpectedEndOfStream;
             try testing.expect(!got.control_truncated);
             if (got.fd_count != 0) {
-                if (out.first_fd_offset == null) out.first_fd_offset = out.bytes;
+                if (out.first_fd_offset == null) {
+                    out.first_fd_offset = out.bytes;
+                    out.first_fd_read_end = out.bytes + got.data_len;
+                }
                 out.reads_with_fds += 1;
                 out.fds += got.fd_count;
                 for (fds[0..got.fd_count]) |fd| support.closeFd(fd);
@@ -364,7 +369,15 @@ test "sendWithFds on a blocking socket waits while the peer's buffer is full (ma
         try testing.expect(waited);
         const read = try got;
         try testing.expectEqual(fd_count, read.fds);
-        try testing.expectEqual(@as(?usize, filled), read.first_fd_offset);
+        // The fds arrive with the message, not with the filler before it.
+        // macOS reports them on a read that starts at the message. Linux
+        // joins the filler that is still queued into the same read and
+        // reports the fds on the whole read (its last byte), so that read
+        // may start earlier: on ubuntu CI it started at 131072 of 180224,
+        // the 64 KiB read boundary before the message. Either way the read
+        // that brings the fds must cover the message's first byte.
+        try testing.expect(read.first_fd_offset.? <= filled);
+        try testing.expect(read.first_fd_read_end.? > filled);
         pipes.closeWriters();
         try pipes.expectAllWritersClosed();
     }
