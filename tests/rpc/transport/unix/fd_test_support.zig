@@ -20,9 +20,11 @@ const testing = std.testing;
 
 pub const is_linux = builtin.os.tag == .linux;
 pub const is_macos = builtin.os.tag == .macos;
-/// The kernels these suites pin. Every other target skips (Windows has no
-/// SCM_RIGHTS), but every target compiles the files.
-pub const supported = is_linux or is_macos;
+/// The kernels these suites pin, in a build that compiles fd passing in.
+/// Every other target skips (Windows has no SCM_RIGHTS), and so does
+/// `-Dfd-passing=false` (`FdHandle.fd` is `void` there), but every target
+/// compiles the files.
+pub const supported = (is_linux or is_macos) and capnpc.rpc.transport.unix.fd_io.supported;
 
 pub const Fd = posix.fd_t;
 pub const events = capnpc.rpc.events;

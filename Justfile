@@ -262,6 +262,9 @@ ci:
     just check
     just check-evented
     just check-selector
+    just check-ios
+    zig build check-fd-passing-off-symbols --summary all
+    just test-fd-passing-off
     zig build hardening
     zig build check-api
     zig build api-closure
@@ -534,6 +537,16 @@ check:
 # `-Dio-backend=evented check` compiles nothing evented, so it is not a gate.
 check-evented:
     zig build check-evented-canary {{ evented_canary_target }} --summary all
+
+# capnpc-zig-core as static libraries for iOS, both iOS simulators, and macOS
+# with fd passing off. Static libraries never link, so no Apple SDK is needed.
+check-ios:
+    zig build check-ios --summary all
+
+# The full suite with fd passing, the fd closer and the AF_UNIX transport
+# compiled out (`-Dfd-passing=false`). It changes the build on Linux and macOS.
+test-fd-passing-off:
+    zig build -Dfd-passing=false {{ test_jobs }} test --summary all
 
 # Execute the RPC e2e over an explicitly selected Io backend. This is the lane
 # with teeth: `-Dio-backend` is a []const u8 compared at RUNTIME by

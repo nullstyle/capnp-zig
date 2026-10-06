@@ -961,7 +961,10 @@ fn compileUpstreamSchemaProfile(
         root_arg,
         "--dep",
         "capnpc-zig",
+        "--dep",
+        "capnp_build_options",
         lib_arg,
+        "-Mcapnp_build_options=tests/fixtures/capnp_build_options.zig",
     } }) catch |err| switch (err) {
         error.FileNotFound => return error.ZigCompilerUnavailable,
         else => return err,

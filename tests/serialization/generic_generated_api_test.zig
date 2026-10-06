@@ -2,6 +2,9 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const capnp_cli = @import("support/capnp_cli.zig");
 
+/// The library reads `-Dfd-passing` from this module (see the fixture).
+const build_options_arg = "-Mcapnp_build_options=tests/fixtures/capnp_build_options.zig";
+
 fn writeFile(dir: std.Io.Dir, name: []const u8, bytes: []const u8) !void {
     var file = try dir.createFile(std.testing.io, name, .{});
     defer file.close(std.testing.io);
@@ -39,7 +42,7 @@ fn run(schema_path: []const u8, harness: []const u8, profile: capnpc.codegen.Gen
     const library_arg = try std.fmt.allocPrint(allocator, "-Mcapnpc-zig={s}", .{library_path});
     defer allocator.free(library_arg);
     const result = try std.process.run(allocator, io, .{
-        .argv = &.{ "zig", "test", "--dep", "capnpc-zig", root_arg, "--dep", "capnpc-zig", library_arg },
+        .argv = &.{ "zig", "test", "--dep", "capnpc-zig", root_arg, "--dep", "capnpc-zig", "--dep", "capnp_build_options", library_arg, build_options_arg },
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);

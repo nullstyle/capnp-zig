@@ -63,9 +63,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 
-/// True where fd passing is compiled in: Linux and Darwin. Elsewhere the
-/// budget counts nothing and `limit()` is 0.
-pub const supported: bool = builtin.target.os.tag == .linux or builtin.target.os.tag.isDarwin();
+/// True where fd passing is compiled in (`fd_passing.supported`: Linux and
+/// macOS, with `-Dfd-passing` on). Elsewhere the budget counts nothing,
+/// `limit()` is 0 and `RLIMIT_NOFILE` is never read.
+pub const supported: bool = @import("../fd_passing.zig").supported;
 
 /// The smallest limit the default can produce.
 pub const min_limit: usize = 16;

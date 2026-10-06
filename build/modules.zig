@@ -31,6 +31,12 @@ pub const Graph = struct {
     /// without `-Dquic=true`.
     quic_test_imports: ?helpers.QuicTestImports,
     wasm_host_module: *std.Build.Step.Compile,
+    /// The `capnp_build_options` module (`-Dfd-passing`). Every module
+    /// rooted at a library root (`src/lib.zig`, `src/lib_quic.zig`,
+    /// `src/lib_core.zig`) imports it: `src/rpc/transport/fd_passing.zig`
+    /// reads it, and a compile that reaches that file without it fails with
+    /// `no module named 'capnp_build_options'`.
+    capnp_build_options_module: *std.Build.Module,
 };
 
 /// Returns `!Graph` so `error.LazyDependencyNeeded` propagates (see above).
@@ -61,6 +67,23 @@ pub fn setup(b: *std.Build) !Graph {
     io_backend_options.addOption([]const u8, "kind", io_backend_kind);
     const io_backend_options_module = io_backend_options.createModule();
 
+    // Fd passing, the fd closer threads, the process fd budget and the
+    // AF_UNIX transport (src/rpc/transport/fd_passing.zig `supported`).
+    // They exist only on Linux and macOS; `false` compiles them out there
+    // too, for an embedder that owns its sockets and wants no closer thread.
+    // A consumer passes it as `.@"fd-passing" = false` in `b.dependency`.
+    // Like quic's, the option map is part of the module's identity: every
+    // package that depends on capnp-zig in one build must pass the same map,
+    // or the build gets two capnp-zig module sets.
+    const fd_passing = b.option(
+        bool,
+        "fd-passing",
+        "Compile in fd passing, the fd closer threads and the AF_UNIX transport on Linux and macOS (default: true)",
+    ) orelse true;
+    const capnp_build_options = b.addOptions();
+    capnp_build_options.addOption(bool, "fd_passing", fd_passing);
+    const capnp_build_options_module = capnp_build_options.createModule();
+
     // Create the library module
     const lib_module = b.addModule("capnpc-zig", .{
         .root_source_file = b.path(lib_root),
@@ -69,6 +92,7 @@ pub fn setup(b: *std.Build) !Graph {
         .imports = &.{},
     });
     lib_module.addImport("capnpc-zig", lib_module);
+    lib_module.addImport("capnp_build_options", capnp_build_options_module);
 
     const core_module = b.addModule("capnpc-zig-core", .{
         .root_source_file = b.path("src/lib_core.zig"),
@@ -76,6 +100,7 @@ pub fn setup(b: *std.Build) !Graph {
         .optimize = optimize,
     });
     core_module.addImport("capnpc-zig", core_module);
+    core_module.addImport("capnp_build_options", capnp_build_options_module);
 
     // Register the package's public modules before resolving the optional lazy
     // dependency. When this project is itself a child dependency, Zig catches
@@ -135,6 +160,7 @@ pub fn setup(b: *std.Build) !Graph {
         .optimize = wasm_optimize,
     });
     core_module_wasm.addImport("capnpc-zig", core_module_wasm);
+    core_module_wasm.addImport("capnp_build_options", capnp_build_options_module);
 
     const wasm_example_schema_module = b.addModule("capnp-wasm-example-schema", .{
         .root_source_file = b.path("src/wasm/generated/example.zig"),
@@ -181,5 +207,6 @@ pub fn setup(b: *std.Build) !Graph {
         .quic_zig_module = quic_zig_module,
         .quic_test_imports = helpers.QuicTestImports.of(quic_dep),
         .wasm_host_module = wasm_host_module,
+        .capnp_build_options_module = capnp_build_options_module,
     };
 }

@@ -3,8 +3,13 @@
 const std = @import("std");
 const helpers = @import("helpers.zig");
 
-fn runtime(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
-    const module = b.createModule(.{ .root_source_file = b.path("src/lib_core.zig"), .target = target, .optimize = optimize });
+fn runtime(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, build_options: *std.Build.Module) *std.Build.Module {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/lib_core.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "capnp_build_options", .module = build_options }},
+    });
     module.addImport("capnpc-zig", module);
     return module;
 }
@@ -45,8 +50,8 @@ pub const Steps = struct {
     tools: [2]*std.Build.Step.Compile,
 };
 
-pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, core: *std.Build.Module) Steps {
-    const host_core = runtime(b, b.graph.host, optimize);
+pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, core: *std.Build.Module, build_options: *std.Build.Module) Steps {
+    const host_core = runtime(b, b.graph.host, optimize, build_options);
     const generator = b.addExecutable(.{ .name = "reflection-generate", .root_module = b.createModule(.{
         .root_source_file = b.path("tests/reflection/generate.zig"),
         .target = b.graph.host,
@@ -110,7 +115,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     b.step("test-builder-evolution", "Run evolved list mutation and strict Text regressions").dependOn(evolution);
 
     const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .wasi });
-    const wasm_core = runtime(b, wasm_target, optimize);
+    const wasm_core = runtime(b, wasm_target, optimize, build_options);
     const wasm_generated = bindings(b, source, wasm_target, optimize, wasm_core);
     const wasm_exe = consumer(b, wasm_target, optimize, wasm_core, wasm_generated);
     const run_wasm = b.addSystemCommand(&.{ "wasmtime", "run" });

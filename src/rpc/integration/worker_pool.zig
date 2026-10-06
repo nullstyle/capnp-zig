@@ -186,13 +186,16 @@ pub const WorkerPool = struct {
         /// The wake door's pipe hit the system fd limit.
         SystemFdQuotaExceeded,
         Unexpected,
-        /// Not Linux or Darwin. Use `init` for TCP there.
+        /// Not Linux or Darwin (`park_door_supported`). Use `init` for TCP
+        /// there.
         UnixSocketsUnsupported,
     };
 
     /// Serve connections from a listener the caller already has, such as
     /// one from `rpc.transport.unix.listen`. Experimental. Linux and Darwin
-    /// only; elsewhere this returns `error.UnixSocketsUnsupported`.
+    /// only (`park_door_supported`); elsewhere this returns
+    /// `error.UnixSocketsUnsupported`. Its gate is not fd passing's:
+    /// `-Dfd-passing=false` keeps it, and so does every Darwin target.
     ///
     /// On success the pool takes the listener: it moves `listener.*` into
     /// the pool and marks the caller's copy closed, so `close` on that copy
@@ -703,9 +706,12 @@ pub const WorkerPool = struct {
     }
 };
 
-/// Where `initListener` works: Linux and Darwin, the targets of
-/// `rpc.transport.unix`.
-const park_door_supported: bool = builtin.target.os.tag == .linux or builtin.target.os.tag.isDarwin();
+/// Where `initListener` works: Linux and every Darwin target. Experimental.
+/// It needs only raw `poll`, `accept` and a pipe, not fd passing, so it is
+/// wider than `rpc.transport.unix` (Linux and macOS, with `-Dfd-passing`
+/// on): with `-Dfd-passing=false`, or on iOS, a pool can still serve a
+/// `tcp.Listener` through it.
+pub const park_door_supported: bool = builtin.target.os.tag == .linux or builtin.target.os.tag.isDarwin();
 
 /// The raw syscalls behind `initListener`'s wait: the wake door, the
 /// listener's non-blocking mode, `poll` and `accept`. Reached only where

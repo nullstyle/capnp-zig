@@ -1,8 +1,10 @@
 //! Cap'n Proto RPC over an AF_UNIX stream socket at a filesystem path:
 //! `rpc.transport.unix.listen` and `rpc.transport.unix.connect`.
 //!
-//! Experimental. Linux and Darwin only (`supported`). On every other target,
-//! Windows included, both calls return `error.UnixSocketsUnsupported`.
+//! Experimental. Linux and macOS only, with `-Dfd-passing` on (`supported`):
+//! the transport needs the fd closer to read and close its sockets. On every
+//! other target, Windows and the iOS family included, and in a build with
+//! `-Dfd-passing=false`, both calls return `error.UnixSocketsUnsupported`.
 //!
 //! Both reuse the TCP stack, which runs over any stream socket:
 //! - `listen` returns a `tcp.Listener`, so the frozen `ServerSession.accept`
@@ -112,7 +114,8 @@ const ClientSession = client.ClientSession;
 const Connection = connection_mod.Connection;
 const Fd = fd_io.Fd;
 
-/// True where `listen` and `connect` work: Linux and Darwin.
+/// True where `listen` and `connect` work: Linux and macOS, with
+/// `-Dfd-passing` on (`fd_passing.supported`).
 pub const supported: bool = fd_io.supported;
 
 const is_linux = builtin.target.os.tag == .linux;

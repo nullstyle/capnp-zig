@@ -64,7 +64,7 @@ const fd_passing = @import("../transport/fd_passing.zig");
 /// Experimental (fd passing). A POSIX file descriptor attached to a
 /// capability on an AF_UNIX connection (`Peer.setExportFd`,
 /// `Peer.importFd`). Its `fd` is `void` where fd passing is compiled out
-/// (only Linux and macOS have it).
+/// (only Linux and macOS have it, and only with `-Dfd-passing` on).
 pub const FdHandle = fd_passing.FdHandle;
 
 /// Experimental (fd passing). `Peer.setExportFd` failures.

@@ -1,8 +1,9 @@
 //! Raw reads on an AF_UNIX stream socket that take the file descriptors a
 //! peer attaches (SCM_RIGHTS), and raw sends that attach them.
 //!
-//! Experimental. Linux and Darwin only (`supported`); on every other target
-//! the calls return `error.UnixSocketsUnsupported` and parse nothing.
+//! Experimental. Linux and macOS only, with `-Dfd-passing` on (`supported`);
+//! everywhere else the calls return `error.UnixSocketsUnsupported` and parse
+//! nothing.
 //!
 //! ## Sending fds
 //!
@@ -171,7 +172,8 @@ pub const closer = @import("fd_closer.zig");
 /// (`RLIMIT_NOFILE / 4` by default).
 pub const budget = @import("fd_budget.zig");
 
-/// True where fd reads are compiled in: Linux and Darwin.
+/// True where fd reads are compiled in: where fd passing is
+/// (`fd_passing.supported`: Linux and macOS, with `-Dfd-passing` on).
 pub const supported: bool = closer.supported;
 
 /// A POSIX file descriptor number.

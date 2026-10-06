@@ -87,7 +87,11 @@ fn runGeneratedHarnessFiles(allocator: std.mem.Allocator, schema_paths: []const 
     // to compile with "no module named 'capnpc-zig'".
     try zig_argv.append(allocator, "--dep");
     try zig_argv.append(allocator, "capnpc-zig");
+    // The library reads `-Dfd-passing` from this module (see the fixture).
+    try zig_argv.append(allocator, "--dep");
+    try zig_argv.append(allocator, "capnp_build_options");
     try zig_argv.append(allocator, lib_arg);
+    try zig_argv.append(allocator, "-Mcapnp_build_options=tests/fixtures/capnp_build_options.zig");
 
     const zig_result = std.process.run(allocator, io, .{
         .argv = zig_argv.items,

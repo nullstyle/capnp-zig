@@ -1,8 +1,9 @@
 //! The process-wide threads that close file descriptors a peer attached, and
 //! the AF_UNIX transport's own sockets.
 //!
-//! Experimental. Linux and Darwin only (`supported`); on every other target
-//! the calls are stubs and nothing is ever queued.
+//! Experimental. Linux and macOS only, and only with `-Dfd-passing` on
+//! (`supported`, which is `fd_passing.supported`); everywhere else the calls
+//! are stubs, nothing is ever queued and no thread starts.
 //!
 //! ## Why separate threads
 //!
@@ -137,13 +138,13 @@
 //! calls go straight to the OS futex and work from any thread.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const posix = std.posix;
 const log = std.log.scoped(.rpc_fd_closer);
 const budget = @import("fd_budget.zig");
 
-/// True where the closer is compiled in: Linux and Darwin.
-pub const supported: bool = builtin.target.os.tag == .linux or builtin.target.os.tag.isDarwin();
+/// True where the closer is compiled in: where fd passing is
+/// (`fd_passing.supported`: Linux and macOS, with `-Dfd-passing` on).
+pub const supported: bool = @import("../fd_passing.zig").supported;
 
 /// A POSIX file descriptor number.
 pub const Fd = i32;

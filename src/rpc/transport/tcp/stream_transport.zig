@@ -5,6 +5,13 @@ const net = std.Io.net;
 const events = @import("../../events.zig");
 const framing = @import("../../wire/framing.zig");
 const fd_io = @import("../unix/fd_io.zig");
+const fd_passing = @import("../fd_passing.zig");
+
+/// A build with fd passing compiled out on a target that has it
+/// (`-Dfd-passing=false` on Linux or macOS). Such a build has no fd closer,
+/// so it has no safe way to read an AF_UNIX socket: the transport refuses
+/// one (see "AF_UNIX sockets without fd passing" on `Transport`).
+const refuses_unix_sockets = fd_passing.target_supported and !fd_io.supported;
 
 /// Opaque platform-stable socket handle wrapper passed into the transport
 /// layer. This is the canonical handle type in every public, handle-taking
@@ -77,6 +84,21 @@ pub const SocketFd = struct {
 /// reader on a lingering socket. TCP sockets read exactly as before, and so
 /// does a handle that is not a socket at all (only a test's fake `Io` passes
 /// one).
+///
+/// ## AF_UNIX sockets without fd passing
+///
+/// A build with `-Dfd-passing=false` compiles drain mode out with the fd
+/// closer. On Linux and macOS `initWithOptions` still reads the socket
+/// family. On an AF_UNIX socket, and on any socket whose family it cannot
+/// read, the transport refuses to read: every `read` and `readTimeout`
+/// fails with `error.Unexpected`, after a `.resource_rejection` event
+/// (`resource = .attached_fds`, `limit = 0`, `err =
+/// error.UnixSocketsUnsupported`), so the connection ends at its first
+/// read. A plain read would let a local peer's fds leak (macOS) or close
+/// on the reading thread (Linux). TCP sockets read as before. Rebuild with
+/// `-Dfd-passing=true` (the default) to serve AF_UNIX sockets. On targets
+/// that never have fd passing (Windows, the iOS family, the BSDs) the
+/// transport reads every socket the plain way, as before.
 ///
 /// ## Sending fds (AF_UNIX)
 ///
@@ -162,6 +184,12 @@ pub const Transport = struct {
     /// Drain-mode state; null for a socket read the plain way (see the type
     /// doc). Owned by the transport and freed by `deinit`.
     drain: ?*FdDrain = null,
+    /// True when this build cannot read the socket safely: fd passing is
+    /// compiled out on Linux or macOS (`-Dfd-passing=false`) and the socket
+    /// is AF_UNIX, or of a family `getsockname` did not report. Every read
+    /// then fails (see "AF_UNIX sockets without fd passing" on the type).
+    /// Set by `initWithOptions`. Experimental.
+    unix_refused: bool = false,
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     fd_closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     fd_mu: std.atomic.Mutex = .unlocked,
@@ -191,8 +219,8 @@ pub const Transport = struct {
     /// its fds.
     pub const EnqueueFdsError = EnqueueError || error{
         /// This transport cannot carry fds: its socket is not AF_UNIX, or
-        /// fd passing is not compiled in for this target (only Linux and
-        /// macOS have it).
+        /// fd passing is not compiled in (only Linux and macOS have it, and
+        /// only with `-Dfd-passing` on).
         FdPassingUnsupported,
         /// More than `fd_io.max_fds_per_send` (253) fds in one message.
         TooManyFds,
@@ -254,8 +282,8 @@ pub const Transport = struct {
 
     /// `enableFdPassing` failures. On each, nothing changed.
     pub const EnableFdPassingError = error{
-        /// The socket is not AF_UNIX, or fd passing is not compiled in for
-        /// this target (only Linux and macOS have it).
+        /// The socket is not AF_UNIX, or fd passing is not compiled in
+        /// (only Linux and macOS have it, and only with `-Dfd-passing` on).
         FdPassingUnsupported,
         /// The transport has already read: fd passing must start at the
         /// first byte of the stream, so frames and their fds line up.
@@ -537,6 +565,17 @@ pub const Transport = struct {
         errdefer allocator.free(buf);
         var source: events.Source = .tcp;
         var drain: ?*FdDrain = null;
+        var unix_refused = false;
+        if (comptime refuses_unix_sockets) {
+            switch (socketFamily(socket.handle)) {
+                .ip, .not_socket => {},
+                .unix => {
+                    source = .unix;
+                    unix_refused = true;
+                },
+                .unknown => unix_refused = true,
+            }
+        }
         if (comptime fd_io.supported) {
             switch (socketFamily(socket.handle)) {
                 .ip, .not_socket => {},
@@ -566,6 +605,7 @@ pub const Transport = struct {
             .observer = options.observer,
             .source = source,
             .drain = drain,
+            .unix_refused = unix_refused,
             .write_queue = .{
                 .max_items = options.write_queue_max_items,
                 .max_bytes = options.write_queue_max_bytes,
@@ -742,11 +782,22 @@ pub const Transport = struct {
     /// after a `.protocol_error` event).
     pub fn read(self: *Transport) ReadError!usize {
         if (self.close_requested.load(.acquire)) return 0;
+        if (comptime refuses_unix_sockets) {
+            if (self.unix_refused) return self.refuseRead();
+        }
         if (comptime fd_io.supported) {
             if (self.drain) |drain| return self.readDrain(drain);
         }
         var bufs: [1][]u8 = .{self.read_buf};
         return ioReadVec(self.io, self.fd, &bufs);
+    }
+
+    /// A read of a socket this build refuses (`unix_refused`): reads
+    /// nothing, reports why, and fails.
+    fn refuseRead(self: *const Transport) ReadError {
+        log.warn("refusing to read an AF_UNIX socket: fd passing is compiled out (-Dfd-passing=false)", .{});
+        events.emitResourceRejection(self.observer, self.source, .unknown, .attached_fds, null, 0, error.UnixSocketsUnsupported);
+        return error.Unexpected;
     }
 
     fn readDrain(self: *Transport, drain: *FdDrain) ReadError!usize {
@@ -1096,6 +1147,9 @@ pub const Transport = struct {
     /// In drain mode the deadline is a `poll` before the drain-mode `read`.
     pub fn readTimeout(self: *Transport, timeout: std.Io.Timeout) ReadTimeoutError!usize {
         if (self.close_requested.load(.acquire)) return 0;
+        if (comptime refuses_unix_sockets) {
+            if (self.unix_refused) return self.refuseRead();
+        }
         if (comptime fd_io.supported) {
             if (self.drain) |drain| {
                 try pollReadable(self.io, self.fd, timeout);

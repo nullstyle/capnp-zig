@@ -1,4 +1,5 @@
-//! Fd passing in the peer (Experimental, Linux and macOS): the side tables
+//! Fd passing in the peer (Experimental, Linux and macOS, with `-Dfd-passing`
+//! on; `fd_passing.supported`): the side tables
 //! that tie file descriptors to capabilities (`CapDescriptor.attachedFd`,
 //! `rpc.capnp:1112-1167`).
 //!
@@ -110,8 +111,8 @@ pub const SetExportFdError = error{
     UnknownExport,
     /// The fd is negative.
     InvalidFd,
-    /// Fd passing is not compiled in for this target (only Linux and macOS
-    /// have it).
+    /// Fd passing is not compiled in (only Linux and macOS have it, and only
+    /// with `-Dfd-passing` on).
     FdPassingUnsupported,
     OutOfMemory,
 };

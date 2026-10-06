@@ -503,6 +503,73 @@ jobs:
         if: matrix.target == 'x86-linux-gnu'
         run: zig build -Dquic=true check-compile check-test-compile -Dtarget=${{ matrix.target }} --summary all
 
+  ios-check:
+    name: iOS cross-compile (static libraries, no SDK)
+    # ubuntu-latest: the cheapest runner this workflow already uses. A static
+    # library never links, so it needs no Apple SDK and no macOS runner, and
+    # running on Linux proves that on every push. `check-ios` compiles
+    # capnpc-zig-core for aarch64-ios, aarch64-ios-simulator and
+    # x86_64-ios-simulator (fd passing on, so the target gate alone must
+    # compile it out) and for aarch64-macos with -Dfd-passing=false, each in
+    # Debug and ReleaseSafe. Nothing reads the vendored submodules.
+    # Ablation: putting `isDarwin()` back in `fd_passing.target_supported`
+    # turns the six iOS libraries red with std's `Threaded.zig:15486` error.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.17
+
+      - uses: ./.github/actions/setup-zig
+
+      - name: Compile capnpc-zig-core for iOS, both simulators, and macOS with fd passing off
+        run: zig build check-ios --summary all
+
+  fd-passing-off:
+    name: Fd passing compiled out (${{ matrix.os }})
+    # The whole suite again with -Dfd-passing=false: no fd passing, no fd
+    # closer threads, no fd budget, no AF_UNIX transport. Linux and macOS
+    # only, because the option changes nothing on Windows (no fd passing
+    # either way). Sized like the Test job, whose legs it mirrors.
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.17
+
+      - uses: ./.github/actions/setup-zig
+
+      # Compiler-dependent suites need the verified WASM compiler, as in the
+      # Test job.
+      - uses: ./.github/actions/setup-capnp
+
+      - name: Embedder symbol gate (macOS core static library, fd passing off)
+        # The library an embedder such as capnp-swift links must import no
+        # ___ulock_*, _pthread_create or _getrlimit and define no fd closer
+        # function. The step reads the Mach-O archive with nm, so it runs on
+        # the macOS leg (elsewhere it prints SKIPPED and succeeds).
+        # Ablation: building that library with fd passing on turns it red.
+        if: runner.os == 'macOS'
+        run: zig build check-fd-passing-off-symbols --summary all
+
+      - name: Run tests with fd passing compiled out
+        # Wrapped in the stall watchdog like the Test job's suite.
+        timeout-minutes: 35
+        shell: bash
+        run: bash tools/stall_watchdog.sh zig build -Dfd-passing=false test --summary all
+
   hardening:
     name: Hardening gate (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

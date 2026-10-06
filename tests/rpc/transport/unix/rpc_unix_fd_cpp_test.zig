@@ -38,6 +38,9 @@ const builtin = @import("builtin");
 const capnp = @import("capnpc-zig");
 const cli = @import("capnp-cli");
 
+/// The library reads `-Dfd-passing` from this module (see the fixture).
+const build_options_arg = "-Mcapnp_build_options=tests/fixtures/capnp_build_options.zig";
+
 fn run(argv: []const []const u8) ![]u8 {
     const result = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = argv });
     defer std.testing.allocator.free(result.stderr);
@@ -95,7 +98,7 @@ test "C++ reference and capnp-zig pass fds on capabilities over AF_UNIX, in both
     defer allocator.free(lib_arg);
     const emit_arg = try std.fmt.allocPrint(allocator, "-femit-bin={s}", .{endpoint});
     defer allocator.free(emit_arg);
-    allocator.free(try run(&.{ "zig", "build-exe", "-lc", "-ODebug", "--dep", "capnpc-zig", root_arg, "--dep", "capnpc-zig", lib_arg, emit_arg }));
+    allocator.free(try run(&.{ "zig", "build-exe", "-lc", "-ODebug", "--dep", "capnpc-zig", root_arg, "--dep", "capnpc-zig", "--dep", "capnp_build_options", lib_arg, build_options_arg, emit_arg }));
 
     const cpp_output = try std.fmt.allocPrint(allocator, "c++:{s}", .{directory});
     defer allocator.free(cpp_output);

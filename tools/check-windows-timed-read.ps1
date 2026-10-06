@@ -32,7 +32,9 @@ try {
         'exec', '--', 'zig', 'test', "-O$Optimize", '--test-no-exec',
         '--dep', 'capnpc-zig', '--dep', 'io-write-compat',
         '-Mroot=tests/rpc/transport/tcp/rpc_tick_idle_test.zig',
-        "-O$Optimize", '--dep', 'capnpc-zig', '-Mcapnpc-zig=src/lib.zig',
+        "-O$Optimize", '--dep', 'capnpc-zig', '--dep', 'capnp_build_options',
+        '-Mcapnpc-zig=src/lib.zig',
+        "-O$Optimize", '-Mcapnp_build_options=tests/fixtures/capnp_build_options.zig',
         "-O$Optimize", '--dep', 'capnpc-zig',
         '-Mio-write-compat=tests/rpc/support/io_write_compat.zig',
         "-femit-bin=$executable"

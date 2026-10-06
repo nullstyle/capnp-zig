@@ -1,18 +1,34 @@
 //! Types shared by fd passing (Experimental): attaching a file descriptor to
 //! a capability on an AF_UNIX connection (`CapDescriptor.attachedFd`).
 //!
-//! This file has no dependencies beyond `builtin`, so the peer layer, the
-//! transport binding and the core (socket-free) root can all name the types.
-//! The Unix transport (`rpc.transport.unix`) and `rpc.peer` re-export them.
+//! This file depends only on `builtin` and the `capnp_build_options` module
+//! (the build's `-Dfd-passing`), so the peer layer, the transport binding and
+//! the core (socket-free) root can all name the types. The Unix transport
+//! (`rpc.transport.unix`) and `rpc.peer` re-export them.
 //!
-//! Fd passing is compiled in on Linux and Darwin only (`supported`). On every
-//! other target `FdHandle` is an empty struct: the signatures that take or
-//! return one are the same on every platform, but nothing can be attached.
+//! Fd passing is compiled in on Linux and macOS only, and only when the build
+//! leaves `-Dfd-passing` on (`supported`). Everywhere else `FdHandle` is an
+//! empty struct: the signatures that take or return one are the same on
+//! every platform, but nothing can be attached.
+//!
+//! `supported` is the one gate. `fd_closer`, `fd_budget`, `fd_io` and the
+//! Unix transport all read it, so they agree by construction.
 
 const builtin = @import("builtin");
+const build_options = @import("capnp_build_options");
 
-/// True where fd passing is compiled in: Linux and Darwin.
-pub const supported: bool = builtin.target.os.tag == .linux or builtin.target.os.tag.isDarwin();
+/// The targets where fd passing can be compiled in: Linux and macOS. Not
+/// iOS, tvOS, watchOS, visionOS, Mac Catalyst or DriverKit: no lane tests fd
+/// passing there, and on the iOS family std's `Io.Threaded`, which the fd
+/// closer uses, does not compile at Zig 0.17.0
+/// (`docs/upstream/handoff-zig-fork-ios-nullfile.md`).
+pub const target_supported: bool = builtin.target.os.tag == .linux or builtin.target.os.tag == .macos;
+
+/// True where fd passing is compiled in: `target_supported`, and the build
+/// option `-Dfd-passing` (default true). With the option off, fd passing,
+/// the fd closer threads, the process fd budget and the AF_UNIX transport
+/// are compiled out on every target (docs/build-integration.md).
+pub const supported: bool = target_supported and build_options.fd_passing;
 
 /// A POSIX file descriptor, wrapped so that the raw platform type never
 /// appears in a signature (`posix.fd_t` is a pointer on Windows). Where fd

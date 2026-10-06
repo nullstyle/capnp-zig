@@ -47,10 +47,11 @@ pub const Runtime = struct {
 /// ## AF_UNIX
 ///
 /// `rpc.transport.unix.listen` returns a `Listener` too (Experimental,
-/// Linux and Darwin). It accepts the same way; `unixPath` returns its path,
-/// and `close` also removes its socket file and releases its lock. Any
-/// AF_UNIX listener (this one, or `initFd` on an AF_UNIX socket, such as one
-/// a service manager hands over) waits to accept while the fd closer's
+/// Linux and macOS with `-Dfd-passing` on). It accepts the same way;
+/// `unixPath` returns its path, and `close` also removes its socket file
+/// and releases its lock. Any AF_UNIX listener (this one, or `initFd` on an
+/// AF_UNIX socket, such as one a service manager hands over) waits to
+/// accept while the fd closer's
 /// `.socket` lane is full (`awaitSocketLane`), and its final close runs on
 /// that lane (see `close`).
 pub const Listener = struct {
@@ -67,7 +68,8 @@ pub const Listener = struct {
     /// (`rpc.transport.unix.ListenOptions.fd_passing`). Experimental; only
     /// an AF_UNIX listener may turn it on.
     fd_passing: fd_passing_mod.FdPassing = .{},
-    /// True for an AF_UNIX listener on Linux and Darwin: every listener from
+    /// True for an AF_UNIX listener where fd passing is compiled in (Linux
+    /// and macOS, `-Dfd-passing` on): every listener from
     /// `rpc.transport.unix.listen`, and `initFd` on any socket `getsockname`
     /// reports as neither IPv4 nor IPv6 (`initFd` reads the family once).
     /// Its connections read in drain mode, and their socket closes can queue
@@ -98,10 +100,14 @@ pub const Listener = struct {
     /// passes the fd to the child (e.g., to avoid ephemeral port races
     /// in test harnesses, or a service manager's socket activation).
     ///
-    /// On Linux and Darwin this reads the socket's family once
-    /// (`getsockname`). An AF_UNIX socket (any family but IPv4 and IPv6)
-    /// gets the accept gate of a `rpc.transport.unix.listen` listener
-    /// (`awaitSocketLane`) and its off-thread final close (`close`).
+    /// Where fd passing is compiled in (Linux and macOS, `-Dfd-passing` on)
+    /// this reads the socket's family once (`getsockname`). An AF_UNIX
+    /// socket (any family but IPv4 and IPv6) gets the accept gate of a
+    /// `rpc.transport.unix.listen` listener (`awaitSocketLane`) and its
+    /// off-thread final close (`close`). With `-Dfd-passing=false` on Linux
+    /// or macOS, an AF_UNIX listener accepts, but every connection's first
+    /// read fails (see "AF_UNIX sockets without fd passing" on
+    /// `tcp.Transport`), and its final close runs inline.
     pub fn initFd(
         allocator: std.mem.Allocator,
         io: std.Io,
@@ -184,12 +190,12 @@ pub const Listener = struct {
     /// file (only while the path still names that file) and releases its
     /// lock last, so no other `unix.listen` can bind the path in between.
     ///
-    /// On Linux and Darwin an AF_UNIX listener (one from
-    /// `rpc.transport.unix.listen`, or any socket `getsockname` reports as
-    /// neither IPv4 nor IPv6) never does its final close on the calling
-    /// thread. The connections still in its accept queue are released inside
-    /// that close, with any fds riding on their unread messages, and one of
-    /// those closes can block. The final close runs on the fd closer's
+    /// Where fd passing is compiled in (Linux and macOS, `-Dfd-passing` on)
+    /// an AF_UNIX listener (one from `rpc.transport.unix.listen`, or any
+    /// socket `getsockname` reports as neither IPv4 nor IPv6) never does its
+    /// final close on the calling thread. The connections still in its
+    /// accept queue are released inside that close, with any fds riding on
+    /// their unread messages, and one of those closes can block. The final close runs on the fd closer's
     /// `.socket` lane instead (see `closeListenSocket`). This fd is still
     /// closed before `close` returns, so a thread parked in `accept` wakes at
     /// once, and the lock is released without waiting for that final close.
@@ -344,12 +350,14 @@ pub fn closeFd(io: std.Io, socket: SocketFd) void {
 }
 
 /// The close of `Listener.close`. An IP listener (and every listener on
-/// Windows) closes inline, as before.
+/// Windows, and every listener in a build without fd passing) closes
+/// inline, as before.
 ///
-/// On Linux and Darwin an AF_UNIX listener never does its final close on
-/// this thread: one from `rpc.transport.unix.listen` (`unix_file` set), or
-/// any other socket `getsockname` reports as neither IPv4 nor IPv6 (a
-/// `Listener.initFd` on an AF_UNIX socket). The kernel releases the
+/// Where fd passing is compiled in (Linux and macOS, `-Dfd-passing` on) an
+/// AF_UNIX listener never does its final close on this thread: one from
+/// `rpc.transport.unix.listen` (`unix_file` set), or any other socket
+/// `getsockname` reports as neither IPv4 nor IPv6 (a `Listener.initFd` on
+/// an AF_UNIX socket). The kernel releases the
 /// connections still in a listener's accept queue inside the listener's
 /// final close, on the closing thread, and closes the fds riding on their
 /// unread messages there; `shutdown` disposes of none of them (measured with
@@ -396,8 +404,9 @@ const socket_lane_wait_ms: u32 = 50;
 /// The accept gate of an AF_UNIX listener: one from
 /// `rpc.transport.unix.listen`, or `Listener.initFd` on an AF_UNIX socket
 /// (`Listener.accept`, `Listener.acceptFd`, and a `WorkerPool` serving
-/// either through `initListener`). Experimental; Linux and Darwin
-/// (elsewhere it returns at once).
+/// either through `initListener`). Experimental; where fd passing is
+/// compiled in (Linux and macOS, `-Dfd-passing` on; elsewhere it returns
+/// at once).
 ///
 /// Returns at once while the fd closer's `.socket` lane holds fewer than
 /// `fd_io.closer.socketLaneBound()` jobs; otherwise waits until it does.

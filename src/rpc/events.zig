@@ -170,7 +170,12 @@ pub const Resource = enum(u8) {
     /// capability that arrived with one more as a `.resource_rejection` from
     /// source `.peer` (`err` = `error.ImportedFdsOverLimit`, `attempted` =
     /// the fds it would keep, `limit` = the cap); the capability arrives
-    /// without its fd, which the transport closes.
+    /// without its fd, which the transport closes. A build with
+    /// `-Dfd-passing=false` on Linux or macOS has no fd closer, so its TCP
+    /// transport refuses an AF_UNIX socket: each read emits a
+    /// `.resource_rejection` (`err` = `error.UnixSocketsUnsupported`,
+    /// `attempted` = null, `limit` = 0) and fails, which ends the
+    /// connection at its first read.
     attached_fds,
     _,
 };

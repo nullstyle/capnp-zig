@@ -1665,6 +1665,7 @@ capnpc-zig.rpc.integration.worker_pool.WorkerPool.shutdown: fn (*rpc.integration
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.shutdownGraceful: fn (*rpc.integration.worker_pool.WorkerPool, u64) void
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.workers: field []rpc.integration.worker_pool.WorkerPool.Worker
 capnpc-zig.rpc.integration.worker_pool.WorkerPool: struct
+capnpc-zig.rpc.integration.worker_pool.park_door_supported: const bool
 capnpc-zig.rpc.integration.worker_pool: struct
 capnpc-zig.rpc.integration: struct
 capnpc-zig.rpc.peer.CallOptions.result_lifetime: field rpc.peer.retained_questions.ResultLifetime = .automatic
@@ -4068,6 +4069,7 @@ capnpc-zig.rpc.transport.tcp.Transport.io: field Io
 capnpc-zig.rpc.transport.tcp.Transport.observer: field ?rpc.events.Observer = null
 capnpc-zig.rpc.transport.tcp.Transport.read_buf: field []u8
 capnpc-zig.rpc.transport.tcp.Transport.source: field rpc.events.Source = .tcp
+capnpc-zig.rpc.transport.tcp.Transport.unix_refused: field bool = false
 capnpc-zig.rpc.transport.tcp.Transport.write_queue: field rpc.transport.tcp.stream_transport.Transport.WriteQueue = <default>
 capnpc-zig.rpc.transport.tcp.Transport.writer_thread: field ?Thread = null
 capnpc-zig.rpc.transport.tcp.Transport: struct
@@ -4226,6 +4228,7 @@ capnpc-zig.rpc.transport.tcp.stream.Transport.source: field rpc.events.Source = 
 capnpc-zig.rpc.transport.tcp.stream.Transport.startWriter: fn (*rpc.transport.tcp.stream_transport.Transport) error{LockedMemoryLimitExceeded,OutOfMemory,SystemResources,ThreadQuotaExceeded,Unexpected}!void
 capnpc-zig.rpc.transport.tcp.stream.Transport.stopWriter: fn (*rpc.transport.tcp.stream_transport.Transport) void
 capnpc-zig.rpc.transport.tcp.stream.Transport.takeFrameFd: fn (*rpc.transport.tcp.stream_transport.Transport, usize) ?i32
+capnpc-zig.rpc.transport.tcp.stream.Transport.unix_refused: field bool = false
 capnpc-zig.rpc.transport.tcp.stream.Transport.write: fn (*rpc.transport.tcp.stream_transport.Transport, []const u8) error{AddressFamilyUnsupported,Canceled,ConnectionRefused,ConnectionResetByPeer,ConnectionTimedOut,FastOpenAlreadyInProgress,HostUnreachable,NetworkDown,NetworkUnreachable,SocketNotBound,SocketUnconnected,SystemResources,Unexpected}!void
 capnpc-zig.rpc.transport.tcp.stream.Transport.write_queue: field rpc.transport.tcp.stream_transport.Transport.WriteQueue = <default>
 capnpc-zig.rpc.transport.tcp.stream.Transport.writer_thread: field ?Thread = null

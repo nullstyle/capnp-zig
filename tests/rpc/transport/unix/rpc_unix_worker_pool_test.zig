@@ -24,8 +24,9 @@
 //!
 //! Every case runs in its own private directory (mode 0700) under /tmp,
 //! with short names (`sun_path` is 104 bytes on Darwin). Linux and macOS
-//! run the suite; every other target compiles it and runs only the
-//! unsupported-target case.
+//! run the suite; a build with `-Dfd-passing=false` and every other target
+//! compile it, and run the unsupported-target case where `initListener` is
+//! unsupported.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -799,7 +800,10 @@ test "WorkerPool.initListener: the caller's copy is marked closed, so a leftover
 }
 
 test "WorkerPool.initListener: unsupported targets return UnixSocketsUnsupported" {
-    if (comptime supported) return error.SkipZigTest;
+    // The pool's own gate, not fd passing's: `-Dfd-passing=false` skips the
+    // AF_UNIX cases above on Linux and macOS, but `initListener` still works
+    // there.
+    if (comptime capnpc.rpc.integration.worker_pool.park_door_supported) return error.SkipZigTest;
 
     var listener = try tcp.Listener.init(testing.allocator, testing.io, .{ .ip4 = .loopback(0) }, .{});
     defer listener.close();

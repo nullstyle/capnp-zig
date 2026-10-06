@@ -4,6 +4,9 @@ const request_reader = capnpc.request;
 const capnp_cli = @import("support/capnp_cli.zig");
 const zig_fmt = @import("support/zig_fmt.zig");
 
+/// The library reads `-Dfd-passing` from this module (see the fixture).
+const build_options_arg = "-Mcapnp_build_options=tests/fixtures/capnp_build_options.zig";
+
 fn writeFile(dir: std.Io.Dir, name: []const u8, data: []const u8) !void {
     const io = std.testing.io;
     var file = try dir.createFile(io, name, .{});
@@ -735,7 +738,10 @@ fn runCrossFileBrandHarnessProfile(
         root_arg,
         "--dep",
         "capnpc-zig",
+        "--dep",
+        "capnp_build_options",
         lib_arg,
+        build_options_arg,
     } });
     defer allocator.free(zig_result.stdout);
     defer allocator.free(zig_result.stderr);
@@ -814,7 +820,10 @@ fn runMultiFileHarnessProfile(
         root_arg,
         "--dep",
         "capnpc-zig",
+        "--dep",
+        "capnp_build_options",
         lib_arg,
+        build_options_arg,
     } }) catch |err| switch (err) {
         error.FileNotFound => return error.ZigCompilerUnavailable,
         else => return err,
@@ -1087,7 +1096,10 @@ fn runGeneratedHarnessProfile(
     // to compile with "no module named 'capnpc-zig'".
     try zig_argv.append(allocator, "--dep");
     try zig_argv.append(allocator, "capnpc-zig");
+    try zig_argv.append(allocator, "--dep");
+    try zig_argv.append(allocator, "capnp_build_options");
     try zig_argv.append(allocator, lib_arg);
+    try zig_argv.append(allocator, build_options_arg);
 
     const zig_result = std.process.run(allocator, io, .{
         .argv = zig_argv.items,

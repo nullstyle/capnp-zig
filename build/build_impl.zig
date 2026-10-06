@@ -35,6 +35,13 @@ pub fn buildImpl(b: *std.Build) !void {
     const quic_zig_module = graph.quic_zig_module;
     const quic_test_imports = graph.quic_test_imports;
     const wasm_host_module = graph.wasm_host_module;
+    // Every module rooted at a library root (src/lib.zig, src/lib_quic.zig,
+    // src/lib_core.zig) imports it (see `modules.Graph`). src/main.zig does
+    // not reach src/rpc/, so the plugin's modules need none.
+    const capnp_build_options_module = graph.capnp_build_options_module;
+    const build_options_imports: []const std.Build.Module.Import = &.{
+        .{ .name = "capnp_build_options", .module = capnp_build_options_module },
+    };
 
     // Expected-fail canary for std.Io.Evented; self-contained in its own file.
     @import("./evented_canary.zig").register(b, target, optimize);
@@ -64,7 +71,7 @@ pub fn buildImpl(b: *std.Build) !void {
         .root_source_file = b.path(lib_root),
         .target = target,
         .optimize = optimize,
-        .imports = &.{},
+        .imports = build_options_imports,
     });
     docs_module.addImport("capnpc-zig", docs_module);
     addQuicImport(docs_module, quic_zig_module);
@@ -754,7 +761,7 @@ pub fn buildImpl(b: *std.Build) !void {
         .root_source_file = b.path(lib_root),
         .target = target,
         .optimize = optimize,
-        .imports = &.{},
+        .imports = build_options_imports,
     });
     addQuicImport(lib_tests_module, quic_zig_module);
     // The checked-in generated code under src/rpc/gen/ imports the library by
@@ -778,7 +785,7 @@ pub fn buildImpl(b: *std.Build) !void {
         .root_source_file = b.path("src/lib_core.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{},
+        .imports = build_options_imports,
     });
     core_tests_module.addImport("capnpc-zig", core_tests_module);
     const core_tests = b.addTest(.{
@@ -788,7 +795,7 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_core_tests = b.addRunArtifact(core_tests);
 
     // Serialization tests
-    const reflection = @import("reflection.zig").add(b, target, optimize, core_module);
+    const reflection = @import("reflection.zig").add(b, target, optimize, core_module, capnp_build_options_module);
     const test_reflection_step = reflection.test_step;
     const run_message_tests = addLibTest(b, "tests/serialization/message_test.zig", target, optimize, lib_module);
     const run_serialization_fuzz_tests = addLibTest(b, "tests/serialization/serialization_fuzz_test.zig", target, optimize, lib_module);
@@ -856,7 +863,7 @@ pub fn buildImpl(b: *std.Build) !void {
     });
     registered_test_compile_steps.append(b.allocator, &codegen_error_sets_tests.step) catch @panic("OOM");
     const run_codegen_error_sets_tests = &b.addRunArtifact(codegen_error_sets_tests).step;
-    const codegen_skew_step = addCodegenSkewChecks(b, target, optimize);
+    const codegen_skew_step = addCodegenSkewChecks(b, target, optimize, capnp_build_options_module);
     const run_integration_tests = addLibTest(b, "tests/serialization/integration_test.zig", target, optimize, lib_module);
     const run_interop_tests = addLibTest(b, "tests/serialization/interop_test.zig", target, optimize, lib_module);
     const run_interop_roundtrip_tests = addLibTest(b, "tests/serialization/interop_roundtrip_test.zig", target, optimize, lib_module);
@@ -947,6 +954,10 @@ pub fn buildImpl(b: *std.Build) !void {
     // parked on the wake door shut down promptly, even after the socket file
     // is gone. Linux and macOS run it; other targets run only the stub case.
     const run_rpc_unix_worker_pool_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_worker_pool_test.zig", target, optimize, lib_module);
+    // `-Dfd-passing=false` on Linux and macOS: no `rpc.transport.unix`, and
+    // the TCP transport refuses an AF_UNIX socket. Runs in that build only
+    // (plus one drain-mode case with the option on).
+    const run_rpc_unix_fd_passing_off_tests = addLibTest(b, "tests/rpc/transport/unix/rpc_unix_fd_passing_off_test.zig", target, optimize, lib_module);
     const test_rpc_unix_step = b.step("test-rpc-unix", "Run the AF_UNIX transport suites (regressions, fd drain, lingering close, fd send, fd boundary reads, fd limits, listen/connect, WorkerPool)");
     test_rpc_unix_step.dependOn(run_rpc_unix_regression_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_fd_drain_tests);
@@ -957,6 +968,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_unix_step.dependOn(run_rpc_unix_fd_limits_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_session_tests);
     test_rpc_unix_step.dependOn(run_rpc_unix_worker_pool_tests);
+    test_rpc_unix_step.dependOn(run_rpc_unix_fd_passing_off_tests);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_test_imports) |qi|
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, qi)
     else
@@ -1111,7 +1123,7 @@ pub fn buildImpl(b: *std.Build) !void {
     });
     helpers.registered_test_compile_steps.append(b.allocator, &selected_fuzz.step) catch @panic("OOM");
     b.step("test-fuzz-target", "Run a selected fuzz target for evidence collection").dependOn(&b.addRunArtifact(selected_fuzz).step);
-    const stream_fixture_host_core = b.createModule(.{ .root_source_file = b.path("src/lib_core.zig"), .target = b.graph.host, .optimize = optimize });
+    const stream_fixture_host_core = b.createModule(.{ .root_source_file = b.path("src/lib_core.zig"), .target = b.graph.host, .optimize = optimize, .imports = build_options_imports });
     stream_fixture_host_core.addImport("capnpc-zig", stream_fixture_host_core);
     const stream_fixture_generator = b.addExecutable(.{ .name = "fuzz-streaming-generate", .root_module = b.createModule(.{
         .root_source_file = b.path("tests/serialization/generate_streaming.zig"),
@@ -1467,6 +1479,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_transport_step.dependOn(run_rpc_unix_fd_limits_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_worker_pool_tests);
+    test_rpc_transport_step.dependOn(run_rpc_unix_fd_passing_off_tests);
     test_rpc_transport_step.dependOn(run_rpc_raw_frame_security_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_kernel_semantics_tests);
 
@@ -1619,7 +1632,7 @@ pub fn buildImpl(b: *std.Build) !void {
         .root_source_file = b.path(lib_root),
         .target = target,
         .optimize = release_safe_optimize,
-        .imports = &.{},
+        .imports = build_options_imports,
     });
     release_safe_lib_module.addImport("capnpc-zig", release_safe_lib_module);
     addQuicImport(release_safe_lib_module, release_safe_quic_zig_module);
@@ -1700,7 +1713,7 @@ pub fn buildImpl(b: *std.Build) !void {
         .root_source_file = b.path(lib_root),
         .target = target,
         .optimize = release_fast_optimize,
-        .imports = &.{},
+        .imports = build_options_imports,
     });
     release_fast_lib_module.addImport("capnpc-zig", release_fast_lib_module);
     addQuicImport(release_fast_lib_module, null);
@@ -1743,7 +1756,7 @@ pub fn buildImpl(b: *std.Build) !void {
             .optimize = .Debug,
             .sanitize_thread = true,
             .link_libc = true,
-            .imports = &.{},
+            .imports = build_options_imports,
         });
         tsan_lib_module.addImport("capnpc-zig", tsan_lib_module);
         addQuicImport(tsan_lib_module, quic_zig_module);
@@ -1841,6 +1854,11 @@ pub fn buildImpl(b: *std.Build) !void {
         check_tsan_step.dependOn(&tsan_fail.step);
     }
 
+    // Embedder static libraries: `check-ios` (iOS, the iOS simulators, and
+    // macOS with fd passing off; no SDK) and the macOS-only
+    // `check-fd-passing-off-symbols`. Their root's host test joins `test`.
+    const apple = @import("./apple.zig").register(b, target, optimize, capnp_build_options_module);
+
     // Test step runs all tests
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(test_serialization_step);
@@ -1868,6 +1886,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_step.dependOn(run_package_preflight_tests);
     test_step.dependOn(test_snapshot_render_step);
     test_step.dependOn(test_release_drift_step);
+    for (apple.host_tests) |host_test| test_step.dependOn(host_test);
 
     // Configure these after the suites are complete. Windows can warm their
     // exact compile prerequisites in parallel, then run the unchanged suites
@@ -2025,6 +2044,7 @@ fn addCodegenSkewChecks(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    capnp_build_options_module: *std.Build.Module,
 ) *std.Build.Step {
     const codegen_abi = @import("../src/codegen_abi.zig");
     const step = b.step("test-codegen-skew", "Compile generated code against older/newer stub runtimes and expect the one skew error");
@@ -2034,6 +2054,7 @@ fn addCodegenSkewChecks(
         .root_source_file = b.path("src/lib_core.zig"),
         .target = b.graph.host,
         .optimize = .Debug,
+        .imports = &.{.{ .name = "capnp_build_options", .module = capnp_build_options_module }},
     });
     host_core.addImport("capnpc-zig", host_core);
     const generate_fixture = b.addExecutable(.{
