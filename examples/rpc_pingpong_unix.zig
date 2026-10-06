@@ -88,7 +88,7 @@ fn runClient(allocator: std.mem.Allocator, io: std.Io, path: []const u8, state: 
 
 pub fn main(init: std.process.Init) !void {
     if (comptime !unix.supported) {
-        std.debug.print("Unix-domain sockets are not supported on this target\n", .{});
+        std.debug.print("Unix-domain sockets are not compiled in: they need Linux or macOS, built with -Dfd-passing=true (the default)\n", .{});
         return;
     }
 

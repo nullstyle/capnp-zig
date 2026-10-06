@@ -1,6 +1,8 @@
 //! The embedder static-library gates: `check-ios` and
 //! `check-fd-passing-off-symbols`, and the host test of their shared root,
-//! `tests/apple/apple_check_root.zig`.
+//! `tests/apple/apple_check_root.zig`. `check-ios` also compiles the full
+//! module's TCP transport for iOS and Mac Catalyst
+//! (`tests/apple/apple_tcp_check_root.zig`).
 //!
 //! Each library is `capnpc-zig-core` plus that root, built with its own
 //! `capnp_build_options` (a fixed `-Dfd-passing`), so the gates do not
@@ -32,6 +34,14 @@ const points = [_]Point{
 
 const modes = [_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe };
 
+/// The Darwin targets without fd passing where `check-ios` also compiles
+/// the full module's TCP transport (`tests/apple/apple_tcp_check_root.zig`):
+/// there it refuses an AF_UNIX socket, a code path no lane runs.
+const tcp_points = [_]std.Target.Query{
+    .{ .cpu_arch = .aarch64, .os_tag = .ios },
+    .{ .cpu_arch = .aarch64, .os_tag = .maccatalyst },
+};
+
 /// What `zig build check-fd-passing-off-symbols` forbids in a macOS static
 /// library of the core built with `-Dfd-passing=false`: the futex imports
 /// and the thread and rlimit calls of the fd closer and the fd budget
@@ -60,7 +70,7 @@ pub fn register(
 ) Steps {
     const check_ios_step = b.step(
         "check-ios",
-        "Compile capnpc-zig-core as static libraries for iOS, the iOS simulators, and macOS with fd passing off (Debug and ReleaseSafe; no SDK, nothing links or runs)",
+        "Compile capnpc-zig-core as static libraries for iOS, the iOS simulators, and macOS with fd passing off, and the TCP transport for iOS and Mac Catalyst (Debug and ReleaseSafe; no SDK, nothing links or runs)",
     );
     for (points) |point| {
         const point_target = b.resolveTargetQuery(point.query);
@@ -68,6 +78,14 @@ pub fn register(
             const lib = checkLibrary(b, point_target, mode, optionsModule(b, point.fd_passing));
             // Emit the archive: code generation can fail where analysis
             // passes.
+            _ = lib.getEmittedBin();
+            check_ios_step.dependOn(&lib.step);
+        }
+    }
+    for (tcp_points) |query| {
+        const point_target = b.resolveTargetQuery(query);
+        for (modes) |mode| {
+            const lib = tcpCheckLibrary(b, point_target, mode, optionsModule(b, true));
             _ = lib.getEmittedBin();
             check_ios_step.dependOn(&lib.step);
         }
@@ -164,6 +182,34 @@ fn rootModule(
             .{ .name = "capnpc-zig-core", .module = core },
             .{ .name = "capnp_build_options", .module = build_options },
         },
+    });
+}
+
+/// `tests/apple/apple_tcp_check_root.zig` over the full `capnpc-zig`
+/// module (`src/lib.zig`) for `target`.
+fn tcpCheckLibrary(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    build_options: *std.Build.Module,
+) *std.Build.Step.Compile {
+    const lib_module = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "capnp_build_options", .module = build_options }},
+    });
+    lib_module.addImport("capnpc-zig", lib_module);
+    return b.addLibrary(.{
+        .name = "capnp-embedder-tcp-check",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/apple/apple_tcp_check_root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "capnpc-zig", .module = lib_module }},
+        }),
     });
 }
 

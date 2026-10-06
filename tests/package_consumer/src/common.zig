@@ -1,5 +1,7 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
+const capnp_build_options = @import("capnp_build_options");
 
 // Release sentinels: each package root must carry the new sprint surface, not
 // merely compile an older baseline. This file is imported by all three clean-
@@ -9,6 +11,17 @@ comptime {
     _ = capnpc.message.PointerListBuilder.initTextList;
     _ = capnpc.message.typed_list_helpers.NestedListReader;
     _ = capnpc.rpc.peer.CallOptions;
+}
+
+// The package exports its `-Dfd-passing` options module, so a consumer can
+// read the option without making a second options module with the same
+// contents (two modules may not own one file). The gate follows it: fd
+// passing on Linux and macOS only, and only with the option on.
+comptime {
+    const os = builtin.target.os.tag;
+    const expect_fd = capnp_build_options.fd_passing and (os == .linux or os == .macos);
+    if ((@FieldType(capnpc.rpc.peer.FdHandle, "fd") != void) != expect_fd)
+        @compileError("capnp_build_options.fd_passing disagrees with the fd passing gate");
 }
 
 // Downstream surface, shared by every root.

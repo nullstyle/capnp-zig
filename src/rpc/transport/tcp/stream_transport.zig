@@ -5,13 +5,21 @@ const net = std.Io.net;
 const events = @import("../../events.zig");
 const framing = @import("../../wire/framing.zig");
 const fd_io = @import("../unix/fd_io.zig");
-const fd_passing = @import("../fd_passing.zig");
 
-/// A build with fd passing compiled out on a target that has it
-/// (`-Dfd-passing=false` on Linux or macOS). Such a build has no fd closer,
-/// so it has no safe way to read an AF_UNIX socket: the transport refuses
-/// one (see "AF_UNIX sockets without fd passing" on `Transport`).
-const refuses_unix_sockets = fd_passing.target_supported and !fd_io.supported;
+/// A build without fd passing on a kernel where a plain read of a message
+/// with fds is unsafe: Linux closes them on the reading thread, and XNU
+/// (macOS and every other Darwin target) installs and leaks them. That is
+/// `-Dfd-passing=false` on Linux or macOS, and any build for the iOS family,
+/// Mac Catalyst or DriverKit, where fd passing is never compiled in. Such a
+/// build has no fd closer, so it has no safe way to read an AF_UNIX socket:
+/// the transport refuses one (see "AF_UNIX sockets without fd passing" on
+/// `Transport`). The gate is the kernel, not the targets that can have fd
+/// passing (Linux and macOS), so the other Darwin targets refuse too.
+const refuses_unix_sockets = refusesUnixSockets(builtin.target.os.tag, fd_io.supported);
+
+fn refusesUnixSockets(os: std.Target.Os.Tag, fd_passing_compiled_in: bool) bool {
+    return (os == .linux or os.isDarwin()) and !fd_passing_compiled_in;
+}
 
 /// Opaque platform-stable socket handle wrapper passed into the transport
 /// layer. This is the canonical handle type in every public, handle-taking
@@ -56,12 +64,13 @@ pub const SocketFd = struct {
 /// ## AF_UNIX sockets: drain mode
 ///
 /// On Linux and macOS, `initWithOptions` reads the socket family once (with
-/// `getsockname`). On an AF_UNIX socket, and on any socket whose family it
-/// cannot read, the transport runs in drain mode: a read waits until the
-/// socket is readable, takes a read claim in the closer
-/// (`fd_io.closer.claimRead`), then does one non-blocking `recvmsg` with a
-/// control buffer (`rpc.transport.unix.fd_io.tryRecvWithFds`; nothing to
-/// read sends it back to the wait), and every file descriptor the peer
+/// `getsockname`). On an AF_UNIX socket, and on any other socket that is
+/// not IPv4 or IPv6 (whether or not it can read the family), the transport
+/// runs in drain mode: a read waits until the socket is readable, takes a
+/// read claim in the closer (`fd_io.closer.claimRead`), then does one
+/// non-blocking `recvmsg` with a control buffer
+/// (`rpc.transport.unix.fd_io.tryRecvWithFds`; nothing to read sends it
+/// back to the wait), and every file descriptor the peer
 /// attached goes to the process-wide closer (`fd_io.closer`, its `.received`
 /// lane), never closed on the reading thread. On Linux `initWithOptions`
 /// also sets `SO_OOBINLINE` (`fd_io.setOobInline`), so fds a peer attaches
@@ -87,18 +96,33 @@ pub const SocketFd = struct {
 ///
 /// ## AF_UNIX sockets without fd passing
 ///
-/// A build with `-Dfd-passing=false` compiles drain mode out with the fd
-/// closer. On Linux and macOS `initWithOptions` still reads the socket
-/// family. On an AF_UNIX socket, and on any socket whose family it cannot
-/// read, the transport refuses to read: every `read` and `readTimeout`
+/// A build without fd passing has no drain mode and no fd closer: a build
+/// with `-Dfd-passing=false`, and every build for the iOS family, Mac
+/// Catalyst or DriverKit. On Linux and on every Darwin target
+/// `initWithOptions` still reads the socket family. On an AF_UNIX socket,
+/// and on a socket whose family `getsockname` does not report (it may be
+/// AF_UNIX), the transport refuses to read: every `read` and `readTimeout`
 /// fails with `error.Unexpected`, after a `.resource_rejection` event
 /// (`resource = .attached_fds`, `limit = 0`, `err =
 /// error.UnixSocketsUnsupported`), so the connection ends at its first
-/// read. A plain read would let a local peer's fds leak (macOS) or close
-/// on the reading thread (Linux). TCP sockets read as before. Rebuild with
-/// `-Dfd-passing=true` (the default) to serve AF_UNIX sockets. On targets
-/// that never have fd passing (Windows, the iOS family, the BSDs) the
+/// read. A plain read would let a local peer's fds leak (XNU) or close on
+/// the reading thread (Linux). TCP sockets, and sockets of any other family
+/// `getsockname` reports (only AF_UNIX carries fds), read as before.
+/// Rebuild for Linux or macOS with `-Dfd-passing=true` (the default) to
+/// serve AF_UNIX sockets. On the other targets (Windows, the BSDs) the
 /// transport reads every socket the plain way, as before.
+///
+/// The refusal does not stop a local peer from blocking a thread. The fds
+/// it attached stay queued on the socket, and the kernel disposes of them
+/// when the transport shuts the socket down or closes it, on the thread
+/// that does that. XNU disposes of them in a `shutdown` while the peer is
+/// still connected (a `Connection` does one inside `run`, after the failed
+/// read), and otherwise in the final close, inside `deinit`; Linux always
+/// in the final close, inside `deinit`. A lingering socket among them
+/// (`SO_LINGER` and unsent data) blocks that thread for its linger time: up
+/// to about 327 s on macOS, with no cap on Linux. With no closer thread,
+/// nothing can take that close off the caller. So do not give such a build
+/// an AF_UNIX socket that an untrusted process can write to.
 ///
 /// ## Sending fds (AF_UNIX)
 ///
@@ -185,10 +209,11 @@ pub const Transport = struct {
     /// doc). Owned by the transport and freed by `deinit`.
     drain: ?*FdDrain = null,
     /// True when this build cannot read the socket safely: fd passing is
-    /// compiled out on Linux or macOS (`-Dfd-passing=false`) and the socket
-    /// is AF_UNIX, or of a family `getsockname` did not report. Every read
-    /// then fails (see "AF_UNIX sockets without fd passing" on the type).
-    /// Set by `initWithOptions`. Experimental.
+    /// not compiled in on Linux or a Darwin target (`-Dfd-passing=false`,
+    /// or a Darwin target other than macOS) and the socket is AF_UNIX, or
+    /// of a family `getsockname` did not report. Every read then fails (see
+    /// "AF_UNIX sockets without fd passing" on the type). Set by
+    /// `initWithOptions`. Experimental.
     unix_refused: bool = false,
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     fd_closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -567,14 +592,9 @@ pub const Transport = struct {
         var drain: ?*FdDrain = null;
         var unix_refused = false;
         if (comptime refuses_unix_sockets) {
-            switch (socketFamily(socket.handle)) {
-                .ip, .not_socket => {},
-                .unix => {
-                    source = .unix;
-                    unix_refused = true;
-                },
-                .unknown => unix_refused = true,
-            }
+            const family = socketFamily(socket.handle);
+            if (family == .unix) source = .unix;
+            unix_refused = refusedFamily(family);
         }
         if (comptime fd_io.supported) {
             switch (socketFamily(socket.handle)) {
@@ -583,9 +603,9 @@ pub const Transport = struct {
                     source = .unix;
                     drain = try FdDrain.create(allocator);
                 },
-                // recvmsg works on any stream socket, so an unreadable
-                // family costs nothing but the drain state.
-                .unknown => drain = try FdDrain.create(allocator),
+                // recvmsg works on any stream socket, so another or an
+                // unreadable family costs nothing but the drain state.
+                .other, .unknown => drain = try FdDrain.create(allocator),
             }
             if (drain) |d| {
                 // Before the first read: an out-of-band message read past
@@ -795,7 +815,8 @@ pub const Transport = struct {
     /// A read of a socket this build refuses (`unix_refused`): reads
     /// nothing, reports why, and fails.
     fn refuseRead(self: *const Transport) ReadError {
-        log.warn("refusing to read an AF_UNIX socket: fd passing is compiled out (-Dfd-passing=false)", .{});
+        const what = if (self.source == .unix) "an AF_UNIX socket" else "a socket whose family getsockname did not report";
+        log.warn("refusing to read {s}: fd passing is not compiled in (-Dfd-passing=false, or a target other than Linux and macOS)", .{what});
         events.emitResourceRejection(self.observer, self.source, .unknown, .attached_fds, null, 0, error.UnixSocketsUnsupported);
         return error.Unexpected;
     }
@@ -1719,14 +1740,33 @@ const FrameReader = struct {
 const SocketFamily = enum {
     ip,
     unix,
-    /// A socket whose family `getsockname` did not report. Read in drain
-    /// mode: `recvmsg` works on any stream socket.
+    /// A family `getsockname` reported that is neither IP nor AF_UNIX (for
+    /// example AF_NETLINK or AF_VSOCK on Linux). It cannot carry fds: only
+    /// AF_UNIX has SCM_RIGHTS. Read in drain mode where fd passing is
+    /// compiled in (`recvmsg` works on any stream socket), and the plain
+    /// way where it is not.
+    other,
+    /// A socket whose family `getsockname` did not report (it failed, or
+    /// returned too short an address; macOS fails it on AF_SYSTEM and
+    /// AF_ROUTE sockets). It may be AF_UNIX: read in drain mode, or refused
+    /// where fd passing is not compiled in.
     unknown,
     /// Not a socket, or not an open fd (ENOTSOCK, EBADF). `recvmsg` cannot
     /// read it, so it keeps the plain `std.Io` path; only a test's fake `Io`
     /// hands the transport such a handle.
     not_socket,
 };
+
+/// Whether a build that refuses AF_UNIX sockets (`refuses_unix_sockets`)
+/// refuses a socket of this family: AF_UNIX, and a family it could not
+/// read, which may be AF_UNIX. Only AF_UNIX carries fds (SCM_RIGHTS), so
+/// every other family reads the plain way.
+fn refusedFamily(family: SocketFamily) bool {
+    return switch (family) {
+        .unix, .unknown => true,
+        .ip, .other, .not_socket => false,
+    };
+}
 
 /// The address family of a socket, from `getsockname`.
 fn socketFamily(handle: net.Socket.Handle) SocketFamily {
@@ -1743,7 +1783,7 @@ fn socketFamily(handle: net.Socket.Handle) SocketFamily {
     return switch (addr.family) {
         std.posix.AF.INET, std.posix.AF.INET6 => .ip,
         std.posix.AF.UNIX => .unix,
-        else => .unknown,
+        else => .other,
     };
 }
 
@@ -2027,6 +2067,56 @@ fn ioReadVecTaskTimeout(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, deadlin
 fn ioRead(io: std.Io, fd: net.Socket.Handle, buf: []u8) Transport.ReadError!usize {
     var bufs: [1][]u8 = .{buf};
     return ioReadVec(io, fd, &bufs);
+}
+
+test "without fd passing, Linux and every Darwin target refuse AF_UNIX sockets, and other targets read them" {
+    const xnu_or_linux = [_]std.Target.Os.Tag{ .linux, .macos, .ios, .tvos, .watchos, .visionos, .maccatalyst, .driverkit };
+    for (xnu_or_linux) |os| {
+        try std.testing.expect(refusesUnixSockets(os, false));
+        try std.testing.expect(!refusesUnixSockets(os, true));
+    }
+    const others = [_]std.Target.Os.Tag{ .windows, .freebsd, .netbsd, .openbsd, .dragonfly, .wasi, .freestanding };
+    for (others) |os| try std.testing.expect(!refusesUnixSockets(os, false));
+}
+
+test "a build without fd passing refuses AF_UNIX and unreadable families, and reads every other family" {
+    try std.testing.expect(refusedFamily(.unix));
+    try std.testing.expect(refusedFamily(.unknown));
+    try std.testing.expect(!refusedFamily(.ip));
+    try std.testing.expect(!refusedFamily(.other));
+    try std.testing.expect(!refusedFamily(.not_socket));
+}
+
+test "socketFamily: AF_UNIX, IP, another family (Linux AF_NETLINK) and one getsockname cannot read (macOS AF_SYSTEM)" {
+    const os = builtin.target.os.tag;
+    if (comptime os != .linux and os != .macos) return error.SkipZigTest;
+    const posix = std.posix;
+    const sys = posix.system;
+
+    var pair: [2]posix.fd_t = undefined;
+    try std.testing.expectEqual(posix.E.SUCCESS, posix.errno(sys.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &pair)));
+    defer for (pair) |fd| {
+        _ = sys.close(fd);
+    };
+    try std.testing.expectEqual(SocketFamily.unix, socketFamily(pair[0]));
+
+    const tcp_pair = try createSocketPair();
+    defer for (tcp_pair) |fd| ioClose(std.testing.io, fd);
+    try std.testing.expectEqual(SocketFamily.ip, socketFamily(tcp_pair[0]));
+
+    // A family getsockname reports that is neither: AF_NETLINK (Linux; its
+    // protocol 0 is NETLINK_ROUTE). macOS has none an unprivileged process
+    // can open: it fails getsockname on a kernel-control socket
+    // (AF_SYSTEM, SYSPROTO_CONTROL = 2) with EOPNOTSUPP.
+    const domain: u32, const kind: u32, const protocol: u32 = if (os == .linux)
+        .{ posix.AF.NETLINK, posix.SOCK.RAW, 0 }
+    else
+        .{ posix.AF.SYSTEM, posix.SOCK.DGRAM, 2 };
+    const rc = sys.socket(domain, kind, protocol);
+    try std.testing.expectEqual(posix.E.SUCCESS, posix.errno(rc));
+    const fd: posix.fd_t = @intCast(rc);
+    defer _ = sys.close(fd);
+    try std.testing.expectEqual(if (os == .linux) SocketFamily.other else SocketFamily.unknown, socketFamily(fd));
 }
 
 test "transport init and deinit" {

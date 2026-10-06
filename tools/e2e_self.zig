@@ -248,7 +248,7 @@ fn runAll(
 /// afterwards (the killed servers leave their socket and lock files).
 fn runAllUnix(allocator: std.mem.Allocator, io: std.Io, server_bin: []const u8, client_bin: []const u8) !void {
     if (comptime !unix_supported) {
-        std.debug.print("e2e-self --transport=unix: Unix-domain sockets are not supported on this target\n", .{});
+        std.debug.print("e2e-self --transport=unix: Unix-domain sockets are not compiled in: they need Linux or macOS, built with -Dfd-passing=true (the default)\n", .{});
         return error.UnixSocketsUnsupported;
     }
     // Short and private: `sun_path` is 104 bytes on macOS, and the 0700

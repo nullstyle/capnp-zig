@@ -176,7 +176,7 @@ fn readUntilAllWritersClosed(read_end: i32, buf: []u8, timeout_ms: i32) ![]const
 
 pub fn main(init: std.process.Init) !void {
     if (comptime !unix.supported) {
-        std.debug.print("Fd passing needs Linux or macOS\n", .{});
+        std.debug.print("Fd passing is not compiled in: it needs Linux or macOS, built with -Dfd-passing=true (the default)\n", .{});
         return;
     }
 

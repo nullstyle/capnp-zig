@@ -82,7 +82,14 @@ pub fn setup(b: *std.Build) !Graph {
     ) orelse true;
     const capnp_build_options = b.addOptions();
     capnp_build_options.addOption(bool, "fd_passing", fd_passing);
-    const capnp_build_options_module = capnp_build_options.createModule();
+    // Public, so a consumer that wants to read the option imports this copy
+    // (`dep.module("capnp_build_options")`). Zig writes an options module
+    // to a content-addressed file, and one file can belong to only one
+    // module: a consumer's own options module with the same contents next
+    // to capnp-zig in one compile fails with "file exists in modules".
+    const capnp_build_options_module = b.addModule("capnp_build_options", .{
+        .root_source_file = capnp_build_options.getOutput(),
+    });
 
     // Create the library module
     const lib_module = b.addModule("capnpc-zig", .{

@@ -24,9 +24,11 @@
 //!
 //! Every case runs in its own private directory (mode 0700) under /tmp,
 //! with short names (`sun_path` is 104 bytes on Darwin). Linux and macOS
-//! run the suite; a build with `-Dfd-passing=false` and every other target
-//! compile it, and run the unsupported-target case where `initListener` is
-//! unsupported.
+//! run the suite. The TCP-listener cases need no fd passing, only
+//! `initListener` (`park_door_supported`), so a build with
+//! `-Dfd-passing=false` runs them too: it serves and shuts down a pool on a
+//! TCP listener. Every other target compiles the file, and runs the
+//! unsupported-target case where `initListener` is unsupported.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -49,6 +51,9 @@ const testing = std.testing;
 
 const is_linux = support.is_linux;
 const supported = support.supported;
+/// Where `initListener` works: Linux and every Darwin target, with or
+/// without fd passing. The TCP-listener cases need only this.
+const park_door_supported = capnpc.rpc.integration.worker_pool.park_door_supported;
 
 /// The bound on a pool shutdown (sprint item 9). An idle pool shuts down in
 /// a few milliseconds, so the bound leaves far more than the 300 ms of
@@ -240,7 +245,7 @@ test "WorkerPool.initListener: unlinking the socket file, then shutting down, st
 }
 
 test "WorkerPool.initListener: a TCP listener with no known address also shuts down in under 2 s" {
-    if (comptime !supported) return error.SkipZigTest;
+    if (comptime !park_door_supported) return error.SkipZigTest;
 
     // `Listener.initFd` records no address (0.0.0.0:0), so a dial nudge
     // could not reach it either. The wake door does not need one.
@@ -376,6 +381,53 @@ test "WorkerPool.initListener: serves bootstrap and one call over a Unix socket,
 
     run_joined = true;
     const elapsed = try timedShutdown(&pool, run_thread, "shutdown after serving one connection");
+    try testing.expect(elapsed < shutdown_bound_ms);
+}
+
+test "WorkerPool.initListener: serves bootstrap and one call over a TCP listener, with or without fd passing" {
+    if (comptime !park_door_supported) return error.SkipZigTest;
+
+    var listener = try tcp.Listener.init(testing.allocator, testing.io, .{ .ip4 = .loopback(0) }, .{});
+    // On success the pool owns it and this copy is marked closed, so the
+    // close here does nothing; on error it closes the caller's listener.
+    defer listener.close();
+    const address = listener.getAddress();
+
+    var server: EchoPool = .{};
+    var pool = try WorkerPool.initListener(testing.allocator, &listener, &server, EchoPool.onAccept, .{ .concurrency = parked_workers });
+    defer pool.deinit();
+    const run_thread = try std.Thread.spawn(.{}, runPool, .{&pool});
+    var run_joined = false;
+    defer if (!run_joined) {
+        pool.shutdown();
+        run_thread.join();
+    };
+
+    var app: ClientApp = .{};
+    {
+        // A call deadline bounds the wait, so an unserved call fails the
+        // test instead of hanging it.
+        const session = try tcp.ClientSession.connect(testing.allocator, testing.io, address, .{
+            .default_call_timeout_ms = 5_000,
+        });
+        defer session.deinit();
+        app.peer = &session.peer;
+        _ = try session.peer.sendBootstrap(&app, ClientApp.onBootstrap);
+        session.run();
+    }
+
+    try testing.expect(!app.failed);
+    try testing.expect(app.call_returned);
+    try testing.expectEqual(@as(usize, 1), app.calls_ok);
+
+    try testing.expectEqual(@as(u32, 1), server.accepted.load(.acquire));
+    try testing.expect(!server.unix_source.load(.acquire));
+    // The pool's own accept keeps its promises on TCP too.
+    try testing.expect(!server.nonblocking.load(.acquire));
+    try testing.expect(server.cloexec.load(.acquire));
+
+    run_joined = true;
+    const elapsed = try timedShutdown(&pool, run_thread, "shutdown after serving one TCP connection");
     try testing.expect(elapsed < shutdown_bound_ms);
 }
 

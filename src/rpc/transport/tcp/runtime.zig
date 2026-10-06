@@ -104,10 +104,14 @@ pub const Listener = struct {
     /// this reads the socket's family once (`getsockname`). An AF_UNIX
     /// socket (any family but IPv4 and IPv6) gets the accept gate of a
     /// `rpc.transport.unix.listen` listener (`awaitSocketLane`) and its
-    /// off-thread final close (`close`). With `-Dfd-passing=false` on Linux
-    /// or macOS, an AF_UNIX listener accepts, but every connection's first
+    /// off-thread final close (`close`). Without fd passing on Linux or a
+    /// Darwin target (`-Dfd-passing=false`, or a Darwin target other than
+    /// macOS), an AF_UNIX listener accepts, but every connection's first
     /// read fails (see "AF_UNIX sockets without fd passing" on
-    /// `tcp.Transport`), and its final close runs inline.
+    /// `tcp.Transport`), and its final close runs inline. That close
+    /// disposes of the fds riding on connections still in its accept queue,
+    /// and a lingering one blocks the thread that calls `close` for its
+    /// linger time, as each refused connection's teardown can.
     pub fn initFd(
         allocator: std.mem.Allocator,
         io: std.Io,

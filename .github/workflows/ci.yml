@@ -511,7 +511,9 @@ jobs:
     # capnpc-zig-core for aarch64-ios, aarch64-ios-simulator and
     # x86_64-ios-simulator (fd passing on, so the target gate alone must
     # compile it out) and for aarch64-macos with -Dfd-passing=false, each in
-    # Debug and ReleaseSafe. Nothing reads the vendored submodules.
+    # Debug and ReleaseSafe, plus the full module's TCP transport for
+    # aarch64-ios and aarch64-maccatalyst (its AF_UNIX refusal path, which no
+    # lane runs). Nothing reads the vendored submodules.
     # Ablation: putting `isDarwin()` back in `fd_passing.target_supported`
     # turns the six iOS libraries red with std's `Threaded.zig:15486` error.
     runs-on: ubuntu-latest

@@ -170,12 +170,18 @@ pub const Resource = enum(u8) {
     /// capability that arrived with one more as a `.resource_rejection` from
     /// source `.peer` (`err` = `error.ImportedFdsOverLimit`, `attempted` =
     /// the fds it would keep, `limit` = the cap); the capability arrives
-    /// without its fd, which the transport closes. A build with
-    /// `-Dfd-passing=false` on Linux or macOS has no fd closer, so its TCP
-    /// transport refuses an AF_UNIX socket: each read emits a
-    /// `.resource_rejection` (`err` = `error.UnixSocketsUnsupported`,
+    /// without its fd, which the transport closes. A build without fd
+    /// passing on Linux or a Darwin target (`-Dfd-passing=false`, or a
+    /// Darwin target other than macOS) has no fd closer, so its TCP
+    /// transport refuses an AF_UNIX socket (source `.unix`), and a socket
+    /// whose family `getsockname` did not report (source `.tcp`): each read
+    /// emits a `.resource_rejection` (`err` = `error.UnixSocketsUnsupported`,
     /// `attempted` = null, `limit` = 0) and fails, which ends the
-    /// connection at its first read.
+    /// connection at its first read. The fds a peer attached stay queued
+    /// on that socket until the kernel disposes of them on the thread that
+    /// shuts it down (XNU, while the peer is connected: inside
+    /// `Connection.run`) or closes it (inside `deinit`), and a lingering
+    /// one blocks that thread for its linger time; no event reports it.
     attached_fds,
     _,
 };

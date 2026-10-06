@@ -39,7 +39,12 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(root_source),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "capnpc-zig", .module = dependency.module(module_name) }},
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = dependency.module(module_name) },
+                // capnp-zig's own options module (`-Dfd-passing`), the one
+                // copy a consumer may import next to it (common.zig).
+                .{ .name = "capnp_build_options", .module = dependency.module("capnp_build_options") },
+            },
         }),
     });
     b.installArtifact(consumer);
