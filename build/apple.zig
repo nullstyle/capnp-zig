@@ -95,7 +95,7 @@ pub fn register(
 
     const root_test = b.addTest(.{
         .name = "apple-check-root-test",
-        .root_module = rootModule(b, target, optimize, capnp_build_options_module),
+        .root_module = rootModule(b, target, optimize, capnp_build_options_module, false),
     });
     helpers.registered_test_compile_steps.append(b.allocator, &root_test.step) catch @panic("OOM");
     const tool_test = b.addTest(.{
@@ -163,6 +163,7 @@ fn rootModule(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     build_options: *std.Build.Module,
+    link_libc: bool,
 ) *std.Build.Module {
     const core = b.createModule(.{
         .root_source_file = b.path("src/lib_core.zig"),
@@ -175,9 +176,9 @@ fn rootModule(
         .root_source_file = b.path("tests/apple/apple_check_root.zig"),
         .target = target,
         .optimize = optimize,
-        // The root's exported functions allocate with `std.heap.c_allocator`,
-        // as an embedder's do.
-        .link_libc = true,
+        // The libraries link libc, as an embedder's do. The host test does
+        // not: Zig cannot provide a libc for every CI cross target.
+        .link_libc = link_libc,
         .imports = &.{
             .{ .name = "capnpc-zig-core", .module = core },
             .{ .name = "capnp_build_options", .module = build_options },
@@ -222,6 +223,6 @@ fn checkLibrary(
     return b.addLibrary(.{
         .name = "capnp-embedder-check",
         .linkage = .static,
-        .root_module = rootModule(b, target, optimize, build_options),
+        .root_module = rootModule(b, target, optimize, build_options, true),
     });
 }

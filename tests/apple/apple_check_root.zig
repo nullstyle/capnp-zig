@@ -21,6 +21,12 @@ const build_options = @import("capnp_build_options");
 const rpc = core.rpc;
 const Peer = rpc.peer.Peer;
 
+/// The static libraries link libc and allocate with `std.heap.c_allocator`,
+/// as an embedder's do. The host test links no libc, so it compiles for
+/// every CI cross target (Zig cannot provide a libc for some of them, for
+/// example powerpc64-linux-gnu).
+const embedder_allocator = if (builtin.link_libc) std.heap.c_allocator else std.heap.page_allocator;
+
 fn trapPanic(msg: []const u8, ra: ?usize) noreturn {
     _ = msg;
     _ = ra;
@@ -49,7 +55,7 @@ comptime {
 /// The sans-IO calls an embedder makes on a peer with no transport
 /// (capnp-swift's shim). Returns 1.
 export fn capnp_apple_check_peer() u32 {
-    var peer = Peer.initDetached(std.heap.c_allocator);
+    var peer = Peer.initDetached(embedder_allocator);
     defer peer.deinit();
     peer.disableThreadAffinity();
     _ = peer.checkDeadlines();
@@ -63,7 +69,7 @@ export fn capnp_apple_check_peer() u32 {
 /// and the bootstrap capability comes back. Returns 1 on success, 0 on any
 /// failure.
 export fn capnp_apple_check_loopback() u32 {
-    const ok = loopbackBootstrap(std.heap.c_allocator) catch return 0;
+    const ok = loopbackBootstrap(embedder_allocator) catch return 0;
     return @intFromBool(ok);
 }
 

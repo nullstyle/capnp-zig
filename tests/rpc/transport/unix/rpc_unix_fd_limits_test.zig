@@ -1362,7 +1362,7 @@ test "EMFILE while dup'ing a sent fd refuses that message, closes the dups made,
 }
 
 test "Linux ETOOMANYREFS: a direct send is refused with FdQueueFull, a queued one goes without its fds, and the connection stays" {
-    if (comptime !support.is_linux) return error.SkipZigTest;
+    if (comptime !support.is_linux or !supported) return error.SkipZigTest;
     const gpa = testing.allocator;
     try warmUp();
     const before = support.FdSnapshot.take();

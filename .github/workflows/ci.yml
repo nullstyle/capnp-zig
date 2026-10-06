@@ -772,9 +772,11 @@ jobs:
   release-safe-tests:
     name: ReleaseSafe hardening tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Slowest healthy run measured across the matrix: 28m (windows) — the same
-    # shape as the Test job, so the same 45.
-    timeout-minutes: 45
+    # Slowest healthy run measured across the matrix: 41m (windows, 2026-10-06,
+    # run 37513039981; its ReleaseSafe compile alone takes 29-33m). The H1
+    # tests pushed one healthy windows run past 45m (run 37530284324, the
+    # compile step 32.9m), so 60.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
