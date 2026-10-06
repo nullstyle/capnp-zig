@@ -68,10 +68,9 @@
         // this tree pins v0.29.0; on 2026-10-05 the main branches of qmsg
         // and qmesh-zig, and nest, pin v0.27.0. The released http3-zig
         // v0.5.2 cannot share this module: it builds its own quic module
-        // from quic's src/root.zig and its own BoringSSL. http3-zig main
-        // from 3a2d6bb (on v0.29.0) takes quic's exported quic and
-        // boringssl modules with this option map, so it should share it;
-        // that is unreleased and not measured here.
+        // from quic's src/root.zig and its own BoringSSL. http3-zig v0.5.3
+        // (3df122c, on v0.29.0) takes quic's exported quic and boringssl
+        // modules with this option map, so it shares this one.
         // boringssl-zig is unchanged since v0.25.0 (v0.29.0 too): ff30fe99
         // (0.6.7, BoringSSL aef0e2df), which links Windows ws2_32 with
         // pkg-config lookup disabled.

@@ -86,14 +86,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - **One quic module per process.** A build that links capnp-zig with
       `-Dquic=true` next to another package that depends on quic-zig must
       pin a release of that package that pins quic-zig v0.29.0, with the
-      same option map. quic-zig's v0.29.0 note records http3-zig's `main`
-      on v0.29.0 (`7012a6c`), and records no qmsg, qmesh-zig or nest
-      release on v0.29.0. The released http3-zig `v0.5.2` builds its own
-      quic module, so it cannot share capnp-zig's. http3-zig `main` from
-      `3a2d6bb` takes quic's exported `quic` and `boringssl` modules with
-      the same option map, so a build of that `main` and capnp-zig on
-      v0.29.0 should get one quic module. That combination is unreleased,
-      and this change did not measure it.
+      same option map. http3-zig `v0.5.3` (tag `3df122c`, hash
+      `http3_zig-0.5.3-ayZ03GssEwAiT7GhEpJgTa6liWnxBLTJ58rI869o4Wwo`) is
+      that release: it pins quic-zig v0.29.0 and takes quic's exported
+      `quic` and `boringssl` modules with capnp-zig's option map, so one
+      program can link both with one quic module. Older http3-zig releases
+      (`v0.5.2` and before) build their own quic module and cannot share
+      it. No qmsg, qmesh-zig or nest release pins v0.29.0 yet.
     - **Direct quic-zig users:** read quic-zig's 0.29.0 entry. The
       congestion controllers' loss hooks take the detection time (internal
       surface).
