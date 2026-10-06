@@ -109,18 +109,19 @@ module. So a binary that links http3-zig and capnp-zig with `-Dquic=true`
 gets two quic modules. With the same quic pin, the two modules have the
 same root file, and the build stops with `file exists in modules 'quic0'
 and 'quic'` (measured: http3-zig `main` at `bc708cd`, quic v0.28.1,
-tagged Zig 0.17.0). This stays true until http3-zig can use the quic and
-BoringSSL modules of its parent.
+tagged Zig 0.17.0). The tag `v0.5.2` has the same `build.zig`. This stays
+true until http3-zig can use the quic and BoringSSL modules of its parent.
 
-On 2026-10-05, no tag of qmsg, qmesh-zig or http3-zig pins quic v0.28.1,
-and nest has no tag. The newest tags pin older versions:
+On 2026-10-05, no tag of qmsg or qmesh-zig pins quic v0.28.1, and nest
+has no tag. The http3-zig tag `v0.5.2` pins v0.28.1, but it still builds
+its own quic module (see above):
 
 | Package | Newest tag | quic pin of that tag | quic pin of `main` |
 |---|---|---|---|
 | qmsg | `v0.7.0` | `v0.21.0` | `v0.27.0` (`cf22d0f`) |
 | qmesh-zig | `0.2.1` | `v0.21.0` | `v0.27.0` (`5aab8f1`) |
 | nest | none | none | `v0.27.0` (`a8d3672`, its newest commit) |
-| http3-zig | `v0.5.1` | `v0.26.0` | `v0.28.1` (`bc708cd`) |
+| http3-zig | `v0.5.2` (`7c8fff6`) | `v0.28.1` | `v0.28.1` (`5419108`) |
 
 Do not pin one of these tags, or the `main` branch of qmsg, qmesh-zig or
 nest, next to capnp-zig v0.20.0 with `-Dquic=true`. The build then makes
@@ -158,9 +159,20 @@ Do the items that apply. Each item names the change and what to do.
 2. **Generated code.** The codegen ABI does not change (`version` 1), so
    bindings from the v0.19.x plugin still compile against the v0.20.0
    runtime. Regenerate them with the plugin from your pin all the same
-   ([build-integration.md](build-integration.md)). The only change in
-   generated code is the name of one capture: a schema that declares a
-   file-level `flag` (for example `annotation flag`) now compiles.
+   ([build-integration.md](build-integration.md)).
+   - For a schema that compiled before, regeneration changes three names
+     in function bodies. The settled-flag capture of each call-return
+     function is now `@"settled flag"` (was `flag`). In generic-RPC client
+     code, the local `Adapter` is now `@"client adapter"`, and the
+     parameter `Ancestor` of `asAncestor` is now `@"ancestor type"`.
+   - Some schemas did not compile before, because a generated local
+     shadowed one of their names. Now they compile. A schema that declares
+     a file-level `flag` (for example `annotation flag`) keeps that name.
+     But a schema constant or annotation that a generated local would
+     shadow now has a trailing underscore (`ctx_`), and a shadowed import
+     alias has a numeric suffix (`user_ctx_2`). Use these new names in
+     your code. See "Schema names that generated code uses for locals" in
+     [generated-api.md](generated-api.md#schema-names-that-generated-code-uses-for-locals).
 3. **`events.Source` and `events.Resource` are non-exhaustive (Breaking,
    Experimental).** Both are now `enum(u8) { ..., _ }`, with the new values
    `Source.unix` and `Resource.attached_fds`.

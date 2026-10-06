@@ -792,7 +792,7 @@ by step.
       `main` at `bc708cd`, which pins quic v0.28.1 with the same hash as
       capnp-zig, tagged Zig 0.17.0). This stays true until http3-zig can
       use the quic and BoringSSL modules of its parent. Its newest tag,
-      `v0.5.1`, pins quic v0.26.0.
+      `v0.5.2`, pins quic v0.28.1 and still builds its own quic module.
     - **An embedded host that ticks before it services** (Experimental
       QUIC transport) now gets the same results as in the safe order: a
       RESET of stream 0 closes the session (through quic-zig v0.27.0 the
@@ -845,7 +845,7 @@ by step.
   declares a file-level `flag`** (for example `annotation flag`). Call-return
   code captured its settled flag as `|flag|`, which shadowed the
   declaration. The capture is now `@"settled flag"`, which no schema name can
-  match. Regenerating bindings changes only that capture name.
+  match. The next entry lists the other lines that regeneration changes.
 - **Generated code compiles when a schema names a constant, an annotation or
   an import after a generated local.** Generated functions name their
   parameters, locals and captures plainly (`self`, `value`, `msg`, `ctx`,
@@ -860,8 +860,9 @@ by step.
   check is per container, so output with no collision does not change. A type
   is never renamed: the generic-RPC client's type-valued locals are now
   `@"client adapter"` and `@"ancestor type"`, because a schema type named
-  `Adapter` or `Ancestor` collided with them. Regenerating bindings changes
-  only those lines.
+  `Adapter` or `Ancestor` collided with them. For a schema that compiled
+  before, regeneration changes only those lines and the settled-flag capture
+  (above).
 
 - **A crash-restarted QUIC server accepts the NEW_TOKENs its predecessor
   issued (Experimental).** quic-zig stamps a NEW_TOKEN's issue and expiry
