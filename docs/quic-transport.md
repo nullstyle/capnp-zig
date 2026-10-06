@@ -44,9 +44,11 @@ Cap'n Proto RPC vat session. The payload above the QUIC transport is still the
 standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
 between peers, not the RPC protocol that `Peer` handles.
 
-The manifest pins the `quic` package at annotated tag `v0.27.0` (commit
-`9d2ab6e`: session-ticket keys as server config, and a client that sends its
-0-RTT data again after a Retry), which in turn pins the published
+The manifest pins the `quic` package at annotated tag `v0.28.0` (commit
+`a9078d8`: `Connection.streamRecvEnd`, so the end of a stream is not lost when
+`tick` runs before the read; see [Embedder rules](#embedder-rules)). v0.27.0
+before it made session-ticket keys server config, and made a client send its
+0-RTT data again after a Retry. The tag in turn pins the published
 boringssl-zig commit `ff30fe99` (boringssl 0.6.7). That BoringSSL wrapper links
 Windows sockets as `ws2_32` with package-config lookup disabled, removing the
 native-shell and Git Bash `pkg-config.BAT` failure path. A process can hold
@@ -443,18 +445,52 @@ already obey both.
 The reason is quic-zig's stream GC. `tick` frees a stream when its receive
 half has ended. Sometimes every byte of a stream is read, and then its FIN or
 RESET arrives alone. If `tick` runs before the service pass, the stream is
-gone before the Driver sees its end. The Driver then reports `.reaped`, not
-`.fin` or `.reset`, and a read gets `StreamNotFound`. So a clean end and a
-cut stream look the same, and the RESET error code is lost.
+gone before the Driver reads it, and a read gets `StreamNotFound`. Through
+quic-zig v0.27.0 the Driver then reported `.reaped`, so a clean end and a cut
+stream looked the same, and the RESET error code was lost.
+
+Since quic-zig v0.28.0 the connection keeps a note of how each freed stream
+ended. `Connection.streamRecvEnd(id)` gives it: `fin_seen`, `reset_code`,
+`final_size`, `read_offset`, `stopped` and `isClean()`. It gives the same
+answer before and after the tick that frees the stream, at least through the
+next tick. The Driver reads the note and reports `.fin` or `.reset`. For a
+host that ticks first, this gives:
+
+- A RESET of stream 0 reaches the seat as `.reset`, and the seat closes the
+  session (the E-order contract), as in the safe order. Through v0.27.0 the
+  seat got `.reaped`, and the session stayed up with no control stream.
+- A native data stream that the peer reset keeps the final size and the
+  error code of its RESET. The seat judges the frame as the owned loops do:
+  a final size other than the announced length fails it (`InvalidFrame`),
+  missing bytes fail it (`DataStreamReset`), and all the bytes complete it.
+  Through v0.27.0 the seat lost the RESET in this order.
+- A data stream that ended clean keeps its bytes until the engine reads
+  them, as before.
+
+`.reaped` now means "no clean end the Driver can vouch for": the teardown
+pass, a stream that this side stopped, or a freed stream whose note is gone.
+The seat treats a freed stream with no note as cut. Its bytes in hand are its
+final size: all the announced bytes complete the frame, and fewer fail it at
+once with `InvalidFrame`. On stream 0 such an end closes the session.
+
+**The stopped-stream signal.** The seat refuses a peer stream that has no
+place in the protocol with STOP_SENDING (`peer_streams.zig`). Since quic-zig
+v0.28.0 a stream that this side stopped ends as `.reaped`, also while it is
+still live. Such a stream has `streamRecvWasReaped(id) == false`, so that
+call alone does not tell it from the teardown pass. The direct signal is
+`conn.streamRecvEnd(id).?.stopped`. The seat drops a stopped stream and never
+takes its bytes as a complete data stream: quic-zig threw away what arrived
+after the stop. This is also true for a stream that your host stops.
 
 capnp-zig survives the wrong order. A native data frame announces its length
-on the control stream (stream 0). The seat keeps the bytes of a data stream
-after its end, also after `.reaped`. When every announced byte is in hand,
-the frame completes. When bytes are missing, the session closes at once with
-`InvalidFrame`. Obey the rule all the same. In the wrong order the seat does
-not get the final size of a RESET, so it cannot see a RESET that claims more
-bytes than the announcement. Other protocols on the same Driver cannot
-always recover the end of a stream.
+on the control stream (stream 0), and the seat keeps the bytes of a data
+stream after its end. The owned loops read the note too: when `tick` freed a
+data stream after a RESET and bytes are missing, the frame fails at once
+with `DataStreamReset`, and the reset code goes to the debug log. Obey the rule all the same. The note holds
+the last 256 ends of a connection. A host that reads late, after many
+streams ended, gets "end not known" (`streamRecvEnd` null and
+`streamRecvWasReaped` true), which it must treat as a cut stream. Other
+protocols on the same Driver need the same care.
 
 **2. One socket for a `Server` and your own dials: give each datagram to your
 dials first.** Since quic-zig v0.26.0, the first flight of a server is 1200
@@ -1146,3 +1182,8 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.
 - Mode mismatch is treated as malformed transport input and closes cleanly.
+- quic-zig v0.28.0 does not compile for a 32-bit target: a size check in
+  its stream-end note (`src/conn/RecvEndRing.zig`) holds only where a `u64`
+  aligns to 8 bytes. So `-Dquic=true` builds for `x86-linux-gnu` fail with
+  this pin. 64-bit targets are not affected. The fix is in quic-zig
+  (commit `dd570d0`, not released when this was written).

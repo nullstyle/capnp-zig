@@ -10,8 +10,9 @@ changes:
 - Cap'n Proto RPC over Unix-domain sockets (Linux and macOS), with fd
   passing as an opt-in.
 - A security fix for every RPC connection on an AF_UNIX socket.
-- quic-zig v0.25.0 -> v0.27.0: session tickets that live through a
-  restart, and 0-RTT data that still goes early behind a Retry.
+- quic-zig v0.25.0 -> v0.28.0: session tickets that live through a
+  restart, 0-RTT data that still goes early behind a Retry, and the end of
+  a stream that a `tick` cannot hide.
 - A session-ticket key for QUIC servers, with rotation.
 - A freeze gate for the shape of generated code.
 
@@ -50,7 +51,7 @@ process limit (threat-table row 41 in
 
 QUIC users get no new security fix in this release. v0.19.1 already moved
 to quic-zig v0.25.0, which fixes the unauthenticated-datagram fault.
-quic-zig v0.26.0 and v0.27.0 have no security fix.
+quic-zig v0.26.0, v0.27.0 and v0.28.0 have no security fix.
 
 ## The coordinated set
 
@@ -58,7 +59,7 @@ quic-zig v0.26.0 and v0.27.0 have no security fix.
 |---|---|---|
 | Zig | `0.17.0` (tagged; no change since v0.19.0) | `mise.toml`: `zig = "0.17.0"`; `build.zig.zon`: `.minimum_zig_version = "0.17.0"` |
 | capnp-zig | `v0.20.0` | `capnpc_zig-0.20.0-...` (`zig fetch --save` writes it; [build-integration.md](build-integration.md) records it at the tag) |
-| quic-zig | `v0.27.0` (tag at `9d2ab6e`) | `quic-0.27.0-DnSYvdkEOQDHm_pJQOp6Vo47gQ1Cm7-0c2sgVV0M6Xht` |
+| quic-zig | `v0.28.0` (tag at `a9078d8`) | `quic-0.28.0-DnSYvYT2OQBEMBW5UQd4BQki7EgGez1d-Ed5fGPHJHBd` |
 | boringssl-zig | `0.6.7` (`ff30fe99`), through quic; no change since v0.25.0 | none (quic pins it) |
 
 capnp-zig pin (let `zig fetch --save` write the hash):
@@ -71,14 +72,19 @@ quic pin, for builds that also depend on quic directly:
 
 ```zig
 .quic = .{
-    .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.27.0.tar.gz",
-    .hash = "quic-0.27.0-DnSYvdkEOQDHm_pJQOp6Vo47gQ1Cm7-0c2sgVV0M6Xht",
+    .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.28.0.tar.gz",
+    .hash = "quic-0.28.0-DnSYvYT2OQBEMBW5UQd4BQki7EgGez1d-Ed5fGPHJHBd",
 },
 ```
 
-Use quic `v0.27.0`. capnp-zig v0.20.0 pins it and is tested only against
+Use quic `v0.28.0`. capnp-zig v0.20.0 pins it and is tested only against
 it. Never pin a quic tag older than v0.25.0: each one has the
 unauthenticated-datagram fault.
+
+quic-zig v0.28.0 does not compile for a 32-bit target (a size check in its
+stream-end note). With this pin, `-Dquic=true` builds for `x86-linux-gnu`
+fail. 64-bit targets are not affected. quic-zig has the fix (commit
+`dd570d0`), but no tag carries it yet.
 
 ### One quic module per process
 
@@ -89,12 +95,14 @@ BoringSSL, and Zig 0.17.0 can fail with `file exists in modules 'quic' and
 'quic0'`.
 
 So, in the same commit, pin every package that depends on quic-zig at a
-release that pins quic v0.27.0: capnp-zig, qmsg, nest, qmesh-zig,
+release that pins quic v0.28.0: capnp-zig, qmsg, nest, qmesh-zig,
 http3-zig, and your own build. Before you pin a release of such a package,
-read its `build.zig.zon`. Its quic pin must be v0.27.0.
+read its `build.zig.zon`. Its quic pin must be v0.28.0.
 
-On 2026-10-05, no tag of http3-zig, qmsg or qmesh-zig pins quic v0.27.0.
-Their `main` branches pin it, but their newest tags pin older versions:
+On 2026-10-05, no tag and no `main` branch of http3-zig, qmsg or qmesh-zig
+pins quic v0.28.0. Their `main` branches pin v0.27.0 (http3-zig moved back
+to v0.27.0 because of the 32-bit defect above), and their newest tags pin
+older versions:
 
 | Package | Newest tag | quic pin of that tag | quic pin of `main` |
 |---|---|---|---|
@@ -102,9 +110,9 @@ Their `main` branches pin it, but their newest tags pin older versions:
 | qmsg | `v0.7.0` | `v0.21.0` | `v0.27.0` |
 | qmesh-zig | `0.2.1` | `v0.21.0` | `v0.27.0` |
 
-Do not pin one of these tags next to capnp-zig v0.20.0 with `-Dquic=true`.
-The build then makes two quic modules. Pin a release of the package that
-pins quic v0.27.0, or wait for one.
+Do not pin one of these tags or branches next to capnp-zig v0.20.0 with
+`-Dquic=true`. The build then makes two quic modules. Pin a release of the
+package that pins quic v0.28.0, or wait for one.
 
 The option map does not change. capnp-zig passes this map to quic
 (`build/modules.zig`):
@@ -131,7 +139,7 @@ no `-Mquic0=`.
 Do the items that apply. Each item names the change and what to do.
 
 1. **Bump the pins.** Pin capnp-zig `v0.20.0` (above). If you build QUIC,
-   pin quic `v0.27.0` in the same commit, and follow the one-quic-module
+   pin quic `v0.28.0` in the same commit, and follow the one-quic-module
    rule.
 2. **Generated code.** The codegen ABI does not change (`version` 1), so
    bindings from the v0.19.x plugin still compile against the v0.20.0
@@ -192,7 +200,7 @@ Do the items that apply. Each item names the change and what to do.
      same property, or NEW_TOKENs do not survive a restart.
 8. **QUIC tokens are 114 bytes (were 96).** A NEW_TOKEN that a v0.19.x
    client persisted (for example in a `WarmRedialClient.exportWarmState`
-   envelope) reads as malformed at a v0.27.0 server. The server treats it
+   envelope) reads as malformed at a v0.28.0 server. The server treats it
    as no token. That client's next dial gets one Retry (one round trip; its
    0-RTT restore still runs early) and a new token. Nothing closes. If your
    code holds a token in a `[96]u8`, use quic-zig's type or
@@ -219,8 +227,8 @@ Do the items that apply. Each item names the change and what to do.
     - Behind a NAT, the server sees the NAT's port. The redial skips the
       Retry only when the NAT maps the reused local port to the same
       external port.
-12. **If you drive quic-zig yourself**, read its CHANGELOG entries `0.26.0`
-    and `0.27.0`.
+12. **If you drive quic-zig yourself**, read its CHANGELOG entries `0.26.0`,
+    `0.27.0` and `0.28.0`.
     - `requestKeyUpdate` returns `error.KeyUpdateBlocked` until the
       handshake is confirmed.
     - `Connection.setRememberedPeerTransportParams` must carry the two
@@ -228,6 +236,22 @@ Do the items that apply. Each item names the change and what to do.
       before its handshake, and one more gives `StreamLimitExceeded`.
       Treat it as transient.
     - capnp-zig calls neither function.
+    - To learn how a stream ended, call `Connection.streamRecvEnd(id)`
+      (v0.28.0). It answers also after the `tick` that frees the stream.
+      `null` together with `streamRecvWasReaped(id) == true` means "ended,
+      how not known": treat that stream as cut. `streamReadFin` now gives
+      `fin = false` for a stream that the peer reset after its FIN.
+    - `quic.app`: a stream that a `tick` freed before the Driver read it
+      now ends as `.fin` or `.reset`, not `.reaped`. A stream that you
+      stopped (`streamStopSending`) ends as `.reaped`, also while it is
+      live, so `streamRecvWasReaped(id) == false` alone does not mean the
+      teardown pass. `streamRecvEnd(id).?.stopped` says it directly.
+      `transport.runUdpClient` now calls its hook before `tick`.
+13. **If you host `EmbeddedSession` and tick before you service**, the seat
+    now behaves as in the safe order (quic-zig v0.28.0). A RESET of stream
+    0 closes the session, and a reset data stream keeps the final size and
+    code of its RESET. Feed, service, then tick all the same ("Embedder
+    rules" in [quic-transport.md](quic-transport.md#embedder-rules)).
 
 To find the call sites in one pass:
 
@@ -235,7 +259,8 @@ To find the call sites in one pass:
 grep -rn --include='*.zig' -e 'events.Source' -e 'events.Resource' \
   -e '@tagName' -e 'handshake_timeout' -e 'nowUs' -e 'WarmRedialClient' \
   -e 'exportWarmState' -e 'requestKeyUpdate' \
-  -e 'setRememberedPeerTransportParams' -e 'initFd' .
+  -e 'setRememberedPeerTransportParams' -e 'initFd' \
+  -e 'StreamEnd' -e 'streamRecvWasReaped' -e 'streamReadFin' .
 ```
 
 Also read your `build.zig` for every `b.dependency("capnpc_zig", ...)` and

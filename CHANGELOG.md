@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 This release adds Cap'n Proto RPC over Unix-domain sockets, with fd
-passing, on Linux and macOS. It also moves QUIC to quic-zig v0.27.0, adds a
+passing, on Linux and macOS. It also moves QUIC to quic-zig v0.28.0, adds a
 freeze gate for generated code, and adds a session-ticket key that lets a
 restarted QUIC server accept 0-RTT. The Security entry fixes an fd leak and
 a stall on AF_UNIX connections: read it if you run RPC over a Unix socket.
@@ -720,29 +720,63 @@ by step.
   (quic-zig v0.27.0), and it counts in `zero_rtt_generations` as well as in
   `retried_generations`.
 
-- **QUIC: quic-zig v0.25.0 -> v0.27.0 (tag `9d2ab6e`,
-  `quic-0.27.0-DnSYvdkEOQDHm_pJQOp6Vo47gQ1Cm7-0c2sgVV0M6Xht`).**
+- **QUIC: quic-zig v0.25.0 -> v0.28.0 (tag `a9078d8`,
+  `quic-0.28.0-DnSYvYT2OQBEMBW5UQd4BQki7EgGez1d-Ed5fGPHJHBd`).**
   boringssl-zig is unchanged (`ff30fe99`, 0.6.7), and so is the dependency
   option map (`.target`, `.release = optimize != .debug`,
-  `.@"sanitize-c" = "trap"`). v0.27.0 makes session tickets live through a
-  restart (a ticket-key config field, rotation, a lifetime setting; see
-  Added). It also has the client send its 0-RTT data again after a Retry,
-  so a warm restore behind a Retry still runs before the handshake
-  completes, one round trip later. v0.26.0 (not pinned on its own) repairs
-  RFC 9000/9001 rules. No security fix since v0.25.0.
+  `.@"sanitize-c" = "trap"`).
+  - v0.28.0: the end of a stream is not lost when `tick` runs before the
+    read. `Connection.streamRecvEnd(id)` (new) says how the receive half
+    of a stream ended: a clean FIN, a reset with its code, or a stream
+    that the application stopped. It gives the same answer before and
+    after the `tick` that frees the stream, at least through the next
+    tick. `quic.app` now reports `.fin` or `.reset` for a stream that a
+    `tick` freed before the Driver read it (it reported `.reaped`), and
+    `.reaped` for a stream that the application stopped, also while it is
+    live. `streamReadFin` gives `fin = false` for a stream that the peer
+    reset after its FIN. `runUdpClient` calls its hook before `tick`
+    (capnp-zig does not use it). When quic-zig frees a stream and when
+    its stream credit returns do not change, and nor does
+    `Stream.recv.final_size`, which native mode reads. The embedded seat
+    and native mode now read `streamRecvEnd` (see Fixed).
+  - v0.27.0 makes session tickets live through a restart (a ticket-key
+    config field, rotation, a lifetime setting; see Added). It also has
+    the client send its 0-RTT data again after a Retry, so a warm restore
+    behind a Retry still runs before the handshake completes, one round
+    trip later.
+  - v0.26.0 (not pinned on its own) repairs RFC 9000/9001 rules.
+  - No security fix since v0.25.0, and no wire change in v0.28.0.
+  - **Known defect:** v0.28.0 does not compile for a 32-bit target. A
+    comptime size check in its stream-end note
+    (`src/conn/RecvEndRing.zig`) holds only where a `u64` aligns to 8
+    bytes, so `-Dquic=true` builds for `x86-linux-gnu` fail. 64-bit
+    targets are not affected. quic-zig fixed it in `dd570d0`, after the
+    tag.
   - **Migration:**
     - **One quic module per process.** A build that links capnp-zig with
       `-Dquic=true` next to another package that depends on quic-zig
       (qmsg, nest, qmesh-zig, http3-zig, ...) must pin a release of that
-      package that pins quic-zig v0.27.0, with the same option map.
+      package that pins quic-zig v0.28.0, with the same option map.
       Otherwise it builds two quic modules, each with its own BoringSSL.
-      On 2026-10-05, no tag of http3-zig, qmsg or qmesh-zig pins v0.27.0:
-      their newest tags (`v0.5.1`, `v0.7.0`, `0.2.1`) pin quic v0.26.0,
-      v0.21.0 and v0.21.0. Their `main` branches pin v0.27.0.
-      `docs/upgrading-to-0.20.0.md` has the table.
+      On 2026-10-05, no tag and no `main` branch of http3-zig, qmsg or
+      qmesh-zig pins v0.28.0: their newest tags (`v0.5.1`, `v0.7.0`,
+      `0.2.1`) pin quic v0.26.0, v0.21.0 and v0.21.0, and their `main`
+      branches pin v0.27.0. `docs/upgrading-to-0.20.0.md` has the table.
+    - **An embedded host that ticks before it services** (Experimental
+      QUIC transport) now gets the same results as in the safe order: a
+      RESET of stream 0 closes the session (through quic-zig v0.27.0 the
+      session stayed up with no control stream), and a reset data stream
+      is judged by the final size of its RESET. Keep the safe order all the
+      same ("Embedder rules" in `docs/quic-transport.md`).
+    - **Direct quic-zig users:** read quic-zig's 0.28.0 entry. A
+      `quic.app` host that took `.reaped` of a live stream as the teardown
+      pass must also handle a stream that it stopped:
+      `streamRecvEnd(id).?.stopped` says it directly. `null` from
+      `streamRecvEnd` together with `streamRecvWasReaped(id) == true`
+      means "ended, how not known": treat that stream as cut.
     - **Tokens are 114 bytes (were 96).** A NEW_TOKEN that a v0.19.x client
       persisted (for example inside a `WarmRedialClient.exportWarmState`
-      envelope) reads as malformed at a v0.27.0 server, which treats it as
+      envelope) reads as malformed at a v0.28.0 server, which treats it as
       no token. That client's next dial gets one Retry (one round trip; its
       0-RTT restore still runs early), and it receives a new token. Nothing
       closes. Code that holds a token in a `[96]u8` must use quic-zig's
@@ -812,29 +846,57 @@ by step.
   alone, a tick before the service pass freed the stream. The frame then
   waited for `data_stream_completion_deadline_us`, and the session closed
   with `DataStreamTimeout`. capnp-zig's own loops service before they tick,
-  so they were not exposed. A host loop that ticks first was. Now a data
-  stream that is gone after every announced byte was read completes its
-  frame: the length came on the control stream, so nothing is missing. In
-  the safe order nothing changes. Test builds get
-  `rpc.transport.quic.testing.knobs.setTickBeforeService`, which puts the
-  wrong order into the owned loops. Other builds compile it out.
+  so they were not exposed. A host loop that ticks first was. Now the
+  engine settles a frame at once when its data stream is gone, from
+  quic-zig v0.28.0's note of how the stream ended
+  (`Connection.streamRecvEnd`):
+  - Every announced byte was read: the frame completes. The length came on
+    the control stream, so nothing is missing.
+  - The final size of the stream is not the announced length: the frame
+    fails with `InvalidFrame`, as on a live stream.
+  - The peer reset the stream with bytes missing: the frame fails with
+    `DataStreamReset` (close code `protocol_error`), and the reset code
+    goes to the debug log. A stream that this side stopped fails the same
+    way.
+  - quic-zig freed the stream and no longer knows how it ended
+    (`streamRecvEnd` null, `streamRecvWasReaped` true): with bytes missing
+    the frame fails with `DataStreamReset`, never at the deadline.
+  - A stream that is not open yet still waits for the completion deadline.
+    In the safe order nothing changes.
+  - Test builds get `rpc.transport.quic.testing.knobs.setTickBeforeService`,
+    which puts the wrong order into the owned loops. Other builds compile
+    it out.
 - **The embedded seat keeps a data stream's bytes past its end, and judges
   a reset stream by its RESET (Experimental QUIC transport).**
   `EmbeddedSession.onStreamEnd` dropped the buffered bytes of a native data
   stream on `.reset` and `.reaped`. A frame whose bytes reached the seat
   before its announcement then failed with `DataStreamTimeout` at the
   deadline, with every byte in hand. The seat now keeps the bytes and marks
-  the end for `.fin`, for `.reset`, and for a `.reaped` from quic-zig's
-  stream GC. A host that ticks before `driver.service` gets `.reaped`.
-  - For `.fin` and `.reaped`, the bytes in hand are the final size. All the
+  the end for a clean end, for a reset, and for a stream that quic-zig's
+  stream GC freed with its end unknown. The seat classifies each end with
+  quic-zig v0.28.0's `Connection.streamRecvEnd`, so a host that ticks
+  before `driver.service` gets the same results as one that services
+  first.
+  - For a clean end (`.fin`), and for a freed stream whose end quic-zig no
+    longer knows (`.reaped`), the bytes in hand are the final size. All the
     announced bytes complete the frame. Fewer bytes fail it at once with
     `InvalidFrame`.
   - For `.reset`, the seat reads the final size and the error code of the
-    RESET from quic-zig, so it gives the same results as the owned loops.
-    A final size other than the announced length fails the frame with
-    `InvalidFrame` (close code `frame_error`). Missing bytes fail it with
-    `DataStreamReset` (close code `protocol_error`), and the reset code is
-    logged. When every byte is in hand, the frame completes.
+    RESET from `streamRecvEnd`, also when a tick freed the stream first, so
+    it gives the same results as the owned loops. A final size other than
+    the announced length fails the frame with `InvalidFrame` (close code
+    `frame_error`). Missing bytes fail it with `DataStreamReset` (close
+    code `protocol_error`), and the reset code is logged. When every byte
+    is in hand, the frame completes.
+  - A stream that this side stopped is dropped, never treated as a
+    completed data stream: quic-zig threw away what arrived after the stop.
+    The seat stops (refuses) a peer stream that has no place in the
+    protocol, and since quic-zig v0.28.0 such a stream ends as `.reaped`,
+    also while it is live. `streamRecvEnd(id).?.stopped` tells it from the
+    teardown pass. A stream that the host stops is dropped too.
+  - On stream 0, a reset, or an end that quic-zig cannot classify, closes
+    the session (cause `transport_error`), also when a tick freed stream 0
+    first.
   - A `.reaped` from the Driver's teardown pass still drops the entry. The
     kept bytes count toward `max_buffered_stream_bytes` until the engine
     reads them.
@@ -852,8 +914,10 @@ by step.
   deadline and closed with `DataStreamTimeout`. It now closes at once
   with `error.DataStreamReset` (close code `protocol_error`), and logs the
   reset code of the peer at debug level. This applies to the owned loops
-  and to the embedded seat. A RESET that arrives after every byte was read
-  still completes the frame.
+  and to the embedded seat, and also when a tick freed the stream before
+  the engine read it (the final size and the code then come from quic-zig
+  v0.28.0's `Connection.streamRecvEnd`). A RESET that arrives after every
+  byte was read still completes the frame.
 
 ### Documentation
 
@@ -907,7 +971,9 @@ by step.
 - `docs/upstream/handoff-quic-zig-ticket-keys.md` is marked DELIVERED
   (quic-zig v0.27.0: asks 1-5 and the accessor), with the candidates
   quic-zig left open (a thread check in `rotateSessionTicketKey`, the
-  previous key at start, the NEW_TOKEN clock asks).
+  previous key at start, the NEW_TOKEN clock asks). quic-zig v0.28.0
+  builds none of them; it documents the first two and the clock of its
+  bundled server loop.
   `docs/quic-transport.md`'s section is now "Retry and NEW_TOKEN", with
   both halves closed. `docs/stability.md` and `docs/supported-surface.md`
   gain a QUIC session-ticket key row (Experimental).
@@ -915,17 +981,23 @@ by step.
 - **QUIC guide: "Embedder rules" (Experimental QUIC transport).**
   `docs/quic-transport.md` gives the two rules for a host loop that runs
   `EmbeddedSession`. First: feed, then service the Driver and every seat,
-  then tick (the stream-end trap). In the wrong order the seat does not
-  get the final size of a RESET. Second: when one UDP socket serves a
-  quic-zig `Server` and your own dials, give each datagram to your dials
-  first (`Connection.ownsLocalCid`). Since quic-zig v0.26.0, the first
-  flight of a server is 1200 bytes and passes the Initial gate of the
-  `Server`. capnp-zig's own loops obey the first rule, and they never put
-  a `Server` and a dial on one socket.
+  then tick (the stream-end trap). The section says what quic-zig v0.28.0
+  changes for a host that ticks first (the Driver reports `.fin` or
+  `.reset` from `Connection.streamRecvEnd`; a RESET of stream 0 closes the
+  session; a reset data stream keeps its RESET), what `.reaped` now means,
+  and the stopped-stream signal (`streamRecvEnd(id).?.stopped`). Second:
+  when one UDP socket serves a quic-zig `Server` and your own dials, give
+  each datagram to your dials first (`Connection.ownsLocalCid`). Since
+  quic-zig v0.26.0, the first flight of a server is 1200 bytes and passes
+  the Initial gate of the `Server`. capnp-zig's own loops obey the first
+  rule, and they never put a `Server` and a dial on one socket. "Current
+  Limits" records that quic-zig v0.28.0 does not compile for a 32-bit
+  target.
 
 - **`docs/upgrading-to-0.20.0.md`, the upgrade guide for this release.**
-  It lists the coordinated set (capnp-zig v0.20.0, quic-zig v0.27.0, Zig
-  0.17.0), the one-quic-module rule with the option map, each Breaking
+  It lists the coordinated set (capnp-zig v0.20.0, quic-zig v0.28.0, Zig
+  0.17.0) with the quic pins of http3-zig, qmsg and qmesh-zig (none on
+  v0.28.0 yet), the one-quic-module rule with the option map, each Breaking
   (Experimental) entry with its migration, who must take the AF_UNIX
   security fix, and what is new. `docs/supported-surface.md` gains rows for
   the Unix transport and for fd passing (Experimental). `docs/stability.md`
