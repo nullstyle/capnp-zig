@@ -443,13 +443,29 @@ src/rpc/transport/fd_passing.zig:18:31: error: no module named 'capnp_build_opti
 ```
 
 capnp-zig reads `-Dfd-passing` from a module named `capnp_build_options`.
-`zig build` and `b.dependency` create it. A compiler command that passes
-capnp-zig's modules by hand (`zig build-lib` or `zig test` with
-`-Mcapnpc-zig=.../src/lib.zig`) must create it too: add
+`zig build` and `b.dependency` create it. A compiler command that targets
+Linux or macOS and passes capnp-zig's modules by hand (`zig build-lib` or
+`zig test` with `-Mcapnpc-zig=.../src/lib.zig`) must create it too: add
 `--dep capnp_build_options` to the capnp-zig module, and pass
 `-Mcapnp_build_options=<file>`, where the file holds
 `pub const fd_passing: bool = true;` (or `false`).
-`tests/fixtures/capnp_build_options.zig` is such a file.
+`tests/fixtures/capnp_build_options.zig` is such a file. (For other targets
+the gate never reads the option, so the import is not needed.)
+
+### `file exists in modules` naming `capnp_build_options`
+
+```
+.zig-cache/o/.../options.zig:1:1: error: file exists in modules 'build_options' and 'capnp_build_options'
+.zig-cache/o/.../options.zig:1:1: note: files must belong to only one module
+```
+
+Your build made its own options module with the same contents as
+capnp-zig's (`fd_passing: bool = true`, for example) and imported it next to
+capnp-zig (here as `build_options`). Zig names an options file by its
+contents, so both modules own one file. **Fix:** import capnp-zig's copy,
+`capnpc_dep.module("capnp_build_options")`, or give your own options a
+different field name
+([build-integration.md](build-integration.md#compiling-fd-passing-out--dfd-passing-experimental)).
 
 ### `no field named 'fd' in struct 'Io.Threaded.NullFile...'` for iOS
 

@@ -289,9 +289,17 @@ What changes with `-Dfd-passing=false`:
   with `err = error.UnixSocketsUnsupported`, so the connection ends. Without
   the fd closer, a read can leak the fds that a local peer attaches (macOS)
   or close them on the reading thread (Linux). TCP sockets work as before.
+- The refusal does not stop a local peer from blocking a thread: the fds it
+  attached stay queued, and the kernel disposes of them where the transport
+  shuts the socket down (macOS, while the peer is connected: inside
+  `Connection.run`) or closes it (inside `deinit`). A lingering socket among
+  them blocks that thread for its linger time. Do not give such a build an
+  AF_UNIX socket that an untrusted process can write to
+  ([rpc-unix-sockets.md](rpc-unix-sockets.md#builds-without-fd-passing--dfd-passingfalse)).
 - `WorkerPool.initListener` still works. It needs no fd passing.
-- On targets that never have fd passing (Windows, the iOS family, the BSDs)
-  nothing changes.
+- The iOS family, Mac Catalyst and DriverKit never have fd passing, so the
+  option changes nothing there: their TCP transport refuses an AF_UNIX
+  socket either way, as above. On Windows and the BSDs nothing changes.
 
 **Every package passes the same capnp-zig option map.** Zig makes one
 dependency instance per option map. If two packages in one build depend on
@@ -304,12 +312,31 @@ rule holds for `.quic`. A library that wraps capnp-zig should forward
 (`capnpc_host` in the recipe above) is a separate executable, so it does not
 need the option.
 
-**A raw `zig build-lib` or `zig build-exe` command** that passes capnp-zig's
-modules by hand (`-Mcapnpc-zig-core=.../src/lib_core.zig`) must now also pass
-the options module: add `--dep capnp_build_options` to the capnp-zig module
-and `-Mcapnp_build_options=<file>`, where the file holds
+**To read the option in your own code** (for example to assert the gate,
+as `tests/apple/apple_check_root.zig` does), import capnp-zig's own copy of
+the options module:
+
+```zig
+root_module.addImport("capnp_build_options", capnpc_dep.module("capnp_build_options"));
+```
+
+Do not make a second options module with the same contents (your own
+`b.addOptions()` with `fd_passing: bool = true`, say) and import it next to
+capnp-zig. Zig writes an options module to a file named by its contents, and
+one file can belong to only one module, so that compile fails with
+`file exists in modules '<yours>' and 'capnp_build_options'`. Without the
+module, check `@FieldType(rpc.peer.FdHandle, "fd") != void` (or
+`rpc.transport.unix.supported` in the full module) instead.
+
+**A raw `zig build-lib` or `zig build-exe` command** that targets Linux or
+macOS and passes capnp-zig's modules by hand
+(`-Mcapnpc-zig-core=.../src/lib_core.zig`) must now also pass the options
+module: add `--dep capnp_build_options` to the capnp-zig module and
+`-Mcapnp_build_options=<file>`, where the file holds
 `pub const fd_passing: bool = true;` (or `false`). Without it the compile
-fails with `no module named 'capnp_build_options'`.
+fails with `no module named 'capnp_build_options'`. On other targets the
+gate never reads the option, so such a command builds without it; passing
+it anyway does no harm.
 
 ## iOS: the core as a static library (Experimental)
 
@@ -337,7 +364,10 @@ pub const std_options_debug_io: std.Io = std.Io.failing;
 ```
 
 `tests/apple/apple_check_root.zig` is the root that `check-ios` builds. The
-full `capnpc-zig` module is not gated for iOS.
+full `capnpc-zig` module is not gated for iOS, except for its TCP transport's
+read path: `check-ios` also compiles that for `aarch64-ios` and
+`aarch64-maccatalyst` (`tests/apple/apple_tcp_check_root.zig`), where it
+refuses an AF_UNIX socket.
 
 ## Reflection metadata and runtime versions
 

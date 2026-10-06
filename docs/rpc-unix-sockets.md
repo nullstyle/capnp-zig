@@ -216,8 +216,11 @@ A server that dies leaves its socket file behind.
   stubs: fd passing is compiled in on macOS only, the one Apple target a CI
   lane tests it on. (On the iOS family std's `Io.Threaded`, which the fd
   closer uses, also does not compile at Zig 0.17.0.) Their kernel is XNU, so
-  a plain read installs the fds a peer attaches, as on macOS: do not hand
-  the TCP transport an AF_UNIX socket that an untrusted process can write to.
+  a plain read would install the fds a peer attaches, as on macOS. So the
+  TCP transport there refuses an AF_UNIX socket, exactly as a
+  `-Dfd-passing=false` build does on Linux and macOS ([Builds without fd
+  passing](#builds-without-fd-passing--dfd-passingfalse), residual
+  included).
 - **The core module** (`capnpc-zig-core`) has no sockets and no
   `rpc.transport.unix`. It compiles for iOS (`zig build check-ios`).
 
@@ -230,19 +233,55 @@ Without the closer, no AF_UNIX socket can be read safely, so:
 
 - `unix.supported` is false, and `unix.listen` and `unix.connect` return
   `error.UnixSocketsUnsupported`, as on Windows.
-- The TCP transport still reads the socket family on Linux and macOS. It
-  refuses an AF_UNIX socket (or one whose family it cannot read) that you
-  give it through `Connection.init`, `Listener.initFd` or `Transport.init`:
-  every read fails with `error.Unexpected`, after a `.resource_rejection`
-  event (`resource = .attached_fds`, `limit = 0`, `err =
-  error.UnixSocketsUnsupported`). The connection ends at its first read and
-  dispatches nothing. A listener from `Listener.initFd` on an AF_UNIX
-  socket still accepts, and does its final close inline.
-- TCP sockets work as before, and so does `WorkerPool.initListener` on a
-  TCP listener.
+- The TCP transport still reads the socket family, on Linux and on every
+  Darwin target (the other Apple targets never have fd passing, and behave
+  the same with or without the option). It refuses an AF_UNIX socket that
+  you give it through `Connection.init`, `Listener.initFd` or
+  `Transport.init`, and a socket whose family `getsockname` does not report
+  (it may be AF_UNIX; macOS does not report AF_SYSTEM or AF_ROUTE): every
+  read fails with `error.Unexpected`, after a `.resource_rejection` event
+  (`resource = .attached_fds`, `limit = 0`, `err =
+  error.UnixSocketsUnsupported`, source `.unix` for AF_UNIX and `.tcp`
+  otherwise). The connection ends at its first read and dispatches nothing.
+  A listener from `Listener.initFd` on an AF_UNIX socket still accepts, and
+  does its final close inline.
+- TCP sockets work as before, and so do sockets of any other family
+  `getsockname` reports (Linux AF_NETLINK or AF_VSOCK, say): only AF_UNIX
+  carries fds. `WorkerPool.initListener` on a TCP listener works too.
+
+**What the refusal does not prevent: a blocked thread.** The refusal reads
+nothing, so the fds a peer attached stay queued on the socket. The kernel
+disposes of them when the transport shuts the socket down or closes it, on
+the thread that does that, and with no closer thread nothing can take that
+work off it:
+
+- On macOS (XNU) a `shutdown(SHUT_RD)` disposes of them while the peer is
+  still connected. A `Connection` does that inside `run`, right after the
+  failed read, so `run` blocks. If the peer has already gone, XNU's
+  `shutdown` fails with ENOTCONN and the final close disposes of them,
+  inside `deinit`.
+- On Linux the final close always does, inside `deinit`, so `deinit`
+  blocks.
+- `Listener.close` on an AF_UNIX `Listener.initFd` closes inline, and the
+  kernel disposes there of the fds on connections still in its accept
+  queue (threat row 40).
+
+A lingering socket among those fds (`SO_LINGER` and unsent data) blocks that
+thread for its linger time: up to about 327 s on macOS, with no cap on Linux
+(measured: 3 s for a 3 s linger on each). A tty, FUSE or NFS file can block
+longer. So in a build without fd passing, do not give the TCP transport an
+AF_UNIX socket that an untrusted process can write to, or run its
+`Connection.run` and `deinit` on a thread that may block. Row 5 of the
+[threat table](#threat-table) records this residual, and row 1 points to
+it.
 
 `tests/rpc/transport/unix/rpc_unix_fd_passing_off_test.zig` pins each of
-these in the `-Dfd-passing=false` CI lane.
+these in the `-Dfd-passing=false` CI lane, the blocked thread included
+("residual: a lingering socket a peer attached blocks the thread that tears
+the refused socket down (macOS: run while the peer is connected, else
+deinit; Linux: deinit)"), and
+`rpc_unix_worker_pool_test.zig` serves and shuts down a `WorkerPool` on a
+TCP listener there.
 
 ## Fds a peer attaches: drain mode
 
@@ -609,11 +648,11 @@ then) came from the security review of this table (2026-10-05).
 
 | # | Threat | Status | Defense, and what is left | Proof |
 |---|---|---|---|---|
-| 1 | A peer attaches fds the receiver did not ask for | Defended | Drain mode on every AF_UNIX transport: a control buffer on every read, every fd to the closer. (macOS installed them; Linux closed them on the reader.) On Linux `SO_OOBINLINE` keeps a read from skipping an out-of-band message with fds (row 39) | `rpc_unix_fd_drain_test.zig` "a Connection on an AF_UNIX socket closes the pipe write end a peer attached to a frame (macOS leaked it)"; `unix_kernel_semantics_test.zig` "FD-0 a read with no control buffer leaks the fd on macOS (T4) and closes it on Linux"; `rpc_unix_linger_test.zig` "MSG_OOB: a lingering socket sent out of band reaches the closer like any fd, and the read does not wait for its close" |
+| 1 | A peer attaches fds the receiver did not ask for | Defended | Drain mode on every AF_UNIX transport: a control buffer on every read, every fd to the closer. (macOS installed them; Linux closed them on the reader.) On Linux `SO_OOBINLINE` keeps a read from skipping an out-of-band message with fds (row 39). Without fd passing (`-Dfd-passing=false`, or a Darwin target other than macOS) there is no drain mode: the TCP transport refuses an AF_UNIX socket, so no fd enters the process, but the kernel still disposes of the queued fds on the thread that tears the socket down (row 5) | `rpc_unix_fd_drain_test.zig` "a Connection on an AF_UNIX socket closes the pipe write end a peer attached to a frame (macOS leaked it)"; `unix_kernel_semantics_test.zig` "FD-0 a read with no control buffer leaks the fd on macOS (T4) and closes it on Linux"; `rpc_unix_linger_test.zig` "MSG_OOB: a lingering socket sent out of band reaches the closer like any fd, and the read does not wait for its close"; `rpc_unix_fd_passing_off_test.zig` "-Dfd-passing=false: a Connection on an AF_UNIX socket fails its first read and dispatches nothing" |
 | 2 | Fd flood: many fds per message, many messages | Bounded | Extras past `max_fds_per_message` closed at once; every fd of every read closed in drain mode; the process budget caps what is kept | `rpc_unix_fd_boundary_test.zig` "more fds than max_fds_per_message: the frame keeps the first ones, the extras are closed at once"; `rpc_unix_fd_drain_test.zig` "every attached fd on every read is closed: 20 frames with 3 fds each"; `rpc_unix_fd_limits_test.zig` "over the process fd budget a frame arrives without the fds that do not fit; they are closed and the connection stays" |
 | 3 | Fd-table exhaustion by one connection | Bounded | `max_live_imported_fds` per connection; EMFILE on a read drops that message's fds, reports it, retries once | `rpc_unix_fd_peer_test.zig` "inbound: past max_live_imported_fds the capability arrives without its fd, the fd is closed, and an event says so"; `rpc_unix_fd_drain_test.zig` "EMFILE: the connection survives, the drop is reported once, and no fd stays open" |
 | 4 | Fd-table exhaustion across connections, through the fds fd passing keeps | Bounded | One process budget (`RLIMIT_NOFILE / 4`) for frame fds, imports, sent dups and the closer's queues; read claims keep the `.received` lane within one read of it (row 7); the `.socket` lane is bounded too (row 8). Cost: a peer that fills the budget starves fd passing for every connection (fds dropped with events, sends refused); connections and `accept` keep working. Needs a soft `RLIMIT_NOFILE` of 1024 or more (row 41) | `rpc_unix_fd_limits_test.zig` "N connections at their per-connection fd cap: the budget holds the total, and accept still works"; "one budget for every kind: fds a frame keeps leave less room for sends, and sent dups less for frames"; `rpc_unix_linger_test.zig` "at a soft RLIMIT_NOFILE of 1024 and the default budget, peers that stall the received lane and then send from many connections at once cannot fill the fd table" |
-| 5 | A received fd whose final close blocks (`SO_LINGER` socket, tty, FUSE, NFS), on Linux **and** macOS | Defended for readers, teardown and `Listener.close` | No received fd is closed on the reader or `Peer` thread; `deinit` never waits for a close; an out-of-band message is read in line, not skipped and closed inside the read (row 39); an AF_UNIX listener's final close, which disposes of the fds on its pending connections, runs on the `.socket` lane (row 40) | `rpc_unix_linger_test.zig` "a frame that carries a lingering socket dispatches at once, and close plus deinit stay fast"; "deinit of an AF_UNIX transport with an unread lingering socket in its queue does not block"; "MSG_OOB: a lingering socket sent out of band reaches the closer like any fd, and the read does not wait for its close"; "Listener.close does not wait for the final close of a pending connection that carries a lingering socket"; `unix_kernel_semantics_test.zig` "FD-0 the final close of a received lingering socket blocks the closing thread (Linux: inside recvmsg with no control buffer)" |
+| 5 | A received fd whose final close blocks (`SO_LINGER` socket, tty, FUSE, NFS), on Linux **and** macOS | Defended for readers, teardown and `Listener.close`; Residual without fd passing | No received fd is closed on the reader or `Peer` thread; `deinit` never waits for a close; an out-of-band message is read in line, not skipped and closed inside the read (row 39); an AF_UNIX listener's final close, which disposes of the fds on its pending connections, runs on the `.socket` lane (row 40). Without fd passing (`-Dfd-passing=false`, or a Darwin target other than macOS) there is no closer: the refused socket's queued fds are disposed of inline, in `Connection.run`'s `shutdown` on XNU while the peer is connected and otherwise in `deinit`'s close, and an AF_UNIX `Listener.initFd`'s close is inline too, so a lingering fd blocks that thread for its linger time (measured: 3 s for a 3 s linger on each). Do not give such a build an AF_UNIX socket an untrusted process can write to ([Builds without fd passing](#builds-without-fd-passing--dfd-passingfalse)) | `rpc_unix_linger_test.zig` "a frame that carries a lingering socket dispatches at once, and close plus deinit stay fast"; "deinit of an AF_UNIX transport with an unread lingering socket in its queue does not block"; "MSG_OOB: a lingering socket sent out of band reaches the closer like any fd, and the read does not wait for its close"; "Listener.close does not wait for the final close of a pending connection that carries a lingering socket"; `unix_kernel_semantics_test.zig` "FD-0 the final close of a received lingering socket blocks the closing thread (Linux: inside recvmsg with no control buffer)"; the residual: `rpc_unix_fd_passing_off_test.zig` "-Dfd-passing=false: residual: a lingering socket a peer attached blocks the thread that tears the refused socket down (macOS: run while the peer is connected, else deinit; Linux: deinit)" |
 | 6 | A stuck received close holds other connections' socket closes | Defended | Separate lanes: `.received` for peers' fds, `.socket` for the transport's own sockets, `.sent` for sent dups | `rpc_unix_linger_test.zig` "a received fd whose close blocks holds up no other connection's socket close or shutdown" |
 | 7 | A stuck received close, then more fds: the closer's queue grows | Bounded | Once the `.received` lane holds the budget's limit of fds that arrived there, every AF_UNIX read that finds data reads nothing and closes its connection (`FdCloseQueueFull`), on **every** AF_UNIX connection of the process, not only the sender's: a denial of service on AF_UNIX connections while the close is stuck. Each read first takes a claim worth one read's fds (254), granted only while the limit has room, so readers that wake together end at most one read past the limit, not one read each (measured without claims: 16 readers put 4063 fds in a lane bounded at 16). A reader whose claim does not come back within 1 s closes its connection. The fd table stays bounded at a soft `RLIMIT_NOFILE` of 1024 or more (row 41) | `rpc_unix_linger_test.zig` "while a received fd's close blocks, reconnecting peers cannot grow this process's fds past the bound"; "a reader already waiting for data takes no fds once the received lane is full"; "readers that wake together take at most one read past the received lane's bound, however many they are"; "at a soft RLIMIT_NOFILE of 1024 and the default budget, peers that stall the received lane and then send from many connections at once cannot fill the fd table"; `rpc_unix_fd_drain_test.zig` "fds past the closer-queue bound close the connection that sent them, with a typed cause"; `rpc_unix_fd_limits_test.zig` "fds the budget already counts end no connection when they move to the closer, even while a close there blocks" |
 | 8 | A stuck **socket-lane** close, then many connections that close | Bounded | Once one close there blocks (a connection torn down with a lingering fd still unread), every later socket close it takes keeps that socket's fd until the blocked close ends. macOS sends every AF_UNIX close there; Linux every close with bytes unread, which a peer forces by tearing down mid-frame or by filling the `.received` lane. An AF_UNIX listener (one from `unix.listen`, or `Listener.initFd` on an AF_UNIX socket, which reads the family with `getsockname`) takes no connection while the lane holds `socketLaneBound()` jobs (a quarter of the budget's limit, at least 16), with a `.backpressure` event (`SocketCloseQueueFull`); new connections wait in the kernel's backlog. A `WorkerPool` serving such a listener (`initListener`) accepts with its own syscalls behind the same gate; its workers check the lane on their own, so with `concurrency` N the lane can pass the bound by up to 2 × N jobs, and one stall emits one event per waiting worker. Cost: no new AF_UNIX connections on that listener while the close is stuck (on Linux as long as the attacker keeps the far end's window shut, on macOS up to about 327 s per lingering socket, chainable); existing connections, TCP and QUIC keep working. Connections the app opens itself (`unix.connect`, `Connection.init` on its own fd), and sockets it accepts itself from a listen fd it never wrapped in a `Listener`, are not gated | `rpc_unix_linger_test.zig` "behind a stuck socket-lane close, a Unix listener stops accepting at the lane's bound, so reconnecting peers cannot grow this process's fds past it"; "behind a stuck socket-lane close, a Listener.initFd on an AF_UNIX socket also stops accepting at the lane's bound"; "a connection torn down with a blocking fd still unread stalls only the socket lane"; `rpc_unix_worker_pool_test.zig` "WorkerPool.initListener: behind a stuck socket-lane close, the workers stop accepting at the lane's bound, and shutdown still ends the wait"; "WorkerPool.initListener: on a Listener.initFd AF_UNIX socket the workers also stop accepting at the socket lane's bound" |

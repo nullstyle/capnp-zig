@@ -16,8 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consumer that uses capnp-zig through its `build.zig` changes nothing. A
   raw `zig build-lib`, `zig build-exe` or `zig test` command with
   `-Mcapnpc-zig=.../src/lib.zig` (or `lib_quic.zig`, or `lib_core.zig`)
-  whose program reaches the RPC runtime now fails with
+  that targets Linux or macOS and whose program reaches the RPC runtime now
+  fails with
   `no module named 'capnp_build_options' available within module 'capnpc-zig'`.
+  (For other targets the gate never reads the option, so such a command
+  still builds without it.)
   - **Migration:** add `--dep capnp_build_options` to the capnp-zig module,
     and pass `-Mcapnp_build_options=<file>`, where the file holds
     `pub const fd_passing: bool = true;`. For example:
@@ -33,15 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DriverKit build now gets what Windows gets: `unix.supported` is false,
   `unix.listen` and `unix.connect` return `error.UnixSocketsUnsupported`,
   `FdHandle` is empty, `Peer.setExportFd` returns
-  `error.FdPassingUnsupported`, no fd closer thread starts, and a TCP
-  transport on an AF_UNIX socket reads it the plain way (no drain mode).
+  `error.FdPassingUnsupported`, and no fd closer thread starts. A TCP
+  transport there refuses an AF_UNIX socket, as a `-Dfd-passing=false`
+  build does on Linux and macOS (see Added): XNU installs the fds a peer
+  attaches on a plain read, so without drain mode no read is safe.
   `WorkerPool.initListener` keeps working there (its own gate, now public
   as `worker_pool.park_door_supported`).
   - **Migration:** none in this release for a Mac Catalyst or DriverKit
     program that serves AF_UNIX sockets: stay on v0.20.0 and tell us. No
-    such user is known. Do not hand the TCP transport an AF_UNIX socket that
-    an untrusted process can write to on those targets: XNU installs the fds
-    a peer attaches on a plain read.
+    such user is known.
 
 ### Added
 
@@ -60,20 +63,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `unix.supported` is false and `unix.listen` / `unix.connect` return
     `error.UnixSocketsUnsupported`; `FdHandle` is empty and
     `Peer.setExportFd` returns `error.FdPassingUnsupported`;
-  - on Linux and macOS the TCP transport refuses an AF_UNIX socket handed to
-    it (`Connection.init`, `Listener.initFd`, `Transport.init`): every read
-    fails with `error.Unexpected` after a `.resource_rejection` event
-    (`resource = .attached_fds`, `limit = 0`, `err =
-    error.UnixSocketsUnsupported`), because without the closer a read would
-    leak the fds a local peer attaches (macOS) or close them on the reading
-    thread (Linux). New field `Transport.unix_refused` records it. TCP
-    sockets work as before.
+  - on Linux and every Darwin target the TCP transport refuses an AF_UNIX
+    socket handed to it (`Connection.init`, `Listener.initFd`,
+    `Transport.init`), and a socket whose family `getsockname` does not
+    report: every read fails with `error.Unexpected` after a
+    `.resource_rejection` event (`resource = .attached_fds`, `limit = 0`,
+    `err = error.UnixSocketsUnsupported`), because without the closer a read
+    would leak the fds a local peer attaches (XNU) or close them on the
+    reading thread (Linux). New field `Transport.unix_refused` records it.
+    TCP sockets, and sockets of any other family (only AF_UNIX carries
+    fds), work as before;
+  - a residual: the refusal reads nothing, so the fds a peer attached stay
+    queued, and the kernel disposes of them on the thread that tears the
+    socket down: inside `Connection.run` on macOS while the peer is
+    connected (the `shutdown` after the failed read), inside `deinit`
+    otherwise and always on Linux (the final close), and inside an
+    AF_UNIX `Listener.initFd`'s `close` for its unaccepted connections. A
+    lingering socket among them blocks that thread for its linger time (up
+    to about 327 s on macOS, no cap on Linux). Do not give such a build an
+    AF_UNIX socket that an untrusted process can write to
+    ([rpc-unix-sockets.md](docs/rpc-unix-sockets.md#builds-without-fd-passing--dfd-passingfalse),
+    threat rows 1 and 5).
   `fd_passing.supported` (`target_supported and -Dfd-passing`) is the one
   gate: `fd_closer`, `fd_budget`, `fd_io` and `rpc.transport.unix` read it,
-  so the comptime asserts that tie them hold by construction.
+  so the comptime asserts that tie them hold by construction. The package
+  exports the options module as `capnp_build_options`, so a consumer reads
+  the option from capnp-zig's copy (a second options module with the same
+  contents fails with "file exists in modules";
+  [troubleshooting](docs/troubleshooting.md#file-exists-in-modules-naming-capnp_build_options)).
   `tests/rpc/transport/unix/rpc_unix_fd_passing_off_test.zig` pins the
-  behavior. CI runs the full suite with `-Dfd-passing=false` on Linux and
-  macOS, and the symbol gate on macOS (job `fd-passing-off`).
+  behavior, the residual included, and `rpc_unix_worker_pool_test.zig`
+  serves a `WorkerPool` on a TCP listener in that build. CI runs the full
+  suite with `-Dfd-passing=false` on Linux and macOS, and the symbol gate on
+  macOS (job `fd-passing-off`).
 - **`zig build check-ios` (Experimental, compile-only).** It builds
   `capnpc-zig-core` plus a root that names `Peer`'s sans-IO surface
   (`tests/apple/apple_check_root.zig`) as static libraries for
@@ -85,7 +107,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `std_options_debug_io = std.Io.failing`;
   `docs/upstream/handoff-zig-fork-ios-nullfile.md`). `zig build test` also
   runs that root's exported functions on the host (a loopback bootstrap
-  between two detached peers).
+  between two detached peers). It also compiles the full module's TCP
+  transport for `aarch64-ios` and `aarch64-maccatalyst`
+  (`tests/apple/apple_tcp_check_root.zig`), whose read path there refuses
+  an AF_UNIX socket, a path no test lane runs.
 - `worker_pool.park_door_supported` (Experimental): where
   `WorkerPool.initListener` works, Linux and every Darwin target, with or
   without fd passing.
@@ -219,11 +244,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/build-integration.md`: "Compiling fd passing out: `-Dfd-passing`"
   (the option, how a consumer passes it, the one-option-map rule, raw
   compiler commands) and "iOS: the core as a static library".
-  `docs/rpc-unix-sockets.md`: "Builds without fd passing" and the Apple
+  `docs/rpc-unix-sockets.md`: "Builds without fd passing" (with the
+  blocked-thread residual, also in threat rows 1 and 5) and the Apple
   targets. `docs/stability.md`: the platform table, iOS, and the fd rows.
   `docs/supported-surface.md`, `docs/troubleshooting.md` (the
-  `capnp_build_options` and iOS `NullFile` errors), `docs/api_contracts.md`
-  and the README. `docs/upstream/handoff-zig-fork-ios-nullfile.md` records
+  `capnp_build_options`, `file exists in modules` and iOS `NullFile`
+  errors), `docs/api_contracts.md` and the README. `docs/upstream/handoff-zig-fork-ios-nullfile.md` records
   the Zig 0.17.0 std defect (H2).
 - `docs/quic-transport.md`: "Rotation" persists a key change with
   `previous_session_ticket_key` (the old way, start with the old key and
