@@ -195,6 +195,7 @@ const version_needles = [_]VersionNeedle{
     .{ .path = "docs/build-integration.md", .template = "capnp-zig.git#v{v}", .reason = "build-integration install snippet must pin the released version" },
     .{ .path = "docs/build-integration.md", .template = "capnpc_zig-{v}-", .reason = "build-integration hash example must match the released version" },
     .{ .path = "docs/supported-surface.md", .template = "# Supported Surface (v{v})", .reason = "the authoritative consumer contract must be titled for the released version" },
+    .{ .path = "docs/supported-surface.md", .template = "v{v} — which modules are stable", .reason = "the supported-surface opening sentence must name the released version" },
     .{ .path = "docs/supported-surface.md", .template = "#v{v}", .reason = "supported-surface pinning advice must name the released version" },
     .{ .path = "docs/supported-surface.md", .template = "## Known limitations (v{v})", .reason = "known-limitations heading must name the released version" },
     .{ .path = "docs/stability.md", .template = "The current version is **{v}**", .reason = "stability semver guidance must name the released version" },

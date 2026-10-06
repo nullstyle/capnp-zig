@@ -1,6 +1,6 @@
 # Binary schema reflection
 
-Reflection is an unreleased, Experimental addition. Both `capnpc-zig` and
+Reflection is Experimental. It shipped in v0.19.0. Both `capnpc-zig` and
 `capnpc-zig-core` export `reflection`; use matching generator and runtime
 revisions. Existing typed accessors remain available.
 

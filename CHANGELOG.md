@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-05
+
 This release adds Cap'n Proto RPC over Unix-domain sockets, with fd
 passing, on Linux and macOS. It also moves QUIC to quic-zig v0.28.1, adds a
 freeze gate for generated code, and adds a session-ticket key that lets a
@@ -218,11 +220,21 @@ by step.
   the wall clock in `init` and advances on the monotonic clock, so a
   restarted server accepts its predecessor's NEW_TOKENs (see Fixed). New
   field: `Listener.clock_origin_us`.
-  - **Migration:** code that read `nowUs()` as an uptime must subtract its
-    own first reading (or `clock_origin_us`). Code that only feeds the value
-    back to quic-zig, or takes differences, needs no change. Embedded-mode
-    hosts that feed their own clock to quic-zig need the same property for
-    NEW_TOKENs to survive a restart.
+  - **Migration:**
+    - Code that read `nowUs()` as an uptime must subtract its own first
+      reading (or `clock_origin_us`).
+    - If you call `Listener.receiveOne`, or give `nowUs()` to
+      `feedDatagram`, give `nowUs()` to `tick`, `drainSessionDatagrams`,
+      `drainAcceptedSessionDatagrams` and the `EmbeddedSession.service` of
+      each seat too. Do not mix it with a clock of your own. `receiveOne`
+      reads `nowUs()` inside the library, so this applies to a host that
+      never calls `nowUs()`. Through v0.19.1 the two clocks differed by
+      milliseconds. Now they differ by about 1.8e15 µs, and one quic-zig
+      server gets both.
+    - Code that gives quic-zig only `nowUs()`, or only takes differences
+      of it, needs no change.
+    - Embedded-mode hosts that feed their own clock to quic-zig need the
+      same property for NEW_TOKENs to survive a restart.
 
 ### Added
 
@@ -729,6 +741,14 @@ by step.
     32-bit target (a comptime size check in `src/conn/RecvEndRing.zig`),
     so `-Dquic=true` builds for `x86-linux-gnu` failed. v0.28.1 fixes it
     and changes nothing else for a 64-bit target. Do not pin v0.28.0.
+  - A known limit on 32-bit x86, recorded in quic-zig's v0.28.1 notes for
+    boringssl-zig to fix: BoringSSL's 32-bit P-256 code
+    (`third_party/fiat/p256_32.h`, in ECDSA verify) can trap in some TLS
+    handshakes when C is built with `sanitize-c = "trap"`. capnp-zig's
+    option map sets that value. The BoringSSL build is the same as in
+    v0.19.1. capnp-zig's CI compiles QUIC for 32-bit x86, but does not run
+    it there. 64-bit targets are not affected. "Current Limits" in
+    `docs/quic-transport.md` lists it.
   - v0.28.0 (not pinned on its own): the end of a stream is not lost when
     `tick` runs before the read. `Connection.streamRecvEnd(id)` (new) says
     how the receive half of a stream ended: a clean FIN, a reset with its
@@ -755,15 +775,24 @@ by step.
   - **Migration:**
     - **One quic module per process.** A build that links capnp-zig with
       `-Dquic=true` next to another package that depends on quic-zig
-      (qmsg, nest, qmesh-zig, http3-zig, ...) must pin a release of that
-      package that pins quic-zig v0.28.1, with the same option map.
-      Otherwise it builds two quic modules, each with its own BoringSSL.
-      On 2026-10-05, no tag of http3-zig, qmsg or qmesh-zig pins
-      v0.28.1: their newest tags (`v0.5.1`, `v0.7.0`, `0.2.1`) pin quic
-      v0.26.0, v0.21.0 and v0.21.0. The `main` branch of http3-zig
-      (`3c2f4c8`) pins v0.28.1. The `main` branches of qmsg and qmesh-zig
-      pin v0.27.0. nest (no published tag) also pins v0.27.0.
-      `docs/upgrading-to-0.20.0.md` has the table.
+      (qmsg, nest, qmesh-zig, ...) must pin a release of that package that
+      pins quic-zig v0.28.1, with the same option map. Otherwise it builds
+      two quic modules, each with its own BoringSSL. On 2026-10-05, no tag
+      of qmsg or qmesh-zig pins v0.28.1: their newest tags (`v0.7.0`,
+      `0.2.1`) pin quic v0.21.0, and their `main` branches (`cf22d0f`,
+      `5aab8f1`) pin v0.27.0. nest has no tag, and its newest commit
+      (`a8d3672`) pins v0.27.0. `docs/upgrading-to-0.20.0.md` has the
+      table.
+    - **http3-zig cannot share the quic module, at any pin.** Its build
+      does not use the module that quic exports. It makes its own quic
+      module from quic's `src/root.zig`, and its own BoringSSL module. So
+      a binary that links http3-zig and capnp-zig with `-Dquic=true` gets
+      two quic modules. With the same quic pin, the build stops with
+      `file exists in modules 'quic0' and 'quic'` (measured: http3-zig
+      `main` at `bc708cd`, which pins quic v0.28.1 with the same hash as
+      capnp-zig, tagged Zig 0.17.0). This stays true until http3-zig can
+      use the quic and BoringSSL modules of its parent. Its newest tag,
+      `v0.5.1`, pins quic v0.26.0.
     - **An embedded host that ticks before it services** (Experimental
       QUIC transport) now gets the same results as in the safe order: a
       RESET of stream 0 closes the session (through quic-zig v0.27.0 the
@@ -938,10 +967,14 @@ by step.
   are. `RELEASING.md` asks for a Migration paragraph in each Breaking entry,
   `(Experimental)` in the bold title of an Experimental-only entry, and one
   entry for each tier when a change breaks both.
-- `docs/supported-surface.md`, `docs/stability.md` and
-  `docs/generated-api.md` no longer call reflection or the generated mutable
-  APIs "unreleased" (both shipped in v0.19.0), and no longer say the
-  experimental API snapshots are "ungated"; CI checks them strictly.
+- `README.md`, `docs/reflection.md`, `docs/supported-surface.md`,
+  `docs/stability.md` and `docs/generated-api.md` no longer call reflection
+  or the generated mutable APIs "unreleased" (both shipped in v0.19.0), and
+  no longer say the experimental API snapshots are "ungated"; CI checks
+  them strictly.
+- The opening sentence of `docs/supported-surface.md` named v0.17.0 since
+  that release. It now names the current version, and docs-smoke checks
+  it (a new `version_needles` entry in `tools/docs_examples_smoke.zig`).
 - Two zig-fork handoffs (docs only, not filed upstream):
   `docs/upstream/handoff-zig-fork-unix-address.md` (`UnixAddress.max_len`
   against Darwin's 104-byte `sun_path`, the extra trailing NUL on abstract
@@ -1007,8 +1040,9 @@ by step.
 
 - **`docs/upgrading-to-0.20.0.md`, the upgrade guide for this release.**
   It lists the coordinated set (capnp-zig v0.20.0, quic-zig v0.28.1, Zig
-  0.17.0) with the quic pins of http3-zig, qmsg and qmesh-zig (no tag on
-  v0.28.1 yet), the one-quic-module rule with the option map, each Breaking
+  0.17.0) with the quic pins of qmsg, qmesh-zig and nest (no tag on
+  v0.28.1 yet), the one-quic-module rule with the option map, why
+  http3-zig cannot share the quic module, each Breaking
   (Experimental) entry with its migration, who must take the AF_UNIX
   security fix, and what is new. `docs/supported-surface.md` gains rows for
   the Unix transport and for fd passing (Experimental). `docs/stability.md`
@@ -5615,7 +5649,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.19.1...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/nullstyle/capnp-zig/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/nullstyle/capnp-zig/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/nullstyle/capnp-zig/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/nullstyle/capnp-zig/compare/v0.17.0...v0.18.0

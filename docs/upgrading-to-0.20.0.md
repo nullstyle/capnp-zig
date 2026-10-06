@@ -1,9 +1,5 @@
 # Upgrading to capnp-zig v0.20.0
 
-> **Release candidate.** v0.20.0 is not tagged yet, and the newest tag is
-> v0.19.1. This guide describes the release candidate on `main`. Until the
-> tag exists, keep the v0.19.1 pin.
-
 This guide is for projects that depend on capnp-zig. v0.20.0 bundles these
 changes:
 
@@ -58,7 +54,7 @@ quic-zig v0.26.0, v0.27.0, v0.28.0 and v0.28.1 have no security fix.
 | Component | Version | Pin |
 |---|---|---|
 | Zig | `0.17.0` (tagged; no change since v0.19.0) | `mise.toml`: `zig = "0.17.0"`; `build.zig.zon`: `.minimum_zig_version = "0.17.0"` |
-| capnp-zig | `v0.20.0` | `capnpc_zig-0.20.0-...` (`zig fetch --save` writes it; [build-integration.md](build-integration.md) records it at the tag) |
+| capnp-zig | `v0.20.0` | `capnpc_zig-0.20.0-...` (a placeholder: the hash exists only after the tag, and then replaces it. `zig fetch --save` writes it, and [build-integration.md](build-integration.md) records it.) |
 | quic-zig | `v0.28.1` (tag at `21d05d1`) | `quic-0.28.1-DnSYvacDOgCPlHPHQWufNaG2XMoKtnwwHJPVcIUuAmqB` |
 | boringssl-zig | `0.6.7` (`ff30fe99`), through quic; no change since v0.25.0 | none (quic pins it) |
 
@@ -85,6 +81,14 @@ Do not pin quic `v0.28.0`. It does not compile for a 32-bit target (a size
 check in its stream-end note), so `-Dquic=true` builds for `x86-linux-gnu`
 fail. v0.28.1 fixes this and has no other change for a 64-bit target.
 
+QUIC on 32-bit x86 has a known limit. capnp-zig builds BoringSSL with
+`sanitize-c = "trap"`, and there BoringSSL's 32-bit P-256 code can trap in
+some TLS handshakes. quic-zig's v0.28.1 notes record it for boringssl-zig
+to fix. The BoringSSL build is the same as in v0.19.1. capnp-zig's CI
+compiles QUIC for 32-bit x86, but does not run it there. 64-bit targets
+are not affected ("Current Limits" in
+[quic-transport.md](quic-transport.md#current-limits)).
+
 ### One quic module per process
 
 A binary links exactly one `quic` module. Zig shares a dependency module
@@ -94,27 +98,35 @@ BoringSSL, and Zig 0.17.0 can fail with `file exists in modules 'quic' and
 'quic0'`.
 
 So, in the same commit, pin every package that depends on quic-zig at a
-release that pins quic v0.28.1: capnp-zig, qmsg, nest, qmesh-zig,
-http3-zig, and your own build. Before you pin a release of such a package,
-read its `build.zig.zon`. Its quic pin must be v0.28.1.
+release that pins quic v0.28.1: capnp-zig, qmsg, nest, qmesh-zig, and
+your own build. Before you pin a release of such a package, read its
+`build.zig.zon`. Its quic pin must be v0.28.1.
 
-On 2026-10-05, no tag of http3-zig, qmsg or qmesh-zig pins quic v0.28.1.
-The `main` branch of http3-zig (`3c2f4c8`) pins v0.28.1. The `main`
-branches of qmsg and qmesh-zig pin v0.27.0. The newest tags pin older
-versions:
+http3-zig cannot share a quic module with capnp-zig `-Dquic=true`, at any
+quic pin. Its `build.zig` does not use the module that quic exports. It
+makes its own quic module from quic's `src/root.zig`, and its own BoringSSL
+module. So a binary that links http3-zig and capnp-zig with `-Dquic=true`
+gets two quic modules. With the same quic pin, the two modules have the
+same root file, and the build stops with `file exists in modules 'quic0'
+and 'quic'` (measured: http3-zig `main` at `bc708cd`, quic v0.28.1,
+tagged Zig 0.17.0). This stays true until http3-zig can use the quic and
+BoringSSL modules of its parent.
+
+On 2026-10-05, no tag of qmsg, qmesh-zig or http3-zig pins quic v0.28.1,
+and nest has no tag. The newest tags pin older versions:
 
 | Package | Newest tag | quic pin of that tag | quic pin of `main` |
 |---|---|---|---|
-| http3-zig | `v0.5.1` | `v0.26.0` | `v0.28.1` (`3c2f4c8`) |
-| qmsg | `v0.7.0` | `v0.21.0` | `v0.27.0` |
-| qmesh-zig | `0.2.1` | `v0.21.0` | `v0.27.0` |
+| qmsg | `v0.7.0` | `v0.21.0` | `v0.27.0` (`cf22d0f`) |
+| qmesh-zig | `0.2.1` | `v0.21.0` | `v0.27.0` (`5aab8f1`) |
+| nest | none | none | `v0.27.0` (`a8d3672`, its newest commit) |
+| http3-zig | `v0.5.1` | `v0.26.0` | `v0.28.1` (`bc708cd`) |
 
-nest has no published tag. Its newest commit pins quic v0.27.0.
-
-Do not pin one of these tags, or the `main` branch of qmsg or qmesh-zig,
-next to capnp-zig v0.20.0 with `-Dquic=true`. The build then makes two
-quic modules. Pin a release of the package that pins quic v0.28.1, or wait
-for one.
+Do not pin one of these tags, or the `main` branch of qmsg, qmesh-zig or
+nest, next to capnp-zig v0.20.0 with `-Dquic=true`. The build then makes
+two quic modules. For qmsg, qmesh-zig and nest, pin a release of the
+package that pins quic v0.28.1, or wait for one. The http3-zig row is for
+information only: no http3-zig pin gives one quic module (see above).
 
 The option map does not change. capnp-zig passes this map to quic
 (`build/modules.zig`):
@@ -196,8 +208,16 @@ Do the items that apply. Each item names the change and what to do.
    `Listener.clock_origin_us`.
    - If you read `nowUs()` as an uptime, subtract your first reading (or
      `clock_origin_us`).
-   - Code that only feeds the value back to quic-zig, or takes
-     differences, needs no change.
+   - If you call `Listener.receiveOne`, or give `nowUs()` to
+     `feedDatagram`, give `nowUs()` to `tick`, `drainSessionDatagrams`,
+     `drainAcceptedSessionDatagrams` and the `EmbeddedSession.service` of
+     each seat too. Do not mix it with a clock of your own. `receiveOne`
+     reads `nowUs()` inside the library, so this applies to a host that
+     never calls `nowUs()`. Through v0.19.1 the two clocks differed by
+     milliseconds. Now they differ by about 1.8e15 µs, and one quic-zig
+     server gets both.
+   - Code that gives quic-zig only `nowUs()`, or only takes differences
+     of it, needs no change.
    - An embedded-mode host that feeds its own clock to quic-zig needs the
      same property, or NEW_TOKENs do not survive a restart.
 8. **QUIC tokens are 114 bytes (were 96).** A NEW_TOKEN that a v0.19.x

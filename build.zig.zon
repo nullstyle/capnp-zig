@@ -1,6 +1,6 @@
 .{
     .name = .capnpc_zig,
-    .version = "0.19.1",
+    .version = "0.20.0",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         // Pinned to a TAG, not a raw commit: tags are immutable release
@@ -58,10 +58,13 @@
         // one build must pin the same tag and pass the same option map, or
         // the build makes two quic modules (and two BoringSSLs). The map is
         // `.target`, `.release`, `.@"sanitize-c" = "trap"` (build/modules.zig),
-        // the one nest/qmsg/qmesh/http3-zig use; the coordinated set for
-        // capnp-zig v0.20.0 is on v0.28.1. boringssl-zig is unchanged since
-        // v0.25.0: ff30fe99 (0.6.7, BoringSSL aef0e2df), which links Windows
-        // ws2_32 with pkg-config lookup disabled.
+        // the one nest/qmsg/qmesh use. capnp-zig v0.20.0 pins v0.28.1; on
+        // 2026-10-05 the main branches of qmsg and qmesh-zig, and nest, pin
+        // v0.27.0. http3-zig cannot share this module at any pin: it builds
+        // its own quic module from quic's src/root.zig and its own
+        // BoringSSL. boringssl-zig is unchanged since v0.25.0: ff30fe99
+        // (0.6.7, BoringSSL aef0e2df), which links Windows ws2_32 with
+        // pkg-config lookup disabled.
         .quic = .{
             .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.28.1.tar.gz",
             .hash = "quic-0.28.1-DnSYvacDOgCPlHPHQWufNaG2XMoKtnwwHJPVcIUuAmqB",

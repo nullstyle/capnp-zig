@@ -2,7 +2,7 @@
 
 A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serialization framework and RPC system. Includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime built on `std.Io` with a concurrent read/write transport. Targets tagged Zig 0.17.
 
-> **Status (v0.19.1):** serialization, codegen, the `capnpc-zig` plugin, and the
+> **Status (v0.20.0):** serialization, codegen, the `capnpc-zig` plugin, and the
 > **two-party RPC core** are **Stable** on a **frozen, CI-gated** public surface
 > (`docs/api-snapshot.txt`). The L3/L4 three-party arc, the reflected-cap resolver,
 > QUIC, persistence vat-restore, events, binary schema reflection, and the demoted transport/ctor variants
@@ -34,7 +34,7 @@ Fetch a tagged release into your `build.zig.zon` (`zig fetch --save` records the
 `.hash`):
 
 ```bash
-zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.19.1
+zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.20.0
 ```
 
 Then import `capnpc-zig` (full: serialization + codegen + RPC) or
@@ -46,8 +46,7 @@ binary). That codegen recipe needs v0.19.0 or later.
 
 Upgrading from v0.19.x? [docs/upgrading-to-0.20.0.md](docs/upgrading-to-0.20.0.md)
 lists the coordinated set, every Breaking change with its migration, and who
-must take the AF_UNIX security fix. v0.20.0 is not tagged yet, so the pin
-above stays on v0.19.1 until it is. <!-- unreleased-after: v0.19.1 -->
+must take the AF_UNIX security fix.
 
 ### Prerequisites
 
@@ -233,7 +232,7 @@ and finite recursive applications have typed `brands()` views in full and
 compact profiles. See [the generated API guide](docs/generated-api.md) for an
 executable example, strict Text reads, lifetime rules, and remaining RPC limits.
 
-### Reflection (unreleased, Experimental)
+### Reflection (Experimental)
 
 Generated structs, groups, enums, and interfaces expose `capnpSchema`. The
 module's `CAPNP_SCHEMA_REQUEST` contains the original binary schema nodes,
