@@ -434,6 +434,8 @@ const SeatHost = struct {
     allocator: std.mem.Allocator,
     recorder: *Recorder,
     seat: ?*quic.EmbeddedSession = null,
+    /// The seat's close cause, kept when `onDisconnect` destroys the seat.
+    last_close_cause: ?capnpc.rpc.events.DisconnectCause = null,
 
     pub const ConnState = ?*quic.EmbeddedSession;
     pub const StreamState = void;
@@ -468,6 +470,7 @@ const SeatHost = struct {
         session.app = null;
         host.seat = null;
         seat.notifyDisconnected();
+        host.last_close_cause = seat.closeCause();
         seat.destroy();
     }
 
@@ -631,9 +634,12 @@ const SeatRig = struct {
 
 /// The case the seat must survive: the data stream's bytes reach the seat
 /// before the announcement, so the engine has read none of them when the
-/// end comes. In the trap order the end comes as `.reaped`, in the safe
-/// order as `.fin` or `.reset`. The seat must keep the bytes and finish the
-/// frame when the announcement arrives, and then free the stream's buffer.
+/// end comes. In both orders the end comes as `.fin` or `.reset` (through
+/// quic-zig v0.27.0 the trap order gave `.reaped`). In the trap order a tick
+/// freed the stream first, so the seat takes the RESET's final size and
+/// code from quic-zig's note of the end. The seat must keep the bytes and
+/// finish the frame when the announcement arrives, and then free the
+/// stream's buffer.
 pub fn runEmbedded(end: End, order: Order) !void {
     const allocator = std.testing.allocator;
     const rig = try SeatRig.create(allocator, order);
@@ -661,6 +667,19 @@ pub fn runEmbedded(end: End, order: Order) !void {
     try rig.waitForReap(seat, data_stream);
     try std.testing.expectEqual(@as(usize, 0), rig.recorder.messages);
     try std.testing.expectEqual(@as(usize, 0), rig.recorder.errors);
+    // The seat kept the bytes, marked the end, and for a RESET kept its final
+    // size and code, in both orders.
+    const buf = seat.streams.get(data_stream) orelse return error.TestExpectedSeatStream;
+    try std.testing.expect(buf.ended);
+    try std.testing.expectEqual(@as(usize, payload_len), buf.total);
+    switch (end) {
+        .fin => try std.testing.expect(buf.reset == null),
+        .reset => {
+            const reset = buf.reset orelse return error.TestExpectedReset;
+            try std.testing.expectEqual(reset_code, reset.error_code);
+            try std.testing.expectEqual(@as(u64, payload_len), reset.final_size);
+        },
+    }
 
     // 5. The announcement. The frame completes from the bytes the seat kept.
     try writeAnnouncement(allocator, &rig.raw, data_stream);
@@ -865,12 +884,14 @@ pub fn runServerReset(shape: ResetShape, order: Order) !void {
     try std.testing.expectEqual(@as(?u64, reset_code), recv_end.reset_code);
 }
 
-/// The seat, in the safe order. The sent bytes reach the seat before the
-/// announcement, so the engine reads none of them before the RESET. The
-/// seat must give the error that the owned server gives.
-pub fn runEmbeddedReset(shape: ResetShape) !void {
+/// The seat. The sent bytes reach the seat before the announcement, so the
+/// engine reads none of them before the RESET. The seat must give the error
+/// that the owned server gives. In the trap order a tick frees the stream
+/// before the Driver reports its end, so the seat takes the RESET's final
+/// size from quic-zig's note of the end (quic-zig v0.28.0).
+pub fn runEmbeddedReset(shape: ResetShape, order: Order) !void {
     const allocator = std.testing.allocator;
-    const rig = try SeatRig.create(allocator, .service_then_tick);
+    const rig = try SeatRig.create(allocator, order);
     defer rig.destroy();
 
     const seat = try rig.handshake();
@@ -883,13 +904,18 @@ pub fn runEmbeddedReset(shape: ResetShape) !void {
     try rig.raw.writeAll(data_stream, payload[0..shape.sentBytes()]);
     try rig.waitForSeatBytes(seat, data_stream, shape.sentBytes());
 
-    // 2. The reset. The Driver passes `.reset` to the seat, then the tick
-    //    frees the stream. The seat holds the sent bytes only.
+    // 2. The reset. In the safe order the Driver passes `.reset` to the seat
+    //    before the tick frees the stream. In the trap order the tick frees
+    //    it first. Either way the seat holds the sent bytes only, and the
+    //    final size of the RESET.
     try resetWithQueuedBytes(rig.raw.client.conn, data_stream, shape);
     try rig.raw.drainOutgoing(rig.raw.nowUs());
     try rig.waitForReap(seat, data_stream);
     const buf = seat.streams.get(data_stream) orelse return error.TestExpectedSeatStream;
     try std.testing.expectEqual(shape.sentBytes(), buf.total);
+    const reset = buf.reset orelse return error.TestExpectedReset;
+    try std.testing.expectEqual(@as(u64, shape.sentBytes() + shape.queuedBytes()), reset.final_size);
+    try std.testing.expectEqual(reset_code, reset.error_code);
     try std.testing.expectEqual(@as(usize, 0), rig.recorder.messages);
     try std.testing.expectEqual(@as(usize, 0), rig.recorder.errors);
 
@@ -900,4 +926,139 @@ pub fn runEmbeddedReset(shape: ResetShape) !void {
     const status = seat.closeStatus() orelse return error.QuicLoopbackMissingCloseStatus;
     try std.testing.expectEqual(shape.expectedCode(), status.code);
     try std.testing.expectEqual(@as(?anyerror, shape.expectedError()), status.err);
+}
+
+// ---------------------------------------------------------------------------
+// A stream this side stopped. Since quic-zig v0.28.0 the Driver reports such
+// a stream as `.reaped`, also while it is live, so `streamRecvWasReaped`
+// alone does not tell it from the teardown pass.
+// ---------------------------------------------------------------------------
+
+const stop_code: u64 = 99;
+
+/// The seat refuses a stream that it has no use for, and the host can stop
+/// a stream too. Either way quic-zig throws away what arrives after the
+/// stop, so the seat must drop the stream and never treat it as a completed
+/// data stream.
+///
+/// 1. The peer opens a bidirectional stream, which a native server never
+///    uses. The seat refuses it (STOP_SENDING and RESET_STREAM), keeps no
+///    buffer for it, and the session stays up.
+/// 2. Half the payload of data stream 2 reaches the seat. Then the host
+///    stops the stream, and the rest of the payload and the FIN arrive:
+///    quic-zig drops them. The seat must drop its buffer of stream 2. In the
+///    trap order the end reaches the seat after a tick freed the stream.
+/// 3. An announcement for stream 2 with the length of the bytes that reached
+///    the seat. A seat that kept those bytes would complete the frame.
+///    quic-zig recorded the full payload as the final size, so the frame
+///    fails with `InvalidFrame`.
+pub fn runEmbeddedStopped(order: Order) !void {
+    const allocator = std.testing.allocator;
+    const rig = try SeatRig.create(allocator, order);
+    defer rig.destroy();
+
+    const seat = try rig.handshake();
+    try rig.raw.ensureControlStream();
+    try writePreamble(&rig.raw);
+    const client_conn = rig.raw.client.conn;
+
+    // 1. A refused stream.
+    const refused_stream: u64 = 4;
+    _ = try client_conn.openBidi(refused_stream);
+    try rig.raw.writeAll(refused_stream, "refused");
+    try client_conn.streamFinish(refused_stream);
+    try rig.raw.drainOutgoing(rig.raw.nowUs());
+    try rig.waitForReap(seat, refused_stream);
+    try std.testing.expect(seat.streams.get(refused_stream) == null);
+    try std.testing.expect(!seat.isClosing());
+
+    // 2. A data stream that the host stops after half its bytes.
+    const data_stream: u64 = 2;
+    const half = payload_len / 2;
+    try rig.raw.ensureUniStream(data_stream);
+    try rig.raw.writeAll(data_stream, payload[0..half]);
+    try rig.waitForSeatBytes(seat, data_stream, half);
+    try seat.conn.streamStopSending(data_stream, stop_code);
+    // The rest and the FIN leave the peer before it learns of the stop.
+    try std.testing.expectEqual(payload_len - half, try client_conn.streamWrite(data_stream, payload[half..]));
+    try client_conn.streamFinish(data_stream);
+    try rig.raw.drainOutgoing(rig.raw.nowUs());
+    try rig.waitForReap(seat, data_stream);
+    const recv_end = seat.conn.streamRecvEnd(data_stream) orelse return error.TestExpectedStreamRecvEnd;
+    try std.testing.expect(recv_end.stopped);
+    try std.testing.expectEqual(@as(u64, payload_len), recv_end.final_size);
+    // The seat dropped the stream: stream 0 is all it holds.
+    try std.testing.expect(seat.streams.get(data_stream) == null);
+    try std.testing.expectEqual(@as(usize, 1), seat.streams.count());
+    try std.testing.expectEqual(@as(usize, 0), seat.ended_data_streams);
+    try std.testing.expectEqual(@as(usize, 0), rig.recorder.messages);
+    try std.testing.expectEqual(@as(usize, 0), rig.recorder.errors);
+
+    // 3. The announcement names the bytes that reached the seat.
+    const announce = try quic.native.encodeDataRpc(allocator, 0, data_stream, half, native_options.max_control_frame_bytes);
+    defer allocator.free(announce);
+    try rig.raw.writeAll(quic.baseline_stream_id, announce);
+    try rig.waitForRecorder();
+    try rig.recorder.expectFailure(error.InvalidFrame);
+    const status = seat.closeStatus() orelse return error.QuicLoopbackMissingCloseStatus;
+    try std.testing.expectEqual(quic.ApplicationCloseCode.frame_error, status.code);
+}
+
+// ---------------------------------------------------------------------------
+// A RESET of the control stream (stream 0).
+// ---------------------------------------------------------------------------
+
+/// A RESET of stream 0 is session loss (the E-order contract). Here it
+/// arrives when the server's own half of stream 0 has ended too (the peer
+/// stopped it first), so in the trap order a tick frees stream 0 before the
+/// Driver reports the end. Through quic-zig v0.27.0 the seat then got
+/// `.reaped`, and the session stayed up with no control stream. Since
+/// v0.28.0 the seat gets `.reset` and closes the session, in both orders.
+pub fn runEmbeddedControlReset(order: Order) !void {
+    const allocator = std.testing.allocator;
+    const rig = try SeatRig.create(allocator, order);
+    defer rig.destroy();
+
+    const seat = try rig.handshake();
+    const control: u64 = quic.baseline_stream_id;
+    try rig.raw.ensureControlStream();
+    try writePreamble(&rig.raw);
+
+    // 1. Step until the server has sent its own preamble on stream 0, so no
+    //    write of the seat meets the stop below.
+    var patience = Patience.begin();
+    while (seat.native.preamble_len == 0 or seat.native.preamble_offset != seat.native.preamble_len) {
+        try rig.step();
+        try patience.wait();
+    }
+
+    // 2. The peer stops the server's half of stream 0. The server answers
+    //    with RESET_STREAM. Step until the peer has acknowledged it: the
+    //    server's half has then ended.
+    try rig.raw.client.conn.streamStopSending(control, stop_code);
+    try rig.raw.drainOutgoing(rig.raw.nowUs());
+    patience = Patience.begin();
+    while (true) {
+        try rig.step();
+        const stream = seat.conn.stream(control) orelse return error.TestExpectedControlStream;
+        if (stream.send.isTerminal()) break;
+        try patience.wait();
+    }
+    try std.testing.expect(!seat.isClosing());
+
+    // 3. The peer resets stream 0, alone in a later datagram. Step the
+    //    server only, until the seat closes the session.
+    try rig.raw.client.conn.streamReset(control, reset_code);
+    try rig.raw.drainOutgoing(rig.raw.nowUs());
+    patience = Patience.begin();
+    while (!seat.isClosing()) {
+        try rig.loop.step();
+        if (rig.host.seat == null) return error.TestSeatGoneBeforeClose;
+        try patience.wait();
+    }
+    // Both halves of stream 0 have ended. In the trap order the tick freed
+    // the stream before the Driver reported the end.
+    if (order == .tick_then_service) try std.testing.expect(seat.conn.streamRecvWasReaped(control));
+    try std.testing.expectEqual(capnpc.rpc.events.DisconnectCause.transport_error, seat.closeCause());
+    try std.testing.expect(seat.streams.get(control) == null);
 }

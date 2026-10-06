@@ -300,14 +300,18 @@ test "embedded quic session refuses peer streams it never uses (native)" {
 }
 
 // The stream-end trap in the seat: a data stream's bytes reach the seat
-// before its announcement, and its end follows alone. In the safe order the
-// end comes as `.fin` or `.reset`; when the host ticks first it comes as
-// `.reaped`. Either way the seat must keep the bytes, finish the frame when
-// the announcement arrives, then free the stream's buffer. Ablation: with
-// `onStreamEnd` dropping the bytes on `.reset` and `.reaped` (the old code),
-// three of the four cases fail with `DataStreamTimeout` (all but
-// service-then-tick FIN); with `releaseDrainedDataStreams` removed, the seat
-// still holds the data stream (2 buffers, not 1).
+// before its announcement, and its end follows alone. Since quic-zig v0.28.0
+// the end comes as `.fin` or `.reset` in both orders; when the host ticks
+// first, quic-zig has already freed the stream, and the seat reads how it
+// ended from `Connection.streamRecvEnd`. Either way the seat must keep the
+// bytes (and the final size and code of a RESET), finish the frame when the
+// announcement arrives, then free the stream's buffer. Ablation: with
+// `onStreamEnd` dropping the bytes on a reset (the v0.19.1 code), both RESET
+// cases lose the stream's buffer; with the seat reading the RESET from the
+// live stream only (`conn.stream(id).recv.reset`, the v0.27.0-era code), the
+// trap-order RESET case keeps no final size and no code; with
+// `releaseDrainedDataStreams` removed, the seat still holds the data stream
+// (2 buffers, not 1).
 
 const stream_end = @import("stream_end_support.zig");
 
@@ -327,8 +331,36 @@ test "embedded native seat judges a reset data stream by the final size of the R
     // `DataStreamReset`. Ablation: when the seat ignores the RESET (its final
     // size is then the bytes in hand), the longer RESET completes the frame
     // and the cut one fails with `InvalidFrame`.
-    try stream_end.runEmbeddedReset(.longer_than_announced);
-    try stream_end.runEmbeddedReset(.cut);
+    try stream_end.runEmbeddedReset(.longer_than_announced, .service_then_tick);
+    try stream_end.runEmbeddedReset(.cut, .service_then_tick);
+}
+
+test "embedded native seat judges a reset data stream by the final size of the RESET when a tick freed it first (the trap order)" {
+    // quic-zig v0.28.0 reports `.reset` for a stream that a tick freed before
+    // the Driver read it, and keeps the RESET's final size and code in its
+    // note of the end. Ablation: with the seat reading the RESET from the
+    // live stream only, the seat keeps no RESET for the stream, and without
+    // that check the longer RESET completes the frame.
+    try stream_end.runEmbeddedReset(.longer_than_announced, .tick_then_service);
+    try stream_end.runEmbeddedReset(.cut, .tick_then_service);
+}
+
+test "embedded native seat drops a stream that this side stopped, and never completes a frame from it" {
+    // Since quic-zig v0.28.0 the Driver reports a stopped stream as `.reaped`,
+    // also while it is live. Ablation: with `classifyEnd` using the rule of
+    // the v0.27.0 era (a `.reaped` of a freed stream is a GC end, any other
+    // `.reaped` is teardown), the trap order keeps the stopped stream's
+    // bytes, and without that check it completes a frame from them.
+    try stream_end.runEmbeddedStopped(.service_then_tick);
+    try stream_end.runEmbeddedStopped(.tick_then_service);
+}
+
+test "embedded native seat closes the session on a RESET of stream 0, also when a tick freed stream 0 first" {
+    // Ablation: with stream 0 dropping its entry on a reset without the
+    // session loss, the seat never closes, and each order (run alone first)
+    // times out.
+    try stream_end.runEmbeddedControlReset(.service_then_tick);
+    try stream_end.runEmbeddedControlReset(.tick_then_service);
 }
 
 fn countEmbeddedClientMessage(conn: *quic.Connection, frame: []const u8) anyerror!void {
