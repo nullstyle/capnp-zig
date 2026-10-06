@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-06
+
+This release moves QUIC to quic-zig v0.29.0 (about 91 KB per connection
+instead of 1.09 MB, and better loss handling), fixes a double free and a
+leak in Experimental persistence, and makes the core build for iOS. A new
+build option, `-Dfd-passing`, compiles fd passing out. capnp-zig v0.21.0
+and http3-zig v0.5.3 pin the same quic-zig release with the same option
+map, so one program can link both with one quic module. No Stable API line
+changes (`docs/api-snapshot.txt` and `docs/generated-shape.txt` are the
+same as in v0.20.0). One `### Breaking` entry is in the Stable build
+integration: a raw compiler command that passes capnp-zig's modules by hand
+needs a `capnp_build_options` module. The other is Experimental.
+docs/upgrading-to-0.21.0.md walks through the upgrade.
+
 ### Breaking
 
 - **A compiler command that passes capnp-zig's modules by hand needs a
@@ -241,6 +255,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- `docs/upgrading-to-0.21.0.md` (new): the coordinated set (capnp-zig
+  v0.21.0, quic-zig v0.29.0, http3-zig v0.5.3), one quic module per
+  process, and a checklist for every Breaking entry.
 - `docs/build-integration.md`: "Compiling fd passing out: `-Dfd-passing`"
   (the option, how a consumer passes it, the one-option-map rule, raw
   compiler commands) and "iOS: the core as a static library".
@@ -5910,7 +5927,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/nullstyle/capnp-zig/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/nullstyle/capnp-zig/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/nullstyle/capnp-zig/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/nullstyle/capnp-zig/compare/v0.18.0...v0.19.0
