@@ -3,7 +3,9 @@
 > **Status: DELIVERED in quic-zig v0.27.0 (tag `9d2ab6e`, 2026-10-05);
 > capnp-zig moved onto it on the same pin, and then to v0.28.1, which keeps
 > it. The three candidates at the end were DELIVERED in quic-zig v0.29.0
-> (tag `b9a15e6`, 2026-10-06), and capnp-zig adopted them on that pin.** Written 2026-10-04 against
+> (tag `b9a15e6`, 2026-10-06), and capnp-zig adopted them on that pin.
+> One new ask is OPEN: a way to move v0.29.0's Debug loop-thread latch
+> (section at the end).** Written 2026-10-04 against
 > quic-zig v0.25.0 and boringssl-zig 0.6.7 / BoringSSL `aef0e2df`. This is
 > a document for the quic-zig maintainers, not a filed issue. The asks
 > below are kept as written; "Delivered" and "Left as candidates" at the
@@ -287,11 +289,12 @@ more things that capnp-zig's tests saw:
 
 ## Left as candidates (not built in v0.27.0)
 
-These stay open. None blocks capnp-zig. quic-zig v0.28.1 (capnp-zig's pin
-for v0.20.0) builds none of them. It documents the first two and the
-bundled loop's clock: `rotateSessionTicketKey` says that the Server does
-not check the thread and that the old key's time counts from `now_us`; its
-doc and EMBEDDING.md give the restart recipe (start with the OLD key, then
+These stayed open through quic-zig v0.28.1, and v0.29.0 delivered all
+three ("Delivered in v0.29.0", at the end). None blocked capnp-zig.
+quic-zig v0.28.1 (capnp-zig's pin for v0.20.0) builds none of them. It
+documents the first two and the bundled loop's clock:
+`rotateSessionTicketKey` says that the Server does not check the thread
+and that the old key's time counts from `now_us`; its doc and EMBEDDING.md give the restart recipe (start with the OLD key, then
 rotate again before the first datagram); and `Config.new_token_key` says
 that the bundled loop's clock starts at zero.
 
@@ -338,3 +341,21 @@ constants and `epoch`. Any reference fails with "root source file struct
 'time' has no member named 'microTimestamp'" at `src/root.zig:75`. quic-zig's
 own tests do not call it, so its gates do not see it. capnp-zig does not
 reference it, and its docs tell users not to.
+
+## Asked after v0.29.0: a way to move the loop thread
+
+The v0.29.0 Debug check fixes the loop thread at the first `feed`, `tick`
+or rotation, and nothing moves it after that. capnp-zig documents a thread
+handoff at a quiescent point (`Connection.adoptOwnerThread`: connect or
+accept on one thread, run on another). Since v0.29.0, a server-role
+connection that has received one datagram cannot do this in a Debug build:
+the next `feed` on the new thread asserts at `Server.zig:1298`
+(`std.debug.assert(loop == me)`). The same handoff passed on v0.28.1.
+Release builds are not affected.
+
+The ask: a call that moves the latch at a quiescent point, for example
+`Server.adoptLoopThread()`, which sets the loop thread to the calling
+thread. capnp-zig's `Connection.adoptOwnerThread` would call it for the
+server role. Until then, capnp-zig documents the limit (CHANGELOG,
+`Connection.adoptOwnerThread`, `Listener`, `docs/quic-transport.md`
+"Rotation", `docs/rpc_runtime_design.md`). It does not block capnp-zig.

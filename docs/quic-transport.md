@@ -1004,6 +1004,13 @@ tick or rotation fixes its loop thread, and a call on any other thread
 asserts. So a rotation before `run` must run on the thread that then calls
 `run`. `Listener.rotateSessionTicketKey` is the same call for code that
 drives a `Listener` itself; it must run on the thread that feeds it.
+The same Debug latch limits a thread handoff: a server-side `Connection` or
+`Listener` cannot move to another thread after its first received
+datagram, tick or rotation. `Connection.adoptOwnerThread` moves
+capnp-zig's owner thread, not quic-zig's loop thread, so the next step on
+the new thread asserts inside quic-zig. Hand a server-side connection to
+its thread before its first step. Release builds do not check, and a
+client-side `Connection` is not affected.
 `serve` (`PeerServer`) has no loop-thread hook of its own: rotate through
 `PeerServer.server` before `run`, on the thread that calls `run`, or drive a
 `Server` with `runWithAfterStep`. A rotation hook on `PeerServer` is a

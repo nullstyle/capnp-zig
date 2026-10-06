@@ -28,6 +28,12 @@ pub const StatelessResponse = quic_zig.Server.StatelessResponse;
 /// This type deliberately has no Cap'n Proto RPC callbacks. A fanout server is
 /// expected to accept/choose sessions here, then hand each selected session to a
 /// per-session transport driver.
+///
+/// Drive a `Listener` from one thread for its whole life. In a Debug build,
+/// quic-zig (v0.29.0) fixes the loop thread of its `Server` at the first
+/// received datagram, tick or session-ticket rotation, and asserts that
+/// thread at every later one, so a later feed from another thread panics
+/// inside quic-zig. Release builds do not check.
 pub const Listener = struct {
     allocator: std.mem.Allocator,
     io: std.Io,

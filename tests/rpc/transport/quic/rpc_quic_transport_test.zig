@@ -3594,9 +3594,11 @@ test "serverConfigFromOptions refuses a previous ticket key with no key, all zer
     var zero = keyedListenerOptions();
     zero.previous_session_ticket_key = &zero_key;
     // The current key's name (bytes 0-15) with other key bytes: a ticket
-    // names its key by those bytes alone.
-    var same_name = ticket_key_next;
-    @memcpy(same_name[0..16], ticket_key[0..16]);
+    // names its key by those bytes alone. Byte 20 is in the HMAC key, so a
+    // whole-key comparison would let this one through.
+    const same_name = ticketKeyWithByte(20, 0x5a);
+    try std.testing.expectEqualSlices(u8, ticket_key[0..16], same_name[0..16]);
+    try std.testing.expect(!std.mem.eql(u8, &ticket_key, &same_name));
     var named = keyedListenerOptions();
     named.previous_session_ticket_key = &same_name;
     // The current key itself.

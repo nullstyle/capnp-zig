@@ -131,6 +131,14 @@ pub const Connection = struct {
     /// Re-capture thread affinity on the current thread. Legal only at a
     /// quiescent handoff point — no other thread may touch this connection
     /// concurrently (mirrors the TCP connection's `adoptOwnerThread`).
+    ///
+    /// A server-role connection can move only before its first step. In a
+    /// Debug build, quic-zig (v0.29.0) fixes the loop thread of its `Server`
+    /// at the first received datagram, tick or session-ticket rotation, and
+    /// asserts that thread at every later one. This call does not move that
+    /// latch: after a server-role connection has stepped, a step on another
+    /// thread panics inside quic-zig. Release builds do not check. A
+    /// client-role connection can move at any quiescent point.
     pub fn adoptOwnerThread(self: *Connection) void {
         if (comptime builtin.target.os.tag == .freestanding) return;
         self.owner_thread_id = std.Thread.getCurrentId();

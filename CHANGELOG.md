@@ -74,14 +74,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     thread in a Debug build: the first of them fixes the loop thread. A
     capnp-zig rotation before `run` must run on the thread that then calls
     `run` (`Server.rotateSessionTicketKey` docs).
+  - The same Debug check limits a thread handoff. A server-side QUIC
+    `Connection` or `Listener` cannot move to another thread after its
+    first received datagram, tick or rotation: `Connection.adoptOwnerThread`
+    moves capnp-zig's owner thread, not quic-zig's loop thread, so the next
+    step on the new thread panics inside quic-zig (`Server.feed`). Through
+    v0.28.1 such a handoff worked. Release builds do not check, and a
+    client-side `Connection` is not affected. Hand a server-side connection
+    to its thread before its first step.
   - **Migration:**
     - **One quic module per process.** A build that links capnp-zig with
       `-Dquic=true` next to another package that depends on quic-zig must
       pin a release of that package that pins quic-zig v0.29.0, with the
       same option map. quic-zig's v0.29.0 note records http3-zig's `main`
-      on v0.29.0 (`7012a6c`); http3-zig still builds its own quic module,
-      so it cannot share capnp-zig's at any pin. It records no qmsg,
-      qmesh-zig or nest release on v0.29.0.
+      on v0.29.0 (`7012a6c`), and records no qmsg, qmesh-zig or nest
+      release on v0.29.0. The released http3-zig `v0.5.2` builds its own
+      quic module, so it cannot share capnp-zig's. http3-zig `main` from
+      `3a2d6bb` takes quic's exported `quic` and `boringssl` modules with
+      the same option map, so a build of that `main` and capnp-zig on
+      v0.29.0 should get one quic module. That combination is unreleased,
+      and this change did not measure it.
     - **Direct quic-zig users:** read quic-zig's 0.29.0 entry. The
       congestion controllers' loss hooks take the detection time (internal
       surface).
@@ -119,10 +131,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check; "Retry and NEW_TOKEN" describes `new_token_clock` and
   `new_token_max_clock_skew_us`; the client ticket lifetime, the refusals,
   `zeroServerConfigSecrets`, the pin paragraph and the CONNECTION_CLOSE
-  entry of "Current Limits" are updated.
+  entry of "Current Limits" are updated. "Rotation" also states that a
+  server-side `Connection` or `Listener` cannot move to another thread
+  after its first step in a Debug build; so do the doc comments of
+  `Connection.adoptOwnerThread` and `Listener`, and
+  `docs/rpc_runtime_design.md` ("Concurrency and Scheduling").
 - `docs/upstream/handoff-quic-zig-ticket-keys.md` records the three
-  candidates as delivered in quic-zig v0.29.0, and the `unixWallClockUs`
-  compile defect found on adoption.
+  candidates as delivered in quic-zig v0.29.0, the `unixWallClockUs`
+  compile defect found on adoption, and a new ask: a way to move the Debug
+  loop-thread latch (for example `Server.adoptLoopThread`).
 
 ## [0.20.0] - 2026-10-05
 
