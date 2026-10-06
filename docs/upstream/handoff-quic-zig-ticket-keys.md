@@ -1,7 +1,7 @@
 # HANDOFF — quic-zig: session-ticket keys as a server config
 
 > **Status: DELIVERED in quic-zig v0.27.0 (tag `9d2ab6e`, 2026-10-05);
-> capnp-zig moved onto it on the same pin, and then to v0.28.0, which keeps
+> capnp-zig moved onto it on the same pin, and then to v0.28.1, which keeps
 > it.** Written 2026-10-04 against
 > quic-zig v0.25.0 and boringssl-zig 0.6.7 / BoringSSL `aef0e2df`. This is
 > a document for the quic-zig maintainers, not a filed issue. The asks
@@ -286,7 +286,7 @@ more things that capnp-zig's tests saw:
 
 ## Left as candidates (not built in v0.27.0)
 
-These stay open. None blocks capnp-zig. quic-zig v0.28.0 (capnp-zig's pin
+These stay open. None blocks capnp-zig. quic-zig v0.28.1 (capnp-zig's pin
 for v0.20.0) builds none of them. It documents the first two and the
 bundled loop's clock: `rotateSessionTicketKey` says that the Server does
 not check the thread and that the old key's time counts from `now_us`; its

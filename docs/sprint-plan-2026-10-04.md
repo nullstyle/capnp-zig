@@ -766,6 +766,8 @@ The fix work also found row 44: on macOS a close of the other end of a socket wh
 - quic-zig tags the fix (v0.28.1) and capnp-zig moves its pin to it. Then change every `v0.28.0`, `a9078d8` and `quic-0.28.0-...` hash string (the `build.zig.zon` comment, the CHANGELOG pin entry and intro, the table, snippet and checklist of `docs/upgrading-to-0.20.0.md`, and the pin paragraph and "Current Limits" of `docs/quic-transport.md`), and delete the notes on the 32-bit defect (`build.zig.zon`, CHANGELOG, `docs/upgrading-to-0.20.0.md`, "Current Limits").
 - The owner records a decision to accept a red cross-targets x86 job for v0.20.0.
 
+**Blocker closed (2026-10-05): quic-zig v0.28.1.** quic-zig tagged the fix as v0.28.1 (tag `21d05d1`, hash `quic-0.28.1-DnSYvacDOgCPlHPHQWufNaG2XMoKtnwwHJPVcIUuAmqB`). It is v0.28.0 with a layout check in place of the size assert, and five casts in tests and examples. No library code changes for a 64-bit target, and boringssl-zig stays at `ff30fe99`. `sprint/quic-v0281` (from main `05b186c`) moves the pin and changes the strings and notes in the first item above. On that branch, `-Dquic=true check-compile check-test-compile -Dtarget=x86-linux-gnu` passes.
+
 **What remains: item 18, the v0.20.0 release candidate.**
 - Done on `sprint/rc-docs`:
   - CHANGELOG `[Unreleased]`: the quic v0.27.0 move (a new Breaking (Experimental behavior) entry, the rotation entry, the bump with its Migration notes), the two deletions (the `SessionTicketKeyInstallFailed` Breaking entry and the "library roots import boringssl" Changed entry), the soak gate, and the stream-end entries.
@@ -780,12 +782,12 @@ The fix work also found row 44: on macOS a close of the other end of a socket wh
 - At the cut (the release ceremony, after the version sweep):
   - README: one `unreleased-after: v0.19.1` marker sits on the upgrade-guide line. docs-smoke fails on it after the bump, by design. Delete the sentence that says v0.20.0 is not tagged, and the marker.
   - `docs/upgrading-to-0.20.0.md`: delete the "Release candidate" note at the top, and put the real `capnpc_zig-0.20.0-...` hash in its table. docs-smoke does not scan this file.
-  - The downstream quic pins: read the newest tags of http3-zig, qmsg, qmesh-zig and nest again, against the quic release that capnp-zig pins (v0.28.0, or v0.28.1 after the move in "Week 2, part 3"). Update the table in `docs/upgrading-to-0.20.0.md` ("One quic module per process") and the "One quic module per process" Migration note of the quic bump in CHANGELOG. On 2026-10-05, no tag and no `main` branch of http3-zig, qmsg or qmesh-zig pins quic v0.28.0. Their tags pin older releases (`v0.5.1` pins v0.26.0; `v0.7.0` and `0.2.1` pin v0.21.0), and their `main` branches pin v0.27.0 (http3-zig pinned v0.28.0, then went back to v0.27.0 because of the 32-bit defect).
+  - The downstream quic pins: read the newest tags of http3-zig, qmsg, qmesh-zig and nest again, against the quic release that capnp-zig pins (v0.28.1, "Week 2, part 3"). Update the table in `docs/upgrading-to-0.20.0.md` ("One quic module per process") and the "One quic module per process" Migration note of the quic bump in CHANGELOG. On 2026-10-05, after the v0.28.1 tag, no tag and no `main` branch of http3-zig, qmsg or qmesh-zig pins quic v0.28.1. Their tags pin older releases (`v0.5.1` pins v0.26.0; `v0.7.0` and `0.2.1` pin v0.21.0), and their `main` branches pin v0.27.0 (http3-zig pinned v0.28.0, then went back to v0.27.0 because of the 32-bit defect). nest has no tag, and its newest commit (`a8d3672`) pins v0.27.0.
 - The owner approves the tag. Then `just release-tag 0.20.0`, `just verify-release-hash 0.20.0`, a real `zig fetch`, and the consumer builds.
 - Handoffs (files, no pushes):
   - slcp: the shape gate and the walker seam.
-  - http3-zig, qmsg, qmesh-zig, nest: tag a release that pins the same quic release as capnp-zig v0.20.0 (v0.28.0, or v0.28.1 after the move), with the same option map (one quic module per process). The owner moved the set from v0.27.0 to v0.28.0 ("Week 2, part 3"). On 2026-10-05 no tag and no `main` branch of theirs pins v0.28.0.
-  - quic-zig: it can release `Server.tls_ctx`, `retry_accepted` and (outside one test root) `boringssl.raw`. Ask it to hold `Stream.recv.reset`, `Connection.streamRecvWasReaped` and `Connection.streamRecvEnd` with its `StreamRecvEnd` (`reset_code`, `final_size`, `stopped`) next to `Stream.recv.final_size`. Ask it to tag the 32-bit fix (`dd570d0`).
+  - http3-zig, qmsg, qmesh-zig, nest: tag a release that pins the same quic release as capnp-zig v0.20.0 (v0.28.1), with the same option map (one quic module per process). The owner moved the set from v0.27.0 to v0.28.0, and the 32-bit fix moves it to v0.28.1 ("Week 2, part 3"). On 2026-10-05 no tag and no `main` branch of theirs pins v0.28.1. Do not pin v0.28.0: it does not compile for a 32-bit target.
+  - quic-zig: it can release `Server.tls_ctx`, `retry_accepted` and (outside one test root) `boringssl.raw`. Ask it to hold `Stream.recv.reset`, `Connection.streamRecvWasReaped` and `Connection.streamRecvEnd` with its `StreamRecvEnd` (`reset_code`, `final_size`, `stopped`) next to `Stream.recv.final_size`. The 32-bit fix (`dd570d0`) is tagged as v0.28.1.
   - capnp-qmsg-demo and mruby-quic: the switch fix.
   - prollytree and bucketlist: scratch builds.
 
@@ -876,7 +878,7 @@ The fix work also found row 44: on macOS a close of the other end of a socket wh
 | Ticket-key pair or ring (callback form) | BoringSSL's setter takes one 48-byte key. A pair needs the callback form and new crypto glue. Add it if field data asks, or adopt quic-zig's field |
 | Adopting quic-zig's ticket-key config field; ticket keys in embedded mode | Done in v0.20.0 ("Week 2, part 2"): the key goes through quic-zig v0.27.0's config, so an embedder that builds its server from `serverConfigFromOptions` gets it too |
 | Sturdy-ref proof format | Open question in `quic-durable-caps-plan.md:376` |
-| quic v0.26.0 pin; QuicVatNetwork rung 2 | The pin is done: v0.20.0 moves to v0.28.0 (owner's decision, "Week 2, part 3"; first v0.27.0 by option B, "Week 2, part 2"). Rung 2 stays deferred |
+| quic v0.26.0 pin; QuicVatNetwork rung 2 | The pin is done: v0.20.0 moves to v0.28.1 (owner's decision for v0.28.0, "Week 2, part 3", then v0.28.1 for the 32-bit fix; first v0.27.0 by option B, "Week 2, part 2"). Rung 2 stays deferred |
 | TCP loop off `poll(2)` | Same loop that the `recvmsg` seam extends |
 | Module-root restructure; compat/0.18 sweep | Moves Stable paths; path-dependency consumers |
 | Devtools package for slcp | Item 1 builds the seam; publish it next sprint |

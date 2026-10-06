@@ -6,24 +6,26 @@
         // Pinned to a TAG, not a raw commit: tags are immutable release
         // points, so the pin is auditable and reproducible.
         //
-        // v0.28.0 (commit a9078d8): the end of a stream is not lost when
-        // `tick` runs before the read. `Connection.streamRecvEnd(id)` tells
-        // how the receive half of a stream ended (a clean FIN, a reset and
-        // its code, or a stream that the application stopped), before and
-        // after the `tick` that reclaims it. The embedded seat and native
-        // mode read it. `quic.app` now reports `.fin` or `.reset` for a
-        // stream that a `tick` reclaimed first. A stream that the
-        // application stopped ends as `.reset` (the peer answers the stop
-        // with RESET_STREAM) or `.reaped`, also while it is live;
-        // `streamRecvEnd(id)` (null in the teardown pass for a stream that
-        // has not ended) gives `stopped`. WHEN a stream is reclaimed, when
-        // its credit returns, and the field `Stream.recv.final_size` do not
-        // change. No wire change, no security fix. KNOWN DEFECT: v0.28.0 does
-        // not compile for a 32-bit target (a comptime size assert in
-        // `src/conn/RecvEndRing.zig`), so `-Dquic=true` fails for
-        // x86-linux-gnu, and CI's cross-targets job is red on this pin.
-        // quic-zig fixed it in `dd570d0`, after the tag. Move to the release
-        // that carries it.
+        // v0.28.1 (commit 21d05d1): v0.28.0 with a build fix. v0.28.0 did not
+        // compile for a 32-bit target (a comptime size assert in
+        // `src/conn/RecvEndRing.zig`), so `-Dquic=true` failed for
+        // x86-linux-gnu. v0.28.1 checks the record layout, not a fixed size.
+        // There is no other change for a 64-bit target. Do not pin v0.28.0.
+        //
+        // v0.28.0 (commit a9078d8, skipped as a pin, included here): the end
+        // of a stream is not lost when `tick` runs before the read.
+        // `Connection.streamRecvEnd(id)` tells how the receive half of a
+        // stream ended (a clean FIN, a reset and its code, or a stream that
+        // the application stopped), before and after the `tick` that reclaims
+        // it. The embedded seat and native mode read it. `quic.app` now
+        // reports `.fin` or `.reset` for a stream that a `tick` reclaimed
+        // first. A stream that the application stopped ends as `.reset` (the
+        // peer answers the stop with RESET_STREAM) or `.reaped`, also while
+        // it is live; `streamRecvEnd(id)` (null in the teardown pass for a
+        // stream that has not ended) gives `stopped`. WHEN a stream is
+        // reclaimed, when its credit returns, and the field
+        // `Stream.recv.final_size` do not change. No wire change, no security
+        // fix.
         //
         // v0.27.0 (commit 9d2ab6e): session tickets that live through a
         // restart. `Server.Config.session_ticket_key` and
@@ -57,12 +59,12 @@
         // the build makes two quic modules (and two BoringSSLs). The map is
         // `.target`, `.release`, `.@"sanitize-c" = "trap"` (build/modules.zig),
         // the one nest/qmsg/qmesh/http3-zig use; the coordinated set for
-        // capnp-zig v0.20.0 is on v0.28.0. boringssl-zig is unchanged since
+        // capnp-zig v0.20.0 is on v0.28.1. boringssl-zig is unchanged since
         // v0.25.0: ff30fe99 (0.6.7, BoringSSL aef0e2df), which links Windows
         // ws2_32 with pkg-config lookup disabled.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.28.0.tar.gz",
-            .hash = "quic-0.28.0-DnSYvYT2OQBEMBW5UQd4BQki7EgGez1d-Ed5fGPHJHBd",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.28.1.tar.gz",
+            .hash = "quic-0.28.1-DnSYvacDOgCPlHPHQWufNaG2XMoKtnwwHJPVcIUuAmqB",
             .lazy = true,
         },
     },

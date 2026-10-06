@@ -44,20 +44,21 @@ Cap'n Proto RPC vat session. The payload above the QUIC transport is still the
 standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
 between peers, not the RPC protocol that `Peer` handles.
 
-The manifest pins the `quic` package at annotated tag `v0.28.0` (commit
-`a9078d8`: `Connection.streamRecvEnd`, so the end of a stream is not lost when
-`tick` runs before the read; see [Embedder rules](#embedder-rules)). v0.27.0
-before it made session-ticket keys server config, and made a client send its
-0-RTT data again after a Retry. The tag in turn pins the published
-boringssl-zig commit `ff30fe99` (boringssl 0.6.7). That BoringSSL wrapper links
-Windows sockets as `ws2_32` with package-config lookup disabled, removing the
-native-shell and Git Bash `pkg-config.BAT` failure path. A process can hold
-only one `quic` module: every package that links quic-zig into the same build
-must pin the same tag and pass the same dependency options (`.target`,
-`.release`, `.@"sanitize-c" = "trap"`), or the build makes two quic modules,
-each with its own BoringSSL. Connection and server
-session loops drive `Connection.advance()` before waiting on datagrams and again
-during active service, then tick timers and drain outbound datagrams.
+The manifest pins the `quic` package at annotated tag `v0.28.1` (commit
+`21d05d1`). v0.28.1 is v0.28.0 with a build fix: v0.28.0 did not compile for a
+32-bit target, so do not pin it. v0.28.0 added `Connection.streamRecvEnd`, so
+the end of a stream is not lost when `tick` runs before the read (see
+[Embedder rules](#embedder-rules)). v0.27.0 before it made session-ticket keys
+server config, and made a client send its 0-RTT data again after a Retry. The
+tag in turn pins the published boringssl-zig commit `ff30fe99` (boringssl
+0.6.7). That BoringSSL wrapper links Windows sockets as `ws2_32` with package-config lookup
+disabled, removing the native-shell and Git Bash `pkg-config.BAT` failure path.
+A process can hold only one `quic` module: every package that links quic-zig
+into the same build must pin the same tag and pass the same dependency options
+(`.target`, `.release`, `.@"sanitize-c" = "trap"`), or the build makes two quic
+modules, each with its own BoringSSL. Connection and server session loops drive
+`Connection.advance()` before waiting on datagrams and again during active
+service, then tick timers and drain outbound datagrams.
 
 The public API matches the TCP transport's shape. Most applications need only
 two calls: `rpc.transport.quic.connect` returns a `ClientSession` (a QUIC
@@ -1195,8 +1196,3 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.
 - Mode mismatch is treated as malformed transport input and closes cleanly.
-- quic-zig v0.28.0 does not compile for a 32-bit target: a size check in
-  its stream-end note (`src/conn/RecvEndRing.zig`) holds only where a `u64`
-  aligns to 8 bytes. So `-Dquic=true` builds for `x86-linux-gnu` fail with
-  this pin. 64-bit targets are not affected. The fix is in quic-zig
-  (commit `dd570d0`, not released when this was written).
