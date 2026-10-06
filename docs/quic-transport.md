@@ -1196,3 +1196,9 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.
 - Mode mismatch is treated as malformed transport input and closes cleanly.
+- 32-bit x86 (for example `x86-linux-musl`): capnp-zig builds quic-zig and
+  BoringSSL with `sanitize-c = "trap"`. There, BoringSSL's 32-bit P-256 code
+  (`third_party/fiat/p256_32.h`, under ECDSA verify) can trap in some TLS
+  handshakes (quic-zig records it in its v0.28.1 notes, for boringssl-zig to
+  fix). capnp-zig's CI compiles QUIC for 32-bit x86 but does not run it there.
+  64-bit targets are not affected.
