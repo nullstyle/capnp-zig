@@ -86,9 +86,9 @@ pub const EmbeddedSessionOptions = struct {
 ///
 /// Frames reach the `Peer` strictly in stream order (QUIC per-stream order
 /// plus FIFO seat buffers), preserving the E-order contract of
-/// `rpc.capnp`. A RESET observed on the ordered control stream (stream 0)
-/// ends the whole session — sub-session failure semantics do not exist in
-/// the Cap'n Proto RPC protocol.
+/// `rpc.capnp`. A RESET observed on the ordered control stream (stream 0),
+/// or a stop of stream 0 by the host, ends the whole session — sub-session
+/// failure semantics do not exist in the Cap'n Proto RPC protocol.
 pub const EmbeddedSession = struct {
     const CallbackLifecycle = callback_lifecycle_mod.State(EmbeddedSession);
     const Adapters = connection_adapters.State(EmbeddedSession);
@@ -366,9 +366,12 @@ pub const EmbeddedSession = struct {
     /// v0.28.0). See `EndKind` for the five kinds of end.
     ///
     /// The ordered control stream (stream 0): a clean end keeps its entry.
-    /// A reset, or an end that quic-zig cannot classify, is session loss by
-    /// the E-order contract: it drops the entry and closes the session. A
-    /// stopped stream and the teardown pass drop the entry only.
+    /// A reset, a stop, or an end that quic-zig cannot classify is session
+    /// loss by the E-order contract: it drops the entry and closes the
+    /// session. The seat never stops stream 0, but a host can, and after the
+    /// stop quic-zig threw away the bytes that still arrived. The peer
+    /// answers a stop with RESET_STREAM, so the Driver often reports such
+    /// an end as `.reset`. The teardown pass drops the entry only.
     ///
     /// A native data stream keeps the bytes the Driver delivered and is
     /// marked as ended for a clean end, a reset and an unknown end. The end
@@ -389,11 +392,11 @@ pub const EmbeddedSession = struct {
                 .fin => if (self.streams.getPtr(stream_id)) |buf| {
                     buf.ended = true;
                 },
-                .reset, .unknown => {
+                .reset, .unknown, .stopped => {
                     self.dropStream(stream_id);
                     self.requestControlStreamLoss();
                 },
-                .stopped, .teardown => self.dropStream(stream_id),
+                .teardown => self.dropStream(stream_id),
             }
             return;
         }
@@ -500,7 +503,12 @@ pub const EmbeddedSession = struct {
         }
     }
 
+    /// Close the session because stream 0 lost bytes. A connection that is
+    /// already closing keeps the cause of that close: the end of stream 0
+    /// can reach the seat after the close began, in the same service pass
+    /// as the peer's CONNECTION_CLOSE or in the Driver's teardown pass.
     fn requestControlStreamLoss(self: *EmbeddedSession) void {
+        self.captureCloseCause();
         if (self.close_cause == .unknown) self.close_cause = .transport_error;
         self.close();
     }

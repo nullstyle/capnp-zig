@@ -346,8 +346,10 @@ test "embedded native seat judges a reset data stream by the final size of the R
 }
 
 test "embedded native seat drops a stream that this side stopped, and never completes a frame from it" {
-    // Since quic-zig v0.28.0 the Driver reports a stopped stream as `.reaped`,
-    // also while it is live. Ablation: with `classifyEnd` using the rule of
+    // Since quic-zig v0.28.0 the Driver reports a stopped stream as `.reaped`
+    // (its end came before the peer answered the stop) or as `.reset` (the
+    // peer answered the stop with RESET_STREAM), also while it is live.
+    // Ablation: with `classifyEnd` using the rule of
     // the v0.27.0 era (a `.reaped` of a freed stream is a GC end, any other
     // `.reaped` is teardown), the trap order keeps the stopped stream's
     // bytes, and without that check it completes a frame from them.
@@ -361,6 +363,29 @@ test "embedded native seat closes the session on a RESET of stream 0, also when 
     // times out.
     try stream_end.runEmbeddedControlReset(.service_then_tick);
     try stream_end.runEmbeddedControlReset(.tick_then_service);
+}
+
+test "embedded native seat closes the session when the host stops stream 0 and the peer then ends it" {
+    // A stop throws away what arrives after it, so stream 0 lost bytes. The
+    // peer answers a stop with a RESET (the Driver reports `.reset`) or ends
+    // with a FIN that left first (`.reaped`); `streamRecvEnd(0).stopped` is
+    // true either way. Ablation: with a stopped stream 0 dropping its entry
+    // without the session loss, the seat never closes, and every case (run
+    // alone first) times out.
+    try stream_end.runEmbeddedControlStopped(.reset, .service_then_tick);
+    try stream_end.runEmbeddedControlStopped(.reset, .tick_then_service);
+    try stream_end.runEmbeddedControlStopped(.fin, .service_then_tick);
+    try stream_end.runEmbeddedControlStopped(.fin, .tick_then_service);
+}
+
+test "embedded native seat keeps the peer's close cause when a stopped stream 0 ends as the connection closes" {
+    // The end of stream 0 closes the session, but the peer's CONNECTION_CLOSE
+    // came first, so the cause stays `peer_close`. Ablation: with
+    // `requestControlStreamLoss` setting `transport_error` without reading
+    // the close that began first, each order (run alone first) gives
+    // `transport_error`.
+    try stream_end.runEmbeddedControlStoppedThenPeerClose(.service_then_tick);
+    try stream_end.runEmbeddedControlStoppedThenPeerClose(.tick_then_service);
 }
 
 fn countEmbeddedClientMessage(conn: *quic.Connection, frame: []const u8) anyerror!void {

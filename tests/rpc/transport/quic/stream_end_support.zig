@@ -930,8 +930,10 @@ pub fn runEmbeddedReset(shape: ResetShape, order: Order) !void {
 
 // ---------------------------------------------------------------------------
 // A stream this side stopped. Since quic-zig v0.28.0 the Driver reports such
-// a stream as `.reaped`, also while it is live, so `streamRecvWasReaped`
-// alone does not tell it from the teardown pass.
+// a stream as `.reaped` or, when the peer answered the stop with
+// RESET_STREAM, as `.reset`, also while it is live. So `streamRecvWasReaped`
+// alone does not tell it from the teardown pass, and `.reset` alone does not
+// tell it from a reset that the peer started.
 // ---------------------------------------------------------------------------
 
 const stop_code: u64 = 99;
@@ -1023,6 +1025,83 @@ pub fn runEmbeddedControlReset(order: Order) !void {
     const control: u64 = quic.baseline_stream_id;
     try rig.raw.ensureControlStream();
     try writePreamble(&rig.raw);
+    try endServerHalfOfControl(rig, seat);
+
+    // 3. The peer resets stream 0, alone in a later datagram. Step the
+    //    server only, until the seat closes the session.
+    try rig.raw.client.conn.streamReset(control, reset_code);
+    try rig.raw.drainOutgoing(rig.raw.nowUs());
+    try waitForSeatClosing(rig, seat);
+    // Both halves of stream 0 have ended. In the trap order the tick freed
+    // the stream before the Driver reported the end.
+    if (order == .tick_then_service) try std.testing.expect(seat.conn.streamRecvWasReaped(control));
+    try std.testing.expectEqual(capnpc.rpc.events.DisconnectCause.transport_error, seat.closeCause());
+    try std.testing.expect(seat.streams.get(control) == null);
+}
+
+/// The host stops stream 0, and then ONE service pass gets the FIN of
+/// stream 0 and the peer's CONNECTION_CLOSE after it. The seat closes the
+/// session for the stopped stream 0, but the connection was closing first,
+/// so the session keeps the cause of that close (`peer_close`), not
+/// `transport_error`.
+pub fn runEmbeddedControlStoppedThenPeerClose(order: Order) !void {
+    const allocator = std.testing.allocator;
+    const rig = try SeatRig.create(allocator, order);
+    defer rig.destroy();
+
+    const seat = try rig.handshake();
+    const control: u64 = quic.baseline_stream_id;
+    try rig.raw.ensureControlStream();
+    try writePreamble(&rig.raw);
+
+    // 1. Step until the server has sent its own preamble on stream 0.
+    var patience = Patience.begin();
+    while (seat.native.preamble_len == 0 or seat.native.preamble_offset != seat.native.preamble_len) {
+        try rig.step();
+        try patience.wait();
+    }
+    for (0..4) |_| {
+        try rig.raw.step(std.Io.Duration.zero);
+        try rig.loop.step();
+    }
+    try std.testing.expect(!seat.isClosing());
+
+    // 2. The host stops stream 0. The peer sends the FIN of stream 0, and
+    //    then closes the connection, in later datagrams.
+    try seat.conn.streamStopSending(control, stop_code);
+    const client_conn = rig.raw.client.conn;
+    try client_conn.streamFinish(control);
+    try rig.raw.drainOutgoing(rig.raw.nowUs());
+    client_conn.close(false, 0, "done");
+    try rig.raw.drainOutgoing(rig.raw.nowUs());
+
+    // 3. The server takes datagrams, with no service pass, until it has the
+    //    peer's close. Then one service pass.
+    patience = Patience.begin();
+    while (seat.conn.closeEvent() == null) {
+        _ = try rig.listener.receiveOne(&rig.loop.rx_buf);
+        try patience.wait();
+    }
+    try std.testing.expect(!seat.isClosing());
+    try rig.loop.step();
+
+    // The connection was closing (the peer's close) when the Driver gave the
+    // end of stream 0 to the seat. The seat closed the session for the stop
+    // and kept the cause of the peer's close.
+    const close_event = seat.conn.closeEvent() orelse return error.TestExpectedCloseEvent;
+    try std.testing.expectEqual(quic_zig.CloseSource.peer, close_event.source);
+    const recv_end = seat.conn.streamRecvEnd(control) orelse return error.TestExpectedStreamRecvEnd;
+    try std.testing.expect(recv_end.stopped);
+    try std.testing.expect(seat.isClosing());
+    try std.testing.expect(seat.streams.get(control) == null);
+    try std.testing.expectEqual(capnpc.rpc.events.DisconnectCause.peer_close, seat.closeCause());
+}
+
+/// Steps 1 and 2 of the stream-0 runners: end the server's own half of
+/// stream 0, so that a tick can free stream 0 once its receive half ends
+/// too (the trap order).
+fn endServerHalfOfControl(rig: *SeatRig, seat: *quic.EmbeddedSession) !void {
+    const control: u64 = quic.baseline_stream_id;
 
     // 1. Step until the server has sent its own preamble on stream 0, so no
     //    write of the seat meets the stop below.
@@ -1045,19 +1124,49 @@ pub fn runEmbeddedControlReset(order: Order) !void {
         try patience.wait();
     }
     try std.testing.expect(!seat.isClosing());
+}
 
-    // 3. The peer resets stream 0, alone in a later datagram. Step the
-    //    server only, until the seat closes the session.
-    try rig.raw.client.conn.streamReset(control, reset_code);
-    try rig.raw.drainOutgoing(rig.raw.nowUs());
-    patience = Patience.begin();
+/// Step the server only, until the seat closes the session.
+fn waitForSeatClosing(rig: *SeatRig, seat: *quic.EmbeddedSession) !void {
+    const patience = Patience.begin();
     while (!seat.isClosing()) {
         try rig.loop.step();
         if (rig.host.seat == null) return error.TestSeatGoneBeforeClose;
         try patience.wait();
     }
-    // Both halves of stream 0 have ended. In the trap order the tick freed
-    // the stream before the Driver reported the end.
+}
+
+/// The host stops stream 0 (the seat never does), and then the peer ends
+/// it: with a RESET_STREAM, which is how a peer answers a stop, or with a
+/// FIN that left the peer before the stop reached it. quic-zig threw away
+/// what arrived after the stop, so stream 0 lost bytes: session loss by the
+/// E-order contract. The Driver reports the end as `.reset` (a RESET) or
+/// `.reaped` (a FIN), and `streamRecvEnd(0).stopped` is true. In the trap
+/// order a tick frees stream 0 before the Driver reports the end.
+pub fn runEmbeddedControlStopped(end: End, order: Order) !void {
+    const allocator = std.testing.allocator;
+    const rig = try SeatRig.create(allocator, order);
+    defer rig.destroy();
+
+    const seat = try rig.handshake();
+    const control: u64 = quic.baseline_stream_id;
+    try rig.raw.ensureControlStream();
+    try writePreamble(&rig.raw);
+    try endServerHalfOfControl(rig, seat);
+
+    // 3. The host stops stream 0. The peer ends stream 0 before it learns
+    //    of the stop: the raw client does not step again.
+    try seat.conn.streamStopSending(control, stop_code);
+    try sendEnd(rig.raw.client.conn, control, end);
+    try rig.raw.drainOutgoing(rig.raw.nowUs());
+    try waitForSeatClosing(rig, seat);
+
+    const recv_end = seat.conn.streamRecvEnd(control) orelse return error.TestExpectedStreamRecvEnd;
+    try std.testing.expect(recv_end.stopped);
+    switch (end) {
+        .fin => try std.testing.expectEqual(@as(?u64, null), recv_end.reset_code),
+        .reset => try std.testing.expectEqual(@as(?u64, reset_code), recv_end.reset_code),
+    }
     if (order == .tick_then_service) try std.testing.expect(seat.conn.streamRecvWasReaped(control));
     try std.testing.expectEqual(capnpc.rpc.events.DisconnectCause.transport_error, seat.closeCause());
     try std.testing.expect(seat.streams.get(control) == null);
