@@ -12,14 +12,18 @@
         // its code, or a stream that the application stopped), before and
         // after the `tick` that reclaims it. The embedded seat and native
         // mode read it. `quic.app` now reports `.fin` or `.reset` for a
-        // stream that a `tick` reclaimed first, and `.reaped` for a stream
-        // that the application stopped, also while it is live. WHEN a stream
-        // is reclaimed, when its credit returns, and the field
-        // `Stream.recv.final_size` do not change. No wire change, no security
-        // fix. KNOWN DEFECT: v0.28.0 does not compile for a 32-bit target
-        // (a comptime size assert in `src/conn/RecvEndRing.zig`), so
-        // `-Dquic=true` fails for x86-linux-gnu; quic-zig fixed it in
-        // `dd570d0`, after the tag. Move to the release that carries it.
+        // stream that a `tick` reclaimed first. A stream that the
+        // application stopped ends as `.reset` (the peer answers the stop
+        // with RESET_STREAM) or `.reaped`, also while it is live;
+        // `streamRecvEnd(id)` (null in the teardown pass for a stream that
+        // has not ended) gives `stopped`. WHEN a stream is reclaimed, when
+        // its credit returns, and the field `Stream.recv.final_size` do not
+        // change. No wire change, no security fix. KNOWN DEFECT: v0.28.0 does
+        // not compile for a 32-bit target (a comptime size assert in
+        // `src/conn/RecvEndRing.zig`), so `-Dquic=true` fails for
+        // x86-linux-gnu, and CI's cross-targets job is red on this pin.
+        // quic-zig fixed it in `dd570d0`, after the tag. Move to the release
+        // that carries it.
         //
         // v0.27.0 (commit 9d2ab6e): session tickets that live through a
         // restart. `Server.Config.session_ticket_key` and

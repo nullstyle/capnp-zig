@@ -731,12 +731,13 @@ by step.
     that the application stopped. It gives the same answer before and
     after the `tick` that frees the stream, at least through the next
     tick. `quic.app` now reports `.fin` or `.reset` for a stream that a
-    `tick` freed before the Driver read it (it reported `.reaped`), and
-    `.reaped` for a stream that the application stopped, also while it is
-    live. `streamReadFin` gives `fin = false` for a stream that the peer
-    reset after its FIN. `runUdpClient` calls its hook before `tick`
-    (capnp-zig does not use it). When quic-zig frees a stream and when
-    its stream credit returns do not change, and nor does
+    `tick` freed before the Driver read it (it reported `.reaped`). A
+    stream that the application stopped ends as `.reset` when the peer
+    answers the stop with RESET_STREAM (the usual case), or as `.reaped`,
+    also while it is live. `streamReadFin` gives `fin = false` for a
+    stream that the peer reset after its FIN. `runUdpClient` calls its
+    hook before `tick` (capnp-zig does not use it). When quic-zig frees a
+    stream and when its stream credit returns do not change, and nor does
     `Stream.recv.final_size`, which native mode reads. The embedded seat
     and native mode now read `streamRecvEnd` (see Fixed).
   - v0.27.0 makes session tickets live through a restart (a ticket-key
@@ -768,12 +769,18 @@ by step.
       session stayed up with no control stream), and a reset data stream
       is judged by the final size of its RESET. Keep the safe order all the
       same ("Embedder rules" in `docs/quic-transport.md`).
+    - **An embedded host that stops stream 0** (Experimental QUIC
+      transport): the seat closes the session when stream 0 ends, also
+      with a FIN, because stream 0 lost bytes.
     - **Direct quic-zig users:** read quic-zig's 0.28.0 entry. A
-      `quic.app` host that took `.reaped` of a live stream as the teardown
-      pass must also handle a stream that it stopped:
-      `streamRecvEnd(id).?.stopped` says it directly. `null` from
-      `streamRecvEnd` together with `streamRecvWasReaped(id) == true`
-      means "ended, how not known": treat that stream as cut.
+      `quic.app` host that stops streams must not take `.reset` as a
+      reset that the peer started, nor `.reaped` of a live stream as the
+      teardown pass: a stopped stream ends as either. Read
+      `if (conn.streamRecvEnd(id)) |e| e.stopped` first. Do not use `.?`:
+      in the teardown pass `streamRecvEnd` is null for a stream whose
+      receive half has not ended. `null` from `streamRecvEnd` together
+      with `streamRecvWasReaped(id) == true` means "ended, how not known":
+      treat that stream as cut.
     - **Tokens are 114 bytes (were 96).** A NEW_TOKEN that a v0.19.x client
       persisted (for example inside a `WarmRedialClient.exportWarmState`
       envelope) reads as malformed at a v0.28.0 server, which treats it as
@@ -888,15 +895,18 @@ by step.
     `frame_error`). Missing bytes fail it with `DataStreamReset` (close
     code `protocol_error`), and the reset code is logged. When every byte
     is in hand, the frame completes.
-  - A stream that this side stopped is dropped, never treated as a
+  - A data stream that this side stopped is dropped, never treated as a
     completed data stream: quic-zig threw away what arrived after the stop.
     The seat stops (refuses) a peer stream that has no place in the
-    protocol, and since quic-zig v0.28.0 such a stream ends as `.reaped`,
-    also while it is live. `streamRecvEnd(id).?.stopped` tells it from the
-    teardown pass. A stream that the host stops is dropped too.
-  - On stream 0, a reset, or an end that quic-zig cannot classify, closes
-    the session (cause `transport_error`), also when a tick freed stream 0
-    first.
+    protocol. Since quic-zig v0.28.0 such a stream ends as `.reset` (the
+    peer answers the stop with RESET_STREAM) or as `.reaped`, also while
+    it is live. The seat reads `stopped` from `streamRecvEnd` before it
+    acts on either. A data stream that the host stops is dropped too.
+  - On stream 0, a reset, a stop by the host, or an end that quic-zig
+    cannot classify closes the session, also when a tick freed stream 0
+    first. A stopped stream 0 lost bytes, also when it ends with a FIN.
+    The cause is `transport_error`, unless the connection was already
+    closing: then the session keeps the cause of that close.
   - A `.reaped` from the Driver's teardown pass still drops the entry. The
     kept bytes count toward `max_buffered_stream_bytes` until the engine
     reads them.
@@ -985,7 +995,9 @@ by step.
   changes for a host that ticks first (the Driver reports `.fin` or
   `.reset` from `Connection.streamRecvEnd`; a RESET of stream 0 closes the
   session; a reset data stream keeps its RESET), what `.reaped` now means,
-  and the stopped-stream signal (`streamRecvEnd(id).?.stopped`). Second:
+  and the stopped-stream signal (a stopped stream ends as `.reset` or
+  `.reaped`; read `stopped` from `streamRecvEnd`, which can be null in the
+  teardown pass). Second:
   when one UDP socket serves a quic-zig `Server` and your own dials, give
   each datagram to your dials first (`Connection.ownsLocalCid`). Since
   quic-zig v0.26.0, the first flight of a server is 1200 bytes and passes

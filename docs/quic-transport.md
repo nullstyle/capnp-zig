@@ -474,13 +474,26 @@ final size: all the announced bytes complete the frame, and fewer fail it at
 once with `InvalidFrame`. On stream 0 such an end closes the session.
 
 **The stopped-stream signal.** The seat refuses a peer stream that has no
-place in the protocol with STOP_SENDING (`peer_streams.zig`). Since quic-zig
-v0.28.0 a stream that this side stopped ends as `.reaped`, also while it is
-still live. Such a stream has `streamRecvWasReaped(id) == false`, so that
-call alone does not tell it from the teardown pass. The direct signal is
-`conn.streamRecvEnd(id).?.stopped`. The seat drops a stopped stream and never
-takes its bytes as a complete data stream: quic-zig threw away what arrived
-after the stop. This is also true for a stream that your host stops.
+place in the protocol with STOP_SENDING (`peer_streams.zig`). After the stop,
+quic-zig throws away the bytes that still arrive on the stream. Since
+quic-zig v0.28.0 a stream that this side stopped ends in one of two ways,
+also while it is still live:
+
+- As `.reset`, when the peer answers the stop with RESET_STREAM. RFC 9000
+  §3.5 tells the peer to do this, and quic-zig does it, so this is the usual
+  case. Do not take it for a reset that the peer started.
+- As `.reaped`, when the stream ended before a RESET_STREAM arrived (for
+  example, the FIN left the peer before the stop reached it). Such a stream
+  has `streamRecvWasReaped(id) == false`, so that call alone does not tell
+  it from the teardown pass.
+
+Before you act on `.reset` or `.reaped`, read
+`if (conn.streamRecvEnd(id)) |e| e.stopped`. Do not unwrap the result with
+`.?`: in the teardown pass, `streamRecvEnd` is null for a stream whose
+receive half has not ended. The seat drops a stopped data stream and never
+takes its bytes as a complete data stream. This is also true for a data
+stream that your host stops. If your host stops stream 0, the seat closes
+the session, because stream 0 lost bytes.
 
 capnp-zig survives the wrong order. A native data frame announces its length
 on the control stream (stream 0), and the seat keeps the bytes of a data

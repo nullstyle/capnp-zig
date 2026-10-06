@@ -243,15 +243,23 @@ Do the items that apply. Each item names the change and what to do.
       `fin = false` for a stream that the peer reset after its FIN.
     - `quic.app`: a stream that a `tick` freed before the Driver read it
       now ends as `.fin` or `.reset`, not `.reaped`. A stream that you
-      stopped (`streamStopSending`) ends as `.reaped`, also while it is
-      live, so `streamRecvWasReaped(id) == false` alone does not mean the
-      teardown pass. `streamRecvEnd(id).?.stopped` says it directly.
+      stopped (`streamStopSending`) ends as `.reset` when the peer answers
+      the stop with RESET_STREAM (the usual case), or as `.reaped`, also
+      while it is live. So `.reset` does not always mean that the peer
+      started the reset, and `streamRecvWasReaped(id) == false` alone does
+      not mean the teardown pass. Read
+      `if (conn.streamRecvEnd(id)) |e| e.stopped` first. Do not use `.?`:
+      in the teardown pass `streamRecvEnd` is null for a stream whose
+      receive half has not ended.
       `transport.runUdpClient` now calls its hook before `tick`.
 13. **If you host `EmbeddedSession` and tick before you service**, the seat
     now behaves as in the safe order (quic-zig v0.28.0). A RESET of stream
     0 closes the session, and a reset data stream keeps the final size and
     code of its RESET. Feed, service, then tick all the same ("Embedder
-    rules" in [quic-transport.md](quic-transport.md#embedder-rules)).
+    rules" in [quic-transport.md](quic-transport.md#embedder-rules)). If
+    your host stops stream 0 (`streamStopSending`), the seat closes the
+    session when stream 0 ends, also with a FIN, because stream 0 lost
+    bytes.
 
 To find the call sites in one pass:
 
