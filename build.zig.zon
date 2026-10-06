@@ -6,6 +6,20 @@
         // Pinned to a TAG, not a raw commit: tags are immutable release
         // points, so the pin is auditable and reproducible.
         //
+        // v0.30.1 (commit ccf6ae2): no wire change, no API change, the same
+        // option map and exported modules. A probe timeout is not a loss
+        // (RFC 9002 section 6.2.4: the Application space's probe timeout no
+        // longer declares the oldest packet lost nor cuts the congestion
+        // window; the probe carries its frames again, and the thresholds
+        // decide when its ACK comes), and the handshake's probe timeout is
+        // bounded at about a second and runs from the last send, so a
+        // client waiting for a lost server flight probes every second, not
+        // at 1, 2, 4, 8 s. `quic.unixWallClockUs` compiles on Zig 0.17.0
+        // now (it did not at v0.29.0), and `Server.adoptLoopThread()` moves
+        // the Debug loop-thread latch at a quiescent handoff (the ask in
+        // docs/upstream/handoff-quic-zig-ticket-keys.md; capnp-zig does not
+        // call it yet). Not v0.30.0 (abc5f12): it did not compile on Windows.
+        //
         // v0.29.0 (commit b9a15e6): no wire change. A connection costs about
         // 91 KB, not 1.09 MB; late packets are no longer lost packets; and
         // `Server.Config.previous_session_ticket_key`, `new_token_clock`,
@@ -64,19 +78,21 @@
         // one build must pin the same tag and pass the same option map, or
         // the build makes two quic modules (and two BoringSSLs). The map is
         // `.target`, `.release`, `.@"sanitize-c" = "trap"` (build/modules.zig),
-        // the one nest/qmsg/qmesh use. capnp-zig v0.20.0 pins v0.28.1, and
-        // this tree pins v0.29.0; on 2026-10-05 the main branches of qmsg
-        // and qmesh-zig, and nest, pin v0.27.0. The released http3-zig
-        // v0.5.2 cannot share this module: it builds its own quic module
-        // from quic's src/root.zig and its own BoringSSL. http3-zig v0.5.3
-        // (3df122c, on v0.29.0) takes quic's exported quic and boringssl
-        // modules with this option map, so it shares this one.
-        // boringssl-zig is unchanged since v0.25.0 (v0.29.0 too): ff30fe99
+        // the one nest/qmsg/qmesh use. capnp-zig v0.21.0 pins v0.29.0, and
+        // this tree pins v0.30.1; on 2026-10-06 the set (http3-zig, qmsg,
+        // qmesh-zig, nest, mruby-quic) moved to v0.30.1 together on their
+        // main branches, by the owner's rule that the quic packages move to
+        // a new quic tag together. The released http3-zig v0.5.2 cannot
+        // share this module: it builds its own quic module from quic's
+        // src/root.zig and its own BoringSSL. http3-zig v0.5.3 and later
+        // take quic's exported quic and boringssl modules with this option
+        // map, so they share this one.
+        // boringssl-zig is unchanged since v0.25.0 (v0.30.1 too): ff30fe99
         // (0.6.7, BoringSSL aef0e2df), which links Windows ws2_32 with
         // pkg-config lookup disabled.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.29.0.tar.gz",
-            .hash = "quic-0.29.0-DnSYvahYOwAdaHX-Ct3_iZGZycF387GmpAbI9G9wjFGg",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.30.1.tar.gz",
+            .hash = "quic-0.30.1-DnSYvVnOOwBfpDxHQWI41E6YxM1RqqkCuven5bK46jXR",
             .lazy = true,
         },
     },

@@ -44,8 +44,13 @@ Cap'n Proto RPC vat session. The payload above the QUIC transport is still the
 standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
 between peers, not the RPC protocol that `Peer` handles.
 
-The manifest pins the `quic` package at annotated tag `v0.29.0` (commit
-`b9a15e6`). v0.29.0 has no wire change. A connection costs about 91 KB on the
+The manifest pins the `quic` package at annotated tag `v0.30.1` (commit
+`ccf6ae2`). v0.30.1 has no wire change and no API change: a probe timeout is
+not a loss (RFC 9002 section 6.2.4, so an ACK that was only late is no longer
+a window cut), the handshake's probe timeout is bounded at about a second,
+`quic.unixWallClockUs` compiles on Zig 0.17.0, and `Server.adoptLoopThread()`
+is new (not called here yet). Do not pin v0.30.0: it did not compile on
+Windows. v0.29.0 has no wire change. A connection costs about 91 KB on the
 heap, not 1.09 MB. A late packet is no longer counted as a lost one, and a
 client completes its handshake through loss. It adds the previous ticket key,
 the NEW_TOKEN clock and the client ticket lifetime that "Session-ticket key"
@@ -1162,9 +1167,9 @@ until its own uptime passed the predecessor's uptime at the time of issue.
 tokens a clock of their own, a `fn () u64` in microseconds; the timers keep
 the listener's clock. capnp-zig's listener clock already goes on across a
 restart, so leave it null unless every process must agree on another clock.
-Do not use quic-zig's `unixWallClockUs` at the v0.29.0 pin: it calls
-`std.time.microTimestamp`, which Zig 0.17.0 does not have, so it does not
-compile. In embedded mode the host feeds its own clock to its quic-zig
+quic-zig's `unixWallClockUs` compiles from v0.30.1 (at the v0.29.0 pin it
+called `std.time.microTimestamp`, which Zig 0.17.0 does not have, so it did
+not compile). In embedded mode the host feeds its own clock to its quic-zig
 server, so the host's clock needs the same property, or the host sets
 `new_token_clock`. (quic-zig's own bundled loop,
 `quic.transport.runUdpServer`, still feeds a clock that starts at zero, so

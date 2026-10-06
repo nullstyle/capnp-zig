@@ -30,7 +30,7 @@ pub const StatelessResponse = quic_zig.Server.StatelessResponse;
 /// per-session transport driver.
 ///
 /// Drive a `Listener` from one thread for its whole life. In a Debug build,
-/// quic-zig (v0.29.0) fixes the loop thread of its `Server` at the first
+/// quic-zig (v0.29.0 and later) fixes the loop thread of its `Server` at the first
 /// received datagram, tick or session-ticket rotation, and asserts that
 /// thread at every later one, so a later feed from another thread panics
 /// inside quic-zig. Release builds do not check.

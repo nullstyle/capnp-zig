@@ -412,9 +412,9 @@ pub const ServerOptions = struct {
     /// listener's clock (`Listener.nowUs`), which starts at the wall clock
     /// and goes on across a restart, so a persisted `new_token_key` already
     /// lets returning clients skip the Retry after a restart. Set it only
-    /// for a clock of your own that every process agrees on. Do not use
-    /// quic-zig's `unixWallClockUs` at the v0.29.0 pin: it does not compile
-    /// with Zig 0.17.0.
+    /// for a clock of your own that every process agrees on. quic-zig's
+    /// `unixWallClockUs` compiles from v0.30.1 (at the v0.29.0 pin it did
+    /// not, with Zig 0.17.0).
     new_token_clock: ?*const fn () u64 = null,
     /// How far a NEW_TOKEN's times may be off the clock when the server
     /// checks it, in microseconds (Experimental; quic-zig's

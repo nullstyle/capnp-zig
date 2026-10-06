@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **QUIC: quic-zig v0.29.0 -> v0.30.1 (tag `ccf6ae2`,
+  `quic-0.30.1-DnSYvVnOOwBfpDxHQWI41E6YxM1RqqkCuven5bK46jXR`).** Behavior
+  only: no wire change, no API change, the same option map and exported
+  modules, and the same boringssl-zig (0.6.7, `ff30fe9`). The coordinated
+  set (http3-zig, qmsg, qmesh-zig, nest, mruby-quic) moved to it on the
+  same day. A probe timeout is not a loss (RFC 9002 section 6.2.4): the
+  Application space's probe timeout no longer declares the oldest packet
+  lost nor cuts the congestion window; the probe carries its frames
+  again, and the thresholds decide when its ACK comes, so an ACK that was
+  only late is no longer a window cut. The handshake's probe timeout is
+  bounded at about a second and runs from the last send: a client waiting
+  for a lost server flight probes every second, not at 1, 2, 4, 8 s.
+  Also: `quic.unixWallClockUs` compiles on Zig 0.17.0 now (the v0.29.0
+  defect in `docs/upstream/handoff-quic-zig-ticket-keys.md`), and the
+  loop-thread ask there is delivered as `Server.adoptLoopThread()`.
+  capnp-zig does not call it yet, so a server-role connection still
+  cannot move to another thread after its first step in a Debug build
+  (`Connection.adoptOwnerThread`). Not v0.30.0: it did not compile on
+  Windows. No capnp-zig code change.
+
 ## [0.21.0] - 2026-10-06
 
 This release moves QUIC to quic-zig v0.29.0 (about 91 KB per connection

@@ -4,8 +4,10 @@
 > capnp-zig moved onto it on the same pin, and then to v0.28.1, which keeps
 > it. The three candidates at the end were DELIVERED in quic-zig v0.29.0
 > (tag `b9a15e6`, 2026-10-06), and capnp-zig adopted them on that pin.
-> One new ask is OPEN: a way to move v0.29.0's Debug loop-thread latch
-> (section at the end).** Written 2026-10-04 against
+> The one ask made after that, a way to move v0.29.0's Debug loop-thread
+> latch, was DELIVERED in quic-zig v0.30.1 (tag `ccf6ae2`, 2026-10-06) as
+> `Server.adoptLoopThread()`; capnp-zig pins v0.30.1 and does not call it
+> yet (section at the end).** Written 2026-10-04 against
 > quic-zig v0.25.0 and boringssl-zig 0.6.7 / BoringSSL `aef0e2df`. This is
 > a document for the quic-zig maintainers, not a filed issue. The asks
 > below are kept as written; "Delivered" and "Left as candidates" at the
@@ -340,7 +342,9 @@ It calls `std.time.microTimestamp`, and the 0.17.0 `std.time` has only unit
 constants and `epoch`. Any reference fails with "root source file struct
 'time' has no member named 'microTimestamp'" at `src/root.zig:75`. quic-zig's
 own tests do not call it, so its gates do not see it. capnp-zig does not
-reference it, and its docs tell users not to.
+reference it, and its docs tell users not to. Fixed in quic-zig v0.30.1:
+it reads libc's `clock_gettime` (`RtlGetSystemTimePrecise` on Windows),
+and a test keeps it compiled.
 
 ## Asked after v0.29.0: a way to move the loop thread
 
@@ -359,3 +363,10 @@ thread. capnp-zig's `Connection.adoptOwnerThread` would call it for the
 server role. Until then, capnp-zig documents the limit (CHANGELOG,
 `Connection.adoptOwnerThread`, `Listener`, `docs/quic-transport.md`
 "Rotation", `docs/rpc_runtime_design.md`). It does not block capnp-zig.
+
+Delivered in quic-zig v0.30.1 (2026-10-06): `Server.adoptLoopThread()`
+makes the calling thread the loop thread, for an embedder that hands a
+Server to another thread at a quiescent point. Only the latch moves; two
+threads running the Server at once stay a programming error. capnp-zig
+pins v0.30.1, and `Connection.adoptOwnerThread` does not call it yet, so
+the documented limit stands until it does.

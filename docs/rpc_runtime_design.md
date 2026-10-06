@@ -387,9 +387,10 @@ Outbound call:
   user handlers and callbacks run inside `run()` on that thread.
 - One exception to those handoffs: in a Debug build, a server-side QUIC
   `Connection` or `Listener` cannot move to another thread after its first
-  received datagram, tick or session-ticket rotation. quic-zig (v0.29.0)
-  fixes its `Server`'s loop thread at the first of these and asserts it
-  after, and `adoptOwnerThread` does not move that latch. Release builds do
+  received datagram, tick or session-ticket rotation. quic-zig (v0.29.0 and
+  later) fixes its `Server`'s loop thread at the first of these and asserts
+  it after, and `adoptOwnerThread` does not move that latch (quic-zig
+  v0.30.1 added `Server.adoptLoopThread()` for it; not called here yet). Release builds do
   not check. A client-side QUIC `Connection` is not affected.
 - The only thread-safe entry points are `Connection.wake`/`requestClose` (and
   `ClientSession.requestStop`, which wraps them).
