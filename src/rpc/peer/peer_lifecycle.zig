@@ -143,11 +143,9 @@ pub fn Lifecycle(comptime Peer: type) type {
                 while (f_it.next()) |failed| self.allocator.free(failed.reason);
             }
             self.failed_answers.deinit();
-            {
-                var p_it = self.persistent_exports.valueIterator();
-                while (p_it.next()) |st| self.allocator.destroy(st.*);
-            }
-            self.persistent_exports.deinit();
+            // Export deinits first: a persistent export's handler ctx IS its
+            // PersistenceState, and its deinit reads the state to reach the
+            // app ctx. Free the states only after every deinit ran.
             {
                 var e_it = self.exports.valueIterator();
                 while (e_it.next()) |entry| {
@@ -157,6 +155,11 @@ pub fn Lifecycle(comptime Peer: type) type {
                 }
             }
             self.exports.deinit();
+            {
+                var p_it = self.persistent_exports.valueIterator();
+                while (p_it.next()) |st| self.allocator.destroy(st.*);
+            }
+            self.persistent_exports.deinit();
             self.forwarded_questions.deinit();
             self.forwarded_tail_questions.deinit();
             peer_cleanup.deinitProvideEntryMap(

@@ -1988,6 +1988,7 @@ pub const Peer = struct {
         _ = self.exports.remove(id);
         self.caps.clearExport(id);
         PeerFdsImpl.exportRemoved(self, id);
+        self.dropPersistenceStateForRemovedExport(id);
     }
 
     /// Export a promise capability that will be resolved later via

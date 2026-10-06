@@ -123,6 +123,8 @@ pub fn CrossPeerProxy(comptime Peer: type) type {
             if (removed.value.deinit_ctx) |deinit_ctx| {
                 if (removed.value.handler) |handler| deinit_ctx(self.allocator, handler.ctx);
             }
+            // After the deinit: a persistent export's deinit reads its state.
+            self.dropPersistenceStateForRemovedExport(id);
         }
 
         pub fn clonePayloadAcrossPeers(

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A persistent export's `deinit_ctx` gets the app ctx, exactly once
+  (Experimental).** `setPersistentExport` and `setRestorer` put an internal
+  `PersistenceState` in the export's handler ctx. Every destroy path then
+  gave that state, not the app ctx, to the `deinit_ctx` from
+  `addExportWithDeinit`:
+  - A Release (or Finish) that dropped the export freed the state after the
+    deinit, so the app ctx leaked. A deinit that frees its ctx freed the
+    state (wrong type), and then the peer freed it again.
+  - `Peer.deinit` freed every state first, so the deinit got a dangling
+    pointer.
+  - `destroyUnreferencedExport` also kept the state in `persistent_exports`.
+  The export's handler and `deinit_ctx` now move as a pair: while the export
+  is persistent, its deinit is a forwarder that calls the app's deinit with
+  the app ctx, and every destroy path frees the state only after that.
+  `clearPersistentExport` and `clearRestorer` give both back. Also,
+  `removeUnreferencedExport` and `destroyUnreferencedExport` now drop the
+  state, so no state stays on an export id that can be used again.
+  `PersistenceStateRecord` has one new field, `original_deinit`.
+
 ## [0.20.0] - 2026-10-05
 
 This release adds Cap'n Proto RPC over Unix-domain sockets, with fd

@@ -1898,6 +1898,7 @@ capnpc-zig.rpc.peer.Peer.PendingQueuedCallStats.calls: field usize = 0
 capnpc-zig.rpc.peer.Peer.PendingQueuedCallStats: struct
 capnpc-zig.rpc.peer.Peer.PersistenceStateRecord.export_id: field u32
 capnpc-zig.rpc.peer.Peer.PersistenceStateRecord.original: field rpc.peer.mod.Export
+capnpc-zig.rpc.peer.Peer.PersistenceStateRecord.original_deinit: field ?*const fn (mem.Allocator, *anyopaque) void = null
 capnpc-zig.rpc.peer.Peer.PersistenceStateRecord.restore: field ?rpc.peer.peer_context_types.RestoreHookOf(rpc.peer.mod.Peer) = null
 capnpc-zig.rpc.peer.Peer.PersistenceStateRecord.save: field ?rpc.peer.peer_context_types.SaveHookOf(rpc.peer.mod.Peer) = null
 capnpc-zig.rpc.peer.Peer.PersistenceStateRecord: struct

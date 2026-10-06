@@ -1090,3 +1090,171 @@ test "released persistent export drops its persistence state" {
     try std.testing.expect(!peer.exports.contains(shared_id));
     try std.testing.expectEqual(@as(u32, 1), peer.stats().persistent_exports);
 }
+
+/// Heap-owned app ctx for the `addExportWithDeinit` + persistence
+/// regressions. `deinitCtx` frees it only when handed the very pointer it
+/// allocated, so a wrong ctx shows up as a counted miss plus a leak instead
+/// of corrupting the allocator; a second call counts as a miss too.
+const OwnedExport = struct {
+    app: AppHandler = .{},
+
+    var live: ?*OwnedExport = null;
+    var deinit_calls: usize = 0;
+    var wrong_ctx_calls: usize = 0;
+
+    fn create(allocator: std.mem.Allocator) !*OwnedExport {
+        const self = try allocator.create(OwnedExport);
+        self.* = .{};
+        live = self;
+        deinit_calls = 0;
+        wrong_ctx_calls = 0;
+        return self;
+    }
+
+    fn exported(self: *OwnedExport) peer_impl.Export {
+        return .{ .ctx = self, .on_call = onCall };
+    }
+
+    fn onCall(ctx: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *OwnedExport = @ptrCast(@alignCast(ctx));
+        return AppHandler.onCall(&self.app, peer, call, caps);
+    }
+
+    fn deinitCtx(allocator: std.mem.Allocator, ctx: *anyopaque) void {
+        const expected = live orelse {
+            wrong_ctx_calls += 1;
+            return;
+        };
+        if (ctx != @as(*anyopaque, @ptrCast(expected))) {
+            wrong_ctx_calls += 1;
+            return;
+        }
+        deinit_calls += 1;
+        live = null;
+        allocator.destroy(expected);
+    }
+
+    fn expectDeinitOnce() !void {
+        try std.testing.expectEqual(@as(usize, 0), wrong_ctx_calls);
+        try std.testing.expectEqual(@as(usize, 1), deinit_calls);
+        try std.testing.expect(live == null);
+    }
+};
+
+fn deliverRelease(allocator: std.mem.Allocator, peer: *Peer, export_id: u32, count: u32) !void {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildRelease(export_id, count);
+    const frame = try builder.finish();
+    defer allocator.free(frame);
+    try peer.handleFrame(frame);
+}
+
+test "Peer.deinit hands a persistent export's deinit_ctx the app ctx" {
+    const allocator = std.testing.allocator;
+    var registry = SaveRegistry{ .sturdy_ref = "ref:x" };
+
+    var peer = Peer.initDetached(allocator);
+    var peer_live = true;
+    defer if (peer_live) peer.deinit();
+
+    const owned = try OwnedExport.create(allocator);
+    const export_id = try peer.addExportWithDeinit(owned.exported(), OwnedExport.deinitCtx);
+    try peer.setPersistentExport(export_id, &registry, SaveRegistry.onSave);
+
+    peer.deinit();
+    peer_live = false;
+    try OwnedExport.expectDeinitOnce();
+}
+
+test "remote Release of a persistent export runs deinit_ctx once with the app ctx" {
+    const allocator = std.testing.allocator;
+
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var registry = SaveRegistry{ .sturdy_ref = "ref:x" };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    const owned = try OwnedExport.create(allocator);
+    const export_id = try peer.addExportWithDeinit(owned.exported(), OwnedExport.deinitCtx);
+    try peer.setPersistentExport(export_id, &registry, SaveRegistry.onSave);
+    try peer.noteExportRef(export_id);
+
+    // The save hook serves while the export is live.
+    const save_frame = try buildSaveCallFrame(allocator, 30, export_id);
+    defer allocator.free(save_frame);
+    try peer.handleFrame(save_frame);
+    try std.testing.expectEqual(@as(usize, 1), registry.saves);
+
+    try deliverRelease(allocator, &peer, export_id, 1);
+
+    try std.testing.expect(!peer.exports.contains(export_id));
+    try std.testing.expectEqual(@as(u32, 0), peer.stats().persistent_exports);
+    try OwnedExport.expectDeinitOnce();
+}
+
+test "clearPersistentExport then Release runs deinit_ctx once with the app ctx" {
+    const allocator = std.testing.allocator;
+    var registry = SaveRegistry{ .sturdy_ref = "ref:x" };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    const owned = try OwnedExport.create(allocator);
+    const export_id = try peer.addExportWithDeinit(owned.exported(), OwnedExport.deinitCtx);
+    try peer.setPersistentExport(export_id, &registry, SaveRegistry.onSave);
+    peer.clearPersistentExport(export_id);
+    try std.testing.expectEqual(@as(u32, 0), peer.stats().persistent_exports);
+
+    // Clearing the last hook hands the export back its own handler and
+    // deinit pair, untouched.
+    const entry = peer.exports.get(export_id) orelse return error.TestUnexpectedResult;
+    const handler = entry.handler orelse return error.TestUnexpectedResult;
+    try std.testing.expect(handler.ctx == @as(*anyopaque, @ptrCast(owned)));
+    try std.testing.expect(entry.deinit_ctx == @as(?*const fn (std.mem.Allocator, *anyopaque) void, OwnedExport.deinitCtx));
+
+    try peer.noteExportRef(export_id);
+    try deliverRelease(allocator, &peer, export_id, 1);
+
+    try std.testing.expect(!peer.exports.contains(export_id));
+    try OwnedExport.expectDeinitOnce();
+}
+
+test "destroyUnreferencedExport of a persistent export runs deinit_ctx and drops its state" {
+    const allocator = std.testing.allocator;
+    var registry = SaveRegistry{ .sturdy_ref = "ref:x" };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    const owned = try OwnedExport.create(allocator);
+    const export_id = try peer.addExportWithDeinit(owned.exported(), OwnedExport.deinitCtx);
+    try peer.setPersistentExport(export_id, &registry, SaveRegistry.onSave);
+
+    peer.destroyUnreferencedExport(export_id);
+
+    try std.testing.expect(!peer.exports.contains(export_id));
+    try std.testing.expectEqual(@as(u32, 0), peer.stats().persistent_exports);
+    try OwnedExport.expectDeinitOnce();
+}
+
+test "removeUnreferencedExport drops a persistent export's state" {
+    const allocator = std.testing.allocator;
+    var app = AppHandler{};
+    var registry = SaveRegistry{ .sturdy_ref = "ref:x" };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    const export_id = try peer.addExport(.{ .ctx = &app, .on_call = AppHandler.onCall });
+    try peer.setPersistentExport(export_id, &registry, SaveRegistry.onSave);
+
+    peer.removeUnreferencedExport(export_id);
+
+    // No stale state may stay keyed on an id the cap table can recycle.
+    try std.testing.expect(!peer.exports.contains(export_id));
+    try std.testing.expectEqual(@as(u32, 0), peer.stats().persistent_exports);
+}

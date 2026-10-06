@@ -181,6 +181,12 @@ pub fn PersistenceHooks(comptime Peer: type) type {
         /// Look up or create the persistence state for an export, swapping the
         /// export's stored handler for the persistence trampoline. The original
         /// handler keeps serving every non-persistence interface.
+        ///
+        /// The handler and `deinit_ctx` slots move as a pair: every destroy
+        /// path calls `deinit_ctx(allocator, handler.ctx)`, and `handler.ctx`
+        /// is now this state, so an app deinit moves to `persistenceDeinitCtx`,
+        /// which forwards it the app ctx. The state must outlive that call;
+        /// destroy paths free it afterwards (`dropPersistenceStateForRemovedExport`).
         pub fn ensurePersistenceState(self: *Peer, export_id: u32) !*PersistenceState {
             const entry = self.exports.getEntry(export_id) orelse return error.UnknownExport;
             if (self.persistent_exports.get(export_id)) |st| return st;
@@ -190,9 +196,14 @@ pub fn PersistenceHooks(comptime Peer: type) type {
             try ensureCountLimit(false, persistent_before, self.limits.max_persistent_exports);
             const st = try self.allocator.create(PersistenceState);
             errdefer self.allocator.destroy(st);
-            st.* = .{ .export_id = export_id, .original = original };
+            st.* = .{
+                .export_id = export_id,
+                .original = original,
+                .original_deinit = entry.value_ptr.deinit_ctx,
+            };
             try self.persistent_exports.put(export_id, st);
             entry.value_ptr.handler = .{ .ctx = st, .on_call = persistenceOnCall };
+            if (st.original_deinit != null) entry.value_ptr.deinit_ctx = persistenceDeinitCtx;
             events.emitPressureCrossing(
                 self.observer,
                 .peer,
@@ -213,6 +224,7 @@ pub fn PersistenceHooks(comptime Peer: type) type {
                 if (entry.value_ptr.handler) |handler| {
                     if (handler.on_call == persistenceOnCall and handler.ctx == @as(*anyopaque, @ptrCast(st))) {
                         entry.value_ptr.handler = st.original;
+                        entry.value_ptr.deinit_ctx = st.original_deinit;
                     }
                 }
             }
@@ -222,6 +234,8 @@ pub fn PersistenceHooks(comptime Peer: type) type {
 
         /// Free persistence state for an export that left the exports table
         /// (remote released it). The original handler is gone with the export.
+        /// Call it only after the removed entry's `deinit_ctx` ran: while the
+        /// export was persistent, that deinit reads this state.
         pub fn dropPersistenceStateForRemovedExport(self: *Peer, export_id: u32) void {
             if (self.persistent_exports.fetchRemove(export_id)) |removed| {
                 self.allocator.destroy(removed.value);
@@ -255,6 +269,14 @@ pub fn PersistenceHooks(comptime Peer: type) type {
                 }
             }
             return st.original.on_call(st.original.ctx, peer, call, caps);
+        }
+
+        /// Installed as the export's `deinit_ctx` while the trampoline holds its
+        /// handler slot (see `ensurePersistenceState`). Runs the app's deinit
+        /// with the app's ctx. It does not free the state: the peer owns that.
+        fn persistenceDeinitCtx(allocator: std.mem.Allocator, ctx: *anyopaque) void {
+            const st: *PersistenceState = localCastCtx(*PersistenceState, ctx);
+            if (st.original_deinit) |deinit_ctx| deinit_ctx(allocator, st.original.ctx);
         }
 
         pub fn servePersistentSave(self: *Peer, export_id: u32, hook: SaveHook, call: protocol.Call) !void {

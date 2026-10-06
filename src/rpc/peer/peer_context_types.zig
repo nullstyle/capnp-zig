@@ -170,6 +170,10 @@ pub fn PersistenceStateOf(comptime Peer: type) type {
         }
         export_id: u32,
         original: Export,
+        /// The export's own `deinit_ctx`, parked here while the persistence
+        /// trampoline holds the entry's handler and deinit slots. It runs
+        /// with `original.ctx`, never with this state.
+        original_deinit: ?*const fn (std.mem.Allocator, *anyopaque) void = null,
         save: ?SaveHook = null,
         restore: ?RestoreHook = null,
     };
