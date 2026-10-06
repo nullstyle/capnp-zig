@@ -768,6 +768,8 @@ The fix work also found row 44: on macOS a close of the other end of a socket wh
 
 **Blocker closed (2026-10-05): quic-zig v0.28.1.** quic-zig tagged the fix as v0.28.1 (tag `21d05d1`, hash `quic-0.28.1-DnSYvacDOgCPlHPHQWufNaG2XMoKtnwwHJPVcIUuAmqB`). It is v0.28.0 with a layout check in place of the size assert, and five casts in tests and examples. No library code changes for a 64-bit target, and boringssl-zig stays at `ff30fe99`. `sprint/quic-v0281` (from main `05b186c`) moves the pin and changes the strings and notes in the first item above. On that branch, `-Dquic=true check-compile check-test-compile -Dtarget=x86-linux-gnu` passes.
 
+**Released (2026-10-05): capnp-zig v0.20.0.** The owner approved the tag. Tag `v0.20.0` is commit `01eaebe` on quic-zig v0.28.1. Package hash `capnpc_zig-0.20.0-nUduFXM1RwDO9CsVGFgZowhDNaDZ5V5-10qgILp63pqV` (git+ and tarball forms give the same hash). Before the tag: CI 37418866312 green, Nightly 37418880585 and 37418890611 green, `just release-preflight 0.20.0` green. After the tag: the default, core and QUIC consumers built and ran against the fetched tag in Debug and ReleaseSafe.
+
 **What remains: item 18, the v0.20.0 release candidate.**
 - Done on `sprint/rc-docs`:
   - CHANGELOG `[Unreleased]`: the quic v0.27.0 move (a new Breaking (Experimental behavior) entry, the rotation entry, the bump with its Migration notes), the two deletions (the `SessionTicketKeyInstallFailed` Breaking entry and the "library roots import boringssl" Changed entry), the soak gate, and the stream-end entries.

@@ -54,7 +54,7 @@ quic-zig v0.26.0, v0.27.0, v0.28.0 and v0.28.1 have no security fix.
 | Component | Version | Pin |
 |---|---|---|
 | Zig | `0.17.0` (tagged; no change since v0.19.0) | `mise.toml`: `zig = "0.17.0"`; `build.zig.zon`: `.minimum_zig_version = "0.17.0"` |
-| capnp-zig | `v0.20.0` | `capnpc_zig-0.20.0-...` (a placeholder: the hash exists only after the tag, and then replaces it. `zig fetch --save` writes it, and [build-integration.md](build-integration.md) records it.) |
+| capnp-zig | `v0.20.0` (tag at `01eaebe`) | `capnpc_zig-0.20.0-nUduFXM1RwDO9CsVGFgZowhDNaDZ5V5-10qgILp63pqV` |
 | quic-zig | `v0.28.1` (tag at `21d05d1`) | `quic-0.28.1-DnSYvacDOgCPlHPHQWufNaG2XMoKtnwwHJPVcIUuAmqB` |
 | boringssl-zig | `0.6.7` (`ff30fe99`), through quic; no change since v0.25.0 | none (quic pins it) |
 
