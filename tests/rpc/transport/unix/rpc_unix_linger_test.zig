@@ -459,6 +459,12 @@ const TearDownAcceptor = struct {
                 self.last_err = err;
                 return;
             };
+            // Wait for the peer's byte, so the teardown leaves it unread:
+            // that is what sends a Linux close to the socket lane. Without
+            // the wait a slow client (TSan on ubuntu CI) sent after this
+            // teardown and got EPIPE.
+            var pfd = [1]posix.pollfd{.{ .fd = fd.handle, .events = posix.POLL.IN, .revents = 0 }};
+            _ = sys.poll(&pfd, 1, 5000);
             var t = tcp.Transport.init(testing.allocator, testing.io, fd, 64) catch |err| {
                 self.last_err = err;
                 support.closeFd(fd.handle);
