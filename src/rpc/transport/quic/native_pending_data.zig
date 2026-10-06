@@ -64,7 +64,10 @@ pub fn start(
 /// `conn.stream(id)` gives a view with `recv.final_size` (null until the
 /// stream ends) and `recv.reset` (null unless the peer reset the stream,
 /// else a value with `error_code`). quic-zig's own stream has both; so has
-/// the embedded seat's buffered view.
+/// the embedded seat's buffered view. When there is no view,
+/// `conn.streamRecvEnd(id)` and `conn.streamRecvWasReaped(id)` (quic-zig's
+/// `Connection` functions) tell an ended stream from one that is not open
+/// yet.
 pub fn readComplete(
     pending_data: *?PendingData,
     conn: anytype,
@@ -73,23 +76,8 @@ pub fn readComplete(
 ) !?[]u8 {
     var pending = if (pending_data.*) |*pending| pending else return null;
 
-    const stream = conn.stream(pending.stream_id) orelse {
-        // The stream is gone after every announced byte was read: quic-zig
-        // reaped it in a `tick` after its FIN or RESET arrived alone (its
-        // stream GC frees a stream once the receive half ends). The length
-        // came on the control stream, so nothing is missing. No end can
-        // come now, so do not wait for one.
-        if (pending.offset == pending.bytes.len) {
-            const bytes = pending.bytes;
-            pending_data.* = null;
-            return bytes;
-        }
-        // Not yet complete when the stream has not been opened at all. The
-        // completion deadline still applies so a peer that announces a data
-        // stream then never opens (or drips into) it cannot pin the session
-        // open. A stream reaped with bytes still missing also ends here.
-        return incompleteOrTimeout(pending, false, now_us, completion_deadline_us);
-    };
+    const stream = conn.stream(pending.stream_id) orelse
+        return settleWithoutStream(pending_data, pending, conn, now_us, completion_deadline_us);
     if (stream.recv.final_size) |final_size| {
         if (final_size != pending.bytes.len) return error.InvalidFrame;
     }
@@ -123,6 +111,60 @@ pub fn readComplete(
         return incompleteOrTimeout(pending, made_progress, now_us, completion_deadline_us);
     }
 
+    return take(pending_data, pending);
+}
+
+/// The announced data stream has no view: it is not open yet, or quic-zig
+/// reclaimed it in a `tick` (its stream GC frees a stream once the receive
+/// half has ended, also before this read when its FIN or RESET arrived
+/// alone). No byte can come from a reclaimed stream, so settle the frame
+/// now. Do not wait for the completion deadline.
+fn settleWithoutStream(
+    pending_data: *?PendingData,
+    pending: *PendingData,
+    conn: anytype,
+    now_us: u64,
+    completion_deadline_us: ?u64,
+) !?[]u8 {
+    if (conn.streamRecvEnd(pending.stream_id)) |end| {
+        // quic-zig still knows how the stream ended. Judge it as the live
+        // stream: a final size other than the announced length fails the
+        // frame, and all the announced bytes complete it.
+        if (end.final_size != pending.bytes.len) return error.InvalidFrame;
+        if (pending.offset == pending.bytes.len) return take(pending_data, pending);
+        // Bytes are missing, and none can come: the peer reset the stream
+        // (quic-zig dropped the unread bytes), or this side stopped it.
+        if (end.reset_code) |code| {
+            log.debug("native data stream {d} reset by the peer (code {d}) after {d} of {d} bytes", .{
+                pending.stream_id, code, pending.offset, pending.bytes.len,
+            });
+        } else {
+            log.debug("native data stream {d} ended unclean (stopped: {}) after {d} of {d} bytes", .{
+                pending.stream_id, end.stopped, pending.offset, pending.bytes.len,
+            });
+        }
+        return error.DataStreamReset;
+    }
+    if (conn.streamRecvWasReaped(pending.stream_id)) {
+        // quic-zig reclaimed the stream and no longer knows how it ended
+        // (its note of the end is gone). The length came on the control
+        // stream, so all the announced bytes complete the frame. With bytes
+        // missing the stream is cut: fail now.
+        if (pending.offset == pending.bytes.len) return take(pending_data, pending);
+        log.debug("native data stream {d} ended with its end unknown after {d} of {d} bytes", .{
+            pending.stream_id, pending.offset, pending.bytes.len,
+        });
+        return error.DataStreamReset;
+    }
+    // Not open yet. The completion deadline still applies, so a peer that
+    // announces a data stream and then never opens it cannot keep the
+    // session open.
+    return incompleteOrTimeout(pending, false, now_us, completion_deadline_us);
+}
+
+/// Give the completed message to the caller, who frees it. `pending` is the
+/// payload of `pending_data`, which this clears.
+fn take(pending_data: *?PendingData, pending: *PendingData) []u8 {
     const bytes = pending.bytes;
     pending_data.* = null;
     return bytes;

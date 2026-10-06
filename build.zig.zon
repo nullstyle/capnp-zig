@@ -6,6 +6,21 @@
         // Pinned to a TAG, not a raw commit: tags are immutable release
         // points, so the pin is auditable and reproducible.
         //
+        // v0.28.0 (commit a9078d8): the end of a stream is not lost when
+        // `tick` runs before the read. `Connection.streamRecvEnd(id)` tells
+        // how the receive half of a stream ended (a clean FIN, a reset and
+        // its code, or a stream that the application stopped), before and
+        // after the `tick` that reclaims it. The embedded seat and native
+        // mode read it. `quic.app` now reports `.fin` or `.reset` for a
+        // stream that a `tick` reclaimed first, and `.reaped` for a stream
+        // that the application stopped, also while it is live. WHEN a stream
+        // is reclaimed, when its credit returns, and the field
+        // `Stream.recv.final_size` do not change. No wire change, no security
+        // fix. KNOWN DEFECT: v0.28.0 does not compile for a 32-bit target
+        // (a comptime size assert in `src/conn/RecvEndRing.zig`), so
+        // `-Dquic=true` fails for x86-linux-gnu; quic-zig fixed it in
+        // `dd570d0`, after the tag. Move to the release that carries it.
+        //
         // v0.27.0 (commit 9d2ab6e): session tickets that live through a
         // restart. `Server.Config.session_ticket_key` and
         // `session_ticket_lifetime_s` replace the post-init install that
@@ -37,13 +52,13 @@
         // one build must pin the same tag and pass the same option map, or
         // the build makes two quic modules (and two BoringSSLs). The map is
         // `.target`, `.release`, `.@"sanitize-c" = "trap"` (build/modules.zig),
-        // the one nest/qmsg/qmesh/http3-zig use; the coordinated set is on
-        // v0.26/v0.27. boringssl-zig is unchanged since v0.25.0: ff30fe99
-        // (0.6.7, BoringSSL aef0e2df), which links Windows ws2_32 with
-        // pkg-config lookup disabled.
+        // the one nest/qmsg/qmesh/http3-zig use; the coordinated set for
+        // capnp-zig v0.20.0 is on v0.28.0. boringssl-zig is unchanged since
+        // v0.25.0: ff30fe99 (0.6.7, BoringSSL aef0e2df), which links Windows
+        // ws2_32 with pkg-config lookup disabled.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.27.0.tar.gz",
-            .hash = "quic-0.27.0-DnSYvdkEOQDHm_pJQOp6Vo47gQ1Cm7-0c2sgVV0M6Xht",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.28.0.tar.gz",
+            .hash = "quic-0.28.0-DnSYvYT2OQBEMBW5UQd4BQki7EgGez1d-Ed5fGPHJHBd",
             .lazy = true,
         },
     },

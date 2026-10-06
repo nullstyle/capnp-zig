@@ -570,6 +570,18 @@ pub const EmbeddedSession = struct {
             return .{ .recv = .{ .final_size = if (buf.ended) buf.total else null } };
         }
 
+        /// For a stream that has no buffer in the seat (`stream` gives
+        /// null): how quic-zig says it ended. The engine settles a frame from
+        /// it when the seat dropped the stream (this side stopped it) or
+        /// freed it (it ended empty before its announcement).
+        pub fn streamRecvEnd(self: BufferedConn, stream_id: u64) ?quic_zig.StreamRecvEnd {
+            return self.session.conn.streamRecvEnd(stream_id);
+        }
+
+        pub fn streamRecvWasReaped(self: BufferedConn, stream_id: u64) bool {
+            return self.session.conn.streamRecvWasReaped(stream_id);
+        }
+
         pub fn openBidi(self: BufferedConn, stream_id: u64) !*quic_zig.Connection.Stream {
             return self.session.conn.openBidi(stream_id);
         }

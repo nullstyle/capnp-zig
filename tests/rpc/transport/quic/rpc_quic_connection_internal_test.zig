@@ -1,5 +1,6 @@
 const std = @import("std");
 const capnp = @import("capnpc-zig");
+const quic_zig = @import("quic");
 
 const quic = capnp.rpc.transport.quic;
 const native_framer = quic.native;
@@ -1285,8 +1286,9 @@ test "peer streams: a refusal ends both halves of a bidi stream, the one half of
 
 const pending_data = quic.testing.native_pending_data;
 
-/// The two calls `readComplete` makes, on a stream that the test shapes by
-/// hand: present or reaped, its final size, a reset, the readable bytes.
+/// The calls `readComplete` makes, on a stream that the test shapes by
+/// hand: present or gone, its final size, a reset, the readable bytes, and
+/// for a gone stream what quic-zig says about its end.
 const FakeDataStream = struct {
     const View = struct {
         recv: struct {
@@ -1298,9 +1300,21 @@ const FakeDataStream = struct {
     present: bool = true,
     view: View = .{},
     readable: []const u8 = &.{},
+    /// A gone stream that quic-zig reclaimed (false: not opened yet).
+    reclaimed: bool = false,
+    /// quic-zig's note of how a reclaimed stream ended (null: not known).
+    recv_end: ?quic_zig.StreamRecvEnd = null,
 
     pub fn stream(self: *const FakeDataStream, _: u64) ?View {
         return if (self.present) self.view else null;
+    }
+
+    pub fn streamRecvEnd(self: *const FakeDataStream, _: u64) ?quic_zig.StreamRecvEnd {
+        return if (self.present or !self.reclaimed) null else self.recv_end;
+    }
+
+    pub fn streamRecvWasReaped(self: *const FakeDataStream, _: u64) bool {
+        return !self.present and self.reclaimed;
     }
 
     /// `anyerror`, like the embedded seat's reader: `readComplete` keeps an
@@ -1330,27 +1344,88 @@ fn pendingFrame(offset: usize) !?pending_data.PendingData {
     };
 }
 
-test "native data frame: a stream reaped after every byte was read completes the frame" {
-    // quic-zig freed the stream in a tick after its FIN or RESET arrived
-    // alone. The length came on the control stream; nothing is missing.
-    var pending = try pendingFrame(8);
-    defer pending_data.reset(std.testing.allocator, &pending);
-    var conn = FakeDataStream{ .present = false };
-
-    const frame = (try pending_data.readComplete(&pending, &conn, 0, fake_deadline_us)) orelse
-        return error.TestExpectedCompleteFrame;
-    defer std.testing.allocator.free(frame);
-    try std.testing.expectEqual(@as(usize, 8), frame.len);
-    try std.testing.expect(pending == null);
+/// quic-zig's note of a reclaimed stream's end (`Connection.streamRecvEnd`).
+fn recvEnd(final_size: u64, reset_code: ?u64, stopped: bool) quic_zig.StreamRecvEnd {
+    return .{
+        .fin_seen = reset_code == null,
+        .reset_code = reset_code,
+        .final_size = final_size,
+        .read_offset = final_size,
+        .stopped = stopped,
+        .arrived_in_early_data = false,
+    };
 }
 
-test "native data frame: a stream reaped with bytes missing still ends at the deadline" {
+test "native data frame: a reclaimed stream completes the frame when every byte was read" {
+    // quic-zig freed the stream in a tick after its FIN or RESET arrived
+    // alone. The length came on the control stream; nothing is missing. The
+    // end can be clean, a reset after the last byte (as on a live stream),
+    // or not known any more (quic-zig's note of it is gone).
+    for ([_]?quic_zig.StreamRecvEnd{ recvEnd(8, null, false), recvEnd(8, 77, false), null }) |end| {
+        var pending = try pendingFrame(8);
+        defer pending_data.reset(std.testing.allocator, &pending);
+        var conn = FakeDataStream{ .present = false, .reclaimed = true, .recv_end = end };
+
+        const frame = (try pending_data.readComplete(&pending, &conn, 0, fake_deadline_us)) orelse
+            return error.TestExpectedCompleteFrame;
+        defer std.testing.allocator.free(frame);
+        try std.testing.expectEqual(@as(usize, 8), frame.len);
+        try std.testing.expect(pending == null);
+    }
+}
+
+test "native data frame: a stream not opened yet ends at the deadline" {
     var pending = try pendingFrame(3);
     defer pending_data.reset(std.testing.allocator, &pending);
     var conn = FakeDataStream{ .present = false };
 
     try std.testing.expectEqual(@as(?[]u8, null), try pending_data.readComplete(&pending, &conn, fake_deadline_us - 1, fake_deadline_us));
     try std.testing.expectError(error.DataStreamTimeout, pending_data.readComplete(&pending, &conn, fake_deadline_us, fake_deadline_us));
+}
+
+test "native data frame: a reclaimed reset stream with bytes missing fails at once, not at the deadline" {
+    // The RESET arrived alone and a tick freed the stream before this read.
+    // quic-zig's note keeps the final size and the code of the RESET.
+    // Ablation: without the `streamRecvEnd` and `streamRecvWasReaped` arms of
+    // `settleWithoutStream`, the frame waits for the deadline.
+    var pending = try pendingFrame(3);
+    defer pending_data.reset(std.testing.allocator, &pending);
+    var conn = FakeDataStream{ .present = false, .reclaimed = true, .recv_end = recvEnd(8, 77, false) };
+
+    try std.testing.expectError(error.DataStreamReset, pending_data.readComplete(&pending, &conn, 0, fake_deadline_us));
+}
+
+test "native data frame: a reclaimed stream whose end is not known fails at once when bytes are missing" {
+    // quic-zig's note of the end is gone (`streamRecvEnd` null, the stream
+    // reclaimed). quic-zig says to treat such a stream as cut, never as
+    // complete. Ablation: without the `streamRecvWasReaped` arm, the frame
+    // waits for the deadline.
+    var pending = try pendingFrame(3);
+    defer pending_data.reset(std.testing.allocator, &pending);
+    var conn = FakeDataStream{ .present = false, .reclaimed = true };
+
+    try std.testing.expectError(error.DataStreamReset, pending_data.readComplete(&pending, &conn, 0, fake_deadline_us));
+}
+
+test "native data frame: a reclaimed stream that this side stopped never completes the frame" {
+    var pending = try pendingFrame(3);
+    defer pending_data.reset(std.testing.allocator, &pending);
+    var conn = FakeDataStream{ .present = false, .reclaimed = true, .recv_end = recvEnd(8, null, true) };
+
+    try std.testing.expectError(error.DataStreamReset, pending_data.readComplete(&pending, &conn, 0, fake_deadline_us));
+}
+
+test "native data frame: a reclaimed stream with a final size other than the announced length fails with InvalidFrame" {
+    // The same check as on a live stream. Ablation: with the
+    // `streamRecvEnd` arm of `settleWithoutStream` removed, the shorter
+    // stream fails with `DataStreamReset`, not `InvalidFrame`.
+    for ([_]quic_zig.StreamRecvEnd{ recvEnd(5, null, false), recvEnd(12, null, false), recvEnd(12, 77, false) }) |end| {
+        var pending = try pendingFrame(@intCast(@min(end.final_size, 8)));
+        defer pending_data.reset(std.testing.allocator, &pending);
+        var conn = FakeDataStream{ .present = false, .reclaimed = true, .recv_end = end };
+
+        try std.testing.expectError(error.InvalidFrame, pending_data.readComplete(&pending, &conn, 0, fake_deadline_us));
+    }
 }
 
 test "native data frame: a reset stream with bytes missing fails at once, not at the deadline" {

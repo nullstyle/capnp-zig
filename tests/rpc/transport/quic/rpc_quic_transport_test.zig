@@ -1942,10 +1942,13 @@ test "quic native raw peer data stream violations close with typed frame errors"
 
 // The stream-end trap (quic-zig, 2026-10-05): every byte of a data stream is
 // read, then its FIN or RESET arrives alone. A QUIC tick before the next
-// service pass frees the stream, and a read gets `StreamNotFound`. The
-// announced length is in hand, so the frame must complete in either order.
-// Ablation: with the reaped-stream branch of `native_pending_data.readComplete`
-// removed, the tick-then-service cases fail with `DataStreamTimeout`.
+// service pass frees the stream, and a read gets `StreamNotFound`. Since
+// quic-zig v0.28.0, `Connection.streamRecvEnd` still says how the stream
+// ended. The announced length is in hand, so the frame must complete in
+// either order. Ablation: with the "every byte was read" arm of
+// `native_pending_data.settleWithoutStream` removed, the tick-then-service
+// cases fail with `DataStreamReset`; with no settling at all (the v0.19.1
+// code), they fail with `DataStreamTimeout`.
 
 test "stream end alone: the native server finishes a data frame, service then tick" {
     try stream_end.runServerDirection(.fin, .service_then_tick);
@@ -1977,8 +1980,22 @@ test "quic native server judges a reset data stream by the final size of the RES
     // The embedded seat must give the same results ("embedded native seat
     // judges a reset data stream ..."). Ablation: without the final-size
     // check in `readComplete`, the longer RESET completes the frame.
-    try stream_end.runServerReset(.longer_than_announced);
-    try stream_end.runServerReset(.cut);
+    try stream_end.runServerReset(.longer_than_announced, .service_then_tick);
+    try stream_end.runServerReset(.cut, .service_then_tick);
+}
+
+test "quic native server fails a data stream at once when a tick freed it after a RESET (the trap order)" {
+    // The RESET arrives alone, and a tick frees the stream before the engine
+    // reads again. The engine takes the final size and the code of the RESET
+    // from quic-zig's note of the end (`Connection.streamRecvEnd`): a cut
+    // stream fails at once with `DataStreamReset`, and a longer RESET with
+    // `InvalidFrame`. Ablation: with the `streamRecvEnd` arm of
+    // `native_pending_data.settleWithoutStream` removed, the longer RESET
+    // completes the frame. With the code before quic-zig v0.28.0 (complete
+    // when every byte was read, else wait), the longer RESET completes the
+    // frame and the cut stream fails only after the completion deadline.
+    try stream_end.runServerReset(.longer_than_announced, .tick_then_service);
+    try stream_end.runServerReset(.cut, .tick_then_service);
 }
 
 test "quic server refuses peer streams it never uses, so they do not fill its stream window" {

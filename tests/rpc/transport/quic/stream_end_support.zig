@@ -2,10 +2,13 @@
 //!
 //! quic-zig's `Connection.tick` frees a stream once its receive half has
 //! ended. When the receiver has read every byte of a stream and the FIN or
-//! RESET then arrives alone, a tick before the next read removes the stream:
-//! the read gets `StreamNotFound`, and a clean end looks like a cut one. A
-//! native RPC data frame announces its length on the control stream, so the
-//! transport can still finish the frame from the bytes it has.
+//! RESET then arrives alone, a tick before the next read removes the stream,
+//! and a read gets `StreamNotFound`. Through quic-zig v0.27.0 a clean end then
+//! looked like a cut one. Since v0.28.0, `Connection.streamRecvEnd` still
+//! tells how the stream ended (a clean FIN, or a reset and its code), and
+//! `quic.app` reports `.fin` or `.reset` for it, not `.reaped`. A native RPC
+//! data frame announces its length on the control stream, so the transport
+//! settles the frame at once from the bytes it has and that answer.
 //!
 //! Each runner steps both peers on the test thread. It sends a data frame's
 //! bytes, waits until the receiver has every byte, then sends the end alone
@@ -127,6 +130,26 @@ fn sendEnd(conn: *quic_zig.Connection, stream_id: u64, end: End) !void {
     }
 }
 
+/// After quic-zig freed the data stream, it still says how the stream ended
+/// (quic-zig v0.28.0, `Connection.streamRecvEnd`).
+fn expectRecvEnd(conn: *quic_zig.Connection, stream_id: u64, end: End) !void {
+    try std.testing.expect(conn.streamRecvWasReaped(stream_id));
+    const recv_end = conn.streamRecvEnd(stream_id) orelse return error.TestExpectedStreamRecvEnd;
+    switch (end) {
+        .fin => try std.testing.expect(recv_end.isClean()),
+        .reset => try std.testing.expectEqual(@as(?u64, reset_code), recv_end.reset_code),
+    }
+    try std.testing.expectEqual(@as(u64, payload_len), recv_end.final_size);
+}
+
+/// A failure that came "at once" came before the completion deadline: a
+/// stalled frame shows `DataStreamTimeout` only after it.
+fn expectBeforeDeadline(since: Patience) !void {
+    const now = std.Io.Timestamp.now(std.testing.io, .awake);
+    const elapsed_us = since.start.durationTo(now).toMicroseconds();
+    try std.testing.expect(elapsed_us < completion_deadline_us);
+}
+
 // ---------------------------------------------------------------------------
 // Server direction: a raw quic client sends; the fanout `quic.Server` reads.
 // ---------------------------------------------------------------------------
@@ -235,8 +258,8 @@ pub fn runServerDirection(end: End, order: Order) !void {
         try patience.wait();
     }
     try recorder.expectWholeFrame();
-    // The end arrived: quic-zig freed the stream.
-    try std.testing.expect(session.activeQuicConnection().?.streamRecvWasReaped(data_stream));
+    // The end arrived: quic-zig freed the stream, and still knows its end.
+    try expectRecvEnd(session.activeQuicConnection().?, data_stream, end);
 }
 
 // ---------------------------------------------------------------------------
@@ -395,7 +418,7 @@ pub fn runClientDirection(end: End, order: Order) !void {
         try patience.wait();
     }
     try recorder.expectWholeFrame();
-    try std.testing.expect(client.activeQuicConnection().?.streamRecvWasReaped(data_stream));
+    try expectRecvEnd(client.activeQuicConnection().?, data_stream, end);
 
     client.requestClose();
     client.run();
@@ -776,9 +799,15 @@ fn resetWithQueuedBytes(conn: *quic_zig.Connection, stream_id: u64, shape: Reset
 }
 
 /// The owned server. The announcement comes first, so the engine reads the
-/// sent bytes before the RESET arrives.
-pub fn runServerReset(shape: ResetShape) !void {
+/// sent bytes before the RESET arrives. The RESET arrives alone. In the trap
+/// order a tick frees the stream before the engine reads again, so the
+/// engine must take the final size and the code of the RESET from quic-zig's
+/// note of the end (`Connection.streamRecvEnd`). In both orders the frame
+/// fails at once, not at the completion deadline.
+pub fn runServerReset(shape: ResetShape, order: Order) !void {
     const allocator = std.testing.allocator;
+    quic.testing.knobs.setTickBeforeService(order == .tick_then_service);
+    defer quic.testing.knobs.setTickBeforeService(false);
 
     var server = try initServer(allocator);
     defer server.deinit();
@@ -815,17 +844,25 @@ pub fn runServerReset(shape: ResetShape) !void {
     try resetWithQueuedBytes(raw.client.conn, data_stream, shape);
     try raw.drainOutgoing(raw.nowUs());
 
-    // 3. The final size of the RESET settles the frame at once.
+    // 3. The final size of the RESET settles the frame at once, well before
+    //    the completion deadline.
     patience = Patience.begin();
     while (!recorder.done()) {
         _ = try server.stepOnce(.poll);
         try raw.step(std.Io.Duration.zero);
         try patience.wait();
     }
+    try expectBeforeDeadline(patience);
     try recorder.expectFailure(shape.expectedError());
     const status = session.closeStatus() orelse return error.QuicLoopbackMissingCloseStatus;
     try std.testing.expectEqual(shape.expectedCode(), status.code);
     try std.testing.expectEqual(@as(?anyerror, shape.expectedError()), status.err);
+    // quic-zig keeps the code of the RESET. In the trap order the tick freed
+    // the stream before the engine read it again.
+    const server_conn = session.activeQuicConnection().?;
+    if (order == .tick_then_service) try std.testing.expect(server_conn.streamRecvWasReaped(data_stream));
+    const recv_end = server_conn.streamRecvEnd(data_stream) orelse return error.TestExpectedStreamRecvEnd;
+    try std.testing.expectEqual(@as(?u64, reset_code), recv_end.reset_code);
 }
 
 /// The seat, in the safe order. The sent bytes reach the seat before the
