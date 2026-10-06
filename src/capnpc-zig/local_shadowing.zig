@@ -190,7 +190,7 @@ fn collectBindings(
         switch (tree.nodeTag(node)) {
             .fn_decl => {
                 var buffer: [1]Ast.Node.Index = undefined;
-                const proto = tree.fullFnProto(&buffer, tree.nodeData(node).node_and_node[0]).?;
+                const proto = tree.fullFnProto(&buffer, tree.nodeData(node).node_and_node[0]) orelse continue;
                 var params = proto.iterate(tree);
                 while (params.next()) |param| {
                     const token = param.name_token orelse continue;
@@ -199,21 +199,26 @@ fn collectBindings(
             },
             .simple_var_decl, .local_var_decl, .aligned_var_decl, .global_var_decl => {
                 if (members.contains(node)) continue;
-                try addBinding(arena, tree, &bindings, tree.fullVarDecl(node).?.ast.mut_token + 1);
+                const var_decl = tree.fullVarDecl(node) orelse continue;
+                try addBinding(arena, tree, &bindings, var_decl.ast.mut_token + 1);
             },
             .if_simple, .@"if" => {
-                const full = tree.fullIf(node).?;
+                const full = tree.fullIf(node) orelse continue;
                 if (full.payload_token) |token| try addCaptureList(arena, tree, &bindings, token);
                 if (full.error_token) |token| try addBinding(arena, tree, &bindings, token);
             },
             .while_simple, .while_cont, .@"while" => {
-                const full = tree.fullWhile(node).?;
+                const full = tree.fullWhile(node) orelse continue;
                 if (full.payload_token) |token| try addCaptureList(arena, tree, &bindings, token);
                 if (full.error_token) |token| try addBinding(arena, tree, &bindings, token);
             },
-            .for_simple, .@"for" => try addCaptureList(arena, tree, &bindings, tree.fullFor(node).?.payload_token),
+            .for_simple, .@"for" => {
+                const full = tree.fullFor(node) orelse continue;
+                try addCaptureList(arena, tree, &bindings, full.payload_token);
+            },
             .switch_case_one, .switch_case_inline_one, .switch_case, .switch_case_inline => {
-                if (tree.fullSwitchCase(node).?.payload_token) |token| try addCaptureList(arena, tree, &bindings, token);
+                const full = tree.fullSwitchCase(node) orelse continue;
+                if (full.payload_token) |token| try addCaptureList(arena, tree, &bindings, token);
             },
             .@"catch" => {
                 const keyword = tree.nodeMainToken(node);
