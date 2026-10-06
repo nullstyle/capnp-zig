@@ -44,10 +44,15 @@ Cap'n Proto RPC vat session. The payload above the QUIC transport is still the
 standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
 between peers, not the RPC protocol that `Peer` handles.
 
-The manifest pins the `quic` package at annotated tag `v0.28.1` (commit
-`21d05d1`). v0.28.1 is v0.28.0 with a build fix: v0.28.0 did not compile for a
-32-bit target, so do not pin it. v0.28.0 added `Connection.streamRecvEnd`, so
-the end of a stream is not lost when `tick` runs before the read (see
+The manifest pins the `quic` package at annotated tag `v0.29.0` (commit
+`b9a15e6`). v0.29.0 has no wire change. A connection costs about 91 KB on the
+heap, not 1.09 MB. A late packet is no longer counted as a lost one, and a
+client completes its handshake through loss. It adds the previous ticket key,
+the NEW_TOKEN clock and the client ticket lifetime that "Session-ticket key"
+below describes. v0.28.1 is v0.28.0 with a build fix: v0.28.0 did not compile
+for a 32-bit target, so do not pin it. v0.28.0 added
+`Connection.streamRecvEnd`, so the end of a stream is not lost when `tick`
+runs before the read (see
 [Embedder rules](#embedder-rules)). v0.27.0 before it made session-ticket keys
 server config, and made a client send its 0-RTT data again after a Retry. The
 tag in turn pins the published boringssl-zig commit `ff30fe99` (boringssl
@@ -818,7 +823,9 @@ how to persist the key, and states what that costs.
 
 **Status: Experimental.** `ServerOptions.session_ticket_key:
 ?*const SessionTicketKey` (48 bytes) persists the key, and
-`ServerProductionHardening` has the same field. `serverConfigFromOptions`
+`ServerProductionHardening` has the same field. `previous_session_ticket_key`
+(same type, in both) keeps the key before it open in a process that starts
+after a key change ("Rotation" below). `serverConfigFromOptions`
 copies the key into quic-zig's `Server.Config.session_ticket_key`, and
 quic-zig installs it on every TLS context it builds: at `init`, and again on
 a `.pem` reload (`replaceTlsContext`). `Listener.init` (so also `Server.init`,
@@ -950,19 +957,23 @@ and the key found there is rotated every 2 days.
 **What is refused.** `serverConfigFromOptions`, and so `Listener.init`,
 returns `error.InvalidConfig` for an all-zero key, for a key together with
 `.early_data = .with_anti_replay` (see below), and for a
-`session_ticket_lifetime_s` outside 1 second to 2 days. quic-zig's
-`Server.init` refuses the first two as well. Until quic-zig v0.27.0,
+`session_ticket_lifetime_s` outside 1 second to 2 days. It refuses a
+`previous_session_ticket_key` ("Rotation" below) with no
+`session_ticket_key`, an all-zero one, and one whose name (first 16 bytes)
+is the name of `session_ticket_key`. quic-zig's `Server.init` refuses the
+key and previous-key cases as well. Until quic-zig v0.27.0,
 capnp-zig also refused a key with Retry on and `new_token_key == null`,
 because a Retry then cost the early restore; now it costs one round trip
 per returning client, so the pair is allowed (the transport test "session
 ticket key with Retry on and no new_token_key" pins what it costs).
 
 `serverConfigFromOptions` returns a quic-zig config that holds a copy of the
-key, by value. An embedder that builds its own quic-zig server from it (for
-example to host `EmbeddedSession`s) gets the key and lifetime with it: zero
-the config's `session_ticket_key` once `quic.Server.init` has returned, as
-`Listener.init` does, and keep the config out of logs. An embedder that
-feeds its own clock to that server also owns the clock rules below.
+key, and of the previous key, by value. An embedder that builds its own
+quic-zig server from it (for example to host `EmbeddedSession`s) gets the
+keys and lifetime with it: call `quic.zeroServerConfigSecrets(&config)` once
+`quic.Server.init` has returned, as `Listener.init` does, and keep the config
+out of logs. An embedder that feeds its own clock to that server also owns
+the clock rules below.
 
 A restarted server accepts 0-RTT data only when it runs with the same ALPN,
 transport mode and `early_dispatch` as the process that issued the ticket.
@@ -984,31 +995,46 @@ whose name (first 16 bytes) is the current key's.
 
 Call it on the loop thread, because quic-zig reads the keys inside
 handshakes on that thread and takes no lock: from the `after_step` hook of
-`Server.runWithAfterStep`, from the accept hook, or before `run` starts. To
-rotate on a signal from another thread (a timer, an admin command), set a
-flag there, call `server.wake()`, and rotate from `after_step`. Debug builds
-check the thread; release builds check it only with
-`runtime_thread_checks`. `Listener.rotateSessionTicketKey` is the same call
-for code that drives a `Listener` itself; it must run on the thread that
-feeds it. `serve` (`PeerServer`) has no loop-thread hook of its own: rotate
-through `PeerServer.server` before `run`, or drive a `Server` with
-`runWithAfterStep`. A rotation hook on `PeerServer` is a possible addition;
-it is not built.
+`Server.runWithAfterStep` or from the accept hook. To rotate on a signal
+from another thread (a timer, an admin command), set a flag there, call
+`server.wake()`, and rotate from `after_step`. Debug builds check the
+thread; release builds check it only with `runtime_thread_checks`. Since
+quic-zig v0.29.0, a Debug build of quic-zig checks it too: the first feed,
+tick or rotation fixes its loop thread, and a call on any other thread
+asserts. So a rotation before `run` must run on the thread that then calls
+`run`. `Listener.rotateSessionTicketKey` is the same call for code that
+drives a `Listener` itself; it must run on the thread that feeds it.
+`serve` (`PeerServer`) has no loop-thread hook of its own: rotate through
+`PeerServer.server` before `run`, on the thread that calls `run`, or drive a
+`Server` with `runWithAfterStep`. A rotation hook on `PeerServer` is a
+possible addition; it is not built.
 
-A process STARTS with one key, so persist the rotation:
+A rotation lives in one process. The next process starts with the keys you
+give it: `session_ticket_key` seals new tickets, and
+`previous_session_ticket_key` (quic-zig v0.29.0) still opens the tickets of
+the key before, 0-RTT included. Persist a rotation like this:
 
 1. Write the new key file atomically, and keep the old one.
 2. Rotate the running server to the new key.
 3. If the process restarts within one ticket lifetime after the rotation,
-   start it with the OLD key and rotate to the new key before `run`. The old
-   key then lives one more lifetime, counted from the restart. A process that
-   starts with the new key alone cannot open the tickets of the old one, and
-   its clients each pay one full handshake (no outage).
-4. After one ticket lifetime, delete the old key file.
+   start it with the new key as `session_ticket_key` and the old key as
+   `previous_session_ticket_key`. Set `previous_session_ticket_key_until_us`
+   to the time of the rotation plus one ticket lifetime, in microseconds
+   since the Unix epoch (the listener's clock, `Listener.nowUs`): the old
+   key then ends when it would have ended in the process before. Null gives
+   it one more lifetime from the restart. A process that starts with the new
+   key alone cannot open the tickets of the old one, and its clients each
+   pay one full handshake (no outage).
+4. After one ticket lifetime, delete the old key file, and stop passing it.
 
 Every server of a pool, and the next process, needs the same change. A
-restart with a new key file and no rotation is still valid; it costs each
-client one full handshake, which issues a ticket under the new key.
+restart with a new key file and no previous key is still valid; it costs
+each client one full handshake, which issues a ticket under the new key.
+`ServerProductionHardening` takes the pair as its own
+`previous_session_ticket_key` and `previous_session_ticket_key_until_us`
+fields, and sets both with `session_ticket_key`. Before quic-zig v0.29.0
+the only way to keep the old tickets was to start with the old key and
+rotate to the new one before the first datagram.
 
 Rotate the key at least every 7 days, and at once when the file may have
 leaked or when a host that held it is retired. BoringSSL already makes each
@@ -1031,10 +1057,17 @@ tickets the server issues and for the time a rotated-out key keeps opening
 them (1 second up to `quic.max_session_ticket_lifetime_s`, 2 days). A client
 caps a ticket at the lifetime the server advertised with it. quic-zig accepts
 up to 7 days, but capnp-zig keeps 2 days as the maximum: a BoringSSL client,
-and so every quic-zig and capnp-zig client, keeps a ticket for 2 days at most
-(a 7-day server lifetime was measured stored as 172800 s), so a longer
-lifetime buys these clients nothing and keeps a stolen key's tickets valid
-for longer.
+and so every quic-zig and capnp-zig client, keeps a ticket for 2 days unless
+its own limit is raised (a 7-day server lifetime was measured stored as
+172800 s), so a longer lifetime buys these clients nothing and keeps a
+stolen key's tickets valid for longer.
+
+`ClientOptions.session_ticket_lifetime_s` (Experimental, quic-zig v0.29.0)
+is that client limit: the client keeps each ticket for the smaller of it and
+the server's lifetime, and does not offer an older ticket. It takes 1 second
+up to the same 2 days, so it only shortens. quic-zig's
+`Client.resumptionTicketLifetimeSeconds(envelope)` reads the lifetime of a
+saved envelope as the client keeps it.
 
 **Why the key is refused together with anti-replay.** With `.early_data =
 .with_anti_replay`, capnp-zig dispatches every early frame at once, because
@@ -1105,19 +1138,31 @@ and expiry times with the clock that the listener feeds it,
 starts, then advances on the monotonic clock, so it never goes backwards
 within a process. A restarted listener's clock continues from its
 predecessor's, and it accepts its predecessor's NEW_TOKENs within their
-lifetime (`new_token_lifetime_us`, 24 hours by default). quic-zig checks
-these times with no clock-skew allowance. If the wall clock steps backwards
-between the two starts, or the predecessor's monotonic clock ran ahead of
-the wall clock over a long uptime (on macOS it is not NTP-disciplined), the
-restarted server reads the newest tokens as not yet valid by that much, and
-those clients get a Retry. Before v0.20.0 the clock counted from
-`Listener.init`, so a restarted server read every token from its
-predecessor as not yet valid until its own uptime passed the predecessor's
-uptime at the time of issue. In embedded mode the host feeds its own clock
-to its quic-zig server, so the host's clock needs the same property.
-(quic-zig's own bundled loop, `quic.transport.runUdpServer`, still feeds a
-clock that starts at zero, so a persisted `new_token_key` does not survive a
-restart there; capnp-zig does not use that loop.)
+lifetime (`new_token_lifetime_us`, 24 hours by default). By default
+quic-zig checks these times with no clock-skew allowance. If the wall clock
+steps backwards between the two starts, or the predecessor's monotonic clock
+ran ahead of the wall clock over a long uptime (on macOS it is not
+NTP-disciplined), the restarted server reads the newest tokens as not yet
+valid by that much, and those clients get a Retry.
+`ServerOptions.new_token_max_clock_skew_us` (Experimental, quic-zig v0.29.0)
+allows that much: a token from the future by at most this many microseconds
+is taken, and one past its expiry by at most this much too. A few seconds
+cover a small step. Before v0.20.0 the clock counted from `Listener.init`,
+so a restarted server read every token from its predecessor as not yet valid
+until its own uptime passed the predecessor's uptime at the time of issue.
+
+`ServerOptions.new_token_clock` (Experimental, quic-zig v0.29.0) gives the
+tokens a clock of their own, a `fn () u64` in microseconds; the timers keep
+the listener's clock. capnp-zig's listener clock already goes on across a
+restart, so leave it null unless every process must agree on another clock.
+Do not use quic-zig's `unixWallClockUs` at the v0.29.0 pin: it calls
+`std.time.microTimestamp`, which Zig 0.17.0 does not have, so it does not
+compile. In embedded mode the host feeds its own clock to its quic-zig
+server, so the host's clock needs the same property, or the host sets
+`new_token_clock`. (quic-zig's own bundled loop,
+`quic.transport.runUdpServer`, still feeds a clock that starts at zero, so
+there a persisted `new_token_key` needs `new_token_clock`; capnp-zig does
+not use that loop.)
 
 So a heal after a crash-restart runs its restore early whenever the
 restarted server loads the same ticket key (and the same ALPN, transport
@@ -1134,7 +1179,12 @@ whether the restore ran before the handshake. In the peer suite,
 "WarmRedialClient heal after a crash-restart of a hardened server with a
 session-ticket key rides 0-RTT from the port that earned its NEW_TOKEN" and
 "WarmRedialClient heal falls back to an ephemeral port when its previous port
-is taken, and pays a Retry" pin the client's counters.
+is taken, and pays a Retry" pin the client's counters. The transport tests "a
+server restarted with a new key and the old one as
+previous_session_ticket_key resumes the old ticket in 0-RTT", "a
+previous_session_ticket_key whose time is over opens no ticket" and
+"new_token_clock and new_token_max_clock_skew_us" pin the v0.29.0 options
+across a restart.
 
 To see which case a client is in, compare the counters:
 `WarmRedialClient.Outcome.zero_rtt_generations` counts the generations whose
@@ -1188,11 +1238,13 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
 - One server `rpc.transport.quic.Connection` owns one listener and represents one active
   QUIC session. Use `rpc.transport.quic.serve` (or `rpc.transport.quic.Server`)
   for multi-session fanout.
-- A lost CONNECTION_CLOSE is not sent again (quic-zig v0.26.0 and later). A
-  client whose refusal close is lost during the handshake waits for its own
-  handshake timeout (`ClientOptions.handshake_timeout_ms`, 30 s by default),
-  the same as a dial the server's flood gates drop; after the handshake the
-  peer waits for its idle timeout. Keep both timeouts.
+- A lost CONNECTION_CLOSE is sent again only when the peer sends another
+  packet (quic-zig v0.29.0: the first packet after the close earns it again,
+  then two more, then four). A client whose refusal close is lost during the
+  handshake gets it again at its next probe. A peer that sends nothing more
+  waits for its own handshake timeout (`ClientOptions.handshake_timeout_ms`,
+  30 s by default), or after the handshake for its idle timeout. Keep both
+  timeouts.
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.
 - Mode mismatch is treated as malformed transport input and closes cleanly.
@@ -1200,5 +1252,5 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   BoringSSL with `sanitize-c = "trap"`. There, BoringSSL's 32-bit P-256 code
   (`third_party/fiat/p256_32.h`, under ECDSA verify) can trap in some TLS
   handshakes (quic-zig records it in its v0.28.1 notes, for boringssl-zig to
-  fix). capnp-zig's CI compiles QUIC for 32-bit x86 but does not run it there.
+  fix; it is still open at v0.29.0). capnp-zig's CI compiles QUIC for 32-bit x86 but does not run it there.
   64-bit targets are not affected.

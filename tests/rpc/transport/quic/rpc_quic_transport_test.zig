@@ -2999,7 +2999,12 @@ fn ticketKeyWithByte(index: usize, value: u8) quic.SessionTicketKey {
 /// and a NEW_TOKEN key, plus the ticket settings a case varies.
 const TicketServer = struct {
     key: ?*const quic.SessionTicketKey,
+    /// `previous_session_ticket_key` and its end time, through the preset.
+    previous_key: ?*const quic.SessionTicketKey = null,
+    previous_key_until_us: ?u64 = null,
     new_token_key: ?quic.ServerNewTokenKey = ticket_new_token_key,
+    new_token_clock: ?*const fn () u64 = null,
+    new_token_max_clock_skew_us: u64 = 0,
     early_dispatch: quic.early_dispatch.Mode = .restore_only,
 
     fn options(self: TicketServer, listen_addr: std.Io.net.IpAddress) quic.ServerOptions {
@@ -3009,12 +3014,16 @@ const TicketServer = struct {
             .tls_key_pem = loopback_key_pem,
             .receive_timeout = std.Io.Duration.fromMilliseconds(1),
             .max_concurrent_connections = 2,
+            .new_token_clock = self.new_token_clock,
+            .new_token_max_clock_skew_us = self.new_token_max_clock_skew_us,
         }, .{
             .retry_token_key = ticket_retry_key,
             .stateless_reset_key = ticket_reset_key,
             .new_token_key = self.new_token_key,
             .early_data = .restore_only,
             .session_ticket_key = self.key,
+            .previous_session_ticket_key = self.previous_key,
+            .previous_session_ticket_key_until_us = self.previous_key_until_us,
         });
         // Only the dispatch half of `.restore_only` varies: 0-RTT stays on,
         // and only the context bound into the tickets changes.
@@ -3351,7 +3360,8 @@ test "session ticket key: after a Retry the resumed dial's restore still arrives
 test "session ticket key: a NEW_TOKEN from before a crash-restart skips the restarted server's Retry" {
     // Server 1 runs 600 ms before it issues the NEW_TOKEN, and server 2
     // checks the token a few milliseconds after its own start. quic-zig
-    // checks a token's issue time with no clock-skew allowance, so the dial
+    // checks a token's issue time with no clock-skew allowance by default
+    // (`new_token_max_clock_skew_us` = 0), so the dial
     // skips the Retry only when the listener clock continues across the
     // restart. A clock that starts again at zero reads the token as not yet
     // valid and sends a Retry: one more round trip (since quic-zig v0.27.0
@@ -3366,6 +3376,80 @@ test "session ticket key: a NEW_TOKEN from before a crash-restart skips the rest
     try std.testing.expectEqual(@as(u64, 0), outcome.retries_sent);
     try std.testing.expect(outcome.restored_before_handshake);
     try std.testing.expectEqual(quic.EarlyDataStatus.accepted, outcome.status);
+}
+
+/// A ticket key with another name than `ticket_key` (byte 0 differs): the
+/// key a server changes to.
+const ticket_key_next = ticketKeyWithByte(0, 0x5a);
+
+test "session ticket key: a server restarted with a new key and the old one as previous_session_ticket_key resumes the old ticket in 0-RTT" {
+    // The way out of a key change that capnp-zig needed since quic-zig
+    // v0.27.0: the next process starts with the new key and still opens the
+    // tickets of the old one (quic-zig v0.29.0). The key pair goes through
+    // the hardened preset.
+    const outcome = try crashRestartResumedDial(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key_next, .previous_key = &ticket_key },
+        .same_client_port = true,
+    });
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, outcome.status);
+    try std.testing.expectEqual(@as(u64, 0), outcome.retries_sent);
+    try std.testing.expect(outcome.restored_before_handshake);
+    try std.testing.expectEqual(outcome.frame_len, outcome.early_bytes);
+    // Control: the new key alone does not open the old ticket.
+    try expectTicketRestartRejected(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key_next },
+        .same_client_port = true,
+    });
+}
+
+test "session ticket key: a previous_session_ticket_key whose time is over opens no ticket" {
+    // `previous_session_ticket_key_until_us` is on the listener's clock
+    // (microseconds since the Unix epoch), so 1 is long past: the first
+    // datagram clears the old key, and the old ticket is refused.
+    try expectTicketRestartRejected(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key_next, .previous_key = &ticket_key, .previous_key_until_us = 1 },
+        .same_client_port = true,
+    });
+}
+
+/// Fixed NEW_TOKEN clocks for `ServerOptions.new_token_clock`: server 2's
+/// runs 5 s behind server 1's, as a wall clock that stepped back across the
+/// restart would.
+fn newTokenClockAt1000s() u64 {
+    return 1000 * std.time.us_per_s;
+}
+fn newTokenClockAt995s() u64 {
+    return 995 * std.time.us_per_s;
+}
+
+test "new_token_clock and new_token_max_clock_skew_us: a token from 5 s in the future costs a Retry with no skew allowance, and none with 10 s" {
+    // Both servers stamp and check NEW_TOKENs on their own clock, not the
+    // listener's. Server 2's clock is 5 s behind, so server 1's token comes
+    // from its future.
+    const no_skew = try crashRestartResumedDial(.{
+        .before = .{ .key = &ticket_key, .new_token_clock = &newTokenClockAt1000s },
+        .after = .{ .key = &ticket_key, .new_token_clock = &newTokenClockAt995s },
+        .same_client_port = true,
+    });
+    try std.testing.expectEqual(@as(u64, 1), no_skew.retries_sent);
+    // The restore still runs early behind the Retry (quic-zig v0.27.0).
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, no_skew.status);
+
+    const skewed = try crashRestartResumedDial(.{
+        .before = .{ .key = &ticket_key, .new_token_clock = &newTokenClockAt1000s },
+        .after = .{
+            .key = &ticket_key,
+            .new_token_clock = &newTokenClockAt995s,
+            .new_token_max_clock_skew_us = 10 * std.time.us_per_s,
+        },
+        .same_client_port = true,
+    });
+    try std.testing.expectEqual(@as(u64, 0), skewed.retries_sent);
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, skewed.status);
+    try std.testing.expect(skewed.restored_before_handshake);
 }
 
 test "Listener.nowUs continues across a restart instead of starting again at zero" {
@@ -3442,6 +3526,116 @@ test "serverConfigFromOptions refuses an unsafe session-ticket key, as Listener.
     var too_long = keyedListenerOptions();
     too_long.session_ticket_lifetime_s = quic.max_session_ticket_lifetime_s + 1;
     try std.testing.expectError(error.InvalidConfig, quic.serverConfigFromOptions(allocator, too_long));
+}
+
+fn testNewTokenClock() u64 {
+    return 42;
+}
+
+test "serverConfigFromOptions carries the previous ticket key, its end time and the NEW_TOKEN clock into quic-zig's config" {
+    const allocator = std.testing.allocator;
+    const base: quic.ServerOptions = .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+    };
+    const plain = try quic.serverConfigFromOptions(allocator, base);
+    try std.testing.expectEqual(@as(?quic.SessionTicketKey, null), plain.previous_session_ticket_key);
+    try std.testing.expectEqual(@as(?u64, null), plain.previous_session_ticket_key_until_us);
+    try std.testing.expect(plain.new_token_clock == null);
+    try std.testing.expectEqual(@as(u64, 0), plain.new_token_max_clock_skew_us);
+
+    var key = ticket_key;
+    var previous = ticket_key_next;
+    var keyed = base;
+    keyed.session_ticket_key = &key;
+    keyed.previous_session_ticket_key = &previous;
+    keyed.previous_session_ticket_key_until_us = 1_234_567;
+    keyed.new_token_clock = &testNewTokenClock;
+    keyed.new_token_max_clock_skew_us = 5_000_000;
+    var config = try quic.serverConfigFromOptions(allocator, keyed);
+    var zeroed = false;
+    defer if (!zeroed) quic.zeroServerConfigSecrets(&config);
+    // Copies, by value: the caller may zero its own keys at once.
+    std.crypto.secureZero(u8, &key);
+    std.crypto.secureZero(u8, &previous);
+    const carried = config.previous_session_ticket_key orelse return error.TestExpectedPreviousTicketKey;
+    try std.testing.expectEqualSlices(u8, &ticket_key_next, &carried);
+    try std.testing.expectEqual(@as(?u64, 1_234_567), config.previous_session_ticket_key_until_us);
+    const clock = config.new_token_clock orelse return error.TestExpectedNewTokenClock;
+    try std.testing.expectEqual(@as(u64, 42), clock());
+    try std.testing.expectEqual(@as(u64, 5_000_000), config.new_token_max_clock_skew_us);
+
+    // `zeroServerConfigSecrets` clears both copies (`Listener.init` calls it
+    // once quic-zig's server is built).
+    quic.zeroServerConfigSecrets(&config);
+    zeroed = true;
+    const zero_key: quic.SessionTicketKey = @splat(0);
+    try std.testing.expectEqualSlices(u8, &zero_key, &(config.session_ticket_key orelse return error.TestExpectedSessionTicketKey));
+    try std.testing.expectEqualSlices(u8, &zero_key, &(config.previous_session_ticket_key orelse return error.TestExpectedPreviousTicketKey));
+}
+
+test "serverConfigFromOptions refuses a previous ticket key with no key, all zero or with the current key's name, as Listener.init does" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Accepted: a previous key with another name beside the key.
+    var accepted = keyedListenerOptions();
+    accepted.previous_session_ticket_key = &ticket_key_next;
+    var listener = try quic.Listener.init(allocator, io, accepted);
+    listener.deinit();
+
+    // No `session_ticket_key` to keep it beside.
+    var keyless = keyedListenerOptions();
+    keyless.session_ticket_key = null;
+    keyless.previous_session_ticket_key = &ticket_key_next;
+    // All zero: a buffer that was never filled in.
+    const zero_key: quic.SessionTicketKey = @splat(0);
+    var zero = keyedListenerOptions();
+    zero.previous_session_ticket_key = &zero_key;
+    // The current key's name (bytes 0-15) with other key bytes: a ticket
+    // names its key by those bytes alone.
+    var same_name = ticket_key_next;
+    @memcpy(same_name[0..16], ticket_key[0..16]);
+    var named = keyedListenerOptions();
+    named.previous_session_ticket_key = &same_name;
+    // The current key itself.
+    var same_key = keyedListenerOptions();
+    same_key.previous_session_ticket_key = &ticket_key;
+
+    inline for (.{ keyless, zero, named, same_key }) |options| {
+        try std.testing.expectError(error.InvalidConfig, quic.serverConfigFromOptions(allocator, options));
+        try std.testing.expectError(error.InvalidConfig, quic.Listener.init(allocator, io, options));
+    }
+}
+
+test "withProductionServerHardening sets the previous ticket key pair from the preset" {
+    // The preset names the key pair, so it overrides a base previous key,
+    // and a key pair always comes from one place.
+    var base = keyedListenerOptions();
+    base.previous_session_ticket_key = &ticket_key_next;
+    base.previous_session_ticket_key_until_us = 7;
+    const cleared = quic.withProductionServerHardening(base, .{
+        .retry_token_key = ticket_retry_key,
+        .stateless_reset_key = ticket_reset_key,
+        .session_ticket_key = &ticket_key,
+    });
+    try std.testing.expect(cleared.previous_session_ticket_key == null);
+    try std.testing.expectEqual(@as(?u64, null), cleared.previous_session_ticket_key_until_us);
+
+    const set = quic.withProductionServerHardening(.{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+    }, .{
+        .retry_token_key = ticket_retry_key,
+        .stateless_reset_key = ticket_reset_key,
+        .session_ticket_key = &ticket_key,
+        .previous_session_ticket_key = &ticket_key_next,
+        .previous_session_ticket_key_until_us = 99,
+    });
+    try std.testing.expectEqual(@as(?*const quic.SessionTicketKey, &ticket_key_next), set.previous_session_ticket_key);
+    try std.testing.expectEqual(@as(?u64, 99), set.previous_session_ticket_key_until_us);
 }
 
 test "the server config binds the transport mode and early_dispatch into the 0-RTT context" {
@@ -3552,8 +3746,9 @@ const IssuedTicket = struct {
 };
 
 /// The lifetime of the session ticket a server built from `lifetime_s`
-/// issues to one dial, as the client stored it.
-fn issuedTicketLifetime(lifetime_s: ?u32) !IssuedTicket {
+/// issues to one dial from a client built from `client_lifetime_s`, as the
+/// client stored it.
+fn issuedTicketLifetime(lifetime_s: ?u32, client_lifetime_s: ?u32) !IssuedTicket {
     const allocator = std.testing.allocator;
     const frame = try buildBootstrapFrame(allocator, 0x0A1A);
     defer allocator.free(frame);
@@ -3577,6 +3772,7 @@ fn issuedTicketLifetime(lifetime_s: ?u32) !IssuedTicket {
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
         .new_session_callback = ResumptionSink.capture,
         .new_session_user_data = &ticket,
+        .session_ticket_lifetime_s = client_lifetime_s,
     });
     defer client.deinit();
 
@@ -3607,24 +3803,13 @@ fn issuedTicketLifetime(lifetime_s: ?u32) !IssuedTicket {
 }
 
 /// The lifetime, in seconds, of the TLS session inside a quic-zig resumption
-/// envelope (what a client captures through `new_session_callback`). A TLS
-/// 1.3 client caps it at the lifetime the server advertised with the ticket,
-/// so it shows the server's `session_ticket_lifetime_s`. Read through the
-/// `boringssl` module that quic-zig exports (the library itself never
-/// imports BoringSSL; build/helpers.zig `addQuicLibTest`).
+/// envelope (what a client captures through `new_session_callback`), as the
+/// client keeps it: the smaller of the lifetime the server advertised with
+/// the ticket (`ServerOptions.session_ticket_lifetime_s`) and the client's
+/// own limit (`ClientOptions.session_ticket_lifetime_s`). quic-zig's
+/// supported reader since v0.29.0 (it was a `boringssl.raw` read before).
 fn ticketLifetimeSeconds(envelope: []const u8) !u32 {
-    const boringssl = @import("boringssl");
-    const quic_zig = @import("quic");
-    const decoded = try quic_zig.tls.resumption_state.decode(envelope);
-    var ctx = try boringssl.tls.Context.initClient(.{ .verify = .none });
-    defer ctx.deinit();
-    const session = boringssl.raw.zbssl_SSL_SESSION_from_bytes(
-        decoded.session_ticket.ptr,
-        decoded.session_ticket.len,
-        ctx.inner,
-    ) orelse return error.InvalidResumptionState;
-    defer boringssl.raw.zbssl_SSL_SESSION_free(session);
-    return boringssl.raw.zbssl_SSL_SESSION_get_timeout(session);
+    return @import("quic").Client.resumptionTicketLifetimeSeconds(envelope);
 }
 
 /// BoringSSL counts a session's lifetime in whole wall-clock seconds and
@@ -3640,9 +3825,41 @@ fn expectTicketLifetime(expected_s: u32, issued: IssuedTicket) !void {
 }
 
 test "session_ticket_lifetime_s sets the lifetime of the tickets a server issues" {
-    try expectTicketLifetime(600, try issuedTicketLifetime(600));
+    try expectTicketLifetime(600, try issuedTicketLifetime(600, null));
     // Unset: BoringSSL's 2 days.
-    try expectTicketLifetime(quic.max_session_ticket_lifetime_s, try issuedTicketLifetime(null));
+    try expectTicketLifetime(quic.max_session_ticket_lifetime_s, try issuedTicketLifetime(null, null));
+}
+
+test "ClientOptions.session_ticket_lifetime_s bounds how long a client keeps a ticket" {
+    // The client keeps the smaller of its own limit and the server's
+    // lifetime (2 days here).
+    try expectTicketLifetime(600, try issuedTicketLifetime(null, 600));
+    // The server's shorter lifetime still wins.
+    try expectTicketLifetime(300, try issuedTicketLifetime(300, 600));
+}
+
+test "Connection.initClient refuses a client ticket lifetime outside 1 s to 2 days" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const base: quic.ClientOptions = .{
+        .remote_addr = testListenAddr(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+    };
+    // Zero is no lifetime; more than 2 days is more than a capnp-zig server
+    // issues (quic-zig itself would take up to 7 days).
+    inline for (.{ 0, quic.max_session_ticket_lifetime_s + 1 }) |seconds| {
+        var options = base;
+        options.session_ticket_lifetime_s = seconds;
+        try std.testing.expectError(error.InvalidConfig, quic.Connection.initClient(allocator, io, options));
+    }
+    // The bounds themselves dial.
+    inline for (.{ 1, quic.max_session_ticket_lifetime_s }) |seconds| {
+        var options = base;
+        options.session_ticket_lifetime_s = seconds;
+        var client = try quic.Connection.initClient(allocator, io, options);
+        client.deinit();
+    }
 }
 
 // ---------------------------------------------------------------------------

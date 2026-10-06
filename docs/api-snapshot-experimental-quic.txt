@@ -2934,6 +2934,7 @@ capnpc-zig.rpc.transport.quic.ClientOptions.receive_timeout: field Io.Duration =
 capnpc-zig.rpc.transport.quic.ClientOptions.remote_addr: field Io.net.IpAddress
 capnpc-zig.rpc.transport.quic.ClientOptions.resumption_state: field ?[]const u8 = null
 capnpc-zig.rpc.transport.quic.ClientOptions.server_name: field []const u8
+capnpc-zig.rpc.transport.quic.ClientOptions.session_ticket_lifetime_s: field ?u32 = null
 capnpc-zig.rpc.transport.quic.ClientOptions.stream_read_buffer_size: field usize = 65536
 capnpc-zig.rpc.transport.quic.ClientOptions.transport_params: field tls.transport_params.Params = <default>
 capnpc-zig.rpc.transport.quic.ClientOptions.udp_rx_buffer_size: field usize = 65536
@@ -3364,9 +3365,13 @@ capnpc-zig.rpc.transport.quic.ServerOptions.max_outbound_queue_bytes: field usiz
 capnpc-zig.rpc.transport.quic.ServerOptions.max_outbound_queue_items: field usize = 1024
 capnpc-zig.rpc.transport.quic.ServerOptions.mode: field rpc.transport.quic.options.TransportMode = .baseline
 capnpc-zig.rpc.transport.quic.ServerOptions.native: field rpc.transport.quic.options.NativeOptions = <default>
+capnpc-zig.rpc.transport.quic.ServerOptions.new_token_clock: field ?*const fn () u64 = null
 capnpc-zig.rpc.transport.quic.ServerOptions.new_token_key: field ?[32]u8 = null
 capnpc-zig.rpc.transport.quic.ServerOptions.new_token_lifetime_us: field u64 = 86400000000
+capnpc-zig.rpc.transport.quic.ServerOptions.new_token_max_clock_skew_us: field u64 = 0
 capnpc-zig.rpc.transport.quic.ServerOptions.observer: field ?rpc.events.Observer = null
+capnpc-zig.rpc.transport.quic.ServerOptions.previous_session_ticket_key: field ?*const [48]u8 = null
+capnpc-zig.rpc.transport.quic.ServerOptions.previous_session_ticket_key_until_us: field ?u64 = null
 capnpc-zig.rpc.transport.quic.ServerOptions.qlog_callback: field ?*const fn (?*anyopaque, Connection.qlog.QlogEvent) void = null
 capnpc-zig.rpc.transport.quic.ServerOptions.qlog_user_data: field ?*anyopaque = null
 capnpc-zig.rpc.transport.quic.ServerOptions.receive_timeout: field Io.Duration = <default>
@@ -3397,6 +3402,8 @@ capnpc-zig.rpc.transport.quic.ServerProductionHardening.listener_datagram_rate_l
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.log_source_rate_limit: field Server.Config.RateLimit = <default>
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.max_connection_memory: field u64 = 33554432
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.new_token_key: field ?[32]u8 = null
+capnpc-zig.rpc.transport.quic.ServerProductionHardening.previous_session_ticket_key: field ?*const [48]u8 = null
+capnpc-zig.rpc.transport.quic.ServerProductionHardening.previous_session_ticket_key_until_us: field ?u64 = null
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.retry_token_key: field [32]u8
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.session_ticket_key: field ?*const [48]u8 = null
 capnpc-zig.rpc.transport.quic.ServerProductionHardening.source_byte_rate_limit: field Server.Config.RateLimit = <default>
@@ -3941,6 +3948,7 @@ capnpc-zig.rpc.transport.quic.warm_state.encode: fn (mem.Allocator, []const u8, 
 capnpc-zig.rpc.transport.quic.warm_state.version: const u16
 capnpc-zig.rpc.transport.quic.warm_state: struct
 capnpc-zig.rpc.transport.quic.withProductionServerHardening: fn (rpc.transport.quic.options.ServerOptions, rpc.transport.quic.options.ServerProductionHardening) rpc.transport.quic.options.ServerOptions
+capnpc-zig.rpc.transport.quic.zeroServerConfigSecrets: fn (*Server.Config) void
 capnpc-zig.rpc.transport.quic: struct
 capnpc-zig.rpc.transport.stream_state.StreamState.DrainCallback: type = *const fn (*anyopaque, ?anyerror) void
 capnpc-zig.rpc.transport.stream_state.StreamState.Reservation.active: field bool = true

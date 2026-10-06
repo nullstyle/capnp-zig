@@ -54,6 +54,7 @@ pub fn initClient(
         .resumption_state = options.resumption_state,
         .new_session_callback = options.new_session_callback,
         .new_session_user_data = options.new_session_user_data,
+        .session_ticket_lifetime_s = options.session_ticket_lifetime_s,
         .new_token = options.new_token,
         .new_token_callback = options.new_token_callback,
         .new_token_user_data = options.new_token_user_data,

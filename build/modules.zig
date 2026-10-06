@@ -27,8 +27,8 @@ pub const Graph = struct {
     core_module: *std.Build.Module,
     quic_zig_module: ?*std.Build.Module,
     /// What a QUIC test root imports from the same quic-zig dependency
-    /// (`helpers.addQuicLibTest`). Null without `-Dquic=true`. Library roots
-    /// import only `quic`.
+    /// (`helpers.addQuicLibTest`): only `quic`, as library roots do. Null
+    /// without `-Dquic=true`.
     quic_test_imports: ?helpers.QuicTestImports,
     wasm_host_module: *std.Build.Step.Compile,
 };

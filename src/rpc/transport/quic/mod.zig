@@ -188,6 +188,9 @@ pub const ProductionEarlyData = options.ProductionEarlyData;
 pub const defaultTransportParams = options.defaultTransportParams;
 pub const withProductionServerHardening = options.withProductionServerHardening;
 pub const serverConfigFromOptions = options.serverConfigFromOptions;
+/// Zero the session-ticket keys in a config from `serverConfigFromOptions`
+/// once `quic_zig.Server.init` has returned. Experimental.
+pub const zeroServerConfigSecrets = options.zeroServerConfigSecrets;
 
 pub const defaultClientBindAddress = adapter.defaultClientBindAddress;
 pub const ipAddressToPathAddress = adapter.ipAddressToPathAddress;

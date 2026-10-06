@@ -2,7 +2,8 @@
 
 > **Status: DELIVERED in quic-zig v0.27.0 (tag `9d2ab6e`, 2026-10-05);
 > capnp-zig moved onto it on the same pin, and then to v0.28.1, which keeps
-> it.** Written 2026-10-04 against
+> it. The three candidates at the end were DELIVERED in quic-zig v0.29.0
+> (tag `b9a15e6`, 2026-10-06), and capnp-zig adopted them on that pin.** Written 2026-10-04 against
 > quic-zig v0.25.0 and boringssl-zig 0.6.7 / BoringSSL `aef0e2df`. This is
 > a document for the quic-zig maintainers, not a filed issue. The asks
 > below are kept as written; "Delivered" and "Left as candidates" at the
@@ -311,3 +312,29 @@ that the bundled loop's clock starts at zero.
   the monotonic timer clock; and the check allows no clock skew
   (`new_token_max_clock_skew_us`). capnp-zig's `Listener.nowUs` anchor
   works around the first two for capnp-zig servers only.
+
+## Delivered in v0.29.0
+
+quic-zig v0.29.0 (tag `b9a15e6`) builds all three candidates, and
+capnp-zig's pin moved to it:
+
+- `Server.rotateSessionTicketKey` checks the thread in a Debug build. The
+  first `feed`, `tick` or rotation fixes the loop thread. capnp-zig's tests
+  rotate on the thread that steps the server, so none trips it.
+- `Server.Config.previous_session_ticket_key` (and `_until_us`).
+  capnp-zig passes them through as `ServerOptions` and preset fields, with
+  quic-zig's three refusals checked first.
+- `Server.Config.new_token_clock` and `new_token_max_clock_skew_us`, passed
+  through as `ServerOptions` fields.
+- Also: `Client.Config.session_ticket_lifetime_s` (a `ClientOptions` field
+  in capnp-zig) and `Client.resumptionTicketLifetimeSeconds`, which replaced
+  the last `boringssl.raw` read in capnp-zig's tests. No capnp-zig root
+  imports the `boringssl` module now.
+
+One defect, found on adoption: `quic.unixWallClockUs`, the clock that the
+v0.29.0 docs name for `new_token_clock`, does not compile with Zig 0.17.0.
+It calls `std.time.microTimestamp`, and the 0.17.0 `std.time` has only unit
+constants and `epoch`. Any reference fails with "root source file struct
+'time' has no member named 'microTimestamp'" at `src/root.zig:75`. quic-zig's
+own tests do not call it, so its gates do not see it. capnp-zig does not
+reference it, and its docs tell users not to.

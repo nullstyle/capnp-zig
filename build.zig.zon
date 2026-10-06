@@ -6,6 +6,12 @@
         // Pinned to a TAG, not a raw commit: tags are immutable release
         // points, so the pin is auditable and reproducible.
         //
+        // v0.29.0 (commit b9a15e6): no wire change. A connection costs about
+        // 91 KB, not 1.09 MB; late packets are no longer lost packets; and
+        // `Server.Config.previous_session_ticket_key`, `new_token_clock`,
+        // `Client.Config.session_ticket_lifetime_s` and
+        // `Client.resumptionTicketLifetimeSeconds` are new.
+        //
         // v0.28.1 (commit 21d05d1): v0.28.0 with a build fix. v0.28.0 did not
         // compile for a 32-bit target (a comptime size assert in
         // `src/conn/RecvEndRing.zig`), so `-Dquic=true` failed for
@@ -58,16 +64,17 @@
         // one build must pin the same tag and pass the same option map, or
         // the build makes two quic modules (and two BoringSSLs). The map is
         // `.target`, `.release`, `.@"sanitize-c" = "trap"` (build/modules.zig),
-        // the one nest/qmsg/qmesh use. capnp-zig v0.20.0 pins v0.28.1; on
-        // 2026-10-05 the main branches of qmsg and qmesh-zig, and nest, pin
-        // v0.27.0. http3-zig cannot share this module at any pin: it builds
-        // its own quic module from quic's src/root.zig and its own
-        // BoringSSL. boringssl-zig is unchanged since v0.25.0: ff30fe99
+        // the one nest/qmsg/qmesh use. capnp-zig v0.20.0 pins v0.28.1, and
+        // this tree pins v0.29.0; on 2026-10-05 the main branches of qmsg
+        // and qmesh-zig, and nest, pin v0.27.0. http3-zig cannot share this
+        // module at any pin: it builds its own quic module from quic's
+        // src/root.zig and its own BoringSSL (its main is on v0.29.0).
+        // boringssl-zig is unchanged since v0.25.0 (v0.29.0 too): ff30fe99
         // (0.6.7, BoringSSL aef0e2df), which links Windows ws2_32 with
         // pkg-config lookup disabled.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.28.1.tar.gz",
-            .hash = "quic-0.28.1-DnSYvacDOgCPlHPHQWufNaG2XMoKtnwwHJPVcIUuAmqB",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.29.0.tar.gz",
+            .hash = "quic-0.29.0-DnSYvahYOwAdaHX-Ct3_iZGZycF387GmpAbI9G9wjFGg",
             .lazy = true,
         },
     },

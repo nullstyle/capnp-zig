@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **QUIC (Experimental): `ServerOptions.previous_session_ticket_key` and
+  `previous_session_ticket_key_until_us`.** A process that starts less than
+  one ticket lifetime after a key change starts with the new key as
+  `session_ticket_key` and the old key as `previous_session_ticket_key`. It
+  seals new tickets under the new key and still opens the tickets of the
+  old one, 0-RTT included. Before, the only way was to start with the old
+  key and rotate before the first datagram. `_until_us` says when the old
+  key stops opening tickets, on the listener's clock (microseconds since the
+  Unix epoch); null gives it one ticket lifetime from the first datagram.
+  `ServerProductionHardening` has both fields and sets them with
+  `session_ticket_key`. The previous key is handled as the key is: copied by
+  value, zeroed by `Listener.init` once quic-zig's server is built, never
+  logged. `error.InvalidConfig` for a previous key with no
+  `session_ticket_key`, an all-zero one, or one with the current key's name
+  (first 16 bytes), the same refusals as quic-zig's `Server.init`.
+- **QUIC (Experimental): `ServerOptions.new_token_clock` and
+  `new_token_max_clock_skew_us`.** NEW_TOKEN times on a clock of their own
+  (`fn () u64`, microseconds), and an allowed skew for a token that comes
+  from up to that far in the future or is up to that far past its expiry.
+  The default clock stays the listener's (`Listener.nowUs`), which already
+  goes on across a restart; the skew covers a wall clock that stepped back
+  between two starts. quic-zig's `unixWallClockUs` does not compile with
+  Zig 0.17.0 (it calls `std.time.microTimestamp`): do not use it as the
+  clock.
+- **QUIC (Experimental): `ClientOptions.session_ticket_lifetime_s`.** The
+  longest the client keeps a session ticket: the smaller of this and the
+  server's lifetime, 1 s to 2 days (`max_session_ticket_lifetime_s`), so it
+  only shortens. `error.InvalidConfig` outside that range.
+- **QUIC (Experimental): `zeroServerConfigSecrets(&config)`.** Zeroes both
+  ticket keys in a config from `serverConfigFromOptions`, for an embedder
+  that builds its own quic-zig server from it. `Listener.init` calls it.
+
+### Changed
+
+- **QUIC: quic-zig v0.28.1 -> v0.29.0 (tag `b9a15e6`,
+  `quic-0.29.0-DnSYvahYOwAdaHX-Ct3_iZGZycF387GmpAbI9G9wjFGg`).** No wire
+  change and no security fix. boringssl-zig is unchanged (`ff30fe99`,
+  0.6.7), and so is the dependency option map. What an application sees:
+  - A connection costs about 91 KB on the heap, not 1.09 MB (quic-zig's
+    measure): the sent-packet tracker grows on demand, and the CRYPTO
+    buffers live on the heap and go with their keys. A certificate chain
+    above 16 KiB is no longer refused (the cap is 256 KiB).
+  - A late packet is no longer a lost packet. On a path that reorders, the
+    loss thresholds widen when a declared loss turns out spurious, and a
+    window reduction for an episode in which every "lost" packet arrived is
+    taken back (NewReno, CUBIC, BBR). quic-zig measured, 20 ms round trip,
+    100 Mbit, 10% of the packets 1 ms late: BBR 1.4 s -> 0.77 s for 8 MiB,
+    CUBIC 9.9 s -> 0.79 s. `ConnectionStats.packets_spuriously_lost` counts
+    them. The recovery period now starts at the detection of a loss (RFC
+    9002 B.6), so a CUBIC or NewReno sender keeps more of its window under
+    bursty loss; BBR-only paths are unchanged.
+  - A client completes its handshake through loss: a handshake probe is two
+    datagrams while there is no RTT sample, a Handshake packet that arrives
+    before its keys is kept and read when the keys come, and a lost
+    CONNECTION_CLOSE is sent again at the peer's next packet ("Current
+    Limits" in `docs/quic-transport.md`).
+  - `Server.feed` says `.dropped`, and makes no connection, for a datagram
+    of which no packet opens. Through v0.28.1 a 1200-byte long-header
+    datagram of junk made a half-open connection that lived until the
+    handshake timeout, and counted as `.accepted`. For such datagrams,
+    `Server.feedOutcomeCounts` now counts `.dropped`, not `.accepted`.
+  - quic-zig's `Server.rotateSessionTicketKey`, `feed` and `tick` check the
+    thread in a Debug build: the first of them fixes the loop thread. A
+    capnp-zig rotation before `run` must run on the thread that then calls
+    `run` (`Server.rotateSessionTicketKey` docs).
+  - **Migration:**
+    - **One quic module per process.** A build that links capnp-zig with
+      `-Dquic=true` next to another package that depends on quic-zig must
+      pin a release of that package that pins quic-zig v0.29.0, with the
+      same option map. quic-zig's v0.29.0 note records http3-zig's `main`
+      on v0.29.0 (`7012a6c`); http3-zig still builds its own quic module,
+      so it cannot share capnp-zig's at any pin. It records no qmsg,
+      qmesh-zig or nest release on v0.29.0.
+    - **Direct quic-zig users:** read quic-zig's 0.29.0 entry. The
+      congestion controllers' loss hooks take the detection time (internal
+      surface).
+- **The QUIC test roots no longer import quic-zig's `boringssl` module.**
+  The transport suite read a ticket's lifetime through `boringssl.raw`; it
+  now calls quic-zig's `Client.resumptionTicketLifetimeSeconds`. No
+  capnp-zig root imports BoringSSL directly.
+
 ### Fixed
 
 - **A persistent export's `deinit_ctx` gets the app ctx, exactly once
@@ -27,6 +110,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `removeUnreferencedExport` and `destroyUnreferencedExport` now drop the
   state, so no state stays on an export id that can be used again.
   `PersistenceStateRecord` has one new field, `original_deinit`.
+
+### Documentation
+
+- `docs/quic-transport.md`: "Rotation" persists a key change with
+  `previous_session_ticket_key` (the old way, start with the old key and
+  rotate at once, is no longer needed) and states quic-zig's Debug thread
+  check; "Retry and NEW_TOKEN" describes `new_token_clock` and
+  `new_token_max_clock_skew_us`; the client ticket lifetime, the refusals,
+  `zeroServerConfigSecrets`, the pin paragraph and the CONNECTION_CLOSE
+  entry of "Current Limits" are updated.
+- `docs/upstream/handoff-quic-zig-ticket-keys.md` records the three
+  candidates as delivered in quic-zig v0.29.0, and the `unixWallClockUs`
+  compile defect found on adoption.
 
 ## [0.20.0] - 2026-10-05
 

@@ -60,10 +60,11 @@ pub const Listener = struct {
         options: quic_options.ServerOptions,
     ) !Listener {
         var server_config = try quic_options.serverConfigFromOptions(allocator, options);
-        // The config holds the session-ticket key by value. quic-zig keeps
-        // its own copy (and clears it at deinit), so ours goes as soon as
-        // `quic_zig.Server.init` has read it, on every path.
-        defer if (server_config.session_ticket_key) |*key| std.crypto.secureZero(u8, key);
+        // The config holds the session-ticket keys (current and previous)
+        // by value. quic-zig keeps its own copies (and clears them at
+        // deinit), so ours go as soon as `quic_zig.Server.init` has read
+        // them, on every path.
+        defer quic_options.zeroServerConfigSecrets(&server_config);
 
         const udp_rx_buf = try allocator.alloc(u8, options.udp_rx_buffer_size);
         errdefer allocator.free(udp_rx_buf);
@@ -301,9 +302,14 @@ pub const Listener = struct {
     /// The key is read once; nothing keeps the pointer.
     ///
     /// Call it on the thread that feeds this listener (`receiveOne`,
-    /// `feedDatagram`, `tick`), or before the first datagram: quic-zig takes
-    /// no lock, and a call from another thread races the handshakes that
-    /// read the keys. `Server.rotateSessionTicketKey` checks that thread.
+    /// `feedDatagram`, `tick`): quic-zig takes no lock, and a call from
+    /// another thread races the handshakes that read the keys. In a Debug
+    /// build quic-zig checks the thread: the first feed, tick or rotation
+    /// fixes it, and a later call from another thread asserts. So a rotation
+    /// before the first datagram must run on the thread that will feed the
+    /// listener. To start with an old key still open, set
+    /// `ServerOptions.previous_session_ticket_key` instead.
+    /// `Server.rotateSessionTicketKey` checks its own loop thread too.
     ///
     /// `error.InvalidConfig`, and nothing changes: the listener was built
     /// with no `ServerOptions.session_ticket_key`, `new_key` is all zero, or
@@ -316,7 +322,10 @@ pub const Listener = struct {
     /// The clock for this listener's quic-zig server, in microseconds since
     /// the Unix epoch. `receiveOne` and the QUIC `Server` loop pass it to
     /// every `feed`, `tick` and `pollDatagram`, and quic-zig stamps a
-    /// NEW_TOKEN's issue and expiry times with it.
+    /// NEW_TOKEN's issue and expiry times with it (unless
+    /// `ServerOptions.new_token_clock` gives a clock of its own).
+    /// `ServerOptions.previous_session_ticket_key_until_us` is on this
+    /// clock too.
     ///
     /// It starts at the wall clock read once at `init` and advances with the
     /// monotonic `.awake` clock. So it never goes backwards within a
@@ -326,7 +335,8 @@ pub const Listener = struct {
     /// issued, within their lifetime, and enforces that lifetime in wall
     /// time across restarts.
     ///
-    /// quic-zig checks a NEW_TOKEN's times with no clock-skew allowance. A
+    /// By default quic-zig checks a NEW_TOKEN's times with no clock-skew
+    /// allowance (`ServerOptions.new_token_max_clock_skew_us` adds one). A
     /// successor reads its predecessor's token as not yet valid for as long
     /// as the predecessor's clock ran ahead of the wall clock when it issued
     /// the token: after a wall-clock step backwards between the two starts,

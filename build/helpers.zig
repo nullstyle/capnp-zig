@@ -150,24 +150,22 @@ pub fn addPersistenceLibTest(
     return &b.addRunArtifact(t).step;
 }
 
-/// The modules a QUIC test root imports, both from ONE quic-zig dependency.
+/// The modules a QUIC test root imports from the quic-zig dependency: only
+/// `quic`. (Through quic-zig v0.28.1 the transport suite also imported the
+/// `boringssl` module to read a ticket's lifetime; v0.29.0's
+/// `Client.resumptionTicketLifetimeSeconds` replaced that read.)
 pub const QuicTestImports = struct {
     quic: *std.Build.Module,
-    boringssl: *std.Build.Module,
 
-    /// Both modules of `dep`, or null without `-Dquic=true`.
+    /// The `quic` module of `dep`, or null without `-Dquic=true`.
     pub fn of(dep: ?*std.Build.Dependency) ?QuicTestImports {
         const d = dep orelse return null;
-        return .{ .quic = d.module("quic"), .boringssl = d.module("boringssl") };
+        return .{ .quic = d.module("quic") };
     }
 };
 
-/// Create a QUIC-only test step that imports capnpc-zig, quic_zig, and the
-/// `boringssl` module quic-zig exports (the exact instance quic is compiled
-/// against, so a test binary never links a second BoringSSL). The library
-/// itself does not import BoringSSL; the transport suite reads a captured
-/// ticket's lifetime through it, and the import costs the other roots
-/// nothing.
+/// Create a QUIC-only test step that imports capnpc-zig and quic_zig. No
+/// root imports BoringSSL directly: quic-zig links the one instance.
 pub fn addQuicLibTest(
     b: *std.Build,
     path: []const u8,
@@ -184,7 +182,6 @@ pub fn addQuicLibTest(
             .imports = &.{
                 .{ .name = "capnpc-zig", .module = lib_module },
                 .{ .name = "quic", .module = quic.quic },
-                .{ .name = "boringssl", .module = quic.boringssl },
             },
         }),
     });

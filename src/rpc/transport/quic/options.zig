@@ -163,13 +163,14 @@ pub const ServerAntiReplayTracker = quic_zig.tls.AntiReplayTracker;
 /// costs.
 pub const SessionTicketKey = quic_zig.SessionTicketKey;
 
-/// Upper bound of `ServerOptions.session_ticket_lifetime_s`: 2 days,
-/// BoringSSL's default TLS 1.3 ticket lifetime
-/// (`SSL_DEFAULT_SESSION_PSK_DHE_TIMEOUT`). quic-zig accepts up to 7 days,
-/// but a BoringSSL client (every quic-zig client, so every capnp-zig client)
-/// keeps a ticket for 2 days at most: a longer server lifetime buys those
-/// clients nothing, and it keeps a ticket that a stolen key opens valid for
-/// longer. The option only shortens the default.
+/// Upper bound of `ServerOptions.session_ticket_lifetime_s` and
+/// `ClientOptions.session_ticket_lifetime_s`: 2 days, BoringSSL's default
+/// TLS 1.3 ticket lifetime (`SSL_DEFAULT_SESSION_PSK_DHE_TIMEOUT`). quic-zig
+/// accepts up to 7 days on both sides, but a BoringSSL client (every quic-zig
+/// client, so every capnp-zig client) keeps a ticket for 2 days unless its
+/// own limit is raised: a longer server lifetime buys those clients nothing,
+/// and it keeps a ticket that a stolen key opens valid for longer. Both
+/// options only shorten the default.
 pub const max_session_ticket_lifetime_s: u32 = 2 * 24 * 60 * 60;
 
 /// Ticket-capture callback for warm restore. Fires once quic-zig has a
@@ -324,6 +325,15 @@ pub const ClientOptions = struct {
     /// bytes — copy them in the callback.
     new_session_callback: ?NewSessionCallback = null,
     new_session_user_data: ?*anyopaque = null,
+    /// The longest this client keeps a session ticket, in seconds
+    /// (Experimental; quic-zig's `Client.Config.session_ticket_lifetime_s`).
+    /// The client keeps each ticket for the smaller of this value and the
+    /// lifetime the server gave it, and does not offer an older ticket: the
+    /// dial then takes a full handshake. Null keeps BoringSSL's 2 days. Valid
+    /// range 1..`max_session_ticket_lifetime_s` (2 days, the most a
+    /// capnp-zig server issues), so the option only shortens; anything else
+    /// is `error.InvalidConfig`.
+    session_ticket_lifetime_s: ?u32 = null,
     /// Address-validation NEW_TOKEN from a prior connection to this
     /// server, presented on the first Initial so the resume skips Retry.
     new_token: ?[]const u8 = null,
@@ -396,6 +406,24 @@ pub const ServerOptions = struct {
     retry_state_table_capacity: u32 = default_quic_retry_state_table_capacity,
     new_token_key: ?ServerNewTokenKey = null,
     new_token_lifetime_us: u64 = default_quic_new_token_lifetime_us,
+    /// The clock that NEW_TOKEN times are stamped and checked with, in
+    /// microseconds (Experimental; quic-zig's
+    /// `Server.Config.new_token_clock`). Null (the default) uses the
+    /// listener's clock (`Listener.nowUs`), which starts at the wall clock
+    /// and goes on across a restart, so a persisted `new_token_key` already
+    /// lets returning clients skip the Retry after a restart. Set it only
+    /// for a clock of your own that every process agrees on. Do not use
+    /// quic-zig's `unixWallClockUs` at the v0.29.0 pin: it does not compile
+    /// with Zig 0.17.0.
+    new_token_clock: ?*const fn () u64 = null,
+    /// How far a NEW_TOKEN's times may be off the clock when the server
+    /// checks it, in microseconds (Experimental; quic-zig's
+    /// `Server.Config.new_token_max_clock_skew_us`): a token from the future
+    /// by at most this much is taken, and one past its expiry by at most this
+    /// much too. Default 0. A few seconds absorb a wall clock that stepped
+    /// back between the process that issued the token and the one that
+    /// checks it (see `Listener.nowUs`).
+    new_token_max_clock_skew_us: u64 = 0,
     early_data: EarlyData = .disabled,
     /// What may EXECUTE off frames that arrived in 0-RTT early data before
     /// the handshake completes (meaningful only with
@@ -442,6 +470,33 @@ pub const ServerOptions = struct {
     /// shortens the window in which a stolen `session_ticket_key` lets a
     /// thief impersonate the server.
     session_ticket_lifetime_s: ?u32 = null,
+    /// The ticket key before `session_ticket_key` (Experimental; quic-zig's
+    /// `Server.Config.previous_session_ticket_key`). Set it when a process
+    /// starts less than one ticket lifetime after a key change: the server
+    /// still OPENS the tickets that this key sealed (0-RTT too), and seals
+    /// new tickets under `session_ticket_key`. Null (the default): the
+    /// server has one key. A running server changes its key with
+    /// `Server.rotateSessionTicketKey` instead.
+    ///
+    /// The same secret as `session_ticket_key`, with the same handling:
+    /// `serverConfigFromOptions` copies it by value, `Listener.init` zeroes
+    /// that copy once quic-zig's server is built, and quic-zig clears its
+    /// own copy when the key's time is over and at `deinit`. Nothing keeps
+    /// your pointer. See "Rotation" in docs/quic-transport.md.
+    ///
+    /// Refused with `error.InvalidConfig`: a previous key with no
+    /// `session_ticket_key`, an all-zero key, and a key with the same name
+    /// (first 16 bytes) as `session_ticket_key` (a ticket names its key by
+    /// those bytes alone).
+    previous_session_ticket_key: ?*const SessionTicketKey = null,
+    /// When `previous_session_ticket_key` stops opening tickets, in
+    /// microseconds on the listener's clock (`Listener.nowUs`: microseconds
+    /// since the Unix epoch, and it goes on across a restart). Give the time
+    /// of the key change plus one ticket lifetime, and the old key ends when
+    /// it would have ended in the process before. Null (the default): one
+    /// ticket lifetime (`session_ticket_lifetime_s`, or 2 days) after the
+    /// first datagram or tick. Ignored without a previous key.
+    previous_session_ticket_key_until_us: ?u64 = null,
     /// Sweep out sessions whose handshake has not completed within this
     /// window (certified cause `DisconnectCause.handshake_timeout`).
     /// Half-open connections are otherwise IMMORTAL — no QUIC timer
@@ -539,6 +594,12 @@ pub const ServerProductionHardening = struct {
     /// restarted client pays a Retry (one round trip) before its 0-RTT
     /// restore runs.
     session_ticket_key: ?*const SessionTicketKey = null,
+    /// The ticket key before `session_ticket_key`, and when it stops opening
+    /// tickets; see `ServerOptions.previous_session_ticket_key`. Null by
+    /// default. The preset sets both with `session_ticket_key`, so the key
+    /// pair always comes from one place.
+    previous_session_ticket_key: ?*const SessionTicketKey = null,
+    previous_session_ticket_key_until_us: ?u64 = null,
     initial_source_rate_limit: RateLimit = .{ .limit = default_quic_initial_source_rate_cap },
     vn_source_rate_limit: RateLimit = .default,
     listener_datagram_rate_limit: RateLimit = .{ .limit = 100_000 },
@@ -550,8 +611,9 @@ pub const ServerProductionHardening = struct {
 
 /// Apply the production preset to `options`. Every field the preset names
 /// OVERRIDES the base value, including `stateless_reset_key`,
-/// `session_ticket_key`, the 0-RTT pair (`early_data` + `early_dispatch`,
-/// from `ServerProductionHardening.early_data`), and
+/// `session_ticket_key` and the previous ticket key, the 0-RTT pair
+/// (`early_data` + `early_dispatch`, from
+/// `ServerProductionHardening.early_data`), and
 /// `reveal_close_reason_on_wire` (always false).
 pub fn withProductionServerHardening(
     options: ServerOptions,
@@ -562,6 +624,8 @@ pub fn withProductionServerHardening(
     out.stateless_reset_key = hardening.stateless_reset_key;
     out.new_token_key = hardening.new_token_key;
     out.session_ticket_key = hardening.session_ticket_key;
+    out.previous_session_ticket_key = hardening.previous_session_ticket_key;
+    out.previous_session_ticket_key_until_us = hardening.previous_session_ticket_key_until_us;
     out.initial_source_rate_limit = hardening.initial_source_rate_limit;
     out.vn_source_rate_limit = hardening.vn_source_rate_limit;
     out.listener_datagram_rate_limit = hardening.listener_datagram_rate_limit;
@@ -586,10 +650,12 @@ pub fn withProductionServerHardening(
 /// Build the quic-zig server config for `options`, the one `Listener.init`
 /// hands to `quic_zig.Server.init`.
 ///
-/// With `session_ticket_key` set, the returned config holds a COPY of the
-/// key, by value (`Server.Config.session_ticket_key`): a secret. Zero it
-/// (`std.crypto.secureZero` on the config's key) once `quic_zig.Server.init`
-/// has returned, as `Listener.init` does, and keep the config out of logs.
+/// With `session_ticket_key` (or `previous_session_ticket_key`) set, the
+/// returned config holds a COPY of each key, by value
+/// (`Server.Config.session_ticket_key`, `previous_session_ticket_key`):
+/// secrets. Zero them (`zeroServerConfigSecrets`) once
+/// `quic_zig.Server.init` has returned, as `Listener.init` does, and keep
+/// the config out of logs.
 pub fn serverConfigFromOptions(
     allocator: std.mem.Allocator,
     options: ServerOptions,
@@ -617,10 +683,14 @@ pub fn serverConfigFromOptions(
         .retry_state_table_capacity = options.retry_state_table_capacity,
         .new_token_key = options.new_token_key,
         .new_token_lifetime_us = options.new_token_lifetime_us,
+        .new_token_clock = options.new_token_clock,
+        .new_token_max_clock_skew_us = options.new_token_max_clock_skew_us,
         .early_data = options.early_data,
         .early_data_application_context = earlyDataApplicationContext(options.mode, options.early_dispatch),
         .session_ticket_key = if (options.session_ticket_key) |key| key.* else null,
         .session_ticket_lifetime_s = options.session_ticket_lifetime_s,
+        .previous_session_ticket_key = if (options.previous_session_ticket_key) |key| key.* else null,
+        .previous_session_ticket_key_until_us = options.previous_session_ticket_key_until_us,
         .congestion_control = options.congestion_control,
         .reveal_close_reason_on_wire = options.reveal_close_reason_on_wire,
         .max_connection_memory = options.max_connection_memory,
@@ -693,7 +763,26 @@ fn validateServerOptions(options: ServerOptions) !void {
     if (options.session_ticket_lifetime_s) |lifetime_s| {
         if (lifetime_s == 0 or lifetime_s > max_session_ticket_lifetime_s) return error.InvalidConfig;
     }
+    // The three refusals of quic-zig's `Server.init` for a previous key.
+    if (options.previous_session_ticket_key) |previous| {
+        // Nothing to keep the old key beside.
+        const current = options.session_ticket_key orelse return error.InvalidConfig;
+        if (std.mem.allEqual(u8, previous, 0)) return error.InvalidConfig;
+        // A ticket names its key by the first 16 bytes alone, so two keys
+        // with one name cannot both open tickets.
+        const name_len = quic_zig.tls.session_ticket.name_len;
+        if (std.mem.eql(u8, previous[0..name_len], current[0..name_len])) return error.InvalidConfig;
+    }
     try validateNativeOptions(options.mode, options.native, options.max_message_bytes);
+}
+
+/// Zero the session-ticket keys that `serverConfigFromOptions` copied into
+/// `config` (`session_ticket_key`, `previous_session_ticket_key`). Call it
+/// once `quic_zig.Server.init` has returned, on every path: quic-zig keeps
+/// copies of its own. `Listener.init` does this for you. Experimental.
+pub fn zeroServerConfigSecrets(config: *quic_zig.Server.Config) void {
+    if (config.session_ticket_key) |*key| std.crypto.secureZero(u8, key);
+    if (config.previous_session_ticket_key) |*key| std.crypto.secureZero(u8, key);
 }
 
 /// The application half of the RFC 9001 §4.6.1 0-RTT context that this
@@ -733,6 +822,9 @@ pub fn validateClientOptions(options: ClientOptions) !void {
     }
     if (zeroSocketBuffer(options.udp_socket_recv_buffer_bytes) or
         zeroSocketBuffer(options.udp_socket_send_buffer_bytes)) return error.InvalidConfig;
+    if (options.session_ticket_lifetime_s) |lifetime_s| {
+        if (lifetime_s == 0 or lifetime_s > max_session_ticket_lifetime_s) return error.InvalidConfig;
+    }
     try validateNativeOptions(options.mode, options.native, options.max_message_bytes);
 }
 
