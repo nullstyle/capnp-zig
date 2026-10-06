@@ -758,10 +758,11 @@ by step.
       (qmsg, nest, qmesh-zig, http3-zig, ...) must pin a release of that
       package that pins quic-zig v0.28.1, with the same option map.
       Otherwise it builds two quic modules, each with its own BoringSSL.
-      On 2026-10-05, no tag and no `main` branch of http3-zig, qmsg or
-      qmesh-zig pins v0.28.1: their newest tags (`v0.5.1`, `v0.7.0`,
-      `0.2.1`) pin quic v0.26.0, v0.21.0 and v0.21.0, and their `main`
-      branches pin v0.27.0. nest (no published tag) also pins v0.27.0.
+      On 2026-10-05, no tag of http3-zig, qmsg or qmesh-zig pins
+      v0.28.1: their newest tags (`v0.5.1`, `v0.7.0`, `0.2.1`) pin quic
+      v0.26.0, v0.21.0 and v0.21.0. The `main` branch of http3-zig
+      (`3c2f4c8`) pins v0.28.1. The `main` branches of qmsg and qmesh-zig
+      pin v0.27.0. nest (no published tag) also pins v0.27.0.
       `docs/upgrading-to-0.20.0.md` has the table.
     - **An embedded host that ticks before it services** (Experimental
       QUIC transport) now gets the same results as in the safe order: a
@@ -1006,7 +1007,7 @@ by step.
 
 - **`docs/upgrading-to-0.20.0.md`, the upgrade guide for this release.**
   It lists the coordinated set (capnp-zig v0.20.0, quic-zig v0.28.1, Zig
-  0.17.0) with the quic pins of http3-zig, qmsg and qmesh-zig (none on
+  0.17.0) with the quic pins of http3-zig, qmsg and qmesh-zig (no tag on
   v0.28.1 yet), the one-quic-module rule with the option map, each Breaking
   (Experimental) entry with its migration, who must take the AF_UNIX
   security fix, and what is new. `docs/supported-surface.md` gains rows for

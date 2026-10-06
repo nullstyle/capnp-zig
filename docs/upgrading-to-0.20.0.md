@@ -98,22 +98,23 @@ release that pins quic v0.28.1: capnp-zig, qmsg, nest, qmesh-zig,
 http3-zig, and your own build. Before you pin a release of such a package,
 read its `build.zig.zon`. Its quic pin must be v0.28.1.
 
-On 2026-10-05, no tag and no `main` branch of http3-zig, qmsg or qmesh-zig
-pins quic v0.28.1. Their `main` branches pin v0.27.0 (http3-zig moved to
-v0.28.0 and then back to v0.27.0 because of the 32-bit defect above), and
-their newest tags pin older versions:
+On 2026-10-05, no tag of http3-zig, qmsg or qmesh-zig pins quic v0.28.1.
+The `main` branch of http3-zig (`3c2f4c8`) pins v0.28.1. The `main`
+branches of qmsg and qmesh-zig pin v0.27.0. The newest tags pin older
+versions:
 
 | Package | Newest tag | quic pin of that tag | quic pin of `main` |
 |---|---|---|---|
-| http3-zig | `v0.5.1` | `v0.26.0` | `v0.27.0` |
+| http3-zig | `v0.5.1` | `v0.26.0` | `v0.28.1` (`3c2f4c8`) |
 | qmsg | `v0.7.0` | `v0.21.0` | `v0.27.0` |
 | qmesh-zig | `0.2.1` | `v0.21.0` | `v0.27.0` |
 
-nest has no published tag. Its newest commit also pins quic v0.27.0.
+nest has no published tag. Its newest commit pins quic v0.27.0.
 
-Do not pin one of these tags or branches next to capnp-zig v0.20.0 with
-`-Dquic=true`. The build then makes two quic modules. Pin a release of the
-package that pins quic v0.28.1, or wait for one.
+Do not pin one of these tags, or the `main` branch of qmsg or qmesh-zig,
+next to capnp-zig v0.20.0 with `-Dquic=true`. The build then makes two
+quic modules. Pin a release of the package that pins quic v0.28.1, or wait
+for one.
 
 The option map does not change. capnp-zig passes this map to quic
 (`build/modules.zig`):
