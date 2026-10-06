@@ -425,12 +425,50 @@ import themselves as `capnpc-zig`. Two common ways to get here:
 - Instantiating the dependency twice with different `quic` values, for example
   your `b.dependency("capnpc_zig", .{})` next to a library that asks for
   `.quic = true`. The notes then name `src/lib.zig` and `src/lib_quic.zig`.
+- Instantiating it twice with different `fd-passing` values (one package
+  passes `.@"fd-passing" = false`, another does not). Each instance makes its
+  own `capnp_build_options` module, so the two module sets do not match.
 
 **Fix:** pick one module for the whole binary: `capnpc-zig` if anything uses
 RPC, `capnpc-zig-core` otherwise. Make every `b.dependency("capnpc_zig", ...)`
 in the graph pass the same options (Zig reuses one instance per option set),
 and pass the module down to library modules. A library that wraps capnp-zig
-should forward `quic` from its own build options instead of hard-coding it.
+should forward `quic` and `fd-passing` from its own build options instead of
+hard-coding them.
+
+### `no module named 'capnp_build_options'`
+
+```
+src/rpc/transport/fd_passing.zig:18:31: error: no module named 'capnp_build_options' available within module 'capnpc-zig'
+```
+
+capnp-zig reads `-Dfd-passing` from a module named `capnp_build_options`.
+`zig build` and `b.dependency` create it. A compiler command that passes
+capnp-zig's modules by hand (`zig build-lib` or `zig test` with
+`-Mcapnpc-zig=.../src/lib.zig`) must create it too: add
+`--dep capnp_build_options` to the capnp-zig module, and pass
+`-Mcapnp_build_options=<file>`, where the file holds
+`pub const fd_passing: bool = true;` (or `false`).
+`tests/fixtures/capnp_build_options.zig` is such a file.
+
+### `no field named 'fd' in struct 'Io.Threaded.NullFile...'` for iOS
+
+```
+lib/std/Io/Threaded.zig:15486:25: error: no field named 'fd' in struct 'Io.Threaded.NullFile__struct_37'
+```
+
+At Zig 0.17.0, any reference to `std.Io.Threaded.io()` fails to compile for
+iOS, tvOS, watchOS and visionOS
+([handoff](upstream/handoff-zig-fork-ios-nullfile.md)). capnp-zig names none
+on those targets (fd passing is compiled out there), but std's default panic
+handler, default log function and `std.debug` do, through
+`std.Options.debug_io`. **Fix:** in your library's root module, declare a
+panic handler that does not print (`std.debug.FullPanic` over a function
+that calls `@trap()`), a no-op `std_options.logFn`, and
+`pub const std_options_debug_io: std.Io = std.Io.failing;`
+([build-integration.md](build-integration.md#ios-the-core-as-a-static-library-experimental)).
+If the reference trace names capnp-zig's `fd_closer.zig`, your capnp-zig is
+older than the release that compiles fd passing out on iOS.
 
 ### `capnpc-zig version skew` in a generated file
 

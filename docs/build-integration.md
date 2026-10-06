@@ -247,6 +247,98 @@ install it with `b.installArtifact(capnpc_host.artifact("capnpc-zig"))`, then
 pass the installed path, for example
 `capnp compile -ozig-out/bin/capnpc-zig:gen schema/addressbook.capnp`.
 
+## Compiling fd passing out: `-Dfd-passing` (Experimental)
+
+Fd passing attaches file descriptors to capabilities over AF_UNIX sockets.
+It exists on Linux and macOS only, and it brings three process-wide parts
+with it:
+
+- the fd closer threads, which start on first use;
+- the process fd budget, which reads `RLIMIT_NOFILE`;
+- the AF_UNIX transport, `rpc.transport.unix`.
+
+`-Dfd-passing=false` compiles all three out, on every target. The default
+is `true`. Use `false` when your program owns its sockets and drives `Peer`
+through its own transport binding, for example a Swift or C host that
+embeds `capnpc-zig-core`. Such a build starts no fd closer thread. A macOS
+static library of the core then imports no `___ulock_*`, `_pthread_create`
+or `_getrlimit`, and defines no fd closer function. On a macOS host,
+`zig build check-fd-passing-off-symbols` checks this.
+
+Pass the option in `b.dependency`:
+
+```zig
+const capnpc_dep = b.dependency("capnpc_zig", .{
+    .target = target,
+    .optimize = optimize,
+    .@"fd-passing" = false,
+});
+const capnpc_core = capnpc_dep.module("capnpc-zig-core");
+```
+
+What changes with `-Dfd-passing=false`:
+
+- `rpc.transport.unix.supported` is false. `unix.listen` and `unix.connect`
+  return `error.UnixSocketsUnsupported`, as on Windows.
+- `FdHandle` is an empty struct. `Peer.setExportFd` returns
+  `error.FdPassingUnsupported`, `Peer.importFd` returns null, and no
+  message carries an fd.
+- The TCP transport refuses an AF_UNIX socket that you give it
+  (`Connection.init`, `tcp.Listener.initFd`). On Linux and macOS its first
+  read fails with `error.Unexpected`, after a `.resource_rejection` event
+  with `err = error.UnixSocketsUnsupported`, so the connection ends. Without
+  the fd closer, a read can leak the fds that a local peer attaches (macOS)
+  or close them on the reading thread (Linux). TCP sockets work as before.
+- `WorkerPool.initListener` still works. It needs no fd passing.
+- On targets that never have fd passing (Windows, the iOS family, the BSDs)
+  nothing changes.
+
+**Every package passes the same capnp-zig option map.** Zig makes one
+dependency instance per option map. If two packages in one build depend on
+capnp-zig with different maps (for example one passes
+`.@"fd-passing" = false` and one does not), the build gets two capnp-zig
+module sets, and their types do not match (see
+[troubleshooting](troubleshooting.md#one-module-root-per-binary)). The same
+rule holds for `.quic`. A library that wraps capnp-zig should forward
+`fd-passing` from its own build options. The host-built plugin
+(`capnpc_host` in the recipe above) is a separate executable, so it does not
+need the option.
+
+**A raw `zig build-lib` or `zig build-exe` command** that passes capnp-zig's
+modules by hand (`-Mcapnpc-zig-core=.../src/lib_core.zig`) must now also pass
+the options module: add `--dep capnp_build_options` to the capnp-zig module
+and `-Mcapnp_build_options=<file>`, where the file holds
+`pub const fd_passing: bool = true;` (or `false`). Without it the compile
+fails with `no module named 'capnp_build_options'`.
+
+## iOS: the core as a static library (Experimental)
+
+`capnpc-zig-core` compiles as a static library for `aarch64-ios`,
+`aarch64-ios-simulator` and `x86_64-ios-simulator`, in Debug and
+ReleaseSafe. `zig build check-ios` builds those libraries on every push. A
+static library never links, so it needs no Apple SDK, and CI runs nothing on
+an iOS device or simulator. Fd passing is compiled out on the iOS family, and
+on every Apple target except macOS.
+
+At Zig 0.17.0 the root module of your library must also make three std
+overrides, because `std.Io.Threaded` does not compile for iOS and the default
+panic handler, log function and `std.debug` reach it
+([handoff](upstream/handoff-zig-fork-ios-nullfile.md)):
+
+```zig
+fn trapPanic(msg: []const u8, ra: ?usize) noreturn {
+    _ = msg;
+    _ = ra;
+    @trap();
+}
+pub const panic = std.debug.FullPanic(trapPanic);
+pub const std_options: std.Options = .{ .logFn = noLog }; // a no-op logFn
+pub const std_options_debug_io: std.Io = std.Io.failing;
+```
+
+`tests/apple/apple_check_root.zig` is the root that `check-ios` builds. The
+full `capnpc-zig` module is not gated for iOS.
+
 ## Reflection metadata and runtime versions
 
 The plugin emits `CAPNP_SCHEMA_REQUEST` and per-type `capnpSchema` references

@@ -1,9 +1,11 @@
 # Cap'n Proto RPC over Unix-domain sockets
 
-**Status: Experimental, Linux and macOS.** On every other target the calls
-return `error.UnixSocketsUnsupported` (see [Windows and other
-targets](#windows-and-other-targets)). Nothing on this page is part of the
-frozen Stable surface (`docs/api-snapshot.txt`).
+**Status: Experimental, Linux and macOS.** On every other target, and in a
+build with `-Dfd-passing=false`, the calls return
+`error.UnixSocketsUnsupported` (see [Windows and other
+targets](#windows-and-other-targets) and [Builds without fd
+passing](#builds-without-fd-passing--dfd-passingfalse)). Nothing on this
+page is part of the frozen Stable surface (`docs/api-snapshot.txt`).
 
 `capnpc.rpc.transport.unix` runs the normal RPC stack over a socket file:
 
@@ -210,8 +212,37 @@ A server that dies leaves its socket file behind.
   transport that you build yourself on an AF_UNIX fd there
   (`Listener.initFd`, `Transport.init`) reads with a plain read: there is no
   drain mode, and the kernel decides what happens to attached fds.
+- **iOS, tvOS, watchOS, visionOS, Mac Catalyst and DriverKit** get the same
+  stubs: fd passing is compiled in on macOS only, the one Apple target a CI
+  lane tests it on. (On the iOS family std's `Io.Threaded`, which the fd
+  closer uses, also does not compile at Zig 0.17.0.) Their kernel is XNU, so
+  a plain read installs the fds a peer attaches, as on macOS: do not hand
+  the TCP transport an AF_UNIX socket that an untrusted process can write to.
 - **The core module** (`capnpc-zig-core`) has no sockets and no
-  `rpc.transport.unix`.
+  `rpc.transport.unix`. It compiles for iOS (`zig build check-ios`).
+
+## Builds without fd passing: `-Dfd-passing=false`
+
+The build option `-Dfd-passing=false` compiles fd passing, the fd closer
+threads and the process fd budget out, on Linux and macOS too
+([build-integration.md](build-integration.md#compiling-fd-passing-out--dfd-passing-experimental)).
+Without the closer, no AF_UNIX socket can be read safely, so:
+
+- `unix.supported` is false, and `unix.listen` and `unix.connect` return
+  `error.UnixSocketsUnsupported`, as on Windows.
+- The TCP transport still reads the socket family on Linux and macOS. It
+  refuses an AF_UNIX socket (or one whose family it cannot read) that you
+  give it through `Connection.init`, `Listener.initFd` or `Transport.init`:
+  every read fails with `error.Unexpected`, after a `.resource_rejection`
+  event (`resource = .attached_fds`, `limit = 0`, `err =
+  error.UnixSocketsUnsupported`). The connection ends at its first read and
+  dispatches nothing. A listener from `Listener.initFd` on an AF_UNIX
+  socket still accepts, and does its final close inline.
+- TCP sockets work as before, and so does `WorkerPool.initListener` on a
+  TCP listener.
+
+`tests/rpc/transport/unix/rpc_unix_fd_passing_off_test.zig` pins each of
+these in the `-Dfd-passing=false` CI lane.
 
 ## Fds a peer attaches: drain mode
 
@@ -225,8 +256,8 @@ not make them go away:
   close of a TCP socket with `SO_LINGER` and unsent data blocks that thread
   for the linger time.
 
-So on Linux and macOS every transport on an AF_UNIX socket reads in **drain
-mode**. This includes `unix.listen` and `unix.connect`, and also
+So on Linux and macOS (with `-Dfd-passing` on, the default) every transport
+on an AF_UNIX socket reads in **drain mode**. This includes `unix.listen` and `unix.connect`, and also
 `Listener.initFd`, `ServerSession`, `Connection.init` and `Transport.init` on
 an AF_UNIX fd. Drain mode works like this:
 

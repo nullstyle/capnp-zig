@@ -454,6 +454,13 @@ ends turn on fd passing (`.fd_passing`), which ties fds to capabilities
 and the threat table, and run the examples with `zig build example-rpc-unix`
 and `zig build example-rpc-fd`.
 
+The build option `-Dfd-passing=false` (Experimental; a consumer passes
+`.@"fd-passing" = false` to `b.dependency`) compiles fd passing, the fd
+closer threads and the AF_UNIX transport out, for an embedder that owns its
+sockets. `capnpc-zig-core` also compiles for iOS as a static library
+(`zig build check-ios`). See
+[docs/build-integration.md](docs/build-integration.md#compiling-fd-passing-out--dfd-passing-experimental).
+
 ### QUIC Transport
 
 The QUIC RPC transport is optional and excluded from normal builds. The
@@ -554,6 +561,9 @@ zig build docs-smoke         # Docs/examples public API smoke checks
 zig build test-docs-snippets # Compile documentation snippet fixtures
 zig build -Dquic=true test-docs-snippets-quic # Optional QUIC docs snippets
 zig build package-preflight # Filtered-package default/core/QUIC consumers
+zig build check-ios          # capnpc-zig-core as iOS static libraries (no SDK)
+zig build -Dfd-passing=false test # The suite with fd passing compiled out
+zig build check-fd-passing-off-symbols # macOS host: no closer symbols with -Dfd-passing=false
 zig build check-generated-shape # Frozen shape of generated code (docs/generated-shape.txt)
 just check-release-drift vA.B.C X.Y.Z # Snapshot drift since tag vA.B.C, judged for release X.Y.Z
 just release-preflight X.Y.Z # Complete local release preflight

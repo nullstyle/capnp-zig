@@ -85,9 +85,11 @@ Internal helper behavior may change, but exported type semantics and error class
 ## Experimental WorkerPool Listener Contract
 
 - `WorkerPool.initListener` serves a `tcp.Listener` the caller already has,
-  such as one from `rpc.transport.unix.listen`. Linux and Darwin only; on
-  every other target it returns `error.UnixSocketsUnsupported` (use `init`
-  for TCP there). On every error the caller still owns the listener,
+  such as one from `rpc.transport.unix.listen`. Linux and every Darwin
+  target only (`worker_pool.park_door_supported`, its own gate: it needs no
+  fd passing, so `-Dfd-passing=false` and iOS keep it); on every other
+  target it returns `error.UnixSocketsUnsupported` (use `init` for TCP
+  there). On every error the caller still owns the listener,
   unchanged.
 - It takes `*Listener`. On success it moves the listener into the pool and
   marks the caller's copy closed: `close` on that copy does nothing, and

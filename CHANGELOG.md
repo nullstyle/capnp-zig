@@ -7,8 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **A compiler command that passes capnp-zig's modules by hand needs a
+  `capnp_build_options` module.** `src/rpc/transport/fd_passing.zig` now
+  reads the new build option `-Dfd-passing` from a module named
+  `capnp_build_options`. `zig build` and `b.dependency` create it, so a
+  consumer that uses capnp-zig through its `build.zig` changes nothing. A
+  raw `zig build-lib`, `zig build-exe` or `zig test` command with
+  `-Mcapnpc-zig=.../src/lib.zig` (or `lib_quic.zig`, or `lib_core.zig`)
+  whose program reaches the RPC runtime now fails with
+  `no module named 'capnp_build_options' available within module 'capnpc-zig'`.
+  - **Migration:** add `--dep capnp_build_options` to the capnp-zig module,
+    and pass `-Mcapnp_build_options=<file>`, where the file holds
+    `pub const fd_passing: bool = true;`. For example:
+    `zig test --dep capnpc-zig -Mroot=main.zig --dep capnpc-zig --dep capnp_build_options -Mcapnpc-zig=capnp-zig/src/lib.zig -Mcapnp_build_options=capnp_build_options.zig`.
+    `tests/fixtures/capnp_build_options.zig` is such a file
+    ([troubleshooting](docs/troubleshooting.md#no-module-named-capnp_build_options)).
+
+- **Fd passing and `rpc.transport.unix` are compiled in on Linux and macOS
+  only; Mac Catalyst and DriverKit lose them (Experimental).** The gate was
+  `isDarwin()`, which also takes iOS, tvOS, watchOS, visionOS, Mac Catalyst
+  and DriverKit. It is now `.linux or .macos`, the targets a CI lane tests.
+  The iOS family did not compile before (see Changed). A Mac Catalyst or
+  DriverKit build now gets what Windows gets: `unix.supported` is false,
+  `unix.listen` and `unix.connect` return `error.UnixSocketsUnsupported`,
+  `FdHandle` is empty, `Peer.setExportFd` returns
+  `error.FdPassingUnsupported`, no fd closer thread starts, and a TCP
+  transport on an AF_UNIX socket reads it the plain way (no drain mode).
+  `WorkerPool.initListener` keeps working there (its own gate, now public
+  as `worker_pool.park_door_supported`).
+  - **Migration:** none in this release for a Mac Catalyst or DriverKit
+    program that serves AF_UNIX sockets: stay on v0.20.0 and tell us. No
+    such user is known. Do not hand the TCP transport an AF_UNIX socket that
+    an untrusted process can write to on those targets: XNU installs the fds
+    a peer attaches on a plain read.
+
 ### Added
 
+- **Build option `-Dfd-passing` (Experimental; default `true`).** `false`
+  compiles fd passing, the fd closer threads, the process fd budget and the
+  AF_UNIX transport out on every target, for an embedder that owns its
+  sockets (capnp-swift). A consumer passes `.@"fd-passing" = false` to
+  `b.dependency("capnpc_zig", ...)`; every package in one build must pass
+  the same capnp-zig option map, as for `.quic`. With it off:
+  - no fd closer thread starts and `RLIMIT_NOFILE` is never read; a macOS
+    static library of `capnpc-zig-core` imports no `___ulock_*`,
+    `_pthread_create` or `_getrlimit` and defines no fd closer function
+    (`zig build check-fd-passing-off-symbols`, macOS hosts; measured on the
+    ReleaseSafe check library: 29 imports with the option on, 13 with it
+    off);
+  - `unix.supported` is false and `unix.listen` / `unix.connect` return
+    `error.UnixSocketsUnsupported`; `FdHandle` is empty and
+    `Peer.setExportFd` returns `error.FdPassingUnsupported`;
+  - on Linux and macOS the TCP transport refuses an AF_UNIX socket handed to
+    it (`Connection.init`, `Listener.initFd`, `Transport.init`): every read
+    fails with `error.Unexpected` after a `.resource_rejection` event
+    (`resource = .attached_fds`, `limit = 0`, `err =
+    error.UnixSocketsUnsupported`), because without the closer a read would
+    leak the fds a local peer attaches (macOS) or close them on the reading
+    thread (Linux). New field `Transport.unix_refused` records it. TCP
+    sockets work as before.
+  `fd_passing.supported` (`target_supported and -Dfd-passing`) is the one
+  gate: `fd_closer`, `fd_budget`, `fd_io` and `rpc.transport.unix` read it,
+  so the comptime asserts that tie them hold by construction.
+  `tests/rpc/transport/unix/rpc_unix_fd_passing_off_test.zig` pins the
+  behavior. CI runs the full suite with `-Dfd-passing=false` on Linux and
+  macOS, and the symbol gate on macOS (job `fd-passing-off`).
+- **`zig build check-ios` (Experimental, compile-only).** It builds
+  `capnpc-zig-core` plus a root that names `Peer`'s sans-IO surface
+  (`tests/apple/apple_check_root.zig`) as static libraries for
+  `aarch64-ios`, `aarch64-ios-simulator` and `x86_64-ios-simulator`, and for
+  `aarch64-macos` with fd passing off, each in Debug and ReleaseSafe. A
+  static library never links, so it needs no Apple SDK; the new `ios-check`
+  CI job runs it on Linux. The root carries the std overrides every iOS
+  embedder needs at Zig 0.17.0 (a trapping panic handler, a no-op `logFn`,
+  `std_options_debug_io = std.Io.failing`;
+  `docs/upstream/handoff-zig-fork-ios-nullfile.md`). `zig build test` also
+  runs that root's exported functions on the host (a loopback bootstrap
+  between two detached peers).
+- `worker_pool.park_door_supported` (Experimental): where
+  `WorkerPool.initListener` works, Linux and every Darwin target, with or
+  without fd passing.
 - **QUIC (Experimental): `ServerOptions.previous_session_ticket_key` and
   `previous_session_ticket_key_until_us`.** A process that starts less than
   one ticket lifetime after a key change starts with the new key as
@@ -43,6 +123,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Fd passing is compiled in on Linux and macOS only, and iOS-family
+  targets now compile the core.** `capnpc-zig-core` could not be built for
+  iOS in any optimize mode: the fd closer compiled in there (`isDarwin()`)
+  and names `std.Io.Threaded.io()`, which does not compile for iOS, tvOS,
+  watchOS or visionOS at Zig 0.17.0. With the gate on `.macos`, the core
+  compiles for `aarch64-ios`, `aarch64-ios-simulator` and
+  `x86_64-ios-simulator` (Debug and ReleaseSafe), given the root overrides
+  above (`zig build check-ios`). Mac Catalyst and DriverKit lose fd passing
+  (see Breaking).
+- The tests that compile generated code with a raw `zig test` command, and
+  `tools/check-windows-timed-read.ps1`, pass
+  `tests/fixtures/capnp_build_options.zig` as the options module.
 - **QUIC: quic-zig v0.28.1 -> v0.29.0 (tag `b9a15e6`,
   `quic-0.29.0-DnSYvahYOwAdaHX-Ct3_iZGZycF387GmpAbI9G9wjFGg`).** No wire
   change and no security fix. boringssl-zig is unchanged (`ff30fe99`,
@@ -124,6 +216,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- `docs/build-integration.md`: "Compiling fd passing out: `-Dfd-passing`"
+  (the option, how a consumer passes it, the one-option-map rule, raw
+  compiler commands) and "iOS: the core as a static library".
+  `docs/rpc-unix-sockets.md`: "Builds without fd passing" and the Apple
+  targets. `docs/stability.md`: the platform table, iOS, and the fd rows.
+  `docs/supported-surface.md`, `docs/troubleshooting.md` (the
+  `capnp_build_options` and iOS `NullFile` errors), `docs/api_contracts.md`
+  and the README. `docs/upstream/handoff-zig-fork-ios-nullfile.md` records
+  the Zig 0.17.0 std defect (H2).
 - `docs/quic-transport.md`: "Rotation" persists a key change with
   `previous_session_ticket_key` (the old way, start with the old key and
   rotate at once, is no longer needed) and states quic-zig's Debug thread
