@@ -38,7 +38,7 @@ RPC over AF_UNIX sockets.
 | Component | Version | Pin |
 |---|---|---|
 | Zig | `0.17.0` (tagged; no change since v0.19.0) | `mise.toml`: `zig = "0.17.0"`; `build.zig.zon`: `.minimum_zig_version = "0.17.0"` |
-| capnp-zig | `v0.21.0` | `capnpc_zig-0.21.0-...` (recorded here after the tag) |
+| capnp-zig | `v0.21.0` (tag at `3490a77`) | `capnpc_zig-0.21.0-nUduFa7PRwBrWc9CyzM8u052LMqBhHzvA52R1s407iCg` |
 | quic-zig | `v0.30.1` (tag at `ccf6ae2`; not v0.30.0) | `quic-0.30.1-DnSYvVnOOwBfpDxHQWI41E6YxM1RqqkCuven5bK46jXR` |
 | boringssl-zig | `0.6.7` (`ff30fe99`), through quic; no change since v0.25.0 | none (quic pins it) |
 | http3-zig (optional) | `v0.5.4` (tag at `22b821f`) | `http3_zig-0.5.4-ayZ03AMwEwCFw0VQCEBd1LP1JBUQtDKT1USKYn_OJACT` |
