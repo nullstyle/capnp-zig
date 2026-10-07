@@ -333,14 +333,24 @@ fn onL3Return(
     ctx.delivered = true;
     const state = ctx.state;
 
-    if (ret.tag == .exception or state.host.current_inbound_frame == null) {
+    if (ret.tag == .exception) {
         const reason = if (ret.exception) |ex| ex.reason else "handoff return unavailable";
         state.queueL3Event(L3_EVENT_KIND_RETURN_EXCEPTION, ctx.question_id, reason) catch |err| {
             log.debug("l3 exception event dropped: {}", .{err});
         };
         return;
     }
-    state.queueL3Event(ctx.kind, ctx.question_id, state.host.current_inbound_frame.?) catch |err| {
+    const frame = state.host.current_inbound_frame orelse {
+        state.queueL3Event(
+            L3_EVENT_KIND_RETURN_EXCEPTION,
+            ctx.question_id,
+            "handoff return unavailable",
+        ) catch |err| {
+            log.debug("l3 exception event dropped: {}", .{err});
+        };
+        return;
+    };
+    state.queueL3Event(ctx.kind, ctx.question_id, frame) catch |err| {
         log.debug("l3 return event dropped: {}", .{err});
     };
 }
