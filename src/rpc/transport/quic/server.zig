@@ -250,11 +250,11 @@ pub const Server = struct {
     /// Loop-thread only: quic-zig reads the keys inside handshakes on this
     /// thread and takes no lock. Call it from the `after_step` hook of
     /// `runWithAfterStep` or from the accept hook. Before the first step,
-    /// call it only on the thread that will run the loop: in a Debug build
-    /// quic-zig fixes its loop thread at the first feed, tick or rotation and
-    /// asserts on any other. To rotate on a signal from another thread, set
-    /// a flag there, call `wake`, and rotate from `after_step`. To start
-    /// with the old key still open, set
+    /// any thread may call it, provided the first step happens-after the
+    /// call (spawning the loop thread after it is enough): the first step
+    /// makes its thread quic-zig's loop thread too. To rotate on a signal
+    /// from another thread, set a flag there, call `wake`, and rotate from
+    /// `after_step`. To start with the old key still open, set
     /// `ServerOptions.previous_session_ticket_key` instead of rotating.
     pub fn rotateSessionTicketKey(self: *Server, new_key: *const quic_options.SessionTicketKey) !void {
         self.assertLoopThread();
@@ -486,10 +486,20 @@ pub const Server = struct {
     /// Record the current thread as the loop thread on first step. Subsequent
     /// steps assert affinity in debug builds so accidental cross-thread
     /// stepping (which would race the session list) fails loudly.
+    ///
+    /// The first claim also makes this thread the loop thread of the
+    /// listener's quic-zig `Server` (`Listener.adoptLoopThread`). A call
+    /// before the first step (`rotateSessionTicketKey`, a `receiveOne`) may
+    /// have fixed quic-zig's Debug latch at another thread; that call
+    /// happened-before this step (the caller's handoff), so the two loop
+    /// threads become one here instead of quic-zig asserting at this step's
+    /// first feed or tick. After that, both checks agree on one thread for
+    /// good.
     fn claimLoopThread(self: *Server) void {
         if (comptime builtin.target.os.tag == .freestanding) return;
         const loop_tid = self.loop_thread_id orelse {
             self.loop_thread_id = std.Thread.getCurrentId();
+            self.listener.adoptLoopThread();
             return;
         };
         if (builtin.mode == .debug) {

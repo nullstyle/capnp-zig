@@ -3690,6 +3690,7 @@ capnpc-zig.rpc.transport.quic.listener.FeedOutcome.version_negotiated: enumerant
 capnpc-zig.rpc.transport.quic.listener.FeedOutcome: enum
 capnpc-zig.rpc.transport.quic.listener.Listener.TestingHooks: struct
 capnpc-zig.rpc.transport.quic.listener.Listener.acceptedSessionAt: fn (*rpc.transport.quic.listener.Listener, usize) ?rpc.transport.quic.session.AcceptedSession
+capnpc-zig.rpc.transport.quic.listener.Listener.adoptLoopThread: fn (*rpc.transport.quic.listener.Listener) void
 capnpc-zig.rpc.transport.quic.listener.Listener.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.quic.listener.Listener.clock_origin_us: field u64
 capnpc-zig.rpc.transport.quic.listener.Listener.deinit: fn (*rpc.transport.quic.listener.Listener) void

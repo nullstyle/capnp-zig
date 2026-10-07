@@ -29,11 +29,12 @@ pub const StatelessResponse = quic_zig.Server.StatelessResponse;
 /// expected to accept/choose sessions here, then hand each selected session to a
 /// per-session transport driver.
 ///
-/// Drive a `Listener` from one thread for its whole life. In a Debug build,
-/// quic-zig (v0.29.0 and later) fixes the loop thread of its `Server` at the first
+/// Drive a `Listener` from one thread at a time. In a Debug build, quic-zig
+/// (v0.29.0 and later) fixes the loop thread of its `Server` at the first
 /// received datagram, tick or session-ticket rotation, and asserts that
-/// thread at every later one, so a later feed from another thread panics
-/// inside quic-zig. Release builds do not check.
+/// thread at every later one. To hand the listener to another thread, stop
+/// it on the old thread and call `adoptLoopThread` on the new one before
+/// its first call there. Release builds do not check.
 pub const Listener = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -298,6 +299,20 @@ pub const Listener = struct {
         return self.server.reap();
     }
 
+    /// Make the calling thread the loop thread of this listener's quic-zig
+    /// `Server` (quic-zig v0.30.1 `Server.adoptLoopThread`): the thread that
+    /// may feed it (`receiveOne`, `feedDatagram`), `tick` it and rotate its
+    /// ticket key. Call it on the new thread when the listener moves to
+    /// another thread. Legal only at a quiescent handoff point: the old
+    /// thread has stopped driving the listener, and the move happens-after
+    /// its last call (a thread join, or a mutex or channel handoff). Only
+    /// quic-zig's Debug check moves; this is not a lock, and two threads
+    /// that drive the listener at once are still a programming error.
+    /// Nothing happens in a release build.
+    pub fn adoptLoopThread(self: *Listener) void {
+        self.server.adoptLoopThread();
+    }
+
     /// Change the key that session tickets are sealed under, with no
     /// restart and no lost ticket (quic-zig `Server.rotateSessionTicketKey`).
     /// New tickets are sealed under `new_key` at once. The key that sealed
@@ -312,9 +327,10 @@ pub const Listener = struct {
     /// another thread races the handshakes that read the keys. In a Debug
     /// build quic-zig checks the thread: the first feed, tick or rotation
     /// fixes it, and a later call from another thread asserts. So a rotation
-    /// before the first datagram must run on the thread that will feed the
-    /// listener. To start with an old key still open, set
-    /// `ServerOptions.previous_session_ticket_key` instead.
+    /// before the first datagram fixes the loop thread at the rotating
+    /// thread; if another thread then feeds the listener, call
+    /// `adoptLoopThread` there first. To start with an old key still open,
+    /// set `ServerOptions.previous_session_ticket_key` instead.
     /// `Server.rotateSessionTicketKey` checks its own loop thread too.
     ///
     /// `error.InvalidConfig`, and nothing changes: the listener was built

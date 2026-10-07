@@ -4253,3 +4253,203 @@ test "client abandons a black-hole dial at the handshake deadline" {
     client.run();
     try std.testing.expectEqual(events.DisconnectCause.handshake_timeout, client.closeCause());
 }
+
+// ---------------------------------------------------------------------------
+// Thread handoff of a QUIC server that has already run. In a Debug build,
+// quic-zig (v0.29.0 and later) fixes its `Server`'s loop thread at the first
+// `feed`, `tick` or ticket-key rotation and asserts it at every later one;
+// quic-zig v0.30.1's `Server.adoptLoopThread()` moves it. Each phase below
+// runs on a spawned thread that is joined before the next phase starts, so
+// every handoff is quiescent. Without the move, the new thread's first feed
+// or tick panics inside quic-zig (release builds do not check).
+// ---------------------------------------------------------------------------
+
+/// One phase of a `Connection` handoff: adopt both connections on the
+/// calling thread, then step both until the client holds `want` echoes.
+const ConnectionHandoffPhase = struct {
+    server: *quic.Connection,
+    client: *quic.Connection,
+    server_state: *const QuicEndpointState,
+    client_state: *const QuicEndpointState,
+    want: usize,
+    result: anyerror!void = error.QuicHandoffPhaseDidNotRun,
+
+    fn run(self: *ConnectionHandoffPhase) void {
+        self.result = self.drive();
+    }
+
+    fn drive(self: *ConnectionHandoffPhase) !void {
+        self.server.adoptOwnerThread();
+        self.client.adoptOwnerThread();
+        var waited_ms: u64 = 0;
+        while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += 1) {
+            _ = try self.server.stepOnce(.poll);
+            _ = try self.client.stepOnce(.poll);
+            if (self.client_state.messages.load(.acquire) >= self.want) return;
+            if (self.client_state.errors.load(.acquire) > 0 or self.server_state.errors.load(.acquire) > 0) {
+                return error.QuicLoopbackUnexpectedError;
+            }
+            loopback.sleepMs(1);
+        }
+        return error.QuicLoopbackTimedOut;
+    }
+
+    /// Run this phase on a new thread and wait for it to end.
+    fn onNewThread(self: *ConnectionHandoffPhase) !void {
+        const thread = try std.Thread.spawn(.{}, run, .{self});
+        thread.join();
+        try self.result;
+    }
+};
+
+test "Connection.adoptOwnerThread moves a server-role connection that has received datagrams to another thread" {
+    const allocator = std.testing.allocator;
+    const first = try buildBootstrapFrame(allocator, 0xA1);
+    defer allocator.free(first);
+    const second = try buildBootstrapFrame(allocator, 0xB2);
+    defer allocator.free(second);
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+    });
+    defer server.deinit();
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+    });
+    defer client.deinit();
+    // `deinit` checks the owner thread: on a failed phase, take both
+    // connections back before the defers above run.
+    errdefer {
+        server.adoptOwnerThread();
+        client.adoptOwnerThread();
+    }
+
+    var server_state = QuicEndpointState{};
+    var client_state = QuicEndpointState{};
+    server.start(&server_state, echoQuicMessage, recordQuicError, recordQuicClose);
+    client.start(&client_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
+
+    // Thread A: the handshake and one round trip. The server's first feed
+    // fixes quic-zig's loop thread at A.
+    try client.sendFrame(first);
+    var phase_a = ConnectionHandoffPhase{
+        .server = &server,
+        .client = &client,
+        .server_state = &server_state,
+        .client_state = &client_state,
+        .want = 1,
+    };
+    try phase_a.onNewThread();
+
+    // Thread B, after A has ended: one more round trip, so the server feeds
+    // the client's datagrams on B.
+    try client.sendFrame(second);
+    var phase_b = ConnectionHandoffPhase{
+        .server = &server,
+        .client = &client,
+        .server_state = &server_state,
+        .client_state = &client_state,
+        .want = 2,
+    };
+    try phase_b.onNewThread();
+
+    // Back to this thread for the close and `deinit`.
+    server.adoptOwnerThread();
+    client.adoptOwnerThread();
+    client.requestClose();
+    server.requestClose();
+    client.run();
+    server.run();
+
+    try std.testing.expectEqual(@as(usize, 2), server_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 2), client_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), server_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    try std.testing.expectEqualSlices(u8, second, client_state.receivedSlice());
+}
+
+/// One phase of a `Listener` handoff, on the calling thread: adopt (when
+/// asked), tick, rotate to `next_key`, tick again.
+const ListenerHandoffPhase = struct {
+    listener: *quic.Listener,
+    adopt: bool,
+    next_key: quic.SessionTicketKey,
+    result: anyerror!void = error.QuicHandoffPhaseDidNotRun,
+
+    fn run(self: *ListenerHandoffPhase) void {
+        self.result = self.drive();
+    }
+
+    fn drive(self: *ListenerHandoffPhase) !void {
+        if (self.adopt) self.listener.adoptLoopThread();
+        try self.listener.tick(self.listener.nowUs());
+        try self.listener.rotateSessionTicketKey(&self.next_key);
+        try self.listener.tick(self.listener.nowUs());
+    }
+
+    fn onNewThread(self: *ListenerHandoffPhase) !void {
+        const thread = try std.Thread.spawn(.{}, run, .{self});
+        thread.join();
+        try self.result;
+    }
+};
+
+test "Listener.adoptLoopThread moves a listener that has ticked and rotated to another thread" {
+    var listener = try quic.Listener.init(std.testing.allocator, std.testing.io, keyedListenerOptions());
+    defer listener.deinit();
+
+    // Thread A: its first tick fixes quic-zig's loop thread at A.
+    var phase_a = ListenerHandoffPhase{ .listener = &listener, .adopt = false, .next_key = rotationTicketKey(0x91) };
+    try phase_a.onNewThread();
+    // Thread B, after A has ended, adopts the listener and drives it.
+    var phase_b = ListenerHandoffPhase{ .listener = &listener, .adopt = true, .next_key = rotationTicketKey(0xA2) };
+    try phase_b.onNewThread();
+}
+
+/// `RotationServer.dial` on a new thread. The dial steps the server on its
+/// calling thread, so that thread becomes the server's loop thread.
+fn rotationDialOnNewThread(s: *RotationServer, out_ticket: *ResumptionSink) !RotationDial {
+    const Phase = struct {
+        server: *RotationServer,
+        sink: *ResumptionSink,
+        result: anyerror!RotationDial = error.QuicHandoffPhaseDidNotRun,
+
+        fn run(self: *@This()) void {
+            self.result = self.server.dial(null, self.sink);
+        }
+    };
+    var phase = Phase{ .server = s, .sink = out_ticket };
+    const thread = try std.Thread.spawn(.{}, Phase.run, .{&phase});
+    thread.join();
+    return phase.result;
+}
+
+test "Server.rotateSessionTicketKey before the first step may run on another thread than the loop" {
+    const key_a = rotationTicketKey(0x83);
+    const key_b = rotationTicketKey(0x94);
+    var ticket_b = ResumptionSink{};
+    {
+        var s: RotationServer = undefined;
+        try s.init(&key_a);
+        defer s.deinit();
+        // This thread rotates before the first step, which fixes quic-zig's
+        // loop thread here in a Debug build.
+        try s.server.rotateSessionTicketKey(&key_b);
+        // The loop runs on another thread: its first step takes quic-zig's
+        // loop thread with it.
+        const cold = try rotationDialOnNewThread(&s, &ticket_b);
+        try std.testing.expect(cold.status != .accepted);
+    }
+    // The rotation took: the new ticket is sealed under key B, and a server
+    // that starts with key B resumes it in 0-RTT.
+    var s: RotationServer = undefined;
+    try s.init(&key_b);
+    defer s.deinit();
+    try expectRotationDialEarly(try s.dial(ticket_b.slice(), null));
+}
