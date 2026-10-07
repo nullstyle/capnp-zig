@@ -42,10 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sees:
   - A peer that dies silently is noticed one idle timeout after the first
     send it leaves unanswered (see Fixed).
-  - The idle timeout is at least three probe timeouts: a
-    `transport_params.max_idle_timeout_ms` below that is raised to it,
-    about 3 s on a fresh connection with no RTT sample, a few tens of
-    milliseconds once there are samples. The 30 s default is unaffected.
+  - The idle timeout is at least three probe timeouts (a probe timeout is
+    about the smoothed RTT plus four RTT variances plus the peer's
+    `max_ack_delay`): a `transport_params.max_idle_timeout_ms` below that
+    is raised to it. The floor scales with the path: about 3 s on a fresh
+    connection with no RTT sample, tens of milliseconds on loopback,
+    several hundred milliseconds or more on a WAN path. The 30 s default is
+    unaffected.
   - The receive window an endpoint keeps is the one it announces (through
     v0.31.1 the credit after the initial window was a fixed 1 MiB per
     stream and 16 MiB per connection). `quic.defaultTransportParams()`
@@ -70,19 +73,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **QUIC: a dead peer's session lived two to three idle timeouts (a
-  regression capnp-zig v0.21.0 shipped through quic-zig v0.30.1).** Every
-  datagram sent restarted quic-zig's idle timer, and the probes for data
-  that a dead peer never acknowledges kept the connection alive until one
-  backed-off probe gap was longer than the timeout; a datagram received
-  restarted it before it was opened, so a spoofed one could too. quic-zig
-  v0.31.1 restarts it per RFC 9000 section 10.1 (a packet received and
-  processed, and the first ack-eliciting send after one). A peer that
-  stops answering mid-call now ends the session with
-  `DisconnectCause.idle_timeout` one idle timeout after the unanswered
-  send. New test in the QUIC transport suite ("a dead peer is detected
-  about one idle timeout after the unanswered send, not three", 2 s idle
-  timeout, bound 3 s): 2,001 ms (Debug) and 2,002 ms (ReleaseSafe) on
-  v0.32.0; on v0.30.1 it fails at 4,431 and 4,201 ms.
+  regression capnp-zig v0.21.0 shipped through quic-zig v0.30.1).** Through
+  v0.31.0, quic-zig restarted the idle timer at every datagram sent, in
+  every version capnp-zig has pinned. What changed in quic-zig v0.30.0 (in
+  the v0.30.1 that v0.21.0 pins) is that a probe timeout is no longer a
+  loss, so the probes for data a dead peer never acknowledges go on, and
+  each one pushed the deadline out again until one backed-off probe gap was
+  longer than the timeout. quic-zig v0.31.1 restarts the timer per RFC 9000
+  section 10.1 (a packet received and processed, and the first
+  ack-eliciting send after one). A peer that stops answering mid-call now
+  ends the session with `DisconnectCause.idle_timeout` one idle timeout
+  after the unanswered send. New test in the QUIC transport suite ("a dead
+  peer is detected about one idle timeout after the unanswered send, not
+  three", 2 s idle timeout, bound 3 s): 2,001 ms (Debug) and 2,002 ms
+  (ReleaseSafe) on v0.32.0; on v0.30.1 it fails at 4,431 and 4,201 ms.
+- **QUIC: a received datagram restarted the idle timer before it was
+  opened, so a spoofed datagram aimed at a known connection kept a dead
+  peer's session alive.** This affected every earlier capnp-zig release
+  with the QUIC transport, v0.20.0 and older included, not only v0.21.0:
+  quic-zig restarted the timer on a datagram's arrival, before header
+  protection removal or the AEAD open. From quic-zig v0.31.1 only a packet
+  that opens and is processed restarts it.
 
 ## [0.21.0] - 2026-10-06
 

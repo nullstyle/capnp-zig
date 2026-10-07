@@ -4258,14 +4258,16 @@ test "client abandons a black-hole dial at the handshake deadline" {
 // Dead-peer detection. A peer that stops answering (a frozen process, a
 // partition, a host that lost power) sends no CONNECTION_CLOSE and draws no
 // stateless reset, so the survivor learns of it only from its idle timeout.
-// quic-zig v0.30.1 and v0.31.0 restarted the idle timer at every datagram
-// sent, and the probes for data a dead peer never acknowledges kept the
-// connection alive until one backed-off probe gap was longer than the
-// timeout: two to three idle timeouts (qmsg measured 5,909 to 6,007 ms at a
-// 2 s timeout on v0.30.1). quic-zig v0.31.1 restarts it per RFC 9000 section
-// 10.1, on a packet received and processed and on the first ack-eliciting
-// packet sent after one, so the death is noticed one idle timeout after the
-// first send that goes unanswered.
+// quic-zig through v0.31.0 restarted the idle timer at every datagram sent
+// (and at every datagram received, before it was opened). v0.30.1's probing
+// made the send restart matter: from v0.30.0 a probe timeout is not a loss,
+// so the probes for data a dead peer never acknowledges go on, each one
+// pushed the deadline out, and the connection lived until one backed-off
+// probe gap was longer than the timeout: two to three idle timeouts (qmsg
+// measured 5,909 to 6,007 ms at a 2 s timeout on v0.30.1). quic-zig v0.31.1
+// restarts it per RFC 9000 section 10.1, on a packet received and processed
+// and on the first ack-eliciting packet sent after one, so the death is
+// noticed one idle timeout after the first send that goes unanswered.
 // ---------------------------------------------------------------------------
 
 /// Idle timeout both endpoints announce in the dead-peer test. Two seconds,
@@ -4277,13 +4279,6 @@ const dead_peer_idle_timeout_ms: u64 = 2_000;
 fn awakeMs() u64 {
     const ns = std.Io.Clock.awake.now(std.testing.io).nanoseconds;
     return @intCast(@divFloor(ns, std.time.ns_per_ms));
-}
-
-/// Records a frame and keeps the connection open (`captureQuicMessage`
-/// closes it).
-fn keepQuicMessage(conn: *quic.Connection, frame: []const u8) !void {
-    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.context() orelse return error.MissingQuicContext));
-    try state.recordMessage(frame);
 }
 
 test "a dead peer is detected about one idle timeout after the unanswered send, not three" {
@@ -4314,7 +4309,7 @@ test "a dead peer is detected about one idle timeout after the unanswered send, 
     var server_state = QuicEndpointState{};
     var client_state = QuicEndpointState{};
     server.start(&server_state, echoQuicMessage, recordQuicError, recordQuicClose);
-    client.start(&client_state, keepQuicMessage, recordQuicError, recordQuicClose);
+    client.start(&client_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
 
     // One echo round trip with both endpoints stepped on this thread (so
     // both have RTT samples), then a short settle so every packet in flight

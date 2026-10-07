@@ -50,9 +50,11 @@ pinned). None of the three changes the wire, the embedder API or the option
 map.
 
 - **A dead peer is noticed one idle timeout after it stops answering, not
-  two to three (v0.31.1).** From quic-zig v0.30.1, which capnp-zig v0.21.0
-  pins, every datagram sent restarted the idle timer, and the probes for
-  data a dead peer never acknowledges kept the connection alive until one
+  two to three (v0.31.1).** Through v0.31.0, quic-zig restarted the idle
+  timer at every datagram sent, in every version capnp-zig has pinned.
+  From quic-zig v0.30.0 (in the v0.30.1 that capnp-zig v0.21.0 pins) a
+  probe timeout is not a loss, so the probes for data a dead peer never
+  acknowledges go on, and each one pushed the deadline out again until one
   backed-off probe gap was longer than the timeout. The timer now restarts
   as RFC 9000 section 10.1 says: when a packet is received and processed,
   and at the first ack-eliciting send after that. A peer that stops
@@ -60,11 +62,18 @@ map.
   with `DisconnectCause.idle_timeout` one idle timeout after the first
   unanswered send: measured 2,001 ms at a 2 s timeout, against 4,201 to
   4,431 ms on v0.30.1 (the transport suite's dead-peer test). Datagrams
-  that do not open (spoofed ones, say) no longer restart it either. The
-  idle timeout is also at least three probe timeouts: a
-  `max_idle_timeout_ms` below that is raised to it, about 3 s on a fresh
-  connection with no RTT sample, a few tens of milliseconds once there are
-  samples.
+  that do not open (spoofed ones, say) no longer restart it either. That
+  one is older than v0.30.1: quic-zig restarted the timer when a datagram
+  arrived, before its packet was opened, in every version capnp-zig has
+  pinned, so every earlier capnp-zig release with the QUIC transport
+  (v0.20.0 and older included) let a spoofed datagram aimed at a known
+  connection keep a dead peer's session alive. The idle timeout is also at
+  least three probe timeouts (a probe timeout is about the smoothed RTT
+  plus four RTT variances plus the peer's `max_ack_delay`): a
+  `max_idle_timeout_ms` below that is raised to it. The floor scales with
+  the path: about 3 s on a fresh connection with no RTT sample, tens of
+  milliseconds on loopback, several hundred milliseconds or more on a WAN
+  path.
 - **The receive window kept is the one announced (v0.32.0).** Through
   v0.31.1 the credit after the initial window was a fixed 1 MiB per stream
   and 16 MiB per connection, whatever the transport parameters said.
