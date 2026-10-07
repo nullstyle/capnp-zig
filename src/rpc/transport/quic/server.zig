@@ -494,7 +494,9 @@ pub const Server = struct {
     /// happened-before this step (the caller's handoff), so the two loop
     /// threads become one here instead of quic-zig asserting at this step's
     /// first feed or tick. After that, both checks agree on one thread for
-    /// good.
+    /// good. The cost: a rotation on another thread that is still running
+    /// at the first step (a race, not a handoff) is no longer caught by
+    /// quic-zig's Debug check. The caller must end it before `run` starts.
     fn claimLoopThread(self: *Server) void {
         if (comptime builtin.target.os.tag == .freestanding) return;
         const loop_tid = self.loop_thread_id orelse {

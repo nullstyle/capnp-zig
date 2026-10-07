@@ -1013,7 +1013,10 @@ asserts. A rotation before `run` may still run on any thread, provided
 enough): the `Server`'s first step makes its thread quic-zig's loop thread
 too, through quic-zig v0.30.1's `Server.adoptLoopThread()`. After that
 first step the loop thread is fixed for good, in capnp-zig's check and in
-quic-zig's. `Listener.rotateSessionTicketKey` is the same call for code that
+quic-zig's. A rotation must END before `run` starts: a rotation on another
+thread that is still running when the loop takes its first step is a data
+race, and no check catches it (the first step moves quic-zig's latch to the
+loop thread). `Listener.rotateSessionTicketKey` is the same call for code that
 drives a `Listener` itself; it must run on the thread that feeds it.
 A server-side `Connection` or `Listener` can move to another thread at a
 quiescent point: the old thread has stopped, and the move happens-after its
