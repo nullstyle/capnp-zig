@@ -1020,9 +1020,9 @@ quiescent point: the old thread has stopped, and the move happens-after its
 last call (a thread join, say). On the new thread, call
 `Connection.adoptOwnerThread` (for a server-side connection it also moves
 quic-zig's loop thread) or `Listener.adoptLoopThread` before the first step.
-Through capnp-zig v0.21.0 (quic-zig v0.29.0) this panicked inside quic-zig
-in a Debug build once the server had received a datagram. Release builds
-do not check, and a client-side `Connection` has no quic-zig latch.
+With quic-zig v0.29.0 this panicked inside quic-zig in a Debug build once
+the server had received a datagram. Release builds do not check, and a
+client-side `Connection` has no quic-zig latch.
 `serve` (`PeerServer`) has no loop-thread hook of its own: rotate through
 `PeerServer.server` before `run`, or drive a `Server` with
 `runWithAfterStep`. A rotation hook on `PeerServer` is a possible addition;

@@ -17,8 +17,10 @@
         // at 1, 2, 4, 8 s. `quic.unixWallClockUs` compiles on Zig 0.17.0
         // now (it did not at v0.29.0), and `Server.adoptLoopThread()` moves
         // the Debug loop-thread latch at a quiescent handoff (the ask in
-        // docs/upstream/handoff-quic-zig-ticket-keys.md; capnp-zig does not
-        // call it yet). Not v0.30.0 (abc5f12): it did not compile on Windows.
+        // docs/upstream/handoff-quic-zig-ticket-keys.md). capnp-zig calls it
+        // from `Connection.adoptOwnerThread`, `Listener.adoptLoopThread` and
+        // the fanout `Server`'s first step. Not v0.30.0 (abc5f12): it did not
+        // compile on Windows.
         //
         // v0.29.0 (commit b9a15e6): no wire change. A connection costs about
         // 91 KB, not 1.09 MB; late packets are no longer lost packets; and

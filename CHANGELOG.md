@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **QUIC: `Connection.adoptOwnerThread` works again for a server-role
   connection in a Debug build (quic-zig v0.30.1
-  `Server.adoptLoopThread`).** Since v0.21.0 (quic-zig v0.29.0), a
+  `Server.adoptLoopThread`).** With the quic-zig v0.29.0 pin, a
   server-side QUIC `Connection` that had received a datagram on one thread
   and moved to another panicked inside quic-zig at the next datagram
   (`Server.zig:1298`, the Debug loop-thread latch), although
