@@ -6,8 +6,9 @@
 > (tag `b9a15e6`, 2026-10-06), and capnp-zig adopted them on that pin.
 > The one ask made after that, a way to move v0.29.0's Debug loop-thread
 > latch, was DELIVERED in quic-zig v0.30.1 (tag `ccf6ae2`, 2026-10-06) as
-> `Server.adoptLoopThread()`; capnp-zig pins v0.30.1 and does not call it
-> yet (section at the end).** Written 2026-10-04 against
+> `Server.adoptLoopThread()`, and capnp-zig USES it on that pin
+> (`Connection.adoptOwnerThread`, `Listener.adoptLoopThread`, the fanout
+> `Server`'s first step; section at the end).** Written 2026-10-04 against
 > quic-zig v0.25.0 and boringssl-zig 0.6.7 / BoringSSL `aef0e2df`. This is
 > a document for the quic-zig maintainers, not a filed issue. The asks
 > below are kept as written; "Delivered" and "Left as candidates" at the
@@ -367,6 +368,21 @@ server role. Until then, capnp-zig documents the limit (CHANGELOG,
 Delivered in quic-zig v0.30.1 (2026-10-06): `Server.adoptLoopThread()`
 makes the calling thread the loop thread, for an embedder that hands a
 Server to another thread at a quiescent point. Only the latch moves; two
-threads running the Server at once stay a programming error. capnp-zig
-pins v0.30.1, and `Connection.adoptOwnerThread` does not call it yet, so
-the documented limit stands until it does.
+threads running the Server at once stay a programming error.
+
+Used by capnp-zig on the v0.30.1 pin, and the documented limit is gone:
+
+- `Connection.adoptOwnerThread` calls it (through the new
+  `Listener.adoptLoopThread`) for a server-role connection, so the
+  quiescent handoff works again in a Debug build.
+- `Listener.adoptLoopThread` is the same move for code that drives a
+  `Listener` itself.
+- The fanout `Server`'s first step calls it, so a ticket-key rotation
+  before `run` may happen on another thread than the loop's (it used to
+  fix quic-zig's latch at the rotating thread, and the first step then
+  asserted).
+
+Regression tests in `tests/rpc/transport/quic/rpc_quic_transport_test.zig`
+("Thread handoff of a QUIC server that has already run") step on one
+thread, join it, and step again on a second; with the call removed each
+one panics at `Server.zig:1298` in a Debug build.

@@ -49,10 +49,12 @@ The manifest pins the `quic` package at annotated tag `v0.30.1` (commit
 not a loss (RFC 9002 section 6.2.4, so an ACK that was only late is no longer
 a window cut), the handshake's probe timeout is bounded at about a second,
 `quic.unixWallClockUs` compiles on Zig 0.17.0, and `Server.adoptLoopThread()`
-is new (not called here yet). Do not pin v0.30.0: it did not compile on
-Windows. v0.29.0 has no wire change. A connection costs about 91 KB on the
-heap, not 1.09 MB. A late packet is no longer counted as a lost one, and a
-client completes its handshake through loss. It adds the previous ticket key,
+is new: capnp-zig calls it so that a server-side `Connection` or `Listener`
+can move to another thread again in a Debug build ("Rotation" below). Do not
+pin v0.30.0: it did not compile on Windows. v0.29.0 has no wire change. A
+connection costs about 91 KB on the heap, not 1.09 MB. A late packet is no
+longer counted as a lost one, and a client completes its handshake through
+loss. It adds the previous ticket key,
 the NEW_TOKEN clock and the client ticket lifetime that "Session-ticket key"
 below describes. v0.28.1 is v0.28.0 with a build fix: v0.28.0 did not compile
 for a 32-bit target, so do not pin it. v0.28.0 added
@@ -1006,20 +1008,25 @@ from another thread (a timer, an admin command), set a flag there, call
 thread; release builds check it only with `runtime_thread_checks`. Since
 quic-zig v0.29.0, a Debug build of quic-zig checks it too: the first feed,
 tick or rotation fixes its loop thread, and a call on any other thread
-asserts. So a rotation before `run` must run on the thread that then calls
-`run`. `Listener.rotateSessionTicketKey` is the same call for code that
+asserts. A rotation before `run` may still run on any thread, provided
+`run` starts after it (spawning the loop thread after the rotation is
+enough): the `Server`'s first step makes its thread quic-zig's loop thread
+too, through quic-zig v0.30.1's `Server.adoptLoopThread()`. After that
+first step the loop thread is fixed for good, in capnp-zig's check and in
+quic-zig's. `Listener.rotateSessionTicketKey` is the same call for code that
 drives a `Listener` itself; it must run on the thread that feeds it.
-The same Debug latch limits a thread handoff: a server-side `Connection` or
-`Listener` cannot move to another thread after its first received
-datagram, tick or rotation. `Connection.adoptOwnerThread` moves
-capnp-zig's owner thread, not quic-zig's loop thread, so the next step on
-the new thread asserts inside quic-zig. Hand a server-side connection to
-its thread before its first step. Release builds do not check, and a
-client-side `Connection` is not affected.
+A server-side `Connection` or `Listener` can move to another thread at a
+quiescent point: the old thread has stopped, and the move happens-after its
+last call (a thread join, say). On the new thread, call
+`Connection.adoptOwnerThread` (for a server-side connection it also moves
+quic-zig's loop thread) or `Listener.adoptLoopThread` before the first step.
+Through capnp-zig v0.21.0 (quic-zig v0.29.0) this panicked inside quic-zig
+in a Debug build once the server had received a datagram. Release builds
+do not check, and a client-side `Connection` has no quic-zig latch.
 `serve` (`PeerServer`) has no loop-thread hook of its own: rotate through
-`PeerServer.server` before `run`, on the thread that calls `run`, or drive a
-`Server` with `runWithAfterStep`. A rotation hook on `PeerServer` is a
-possible addition; it is not built.
+`PeerServer.server` before `run`, or drive a `Server` with
+`runWithAfterStep`. A rotation hook on `PeerServer` is a possible addition;
+it is not built.
 
 A rotation lives in one process. The next process starts with the keys you
 give it: `session_ticket_key` seals new tickets, and

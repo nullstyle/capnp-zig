@@ -385,13 +385,16 @@ Outbound call:
 - `Peer` and `Connection` are single-thread-affine by contract (debug-checked
   panics; `adoptOwnerThread` re-captures affinity at quiescent handoffs). All
   user handlers and callbacks run inside `run()` on that thread.
-- One exception to those handoffs: in a Debug build, a server-side QUIC
-  `Connection` or `Listener` cannot move to another thread after its first
-  received datagram, tick or session-ticket rotation. quic-zig (v0.29.0 and
-  later) fixes its `Server`'s loop thread at the first of these and asserts
-  it after, and `adoptOwnerThread` does not move that latch (quic-zig
-  v0.30.1 added `Server.adoptLoopThread()` for it; not called here yet). Release builds do
-  not check. A client-side QUIC `Connection` is not affected.
+- A server-side QUIC `Connection` or `Listener` steps a quic-zig `Server`,
+  which (v0.29.0 and later) fixes its loop thread in a Debug build at the
+  first received datagram, tick or session-ticket rotation and asserts it
+  after. The handoffs move that latch too: `Connection.adoptOwnerThread`
+  calls `Listener.adoptLoopThread` for a server-side connection (quic-zig
+  v0.30.1 `Server.adoptLoopThread()`), and code that drives a `Listener`
+  itself calls `Listener.adoptLoopThread` on the new thread. The fanout QUIC
+  `Server` has no handoff: its first step fixes its loop thread, in its own
+  check and in quic-zig's, so a rotation before that step may run on any
+  thread. Release builds do not check.
 - The only thread-safe entry points are `Connection.wake`/`requestClose` (and
   `ClientSession.requestStop`, which wraps them).
 

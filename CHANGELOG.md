@@ -23,11 +23,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for a lost server flight probes every second, not at 1, 2, 4, 8 s.
   Also: `quic.unixWallClockUs` compiles on Zig 0.17.0 now (the v0.29.0
   defect in `docs/upstream/handoff-quic-zig-ticket-keys.md`), and the
-  loop-thread ask there is delivered as `Server.adoptLoopThread()`.
-  capnp-zig does not call it yet, so a server-role connection still
-  cannot move to another thread after its first step in a Debug build
-  (`Connection.adoptOwnerThread`). Not v0.30.0: it did not compile on
-  Windows. No capnp-zig code change.
+  loop-thread ask there is delivered as `Server.adoptLoopThread()`, which
+  capnp-zig now calls (see Fixed). Not v0.30.0: it did not compile on
+  Windows. The bump itself changes no capnp-zig code.
+
+### Fixed
+
+- **QUIC: `Connection.adoptOwnerThread` works again for a server-role
+  connection in a Debug build (quic-zig v0.30.1
+  `Server.adoptLoopThread`).** Since v0.21.0 (quic-zig v0.29.0), a
+  server-side QUIC `Connection` that had received a datagram on one thread
+  and moved to another panicked inside quic-zig at the next datagram
+  (`Server.zig:1298`, the Debug loop-thread latch), although
+  `adoptOwnerThread` documents that handoff. It now moves quic-zig's latch
+  too. Also:
+  - `Listener.adoptLoopThread` (new, Experimental) is the same move for
+    code that drives a `Listener` itself.
+  - The fanout `Server`'s first step makes its thread quic-zig's loop
+    thread, so a `Server.rotateSessionTicketKey` before `run` may happen
+    on another thread than the loop's (provided `run` starts after it).
+    It used to have to run on the thread that then called `run`.
+  Release builds never checked. Tests in the QUIC transport suite step a
+  server on one thread, join it, and step it again on another.
 
 ## [0.21.0] - 2026-10-06
 
