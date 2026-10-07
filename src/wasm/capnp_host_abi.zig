@@ -88,6 +88,14 @@ const FEATURE_HOST_CALL_RETURN_FRAME: u64 = 1 << 8;
 /// Without this feature the peer releases param caps as soon as the call is
 /// queued for the host.
 const FEATURE_HOST_CALL_PARAM_CAP_RETENTION: u64 = 1 << 9;
+/// Experimental Level-3 three-party handoff origination: Provide/Accept,
+/// ThirdPartyAnswer, pending third-party awaits, and the L3 event channel
+/// that delivers their Returns to the embedder. Token minting and
+/// third-party connection resolution stay with the embedder — the peer APIs
+/// take the opaque blobs as arguments, so no VatNetwork runs inside the
+/// module. The recipient auto-pickup handler (which needs a synchronous
+/// vat network) is not exposed.
+const FEATURE_L3_HANDOFF: u64 = 1 << 10;
 const ABI_FEATURE_FLAGS: u64 = FEATURE_ABI_RANGE |
     FEATURE_ERROR_TAKE |
     FEATURE_PEER_LIMITS |
@@ -97,7 +105,8 @@ const ABI_FEATURE_FLAGS: u64 = FEATURE_ABI_RANGE |
     FEATURE_HOST_CALL_FRAME_RELEASE |
     FEATURE_BOOTSTRAP_STUB_IDENTITY |
     FEATURE_HOST_CALL_RETURN_FRAME |
-    FEATURE_HOST_CALL_PARAM_CAP_RETENTION;
+    FEATURE_HOST_CALL_PARAM_CAP_RETENTION |
+    FEATURE_L3_HANDOFF;
 
 const ERROR_ALLOC: u32 = 1;
 const ERROR_INVALID_ARG: u32 = 2;
@@ -111,6 +120,7 @@ const ERROR_BOOTSTRAP_CONFIG: u32 = 9;
 const ERROR_HOST_CALL: u32 = 10;
 const ERROR_PEER_CONTROL: u32 = 11;
 const ERROR_INVALID_FREE: u32 = 12;
+const ERROR_L3_HANDOFF: u32 = 13;
 
 const DEFAULT_MAX_PEERS: usize = 128;
 const DEFAULT_MAX_OUTSTANDING_ALLOCATIONS: usize = 1024;
@@ -119,6 +129,16 @@ const DEFAULT_PEER_OUTBOUND_COUNT_LIMIT: usize = 1024;
 // Caps total outstanding outbound bytes per peer (frames not yet popped/freed),
 // enforced by HostPeer's outbound_bytes_limit.
 const DEFAULT_PEER_OUTBOUND_BYTES_LIMIT: usize = 1024 * 1024;
+
+/// Bounded L3 origination: outstanding originated accepts plus pending
+/// third-party awaits (each fires exactly one event), and the event queue
+/// the embedder drains between pumps.
+const L3_MAX_PENDING_RETURNS: usize = 64;
+const L3_MAX_EVENT_COUNT: usize = 256;
+const L3_MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
+const L3_EVENT_KIND_ACCEPT_RETURN: u32 = 1;
+const L3_EVENT_KIND_AWAIT_RETURN: u32 = 2;
+const L3_EVENT_KIND_RETURN_EXCEPTION: u32 = 3;
 
 const EXAMPLE_MAX_FRAME_BYTES: usize = 1024 * 1024;
 const EXAMPLE_MAX_JSON_BYTES: usize = 1024 * 1024;
@@ -140,9 +160,18 @@ const PeerState = struct {
     last_popped: ?[]u8 = null,
     outstanding_host_call_frames: std.AutoHashMap(usize, u32) = undefined,
     bootstrap_stub_export_id: ?u32 = null,
+    /// Queued L3 event records (owned, byte-encoded), drained through
+    /// `capnp_peer_pop_l3_event`.
+    l3_events: std.ArrayList([]u8) = undefined,
+    l3_event_bytes: usize = 0,
+    /// Live L3 return contexts (accepts and pending awaits), keyed by the
+    /// context pointer so exactly-once delivery can unregister before free.
+    l3_return_ctxs: std.AutoHashMap(usize, *L3ReturnCtx) = undefined,
 
     fn init(self: *PeerState) !void {
         self.outstanding_host_call_frames = std.AutoHashMap(usize, u32).init(allocator);
+        self.l3_events = .empty;
+        self.l3_return_ctxs = std.AutoHashMap(usize, *L3ReturnCtx).init(allocator);
         // Outgoing frames are allocated from the reclaiming module allocator
         // (wasm_allocator/page_allocator) rather than a fixed per-peer scratch
         // buffer: a FixedBufferAllocator only reclaims on a full reset (when the
@@ -152,6 +181,8 @@ const PeerState = struct {
         self.host = HostPeer.init(allocator);
         errdefer self.host.deinit();
         errdefer self.outstanding_host_call_frames.deinit();
+        errdefer self.l3_events.deinit(allocator);
+        errdefer self.l3_return_ctxs.deinit();
         self.host.setLimits(.{
             .outbound_count_limit = DEFAULT_PEER_OUTBOUND_COUNT_LIMIT,
             .outbound_bytes_limit = DEFAULT_PEER_OUTBOUND_BYTES_LIMIT,
@@ -164,6 +195,7 @@ const PeerState = struct {
         try self.host.enableHostCallBridge();
         self.last_popped = null;
         self.bootstrap_stub_export_id = null;
+        self.l3_event_bytes = 0;
     }
 
     fn deinit(self: *PeerState) void {
@@ -177,7 +209,56 @@ const PeerState = struct {
             self.host.freeHostCallFrame(frame_ptr[0..entry.value_ptr.*]);
         }
         self.outstanding_host_call_frames.deinit();
+        // Drain the peer FIRST: its shutdown delivers a synthetic exception
+        // Return to every open question, firing L3 callbacks that queue
+        // events into state that must still be alive (the delivered flag
+        // makes any re-delivery into a spent context a no-op).
         self.host.deinit();
+        for (self.l3_events.items) |record| allocator.free(record);
+        self.l3_events.deinit(allocator);
+        self.l3_event_bytes = 0;
+        var ctx_it = self.l3_return_ctxs.valueIterator();
+        while (ctx_it.next()) |ctx_ptr| {
+            allocator.destroy(ctx_ptr.*);
+        }
+        self.l3_return_ctxs.deinit();
+    }
+
+    /// Destroy contexts whose question already delivered its one Return.
+    /// Called from the origination exports so repeated accepts/awaits cannot
+    /// accumulate spent contexts; delivered contexts between originations are
+    /// bounded by the outstanding-accept budget.
+    fn pruneDeliveredL3Ctxs(self: *PeerState) void {
+        var it = self.l3_return_ctxs.iterator();
+        var to_destroy: [L3_MAX_PENDING_RETURNS * 2]*L3ReturnCtx = undefined;
+        var count: usize = 0;
+        while (it.next()) |entry| {
+            if (entry.value_ptr.*.delivered and count < to_destroy.len) {
+                to_destroy[count] = entry.value_ptr.*;
+                count += 1;
+                _ = self.l3_return_ctxs.remove(entry.key_ptr.*);
+            }
+        }
+        for (to_destroy[0..count]) |ctx| allocator.destroy(ctx);
+    }
+
+    /// Append one owned L3 event record. Layout (little-endian):
+    /// `[0..4) kind, [4..8) question_id, [8..12) payload_len, [12..) payload`.
+    fn queueL3Event(self: *PeerState, kind: u32, question_id: u32, payload: []const u8) !void {
+        if (payload.len > std.math.maxInt(u32) - 12) return error.L3EventTooLarge;
+        if (self.l3_events.items.len >= L3_MAX_EVENT_COUNT or
+            self.l3_event_bytes + payload.len > L3_MAX_EVENT_BYTES)
+        {
+            return error.L3EventQueueFull;
+        }
+        const record = try allocator.alloc(u8, 12 + payload.len);
+        errdefer allocator.free(record);
+        std.mem.writeInt(u32, record[0..4], kind, .little);
+        std.mem.writeInt(u32, record[4..8], question_id, .little);
+        std.mem.writeInt(u32, record[8..12], @intCast(payload.len), .little);
+        @memcpy(record[12..], payload);
+        try self.l3_events.append(allocator, record);
+        self.l3_event_bytes += record.len;
     }
 };
 
@@ -195,6 +276,74 @@ const BootstrapStubHandler = struct {
 };
 
 var bootstrap_stub_ctx: u8 = 0;
+
+/// Root any-pointer of a serialized message, keeping the owning message
+/// alive (heap-allocated: the reader borrows the message by pointer, so the
+/// pair must not move) for the reader's lifetime.
+const RootAnyPointer = struct {
+    msg: *message.Message,
+    reader: message.AnyPointerReader,
+
+    fn init(bytes: []const u8) !RootAnyPointer {
+        const msg = try allocator.create(message.Message);
+        errdefer allocator.destroy(msg);
+        msg.* = try message.Message.init(allocator, bytes, EXAMPLE_SERDE_VALIDATION_OPTIONS);
+        errdefer msg.deinit();
+        const reader = try msg.getRootAnyPointer();
+        return .{ .msg = msg, .reader = reader };
+    }
+
+    fn deinit(self: *RootAnyPointer) void {
+        self.msg.deinit();
+        allocator.destroy(self.msg);
+    }
+};
+
+/// Per-origination context for the L3 Return callbacks. Exactly-once event
+/// delivery is guarded by the `delivered` flag: the peer's Return machinery
+/// can keep a question reachable after its Return (a `noFinishNeeded` Return
+/// leaves it explicitly finishable), and the shutdown drain re-delivers a
+/// synthetic exception to every open question, so re-entry into a spent
+/// context must be a no-op. Spent contexts are freed by the next
+/// origination's prune or by peer teardown.
+const L3ReturnCtx = struct {
+    state: *PeerState,
+    question_id: u32,
+    kind: u32,
+    delivered: bool = false,
+};
+
+/// Deliver an L3 question's Return as an event: the embedder receives the
+/// complete inbound RPC message (Return plus its cap-table descriptors) so
+/// it can parse capability placement itself. Synthetic local Returns (the
+/// shutdown drain) have no inbound frame and surface as an exception event
+/// carrying the reason instead. Event-queue overflow is logged and dropped:
+/// the embedder bounds it by draining between pumps; the alternative would
+/// be blocking inside the peer.
+fn onL3Return(
+    ctx_ptr: *anyopaque,
+    peer: *Peer,
+    ret: protocol.Return,
+    caps: *const cap_table.InboundCapTable,
+) anyerror!void {
+    _ = peer;
+    _ = caps;
+    const ctx: *L3ReturnCtx = @ptrCast(@alignCast(ctx_ptr));
+    if (ctx.delivered) return;
+    ctx.delivered = true;
+    const state = ctx.state;
+
+    if (ret.tag == .exception or state.host.current_inbound_frame == null) {
+        const reason = if (ret.exception) |ex| ex.reason else "handoff return unavailable";
+        state.queueL3Event(L3_EVENT_KIND_RETURN_EXCEPTION, ctx.question_id, reason) catch |err| {
+            log.debug("l3 exception event dropped: {}", .{err});
+        };
+        return;
+    }
+    state.queueL3Event(ctx.kind, ctx.question_id, state.host.current_inbound_frame.?) catch |err| {
+        log.debug("l3 return event dropped: {}", .{err});
+    };
+}
 
 const AllocationRecord = struct {
     requested_len: u32,
@@ -1338,6 +1487,340 @@ pub export fn capnp_peer_send_release(peer: u32, cap_id: u32, reference_count: u
 
     state.host.peer.sendReleaseForHost(cap_id, reference_count) catch |err| {
         setError(ERROR_PEER_CONTROL, @errorName(err));
+        return 0;
+    };
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Experimental Level-3 three-party handoff origination (feature bit 10).
+//
+// The embedder is the vat network: it mints the opaque ThirdPartyToAwait /
+// ThirdPartyToContact tokens and resolves third-party connections outside
+// the module, passing the blobs in as bytes. `capnp_peer_send_provide`
+// couples two module-local peers (the originator's connection to the host
+// of the provided cap, and its connection to the recipient); the Accept,
+// ThirdPartyAnswer, and pending-await origins run on single peers, and
+// their Returns surface through `capnp_peer_pop_l3_event`.
+// ---------------------------------------------------------------------------
+
+/// Originate a three-party handoff: give the capability at import
+/// `provided_import_id` of `peer` (its connection to the host of the
+/// provided cap) to a third party reachable through
+/// `host_of_recipient_peer` (the connection to the recipient).
+/// `recipient` is the serialized root any-pointer holding the embedder's
+/// ThirdPartyToAwait token; `contact` is the opaque ThirdPartyToContact the
+/// module stores for the vine. Writes the held-open Provide question id and
+/// the minted vine export id. The Provide receives no Return; the question
+/// stays open until the recipient releases the vine.
+/// Thread-safe on native targets (mutex-protected).
+pub export fn capnp_peer_send_provide(
+    peer: u32,
+    host_of_recipient_peer: u32,
+    provided_import_id: u32,
+    recipient_ptr: AbiPtr,
+    recipient_len: u32,
+    contact_ptr: AbiPtr,
+    contact_len: u32,
+    out_question_id_ptr: AbiPtr,
+    out_vine_id_ptr: AbiPtr,
+) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    clearErrorState();
+
+    const state = getPeerState(peer) orelse {
+        setError(ERROR_UNKNOWN_PEER, "unknown peer handle");
+        return 0;
+    };
+    const recipient_state = getPeerState(host_of_recipient_peer) orelse {
+        setError(ERROR_UNKNOWN_PEER, "unknown host-of-recipient peer handle");
+        return 0;
+    };
+    const recipient_bytes = asSlice(recipient_ptr, recipient_len) catch {
+        setError(ERROR_INVALID_ARG, "invalid recipient pointer");
+        return 0;
+    };
+    const contact_bytes = asSlice(contact_ptr, contact_len) catch {
+        setError(ERROR_INVALID_ARG, "invalid contact pointer");
+        return 0;
+    };
+    validateAbiRange(out_question_id_ptr, @sizeOf(u32)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    validateAbiRange(out_vine_id_ptr, @sizeOf(u32)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+
+    var recipient = RootAnyPointer.init(recipient_bytes) catch |err| {
+        setError(ERROR_SERDE_DECODE, @errorName(err));
+        return 0;
+    };
+    defer recipient.deinit();
+
+    const handle = state.host.peer.sendProvide(
+        .{
+            .tag = .importedCap,
+            .imported_cap = provided_import_id,
+            .promised_answer = null,
+        },
+        recipient.reader,
+        &recipient_state.host.peer,
+        contact_bytes,
+    ) catch |err| {
+        setError(ERROR_L3_HANDOFF, @errorName(err));
+        return 0;
+    };
+
+    writeU32(out_question_id_ptr, handle.question_id) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    writeU32(out_vine_id_ptr, handle.vine_id) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    return 1;
+}
+
+/// Pick up a capability a third party provided: send an Accept on `peer`
+/// (the connection to the host of the provided cap). `provision` is the
+/// serialized root any-pointer holding the embedder's ThirdPartyCompletion
+/// token; a nonempty `embargo` is forwarded verbatim. Returns the Accept
+/// question id; the Accept's Return (and the accepted capability's import
+/// placement) is delivered through `capnp_peer_pop_l3_event` and the
+/// question is auto-Finished after exactly one Return.
+/// Thread-safe on native targets (mutex-protected).
+pub export fn capnp_peer_send_accept(
+    peer: u32,
+    provision_ptr: AbiPtr,
+    provision_len: u32,
+    embargo_ptr: AbiPtr,
+    embargo_len: u32,
+    out_question_id_ptr: AbiPtr,
+) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    clearErrorState();
+
+    const state = getPeerState(peer) orelse {
+        setError(ERROR_UNKNOWN_PEER, "unknown peer handle");
+        return 0;
+    };
+    const provision_bytes = asSlice(provision_ptr, provision_len) catch {
+        setError(ERROR_INVALID_ARG, "invalid provision pointer");
+        return 0;
+    };
+    const embargo_bytes = asSlice(embargo_ptr, embargo_len) catch {
+        setError(ERROR_INVALID_ARG, "invalid embargo pointer");
+        return 0;
+    };
+    validateAbiRange(out_question_id_ptr, @sizeOf(u32)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    state.pruneDeliveredL3Ctxs();
+    if (state.l3_return_ctxs.count() >= L3_MAX_PENDING_RETURNS) {
+        setError(ERROR_L3_HANDOFF, "too many outstanding handoff returns");
+        return 0;
+    }
+
+    var provision = RootAnyPointer.init(provision_bytes) catch |err| {
+        setError(ERROR_SERDE_DECODE, @errorName(err));
+        return 0;
+    };
+    defer provision.deinit();
+
+    const ctx = allocator.create(L3ReturnCtx) catch {
+        setError(ERROR_ALLOC, "handoff context allocation failed");
+        return 0;
+    };
+    ctx.* = .{ .state = state, .question_id = 0, .kind = L3_EVENT_KIND_ACCEPT_RETURN };
+    const question_id = state.host.peer.sendAccept(
+        provision.reader,
+        if (embargo_len == 0) null else embargo_bytes,
+        ctx,
+        onL3Return,
+    ) catch |err| {
+        allocator.destroy(ctx);
+        setError(ERROR_L3_HANDOFF, @errorName(err));
+        return 0;
+    };
+    ctx.question_id = question_id;
+    state.l3_return_ctxs.put(@intFromPtr(ctx), ctx) catch {
+        // The question is live with a ctx the map no longer tracks; free it
+        // through the callback path is impossible, so fail loudly and let
+        // teardown reclaim it via the peer drain.
+        setError(ERROR_ALLOC, "handoff context registration failed");
+        return 0;
+    };
+
+    writeU32(out_question_id_ptr, question_id) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    return 1;
+}
+
+/// Callee side of a redirected return: send a ThirdPartyAnswer carrying the
+/// embedder's `completion` token (serialized root any-pointer) on `peer`,
+/// the connection to the vat that will receive this call's results. The
+/// answer id is callee-allocated per rpc.capnp (bit 30 set, bit 31 clear)
+/// and written to `out_answer_id_ptr`; the follow-up Return for that id is
+/// an ordinary outbound frame this peer already knows how to send.
+/// Thread-safe on native targets (mutex-protected).
+pub export fn capnp_peer_send_third_party_answer(
+    peer: u32,
+    completion_ptr: AbiPtr,
+    completion_len: u32,
+    out_answer_id_ptr: AbiPtr,
+) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    clearErrorState();
+
+    const state = getPeerState(peer) orelse {
+        setError(ERROR_UNKNOWN_PEER, "unknown peer handle");
+        return 0;
+    };
+    const completion_bytes = asSlice(completion_ptr, completion_len) catch {
+        setError(ERROR_INVALID_ARG, "invalid completion pointer");
+        return 0;
+    };
+    validateAbiRange(out_answer_id_ptr, @sizeOf(u32)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+
+    var completion = RootAnyPointer.init(completion_bytes) catch |err| {
+        setError(ERROR_SERDE_DECODE, @errorName(err));
+        return 0;
+    };
+    defer completion.deinit();
+
+    const answer_id = state.host.peer.sendThirdPartyAnswer(completion.reader) catch |err| {
+        setError(ERROR_L3_HANDOFF, @errorName(err));
+        return 0;
+    };
+
+    writeU32(out_answer_id_ptr, answer_id) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    return 1;
+}
+
+/// Recipient side of a redirected return: park a question that awaits a
+/// ThirdPartyAnswer whose completion serializes byte-identically to
+/// `completion`. The parked question needs no wire id (the callee chooses
+/// it); when the callee's follow-up Return arrives, it is delivered through
+/// `capnp_peer_pop_l3_event`.
+/// Thread-safe on native targets (mutex-protected).
+pub export fn capnp_peer_register_pending_third_party_await(
+    peer: u32,
+    completion_ptr: AbiPtr,
+    completion_len: u32,
+) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    clearErrorState();
+
+    const state = getPeerState(peer) orelse {
+        setError(ERROR_UNKNOWN_PEER, "unknown peer handle");
+        return 0;
+    };
+    const completion_bytes = asSlice(completion_ptr, completion_len) catch {
+        setError(ERROR_INVALID_ARG, "invalid completion pointer");
+        return 0;
+    };
+    state.pruneDeliveredL3Ctxs();
+    if (state.l3_return_ctxs.count() >= L3_MAX_PENDING_RETURNS) {
+        setError(ERROR_L3_HANDOFF, "too many outstanding handoff returns");
+        return 0;
+    }
+
+    var completion = RootAnyPointer.init(completion_bytes) catch |err| {
+        setError(ERROR_SERDE_DECODE, @errorName(err));
+        return 0;
+    };
+    defer completion.deinit();
+
+    const ctx = allocator.create(L3ReturnCtx) catch {
+        setError(ERROR_ALLOC, "handoff context allocation failed");
+        return 0;
+    };
+    ctx.* = .{ .state = state, .question_id = 0, .kind = L3_EVENT_KIND_AWAIT_RETURN };
+    state.host.peer.registerPendingThirdPartyAwait(completion.reader, ctx, onL3Return) catch |err| {
+        allocator.destroy(ctx);
+        setError(ERROR_L3_HANDOFF, @errorName(err));
+        return 0;
+    };
+    state.l3_return_ctxs.put(@intFromPtr(ctx), ctx) catch {
+        setError(ERROR_ALLOC, "handoff context registration failed");
+        return 0;
+    };
+    return 1;
+}
+
+/// Pop the oldest queued L3 event. Event record layout (little-endian):
+/// `[0..4) kind (1 accept Return, 2 adopted-await Return, 3 exception),
+/// [4..8) question id (accept question; exception events carry 0),`
+/// `[8..12) payload_len, [12..) payload`. Kinds 1 and 2 carry the complete
+/// inbound RPC message that contained the Return (including its cap-table
+/// descriptors); kind 3 carries the UTF-8 exception reason.
+/// OWNED output: free via capnp_buf_free with the exact returned length.
+/// Returns 0 with zeroed outputs when no event is queued.
+/// Thread-safe on native targets (mutex-protected).
+pub export fn capnp_peer_pop_l3_event(peer: u32, out_ptr_ptr: AbiPtr, out_len_ptr: AbiPtr) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    clearErrorState();
+
+    const state = getPeerState(peer) orelse {
+        setError(ERROR_UNKNOWN_PEER, "unknown peer handle");
+        return 0;
+    };
+    validateOutBufferPointers(out_ptr_ptr, out_len_ptr) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+
+    const record = state.l3_events.pop() orelse {
+        writeAbiPtr(out_ptr_ptr, 0) catch |err| {
+            setError(ERROR_INVALID_ARG, @errorName(err));
+            return 0;
+        };
+        writeU32(out_len_ptr, 0) catch |err| {
+            setError(ERROR_INVALID_ARG, @errorName(err));
+            return 0;
+        };
+        return 0;
+    };
+    state.l3_event_bytes -= record.len;
+
+    const record_ptr = ptrToAbi(@intFromPtr(record.ptr)) catch {
+        allocator.free(record);
+        setError(ERROR_INVALID_ARG, "event pointer overflow");
+        return 0;
+    };
+    trackBuffer(record) catch {
+        allocator.free(record);
+        setError(ERROR_ALLOC, "event tracking failed");
+        return 0;
+    };
+    writeAbiPtr(out_ptr_ptr, record_ptr) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    writeU32(out_len_ptr, @intCast(record.len)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
         return 0;
     };
     return 1;

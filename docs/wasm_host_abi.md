@@ -101,6 +101,12 @@ does not reserve these bits in another project's ABI or imply compatibility.
 - bit `9`: host-call parameter capabilities are retained until the response
   settles them according to `releaseParamCaps`, rather than released when the
   call is queued for the host.
+- bit `10`: experimental Level-3 three-party handoff origination exports are
+  present (`capnp_peer_send_provide`, `capnp_peer_send_accept`,
+  `capnp_peer_send_third_party_answer`,
+  `capnp_peer_register_pending_third_party_await`, and the
+  `capnp_peer_pop_l3_event` event channel; see
+  [Level-3 handoff exports](#level-3-three-party-handoff-exports-experimental)).
 
 The v1 discovery exports retain their `capnp_wasm_` names for compatibility;
 the other exports use `capnp_`. Hosts must use the names listed here. New ABIs
@@ -370,6 +376,56 @@ u32 capnp_peer_send_release(u32 peer, u32 cap_id, u32 reference_count);
 u32 capnp_schema_manifest_json(u32 out_ptr_ptr, u32 out_len_ptr);
 void capnp_shutdown();
 ```
+
+## Level-3 three-party handoff exports (experimental)
+
+Feature bit `10`. These expose the peer's Provide/Accept/ThirdPartyAnswer
+origination for three-party capability handoff. The embedder is the vat
+network: it mints the opaque `ThirdPartyToAwait` / `ThirdPartyToContact` /
+`ThirdPartyCompletion` tokens and resolves third-party connections outside
+the module, passing the blobs in as serialized root any-pointers (or raw
+bytes). No `VatNetwork` runs inside the module, and the recipient auto-pickup
+handler — which needs a synchronous vat network during inbound frame
+processing — is not exposed.
+
+```c
+u32 capnp_peer_send_provide(
+  u32 peer,                     // connection to the host of the provided cap
+  u32 host_of_recipient_peer,   // connection to the recipient vat
+  u32 provided_import_id,       // MessageTarget: importedCap on `peer`
+  u32 recipient_ptr, u32 recipient_len,   // ThirdPartyToAwait root message
+  u32 contact_ptr, u32 contact_len,       // opaque ThirdPartyToContact bytes
+  u32 out_question_id_ptr, u32 out_vine_id_ptr
+);
+u32 capnp_peer_send_accept(
+  u32 peer,
+  u32 provision_ptr, u32 provision_len,   // ThirdPartyCompletion root message
+  u32 embargo_ptr, u32 embargo_len,       // empty = no embargo
+  u32 out_question_id_ptr
+);
+u32 capnp_peer_send_third_party_answer(
+  u32 peer,
+  u32 completion_ptr, u32 completion_len,
+  u32 out_answer_id_ptr                    // callee-allocated, bit 30 set
+);
+u32 capnp_peer_register_pending_third_party_await(
+  u32 peer,
+  u32 completion_ptr, u32 completion_len
+);
+u32 capnp_peer_pop_l3_event(u32 peer, u32 out_ptr_ptr, u32 out_len_ptr);
+```
+
+`capnp_peer_pop_l3_event` returns one owned record per Accept or adopted
+await Return (free with `capnp_buf_free`; `0` means empty). Record layout,
+little-endian: `[0..4) kind` (`1` accept Return, `2` adopted-await Return,
+`3` exception), `[4..8) question id`, `[8..12) payload_len`, `[12..)` payload.
+Kinds `1` and `2` carry the complete inbound RPC message that contained the
+Return, including its cap-table descriptors, so the embedder can parse
+capability placement itself; kind `3` carries the UTF-8 exception reason
+(synthetic Returns such as the shutdown drain have no inbound frame). Each
+originated question delivers exactly one event; bounded budgets (64
+outstanding origins, 256 queued events, 4 MiB event bytes) keep the queue
+from growing without the embedder draining it.
 
 ### `capnp_peer_new`
 - Returns non-zero opaque peer handle on success.

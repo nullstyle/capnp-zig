@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (Experimental)
+
+- **Level-3 three-party handoff origination over the WASM host ABI (feature
+  bit `10`).** Five new exports expose the peer's existing
+  Provide/Accept/ThirdPartyAnswer/pending-await origination to embedders:
+  `capnp_peer_send_provide` (couples two module-local peers and returns the
+  held-open Provide question id plus the vine export id),
+  `capnp_peer_send_accept`, `capnp_peer_send_third_party_answer`
+  (callee-allocated answer id), `capnp_peer_register_pending_third_party_await`,
+  and `capnp_peer_pop_l3_event`, an owned-output event channel that delivers
+  each Accept/await Return as the complete inbound RPC message (cap-table
+  descriptors included) or as an exception reason for synthetic Returns. The
+  embedder is the vat network: tokens (`ThirdPartyToAwait`,
+  `ThirdPartyToContact`, `ThirdPartyCompletion`) are minted and resolved
+  host-side and passed in as bytes, so no `VatNetwork` runs inside the module
+  and the recipient auto-pickup handler (which needs a synchronous network
+  during inbound processing) is not exposed. Delivery is exactly-once per
+  origination, guarded against the Return machinery's re-delivery into spent
+  questions (a `noFinishNeeded` Return leaves a question finishable, and the
+  shutdown drain re-delivers), with bounded budgets: 64 outstanding origins,
+  256 queued events, 4 MiB event bytes. ABI tests cover the Provide frame
+  (target, question id, token round-trip), the Accept frame plus its Return
+  event (byte-identical frame, exactly-one-event), the ThirdPartyAnswer id
+  range and completion round-trip, and clean teardown of an unanswered Accept.
+
 ## [0.21.0] - 2026-10-06
 
 This release moves QUIC to quic-zig v0.30.1 (about 91 KB per connection

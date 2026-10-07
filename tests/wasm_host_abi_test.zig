@@ -462,6 +462,222 @@ test "wasm host ABI reports min/max version and feature flags" {
     try std.testing.expect((flags & (@as(u64, 1) << 6)) != 0);
     try std.testing.expect((flags & (@as(u64, 1) << 7)) != 0);
     try std.testing.expect((flags & (@as(u64, 1) << 8)) != 0);
+    try std.testing.expect((flags & (@as(u64, 1) << 9)) != 0);
+    try std.testing.expect((flags & (@as(u64, 1) << 10)) != 0);
+}
+
+fn hasL3HandoffExports(comptime ModuleType: type) bool {
+    return @hasDecl(ModuleType, "capnp_peer_send_provide") and
+        @hasDecl(ModuleType, "capnp_peer_send_accept") and
+        @hasDecl(ModuleType, "capnp_peer_send_third_party_answer") and
+        @hasDecl(ModuleType, "capnp_peer_register_pending_third_party_await") and
+        @hasDecl(ModuleType, "capnp_peer_pop_l3_event");
+}
+
+test "wasm host ABI exposes L3 handoff export set" {
+    try std.testing.expect(hasL3HandoffExports(abi));
+
+    const Missing = struct {
+        pub fn capnp_peer_send_provide(
+            _: u32,
+            _: u32,
+            _: u32,
+            _: abi.AbiPtr,
+            _: u32,
+            _: abi.AbiPtr,
+            _: u32,
+            _: abi.AbiPtr,
+            _: abi.AbiPtr,
+        ) u32 {
+            return 0;
+        }
+    };
+    try std.testing.expect(!hasL3HandoffExports(Missing));
+}
+
+/// Build a standalone message whose root any-pointer holds `text`, the shape
+/// the embedder uses for the opaque L3 tokens (ThirdPartyToAwait,
+/// ThirdPartyCompletion, ThirdPartyToContact).
+fn buildTextTokenMessage(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
+    var builder = capnpc.message.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    const root = try builder.initRootAnyPointer();
+    try root.setText(text);
+    return builder.toBytes();
+}
+
+test "l3 send_provide emits a Provide frame coupling two peers" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const originator = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(originator);
+    const recipient_side = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(recipient_side);
+    try std.testing.expect(originator != 0 and recipient_side != 0);
+
+    const recipient_token = try buildTextTokenMessage(std.testing.allocator, "to-await-token");
+    defer std.testing.allocator.free(recipient_token);
+    const recipient_buf = try allocAbiBytes(recipient_token);
+    defer recipient_buf.free();
+
+    var question_id: u32 = 0;
+    var vine_id: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_send_provide(
+        originator,
+        recipient_side,
+        3,
+        recipient_buf.ptr,
+        recipient_buf.len,
+        toAbiPtr("contact-token"),
+        @intCast("contact-token".len),
+        toAbiPtr(&question_id),
+        toAbiPtr(&vine_id),
+    ));
+    // Question and vine ids are small counters starting anywhere; the frame
+    // decode below proves both were published consistently.
+
+    const frame = try popOutFrameCopy(std.testing.allocator, originator);
+    defer std.testing.allocator.free(frame);
+    var decoded = try protocol.DecodedMessage.init(std.testing.allocator, frame);
+    defer decoded.deinit();
+    const provide = try decoded.asProvide();
+    try std.testing.expectEqual(question_id, provide.question_id);
+    try std.testing.expectEqual(protocol.MessageTargetTag.importedCap, provide.target.tag);
+    try std.testing.expectEqual(@as(u32, 3), provide.target.imported_cap orelse return error.MissingTarget);
+    const recipient = provide.recipient orelse return error.MissingRecipient;
+    try std.testing.expectEqualStrings("to-await-token", try recipient.getText());
+}
+
+test "l3 send_accept emits Accept and delivers its Return as an event" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const peer = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(peer);
+    try std.testing.expect(peer != 0);
+
+    const provision_token = try buildTextTokenMessage(std.testing.allocator, "completion-token");
+    defer std.testing.allocator.free(provision_token);
+    const provision_buf = try allocAbiBytes(provision_token);
+    defer provision_buf.free();
+
+    var question_id: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_send_accept(
+        peer,
+        provision_buf.ptr,
+        provision_buf.len,
+        0,
+        0,
+        toAbiPtr(&question_id),
+    ));
+    // Question ids are small counters starting anywhere; the Accept frame
+    // decode below proves the returned id was published consistently.
+
+    const accept_frame = try popOutFrameCopy(std.testing.allocator, peer);
+    defer std.testing.allocator.free(accept_frame);
+    var accept_decoded = try protocol.DecodedMessage.init(std.testing.allocator, accept_frame);
+    defer accept_decoded.deinit();
+    const accept = try accept_decoded.asAccept();
+    try std.testing.expectEqual(question_id, accept.question_id);
+    const provision = accept.provision orelse return error.MissingProvision;
+    try std.testing.expectEqualStrings("completion-token", try provision.getText());
+    try std.testing.expect(accept.embargo == null);
+
+    // The remote answers the Accept with a results Return carrying a
+    // sender-hosted capability; the embedder must see exactly that frame.
+    const return_frame = try buildReturnResultsFrameWithCapAndFlags(std.testing.allocator, question_id, 77);
+    defer std.testing.allocator.free(return_frame);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+        peer,
+        toAbiPtr(return_frame.ptr),
+        @intCast(return_frame.len),
+    ));
+
+    var event_ptr: abi.AbiPtr = 0;
+    var event_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_pop_l3_event(
+        peer,
+        toAbiPtr(&event_ptr),
+        toAbiPtr(&event_len),
+    ));
+    const event = AbiBuffer{ .ptr = event_ptr, .len = event_len };
+    defer event.free();
+    try std.testing.expect(event.len >= 12);
+    const kind = readAbiInt(u32, event.ptr);
+    const event_question_id = readAbiInt(u32, event.ptr + 4);
+    const payload_len = readAbiInt(u32, event.ptr + 8);
+    try std.testing.expectEqual(@as(u32, 1), kind);
+    try std.testing.expectEqual(question_id, event_question_id);
+    try std.testing.expectEqual(@as(u32, @intCast(return_frame.len)), payload_len);
+    try std.testing.expectEqualSlices(u8, return_frame, event.slice()[12..]);
+
+    // Exactly one event per originated accept.
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_pop_l3_event(
+        peer,
+        toAbiPtr(&event_ptr),
+        toAbiPtr(&event_len),
+    ));
+}
+
+test "l3 send_third_party_answer allocates an in-range answer id" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const peer = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(peer);
+    try std.testing.expect(peer != 0);
+
+    const completion_token = try buildTextTokenMessage(std.testing.allocator, "completion-blob");
+    defer std.testing.allocator.free(completion_token);
+    const completion_buf = try allocAbiBytes(completion_token);
+    defer completion_buf.free();
+
+    var answer_id: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_send_third_party_answer(
+        peer,
+        completion_buf.ptr,
+        completion_buf.len,
+        toAbiPtr(&answer_id),
+    ));
+    try std.testing.expect(answer_id >= (1 << 30) and answer_id < (1 << 31));
+
+    const frame = try popOutFrameCopy(std.testing.allocator, peer);
+    defer std.testing.allocator.free(frame);
+    var decoded = try protocol.DecodedMessage.init(std.testing.allocator, frame);
+    defer decoded.deinit();
+    const answer = try decoded.asThirdPartyAnswer();
+    try std.testing.expectEqual(answer_id, answer.answer_id);
+    const completion = answer.completion orelse return error.MissingCompletion;
+    try std.testing.expectEqualStrings("completion-blob", try completion.getText());
+}
+
+test "l3 outstanding accept drains cleanly at peer teardown" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const peer = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(peer);
+    try std.testing.expect(peer != 0);
+
+    const provision_token = try buildTextTokenMessage(std.testing.allocator, "unanswered-token");
+    defer std.testing.allocator.free(provision_token);
+    const provision_buf = try allocAbiBytes(provision_token);
+    defer provision_buf.free();
+
+    var question_id: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_send_accept(
+        peer,
+        provision_buf.ptr,
+        provision_buf.len,
+        0,
+        0,
+        toAbiPtr(&question_id),
+    ));
+
+    // Freeing the peer runs the shutdown drain, which delivers a synthetic
+    // exception Return through the L3 callback; the context and the queued
+    // exception event must both be reclaimed without a pop.
 }
 
 test "host call raw return frame accepts results with cap table and flags" {
