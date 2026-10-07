@@ -7,53 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **QUIC: quic-zig v0.29.0 -> v0.30.1 (tag `ccf6ae2`,
-  `quic-0.30.1-DnSYvVnOOwBfpDxHQWI41E6YxM1RqqkCuven5bK46jXR`).** Behavior
-  only: no wire change, no API change, the same option map and exported
-  modules, and the same boringssl-zig (0.6.7, `ff30fe9`). The coordinated
-  set (http3-zig, qmsg, qmesh-zig, nest, mruby-quic) moved to it on the
-  same day. A probe timeout is not a loss (RFC 9002 section 6.2.4): the
-  Application space's probe timeout no longer declares the oldest packet
-  lost nor cuts the congestion window; the probe carries its frames
-  again, and the thresholds decide when its ACK comes, so an ACK that was
-  only late is no longer a window cut. The handshake's probe timeout is
-  bounded at about a second and runs from the last send: a client waiting
-  for a lost server flight probes every second, not at 1, 2, 4, 8 s.
-  Also: `quic.unixWallClockUs` compiles on Zig 0.17.0 now (the v0.29.0
-  defect in `docs/upstream/handoff-quic-zig-ticket-keys.md`), and the
-  loop-thread ask there is delivered as `Server.adoptLoopThread()`, which
-  capnp-zig now calls (see Fixed). Not v0.30.0: it did not compile on
-  Windows. The bump itself changes no capnp-zig code.
-
-### Fixed
-
-- **QUIC: `Connection.adoptOwnerThread` works again for a server-role
-  connection in a Debug build (quic-zig v0.30.1
-  `Server.adoptLoopThread`).** With the quic-zig v0.29.0 pin, a
-  server-side QUIC `Connection` that had received a datagram on one thread
-  and moved to another panicked inside quic-zig at the next datagram
-  (`Server.zig:1298`, the Debug loop-thread latch), although
-  `adoptOwnerThread` documents that handoff. It now moves quic-zig's latch
-  too. Also:
-  - `Listener.adoptLoopThread` (new, Experimental) is the same move for
-    code that drives a `Listener` itself.
-  - The fanout `Server`'s first step makes its thread quic-zig's loop
-    thread, so a `Server.rotateSessionTicketKey` before `run` may happen
-    on another thread than the loop's (provided `run` starts after it).
-    It used to have to run on the thread that then called `run`.
-  Release builds never checked. Tests in the QUIC transport suite step a
-  server on one thread, join it, and step it again on another.
-
 ## [0.21.0] - 2026-10-06
 
-This release moves QUIC to quic-zig v0.29.0 (about 91 KB per connection
-instead of 1.09 MB, and better loss handling), fixes a double free and a
-leak in Experimental persistence, and makes the core build for iOS. A new
-build option, `-Dfd-passing`, compiles fd passing out. capnp-zig v0.21.0
-and http3-zig v0.5.3 pin the same quic-zig release with the same option
-map, so one program can link both with one quic module. No Stable API line
+This release moves QUIC to quic-zig v0.30.1 (about 91 KB per connection
+instead of 1.09 MB, and better loss and probe-timeout handling), fixes a
+double free and a leak in Experimental persistence, and makes the core
+build for iOS. A new build option, `-Dfd-passing`, compiles fd passing out.
+capnp-zig v0.21.0 and http3-zig v0.5.4 pin the same quic-zig release with
+the same option map, so one program can link both with one quic module. No Stable API line
 changes (`docs/api-snapshot.txt` and `docs/generated-shape.txt` are the
 same as in v0.20.0). One `### Breaking` entry is in the Stable build
 integration: a raw compiler command that passes capnp-zig's modules by hand
@@ -188,13 +149,19 @@ docs/upgrading-to-0.21.0.md walks through the upgrade.
   from up to that far in the future or is up to that far past its expiry.
   The default clock stays the listener's (`Listener.nowUs`), which already
   goes on across a restart; the skew covers a wall clock that stepped back
-  between two starts. quic-zig's `unixWallClockUs` does not compile with
-  Zig 0.17.0 (it calls `std.time.microTimestamp`): do not use it as the
-  clock.
+  between two starts. quic-zig's `quic.unixWallClockUs` is a wall clock
+  that fits (it compiles on Zig 0.17.0 from quic-zig v0.30.1; v0.29.0's
+  did not).
 - **QUIC (Experimental): `ClientOptions.session_ticket_lifetime_s`.** The
   longest the client keeps a session ticket: the smaller of this and the
   server's lifetime, 1 s to 2 days (`max_session_ticket_lifetime_s`), so it
   only shortens. `error.InvalidConfig` outside that range.
+- **QUIC (Experimental): `Listener.adoptLoopThread()`.** Moves quic-zig's
+  Debug loop-thread latch (`Server.adoptLoopThread`, quic-zig v0.30.1) to
+  the calling thread, for code that drives a `Listener` itself and hands it
+  to another thread at a quiescent point (the old thread has stopped, and
+  the move happens-after its last call). See the quic-zig entry under
+  Changed.
 - **QUIC (Experimental): `zeroServerConfigSecrets(&config)`.** Zeroes both
   ticket keys in a config from `serverConfigFromOptions`, for an embedder
   that builds its own quic-zig server from it. `Listener.init` calls it.
@@ -213,10 +180,11 @@ docs/upgrading-to-0.21.0.md walks through the upgrade.
 - The tests that compile generated code with a raw `zig test` command, and
   `tools/check-windows-timed-read.ps1`, pass
   `tests/fixtures/capnp_build_options.zig` as the options module.
-- **QUIC: quic-zig v0.28.1 -> v0.29.0 (tag `b9a15e6`,
-  `quic-0.29.0-DnSYvahYOwAdaHX-Ct3_iZGZycF387GmpAbI9G9wjFGg`).** No wire
-  change and no security fix. boringssl-zig is unchanged (`ff30fe99`,
-  0.6.7), and so is the dependency option map. What an application sees:
+- **QUIC: quic-zig v0.28.1 -> v0.30.1 (tag `ccf6ae2`,
+  `quic-0.30.1-DnSYvVnOOwBfpDxHQWI41E6YxM1RqqkCuven5bK46jXR`), through
+  v0.29.0 (`b9a15e6`).** No wire change and no security fix. boringssl-zig
+  is unchanged (`ff30fe99`, 0.6.7), and so is the dependency option map.
+  Not v0.30.0: it did not compile on Windows. What an application sees:
   - A connection costs about 91 KB on the heap, not 1.09 MB (quic-zig's
     measure): the sent-packet tracker grows on demand, and the CRYPTO
     buffers live on the heap and go with their keys. A certificate chain
@@ -240,32 +208,45 @@ docs/upgrading-to-0.21.0.md walks through the upgrade.
     datagram of junk made a half-open connection that lived until the
     handshake timeout, and counted as `.accepted`. For such datagrams,
     `Server.feedOutcomeCounts` now counts `.dropped`, not `.accepted`.
+  - A probe timeout is not a loss (v0.30.1, RFC 9002 section 6.2.4): the
+    Application space's probe timeout no longer declares the oldest packet
+    lost nor cuts the congestion window; the probe carries its frames
+    again, and the thresholds decide when its ACK comes, so an ACK that was
+    only late is no longer a window cut. The handshake's probe timeout is
+    bounded at about a second and runs from the last send: a client
+    waiting for a lost server flight probes every second, not at 1, 2, 4,
+    8 s.
   - quic-zig's `Server.rotateSessionTicketKey`, `feed` and `tick` check the
-    thread in a Debug build: the first of them fixes the loop thread. A
-    capnp-zig rotation before `run` must run on the thread that then calls
-    `run` (`Server.rotateSessionTicketKey` docs).
-  - The same Debug check limits a thread handoff. A server-side QUIC
-    `Connection` or `Listener` cannot move to another thread after its
-    first received datagram, tick or rotation: `Connection.adoptOwnerThread`
-    moves capnp-zig's owner thread, not quic-zig's loop thread, so the next
-    step on the new thread panics inside quic-zig (`Server.feed`). Through
-    v0.28.1 such a handoff worked. Release builds do not check, and a
-    client-side `Connection` is not affected. Hand a server-side connection
-    to its thread before its first step.
+    thread in a Debug build (from v0.29.0): the first of them fixes the
+    loop thread, and a call on any other thread asserts. capnp-zig moves
+    that latch with quic-zig v0.30.1's `Server.adoptLoopThread()` wherever
+    it supports a handoff: `Connection.adoptOwnerThread` does it for a
+    server-role connection, `Listener.adoptLoopThread` (Added) for code
+    that drives a `Listener`, and the fanout `Server`'s first step makes
+    its thread the loop thread. So a `Server.rotateSessionTicketKey` before
+    `run` may run on another thread, provided it ends before `run` starts;
+    a rotation still running at the loop's first step is a race that no
+    check catches. Release builds do not check, and a client-side
+    `Connection` has no quic-zig latch. Tests in the QUIC transport suite
+    step a server on one thread, join it, and step it again on another.
   - **Migration:**
     - **One quic module per process.** A build that links capnp-zig with
       `-Dquic=true` next to another package that depends on quic-zig must
-      pin a release of that package that pins quic-zig v0.29.0, with the
-      same option map. http3-zig `v0.5.3` (tag `3df122c`, hash
-      `http3_zig-0.5.3-ayZ03GssEwAiT7GhEpJgTa6liWnxBLTJ58rI869o4Wwo`) is
-      that release: it pins quic-zig v0.29.0 and takes quic's exported
+      pin a release of that package that pins quic-zig v0.30.1, with the
+      same option map. http3-zig `v0.5.4` (tag `22b821f`, hash
+      `http3_zig-0.5.4-ayZ03AMwEwCFw0VQCEBd1LP1JBUQtDKT1USKYn_OJACT`) is
+      that release: it pins quic-zig v0.30.1 and takes quic's exported
       `quic` and `boringssl` modules with capnp-zig's option map, so one
-      program can link both with one quic module. Older http3-zig releases
-      (`v0.5.2` and before) build their own quic module and cannot share
-      it. No qmsg, qmesh-zig or nest release pins v0.29.0 yet.
-    - **Direct quic-zig users:** read quic-zig's 0.29.0 entry. The
-      congestion controllers' loss hooks take the detection time (internal
-      surface).
+      program can link both with one quic module (measured: one `-Mquic=`
+      and one `-Mboringssl=`, Debug and ReleaseSafe). http3-zig `v0.5.3`
+      pins quic-zig v0.29.0, so it does not share the module with v0.21.0,
+      and `v0.5.2` and before build their own quic module. qmsg `v0.8.1`
+      (`9dae417`) also pins quic-zig v0.30.1; the qmesh-zig and nest
+      `main` branches do, with no release yet. The quic packages move to a
+      new quic-zig release together.
+    - **Direct quic-zig users:** read quic-zig's 0.29.0, 0.30.0 and 0.30.1
+      entries. The congestion controllers' loss hooks take the detection
+      time (internal surface).
 - **The QUIC test roots no longer import quic-zig's `boringssl` module.**
   The transport suite read a ticket's lifetime through `boringssl.raw`; it
   now calls quic-zig's `Client.resumptionTicketLifetimeSeconds`. No
@@ -295,8 +276,8 @@ docs/upgrading-to-0.21.0.md walks through the upgrade.
 ### Documentation
 
 - `docs/upgrading-to-0.21.0.md` (new): the coordinated set (capnp-zig
-  v0.21.0, quic-zig v0.29.0, http3-zig v0.5.3), one quic module per
-  process, and a checklist for every Breaking entry.
+  v0.21.0, quic-zig v0.30.1, http3-zig v0.5.4, qmsg v0.8.1), one quic
+  module per process, and a checklist for every Breaking entry.
 - `docs/build-integration.md`: "Compiling fd passing out: `-Dfd-passing`"
   (the option, how a consumer passes it, the one-option-map rule, raw
   compiler commands) and "iOS: the core as a static library".
@@ -313,15 +294,16 @@ docs/upgrading-to-0.21.0.md walks through the upgrade.
   check; "Retry and NEW_TOKEN" describes `new_token_clock` and
   `new_token_max_clock_skew_us`; the client ticket lifetime, the refusals,
   `zeroServerConfigSecrets`, the pin paragraph and the CONNECTION_CLOSE
-  entry of "Current Limits" are updated. "Rotation" also states that a
-  server-side `Connection` or `Listener` cannot move to another thread
-  after its first step in a Debug build; so do the doc comments of
-  `Connection.adoptOwnerThread` and `Listener`, and
-  `docs/rpc_runtime_design.md` ("Concurrency and Scheduling").
+  entry of "Current Limits" are updated. "Rotation" also states how a
+  server-side `Connection` or `Listener` moves to another thread at a
+  quiescent point, and that a rotation must end before `run` starts; so
+  do the doc comments of `Connection.adoptOwnerThread`, `Listener` and the
+  fanout `Server`, and `docs/rpc_runtime_design.md` ("Concurrency and
+  Scheduling").
 - `docs/upstream/handoff-quic-zig-ticket-keys.md` records the three
-  candidates as delivered in quic-zig v0.29.0, the `unixWallClockUs`
-  compile defect found on adoption, and a new ask: a way to move the Debug
-  loop-thread latch (for example `Server.adoptLoopThread`).
+  candidates as delivered in quic-zig v0.29.0, and the two findings of that
+  adoption (the `unixWallClockUs` compile defect and a way to move the
+  Debug loop-thread latch) as delivered in v0.30.1 and used.
 
 ## [0.20.0] - 2026-10-05
 

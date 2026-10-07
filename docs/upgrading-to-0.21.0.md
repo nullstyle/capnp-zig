@@ -3,12 +3,13 @@
 This guide is for projects that depend on capnp-zig. v0.21.0 bundles these
 changes:
 
-- quic-zig v0.28.1 -> v0.29.0: about 91 KB per QUIC connection instead of
-  1.09 MB, better loss handling, and new session-ticket options.
+- quic-zig v0.28.1 -> v0.30.1: about 91 KB per QUIC connection instead of
+  1.09 MB, better loss and probe-timeout handling, and new session-ticket
+  options.
 - A memory-safety fix for persistent exports (Experimental persistence).
 - The core builds for iOS. A new build option, `-Dfd-passing`, can compile
   fd passing out.
-- capnp-zig and http3-zig v0.5.3 can now link in one program with one quic
+- capnp-zig and http3-zig v0.5.4 can now link in one program with one quic
   module.
 
 The Zig toolchain does not change: it stays at tagged 0.17.0. No Stable API
@@ -23,8 +24,9 @@ section is the authoritative list of changes.
   `deinit_ctx` got an internal pointer, not your ctx. A `deinit_ctx` that
   frees its ctx caused a double free, and your ctx leaked. v0.21.0 gives
   `deinit_ctx` your ctx, exactly once.
-- **You run QUIC.** v0.29.0 cuts the memory per connection by about 12x,
-  and a client completes its handshake through packet loss.
+- **You run QUIC.** quic-zig v0.29.0 and v0.30.1 cut the memory per
+  connection by about 12x, a client completes its handshake through packet
+  loss, and a late ACK no longer cuts the congestion window.
 - **You build for iOS, or you want no fd closer threads.** See
   `-Dfd-passing` below.
 
@@ -37,9 +39,10 @@ RPC over AF_UNIX sockets.
 |---|---|---|
 | Zig | `0.17.0` (tagged; no change since v0.19.0) | `mise.toml`: `zig = "0.17.0"`; `build.zig.zon`: `.minimum_zig_version = "0.17.0"` |
 | capnp-zig | `v0.21.0` | `capnpc_zig-0.21.0-...` (recorded here after the tag) |
-| quic-zig | `v0.29.0` (tag at `b9a15e6`) | `quic-0.29.0-DnSYvahYOwAdaHX-Ct3_iZGZycF387GmpAbI9G9wjFGg` |
+| quic-zig | `v0.30.1` (tag at `ccf6ae2`; not v0.30.0) | `quic-0.30.1-DnSYvVnOOwBfpDxHQWI41E6YxM1RqqkCuven5bK46jXR` |
 | boringssl-zig | `0.6.7` (`ff30fe99`), through quic; no change since v0.25.0 | none (quic pins it) |
-| http3-zig (optional) | `v0.5.3` (tag at `3df122c`) | `http3_zig-0.5.3-ayZ03GssEwAiT7GhEpJgTa6liWnxBLTJ58rI869o4Wwo` |
+| http3-zig (optional) | `v0.5.4` (tag at `22b821f`) | `http3_zig-0.5.4-ayZ03AMwEwCFw0VQCEBd1LP1JBUQtDKT1USKYn_OJACT` |
+| qmsg (optional) | `v0.8.1` (tag at `9dae417`) | `qmsg-0.8.1-g3pJMUk4FQAEo6BMkaXjAAYUHuOV96OIBKAC1D_rRdTt` |
 
 ### One quic module per process
 
@@ -55,12 +58,13 @@ const quic_dep = b.dependency("quic", .{
 });
 ```
 
-capnp-zig v0.21.0 and http3-zig v0.5.3 both do this. An app that uses
-capnp-zig with `.quic = true` and http3-zig v0.5.3 builds with one quic
-module and one BoringSSL, in Debug and ReleaseSafe (measured on
-2026-10-06). Older http3-zig releases (v0.5.2 and before) build their own
-quic module, so they cannot share it. No qmsg, qmesh-zig or nest release
-pins quic-zig v0.29.0 yet.
+capnp-zig v0.21.0, http3-zig v0.5.4 and qmsg v0.8.1 all do this, on
+quic-zig v0.30.1. An app that uses capnp-zig with `.quic = true` and
+http3-zig v0.5.4 builds with one quic module and one BoringSSL, in Debug
+and ReleaseSafe (measured on 2026-10-06). http3-zig v0.5.3 pins quic-zig
+v0.29.0, so it does not share the module with capnp-zig v0.21.0, and
+v0.5.2 and before build their own quic module. The qmesh-zig and nest
+`main` branches pin v0.30.1, with no release yet.
 
 The packages that use quic move to a new quic-zig release together, and
 they release after all of them agree. A security fix may release first.
@@ -73,7 +77,7 @@ they release after all of them agree. A security fix may release first.
    zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.21.0
    ```
 
-   If your own `build.zig` also depends on quic-zig, move it to v0.29.0
+   If your own `build.zig` also depends on quic-zig, move it to v0.30.1
    with the option map above.
 
 2. **A raw compiler command needs `capnp_build_options`.** This applies
@@ -89,17 +93,14 @@ they release after all of them agree. A security fix may release first.
    returns `error.UnixSocketsUnsupported`. No such user is known. If you
    are one, stay on v0.20.0 and tell us.
 
-4. **QUIC in Debug builds: the server's loop thread is fixed.** quic-zig
-   v0.29.0 asserts, in Debug builds, that one thread runs `feed`, `tick`
-   and `rotateSessionTicketKey`. The first of them fixes that thread. So a
-   server-side QUIC `Connection` or `Listener` cannot move to another
-   thread after its first datagram, tick or rotation, and a key rotation
-   before `run` must happen on the thread that then calls `run`. Release
-   builds are not affected. quic-zig plans a fix
-   (`Server.adoptLoopThread`) for a later release.
-
-5. **Do not use `quic.unixWallClockUs`** as `new_token_clock` with
-   v0.29.0: it does not compile with Zig 0.17.0.
+4. **QUIC in Debug builds: hand a server to another thread only at a
+   quiescent point.** quic-zig asserts, in Debug builds, that one thread
+   runs `feed`, `tick` and `rotateSessionTicketKey`. To move a server-side
+   QUIC `Connection` or `Listener` to another thread, stop the old thread
+   first (join it), then call `Connection.adoptOwnerThread` or
+   `Listener.adoptLoopThread` on the new thread before its first step. A
+   key rotation before `run` may run on any thread, but it must end before
+   `run` starts. Release builds do not check.
 
 ## New options you may want
 

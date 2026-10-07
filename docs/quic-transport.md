@@ -1274,5 +1274,6 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   BoringSSL with `sanitize-c = "trap"`. There, BoringSSL's 32-bit P-256 code
   (`third_party/fiat/p256_32.h`, under ECDSA verify) can trap in some TLS
   handshakes (quic-zig records it in its v0.28.1 notes, for boringssl-zig to
-  fix; it is still open at v0.29.0). capnp-zig's CI compiles QUIC for 32-bit x86 but does not run it there.
+  fix; boringssl-zig is unchanged through quic-zig v0.30.1, so it is still
+  open). capnp-zig's CI compiles QUIC for 32-bit x86 but does not run it there.
   64-bit targets are not affected.
