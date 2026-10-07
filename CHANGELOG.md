@@ -32,6 +32,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event (byte-identical frame, exactly-one-event), the ThirdPartyAnswer id
   range and completion round-trip, and clean teardown of an unanswered Accept.
 
+### Changed
+
+- **QUIC: quic-zig v0.30.1 -> v0.32.0 (tag `ffdb251`,
+  `quic-0.32.0-DnSYvcGOPADCEZMispvPbD9RznRtyIGq77zHIgmS8iVl`), in one step
+  over v0.31.0 and v0.31.1.** No wire change, no embedder API change, the
+  same option map and exported modules, and the same boringssl-zig
+  (`ff30fe99`, 0.6.7). No capnp-zig API line changes. What an application
+  sees:
+  - A peer that dies silently is noticed one idle timeout after the first
+    send it leaves unanswered (see Fixed).
+  - The idle timeout is at least three probe timeouts: a
+    `transport_params.max_idle_timeout_ms` below that is raised to it,
+    about 3 s on a fresh connection with no RTT sample, a few tens of
+    milliseconds once there are samples. The 30 s default is unaffected.
+  - The receive window an endpoint keeps is the one it announces (through
+    v0.31.1 the credit after the initial window was a fixed 1 MiB per
+    stream and 16 MiB per connection). `quic.defaultTransportParams()`
+    announces exactly 1 MiB and 16 MiB, so nothing changes with the
+    defaults; a `transport_params` that announces more now gets it for the
+    whole stream (bounded by `max_connection_memory`), one that announces
+    less gets less.
+  - quic-zig's new `max_buffered_send` (a stream's send buffer, on its
+    `Client.Config`, `Server.Config` and `Connection`, default 1 MiB, the
+    old fixed value) is not passed through: every QUIC stream capnp-zig
+    opens keeps 1 MiB.
+  - ACK frames carry up to 64 ranges (were 16), loss thresholds widened by
+    reordering shrink back after 16 clean round trips, a client confirms
+    its handshake on an ACK of a 1-RTT packet of its own, and quic-zig's
+    `Server.feed` leaves a datagram it reports as `.dropped` as it came.
+  - **One quic module per process.** The quic packages move to a new
+    quic-zig tag together. http3-zig v0.5.4 and qmsg v0.8.1 pin v0.30.1;
+    no release of theirs on v0.32.0 is known yet, so until one is, a build
+    that links capnp-zig's `main` with `-Dquic=true` next to either makes
+    two quic modules.
+
+### Fixed
+
+- **QUIC: a dead peer's session lived two to three idle timeouts (a
+  regression capnp-zig v0.21.0 shipped through quic-zig v0.30.1).** Every
+  datagram sent restarted quic-zig's idle timer, and the probes for data
+  that a dead peer never acknowledges kept the connection alive until one
+  backed-off probe gap was longer than the timeout; a datagram received
+  restarted it before it was opened, so a spoofed one could too. quic-zig
+  v0.31.1 restarts it per RFC 9000 section 10.1 (a packet received and
+  processed, and the first ack-eliciting send after one). A peer that
+  stops answering mid-call now ends the session with
+  `DisconnectCause.idle_timeout` one idle timeout after the unanswered
+  send. New test in the QUIC transport suite ("a dead peer is detected
+  about one idle timeout after the unanswered send, not three", 2 s idle
+  timeout, bound 3 s): 2,001 ms (Debug) and 2,002 ms (ReleaseSafe) on
+  v0.32.0; on v0.30.1 it fails at 4,431 and 4,201 ms.
+
 ## [0.21.0] - 2026-10-06
 
 This release moves QUIC to quic-zig v0.30.1 (about 91 KB per connection

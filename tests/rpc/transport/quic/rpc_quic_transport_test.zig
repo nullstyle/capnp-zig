@@ -4255,6 +4255,119 @@ test "client abandons a black-hole dial at the handshake deadline" {
 }
 
 // ---------------------------------------------------------------------------
+// Dead-peer detection. A peer that stops answering (a frozen process, a
+// partition, a host that lost power) sends no CONNECTION_CLOSE and draws no
+// stateless reset, so the survivor learns of it only from its idle timeout.
+// quic-zig v0.30.1 and v0.31.0 restarted the idle timer at every datagram
+// sent, and the probes for data a dead peer never acknowledges kept the
+// connection alive until one backed-off probe gap was longer than the
+// timeout: two to three idle timeouts (qmsg measured 5,909 to 6,007 ms at a
+// 2 s timeout on v0.30.1). quic-zig v0.31.1 restarts it per RFC 9000 section
+// 10.1, on a packet received and processed and on the first ack-eliciting
+// packet sent after one, so the death is noticed one idle timeout after the
+// first send that goes unanswered.
+// ---------------------------------------------------------------------------
+
+/// Idle timeout both endpoints announce in the dead-peer test. Two seconds,
+/// qmsg's value: far above quic-zig's floor of three probe timeouts (v0.31.1),
+/// which on a loopback path with RTT samples is tens of milliseconds, a few
+/// hundred on a slow Windows runner.
+const dead_peer_idle_timeout_ms: u64 = 2_000;
+
+fn awakeMs() u64 {
+    const ns = std.Io.Clock.awake.now(std.testing.io).nanoseconds;
+    return @intCast(@divFloor(ns, std.time.ns_per_ms));
+}
+
+/// Records a frame and keeps the connection open (`captureQuicMessage`
+/// closes it).
+fn keepQuicMessage(conn: *quic.Connection, frame: []const u8) !void {
+    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.context() orelse return error.MissingQuicContext));
+    try state.recordMessage(frame);
+}
+
+test "a dead peer is detected about one idle timeout after the unanswered send, not three" {
+    const allocator = std.testing.allocator;
+    const frame = try buildBootstrapFrame(allocator, 0xDEAD);
+    defer allocator.free(frame);
+
+    var params = quic.defaultTransportParams();
+    params.max_idle_timeout_ms = dead_peer_idle_timeout_ms;
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .transport_params = params,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+    });
+    defer server.deinit();
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .transport_params = params,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+    });
+    defer client.deinit();
+
+    var server_state = QuicEndpointState{};
+    var client_state = QuicEndpointState{};
+    server.start(&server_state, echoQuicMessage, recordQuicError, recordQuicClose);
+    client.start(&client_state, keepQuicMessage, recordQuicError, recordQuicClose);
+
+    // One echo round trip with both endpoints stepped on this thread (so
+    // both have RTT samples), then a short settle so every packet in flight
+    // is acknowledged before the server dies.
+    try client.sendFrame(frame);
+    const exchange_started_ms = awakeMs();
+    while (client_state.messages.load(.acquire) == 0) {
+        if (awakeMs() - exchange_started_ms >= loopback.loopback_timeout_ms) return error.QuicLoopbackTimedOut;
+        _ = try server.stepOnce(.poll);
+        _ = try client.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    const settle_started_ms = awakeMs();
+    while (awakeMs() - settle_started_ms < 50) {
+        _ = try server.stepOnce(.poll);
+        _ = try client.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    try std.testing.expect(!client.isClosing());
+
+    // The server dies silently: it is never stepped again. Its socket stays
+    // bound, so no ICMP error reaches the client either; every datagram the
+    // client sends from here on vanishes. The frame below is never
+    // acknowledged, and the client probes for it until its idle timer ends
+    // the connection.
+    const dead_since_ms = awakeMs();
+    try client.sendFrame(frame);
+    // Room to see the old behavior's real lag (two to three idle timeouts)
+    // in a failure, not a bare budget error.
+    const budget_ms = 5 * dead_peer_idle_timeout_ms;
+    while (!client.isClosing()) {
+        if (awakeMs() - dead_since_ms >= budget_ms) return error.DeadPeerNeverDetected;
+        _ = try client.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    const lag_ms = awakeMs() - dead_since_ms;
+    // `run` on a closing connection fires the terminal close callback.
+    client.run();
+    try std.testing.expectEqual(events.DisconnectCause.idle_timeout, client.closeCause());
+    try std.testing.expectEqual(@as(usize, 1), client_state.closes.load(.acquire));
+
+    // About one idle timeout. Measured on macOS: 2,001 ms (Debug) and
+    // 2,002 ms (ReleaseSafe) on quic-zig v0.32.0; 4,431 and 4,201 ms on
+    // v0.30.1, where this test fails. The bound is generous against a loaded
+    // runner and still below the two or more idle timeouts of the regression.
+    const bound_ms = dead_peer_idle_timeout_ms * 3 / 2;
+    if (lag_ms > bound_ms) {
+        std.debug.print("dead peer detected after {d} ms; bound {d} ms, idle timeout {d} ms\n", .{ lag_ms, bound_ms, dead_peer_idle_timeout_ms });
+        return error.DeadPeerDetectedLate;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Thread handoff of a QUIC server that has already run. In a Debug build,
 // quic-zig (v0.29.0 and later) fixes its `Server`'s loop thread at the first
 // `feed`, `tick` or ticket-key rotation and asserts it at every later one;

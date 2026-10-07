@@ -44,14 +44,57 @@ Cap'n Proto RPC vat session. The payload above the QUIC transport is still the
 standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
 between peers, not the RPC protocol that `Peer` handles.
 
-The manifest pins the `quic` package at annotated tag `v0.30.1` (commit
-`ccf6ae2`). v0.30.1 has no wire change and no API change: a probe timeout is
-not a loss (RFC 9002 section 6.2.4, so an ACK that was only late is no longer
-a window cut), the handshake's probe timeout is bounded at about a second,
-`quic.unixWallClockUs` compiles on Zig 0.17.0, and `Server.adoptLoopThread()`
-is new: capnp-zig calls it so that a server-side `Connection` or `Listener`
-can move to another thread again in a Debug build ("Rotation" below). Do not
-pin v0.30.0: it did not compile on Windows. v0.29.0 has no wire change. A
+The manifest pins the `quic` package at annotated tag `v0.32.0` (commit
+`ffdb251`), one step from v0.30.1 (v0.31.0 and v0.31.1 are included, not
+pinned). None of the three changes the wire, the embedder API or the option
+map.
+
+- **A dead peer is noticed one idle timeout after it stops answering, not
+  two to three (v0.31.1).** From quic-zig v0.30.1, which capnp-zig v0.21.0
+  pins, every datagram sent restarted the idle timer, and the probes for
+  data a dead peer never acknowledges kept the connection alive until one
+  backed-off probe gap was longer than the timeout. The timer now restarts
+  as RFC 9000 section 10.1 says: when a packet is received and processed,
+  and at the first ack-eliciting send after that. A peer that stops
+  answering mid-call (a frozen process, a partition) now ends the session
+  with `DisconnectCause.idle_timeout` one idle timeout after the first
+  unanswered send: measured 2,001 ms at a 2 s timeout, against 4,201 to
+  4,431 ms on v0.30.1 (the transport suite's dead-peer test). Datagrams
+  that do not open (spoofed ones, say) no longer restart it either. The
+  idle timeout is also at least three probe timeouts: a
+  `max_idle_timeout_ms` below that is raised to it, about 3 s on a fresh
+  connection with no RTT sample, a few tens of milliseconds once there are
+  samples.
+- **The receive window kept is the one announced (v0.32.0).** Through
+  v0.31.1 the credit after the initial window was a fixed 1 MiB per stream
+  and 16 MiB per connection, whatever the transport parameters said.
+  `defaultTransportParams()` (`src/rpc/transport/quic/options.zig`)
+  announces exactly those (`initial_max_stream_data_*` 1 MiB,
+  `initial_max_data` 16 MiB), so nothing changes with the defaults. A
+  `transport_params` that announces more now gets it for the whole stream
+  (a slow reader can then hold that much per stream, still bounded by
+  `max_connection_memory`); one that announces less gets less.
+- **A stream's send buffer is a quic-zig knob (v0.32.0).** quic-zig's
+  `Client.Config`, `Server.Config` and `Connection` have
+  `max_buffered_send` (default 1 MiB, the old fixed value): the bytes a
+  stream holds that the peer has not acknowledged in order, which bounds a
+  single stream to one buffer per round trip. capnp-zig does not pass it
+  through; every QUIC stream it opens keeps the 1 MiB default. To go past
+  it on a path whose bandwidth-delay product is larger, the sender needs
+  this buffer raised and the receiver a matching announced window.
+- ACK frames carry up to 64 ranges (were 16), and the loss thresholds that
+  widened for reordering shrink back after 16 round trips with no spurious
+  loss (v0.32.0). A client confirms its handshake on an ACK of a 1-RTT
+  packet of its own, and `Server.feed` leaves a datagram it reports as
+  `.dropped` as it came (v0.31.0).
+
+v0.30.1 made a probe timeout no loss (RFC 9002 section 6.2.4, so an ACK
+that was only late is no longer a window cut), bounded the handshake's probe
+timeout at about a second, made `quic.unixWallClockUs` compile on Zig 0.17.0,
+and added `Server.adoptLoopThread()`: capnp-zig calls it so that a
+server-side `Connection` or `Listener` can move to another thread again in a
+Debug build ("Rotation" below). Do not pin v0.30.0: it did not compile on
+Windows. v0.29.0 has no wire change. A
 connection costs about 91 KB on the heap, not 1.09 MB. A late packet is no
 longer counted as a lost one, and a client completes its handshake through
 loss. It adds the previous ticket key,
@@ -68,7 +111,10 @@ disabled, removing the native-shell and Git Bash `pkg-config.BAT` failure path.
 A process can hold only one `quic` module: every package that links quic-zig
 into the same build must pin the same tag and pass the same dependency options
 (`.target`, `.release`, `.@"sanitize-c" = "trap"`), or the build makes two quic
-modules, each with its own BoringSSL. Connection and server session loops drive
+modules, each with its own BoringSSL. The quic packages move to a new quic-zig
+tag together. http3-zig v0.5.4 and qmsg v0.8.1 pin v0.30.1, as capnp-zig
+v0.21.0 does, and no release of theirs on v0.32.0 is known yet; until one is,
+a build that links this pin next to either makes two quic modules. Connection and server session loops drive
 `Connection.advance()` before waiting on datagrams and again during active
 service, then tick timers and drain outbound datagrams.
 
@@ -1267,6 +1313,16 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   waits for its own handshake timeout (`ClientOptions.handshake_timeout_ms`,
   30 s by default), or after the handshake for its idle timeout. Keep both
   timeouts.
+- capnp-zig sends no keep-alive of its own. A peer that dies silently (no
+  CONNECTION_CLOSE, no stateless reset) is noticed only by the idle timeout
+  (`transport_params.max_idle_timeout_ms`, 30 s by default): one idle
+  timeout after the first send it leaves unanswered, or after the last
+  packet received when nothing is sent. With quic-zig v0.30.1 (capnp-zig
+  v0.21.0) a session that kept sending took two to three idle timeouts. The
+  timeout is at least three probe timeouts, about 3 s before the first RTT
+  sample.
+- A QUIC stream's send buffer is quic-zig's `max_buffered_send` default,
+  1 MiB; capnp-zig does not expose the knob.
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.
 - Mode mismatch is treated as malformed transport input and closes cleanly.
@@ -1274,6 +1330,6 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   BoringSSL with `sanitize-c = "trap"`. There, BoringSSL's 32-bit P-256 code
   (`third_party/fiat/p256_32.h`, under ECDSA verify) can trap in some TLS
   handshakes (quic-zig records it in its v0.28.1 notes, for boringssl-zig to
-  fix; boringssl-zig is unchanged through quic-zig v0.30.1, so it is still
+  fix; boringssl-zig is unchanged through quic-zig v0.32.0, so it is still
   open). capnp-zig's CI compiles QUIC for 32-bit x86 but does not run it there.
   64-bit targets are not affected.

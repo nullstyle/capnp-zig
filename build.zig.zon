@@ -6,6 +6,29 @@
         // Pinned to a TAG, not a raw commit: tags are immutable release
         // points, so the pin is auditable and reproducible.
         //
+        // v0.32.0 (commit ffdb251): no wire change, no embedder API change,
+        // the same option map and modules. The receive window an endpoint
+        // keeps is the one it announces (it was a fixed 1 MiB per stream and
+        // 16 MiB per connection after the initial window); `defaultTransportParams`
+        // in src/rpc/transport/quic/options.zig announces exactly those, so
+        // nothing changes for capnp-zig's defaults. New `max_buffered_send`
+        // (a stream's send buffer, 1 MiB by default) on quic's Client.Config,
+        // Server.Config and Connection; capnp-zig does not pass it through.
+        // ACK frames carry up to 64 ranges, and the loss thresholds shrink
+        // back after 16 clean round trips.
+        //
+        // v0.31.1 (commit a32dcba, skipped as a pin, included here): fixes
+        // the v0.30.1 regression that capnp-zig v0.21.0 shipped: a dead
+        // peer's connection lived two to three idle timeouts, because every
+        // datagram sent restarted the idle timer and the probes kept it
+        // alive. The timer now restarts per RFC 9000 section 10.1 (a packet
+        // received and processed, or the first ack-eliciting send after
+        // one), and the idle timeout is at least three probe timeouts.
+        //
+        // v0.31.0 (commit 35b3983, skipped as a pin, included here): a client
+        // confirms its handshake on an ACK of a 1-RTT packet of its own, and
+        // `Server.feed` leaves a `.dropped` datagram as it came.
+        //
         // v0.30.1 (commit ccf6ae2): no wire change, no API change, the same
         // option map and exported modules. A probe timeout is not a loss
         // (RFC 9002 section 6.2.4: the Application space's probe timeout no
@@ -80,22 +103,23 @@
         // one build must pin the same tag and pass the same option map, or
         // the build makes two quic modules (and two BoringSSLs). The map is
         // `.target`, `.release`, `.@"sanitize-c" = "trap"` (build/modules.zig),
-        // the one nest/qmsg/qmesh use. capnp-zig v0.21.0 pins v0.30.1; on
-        // 2026-10-06 the set (http3-zig, qmsg, qmesh-zig, nest, mruby-quic)
-        // moved to v0.30.1 together, by the owner's rule that the quic
-        // packages move to a new quic tag together (http3-zig v0.5.4 and
-        // qmsg v0.8.1 are the releases). The released http3-zig v0.5.2
-        // cannot share this module: it builds its own quic module from
-        // quic's src/root.zig and its own BoringSSL. http3-zig v0.5.3 and
-        // later take quic's exported quic and boringssl modules with this
-        // option map, so they share this one when they pin the same tag
-        // (v0.5.4 does).
-        // boringssl-zig is unchanged since v0.25.0 (v0.30.1 too): ff30fe99
+        // the one nest/qmsg/qmesh use. capnp-zig v0.21.0 pinned v0.30.1,
+        // with the set (http3-zig v0.5.4, qmsg v0.8.1, qmesh-zig, nest,
+        // mruby-quic). By the owner's rule the quic packages move to a new
+        // quic tag together, so the set moves to v0.32.0 together; no
+        // http3-zig or qmsg release on v0.32.0 is known yet, and until one
+        // is, a build that links capnp-zig's main next to http3-zig v0.5.4
+        // or qmsg v0.8.1 makes two quic modules. The released http3-zig
+        // v0.5.2 cannot share this module: it builds its own quic module
+        // from quic's src/root.zig and its own BoringSSL. http3-zig v0.5.3
+        // and later take quic's exported quic and boringssl modules with
+        // this option map, so they share this one when they pin the same tag.
+        // boringssl-zig is unchanged since v0.25.0 (v0.32.0 too): ff30fe99
         // (0.6.7, BoringSSL aef0e2df), which links Windows ws2_32 with
         // pkg-config lookup disabled.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.30.1.tar.gz",
-            .hash = "quic-0.30.1-DnSYvVnOOwBfpDxHQWI41E6YxM1RqqkCuven5bK46jXR",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.32.0.tar.gz",
+            .hash = "quic-0.32.0-DnSYvcGOPADCEZMispvPbD9RznRtyIGq77zHIgmS8iVl",
             .lazy = true,
         },
     },
