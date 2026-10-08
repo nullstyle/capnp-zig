@@ -1266,6 +1266,83 @@ test "disconnect: after transportClosed under OOM, freeing the conn adds no seco
     }
 }
 
+test "cancel: with no memory at all, the host's cancel still ends the question with one RETURN{CANCELED}" {
+    // Since capnp-zig 0.23.0 (handoff H8) the Peer delivers the cancel's
+    // synthetic exception through on_return without the heap, so the
+    // shim's reason copy is what fails. The fallback must keep the kind the
+    // header promises (CANCELED), the exception type, and the reason.
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{});
+    const alloc = testing.allocator;
+    const a = try Conn.init(failing.allocator(), .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const ib = try connectPair(a, &ra, b, &rb);
+    const p = try msgU64(alloc, 1);
+    defer alloc.free(p);
+    const q1 = try a.call(ib, iface, 0, p, &.{}, 0);
+    try pump(a, &ra, b, &rb);
+    const c = rb.lastCall();
+
+    failing.fail_index = failing.alloc_index;
+    try a.cancel(q1);
+    failing.fail_index = std.math.maxInt(usize);
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(q1));
+    const r = ra.returnFor(q1) orelse return error.TestNoReturn;
+    try testing.expectEqual(effects.ReturnKind.canceled, r.kind);
+    try testing.expectEqual(@as(u16, 0), r.exception_type); // failed
+    try testing.expectEqualStrings(conn_mod.cancel_reason, r.reason);
+
+    // B answers late: absorbed, no second terminal.
+    try b.returnResults(c.answer_id, p, &.{});
+    _ = a.tick(1); // retries a Finish the OOM kept from going out
+    try pump(a, &ra, b, &rb);
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(q1));
+}
+
+test "tick: with no memory at all, a deadline still ends the question with one RETURN{EXCEPTION overloaded}" {
+    // As for cancel: the Peer delivers the deadline's synthetic exception
+    // without the heap, and the shim's fallback must keep its kind, its type
+    // (overloaded, not failed) and the Peer's reason.
+    const ms = std.time.ns_per_ms;
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{});
+    const alloc = testing.allocator;
+    const a = try Conn.init(failing.allocator(), .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const ib = try connectPair(a, &ra, b, &rb);
+    const p = try msgU64(alloc, 1);
+    defer alloc.free(p);
+    const q1 = try a.call(ib, iface, 0, p, &.{}, 0);
+    try pump(a, &ra, b, &rb);
+    try a.setDeadline(q1, 10);
+
+    failing.fail_index = failing.alloc_index;
+    try testing.expectEqual(@as(usize, 1), a.tick(20 * ms));
+    failing.fail_index = std.math.maxInt(usize);
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(q1));
+    const r = ra.returnFor(q1) orelse return error.TestNoReturn;
+    try testing.expectEqual(effects.ReturnKind.exception, r.kind);
+    try testing.expectEqual(@as(u16, 1), r.exception_type); // overloaded
+    try testing.expectEqualStrings(capnp.rpc.peer.deadline_reason, r.reason);
+    _ = a.tick(30 * ms);
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(q1));
+}
+
 // ---------------------------------------------------------------------------
 // Allocation-failure sweep (from the M0 review's ADV4; it found the
 // transportClosed-under-OOM gap at one fail index)

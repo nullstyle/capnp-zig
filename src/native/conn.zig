@@ -748,21 +748,13 @@ pub const Conn = struct {
                 node.effect = .{ .@"return" = .{ .qid = qid, .kind = .results, .msg = in.msg, .caps = in.caps } };
             },
             .exception => {
-                const ex_type: u16 = if (ret.exception) |e| e.type_value else @backingInt(protocol.ExceptionType.failed);
-                const local = self.local_disconnect and ex_type == @backingInt(protocol.ExceptionType.disconnected);
-                // A local disconnect after a remote Abort carries the Abort's reason.
-                const text = if (local and self.remote_abort_reason != null)
-                    self.disconnectReason()
-                else if (ret.exception) |e| e.reason else "";
-                const reason = try self.allocator.dupe(u8, text);
+                const t = self.exceptionTerminal(ret, canceled);
+                const reason = try self.allocator.dupe(u8, t.text);
                 node.owned_reason = reason;
-                // `cancel` ends the question through a Peer-synthesized
-                // exception: the host asked, so it is a CANCELED terminal.
-                const kind: ReturnKind = if (canceled) .canceled else if (local) .disconnected else .exception;
                 node.effect = .{ .@"return" = .{
                     .qid = qid,
-                    .kind = kind,
-                    .exception_type = ex_type,
+                    .kind = t.kind,
+                    .exception_type = t.exception_type,
                     .reason = reason,
                 } };
             },
@@ -775,7 +767,79 @@ pub const Conn = struct {
             } },
         }
     }
+
+    /// The terminal `fillReturn` could not build (its copy failed), built
+    /// without memory: every reason is static. An exception Return keeps the
+    /// kind and type `fillReturn` gives it, and its reason when that is one
+    /// the Peer or the shim synthesizes (`staticReason`). Only the reason
+    /// copy can fail there, so since capnp-zig 0.23.0 (handoff H8) this is
+    /// how every cancel, deadline and disconnect reaches the host under OOM:
+    /// the Peer delivers those without the heap.
+    fn fallbackReturn(self: *const Conn, ret: protocol.Return, canceled: bool, err: anyerror) effects.Return {
+        if (ret.tag == .exception) {
+            const t = self.exceptionTerminal(ret, canceled);
+            return .{
+                .qid = ret.answer_id,
+                .kind = t.kind,
+                .exception_type = t.exception_type,
+                .reason = staticReason(t.text) orelse switch (t.kind) {
+                    .canceled => cancel_reason,
+                    .disconnected => self.disconnectReason(),
+                    .exception, .results => oom_results_reason,
+                },
+            };
+        }
+        return .{
+            .qid = ret.answer_id,
+            .kind = .exception,
+            .exception_type = @backingInt(protocol.ExceptionType.failed),
+            .reason = switch (err) {
+                error.OutOfMemory => oom_results_reason,
+                error.PayloadCopyExceedsFrame => oversized_results_reason,
+                error.PromisedCapUnsupported => promised_results_reason,
+                else => bad_results_reason,
+            },
+        };
+    }
+
+    const ExceptionTerminal = struct {
+        kind: ReturnKind,
+        exception_type: u16,
+        /// Borrowed from `ret`, or this connection's remote Abort reason.
+        text: []const u8,
+    };
+
+    /// How an exception Return reaches the host. `cancel` ends the question
+    /// through a Peer-synthesized exception: the host asked, so it is
+    /// CANCELED. A `disconnected` exception after the local side went away
+    /// is DISCONNECTED (with the remote Abort's reason when there was one).
+    /// Anything else is a remote (or deadline) EXCEPTION.
+    fn exceptionTerminal(self: *const Conn, ret: protocol.Return, canceled: bool) ExceptionTerminal {
+        const ex_type: u16 = if (ret.exception) |e| e.type_value else @backingInt(protocol.ExceptionType.failed);
+        const local = self.local_disconnect and ex_type == @backingInt(protocol.ExceptionType.disconnected);
+        const text = if (local and self.remote_abort_reason != null)
+            self.disconnectReason()
+        else if (ret.exception) |e| e.reason else "";
+        const kind: ReturnKind = if (canceled) .canceled else if (local) .disconnected else .exception;
+        return .{ .kind = kind, .exception_type = ex_type, .text = text };
+    }
 };
+
+/// `text` as static storage when it is a reason the Peer synthesizes itself
+/// (or the shim's `cancel_reason`), so a terminal can carry it without a
+/// copy; null for any other text.
+fn staticReason(text: []const u8) ?[]const u8 {
+    const known = [_][]const u8{
+        cancel_reason,
+        rpc.peer.deadline_reason,
+        rpc.peer.disconnected_reason,
+        rpc.peer.shutdown_reason,
+    };
+    for (known) |reason| {
+        if (std.mem.eql(u8, text, reason)) return reason;
+    }
+    return null;
+}
 
 const QuestionCtx = struct {
     conn: *Conn,
@@ -918,34 +982,7 @@ fn onQuestionReturn(
         // Never lose the terminal: report it without the payload. Imports were
         // not retained, so the Peer releases them after this callback.
         node.freePayload(self.allocator);
-        // A local disconnect keeps its kind: its reason needs no copy. Since
-        // capnp-zig 0.23.0 (handoff H8) the Peer delivers it here even when
-        // memory is gone (before, it fell back to deinit_ctx), so the reason
-        // copy in fillReturn is what fails.
-        const ex_type: u16 = if (ret.exception) |e| e.type_value else @backingInt(protocol.ExceptionType.failed);
-        if (ret.tag == .exception and !canceled and self.local_disconnect and
-            ex_type == @backingInt(protocol.ExceptionType.disconnected))
-        {
-            node.effect = .{ .@"return" = .{
-                .qid = ret.answer_id,
-                .kind = .disconnected,
-                .exception_type = ex_type,
-                .reason = self.disconnectReason(),
-            } };
-            self.pushNode(node);
-            return;
-        }
-        node.effect = .{ .@"return" = .{
-            .qid = ret.answer_id,
-            .kind = .exception,
-            .exception_type = @backingInt(protocol.ExceptionType.failed),
-            .reason = switch (err) {
-                error.OutOfMemory => oom_results_reason,
-                error.PayloadCopyExceedsFrame => oversized_results_reason,
-                error.PromisedCapUnsupported => promised_results_reason,
-                else => bad_results_reason,
-            },
-        } };
+        node.effect = .{ .@"return" = self.fallbackReturn(ret, canceled, err) };
     };
     self.pushNode(node);
 }
