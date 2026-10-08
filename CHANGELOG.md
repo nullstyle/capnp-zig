@@ -140,8 +140,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the old code the peer gets `UUUUUUUUUUUUUUU` (freed bytes) instead of
   `rpc frame error`.
 
-- **QUIC: `Server.deinit` showed its close callbacks sessions it had
-  already destroyed (Experimental).** It tore sessions down from the end of
+- **QUIC (Experimental `Server`): `Server.deinit` showed its close
+  callbacks sessions it had already destroyed.** It tore sessions down from the end of
   the list but left each one listed. While one session's close callback
   ran, the sessions after it were freed yet still listed: `sessionCount`
   was stale, `sessionAt` returned a freed pointer and `sessionById` read
@@ -154,8 +154,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transport suite ("quic Server.deinit never shows a close callback a
   destroyed session", three live sessions): on the old code its callbacks
   saw 3 destroyed sessions.
-- **QUIC: `prehandshake.Buffer.recordData` leaked its copy of a chunk and
-  overcounted when the event append ran out of memory (Experimental).** It
+- **QUIC (Experimental `prehandshake`): `Buffer.recordData` leaked its copy
+  of a chunk and overcounted when the event append ran out of memory.** It
   copied the chunk and raised `total_bytes` before the append. When the
   append failed with `error.OutOfMemory`, nothing freed the copy, and
   `total_bytes` kept the chunk's length, so the 512 KiB cap tripped early.
@@ -165,8 +165,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Two new tests in `prehandshake.zig`: one fails the append, one sweeps
   every allocation failure with `checkAllAllocationFailures`.
 
-- **QUIC (Experimental): `WarmRedialClient.requestStop` could write into a
-  dead stack frame.** The live generation's connection is a local of the
+- **QUIC (Experimental `WarmRedialClient`): `requestStop` could write into
+  a dead stack frame.** The live generation's connection is a local of the
   run thread. `requestStop` read it under the client's lock, released the
   lock, and only then closed it. A generation that ended on its own in that
   gap (a stateless reset, an idle or handshake timeout, a peer close) tore
