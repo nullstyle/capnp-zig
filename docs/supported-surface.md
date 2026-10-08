@@ -29,7 +29,8 @@ version (`zig fetch --save …#v0.22.0`) and read the CHANGELOG before bumping.
 - **Experimental** (retained outbound-answer lifetimes, L3/L4 three-party
   origination, reflected-cap resolve, QUIC, Unix-domain sockets and fd
   passing, persistence vat-restore, events,
-  `io_backend`, binary schema reflection, the demoted transport/ctor variants): may break at any 0.x
+  `io_backend`, binary schema reflection, the demoted transport/ctor variants,
+  `native` and its C ABI): may break at any 0.x
   minor bump. Functional and tested, but the API
   is not frozen; its surface evolves in
   [`docs/api-snapshot-experimental.txt`](api-snapshot-experimental.txt).

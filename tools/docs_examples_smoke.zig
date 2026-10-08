@@ -25,6 +25,7 @@ const active_docs = [_][]const u8{
     "docs/build-integration.md",
     "docs/getting-started-rpc.md",
     "docs/getting-started-serialization.md",
+    "docs/native-abi.md",
     "docs/quic-transport.md",
     "docs/reflection.md",
     "docs/generated-api.md",
