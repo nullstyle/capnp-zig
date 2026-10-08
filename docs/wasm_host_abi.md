@@ -107,6 +107,11 @@ does not reserve these bits in another project's ABI or imply compatibility.
   `capnp_peer_register_pending_third_party_await`, and the
   `capnp_peer_pop_l3_event` event channel; see
   [Level-3 handoff exports](#level-3-three-party-handoff-exports-experimental)).
+- bit `11`: experimental Level-3 vat hosting exports are present
+  (`capnp_provision_index_new`, `capnp_provision_index_free`,
+  `capnp_peer_attach_provision_index`, `capnp_peer_detach_provision_index`;
+  see
+  [Level-3 vat hosting exports](#level-3-vat-hosting-exports-experimental)).
 
 The v1 discovery exports retain their `capnp_wasm_` names for compatibility;
 the other exports use `capnp_`. Hosts must use the names listed here. New ABIs
@@ -561,6 +566,33 @@ Borrow rule:
 - Destroys every peer, reclaims all tracked allocations and outstanding frames,
   and clears error state. No previously returned allocation or peer handle may
   be used afterwards.
+
+
+## Level-3 vat hosting exports (experimental)
+
+Feature bit `11`. A vat represented by several module-local peers can serve
+an Accept arriving on one connection for a Provide received on a sibling
+connection (the VatC role): create one provision index, attach every peer of
+the vat to it, and the inbound paths do the rest — an inbound Provide
+registers its provision into the attached index, and an inbound Accept routes
+through `handleAcceptWithProvisionIndex`, which matches the completion bytes
+against the sibling's provision and answers with a results Return carrying
+the provided capability (or parks it under the Accept's embargo).
+
+```c
+u32 capnp_provision_index_new();
+void capnp_provision_index_free(u32 index);
+u32 capnp_peer_attach_provision_index(u32 peer, u32 index);
+u32 capnp_peer_detach_provision_index(u32 peer);
+```
+
+Both teardown orders are supported: freeing the index severs attached peers'
+borrowed back-pointers (active provisions keep their owner references), and
+freeing a peer removes it from the index's attached list. Indices are bounded
+(8 per module; one per hosted vat). Attach fails if the peer is already
+attached or carries pre-existing handoff state — the index must observe
+every provision from the first one. Detach fails while live provisions or
+queued cross-peer accepts remain.
 
 ## Required Host Pump Behavior (Capnp-Specific)
 

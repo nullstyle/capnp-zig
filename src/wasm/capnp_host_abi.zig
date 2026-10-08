@@ -96,6 +96,12 @@ const FEATURE_HOST_CALL_PARAM_CAP_RETENTION: u64 = 1 << 9;
 /// module. The recipient auto-pickup handler (which needs a synchronous
 /// vat network) is not exposed.
 const FEATURE_L3_HANDOFF: u64 = 1 << 10;
+/// Experimental Level-3 vat hosting: a module-wide `ProvisionIndex` that
+/// peers attach to, so a vat represented by several module-local peers can
+/// serve an Accept arriving on one connection for a Provide received on a
+/// sibling connection (the VatC role). Inbound Provides register into the
+/// attached index and inbound Accepts route through it automatically.
+const FEATURE_L3_VAT_HOSTING: u64 = 1 << 11;
 const ABI_FEATURE_FLAGS: u64 = FEATURE_ABI_RANGE |
     FEATURE_ERROR_TAKE |
     FEATURE_PEER_LIMITS |
@@ -106,7 +112,8 @@ const ABI_FEATURE_FLAGS: u64 = FEATURE_ABI_RANGE |
     FEATURE_BOOTSTRAP_STUB_IDENTITY |
     FEATURE_HOST_CALL_RETURN_FRAME |
     FEATURE_HOST_CALL_PARAM_CAP_RETENTION |
-    FEATURE_L3_HANDOFF;
+    FEATURE_L3_HANDOFF |
+    FEATURE_L3_VAT_HOSTING;
 
 const ERROR_ALLOC: u32 = 1;
 const ERROR_INVALID_ARG: u32 = 2;
@@ -1831,6 +1838,125 @@ pub export fn capnp_peer_pop_l3_event(peer: u32, out_ptr_ptr: AbiPtr, out_len_pt
     };
     writeU32(out_len_ptr, @intCast(record.len)) catch |err| {
         setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Experimental Level-3 vat hosting (feature bit 11): the shared
+// ProvisionIndex. Peers of one vat attach to the same index so an Accept
+// arriving on one connection is served for a Provide received on a sibling
+// connection: inbound Provides register into the attached index (Phase A)
+// and inbound Accepts route through `handleAcceptWithProvisionIndex`. Both
+// teardown orders are supported — index deinit severs attached peers'
+// back-pointers, and peer deinit removes itself from the index's attached
+// list — so hosts may free in either order.
+// ---------------------------------------------------------------------------
+
+const ProvisionIndex = core.rpc.peer.ProvisionIndex;
+
+/// Module-wide provision indices. Bounded small: one per hosted vat.
+const DEFAULT_MAX_PROVISION_INDICES: usize = 8;
+var provision_indices = std.AutoHashMapUnmanaged(u32, *ProvisionIndex){};
+var next_provision_index_id: u32 = 1;
+
+fn getProvisionIndexState(handle: u32) ?*ProvisionIndex {
+    return provision_indices.get(handle);
+}
+
+/// Create a vat-wide provision index peers can attach to.
+/// Returns its handle, or 0 on error.
+/// Thread-safe on native targets (mutex-protected).
+pub export fn capnp_provision_index_new() u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    clearErrorState();
+
+    if (provision_indices.count() >= DEFAULT_MAX_PROVISION_INDICES) {
+        setError(ERROR_L3_HANDOFF, "provision index limit exceeded");
+        return 0;
+    }
+    const id = next_provision_index_id;
+    if (id == 0) {
+        setError(ERROR_L3_HANDOFF, "no available provision index ids");
+        return 0;
+    }
+    next_provision_index_id += 1;
+
+    const state = allocator.create(ProvisionIndex) catch {
+        setError(ERROR_ALLOC, "provision index allocation failed");
+        return 0;
+    };
+    state.* = ProvisionIndex.init(allocator, .{});
+    // The ABI's global mutex serializes all access; affinity checks would
+    // reject peers created and serviced across host threads.
+    state.disableThreadAffinity();
+    provision_indices.put(allocator, id, state) catch {
+        state.deinit();
+        allocator.destroy(state);
+        setError(ERROR_ALLOC, "provision index map insert failed");
+        return 0;
+    };
+    return id;
+}
+
+/// Destroy a provision index. Attached peers are severed (their borrowed
+/// index pointer is nulled); active provisions keep their owner references.
+/// Unknown handles are ignored.
+/// Thread-safe on native targets (mutex-protected).
+pub export fn capnp_provision_index_free(index: u32) void {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    clearErrorState();
+
+    const removed = provision_indices.fetchRemove(index) orelse return;
+    removed.value.deinit();
+    allocator.destroy(removed.value);
+}
+
+/// Attach a peer to a vat-wide provision index. Fails if either handle is
+/// unknown, the peer is already attached, or the peer carries pre-existing
+/// handoff state (the index must see every provision from the first one).
+/// Thread-safe on native targets (mutex-protected).
+pub export fn capnp_peer_attach_provision_index(peer: u32, index: u32) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    clearErrorState();
+
+    const state = getPeerState(peer) orelse {
+        setError(ERROR_UNKNOWN_PEER, "unknown peer handle");
+        return 0;
+    };
+    const idx = getProvisionIndexState(index) orelse {
+        setError(ERROR_L3_HANDOFF, "unknown provision index handle");
+        return 0;
+    };
+    state.host.peer.attachProvisionIndex(idx) catch |err| {
+        setError(ERROR_L3_HANDOFF, @errorName(err));
+        return 0;
+    };
+    return 1;
+}
+
+/// Detach a peer from its provision index. Fails if live provisions or
+/// queued cross-peer accepts remain (drain them first).
+/// Thread-safe on native targets (mutex-protected).
+pub export fn capnp_peer_detach_provision_index(peer: u32) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    clearErrorState();
+
+    const state = getPeerState(peer) orelse {
+        setError(ERROR_UNKNOWN_PEER, "unknown peer handle");
+        return 0;
+    };
+    state.host.peer.detachProvisionIndex() catch |err| {
+        setError(ERROR_L3_HANDOFF, @errorName(err));
         return 0;
     };
     return 1;

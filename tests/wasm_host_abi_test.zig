@@ -1838,3 +1838,143 @@ test "capnp_peer_free_host_call_frame rejects double free" {
     ));
     try std.testing.expectEqual(@as(u32, 2), abi.capnp_last_error_code());
 }
+
+fn hasL3VatHostingExports(comptime ModuleType: type) bool {
+    return @hasDecl(ModuleType, "capnp_provision_index_new") and
+        @hasDecl(ModuleType, "capnp_provision_index_free") and
+        @hasDecl(ModuleType, "capnp_peer_attach_provision_index") and
+        @hasDecl(ModuleType, "capnp_peer_detach_provision_index");
+}
+
+test "wasm host ABI exposes L3 vat hosting export set" {
+    try std.testing.expect(hasL3VatHostingExports(abi));
+
+    const Empty = struct {};
+    try std.testing.expect(!hasL3VatHostingExports(Empty));
+}
+
+test "l3 vat hosting: a shared provision index serves an Accept for a sibling peer's Provide" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    // VatB peers: b_to_c carries the Provide to VatC, b_to_a hosts the vine.
+    // VatC peers: c_to_b receives the Provide, c_to_a receives the Accept;
+    // both attach to one provision index. VatA: a_to_c originates the Accept.
+    const b_to_c = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(b_to_c);
+    const b_to_a = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(b_to_a);
+    const c_to_b = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(c_to_b);
+    const c_to_a = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(c_to_a);
+    const a_to_c = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(a_to_c);
+    try std.testing.expect(
+        b_to_c != 0 and b_to_a != 0 and c_to_b != 0 and c_to_a != 0 and a_to_c != 0,
+    );
+
+    // VatC hosts a capability so the Provide's target resolves: the
+    // bootstrap stub publishes export 0 on c_to_b.
+    var carol_export_id: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_set_bootstrap_stub_with_id(
+        c_to_b,
+        toAbiPtr(&carol_export_id),
+    ));
+
+    const index = abi.capnp_provision_index_new();
+    try std.testing.expect(index != 0);
+    defer abi.capnp_provision_index_free(index);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_attach_provision_index(c_to_b, index));
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_attach_provision_index(c_to_a, index));
+
+    // Double attach must fail loudly.
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_attach_provision_index(c_to_b, index));
+
+    // VatB originates the handoff toward the recipient on b_to_a.
+    const token = try buildTextTokenMessage(std.testing.allocator, "vatc-token");
+    defer std.testing.allocator.free(token);
+    const token_buf = try allocAbiBytes(token);
+    defer token_buf.free();
+
+    var provide_question_id: u32 = 0;
+    var vine_id: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_send_provide(
+        b_to_c,
+        b_to_a,
+        carol_export_id,
+        token_buf.ptr,
+        token_buf.len,
+        toAbiPtr("vatc-contact"),
+        @intCast("vatc-contact".len),
+        toAbiPtr(&provide_question_id),
+        toAbiPtr(&vine_id),
+    ));
+
+    // The Provide travels to VatC on the C<->B connection and registers
+    // into the shared index.
+    const provide_frame = try popOutFrameCopy(std.testing.allocator, b_to_c);
+    defer std.testing.allocator.free(provide_frame);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+        c_to_b,
+        toAbiPtr(provide_frame.ptr),
+        @intCast(provide_frame.len),
+    ));
+
+    // VatA accepts on its own connection to VatC, presenting the same token
+    // bytes as the completion.
+    var accept_question_id: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_send_accept(
+        a_to_c,
+        token_buf.ptr,
+        token_buf.len,
+        0,
+        0,
+        toAbiPtr(&accept_question_id),
+    ));
+    const accept_frame = try popOutFrameCopy(std.testing.allocator, a_to_c);
+    defer std.testing.allocator.free(accept_frame);
+
+    // The Accept arrives at VatC on the C<->A connection; the shared index
+    // matches it against the sibling peer's provision and VatC answers.
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+        c_to_a,
+        toAbiPtr(accept_frame.ptr),
+        @intCast(accept_frame.len),
+    ));
+    const answer = try popOutFrameCopy(std.testing.allocator, c_to_a);
+    defer std.testing.allocator.free(answer);
+    var answer_decoded = try protocol.DecodedMessage.init(std.testing.allocator, answer);
+    defer answer_decoded.deinit();
+    const ret = try answer_decoded.asReturn();
+    try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
+    try std.testing.expectEqual(accept_question_id, ret.answer_id);
+    const payload = ret.results orelse return error.MissingPayload;
+    _ = try payload.content.getCapability();
+    const caps = payload.cap_table orelse return error.MissingCapTable;
+    try std.testing.expect(caps.len() >= 1);
+
+    // The answer returns to VatA and resolves the accept's wait.
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+        a_to_c,
+        toAbiPtr(answer.ptr),
+        @intCast(answer.len),
+    ));
+    var event_ptr: abi.AbiPtr = 0;
+    var event_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_pop_l3_event(
+        a_to_c,
+        toAbiPtr(&event_ptr),
+        toAbiPtr(&event_len),
+    ));
+    const event = AbiBuffer{ .ptr = event_ptr, .len = event_len };
+    defer event.free();
+    try std.testing.expectEqual(@as(u32, 1), readAbiInt(u32, event.ptr));
+    try std.testing.expectEqual(accept_question_id, readAbiInt(u32, event.ptr + 4));
+}
+
+test "l3 vat hosting feature bit is advertised" {
+    const flags_lo = abi.capnp_wasm_feature_flags_lo();
+    const flags: u64 = @as(u64, flags_lo);
+    try std.testing.expect((flags & (@as(u64, 1) << 11)) != 0);
+}

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (Experimental)
+
+- **Level-3 vat hosting over the WASM host ABI (feature bit `11`).** Four new
+  exports surface the vat-wide `ProvisionIndex` so a vat represented by
+  several module-local peers can serve an Accept arriving on one connection
+  for a Provide received on a sibling connection (the VatC role):
+  `capnp_provision_index_new`/`capnp_provision_index_free` manage a bounded
+  module registry (8 indices), and `capnp_peer_attach_provision_index` /
+  `capnp_peer_detach_provision_index` bind peers to one. With an index
+  attached, an inbound Provide registers its provision (Phase A) and an
+  inbound Accept routes through `handleAcceptWithProvisionIndex`, matching
+  the completion bytes across sibling connections and answering with a
+  results Return carrying the provided capability (or parking it under the
+  Accept's embargo). Both teardown orders are supported — index deinit
+  severs attached peers, peer deinit detaches from the index. ABI tests
+  cover the export set, the feature bit, double-attach rejection, and the
+  headline flow: Provide into one VatC peer, Accept into its sibling, and a
+  capability-bearing results Return resolved into the accepting peer's L3
+  event.
+
 ## [0.22.0] - 2026-10-07
 
 This release moves QUIC to quic-zig v0.32.0, which fixes a regression that
