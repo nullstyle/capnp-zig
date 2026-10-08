@@ -1467,6 +1467,55 @@ test "receiverAnswer param resolves when a queued call replays (H9)" {
     try std.testing.expectEqual(@as(usize, 1), capture.countReturns(11, .results));
 }
 
+test "receiverAnswer param stays .promised when its answer is finished before the replay (H9 limit)" {
+    // q3 parks on q0 and names q1's result. q1 is answered, then the caller
+    // finishes q1 (the C++ client does once it drops its promise), and only
+    // then does q0 return. q1's record is gone by the time q3 replays, so the
+    // handler gets the `.promised` entry. This pins that documented limit
+    // (docs/supported-surface.md, "A pipelined capability in call params").
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const Deferred = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    const Handlers = struct {
+        fn onFactoryCall(ctx_ptr: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+            try p.sendReturnResults(call.question_id, ctx_ptr, buildAnswerHeldServiceResults);
+        }
+    };
+
+    var state = AnswerHeldState{};
+    state.service_export_id = try peer.addExport(.{ .ctx = &state, .on_call = onAnswerHeldServiceCall });
+    const factory_export_id = try peer.addExport(.{ .ctx = &state, .on_call = Handlers.onFactoryCall });
+    var deferred_ctx: u8 = 0;
+    const deferred_export_id = try peer.addExport(.{ .ctx = &deferred_ctx, .on_call = Deferred.onCall });
+    var probe = ParamCapProbe{};
+    const probe_export_id = try peer.addExport(.{ .ctx = &probe, .on_call = ParamCapProbe.onCall });
+
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 5, deferred_export_id));
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 10, factory_export_id));
+    try deliverFrame(&peer, allocator, buildPipelinedTargetAndParamCallFrame(allocator, 11, 5, 10));
+    try std.testing.expect(peer.pending_promises.contains(5));
+
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 10, false));
+    try std.testing.expect(!peer.resolved_answers.contains(10));
+
+    var probe_state = AnswerHeldState{ .service_export_id = probe_export_id };
+    try peer.sendReturnResults(5, &probe_state, buildAnswerHeldServiceResults);
+
+    try std.testing.expectEqual(@as(u32, 1), probe.calls);
+    const seen = probe.seen orelse return error.ProbeNotCalled;
+    try std.testing.expect(seen == .promised);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(11, .results));
+}
+
 test "a replayed call's unresolved receiverAnswer param reads from the queued frame (H9)" {
     // q3 parks on q0; its param names q1, which is still pending when q3
     // replays, so the handler gets the `.promised` entry. That entry's

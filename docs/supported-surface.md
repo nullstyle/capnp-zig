@@ -776,15 +776,20 @@ cooperating peer.
   A generated server's `resolveX` turns the resolved `.exported` entry into
   a local Client (see "Passing capabilities back" in docs/generated-api.md);
   a handler can also read it from the `InboundCapTable` directly.
-  The entry stays `.promised` in two cases. First, when the answer is still
+  The entry stays `.promised` in three cases. First, when the answer is still
   pending (a deferred handler or a forwarded call): the call is not delayed,
   because a delayed call could be overtaken by later calls on the same
   target and would need `Disembargo` reflections held behind it. Second,
   when the answer resolved to a capability the caller itself hosts: the
   descriptor grants no wire reference, and an `.imported` entry would
-  promise the handler one. The C++ reference gives the handler a local
-  promise in both cases; that needs a promise capability with no wire
-  identity, which the Peer does not have.
+  promise the handler one. Third, when the call was parked behind another
+  answer and the caller sent Finish for the named answer before the call
+  replayed: the Peer resolves at dispatch, and the Finish dropped the
+  answer's record. The C++ client sends that Finish as soon as it drops
+  its promise, so this can happen with a deferred server. The C++ reference
+  resolves the descriptor when the call arrives and gives the handler a
+  local promise in the first two cases; that needs a promise capability
+  with no wire identity, which the Peer does not have.
 
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Apart from the pipelined-params

@@ -153,9 +153,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passes a broken capability; `ResolvedCap` has no such variant). The call
   is never delayed: while the named answer is still pending, or when it
   resolved to a capability the caller hosts, the entry stays `.promised` as
-  before. A queued call that replays also re-reads its `.promised` entries
-  from its own frame copy; before, they pointed into the freed inbound
-  frame. A generated server's `resolveX` turns the resolved `.exported`
+  before. A call parked behind another answer resolves its entries when it
+  replays, so the entry also stays `.promised` if the caller finished the
+  named answer before then (see Known limitations in
+  docs/supported-surface.md). A queued call that replays also re-reads its
+  `.promised` entries from its own frame copy; before, they pointed into the
+  freed inbound frame. A generated server's `resolveX` turns the resolved `.exported`
   entry into a local Client (see the `resolveX` entry under Added
   (Experimental)); handlers that read `InboundCapTable` directly, and
   embedders, get the resolved entry too. No API line changes. New tests in
