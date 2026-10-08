@@ -649,6 +649,11 @@ pub const Peer = struct {
     /// Recipient close/deinit nulls every borrow before this peer can die; the
     /// forwarding peer's question owns and eventually frees each context.
     forward_vine_relay_links: std.ArrayList(*ForwardVineCallContext),
+    /// Inbound answers whose call a cross-peer proxy export forwarded to its
+    /// source connection (`forwardCrossPeerProxyCall`): the peer relays that
+    /// Return itself, so the host owes none (`isForwardedAnswer`). Removed by
+    /// the answer's Return, or by a new call that reuses the id.
+    cross_peer_proxy_answers: std.AutoHashMap(u32, void),
     /// Auto-pickup contexts owned by Accept questions on third-vat peers that
     /// borrow this peer for the promise/vine side of the handoff.
     handoff_pickup_links: std.ArrayList(*HandoffPickupContext),
@@ -1006,6 +1011,7 @@ pub const Peer = struct {
             .outbound_provides = std.AutoHashMap(u32, OutboundProvide).init(allocator),
             .coupled_vines = .empty,
             .forward_vine_relay_links = .empty,
+            .cross_peer_proxy_answers = std.AutoHashMap(u32, void).init(allocator),
             .handoff_pickup_links = .empty,
             .cross_peer_proxy_links = .empty,
             .cross_peer_join_relay_links = .empty,
@@ -4768,6 +4774,12 @@ pub const Peer = struct {
     /// target and relays its Return itself, so the host owes nothing for it.
     fn isForwardedAnswer(self: *const Peer, answer_id: u32) bool {
         if (self.forwarded_tail_questions.contains(answer_id)) return true;
+        if (self.cross_peer_proxy_answers.contains(answer_id)) return true;
+        // A Level-3 call parked on a promise that was handed off, then
+        // forwarded over the vine; its relay answers `recipient_answer_id`.
+        for (self.forward_vine_relay_links.items) |relay| {
+            if (relay.recipient_answer_id == answer_id) return true;
+        }
         var it = self.forwarded_questions.valueIterator();
         while (it.next()) |upstream_answer_id| {
             if (upstream_answer_id.* == answer_id) return true;

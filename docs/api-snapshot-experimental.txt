@@ -2011,6 +2011,7 @@ capnpc-zig.rpc.peer.Peer.completing_join_records: field usize = 0
 capnpc-zig.rpc.peer.Peer.coupled_vines: field array_list.Aligned(rpc.peer.peer_context_types.CoupledVineOf(rpc.peer.mod.Peer),null)
 capnpc-zig.rpc.peer.Peer.cross_peer_join_relay_links: field array_list.Aligned(rpc.peer.peer_context_types.CrossPeerJoinRelayLinkOf(rpc.peer.mod.Peer),null)
 capnpc-zig.rpc.peer.Peer.cross_peer_pending_accepts: field hash_map.HashMap(u32,rpc.peer.peer_context_types.CrossPeerAcceptRecordOf(rpc.peer.mod.Peer),hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.cross_peer_proxy_answers: field hash_map.HashMap(u32,void,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.cross_peer_proxy_links: field array_list.Aligned(rpc.peer.peer_context_types.CrossPeerProxyLinkOf(rpc.peer.mod.Peer),null)
 capnpc-zig.rpc.peer.Peer.deadline_reason_text: const *const [17:0]u8
 capnpc-zig.rpc.peer.Peer.deliverLoopbackReturn: fn (*rpc.peer.mod.Peer, []const u8) anyerror!void

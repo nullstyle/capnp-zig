@@ -2110,6 +2110,152 @@ test "async forwarded-vine relay survives either peer teardown with distinct all
     }
 }
 
+const AnswerFinishedCounter = struct {
+    count: usize = 0,
+
+    fn onFinished(ctx: *anyopaque, _: *Peer, _: u32, _: bool) void {
+        const self: *AnswerFinishedCounter = castCtx(*AnswerFinishedCounter, ctx);
+        self.count += 1;
+    }
+};
+
+test "answer-finished hook stays quiet for a call relayed over a handoff vine (H5)" {
+    // VatA's call parked on a promise B then hands off to VatC. B forwards
+    // the call to C and relays C's Return itself, so a Finish from A on that
+    // answer is not the host's business: the hook must not run, and the host
+    // may not answer it with Return{canceled}.
+    const allocator = std.testing.allocator;
+
+    var link = Link.init(allocator);
+    defer link.deinit();
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    var c = Peer.initDetached(allocator);
+    c.disableThreadAffinity();
+    defer c.deinit();
+    var b_to_c = Peer.initDetached(allocator);
+    b_to_c.disableThreadAffinity();
+    var b_to_c_alive = true;
+    defer if (b_to_c_alive) b_to_c.deinit();
+    var b_to_a = Peer.initDetached(allocator);
+    b_to_a.disableThreadAffinity();
+    defer b_to_a.deinit();
+    var a_to_b = Peer.initDetached(allocator);
+    a_to_b.disableThreadAffinity();
+    defer a_to_b.deinit();
+    var a_to_c = Peer.initDetached(allocator);
+    a_to_c.disableThreadAffinity();
+    defer a_to_c.deinit();
+
+    b_to_c.next_question_id = 0;
+    a_to_c.next_question_id = 1000;
+    a_to_b.next_question_id = 2000;
+    link.a_to_b = &a_to_b;
+    link.b_to_a = &b_to_a;
+    link.b_to_c = &b_to_c;
+    link.c = &c;
+    link.a_to_c = &a_to_c;
+    a_to_b.setSendFrameOverride(&link, Link.aToBSend);
+    b_to_a.setSendFrameOverride(&link, Link.bToASend);
+    b_to_c.setSendFrameOverride(&link, Link.bToCSend);
+    a_to_c.setSendFrameOverride(&link, Link.aToCSend);
+    c.setSendFrameOverride(&link, Link.cSend);
+
+    const nonce = "forward-relay-answer-finished";
+    try net.register(nonce, &a_to_c);
+    b_to_a.attachVatNetwork(net.network());
+    a_to_c.attachVatNetwork(net.network());
+
+    var counter = BumpCounter{};
+    _ = try c.setBootstrap(.{ .ctx = &counter, .on_call = BumpCounter.onCall });
+    var counter_probe = CarolImportProbe{};
+    _ = try b_to_c.sendBootstrap(&counter_probe, CarolImportProbe.onReturn);
+    const counter_import_id = counter_probe.carol_import_id orelse
+        return error.CounterBootstrapFailed;
+
+    var introducer = PromiseIntroducer{};
+    _ = try b_to_a.setBootstrap(.{ .ctx = &introducer, .on_call = PromiseIntroducer.onCall });
+    var introducer_probe = IntroducerProbe{};
+    _ = try a_to_b.sendBootstrap(&introducer_probe, IntroducerProbe.onReturn);
+    const introducer_import_id = introducer_probe.introducer_import_id orelse
+        return error.IntroducerBootstrapFailed;
+    var promise_probe = PromiseImportProbe{};
+    _ = try a_to_b.sendCall(
+        introducer_import_id,
+        0x1234_5678_9abc_def0,
+        0,
+        &promise_probe,
+        null,
+        PromiseImportProbe.onReturn,
+    );
+    const promise_import_id = promise_probe.promise_import_id orelse
+        return error.PromiseNotImportedByA;
+
+    var bump = BumpCall{ .n = 1 };
+    const bump_question_id = try a_to_b.sendCall(
+        promise_import_id,
+        NUMBER_INTERFACE_ID,
+        GET_NUMBER_METHOD_ID,
+        &bump,
+        BumpCall.build,
+        BumpCall.onReturn,
+    );
+    try std.testing.expect(!bump.returned);
+
+    const b_network = b_to_a.vat_network orelse return error.NoVatNetworkOnB;
+    var introduction = try b_network.mintIntroduction(&b_to_a, nonce);
+    defer introduction.deinit(allocator);
+    var await_message = try message.Message.initUnvalidated(allocator, introduction.to_await);
+    defer await_message.deinit();
+    const recipient = try await_message.getRootAnyPointer();
+
+    link.hold_b_returns = true;
+    const handle = try b_to_a.resolvePromiseExportToThirdParty(
+        promise_import_id,
+        &b_to_c,
+        .{
+            .tag = .importedCap,
+            .imported_cap = counter_import_id,
+            .promised_answer = null,
+        },
+        recipient,
+        introduction.to_contact,
+    );
+    try std.testing.expectEqual(@as(usize, 1), b_to_a.forward_vine_relay_links.items.len);
+
+    // A finishes its question while C's Return is still in flight.
+    var finished = AnswerFinishedCounter{};
+    b_to_a.setAnswerFinishedHandler(&finished, AnswerFinishedCounter.onFinished);
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildFinish(bump_question_id, false, false);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try b_to_a.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(usize, 0), finished.count);
+    try std.testing.expectError(error.AnswerNotOwed, b_to_a.sendReturnCanceled(bump_question_id));
+    try std.testing.expect(!bump.returned);
+
+    // The provider goes away: the relay settles A's question exactly once.
+    b_to_c.deinit();
+    b_to_c_alive = false;
+    link.b_to_c = null;
+    try std.testing.expect(bump.returned);
+    try std.testing.expect(bump.exception);
+    try std.testing.expectEqual(@as(usize, 0), b_to_a.forward_vine_relay_links.items.len);
+
+    if (a_to_b.caps.hasImport(handle.vine_id)) {
+        try a_to_b.releaseImport(handle.vine_id, 1);
+    }
+    if (a_to_b.caps.hasImport(introducer_import_id)) {
+        try a_to_b.releaseImport(introducer_import_id, 1);
+    }
+    link.forwarding = false;
+}
+
 // ============================================================================
 // Retained-answer handoff: the capability provided to VatA is selected from a
 // completed answer on B<->C, rather than from B's import table. This is the

@@ -653,6 +653,7 @@ pub fn ReturnSend(comptime Peer: type) type {
             try peer_export_release.ExportRelease(Peer).sendFrameControlWithFds(self, bytes, fds);
             _ = self.active_inbound_questions.remove(answer_id);
             _ = self.finished_early_param_grants.remove(answer_id);
+            _ = self.cross_peer_proxy_answers.remove(answer_id);
         }
 
         pub fn sendReturnFrameWithLoopback(self: *Peer, answer_id: u32, bytes: []const u8) !void {
@@ -666,6 +667,7 @@ pub fn ReturnSend(comptime Peer: type) type {
             );
             _ = self.active_inbound_questions.remove(answer_id);
             _ = self.finished_early_param_grants.remove(answer_id);
+            _ = self.cross_peer_proxy_answers.remove(answer_id);
         }
 
         pub fn sendReturnProvidedTarget(self: *Peer, answer_id: u32, target: *const ProvideTarget) !void {

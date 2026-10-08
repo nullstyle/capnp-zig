@@ -231,6 +231,10 @@ pub fn CrossPeerProxy(comptime Peer: type) type {
                 try self.sendReturnException(call.question_id, "cross-peer proxy target unavailable");
                 return;
             }
+            // The peer answers this call itself, from the relayed Return; the
+            // host owes none (`Peer.isForwardedAnswer`). Any Return for the
+            // answer, including the failure paths below, removes the record.
+            try self.cross_peer_proxy_answers.put(call.question_id, {});
 
             const relay = try forward_peer.allocator.create(CrossPeerProxyCallContext);
             relay.* = .{

@@ -64,7 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs, at most once per answer and inside `handleFrame`, when the remote
   sends Finish for a call the host was handed and has not answered. It does
   not run once the host replied, for calls the Peer still holds queued, or
-  for calls the Peer forwarded. The host stops the work and answers with
+  for calls the Peer forwarded. Forwarded calls include the Level-3 ones that
+  the Peer relays over a handoff vine or through a cross-peer proxy export.
+  The new Experimental `Peer` field `cross_peer_proxy_answers` records the
+  proxy forwards. The host stops the work and answers with
   `sendReturnCanceled`, which sends `Return{canceled}` and fails the calls
   pipelined on that answer with their own Return. It refuses with
   `error.AnswerNotFinished` while the caller has not finished the answer,

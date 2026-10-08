@@ -2228,6 +2228,50 @@ test "answer-finished hook stays quiet for a call the peer forwarded (H5)" {
     try std.testing.expectEqual(@as(usize, 0), rec.count);
 }
 
+test "answer-finished hook stays quiet for a call a cross-peer proxy forwarded (H5)" {
+    // A call on a cross-peer proxy export is forwarded to the proxy's source
+    // connection; the peer relays that Return itself. The host never saw the
+    // call, so a Finish on it must not reach the hook, and the host may not
+    // answer it.
+    const allocator = std.testing.allocator;
+    // The captures outlive both peers: the source's teardown settles the
+    // recipient's answer, and that Return goes through `capture`.
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    var source_capture = newCapture(allocator);
+    defer source_capture.deinit();
+    var recipient = Peer.initDetached(allocator);
+    recipient.disableThreadAffinity();
+    defer recipient.deinit();
+    var source = Peer.initDetached(allocator);
+    source.disableThreadAffinity();
+    // Torn down first: its pending forward settles the recipient's answer.
+    defer source.deinit();
+
+    recipient.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    source.setSendFrameOverride(&source_capture, ReturnCapture.onFrame);
+    var rec = FinishedRecorder{};
+    recipient.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+
+    // The proxied target never answers, so the forward stays in flight.
+    var host_ctx: u8 = 0;
+    const target_id = try source.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    const proxy_id = try peer_test_hooks.addCrossPeerProxyExport(
+        &recipient,
+        &source,
+        .{ .exported = .{ .id = target_id } },
+        null,
+        null,
+    );
+    try deliverFrame(&recipient, allocator, buildExportCallFrame(allocator, 21, proxy_id));
+    try std.testing.expectEqual(@as(usize, 0), capture.countTag(.@"return"));
+
+    try deliverFrame(&recipient, allocator, buildFinishFrame(allocator, 21, false));
+    try std.testing.expectEqual(@as(usize, 0), rec.count);
+    try std.testing.expectError(error.AnswerNotOwed, recipient.sendReturnCanceled(21));
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(21, .canceled));
+}
+
 test "a host may answer with sendReturnCanceled from inside the answer-finished hook (H5)" {
     const allocator = std.testing.allocator;
     var peer = Peer.initDetached(allocator);
