@@ -1,8 +1,9 @@
-//! `zig build test-abi`: the C ABI, exercised the way a C or Swift host uses
-//! it. This file never imports `abi.zig`: it calls the `capnp_*` functions
-//! through the translated header (`capnp_core_h`), linked from the host build
-//! of `libcapnp_core.a` (`apple_root.zig`'s root, the C allocator), so a
-//! prototype, layout or linkage mistake fails here, not in an app.
+//! `zig build test-native-abi`: the C ABI, exercised the way a C or Swift
+//! host uses it. This file never imports `abi.zig`: it calls the `capnp_*`
+//! functions through the translated header (`capnp_core_h`), linked from a
+//! host static library (`tests/native/abi_lib_root.zig`'s root, the
+//! counterpart of capnp-swift's `apple_root.zig`), so a prototype, layout or
+//! linkage mistake fails here, not in an app.
 //!
 //! capnp-zig is imported only to build and read standalone test messages.
 
@@ -753,6 +754,9 @@ test "version: the linked library reports the pinned core" {
     const v = std.mem.span(c.capnp_core_version());
     try testing.expect(std.mem.startsWith(u8, v, "core "));
     try testing.expect(std.mem.indexOf(u8, v, " / capnp-zig ") != null);
+    // The library root's `capnp_core_version_string`
+    // (tests/native/abi_lib_root.zig) reaches the export.
+    try testing.expectEqualStrings("core 0.0.0-test / capnp-zig test / native-abi-test", v);
 }
 
 // ---------------------------------------------------------------------------
@@ -792,8 +796,8 @@ test "pipelining: a call on a promised answer goes out at once, costs no extra r
     for (sa.frames.items) |f| try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_conn_push_bytes(sb.conn, f.ptr, f.len));
     try drainAll(&sb);
     // B's host has q1 (method 0); q2 waits in B's core for q1's answer. q3
-    // is refused by B's core (its params name an answer B has not produced;
-    // capnp-zig delivers it unresolved, see cap_remap.copyInbound): the
+    // is refused by B's core (its params name an answer B has not produced
+    // yet; capnp-zig delivers it unresolved, see cap_remap.copyInbound): the
     // caller sees an exception, the host never sees the call.
     try testing.expectEqual(@as(usize, 1), sb.calls.items.len);
     try testing.expectEqual(@as(u16, 0), sb.calls.items[0].method_id);
@@ -830,9 +834,11 @@ test "pipelining: a call on a promised answer goes out at once, costs no extra r
     try testing.expectEqual(@as(u64, 1), try readU64(a, sa.returnFor(q2).?.msg));
     for ([_]u32{ q1, q2, q3 }) |q| try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_finish(sa.conn, q, 0));
 
-    // Even once the callee has produced the answer, capnp-zig hands a
-    // receiverAnswer params cap to the host unresolved (its InboundCapTable
-    // never consults the answer; handoff H9), so q4 is refused the same way.
+    // Once the callee has produced the answer, the Peer resolves a
+    // receiverAnswer params cap before the call dispatches (capnp-zig
+    // 0.23.0, handoff H9), so q4 reaches B's host with B's own export in its
+    // params. (Against capnp-zig 0.21.0 the entry stayed unresolved and B's
+    // core refused q4 with PromisedCapUnsupported, like q3.)
     try pump(&sa, &sb); // the three Finish frames reach B
     const base = sa.frames.items.len;
     const q1b = try call(&sa, ib, 0, p1, &.{});
@@ -847,10 +853,18 @@ test "pipelining: a call on a promised answer goes out at once, costs no extra r
     const b_calls_before_q4 = sb.calls.items.len;
     try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_conn_push_bytes(sb.conn, sa.frames.items[base + 1].ptr, sa.frames.items[base + 1].len));
     try pump(&sa, &sb);
-    try testing.expectEqual(b_calls_before_q4, sb.calls.items.len);
+    try testing.expectEqual(b_calls_before_q4 + 1, sb.calls.items.len);
+    const ic4 = sb.lastCall();
+    try testing.expectEqual(@as(u16, 3), ic4.method_id);
+    try testing.expectEqual(@as(u64, 44), try readU64(a, ic4.msg));
+    const passed = try rootCap(a, ic4.msg, ic4.caps);
+    try testing.expectEqual(@as(u8, c.CAPNP_CAP_EXPORT), passed.kind);
+    try testing.expectEqual(eb2, passed.id);
+    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_results(sb.conn, ic4.answer_id, p1.ptr, p1.len, null, 0));
+    try pump(&sa, &sb);
     const r4 = sa.returnFor(q4) orelse return error.TestNoReturn;
-    try testing.expectEqual(@as(u8, c.CAPNP_RETURN_EXCEPTION), r4.kind);
-    try testing.expectEqualStrings("PromisedCapUnsupported", r4.reason);
+    try testing.expectEqual(@as(u8, c.CAPNP_RETURN_RESULTS), r4.kind);
+    try testing.expectEqual(@as(usize, 1), sa.countReturns(q4));
     const ib1b = try rootCap(a, sa.returnFor(q1b).?.msg, sa.returnFor(q1b).?.caps);
     try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_finish(sa.conn, q1b, 0));
     try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_finish(sa.conn, q4, 0));

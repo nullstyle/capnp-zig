@@ -1,16 +1,17 @@
-//! `zig build fuzz-abi -- [--seconds N] [--seed S] [--steps N] [--ops a,b,...]`
-//! (plan §8, M2 gate). `--steps` fixes the operations per session and `--ops`
-//! restricts the operation kinds (indices of `randomOp`'s switch), to bisect
-//! a finding.
+//! `zig build fuzz-native-abi -- [--seconds N] [--seed S] [--steps N] [--ops a,b,...]`
+//! (capnp-swift plan §8, M2 gate). `--steps` fixes the operations per session
+//! and `--ops` restricts the operation kinds (indices of `randomOp`'s switch),
+//! to bisect a finding.
 //!
 //! Drives the C ABI with random operation sequences: two connections wired
 //! back to back, every `capnp_*` export called with known and with stale or
 //! random handles, frames from the other side, from the framing fixtures
-//! (`fuzz/seeds/`) and mutated at random, commits without a `next`, a second
-//! `next` before `commit`, ticks, deadlines, cancels, promises, shutdown,
-//! transport close, and frees with effects queued and one in flight.
+//! (`tests/fixtures/framing/`) and mutated at random, commits without a
+//! `next`, a second `next` before `commit`, ticks, deadlines, cancels,
+//! promises, shutdown, transport close, and frees with effects queued and one
+//! in flight.
 //!
-//! This file is the root of the fuzz executable: `abi.zig` takes its
+//! This file is the root of the fuzz executable: `native.abi` takes its
 //! allocator from `capnp_core_allocator` below, a live-byte counter over the
 //! page allocator. Not `std.heap.DebugAllocator`: at Zig 0.17.0 it keeps the
 //! slabs of emptied small-allocation buckets mapped, so a 30-minute run grew
@@ -33,9 +34,11 @@
 //! seed and the step so it can be replayed with `--seed`.
 
 const std = @import("std");
-const abi = @import("abi.zig");
-const effects = @import("effects.zig");
 const capnp = @import("capnpc-zig");
+// Through the module, not by path: src/native/ belongs to the capnp-zig
+// module, and a file may belong to only one module per compilation.
+const abi = capnp.native.abi;
+const effects = capnp.native.effects;
 
 const message = capnp.message;
 

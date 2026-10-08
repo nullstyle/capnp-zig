@@ -8,10 +8,10 @@
 //! `commitEffect` after every call. Every Peer callback only queues an
 //! effect; the core never calls the host.
 //!
-//! Laid out so it can move to capnp-zig `src/native/` unchanged (plan H7): it
-//! imports capnp-zig only as "capnpc-zig".
+//! Moved here from capnp-swift's core (handoff H7). It imports capnp-zig only
+//! as "capnpc-zig", the library module's import of itself.
 //!
-//! Peer API used (capnp-zig v0.21.0, `src/rpc/peer/mod.zig`):
+//! Peer API used (written against capnp-zig v0.21.0, `src/rpc/peer/mod.zig`):
 //!   initDetachedWithLimits, disableThreadAffinity, attachTransportBinding,
 //!   setClock, setTimeouts, setObserver, start, handleFrame,
 //!   notifyTransportClosed, checkDeadlines, sendBuilder, sendBootstrap,
@@ -91,7 +91,7 @@ const LengthCodec = struct {
         var rest = bytes;
         while (true) {
             const have = self.pending.items.len;
-            if (self.expected == null) {
+            const expected = self.expected orelse {
                 const need = 4 - have;
                 if (rest.len < need) {
                     try self.pending.appendSlice(allocator, rest);
@@ -107,8 +107,8 @@ const LengthCodec = struct {
                 if (len > self.max_bytes) return error.FrameTooLarge;
                 self.expected = len;
                 continue;
-            }
-            const want = self.expected.? - have;
+            };
+            const want = expected - have;
             if (rest.len < want) {
                 try self.pending.appendSlice(allocator, rest);
                 return;
@@ -421,7 +421,8 @@ pub const Conn = struct {
                     .{ .result_lifetime = .retained },
                 );
             },
-            else => unreachable,
+            // Refused by the first switch above; the same error if reached.
+            .none, .@"export" => error.Unsupported,
         } catch |err| {
             self.sending_qctx = null;
             self.abandonQuestionCtx(qc);
@@ -917,6 +918,23 @@ fn onQuestionReturn(
         // Never lose the terminal: report it without the payload. Imports were
         // not retained, so the Peer releases them after this callback.
         node.freePayload(self.allocator);
+        // A local disconnect keeps its kind: its reason needs no copy. Since
+        // capnp-zig 0.23.0 (handoff H8) the Peer delivers it here even when
+        // memory is gone (before, it fell back to deinit_ctx), so the reason
+        // copy in fillReturn is what fails.
+        const ex_type: u16 = if (ret.exception) |e| e.type_value else @backingInt(protocol.ExceptionType.failed);
+        if (ret.tag == .exception and !canceled and self.local_disconnect and
+            ex_type == @backingInt(protocol.ExceptionType.disconnected))
+        {
+            node.effect = .{ .@"return" = .{
+                .qid = ret.answer_id,
+                .kind = .disconnected,
+                .exception_type = ex_type,
+                .reason = self.disconnectReason(),
+            } };
+            self.pushNode(node);
+            return;
+        }
         node.effect = .{ .@"return" = .{
             .qid = ret.answer_id,
             .kind = .exception,

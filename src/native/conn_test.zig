@@ -583,11 +583,15 @@ test "disconnect: transportClosed ends every open question with exactly one RETU
     try testing.expectError(error.Closed, a.pushBytes(&.{ 0, 0, 0, 0 }));
 }
 
-test "disconnect: a question that ends only through deinit_ctx still yields one RETURN{DISCONNECTED}" {
-    // claims.json #5: when the synthetic disconnect Return cannot be built
-    // (OOM), the Peer frees the question through deinit_ctx and never calls
-    // on_return. The shim must still produce the terminal, from memory it
-    // reserved when the question was sent.
+test "disconnect: under OOM at transportClosed every question still yields one RETURN{DISCONNECTED}" {
+    // claims.json #5: against capnp-zig 0.21.0, when the synthetic disconnect
+    // Return could not be built (OOM), the Peer freed the question through
+    // deinit_ctx and never called on_return, and this test required that
+    // path. Since capnp-zig 0.23.0 (handoff H8) the Peer builds that Return
+    // in a stack buffer and calls on_return anyway, so the deinit_ctx-only
+    // path is no longer reachable from transportClosed. The shim must still
+    // produce the terminal, with the right kind, without memory: the first
+    // question below gets the one allocation left, the second none.
     var failing = std.testing.FailingAllocator.init(testing.allocator, .{});
     const fa = failing.allocator();
     const alloc = testing.allocator;
@@ -610,22 +614,24 @@ test "disconnect: a question that ends only through deinit_ctx still yields one 
     try testing.expectEqual(@as(usize, 2), rb.calls.items.len);
 
     const via_return_before = a.stats.terminal_via_on_return;
-    // forceCancelAllQuestions makes exactly one allocation (its id list)
-    // before it builds each synthetic Return: allow that one, fail the rest.
+    // Allow one allocation, fail the rest.
     failing.fail_index = failing.alloc_index + 1;
     failing.resize_fail_index = failing.resize_index;
     a.transportClosed();
     failing.fail_index = std.math.maxInt(usize);
     failing.resize_fail_index = std.math.maxInt(usize);
 
-    // The test is only meaningful if the deinit_ctx-only path really ran.
-    try testing.expectEqual(@as(u32, 2), a.stats.terminal_via_deinit_ctx);
-    try testing.expectEqual(via_return_before, a.stats.terminal_via_on_return);
+    // Both terminals came through on_return (H8), none through deinit_ctx
+    // or the shim's close sweep.
+    try testing.expectEqual(via_return_before + 2, a.stats.terminal_via_on_return);
+    try testing.expectEqual(@as(u64, 0), a.stats.terminal_via_deinit_ctx);
+    try testing.expectEqual(@as(u64, 0), a.stats.terminal_via_close_sweep);
 
     try drainAll(a, &ra);
     for ([_]u32{ q1, q2 }) |qid| {
         try testing.expectEqual(@as(usize, 1), ra.countReturns(qid));
         try testing.expectEqual(effects.ReturnKind.disconnected, ra.returnFor(qid).?.kind);
+        try testing.expectEqual(@as(u16, 2), ra.returnFor(qid).?.exception_type);
     }
 }
 
@@ -1188,13 +1194,16 @@ test "disconnect: with no memory at all, transportClosed still ends every open q
     try pump(a, &ra, b, &rb);
     try testing.expectEqual(@as(usize, 2), rb.calls.items.len);
 
-    // capnp-zig v0.20.0 cancels nothing when its cancel list cannot be
-    // allocated (peer_lifecycle.zig:691 `catch break`; handoff H8).
+    // capnp-zig v0.20.0 cancelled nothing when its cancel list could not be
+    // allocated (peer_lifecycle.zig:691 `catch break`; handoff H8), and the
+    // shim's close sweep ended both questions. Since capnp-zig 0.23.0 the
+    // Peer's cancel pass allocates nothing and ends both itself, through
+    // on_return, so the sweep finds nothing; the shim's terminals must still
+    // be DISCONNECTED with no memory at all.
     failing.fail_index = failing.alloc_index;
     a.transportClosed();
     failing.fail_index = std.math.maxInt(usize);
-    // The test is only meaningful if the Peer really left both open.
-    try testing.expectEqual(@as(u64, 2), a.stats.terminal_via_close_sweep);
+    try testing.expectEqual(@as(u64, 0), a.stats.terminal_via_close_sweep);
 
     try drainAll(a, &ra);
     for ([_]u32{ q1, q2 }) |qid| {
@@ -1204,19 +1213,24 @@ test "disconnect: with no memory at all, transportClosed still ends every open q
         try testing.expectEqual(@as(u16, 2), r.exception_type);
     }
     // Nothing later adds a second terminal: not a tick, not the Peer's own
-    // callbacks at free (they only free the swept contexts; the testing
-    // allocator checks that nothing leaks or is freed twice).
+    // callbacks at free (the testing allocator checks that nothing leaks or
+    // is freed twice).
     _ = a.tick(1);
     try drainAll(a, &ra);
     try testing.expectEqual(@as(usize, 1), ra.countReturns(q1));
     try testing.expectEqual(@as(usize, 1), ra.countReturns(q2));
 }
 
-test "disconnect: the Peer's late callback for a swept question only frees it (on_return or deinit_ctx)" {
+test "disconnect: after transportClosed under OOM, freeing the conn adds no second terminal" {
+    // Written against capnp-zig 0.21.0, whose cancel pass left the question
+    // open under OOM: the shim's close sweep ended it, and Peer.deinit then
+    // called back for the swept question (on_return when memory was back at
+    // free, deinit_ctx when not), which must only free it. Since capnp-zig
+    // 0.23.0 (handoff H8) the Peer ends the question itself, so nothing is
+    // swept and nothing calls back at free; the test still pins one terminal
+    // and no double free (the testing allocator) through the free.
     const alloc = testing.allocator;
-    // false: memory is back at free, so Peer.deinit cancels the swept
-    // question again with a synthetic Return (on_return). true: memory still
-    // fails at free, so Peer.deinit can only call its deinit_ctx.
+    // false: memory is back at free. true: memory still fails at free.
     for ([_]bool{ false, true }) |oom_at_free| {
         var failing = std.testing.FailingAllocator.init(alloc, .{});
         const a = try Conn.init(failing.allocator(), .{ .now_ns = 0 });
@@ -1237,13 +1251,13 @@ test "disconnect: the Peer's late callback for a swept question only frees it (o
 
         failing.fail_index = failing.alloc_index;
         a.transportClosed();
-        try testing.expectEqual(@as(u64, 1), a.stats.terminal_via_close_sweep);
+        try testing.expectEqual(@as(u64, 0), a.stats.terminal_via_close_sweep);
         if (!oom_at_free) failing.fail_index = std.math.maxInt(usize);
-        try drainAll(a, &ra); // the swept RETURN's node is freed by its commit
+        try drainAll(a, &ra); // the RETURN's node is freed by its commit
         try testing.expectEqual(@as(usize, 1), ra.countReturns(q1));
+        try testing.expectEqual(effects.ReturnKind.disconnected, ra.returnFor(q1).?.kind);
 
-        // The Peer still holds q1's context and calls back for it here. A
-        // second terminal would reuse the committed node: the testing
+        // A second terminal here would reuse the committed node: the testing
         // allocator reports that double free (and a leak if it is skipped).
         a_alive = false;
         a.deinit();
