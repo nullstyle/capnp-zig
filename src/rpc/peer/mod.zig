@@ -226,7 +226,8 @@ pub const ClientOrigin = enum {
     /// `error.LoopbackPromisedCapabilityUnsupported`. Pipelined and
     /// streaming calls fail with `error.LocalCapabilityPipelineUnsupported`
     /// and `error.LocalCapabilityStreamingUnsupported`. The Client is valid
-    /// while the export lives.
+    /// while the export lives: written into a call or Return after the
+    /// export went, it fails that send with `error.UnknownExport`.
     exported,
 };
 

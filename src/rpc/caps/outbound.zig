@@ -279,10 +279,26 @@ fn encodePayloadCaps(
         var elem = try cap_list.get(@intCast(idx));
 
         if (destination == .loopback) {
+            // The loopback decode (`InboundCapTable.initLoopback`) refuses a
+            // descriptor naming an export or import this peer does not hold.
+            // Refuse it here first, the way `onOutboundCap` refuses an
+            // unknown export for the wire: an origin-tagged pointer is never
+            // checked against the table (`resolveCapEntry`), and a decode
+            // failure comes after a loopback Return has consumed its
+            // loopback marker.
             switch (entry.tag) {
-                .senderHosted => try elem.setSenderHosted(entry.id),
-                .senderPromise => try elem.setSenderPromise(entry.id),
-                .receiverHosted => try elem.setReceiverHosted(entry.id),
+                .senderHosted, .senderPromise => {
+                    if (!table.hasExport(entry.id)) return error.UnknownExport;
+                    if (entry.tag == .senderHosted) {
+                        try elem.setSenderHosted(entry.id);
+                    } else {
+                        try elem.setSenderPromise(entry.id);
+                    }
+                },
+                .receiverHosted => {
+                    if (!table.hasImport(entry.id)) return error.UnknownImport;
+                    try elem.setReceiverHosted(entry.id);
+                },
                 // A promise on one of our questions has no entry on the
                 // loopback receiver's side (see `InboundCapTable.initLoopback`).
                 .receiverAnswer => return error.LoopbackPromisedCapabilityUnsupported,
@@ -362,8 +378,10 @@ pub fn encodeCallPayloadCapsWithEffects(
 /// wire reference on our exports and keeps no third-party handoff, and the
 /// loopback decode (`InboundCapTable.initLoopback`) maps every descriptor
 /// back to our own cap table. A promise on one of our questions
-/// (`receiverAnswer`) fails with `error.LoopbackPromisedCapabilityUnsupported`
-/// before anything is dispatched.
+/// (`receiverAnswer`) fails with `error.LoopbackPromisedCapabilityUnsupported`,
+/// and a descriptor naming an export or import this peer does not hold with
+/// `error.UnknownExport` / `error.UnknownImport`, before anything is
+/// dispatched: the encode refuses everything the loopback decode would.
 pub fn encodeLoopbackCallPayloadCaps(table: *CapTable, call: *protocol.CallBuilder) !void {
     var effects = OutboundCapEffects.init(table.allocator, null, null);
     defer effects.deinit();
@@ -371,7 +389,9 @@ pub fn encodeLoopbackCallPayloadCaps(table: *CapTable, call: *protocol.CallBuild
     _ = try encodePayloadCaps(table, payload, null, &effects, .loopback);
 }
 
-/// `encodeLoopbackCallPayloadCaps` for the results of a LOOPBACK Return.
+/// `encodeLoopbackCallPayloadCaps` for the results of a LOOPBACK Return. It
+/// fails before the Return leaves the handler, so the loopback answer stays
+/// open for the handler's exception Return.
 pub fn encodeLoopbackReturnPayloadCaps(table: *CapTable, ret: *protocol.ReturnBuilder) !void {
     var effects = OutboundCapEffects.init(table.allocator, null, null);
     defer effects.deinit();

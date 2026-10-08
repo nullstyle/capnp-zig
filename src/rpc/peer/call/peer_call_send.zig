@@ -305,7 +305,9 @@ pub fn CallSend(comptime Peer: type) type {
         /// their descriptors from our side (`InboundCapTable.initLoopback`).
         /// A promise on one of our questions (`receiverAnswer`) has no such
         /// entry and fails with `error.LoopbackPromisedCapabilityUnsupported`
-        /// before anything is dispatched.
+        /// before anything is dispatched, and so does an export or import
+        /// this peer no longer holds (`error.UnknownExport` /
+        /// `error.UnknownImport`).
         pub fn sendCallResolvedGeneratedWithOptions(
             self: *Peer,
             target: cap_table.ResolvedCap,

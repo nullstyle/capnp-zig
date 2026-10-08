@@ -323,12 +323,15 @@ const ProbeCall = struct {
     params: []const CapRef = &.{},
     action: CapAction = .inspect,
     returned: bool = false,
+    /// Every Return the callback saw; a call gets exactly one.
+    returns: u32 = 0,
     exception: bool = false,
     results: Received = .{},
 
     fn onReturn(ctx_ptr: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
         const self = castCtx(*ProbeCall, ctx_ptr);
         self.returned = true;
+        self.returns += 1;
         if (ret.tag != .results) {
             self.exception = true;
             return;
@@ -782,4 +785,145 @@ test "sendCall on an import that resolved to our own export delivers loopback pa
     }
     try std.testing.expectEqual(@as(usize, 1), probe_calls_on_wire);
     try fx.expectBaselineRefs();
+}
+
+// -- (e) Capabilities the peer does not hold -----------------------------------
+//
+// An origin-tagged capability pointer is never checked against the cap table
+// when it is written: a generated local Client (origin `.exported`) kept past
+// its export's removal and written with `setXClient` names an export that no
+// longer exists. The loopback encoder refuses such a descriptor itself, the
+// way `onOutboundCap` refuses one for the wire, before the call is
+// dispatched or the Return leaves the handler. Otherwise only the loopback
+// decode notices, after the Return has consumed the loopback marker, and
+// the exception that follows goes to the remote under the loopback answer
+// id.
+
+/// An id that names neither an export nor an import on the server.
+const stale_id: u32 = 77;
+
+fn expectStaleId(fx: *const Fixture) !void {
+    try std.testing.expect(!fx.server.caps.hasExport(stale_id));
+    try std.testing.expect(!fx.server.caps.hasImport(stale_id));
+}
+
+/// A loopback call that failed: the caller saw exactly one Return, an
+/// exception; nothing reached the remote; no question or loopback marker is
+/// left; and the fixture's references are as they were.
+fn expectFailedLocally(fx: *Fixture, caller: *const ProbeCall, questions_before: usize, events_before: usize) !void {
+    try std.testing.expectEqual(@as(u32, 1), caller.returns);
+    try std.testing.expect(caller.exception);
+    try expectNoFramesSince(&fx.wire, events_before);
+    try std.testing.expectEqual(questions_before, fx.server.questions.count());
+    try std.testing.expectEqual(@as(usize, 0), fx.server.loopback_questions.count());
+    try fx.expectBaselineRefs();
+}
+
+/// A loopback call whose params name a capability the peer does not hold
+/// fails synchronously, before the handler runs.
+fn expectParamsRefused(origin: protocol.CapDescriptorTag, expected: anyerror) !void {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    try expectStaleId(&fx);
+
+    const before = fx.wire.events.items.len;
+    const questions_before = fx.server.questions.count();
+    var caller = ProbeCall{};
+    try std.testing.expectError(expected, fx.callProbe(&.{.{ .origin = origin, .id = stale_id }}, &caller));
+    try std.testing.expectEqual(@as(u32, 0), fx.probe.calls);
+    try std.testing.expectEqual(@as(u32, 0), caller.returns);
+    try std.testing.expectEqual(questions_before, fx.server.questions.count());
+    try std.testing.expectEqual(@as(usize, 0), fx.server.loopback_questions.count());
+    try expectNoFramesSince(&fx.wire, before);
+    try fx.expectBaselineRefs();
+}
+
+test "a loopback call whose params name an export the peer does not hold fails before dispatch" {
+    try expectParamsRefused(.senderHosted, error.UnknownExport);
+}
+
+test "a loopback call whose params name an import the peer does not hold fails before dispatch" {
+    try expectParamsRefused(.receiverHosted, error.UnknownImport);
+}
+
+/// A handler whose loopback results name a capability the peer does not
+/// hold: its `sendReturnResults` fails, the handler lets the error out of
+/// `on_call`, and the caller receives an exception Return.
+fn expectResultsRefused(origin: protocol.CapDescriptorTag, queued_wire: bool) !void {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    try expectStaleId(&fx);
+
+    const results = [_]CapRef{.{ .origin = origin, .id = stale_id }};
+    fx.probe.results = &results;
+    const before = fx.wire.events.items.len;
+    const questions_before = fx.server.questions.count();
+    // A queued wire holds what the server sends until `flush`, as a real
+    // transport would: nothing may be waiting there either.
+    fx.wire.queueing = queued_wire;
+    var caller = ProbeCall{};
+    _ = try fx.callProbe(&.{}, &caller);
+    try std.testing.expectEqual(@as(usize, 0), fx.wire.queue.items.len);
+    try fx.wire.flush();
+    try std.testing.expectEqual(@as(u32, 1), fx.probe.calls);
+    try expectFailedLocally(&fx, &caller, questions_before, before);
+}
+
+test "a loopback Return whose results name an export the peer does not hold fails the call locally" {
+    try expectResultsRefused(.senderHosted, false);
+}
+
+test "a loopback Return whose results name an export the peer does not hold fails the call locally over a queued wire" {
+    try expectResultsRefused(.senderHosted, true);
+}
+
+test "a loopback Return whose results name an import the peer does not hold fails the call locally" {
+    try expectResultsRefused(.receiverHosted, false);
+}
+
+/// Answers each call later, from the test, instead of inside `on_call`.
+const DeferredProbe = struct {
+    pending: ?u32 = null,
+
+    fn exported(self: *DeferredProbe) capnpc.rpc.peer.Export {
+        return .{ .ctx = self, .on_call = onCall };
+    }
+
+    fn onCall(ctx_ptr: *anyopaque, _: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self = castCtx(*DeferredProbe, ctx_ptr);
+        self.pending = call.question_id;
+    }
+};
+
+test "an async handler whose loopback results name a stale export gets the error and settles the call itself" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    try expectStaleId(&fx);
+
+    var deferred = DeferredProbe{};
+    const deferred_id = try fx.server.addExport(deferred.exported());
+    const before = fx.wire.events.items.len;
+    const questions_before = fx.server.questions.count();
+    var caller = ProbeCall{};
+    _ = try fx.server.sendCallResolved(
+        .{ .exported = .{ .id = deferred_id } },
+        interface_id,
+        probe_method,
+        &caller,
+        ProbeCall.build,
+        ProbeCall.onReturn,
+    );
+    const answer_id = deferred.pending orelse return error.TestHandlerDidNotRun;
+
+    var reply = CapList{ .refs = &.{.{ .origin = .senderHosted, .id = stale_id }} };
+    try std.testing.expectError(error.UnknownExport, fx.server.sendReturnResults(answer_id, &reply, CapList.buildReturn));
+    // The call is still open, and still a loopback one...
+    try std.testing.expectEqual(@as(u32, 0), caller.returns);
+    try std.testing.expect(fx.server.loopback_questions.contains(answer_id));
+    // ...so the handler's own exception Return reaches the caller here.
+    try fx.server.sendReturnException(answer_id, "results unavailable");
+    try expectFailedLocally(&fx, &caller, questions_before, before);
 }
