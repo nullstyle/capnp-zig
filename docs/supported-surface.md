@@ -366,7 +366,20 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   caller-owned and transferred retained answers, while the redacted
   `retained_questions` resource reports pressure and rejection. This API is
   Experimental even though the existing automatic call surface remains
-  unchanged.
+  unchanged. `Peer.sendBootstrapWithOptions` takes the same options for the
+  bootstrap question, so a caller can pipeline on the bootstrap after its
+  Return; `sendBootstrap` keeps the automatic lifetime.
+- **Answering after the caller's Finish:** a host that answers calls later can
+  install `Peer.setAnswerFinishedHandler`. It runs, at most once per answer and
+  inside `handleFrame`, when the remote sends Finish for a call the host was
+  handed and has not answered; not for an answer the host already replied to,
+  a call the Peer still holds queued, or a call the Peer forwarded. The host
+  then answers with `Peer.sendReturnCanceled`, which sends `Return{canceled}`
+  and fails the calls pipelined on that answer; it refuses an answer the caller
+  has not finished. Any other late Return is still accepted, and it keeps
+  `releaseParamCaps = false` when the call's params granted capabilities.
+  `Peer.resolvePromiseExportToExceptionTyped` rejects a promise export with an
+  explicit `Exception.Type`. Experimental.
 - **Level 2 (persistence):** Save/Restore SturdyRef hooks are present
   (`rpc.peer` persistence surface) and documented in
   [`rpc-persistence.md`](rpc-persistence.md). Current mainline evidence covers

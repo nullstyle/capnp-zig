@@ -157,7 +157,8 @@ terminal `Return` is dispatched, the peer sends `Finish`. The Experimental
 automatic Finish; generated interface `Client`, `PipelinedClient`, and
 `callXxxPipelined` methods expose matching `WithOptions` forms. Their existing
 methods delegate with `.automatic`, and streaming fire-and-forget calls remain
-automatic.
+automatic. `sendBootstrapWithOptions` applies the same policy to the bootstrap
+question; `sendBootstrap` delegates with `.automatic`.
 
 Retained registration is an atomic pre-send step, including synchronous
 loopback/transport Returns. The terminal callback runs at most once and makes
