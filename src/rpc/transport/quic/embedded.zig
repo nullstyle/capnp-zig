@@ -83,6 +83,14 @@ pub const EmbeddedSessionOptions = struct {
 ///      and before `Server.tick` ("Embedder rules" in
 ///      docs/quic-transport.md: a tick first can reclaim a stream before the
 ///      Driver reads it).
+///   5. Tear down with `destroy`, the last call on the seat: usually from
+///      `on_disconnect`, after `notifyDisconnected`. A `destroy` from a seat
+///      callback also works, and frees the seat before the seat call that
+///      ran the callback returns.
+///
+/// The close callback is the seat's last call into the host: after it, the
+/// seat never runs its engines or calls `on_message`, `on_error` or
+/// `on_tick` again, so the host may free the `Peer` inside it.
 ///
 /// Frames reach the `Peer` strictly in stream order (QUIC per-stream order
 /// plus FIFO seat buffers), preserving the E-order contract of
@@ -221,9 +229,23 @@ pub const EmbeddedSession = struct {
         return self;
     }
 
-    /// Host-side teardown. If a callback is currently running on this
-    /// session, the teardown is deferred to `service`/`notifyDisconnected`
-    /// (same decision table as the owned connection's `deinit`).
+    /// Host-side teardown, and the host's last call on the seat: once
+    /// `destroy` returns, do not call the seat again, and take it out of
+    /// every host table (the Driver session's `app` too).
+    ///
+    /// Outside a seat callback the seat is freed at once. It leaves the QUIC
+    /// connection open: the host owns it, and may hand it to another
+    /// protocol (as a foreign-ALPN `on_handshake` does). The one exception
+    /// is a close the host asked for with `requestClose` that no `service`
+    /// pass has carried out yet: the seat carries it out first.
+    ///
+    /// Inside a seat callback (`on_message`, `on_error`, `on_close`,
+    /// `on_tick`, and Peer code reached through them) the teardown waits
+    /// until the callback returns to the seat call that ran it (`service`,
+    /// `onStreamData` or `notifyDisconnected`). Before that call returns,
+    /// the seat closes the QUIC connection with a normal close, runs the
+    /// close callback if it has not run (an attached `Peer` detaches in
+    /// it), and frees itself. That call then returns without an error.
     pub fn destroy(self: *EmbeddedSession) void {
         switch (self.callback_lifecycle.decideDeinit()) {
             .already_deinitialized => return,
@@ -237,6 +259,9 @@ pub const EmbeddedSession = struct {
 
     fn deinitNow(self: *EmbeddedSession) void {
         if (!self.callback_lifecycle.beginDeinit()) return;
+        // A close the host asked for must not die with the seat. After the
+        // close callback the connection is already closing: leave it be.
+        if (!self.closed_notified) self.carryOutRequestedClose();
         self.baseline.deinit(self.allocator);
         self.native.deinit(self.allocator);
         self.callback_lifecycle.clearCallbacks();
@@ -275,6 +300,16 @@ pub const EmbeddedSession = struct {
         Termination.close(self);
     }
 
+    /// Ask for a normal close of the session and of its QUIC connection.
+    /// Safe from any thread: it only sets flags and `wake`s. The next
+    /// `service` pass carries it out on the loop thread, as the owned
+    /// server's loop does: it closes the engines, records a normal close
+    /// and closes the QUIC connection with `ApplicationCloseCode.normal`
+    /// (or with the code of an error close recorded before it), so the peer
+    /// gets a CONNECTION_CLOSE. The close callback runs on a later pass,
+    /// once quic-zig reports the connection closed (after the host has sent
+    /// the close datagram). `close` does the same at once, on the loop
+    /// thread.
     pub fn requestClose(self: *EmbeddedSession) void {
         Termination.requestClose(self);
     }
@@ -341,9 +376,13 @@ pub const EmbeddedSession = struct {
 
     /// Forward from the embedder's `on_stream_data`. Bytes buffer in
     /// arrival order; the next `service` pass feeds them to the engines.
-    /// Bytes of a refused stream (see `onStreamOpen`) are dropped.
+    /// Bytes of a refused stream (see `onStreamOpen`), and every byte after
+    /// the close callback, are dropped. An overflow of
+    /// `max_buffered_stream_bytes` runs the error callback; a `destroy`
+    /// from inside it completes before this call returns.
     pub fn onStreamData(self: *EmbeddedSession, stream_id: u64, chunk: []const u8) !void {
         if (chunk.len == 0) return;
+        if (self.closed_notified) return;
         if (!peer_streams.expected(self.role, self.mode, stream_id)) return;
         const gop = try self.streams.getOrPut(self.allocator, stream_id);
         if (!gop.found_existing) gop.value_ptr.* = .{};
@@ -351,6 +390,7 @@ pub const EmbeddedSession = struct {
         if (buf.ended) return error.StreamClosed;
         if (self.buffered_bytes + chunk.len > self.max_buffered_stream_bytes) {
             Termination.frameError(self, error.FrameTooLarge);
+            _ = self.finishDeferredDestroy();
             return;
         }
         try buf.data.appendSlice(self.allocator, chunk);
@@ -516,22 +556,60 @@ pub const EmbeddedSession = struct {
     /// Forward from the embedder's `on_disconnect` (the Driver's will-close
     /// path). Captures the typed close cause from the sticky close
     /// certificate while the connection is still live, then fires the
-    /// peer's close callback exactly once.
+    /// peer's close callback exactly once (see `notifyClosed`). A `destroy`
+    /// from inside the close callback completes before this call returns:
+    /// do not call the seat again after that.
     pub fn notifyDisconnected(self: *EmbeddedSession) void {
+        self.notifyClosed();
+        _ = self.finishDeferredDestroy();
+    }
+
+    /// Fire the close callback exactly once. From then on the seat never
+    /// calls the host or the `Peer` again, as the owned loops do
+    /// (`connection_loop.run` closes the engines, then runs the close
+    /// callback, then exits; `Server.stepSessionAt` never services a closing
+    /// session). The engines close first, so nothing more is read, sent or
+    /// dispatched, and every other callback is dropped before the close
+    /// callback runs: the host may free the `Peer` or the callback context
+    /// inside it. `context()` keeps its value, so the close callback can
+    /// still find its state. `service` then does nothing.
+    fn notifyClosed(self: *EmbeddedSession) void {
         self.captureCloseCause();
         if (self.closed_notified) return;
         self.closed_notified = true;
         if (self.close_controller.hasPendingCrossThreadClose()) {
             Termination.emitClosingOnce(self);
         }
+        Termination.enterClosing(self);
         events.emitClose(self.observer, eventSource(self.mode), eventRole(self.role), closeErr(self));
         events.emitConnection(self.observer, eventSource(self.mode), eventRole(self.role), .closed);
-        if (self.callback_lifecycle.closeCallback()) |cb| {
-            self.callback_lifecycle.invokeClose(self, cb);
-        }
-        if (self.callback_lifecycle.shouldCompleteDeferredDeinit()) {
-            self.deinitNow();
-        }
+        const on_close = self.callback_lifecycle.closeCallback();
+        self.callback_lifecycle.setCallbacks(self.callback_lifecycle.context(), null, null, null);
+        self.on_tick = null;
+        if (on_close) |cb| self.callback_lifecycle.invokeClose(self, cb);
+    }
+
+    /// Carry out a close that `requestClose` (or a deferred `destroy`)
+    /// asked for: close the engines, record a normal close and close the
+    /// QUIC connection, as the owned server's `flushClosingSession` does. A
+    /// no-op when no request is pending.
+    fn carryOutRequestedClose(self: *EmbeddedSession) void {
+        if (!self.close_controller.drainPendingClose(&self.baseline, &self.native)) return;
+        Termination.emitClosingOnce(self);
+        self.close_controller.closeActive(self.conn, .normal, null);
+    }
+
+    /// Complete a `destroy` that a callback deferred, once no callback runs
+    /// on the seat: close the QUIC connection (the close that `destroy`
+    /// requested), run the close callback if it has not run (an attached
+    /// `Peer` detaches in it), then free the seat. Returns true when the
+    /// seat is gone: the caller must return at once, without touching it.
+    fn finishDeferredDestroy(self: *EmbeddedSession) bool {
+        if (!self.callback_lifecycle.shouldCompleteDeferredDeinit()) return false;
+        self.carryOutRequestedClose();
+        self.notifyClosed();
+        self.deinitNow();
+        return true;
     }
 
     fn captureCloseCause(self: *EmbeddedSession) void {
@@ -542,18 +620,28 @@ pub const EmbeddedSession = struct {
 
     // ---- Service pass ------------------------------------------------------
 
-    /// One service pass: drain a deferred cross-thread close, run the mode
-    /// engine against the buffered adapter (inbound dispatch + outbound
-    /// flush), notice a dead connection, and drive the `Peer` deadline
-    /// sweep on the tick cadence.
+    /// One service pass: carry out a requested close (`requestClose`), run
+    /// the mode engine against the buffered adapter (inbound dispatch +
+    /// outbound flush), notice a dead connection, and drive the `Peer`
+    /// deadline sweep on the tick cadence.
     ///
     /// Call once per embedder loop pass, AFTER `driver.service(server)` and
     /// BEFORE `server.tick(now_us)` — the same ordering rule the Driver
-    /// itself imposes.
+    /// itself imposes. After the close callback a pass does nothing. A
+    /// `destroy` from a callback in this pass frees the seat before the
+    /// pass returns (without an error): do not call the seat again.
     pub fn service(self: *EmbeddedSession, now_us: u64) !void {
-        if (self.close_controller.drainPendingClose(&self.baseline, &self.native)) {
-            Termination.emitClosingOnce(self);
-        }
+        if (self.closed_notified) return;
+        self.serviceOnce(now_us) catch |err| {
+            // The seat that failed is gone: so is its error.
+            if (self.finishDeferredDestroy()) return;
+            return err;
+        };
+        _ = self.finishDeferredDestroy();
+    }
+
+    fn serviceOnce(self: *EmbeddedSession, now_us: u64) !void {
+        self.carryOutRequestedClose();
 
         const adapter = BufferedConn{ .session = self };
         const router = mode_router.fromConnection(self);
@@ -565,9 +653,12 @@ pub const EmbeddedSession = struct {
                 self.releaseDrainedDataStreams();
             },
         }
+        // A callback of this pass destroyed the seat: `service` finishes
+        // the teardown.
+        if (self.callback_lifecycle.deinitRequested()) return;
 
         if (self.conn.isClosed()) {
-            if (!self.closed_notified) self.notifyDisconnected();
+            self.notifyClosed();
             return;
         }
 

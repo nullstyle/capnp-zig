@@ -1111,3 +1111,588 @@ test "embedded quic session delivers a resumed 0-RTT frame once, never before th
     // through the host's buffer.
     try std.testing.expect(state.replayed_prehandshake_bytes.load(.acquire) > 0);
 }
+
+// ---------------------------------------------------------------------------
+// Seat teardown. The close callback is the seat's last call into the host; a
+// `destroy` from a seat callback frees the seat before the seat call returns;
+// `requestClose` closes the QUIC connection; and quic-zig keeps no pointer
+// into a freed seat. A raw quic client and the host loop both step on the
+// test thread, so each order below is exact.
+// ---------------------------------------------------------------------------
+
+const quic_zig = @import("quic");
+const RawFaultClient = raw_faults.RawFaultClient;
+
+/// Counts the live allocations made through it, to see when a seat is
+/// freed.
+const CountingAllocator = struct {
+    parent: std.mem.Allocator,
+    live: usize = 0,
+
+    fn allocator(self: *CountingAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = alloc,
+            .resize = resize,
+            .remap = remap,
+            .free = free,
+        } };
+    }
+
+    fn cast(ctx: *anyopaque) *CountingAllocator {
+        return @ptrCast(@alignCast(ctx));
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self = cast(ctx);
+        const ptr = self.parent.rawAlloc(len, alignment, ret_addr) orelse return null;
+        self.live += 1;
+        return ptr;
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        return cast(ctx).parent.rawResize(memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        return cast(ctx).parent.rawRemap(memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self = cast(ctx);
+        self.parent.rawFree(memory, alignment, ret_addr);
+        self.live -= 1;
+    }
+};
+
+/// A host with one seat. Its hooks route through `seat`, so a callback that
+/// destroys the seat takes it out of the host by setting `seat` to null.
+const TeardownHost = struct {
+    allocator: std.mem.Allocator,
+    /// The seat's own allocator (a `CountingAllocator`).
+    seat_allocator: std.mem.Allocator,
+    options: quic.EmbeddedSessionOptions,
+    plan: Plan,
+    seat: ?*quic.EmbeddedSession = null,
+    /// The server side of the connection, which outlives the seat.
+    quic_conn: ?*quic_zig.Connection = null,
+    peer: ?*Peer = null,
+    messages: usize = 0,
+    closes: usize = 0,
+    errors: usize = 0,
+    errors_after_close: usize = 0,
+    last_error: ?anyerror = null,
+    disconnects: usize = 0,
+
+    const Plan = enum {
+        /// Seat callbacks that only count.
+        plain,
+        /// A `Peer` on the seat, whose close callback frees it: the pattern
+        /// that `Peer.on_close` documents.
+        peer_freed_in_close,
+        /// `on_message` takes the seat out of the host and destroys it.
+        destroy_in_message,
+    };
+
+    pub const ConnState = void;
+    pub const StreamState = void;
+
+    fn onConnect(host: *TeardownHost, session: *TD.Session) anyerror!void {
+        const seat = try quic.EmbeddedSession.create(host.seat_allocator, session.conn, host.options);
+        host.seat = seat;
+        host.quic_conn = session.conn;
+        if (host.plan != .peer_freed_in_close) seat.start(host, onMessage, onError, onClose);
+    }
+
+    fn onHandshake(host: *TeardownHost, _: *TD.Session) anyerror!void {
+        if (host.plan != .peer_freed_in_close) return;
+        const seat = host.seat orelse return;
+        const peer = try host.allocator.create(Peer);
+        peer.* = Peer.init(host.allocator, seat);
+        peer.start(host, peerError, peerClose);
+        host.peer = peer;
+    }
+
+    fn onStreamOpen(host: *TeardownHost, _: *TD.Session, entry: *TD.StreamEntry, bidi: bool) anyerror!void {
+        const seat = host.seat orelse return;
+        try seat.onStreamOpen(entry.id, bidi);
+    }
+
+    fn onStreamData(host: *TeardownHost, _: *TD.Session, entry: *TD.StreamEntry, chunk: []const u8) anyerror!void {
+        const seat = host.seat orelse return;
+        try seat.onStreamData(entry.id, chunk);
+    }
+
+    fn onStreamEnd(host: *TeardownHost, _: *TD.Session, entry: *TD.StreamEntry, end: quic.quic_app.StreamEnd) anyerror!void {
+        const seat = host.seat orelse return;
+        seat.onStreamEnd(entry.id, end);
+    }
+
+    fn onDisconnect(host: *TeardownHost, _: *TD.Session) void {
+        host.disconnects += 1;
+        host.quic_conn = null;
+        const seat = host.seat orelse return;
+        host.seat = null;
+        seat.notifyDisconnected();
+        seat.destroy();
+    }
+
+    fn of(ctx: ?*anyopaque) *TeardownHost {
+        return @ptrCast(@alignCast(ctx.?));
+    }
+
+    fn noteError(host: *TeardownHost, err: anyerror) void {
+        host.errors += 1;
+        host.last_error = err;
+        if (host.closes > 0) host.errors_after_close += 1;
+    }
+
+    fn onMessage(seat: *quic.EmbeddedSession, _: []const u8) anyerror!void {
+        const host = of(seat.context());
+        host.messages += 1;
+        if (host.plan == .destroy_in_message) {
+            host.seat = null;
+            seat.destroy();
+        }
+    }
+
+    fn onError(seat: *quic.EmbeddedSession, err: anyerror) void {
+        of(seat.context()).noteError(err);
+    }
+
+    fn onClose(seat: *quic.EmbeddedSession) void {
+        of(seat.context()).closes += 1;
+    }
+
+    fn peerError(ctx: ?*anyopaque, _: *Peer, err: anyerror) void {
+        of(ctx).noteError(err);
+    }
+
+    fn peerClose(ctx: ?*anyopaque, peer: *Peer) void {
+        const host = of(ctx);
+        host.closes += 1;
+        host.peer = null;
+        peer.deinit();
+        host.allocator.destroy(peer);
+    }
+};
+
+const TD = quic.quic_app.Driver(TeardownHost);
+
+const teardown_data_deadline_us: u64 = 300_000;
+
+const teardown_native_options: quic.NativeOptions = .{
+    .inline_frame_threshold = 256,
+    .max_control_frame_bytes = 512,
+    .max_pending_data_streams = 4,
+    .max_pending_data_bytes = 4096,
+    .data_stream_completion_deadline_us = teardown_data_deadline_us,
+};
+
+const TeardownRigOptions = struct {
+    plan: TeardownHost.Plan = .plain,
+    max_buffered_stream_bytes: usize = 512 * 1024,
+    /// quic-level `reveal_close_reason_on_wire` on the host's listener.
+    reveal_close_reason_on_wire: bool = false,
+    /// The raw client's `max_ack_delay` transport parameter. The server's
+    /// draining period is three of its PTOs, which include this delay.
+    client_max_ack_delay_ms: ?u64 = null,
+};
+
+/// One host (Driver + listener + seat) and one raw quic client, on the
+/// heap: the Driver, the listener and the host point at each other.
+const TeardownRig = struct {
+    counting: CountingAllocator,
+    host: TeardownHost,
+    driver: TD,
+    listener: quic.Listener,
+    raw: RawFaultClient,
+    rx_buf: [64 * 1024]u8,
+    tx_buf: [2048]u8,
+
+    fn create(allocator: std.mem.Allocator, options: TeardownRigOptions) !*TeardownRig {
+        const rig = try allocator.create(TeardownRig);
+        errdefer allocator.destroy(rig);
+        rig.counting = .{ .parent = allocator };
+        rig.host = .{
+            .allocator = allocator,
+            .seat_allocator = rig.counting.allocator(),
+            .options = .{
+                .mode = .native,
+                .native = teardown_native_options,
+                .max_buffered_stream_bytes = options.max_buffered_stream_bytes,
+            },
+            .plan = options.plan,
+        };
+        rig.driver = try TD.init(.{
+            .allocator = allocator,
+            .app = &rig.host,
+            .max_tracked_streams = 16,
+            .hooks = .{
+                .on_connect = TeardownHost.onConnect,
+                .on_handshake = TeardownHost.onHandshake,
+                .on_stream_open = TeardownHost.onStreamOpen,
+                .on_stream_data = TeardownHost.onStreamData,
+                .on_stream_end = TeardownHost.onStreamEnd,
+                .on_disconnect = TeardownHost.onDisconnect,
+            },
+        });
+        errdefer rig.driver.deinit();
+        rig.listener = try quic.Listener.init(allocator, std.testing.io, .{
+            .listen_addr = loopback.testListenAddr(),
+            .tls_cert_pem = loopback_cert_pem,
+            .tls_key_pem = loopback_key_pem,
+            .alpn_protocols = &.{"capnp-rpc/1"},
+            .max_concurrent_connections = 4,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+            .mode = .native,
+            .native = teardown_native_options,
+            .reveal_close_reason_on_wire = options.reveal_close_reason_on_wire,
+        });
+        // The Driver must outlive the server: `listener.deinit` fires the
+        // Driver's will-close hook.
+        errdefer rig.listener.deinit();
+        rig.driver.attach(&rig.listener.server);
+        rig.raw = if (options.client_max_ack_delay_ms) |delay_ms|
+            try rawClientWithAckDelay(allocator, rig.listener.getAddress(), delay_ms)
+        else
+            try RawFaultClient.init(allocator, std.testing.io, rig.listener.getAddress());
+        return rig;
+    }
+
+    fn destroy(self: *TeardownRig) void {
+        const allocator = self.host.allocator;
+        self.raw.deinit();
+        self.listener.deinit();
+        self.driver.deinit();
+        if (self.host.peer) |peer| {
+            peer.deinit();
+            allocator.destroy(peer);
+        }
+        allocator.destroy(self);
+    }
+
+    /// One embedder pass in the documented order: feed, Driver, seat,
+    /// flush, tick, reap.
+    fn hostStep(self: *TeardownRig) !void {
+        _ = try self.listener.receiveOne(&self.rx_buf);
+        try self.driver.service(&self.listener.server);
+        const now_us = self.listener.nowUs();
+        if (self.host.seat) |seat| seat.service(now_us) catch seat.requestClose();
+        try self.flush(now_us);
+        try self.listener.tick(now_us);
+        try self.flush(now_us);
+        _ = self.listener.reapClosedSessions();
+    }
+
+    fn flush(self: *TeardownRig, now_us: u64) !void {
+        for (self.listener.server.iterator()) |slot| {
+            try self.listener.drainSessionDatagrams(quic.Session.fromSlot(slot), &self.tx_buf, now_us);
+        }
+    }
+
+    fn step(self: *TeardownRig) !void {
+        try self.hostStep();
+        try self.raw.step(std.Io.Duration.zero);
+    }
+
+    fn handshake(self: *TeardownRig) !*quic.EmbeddedSession {
+        const patience = TeardownPatience.begin();
+        while (true) {
+            try self.raw.step(std.Io.Duration.zero);
+            try self.hostStep();
+            if (self.raw.client.conn.handshakeDone()) {
+                if (self.host.seat) |seat| {
+                    if (seat.conn.handshakeDone()) return seat;
+                }
+            }
+            try patience.wait();
+        }
+    }
+
+    /// The native preface and hello on stream 0.
+    fn writePreamble(self: *TeardownRig) !void {
+        var hello: [quic.native.encodedHelloLen()]u8 = undefined;
+        const hello_len = try quic.native.encodeHello(&hello);
+        try self.raw.ensureControlStream();
+        try self.raw.writeAll(quic.baseline_stream_id, quic.native.preface);
+        try self.raw.writeAll(quic.baseline_stream_id, hello[0..hello_len]);
+    }
+
+    /// One inline RPC frame (a Bootstrap) on stream 0.
+    fn writeInlineFrame(self: *TeardownRig, allocator: std.mem.Allocator) !void {
+        const frame = try loopback.buildBootstrapFrame(allocator, 0);
+        defer allocator.free(frame);
+        const inline_rpc = try quic.native.encodeInlineRpc(allocator, 0, frame, teardown_native_options.max_control_frame_bytes);
+        defer allocator.free(inline_rpc);
+        try self.raw.writeAll(quic.baseline_stream_id, inline_rpc);
+    }
+
+    /// Step both sides until the raw client has the server's close.
+    fn waitForClientClose(self: *TeardownRig) !quic_zig.CloseEvent {
+        const patience = TeardownPatience.begin();
+        while (true) {
+            if (self.raw.client.conn.closeEvent()) |ev| return ev;
+            try self.step();
+            try patience.wait();
+        }
+    }
+};
+
+fn rawClientWithAckDelay(
+    allocator: std.mem.Allocator,
+    remote_addr: std.Io.net.IpAddress,
+    max_ack_delay_ms: u64,
+) !RawFaultClient {
+    const io = std.testing.io;
+    const local_addr = quic.defaultClientBindAddress(remote_addr);
+    const socket = try std.Io.net.IpAddress.bind(&local_addr, io, .{ .mode = .dgram, .protocol = .udp });
+    errdefer socket.close(io);
+    var params = quic.defaultTransportParams();
+    params.max_ack_delay_ms = max_ack_delay_ms;
+    var client = try quic_zig.Client.connect(.{
+        .allocator = allocator,
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .alpn_protocols = &.{quic.alpn},
+        .transport_params = params,
+    });
+    errdefer client.deinit();
+    const rx_buf = try allocator.alloc(u8, 64 * 1024);
+    errdefer allocator.free(rx_buf);
+    const tx_buf = try allocator.alloc(u8, 1500);
+    errdefer allocator.free(tx_buf);
+    return .{
+        .allocator = allocator,
+        .io = io,
+        .socket = socket,
+        .remote_addr = remote_addr,
+        .client = client,
+        .start_timestamp = std.Io.Timestamp.now(io, .awake),
+        .rx_buf = rx_buf,
+        .tx_buf = tx_buf,
+    };
+}
+
+const TeardownPatience = struct {
+    start: std.Io.Timestamp,
+
+    fn begin() TeardownPatience {
+        return .{ .start = std.Io.Timestamp.now(std.testing.io, .awake) };
+    }
+
+    /// Fail once the loop has waited `loopback_timeout_ms`; else pause 1 ms.
+    fn wait(self: *const TeardownPatience) !void {
+        const now = std.Io.Timestamp.now(std.testing.io, .awake);
+        if (self.start.durationTo(now).toMilliseconds() >= loopback.loopback_timeout_ms) {
+            return error.QuicLoopbackTimedOut;
+        }
+        loopback.sleepMs(1);
+    }
+};
+
+/// A native seat waits on a data stream that a DataRpc announced and the
+/// client never opens. The client then closes. The seat runs its close
+/// callback when the connection starts draining, and the draining period
+/// (three PTOs with the client's 2 s `max_ack_delay`) outlasts the data
+/// stream's completion deadline. The seat must not report the deadline's
+/// `DataStreamTimeout` after its close callback: the host may have freed the
+/// `Peer` there. Ablation: with the seat servicing its engines and keeping
+/// its callbacks after the close callback (the code before this fix), the
+/// plain plan gets the error after the close, and the Peer plan crashes in
+/// `peer_transport_callbacks.zig` on the freed Peer.
+fn runSeatQuietAfterClose(plan: TeardownHost.Plan) !void {
+    const allocator = std.testing.allocator;
+    const rig = try TeardownRig.create(allocator, .{ .plan = plan, .client_max_ack_delay_ms = 2000 });
+    defer rig.destroy();
+
+    const seat = try rig.handshake();
+    try rig.writePreamble();
+    const announce = try quic.native.encodeDataRpc(allocator, 0, 2, 8, teardown_native_options.max_control_frame_bytes);
+    defer allocator.free(announce);
+    try rig.raw.writeAll(quic.baseline_stream_id, announce);
+
+    // 1. Step until the seat waits on the data stream: its deadline runs.
+    var patience = TeardownPatience.begin();
+    while (seat.native.pending_data == null) {
+        try rig.step();
+        try patience.wait();
+    }
+    const announced_at_us = rig.listener.nowUs();
+
+    // 2. The client closes. Step the host until the seat's close callback.
+    rig.raw.client.conn.close(false, 0, "bye");
+    try rig.raw.drainOutgoing(rig.raw.nowUs());
+    patience = TeardownPatience.begin();
+    while (rig.host.closes == 0) {
+        try rig.hostStep();
+        try patience.wait();
+    }
+    try std.testing.expectEqual(@as(usize, 0), rig.host.errors);
+
+    // 3. Step the host past the deadline. The connection is still draining:
+    //    the Driver has not reaped it.
+    patience = TeardownPatience.begin();
+    while (rig.listener.nowUs() -| announced_at_us < teardown_data_deadline_us + 200_000) {
+        try rig.hostStep();
+        try patience.wait();
+    }
+    try std.testing.expectEqual(@as(usize, 0), rig.host.disconnects);
+    try std.testing.expect(rig.host.seat != null);
+
+    try std.testing.expectEqual(@as(usize, 1), rig.host.closes);
+    try std.testing.expectEqual(@as(usize, 0), rig.host.errors_after_close);
+    try std.testing.expectEqual(@as(usize, 0), rig.host.errors);
+}
+
+test "embedded seat calls no callback after its close callback while the connection drains" {
+    try runSeatQuietAfterClose(.plain);
+}
+
+test "embedded seat never reaches a Peer that its close callback freed" {
+    try runSeatQuietAfterClose(.peer_freed_in_close);
+}
+
+// `on_message` takes the seat out of the host and destroys it: a destroy
+// from inside a seat callback. The seat must be freed before the service
+// pass that ran the callback returns, run its close callback once before
+// that, and close the QUIC connection with a normal close. Ablation: with
+// the deferred teardown completing only in `notifyDisconnected` (the code
+// before this fix), the seat stays allocated after the pass, and the
+// testing allocator reports it as leaked.
+test "embedded seat destroyed from its message callback is freed before the service pass returns" {
+    const allocator = std.testing.allocator;
+    const rig = try TeardownRig.create(allocator, .{ .plan = .destroy_in_message });
+    defer rig.destroy();
+
+    _ = try rig.handshake();
+    try std.testing.expect(rig.counting.live > 0);
+    try rig.writePreamble();
+    try rig.writeInlineFrame(allocator);
+
+    const patience = TeardownPatience.begin();
+    while (rig.host.messages == 0) {
+        try rig.step();
+        try patience.wait();
+    }
+    // The pass that ran `on_message` freed the seat, after its close callback.
+    try std.testing.expect(rig.host.seat == null);
+    try std.testing.expectEqual(@as(usize, 0), rig.counting.live);
+    try std.testing.expectEqual(@as(usize, 1), rig.host.closes);
+    try std.testing.expectEqual(@as(usize, 0), rig.host.errors);
+
+    // The client sees a normal application close.
+    const ev = try rig.waitForClientClose();
+    try std.testing.expectEqual(quic_zig.CloseSource.peer, ev.source);
+    try std.testing.expectEqual(quic_zig.CloseErrorSpace.application, ev.error_space);
+    try std.testing.expectEqual(@as(u64, 0), ev.error_code);
+}
+
+const RequestCloseCase = enum {
+    /// The next service pass carries the request out.
+    service_pass,
+    /// The host destroys the seat before any service pass.
+    destroy_before_service,
+};
+
+/// `requestClose` closes the QUIC connection: the client gets a normal
+/// application CONNECTION_CLOSE well before the 30 s idle timeout, and when
+/// the seat lives on, its close callback follows. A `destroy` before the
+/// next service pass does not lose the request. Ablation: with
+/// `requestClose` closing only the engines (the code before this fix), the
+/// client sees no close and each case times out.
+fn runRequestClose(case: RequestCloseCase) !void {
+    const allocator = std.testing.allocator;
+    const rig = try TeardownRig.create(allocator, .{});
+    defer rig.destroy();
+
+    const seat = try rig.handshake();
+    try rig.writePreamble();
+    try rig.writeInlineFrame(allocator);
+    var patience = TeardownPatience.begin();
+    while (rig.host.messages == 0) {
+        try rig.step();
+        try patience.wait();
+    }
+
+    seat.requestClose();
+    switch (case) {
+        .service_pass => {},
+        .destroy_before_service => {
+            rig.host.seat = null;
+            seat.destroy();
+            try std.testing.expectEqual(@as(usize, 0), rig.counting.live);
+        },
+    }
+
+    const ev = try rig.waitForClientClose();
+    try std.testing.expectEqual(quic_zig.CloseSource.peer, ev.source);
+    try std.testing.expectEqual(quic_zig.CloseErrorSpace.application, ev.error_space);
+    try std.testing.expectEqual(@as(u64, 0), ev.error_code);
+
+    switch (case) {
+        .service_pass => {
+            patience = TeardownPatience.begin();
+            while (rig.host.closes == 0) {
+                try rig.hostStep();
+                try patience.wait();
+            }
+            try std.testing.expectEqual(@as(usize, 1), rig.host.closes);
+        },
+        .destroy_before_service => try std.testing.expectEqual(@as(usize, 0), rig.host.closes),
+    }
+    try std.testing.expectEqual(@as(usize, 0), rig.host.errors);
+}
+
+test "embedded seat requestClose sends a QUIC close the peer sees" {
+    try runRequestClose(.service_pass);
+}
+
+test "embedded seat destroyed right after requestClose still sends the QUIC close" {
+    try runRequestClose(.destroy_before_service);
+}
+
+// A frame error closes the connection with a reason that lives in the
+// seat ("rpc frame error"). The host destroys the seat before it sends the
+// close datagram, with quic-level `reveal_close_reason_on_wire` on, so
+// quic-zig builds the CONNECTION_CLOSE after the seat is gone. The peer
+// must get the reason, not freed memory. Ablation: with the queued close
+// keeping the seat's slice (the code before this fix), the peer gets the
+// freed seat's bytes and the test fails.
+test "embedded seat destroyed before its close datagram leaves keeps the close reason" {
+    const allocator = std.testing.allocator;
+    const rig = try TeardownRig.create(allocator, .{
+        .max_buffered_stream_bytes = 8,
+        .reveal_close_reason_on_wire = true,
+    });
+    defer rig.destroy();
+
+    const seat = try rig.handshake();
+    // The preface alone overflows the 8 buffered bytes: a frame error.
+    try rig.writePreamble();
+
+    // Feed the server and run its Driver, but send nothing: the close stays
+    // queued.
+    const patience = TeardownPatience.begin();
+    while (seat.closeStatus() == null) {
+        try rig.raw.step(std.Io.Duration.zero);
+        _ = try rig.listener.receiveOne(&rig.rx_buf);
+        try rig.driver.service(&rig.listener.server);
+        try patience.wait();
+    }
+    const status = seat.closeStatus() orelse return error.TestExpectedCloseStatus;
+    try std.testing.expectEqual(quic.ApplicationCloseCode.frame_error, status.code);
+    try std.testing.expectEqual(@as(usize, 1), rig.host.errors);
+    const quic_conn = rig.host.quic_conn orelse return error.TestExpectedQuicConnection;
+    // The close is queued and has not left yet.
+    try std.testing.expect(!quic_conn.isClosed());
+    try std.testing.expectEqual(quic_zig.CloseState.closing, quic_conn.closeState());
+
+    rig.host.seat = null;
+    seat.destroy();
+    try std.testing.expectEqual(@as(usize, 0), rig.counting.live);
+
+    const ev = try rig.waitForClientClose();
+    try std.testing.expectEqual(quic_zig.CloseSource.peer, ev.source);
+    try std.testing.expectEqual(@backingInt(quic.ApplicationCloseCode.frame_error), ev.error_code);
+    try std.testing.expectEqualStrings("rpc frame error", ev.reason);
+}

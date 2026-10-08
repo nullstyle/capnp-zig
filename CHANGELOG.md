@@ -94,6 +94,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quic-zig restarted the timer on a datagram's arrival, before header
   protection removal or the AEAD open. From quic-zig v0.31.1 only a packet
   that opens and is processed restarts it.
+- **QUIC (Experimental `EmbeddedSession`): the seat called `on_error` after
+  its close callback, into a `Peer` the host may have freed.** This affects
+  native-mode seats. The seat runs its close callback when the connection
+  starts draining, but it kept servicing its engines, with the `Peer`'s
+  callbacks, until the Driver reaped the connection. A data stream that a
+  DataRpc announced and the peer never opened then hit its completion
+  deadline, and the seat reported `DataStreamTimeout` through `on_error`.
+  A host whose close callback frees the `Peer` (the pattern `Peer.on_close`
+  documents) crashed there. A client could time this on purpose: it sets
+  the draining period through its `max_ack_delay`. Now the close callback
+  is the seat's last call into the host: the seat closes its engines and
+  drops `on_message`, `on_error` and `on_tick` before it, and `service`
+  does nothing after it. New tests in the QUIC transport suite; with the old
+  code the plain case gets the error after the close, and the `Peer` case
+  crashes with a Bus error in `peer_transport_callbacks.zig`.
+- **QUIC (Experimental `EmbeddedSession`): a `destroy` called from a seat
+  callback freed the seat at a time the host could not know, or never.** The
+  seat finished such a `destroy` only in `notifyDisconnected`, after the
+  connection closed. A host that kept the seat then called `service`,
+  `notifyDisconnected` or `destroy` on freed memory. A host that dropped the
+  seat leaked it, and its connection stayed open. Now a `destroy` from a
+  callback completes before the seat call that ran the callback (`service`,
+  `onStreamData` or `notifyDisconnected`) returns: the seat closes the QUIC
+  connection, runs its close callback once if it has not run, and frees
+  itself, and `service` then returns without an error. `destroy` is the
+  host's last call on a seat. New test: with the old code the seat is still
+  allocated after the pass, and the testing allocator reports it leaked.
+- **QUIC (Experimental `EmbeddedSession`): `requestClose` never closed the
+  QUIC connection.** It closed the seat's engines only. The peer got no
+  CONNECTION_CLOSE, its calls hung, and the seat lived on until the peer
+  closed or the idle timeout ran out (30 s by default, restarted by any
+  traffic). The host loop pattern `seat.service(now) catch seat.requestClose()`
+  hit this. Now the next `service` pass closes the connection with
+  `ApplicationCloseCode.normal`, as the owned server does, and a `destroy`
+  before that pass carries the close out first. New tests: with the old
+  code the client sees no close within 3 s.
+- **QUIC: quic-zig kept a pointer to the close reason inside the
+  session.** quic-zig's `Connection.close` queues the caller's reason slice
+  and reads it when it builds the CONNECTION_CLOSE. An `EmbeddedSession`
+  closed by an error and destroyed before the host sent that datagram sent
+  freed memory as the reason, when the host's quic-level
+  `reveal_close_reason_on_wire` was on (it is off by default). capnp-zig now
+  points the queued close at quic-zig's own copy of the reason. New test:
+  with the old code the peer gets `UUUUUUUUUUUUUUU` (freed bytes) instead of
+  `rpc frame error`.
 
 ## [0.21.0] - 2026-10-06
 

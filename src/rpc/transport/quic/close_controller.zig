@@ -139,6 +139,27 @@ pub const Controller = struct {
     fn closeQuicConn(self: *Controller, conn: *quic_zig.Connection) void {
         self.record(.normal, null);
         const status_value = self.status() orelse return;
-        conn.close(false, status_value.codeValue(), self.reason());
+        const ours = self.reason();
+        conn.close(false, status_value.codeValue(), ours);
+        keepReasonInQuic(conn, ours, quic_close.publicReason(status_value.code));
     }
 };
+
+/// quic-zig's `Connection.close` copies the reason into the connection's
+/// sticky close record, but the CONNECTION_CLOSE it queues
+/// (`lifecycle.pending_close`) keeps the caller's slice and reads it when it
+/// builds the frame (with quic-level `reveal_close_reason_on_wire` on). Our
+/// reason lives in the session (`State.reason_buf`), and an
+/// `EmbeddedSession` can be freed while its connection lives on. So point
+/// the queued close at quic-zig's own copy, which is what quic-zig's own
+/// close retransmit reads: quic-zig then holds no pointer into capnp-zig
+/// memory. If the sticky record holds another reason (a close recorded
+/// first), use `fallback`, a static string. A no-op unless the queued close
+/// holds `ours`.
+fn keepReasonInQuic(conn: *quic_zig.Connection, ours: []const u8, fallback: []const u8) void {
+    if (conn.lifecycle.pending_close) |*pending| {
+        if (pending.reason.ptr != ours.ptr) return;
+        const sticky: []const u8 = if (conn.closeEvent()) |ev| ev.reason else &.{};
+        pending.reason = if (std.mem.eql(u8, sticky, ours)) sticky else fallback;
+    }
+}
