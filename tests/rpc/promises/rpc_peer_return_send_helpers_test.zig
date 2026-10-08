@@ -78,6 +78,12 @@ test "peer_return_send_helpers sendReturnFrameWithLoopbackForPeer dispatches by 
             _ = bytes;
             state.sent_count += 1;
         }
+
+        fn questionOpen(_: *State, _: u32) bool {
+            return false;
+        }
+
+        fn report(_: *State, _: anyerror) void {}
     };
 
     var state = State.init(std.testing.allocator);
@@ -90,6 +96,8 @@ test "peer_return_send_helpers sendReturnFrameWithLoopbackForPeer dispatches by 
         "frame-a",
         Hooks.deliver,
         Hooks.send,
+        Hooks.questionOpen,
+        Hooks.report,
     );
     try std.testing.expectEqual(@as(usize, 1), state.sent_count);
     try std.testing.expectEqual(@as(usize, 0), state.delivered_count);
@@ -102,9 +110,88 @@ test "peer_return_send_helpers sendReturnFrameWithLoopbackForPeer dispatches by 
         "frame-b",
         Hooks.deliver,
         Hooks.send,
+        Hooks.questionOpen,
+        Hooks.report,
     );
     try std.testing.expectEqual(@as(usize, 1), state.sent_count);
     try std.testing.expectEqual(@as(usize, 1), state.delivered_count);
+    try std.testing.expect(!state.loopback_questions.contains(11));
+}
+
+test "peer_return_send_helpers sendReturnFrameWithLoopbackForPeer never sends a loopback Return whose delivery fails" {
+    const State = struct {
+        loopback_questions: std.AutoHashMap(u32, void),
+        /// The question has not seen its Return yet.
+        question_open: bool,
+        sent_count: usize = 0,
+        reported: ?anyerror = null,
+    };
+
+    const Hooks = struct {
+        fn deliver(state: *State, bytes: []const u8) !void {
+            _ = state;
+            _ = bytes;
+            return error.TestDeliveryFailed;
+        }
+
+        fn send(state: *State, bytes: []const u8) !void {
+            _ = bytes;
+            state.sent_count += 1;
+        }
+
+        fn questionOpen(state: *State, answer_id: u32) bool {
+            _ = answer_id;
+            return state.question_open;
+        }
+
+        fn report(state: *State, err: anyerror) void {
+            state.reported = err;
+        }
+    };
+
+    // Failed before the question saw the Return: the error goes back to the
+    // sender, and the answer stays a loopback one.
+    var open_state = State{
+        .loopback_questions = std.AutoHashMap(u32, void).init(std.testing.allocator),
+        .question_open = true,
+    };
+    defer open_state.loopback_questions.deinit();
+    try open_state.loopback_questions.put(12, {});
+    try std.testing.expectError(error.TestDeliveryFailed, helpers.sendReturnFrameWithLoopbackForPeer(
+        State,
+        &open_state,
+        12,
+        "frame-c",
+        Hooks.deliver,
+        Hooks.send,
+        Hooks.questionOpen,
+        Hooks.report,
+    ));
+    try std.testing.expect(open_state.loopback_questions.contains(12));
+    try std.testing.expectEqual(@as(usize, 0), open_state.sent_count);
+    try std.testing.expectEqual(@as(?anyerror, null), open_state.reported);
+
+    // Failed after the question saw it: the answer is settled, and the
+    // error is reported instead of returned.
+    var settled_state = State{
+        .loopback_questions = std.AutoHashMap(u32, void).init(std.testing.allocator),
+        .question_open = false,
+    };
+    defer settled_state.loopback_questions.deinit();
+    try settled_state.loopback_questions.put(13, {});
+    try helpers.sendReturnFrameWithLoopbackForPeer(
+        State,
+        &settled_state,
+        13,
+        "frame-d",
+        Hooks.deliver,
+        Hooks.send,
+        Hooks.questionOpen,
+        Hooks.report,
+    );
+    try std.testing.expect(!settled_state.loopback_questions.contains(13));
+    try std.testing.expectEqual(@as(usize, 0), settled_state.sent_count);
+    try std.testing.expectEqual(@as(?anyerror, error.TestDeliveryFailed), settled_state.reported);
 }
 
 test "peer_return_send_helpers noteOutboundReturnCapRefsForPeer tracks sender refs" {

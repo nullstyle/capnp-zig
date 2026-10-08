@@ -667,6 +667,9 @@ pub fn ReturnSend(comptime Peer: type) type {
             _ = self.cross_peer_proxy_answers.remove(answer_id);
         }
 
+        /// Send a Return, or deliver it here for a loopback answer. A
+        /// loopback Return never reaches the wire, even when its delivery
+        /// fails (`return_send.sendReturnFrameWithLoopbackForPeer`).
         pub fn sendReturnFrameWithLoopback(self: *Peer, answer_id: u32, bytes: []const u8) !void {
             try return_send.sendReturnFrameWithLoopbackForPeer(
                 Peer,
@@ -675,10 +678,18 @@ pub fn ReturnSend(comptime Peer: type) type {
                 bytes,
                 Peer.deliverLoopbackReturn,
                 Peer.sendFrameControl,
+                loopbackQuestionOpen,
+                reportNonfatalError,
             );
             _ = self.active_inbound_questions.remove(answer_id);
             _ = self.finished_early_param_grants.remove(answer_id);
             _ = self.cross_peer_proxy_answers.remove(answer_id);
+        }
+
+        /// A loopback answer's question is its own: still open means its
+        /// Return has not been delivered.
+        fn loopbackQuestionOpen(self: *Peer, answer_id: u32) bool {
+            return self.questions.contains(answer_id);
         }
 
         pub fn sendReturnProvidedTarget(self: *Peer, answer_id: u32, target: *const ProvideTarget) !void {

@@ -927,3 +927,82 @@ test "an async handler whose loopback results name a stale export gets the error
     try fx.server.sendReturnException(answer_id, "results unavailable");
     try expectFailedLocally(&fx, &caller, questions_before, before);
 }
+
+// -- (f) A loopback Return never falls back to the wire ----------------------
+
+test "a loopback Return that fails after it left the handler still fails the call locally" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+
+    // Saturate the loopback reference count on `decoy`. The encoder accepts
+    // the import (the server holds it); only the loopback decode, after the
+    // Return has left the handler, fails to take a reference on it.
+    fx.server.caps.imports.getPtr(fx.decoy_import_id).?.loopback_ref_count = std.math.maxInt(u32);
+    const results = [_]CapRef{.{ .origin = .receiverHosted, .id = fx.decoy_import_id }};
+    fx.probe.results = &results;
+    const before = fx.wire.events.items.len;
+    const questions_before = fx.server.questions.count();
+    var caller = ProbeCall{};
+    const call_result = fx.callProbe(&.{}, &caller);
+    fx.server.caps.imports.getPtr(fx.decoy_import_id).?.loopback_ref_count = 0;
+    _ = try call_result;
+
+    try std.testing.expectEqual(@as(u32, 1), fx.probe.calls);
+    try expectFailedLocally(&fx, &caller, questions_before, before);
+}
+
+/// A Return callback that runs out of memory after it has seen its Return.
+/// The peer reports any other callback error itself; it hands
+/// `error.OutOfMemory` back to whoever delivered the Return, which for a
+/// loopback Return is the handler's `sendReturnResults`.
+const FailingCaller = struct {
+    returns: u32 = 0,
+
+    fn onReturn(ctx_ptr: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self = castCtx(*FailingCaller, ctx_ptr);
+        self.returns += 1;
+        return error.OutOfMemory;
+    }
+};
+
+const ErrorLog = struct {
+    last: ?anyerror = null,
+
+    fn onError(ctx_ptr: ?*anyopaque, _: *Peer, err: anyerror) void {
+        const self = castCtx(*ErrorLog, ctx_ptr orelse return);
+        self.last = err;
+    }
+};
+
+test "a loopback Return whose callback runs out of memory sends nothing to the remote" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    var errors = ErrorLog{};
+    fx.server.callback_ctx = &errors;
+    fx.server.on_error = ErrorLog.onError;
+
+    const before = fx.wire.events.items.len;
+    const questions_before = fx.server.questions.count();
+    var caller = FailingCaller{};
+    const question_id = try fx.server.sendCallResolved(
+        .{ .exported = .{ .id = fx.home_id } },
+        interface_id,
+        number_method,
+        &caller,
+        null,
+        FailingCaller.onReturn,
+    );
+
+    // The callback saw its one Return; its failure is reported, and the
+    // handler's Return counts as delivered: no second (exception) Return.
+    try std.testing.expectEqual(@as(u32, 1), fx.home.calls);
+    try std.testing.expectEqual(@as(u32, 1), caller.returns);
+    try std.testing.expectEqual(@as(?anyerror, error.OutOfMemory), errors.last);
+    try expectNoFramesSince(&fx.wire, before);
+    try std.testing.expectEqual(questions_before, fx.server.questions.count());
+    try std.testing.expectEqual(@as(usize, 0), fx.server.loopback_questions.count());
+    try std.testing.expect(!fx.server.active_inbound_questions.contains(question_id));
+    try fx.expectBaselineRefs();
+}
