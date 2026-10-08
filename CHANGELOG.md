@@ -34,18 +34,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one of its own unanswered questions as an argument sends a
   `receiverAnswer` cap descriptor; the C++ reference does this for every
   pipelined argument. The Peer handed the handler a `.promised` entry even
-  when that answer had already returned, so a generated `resolveX` failed
-  with `UnexpectedCapabilityType`. This hit synchronous capnp-zig servers
-  called by C++, Go or Rust clients. The Peer now resolves these entries
-  just before the call dispatches: an export of ours becomes `.exported`, a
-  null result becomes `.none`, and a call whose named answer failed gets a
-  copy of that answer's exception (the C++ reference instead passes a broken
-  capability; `ResolvedCap` has no such variant). The call is never delayed:
-  while the named answer is still pending, or when it resolved to a
-  capability the caller hosts, the entry stays `.promised` as before. A
-  queued call that replays also re-reads its `.promised` entries from its
-  own frame copy; before, they pointed into the freed inbound frame. No API
-  line changes. New tests in `tests/rpc/peer/rpc_answer_lifecycle_test.zig`.
+  when that answer had already returned. This hit synchronous capnp-zig
+  servers called by C++, Go or Rust clients, and embedders such as
+  capnp-swift, which refuse a `.promised` entry. The Peer now resolves these
+  entries just before the call dispatches: an export of ours becomes
+  `.exported`, a null result becomes `.none`, and a call whose named answer
+  failed gets a copy of that answer's exception (the C++ reference instead
+  passes a broken capability; `ResolvedCap` has no such variant). The call
+  is never delayed: while the named answer is still pending, or when it
+  resolved to a capability the caller hosts, the entry stays `.promised` as
+  before. A queued call that replays also re-reads its `.promised` entries
+  from its own frame copy; before, they pointed into the freed inbound
+  frame. Generated `resolveX` accessors still accept only `.imported`
+  entries, so a generated server reading such a parameter still gets
+  `UnexpectedCapabilityType` until codegen learns `.exported`; handlers that
+  read `InboundCapTable` directly, and embedders, get the resolved entry
+  now. No API line changes. New tests in
+  `tests/rpc/peer/rpc_answer_lifecycle_test.zig`.
 - **RPC: a call parked on an answer failed with "promised capability
   unresolved" when that answer returned an unresolved promise export
   (capnp-swift handoff H10).** This affects servers that defer or forward
