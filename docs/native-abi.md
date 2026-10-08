@@ -100,12 +100,13 @@ pub const capnp_core_allocator: std.mem.Allocator = std.heap.c_allocator;
 pub const capnp_core_version_string: [:0]const u8 = "core 0.0.0 / capnp-zig package-preflight / native-consumer";
 ```
 
-abi.zig reads two optional declarations from the root module of the
-compilation (`@import("root")`):
+abi.zig reads two declarations from the root module of the compilation
+(`@import("root")`). Both are optional, except that a library which does
+not link libc must declare `capnp_core_allocator`:
 
 | Declaration | Type | Without it |
 |---|---|---|
-| `capnp_core_allocator` | `std.mem.Allocator` | the C allocator when libc is linked, else `std.heap.page_allocator` (in a test build, a counting wrapper around `std.testing.allocator`) |
+| `capnp_core_allocator` | `std.mem.Allocator` | in a test build, a counting wrapper around `std.testing.allocator`; else the C allocator when libc is linked; else a compile error in a library, and `std.heap.page_allocator` (at least one page per allocation) in an executable |
 | `capnp_core_version_string` | `[:0]const u8` | `"core unknown / capnp-zig unknown / unknown"` |
 
 A library for iOS also needs the std overrides that

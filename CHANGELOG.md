@@ -136,7 +136,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `src/native/include/capnp_core.h`, which ships in the package. The
   `capnp_*` symbols are emitted only in a compilation whose root references
   `native.abi`, so other users get no exported symbols. The root may declare
-  `capnp_core_allocator` and `capnp_core_version_string`. New gates: the
+  `capnp_core_allocator` and `capnp_core_version_string`; a library that
+  does not link libc must declare the allocator (a compile error names
+  it). New gates: the
   shim's tests and a header gate (every export has a matching prototype, and
   the reverse) in `zig build test`, `zig build test-native-abi` (the ABI
   through the translated header, linked from a static library),

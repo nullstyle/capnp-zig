@@ -7,7 +7,10 @@
 //!                     test never imports abi.zig, so a prototype, layout or
 //!                     linkage mistake fails here. Plus
 //!                     `tests/native/abi_version_test.zig` (the root's
-//!                     version string). `test` runs both.
+//!                     version string), and a library root without libc
+//!                     or an allocator, which must fail to compile
+//!                     (`tests/native/abi_lib_no_allocator_root.zig`).
+//!                     `test` runs all three.
 //!   fuzz-native-abi   random operation sequences over the C ABI
 //!                     (`tests/native/fuzz_abi.zig`; pass
 //!                     `-- --seconds N [--seed S]`); exit 1 on a violation.
@@ -129,6 +132,26 @@ pub fn register(
     const version_tests = b.addTest(.{ .name = "native-abi-version-test", .root_module = version_test_module });
     helpers.registered_test_compile_steps.append(b.allocator, &version_tests.step) catch @panic("OOM");
     test_abi_step.dependOn(&b.addRunArtifact(version_tests).step);
+
+    // A library without libc and without a root allocator must not build
+    // (abi.zig: no silent `std.heap.page_allocator` for an embedder). The
+    // step expects a compile error, so it emits and runs nothing. Its
+    // target is fixed: Darwin and some other OSes always link libc, where
+    // the C allocator is the default and this error cannot arise.
+    const no_allocator_lib = b.addLibrary(.{
+        .name = "capnp_core_no_allocator",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/native/abi_lib_no_allocator_root.zig"),
+            .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }),
+            .optimize = optimize,
+            .link_libc = false,
+            .imports = &.{.{ .name = "capnpc-zig-core", .module = core_module }},
+        }),
+    });
+    // `.contains` matches the end of a rendered error line: the whole message.
+    no_allocator_lib.expect_errors = .{ .contains = "error: native.abi in a library without libc: declare `pub const capnp_core_allocator: std.mem.Allocator` in the root module, or link libc (docs/native-abi.md)" };
+    test_abi_step.dependOn(&no_allocator_lib.step);
 
     // ---- fuzz-native-abi ------------------------------------------------
     const fuzz_module = b.createModule(.{

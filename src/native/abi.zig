@@ -209,8 +209,12 @@ const default_shutdown_drain_ms: u64 = 5000;
 /// allocator; `fuzz_abi.zig`: a leak-checking counter), else in tests a
 /// counting wrapper around `std.testing.allocator` (so a test can require 0
 /// live bytes after `capnp_conn_free`), else the C allocator when libc is
-/// linked, else `std.heap.page_allocator` (so a compilation without libc,
-/// such as the API snapshot tool, can still analyze these exports).
+/// linked. A library (an embedder's) without libc and without a root
+/// allocator is a compile error: the only allocator left would be
+/// `std.heap.page_allocator`, which maps at least a page per allocation.
+/// Any other compilation without libc (an executable such as the API
+/// snapshot tool, which only analyzes these exports) gets that page
+/// allocator.
 const root = @import("root");
 const gpa: std.mem.Allocator = if (@hasDecl(root, "capnp_core_allocator"))
     root.capnp_core_allocator
@@ -218,6 +222,8 @@ else if (builtin.is_test)
     test_counting.allocator()
 else if (builtin.link_libc)
     std.heap.c_allocator
+else if (builtin.output_mode == .Lib)
+    @compileError("native.abi in a library without libc: declare `pub const capnp_core_allocator: std.mem.Allocator` in the root module, or link libc (docs/native-abi.md)")
 else
     std.heap.page_allocator;
 
