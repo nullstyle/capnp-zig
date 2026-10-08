@@ -2041,3 +2041,251 @@ test "close and deinit after a retained call's Return deliver no second terminal
         try std.testing.expectEqual(@as(usize, 0), waiter.disconnects);
     }
 }
+
+// ---------------------------------------------------------------------------
+// The answer-finished hook and Return{canceled} (capnp-swift handoff H5).
+//
+// A host that answers later learns from `setAnswerFinishedHandler` that the
+// caller sent Finish for a call the host still owes a Return, and answers it
+// with `sendReturnCanceled`.
+
+const FinishedRecorder = struct {
+    count: usize = 0,
+    last_answer: u32 = 0,
+    last_release: bool = false,
+    /// When set, the handler answers at once from inside the callback.
+    answer_inline: bool = false,
+    inline_error: ?anyerror = null,
+
+    fn onFinished(ctx: *anyopaque, p: *Peer, answer_id: u32, release_result_caps: bool) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        self.count += 1;
+        self.last_answer = answer_id;
+        self.last_release = release_result_caps;
+        if (self.answer_inline) p.sendReturnCanceled(answer_id) catch |err| {
+            self.inline_error = err;
+        };
+    }
+};
+
+/// Export handler that keeps every call pending (the host answers later).
+const DeferringHost = struct {
+    fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+};
+
+fn deliverFrame(peer: *Peer, allocator: std.mem.Allocator, frame_result: anyerror![]const u8) !void {
+    const frame = try frame_result;
+    defer allocator.free(frame);
+    try peer.handleFrame(frame);
+}
+
+fn buildFinishFrameWithEarlyCancel(
+    allocator: std.mem.Allocator,
+    question_id: u32,
+    require_early_cancellation: bool,
+) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildFinish(question_id, false, require_early_cancellation);
+    return builder.finish();
+}
+
+test "answer-finished hook fires once when Finish beats the host's Return (H5)" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    var rec = FinishedRecorder{};
+    peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+
+    var host_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 7, export_id));
+    try std.testing.expectEqual(@as(usize, 0), rec.count);
+
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 7, true));
+    try std.testing.expectEqual(@as(usize, 1), rec.count);
+    try std.testing.expectEqual(@as(u32, 7), rec.last_answer);
+    try std.testing.expect(rec.last_release);
+
+    // The host stops and answers: exactly one Return{canceled}, no second
+    // notification, and the early-Finish tombstone is consumed, so the
+    // caller may reuse the id.
+    try peer.sendReturnCanceled(7);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(7, .canceled));
+    try std.testing.expectEqual(@as(usize, 1), rec.count);
+    try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(7)));
+
+    // Clearing the handler stops the notifications.
+    peer.setAnswerFinishedHandler(null, null);
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 8, export_id));
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 8, false));
+    try std.testing.expectEqual(@as(usize, 1), rec.count);
+    try peer.sendReturnCanceled(8);
+}
+
+test "answer-finished hook stays quiet when the host already replied (H5)" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    var rec = FinishedRecorder{};
+    peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+
+    var host_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    // A results Return is kept as a resolved answer until Finish.
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 8, export_id));
+    try peer.sendReturnEmptyStruct(8);
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 8, false));
+    // An exception Return's record is gone by the time the hook decides.
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 14, export_id));
+    try peer.sendReturnException(14, "failed");
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 14, false));
+    try std.testing.expectEqual(@as(usize, 0), rec.count);
+}
+
+test "answer-finished hook stays quiet for a pipelined call the peer cancels itself (H5)" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    var rec = FinishedRecorder{};
+    peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+
+    var host_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 9, export_id));
+    // Question 42 is pipelined on answer 9, so the peer queues it.
+    try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 42, 9));
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 42, true));
+    // The peer answered 42 itself (Return{canceled}); the host owes nothing.
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(42, .canceled));
+    try std.testing.expectEqual(@as(usize, 0), rec.count);
+    try peer.sendReturnEmptyStruct(9);
+}
+
+test "answer-finished hook stays quiet for a call the peer still holds queued (H5)" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    var rec = FinishedRecorder{};
+    peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+
+    var host_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 11, export_id));
+    try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 44, 11));
+    // `requireEarlyCancellationWorkaround` asks the peer to deliver the
+    // queued call before cancelling it, so it stays queued: the host has not
+    // been handed it, and is not told.
+    try deliverFrame(&peer, allocator, buildFinishFrameWithEarlyCancel(allocator, 44, true));
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(44, .canceled));
+    try std.testing.expectEqual(@as(usize, 0), rec.count);
+    try peer.sendReturnException(11, "done");
+}
+
+test "answer-finished hook stays quiet for a call the peer forwarded (H5)" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    var rec = FinishedRecorder{};
+    peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+
+    // An inbound call whose target resolved to a capability the caller hosts:
+    // the peer forwards it back out and relays the caller's Finish itself.
+    const upstream_question_id: u32 = 900;
+    const frame = try buildCallFrame(allocator, upstream_question_id);
+    defer allocator.free(frame);
+    var decoded = try protocol.DecodedMessage.init(allocator, frame);
+    defer decoded.deinit();
+    const call = try decoded.asCall();
+    try peer.active_inbound_questions.put(upstream_question_id, false);
+    var inbound = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
+    defer inbound.deinit();
+    try peer_test_hooks.handleResolvedCall(&peer, call, &inbound, .{ .imported = .{ .id = 77 } });
+    try std.testing.expect(peer.forwarded_tail_questions.contains(upstream_question_id));
+
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, upstream_question_id, false));
+    try std.testing.expectEqual(@as(usize, 1), capture.countTag(.finish));
+    try std.testing.expectEqual(@as(usize, 0), rec.count);
+}
+
+test "a host may answer with sendReturnCanceled from inside the answer-finished hook (H5)" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    var rec = FinishedRecorder{ .answer_inline = true };
+    peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+
+    var host_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 12, export_id));
+    try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 45, 12));
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 12, false));
+
+    try std.testing.expectEqual(@as(usize, 1), rec.count);
+    try std.testing.expectEqual(@as(?anyerror, null), rec.inline_error);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(12, .canceled));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(45, .exception));
+    try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(12)));
+}
+
+test "sendReturnCanceled fails the calls pipelined on the cancelled answer (H5)" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var host_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 10, export_id));
+    try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 43, 10));
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 10, true));
+    try peer.sendReturnCanceled(10);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(10, .canceled));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(43, .exception));
+}
+
+test "sendReturnCanceled refuses an answer the caller has not finished (H5)" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var host_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 13, export_id));
+    // rpc.capnp: `canceled` answers a call whose caller sent Finish first.
+    // The C++ reference rejects it for a question still awaiting its Return.
+    try std.testing.expectError(error.AnswerNotFinished, peer.sendReturnCanceled(13));
+    try std.testing.expectEqual(@as(usize, 0), capture.countTag(.@"return"));
+    try peer.sendReturnEmptyStruct(13);
+}

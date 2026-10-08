@@ -26,6 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   headline flow: Provide into one VatC peer, Accept into its sibling, and a
   capability-bearing results Return resolved into the accepting peer's L3
   event.
+- **`Peer.setAnswerFinishedHandler` and `Peer.sendReturnCanceled`
+  (capnp-swift handoff H5).** A host that answers calls later could not tell
+  when the caller gave up: Finish only left an internal tombstone, and the
+  caller's question id stayed taken until the host replied. The handler now
+  runs, at most once per answer and inside `handleFrame`, when the remote
+  sends Finish for a call the host was handed and has not answered. It does
+  not run once the host replied, for calls the Peer still holds queued, or
+  for calls the Peer forwarded. The host stops the work and answers with
+  `sendReturnCanceled`, which sends `Return{canceled}` and fails the calls
+  pipelined on that answer with their own Return. It refuses with
+  `error.AnswerNotFinished` while the caller has not finished the answer,
+  because the C++ reference rejects such a Return. The handler may answer
+  from inside the callback. Embedders such as capnp-swift can cancel the
+  handler's task and free the caller's id at once.
 
 ### Fixed
 

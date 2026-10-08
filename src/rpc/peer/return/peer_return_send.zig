@@ -27,6 +27,7 @@ pub fn ReturnSend(comptime Peer: type) type {
 
         const results_sent_elsewhere_no_pipelining =
             "results sent elsewhere; pipelining is not supported on a redirected answer";
+        const answer_canceled_no_pipelining = "call canceled";
 
         pub fn sendReturnResults(self: *Peer, answer_id: u32, ctx: *anyopaque, build: ReturnBuildFn) !void {
             self.assertThreadAffinity();
@@ -576,6 +577,21 @@ pub fn ReturnSend(comptime Peer: type) type {
             }
             try sendReturnTag(self, answer_id, .resultsSentElsewhere);
             failQueuedPromisedCalls(self, answer_id, results_sent_elsewhere_no_pipelining, .failed);
+        }
+
+        /// Experimental: answer a call whose caller sent Finish first.
+        ///
+        /// rpc.capnp reserves `canceled` for exactly that case; the C++
+        /// reference rejects it for a question still awaiting its Return. So
+        /// an answer the caller has not finished is refused before anything
+        /// is sent. Calls pipelined on the answer can never resolve now, so
+        /// each gets its own exception Return, as with
+        /// `sendReturnResultsSentElsewhere`.
+        pub fn sendReturnCanceled(self: *Peer, answer_id: u32) !void {
+            self.assertThreadAffinity();
+            if (self.active_inbound_questions.contains(answer_id)) return error.AnswerNotFinished;
+            try sendReturnTag(self, answer_id, .canceled);
+            failQueuedPromisedCalls(self, answer_id, answer_canceled_no_pipelining, .failed);
         }
 
         pub fn sendReturnTag(self: *Peer, answer_id: u32, tag: protocol.ReturnTag) !void {

@@ -196,6 +196,9 @@ pub const CallOptions = retained_question_state.CallOptions;
 
 const QuestionDeinitCtxFn = state.QuestionDeinitCtxFn;
 const ExportDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;
+
+/// Experimental. The callback `Peer.setAnswerFinishedHandler` installs.
+pub const AnswerFinishedFn = *const fn (ctx: *anyopaque, peer: *Peer, answer_id: u32, release_result_caps: bool) void;
 const Question = state.Question(QuestionCallback);
 const PendingThirdPartyAwait = state.PendingThirdPartyAwait(Question);
 
@@ -741,6 +744,9 @@ pub const Peer = struct {
 
     send_frame_ctx: ?*anyopaque = null,
     send_frame_override: ?SendFrameOverride = null,
+    /// Experimental: `setAnswerFinishedHandler`.
+    answer_finished_ctx: ?*anyopaque = null,
+    answer_finished_fn: ?AnswerFinishedFn = null,
 
     // -- Lifecycle callbacks -------------------------------------------------
 
@@ -1581,6 +1587,34 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         self.send_frame_ctx = ctx;
         self.send_frame_override = callback;
+    }
+
+    /// Experimental. Call `handler` when the remote sends Finish for an
+    /// inbound call that this peer handed to the host and that has no Return
+    /// yet: no Return was sent or begun for `answer_id`.
+    ///
+    /// The host should stop the work and answer soon, normally with
+    /// `sendReturnCanceled`, which frees the caller's question id. Any later
+    /// Return is still accepted. `release_result_caps` is the Finish's flag.
+    ///
+    /// The handler runs inside `handleFrame`, after the Finish is fully
+    /// applied, at most once per answer. It may answer from inside the
+    /// callback. It does not run for an answer the host already replied to,
+    /// for a call the peer still holds queued, or for a call the peer
+    /// forwarded on the host's behalf; the peer settles those itself. A
+    /// queued call whose Finish set `requireEarlyCancellationWorkaround` is
+    /// delivered later and never reported; answer it as usual.
+    ///
+    /// Pass `null` for either argument to clear the handler.
+    pub fn setAnswerFinishedHandler(self: *Peer, ctx: ?*anyopaque, handler: ?AnswerFinishedFn) void {
+        self.assertThreadAffinity();
+        if (ctx == null or handler == null) {
+            self.answer_finished_ctx = null;
+            self.answer_finished_fn = null;
+            return;
+        }
+        self.answer_finished_ctx = ctx;
+        self.answer_finished_fn = handler;
     }
 
     /// Return the message tag of the most recently processed inbound message, or `null` if none.
@@ -3685,6 +3719,15 @@ pub const Peer = struct {
         return ReturnSendImpl.sendReturnResultsSentElsewhere(self, answer_id);
     }
 
+    /// Experimental. Answer a call whose caller sent Finish first (see
+    /// `setAnswerFinishedHandler`) with `Return{canceled}`, and fail the calls
+    /// pipelined on it with their own Return. Errors with
+    /// `error.AnswerNotFinished`, sending nothing, while the caller has not
+    /// finished the answer. Body in `return/peer_return_send.zig`.
+    pub fn sendReturnCanceled(self: *Peer, answer_id: u32) !void {
+        return ReturnSendImpl.sendReturnCanceled(self, answer_id);
+    }
+
     fn sendReturnTag(self: *Peer, answer_id: u32, tag: protocol.ReturnTag) !void {
         return ReturnSendImpl.sendReturnTag(self, answer_id, tag);
     }
@@ -4519,6 +4562,13 @@ pub const Peer = struct {
             self.allocator.free(failed.value.reason);
         }
         const finished_completing_join = self.finishCompletingJoinAnswer(qid, finish_msg.release_result_caps);
+        // Experimental `setAnswerFinishedHandler`: the host was handed this
+        // call and has not begun a Return for it. A forwarded call is the
+        // peer's own work; the Finish relay below settles it.
+        const host_owes_return = self.answer_finished_fn != null and was_active and
+            !was_resolving and !finished_completing_join and
+            !self.resolved_answers.contains(qid) and !self.isForwardedAnswer(qid);
+        var tombstoned = false;
         if (!finished_completing_join) self.clearPendingJoinResultAnswer(qid);
         try self.clearPendingJoinRelay(qid, true, finish_msg.release_result_caps);
         // Cancellation race: a Finish for an in-flight inbound call (still
@@ -4533,6 +4583,7 @@ pub const Peer = struct {
             self.finished_early_answers.count() < self.limits.max_active_inbound_questions)
         {
             if (self.finished_early_answers.put(qid, finish_msg.release_result_caps)) |_| {
+                tombstoned = true;
                 if (params_granted_refs) {
                     self.finished_early_param_grants.put(qid, {}) catch |err| self.reportNonfatalError(err);
                 }
@@ -4587,6 +4638,30 @@ pub const Peer = struct {
         if (canceled_automatic_target) {
             _ = self.finished_early_answers.remove(qid);
         }
+        // A Return sent while this Finish was applied (a queued call the peer
+        // cancelled itself) consumed the tombstone: then nobody owes one. A
+        // call still queued (the Finish asked for delivery first) has not
+        // reached the host. With no tombstone (the bounded map was full) the
+        // host is still told.
+        if (host_owes_return and !canceled_automatic_target and
+            (!tombstoned or self.finished_early_answers.contains(qid)) and
+            !self.hasQueuedPendingQuestionId(qid))
+        {
+            if (self.answer_finished_fn) |notify| {
+                if (self.answer_finished_ctx) |ctx| notify(ctx, self, qid, finish_msg.release_result_caps);
+            }
+        }
+    }
+
+    /// True when the peer forwarded inbound answer `answer_id` to another
+    /// target and relays its Return itself, so the host owes nothing for it.
+    fn isForwardedAnswer(self: *const Peer, answer_id: u32) bool {
+        if (self.forwarded_tail_questions.contains(answer_id)) return true;
+        var it = self.forwarded_questions.valueIterator();
+        while (it.next()) |upstream_answer_id| {
+            if (upstream_answer_id.* == answer_id) return true;
+        }
+        return false;
     }
 
     fn cancelQueuedPendingQuestionInMap(
