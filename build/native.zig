@@ -5,7 +5,9 @@
 //!                     against a host static library whose root references
 //!                     `native.abi` (`tests/native/abi_lib_root.zig`). The
 //!                     test never imports abi.zig, so a prototype, layout or
-//!                     linkage mistake fails here. `test` runs it.
+//!                     linkage mistake fails here. Plus
+//!                     `tests/native/abi_version_test.zig` (the root's
+//!                     version string). `test` runs both.
 //!   fuzz-native-abi   random operation sequences over the C ABI
 //!                     (`tests/native/fuzz_abi.zig`; pass
 //!                     `-- --seconds N [--seed S]`); exit 1 on a violation.
@@ -95,6 +97,21 @@ pub fn register(
     helpers.registered_test_compile_steps.append(b.allocator, &abi_tests.step) catch @panic("OOM");
     const test_abi_step = b.step("test-native-abi", "Run the native C ABI tests (capnp_core.h against a host static library)");
     test_abi_step.dependOn(&b.addRunArtifact(abi_tests).step);
+
+    // The root's version string through the header. A separate binary so
+    // abi_test.zig stays reusable against an embedder's own library root.
+    const version_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/native/abi_version_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "capnp_core_h", .module = headerModule(b, target, optimize) },
+        },
+    });
+    version_test_module.linkLibrary(host_lib);
+    const version_tests = b.addTest(.{ .name = "native-abi-version-test", .root_module = version_test_module });
+    helpers.registered_test_compile_steps.append(b.allocator, &version_tests.step) catch @panic("OOM");
+    test_abi_step.dependOn(&b.addRunArtifact(version_tests).step);
 
     // ---- fuzz-native-abi ------------------------------------------------
     const fuzz_module = b.createModule(.{

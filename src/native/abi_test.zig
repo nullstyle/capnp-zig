@@ -754,9 +754,6 @@ test "version: the linked library reports the pinned core" {
     const v = std.mem.span(c.capnp_core_version());
     try testing.expect(std.mem.startsWith(u8, v, "core "));
     try testing.expect(std.mem.indexOf(u8, v, " / capnp-zig ") != null);
-    // The library root's `capnp_core_version_string`
-    // (tests/native/abi_lib_root.zig) reaches the export.
-    try testing.expectEqualStrings("core 0.0.0-test / capnp-zig test / native-abi-test", v);
 }
 
 // ---------------------------------------------------------------------------

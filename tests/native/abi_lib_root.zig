@@ -24,6 +24,6 @@ var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 pub const capnp_core_allocator: std.mem.Allocator = debug_allocator.allocator();
 
 /// What `capnp_core_version()` reports (read by abi.zig). An embedder puts
-/// its own version and the capnp-zig package it pins here; abi_test.zig
-/// checks this exact string.
+/// its own version and the capnp-zig package it pins here;
+/// abi_version_test.zig checks this exact string.
 pub const capnp_core_version_string: [:0]const u8 = "core 0.0.0-test / capnp-zig test / native-abi-test";
