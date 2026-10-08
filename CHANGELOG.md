@@ -289,12 +289,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caller waited forever. Both passes are now allocation-free, and the
   synthetic Return is built in a 4 KiB stack buffer (a longer reason falls
   back to the heap). This affects every embedder whose transport can close,
-  or whose calls have deadlines, under memory pressure: capnp-swift can drop
-  its close-sweep shim. Explicit `cancelQuestion` now also delivers its
-  terminal without the heap. A pipelined call queued during a transient OOM
-  no longer loses its terminal Return either: the queue decodes the call's id
-  once, and an OOM there stored it as "not a call", which the failure drain
-  skipped. The enqueue now fails instead and the caller answers the call.
+  or whose calls have deadlines, under memory pressure. One case remains: a
+  question the remote answered with `awaitFromThirdParty` is parked outside
+  the question table, and the sweep that frees it at transport close
+  (through `deinit_ctx`, not a Return) still allocates its key list, so
+  under OOM it is freed only at `Peer.deinit`. The native shim's close
+  sweep (see Added (Experimental)) ends such a question itself. Explicit
+  `cancelQuestion` now also delivers its terminal without the heap. A
+  pipelined call queued during a transient OOM no longer loses its terminal
+  Return either: the queue decodes the call's id once, and an OOM there
+  stored it as "not a call", which the failure drain skipped. The enqueue
+  now fails instead and the caller answers the call.
   No API line changes. `zig build hardening` gains a rule that bans
   unreviewed `catch break` / `catch continue` / `catch {}` after an
   allocating call; five Experimental Level-3 maintenance passes are
