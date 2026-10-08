@@ -34,7 +34,8 @@ RUN mkdir -p /repo/tests/e2e/go/internal/gametypes \
              /repo/tests/e2e/go/internal/chat \
              /repo/tests/e2e/go/internal/inventory \
              /repo/tests/e2e/go/internal/matchmaking \
-             /repo/tests/e2e/go/internal/resolve_disembargo
+             /repo/tests/e2e/go/internal/resolve_disembargo \
+             /repo/tests/e2e/go/internal/cap_passing
 
 RUN capnp compile -ogo:/repo/tests/e2e/go/internal/gametypes \
       -I /usr/local/share/go-capnp-std \
@@ -70,6 +71,12 @@ RUN capnp compile -ogo:/repo/tests/e2e/go/internal/resolve_disembargo \
       -I /repo/tests/e2e/go/schemas \
       --src-prefix=/repo/tests/e2e/go/schemas \
       /repo/tests/e2e/go/schemas/resolve_disembargo.capnp
+
+RUN capnp compile -ogo:/repo/tests/e2e/go/internal/cap_passing \
+      -I /usr/local/share/go-capnp-std \
+      -I /repo/tests/e2e/go/schemas \
+      --src-prefix=/repo/tests/e2e/go/schemas \
+      /repo/tests/e2e/go/schemas/cap_passing.capnp
 
 # Build server/client binaries.
 RUN CGO_ENABLED=0 go build -o /app/bin/server ./cmd/server

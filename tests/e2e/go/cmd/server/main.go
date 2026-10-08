@@ -18,7 +18,7 @@ import (
 func main() {
 	host := flag.String("host", "0.0.0.0", "listen host")
 	port := flag.Int("port", 4001, "listen port")
-	schema := flag.String("schema", "gameworld", "schema to serve: gameworld, chat, inventory, matchmaking, resolve_disembargo")
+	schema := flag.String("schema", "gameworld", "schema to serve: gameworld, chat, inventory, matchmaking, resolve_disembargo, pass_back, pipelined_params")
 	flag.Parse()
 
 	addr := fmt.Sprintf("%s:%d", *host, *port)
@@ -74,6 +74,9 @@ func handleConn(c net.Conn, schema string) {
 		client, srv := servers.NewReflectorClientWithServer()
 		bootstrap = capnp.Client(client)
 		reflectorServer = srv
+	case "pass_back", "pipelined_params":
+		// One TokenHost serves both; the client picks the flow.
+		bootstrap = capnp.Client(servers.NewTokenHostClient())
 	default:
 		log.Printf("unknown schema: %s", schema)
 		return

@@ -1,7 +1,7 @@
 {
   "target": "capnp-zig",
   "reference_backends": ["cpp", "go", "python", "rust"],
-  "scenarios": ["game_world", "chat", "inventory", "matchmaking", "resolve_disembargo", "l3_l4_interop"],
+  "scenarios": ["game_world", "chat", "inventory", "matchmaking", "resolve_disembargo", "l3_l4_interop", "pass_back", "pipelined_params"],
   "directions": [
     "zig-client_to_reference-server",
     "reference-client_to_zig-server"

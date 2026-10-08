@@ -18,6 +18,7 @@
 #include "inventory.capnp.h"
 #include "matchmaking.capnp.h"
 #include "resolve_disembargo.capnp.h"
+#include "cap_passing.capnp.h"
 
 // ---------------------------------------------------------------------------
 // TAP helpers
@@ -844,6 +845,121 @@ static void testResolveDisembargo(kj::WaitScope& waitScope, Reflector::Client re
 }
 
 // ---------------------------------------------------------------------------
+// pass_back and pipelined_params (C++-client -> TokenHost-server direction).
+// ---------------------------------------------------------------------------
+
+// Every TokenHost's mintFail() reason contains this text.
+static const char kMintFailMarker[] = "deliberate mint failure";
+
+static bool hasMintFailMarker(const kj::Exception& e) {
+  return std::string(e.getDescription().cStr()).find(kMintFailMarker) != std::string::npos;
+}
+
+// A Token this client hosts: tag() returns its tag and counts the call.
+class ClientTokenImpl final : public Token::Server {
+public:
+  explicit ClientTokenImpl(uint32_t tag) : tag_(tag) {}
+
+  kj::Promise<void> tag(TagContext context) override {
+    ++calls_;
+    context.getResults().setTag(tag_);
+    return kj::READY_NOW;
+  }
+
+  uint32_t calls() const { return calls_; }
+
+private:
+  uint32_t tag_;
+  uint32_t calls_ = 0;
+};
+
+// pass_back: pass two minted Tokens back to check() (each goes out as
+// `receiverHosted`); the server must call its own Token. Then hand the server
+// one of our own Tokens in echo(); it must come back as our own object.
+static void testPassBack(kj::WaitScope& waitScope, TokenHost::Client host) {
+  for (uint32_t tag : {7u, 8u}) {
+    auto mintReq = host.mintRequest();
+    mintReq.setTag(tag);
+    Token::Client token = mintReq.send().wait(waitScope).getToken();
+
+    auto checkReq = host.checkRequest();
+    checkReq.setToken(token);
+    auto checkRes = checkReq.send().wait(waitScope);
+    std::string desc = "check(minted Token " + std::to_string(tag) + ") called the server's own Token";
+    ok(checkRes.getTag() == tag && checkRes.getLocal(), desc);
+  }
+
+  auto ownImpl = kj::heap<ClientTokenImpl>(900);
+  ClientTokenImpl& own = *ownImpl;
+  Token::Client ownCap = kj::mv(ownImpl);
+  auto echoReq = host.echoRequest();
+  echoReq.setToken(ownCap);
+  auto echoRes = echoReq.send().wait(waitScope);
+  auto tagRes = echoRes.getToken().tagRequest().send().wait(waitScope);
+  ok(tagRes.getTag() == 900 && own.calls() == 1,
+     "tag() on the echoed Token ran the client's own object");
+}
+
+// pipelined_params: pass the `token` of an unanswered mint() as check()'s param
+// (kj writes a `receiverAnswer` descriptor for a pipelined capability). All
+// four calls are sent before any of them is waited on.
+static void testPipelinedParams(kj::WaitScope& waitScope, TokenHost::Client host) {
+  auto mintReq = host.mintRequest();
+  mintReq.setTag(11);
+  auto mintPromise = mintReq.send();
+  auto checkReq = host.checkRequest();
+  checkReq.setToken(mintPromise.getToken());
+  auto checkPromise = checkReq.send();
+
+  auto failReq = host.mintFailRequest();
+  failReq.setTag(12);
+  auto failPromise = failReq.send();
+  auto checkFailReq = host.checkRequest();
+  checkFailReq.setToken(failPromise.getToken());
+  auto checkFailPromise = checkFailReq.send();
+
+  {
+    bool calledOwn = false;
+    try {
+      auto res = checkPromise.wait(waitScope);
+      calledOwn = res.getTag() == 11 && res.getLocal();
+    } catch (kj::Exception& e) {
+      std::cout << "# check exception: " << e.getDescription().cStr() << std::endl;
+    }
+    ok(calledOwn, "check(pipelined mint().token) called the server's own Token");
+  }
+  {
+    bool minted = false;
+    try {
+      mintPromise.wait(waitScope);
+      minted = true;
+    } catch (kj::Exception& e) {
+      std::cout << "# mint exception: " << e.getDescription().cStr() << std::endl;
+    }
+    ok(minted, "mint() returns results");
+  }
+  {
+    bool failed = false;
+    try {
+      failPromise.wait(waitScope);
+    } catch (kj::Exception& e) {
+      failed = hasMintFailMarker(e);
+    }
+    ok(failed, "mintFail() fails with its exception");
+  }
+  {
+    bool failed = false;
+    try {
+      checkFailPromise.wait(waitScope);
+    } catch (kj::Exception& e) {
+      std::cout << "# check(pipelined mintFail().token) exception: " << e.getDescription().cStr() << std::endl;
+      failed = hasMintFailMarker(e);
+    }
+    ok(failed, "check(pipelined mintFail().token) fails with mintFail()'s exception");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -892,6 +1008,10 @@ int main(int argc, char* argv[]) {
     } else if (schema == "resolve_disembargo") {
       auto client = rpcClient.bootstrap().castAs<Reflector>();
       testResolveDisembargo(waitScope, client);
+    } else if (schema == "pass_back") {
+      testPassBack(waitScope, rpcClient.bootstrap().castAs<TokenHost>());
+    } else if (schema == "pipelined_params") {
+      testPipelinedParams(waitScope, rpcClient.bootstrap().castAs<TokenHost>());
     } else {
       std::cerr << "Unknown schema: " << schema << std::endl;
       return 1;

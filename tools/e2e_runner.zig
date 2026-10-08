@@ -25,6 +25,10 @@ const Schema = enum {
     matchmaking,
     resolve_disembargo,
     l3_l4_interop,
+    // Both use tests/e2e/schemas/cap_passing.capnp; each backend serves the
+    // same TokenHost for both, and its client picks the flow.
+    pass_back,
+    pipelined_params,
 };
 
 const Direction = enum {
@@ -65,7 +69,7 @@ const Config = struct {
     direction: Direction = .both,
     transport: Transport = .tcp,
     backend_selected: [4]bool = .{ false, false, false, false },
-    schema_selected: [6]bool = .{ false, false, false, false, false, false },
+    schema_selected: [@typeInfo(Schema).@"enum".field_names.len]bool = @splat(false),
 
     fn isBackendSelected(self: Config, b: Backend) bool {
         return self.backend_selected[@backingInt(b)];
@@ -83,7 +87,7 @@ const all_backends = [_]Backend{ .cpp, .go, .python, .rust };
 // the C++-first Zig-client runtime lane only. Go has a separate source-backed
 // `just e2e-l3-go` recon gate because vendored go-capnp exposes Network3PH
 // names but its runtime still TODO/panics on the required 3PH paths.
-const all_schemas = [_]Schema{ .game_world, .chat, .inventory, .matchmaking, .resolve_disembargo, .l3_l4_interop };
+const all_schemas = [_]Schema{ .game_world, .chat, .inventory, .matchmaking, .resolve_disembargo, .l3_l4_interop, .pass_back, .pipelined_params };
 
 /// resolve_disembargo is the only scenario with per-direction reference-impl
 /// gaps — all in the reference libraries, not capnp-zig. Returns a SKIP status
@@ -175,7 +179,7 @@ fn usage() void {
         \\      over an AF_UNIX socket. Only the cpp backend runs; go, python and
         \\      rust record SKIP(unix: reference harness TCP-only).
         \\  --backend=cpp|go|python|rust (repeatable)
-        \\  --schema=game_world|chat|inventory|matchmaking|resolve_disembargo|l3_l4_interop (repeatable)
+        \\  --schema=game_world|chat|inventory|matchmaking|resolve_disembargo|l3_l4_interop|pass_back|pipelined_params (repeatable)
         \\  --allow-missing-hooks
         \\  --verbose
         \\  --help
@@ -226,6 +230,8 @@ fn schemaName(s: Schema) []const u8 {
         .matchmaking => "matchmaking",
         .resolve_disembargo => "resolve_disembargo",
         .l3_l4_interop => "l3_l4_interop",
+        .pass_back => "pass_back",
+        .pipelined_params => "pipelined_params",
     };
 }
 
@@ -242,6 +248,8 @@ fn zigSchemaPort(s: Schema) u16 {
         .matchmaking => 4703,
         .resolve_disembargo => 4705,
         .l3_l4_interop => 4706,
+        .pass_back => 4708,
+        .pipelined_params => 4709,
     };
 }
 
@@ -429,6 +437,8 @@ fn parseSchema(text: []const u8) !Schema {
     if (std.mem.eql(u8, text, "matchmaking")) return .matchmaking;
     if (std.mem.eql(u8, text, "resolve_disembargo")) return .resolve_disembargo;
     if (std.mem.eql(u8, text, "l3_l4_interop")) return .l3_l4_interop;
+    if (std.mem.eql(u8, text, "pass_back")) return .pass_back;
+    if (std.mem.eql(u8, text, "pipelined_params")) return .pipelined_params;
     return error.InvalidSchema;
 }
 

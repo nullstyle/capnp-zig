@@ -16,6 +16,9 @@ pub mod matchmaking_capnp {
 pub mod resolve_disembargo_capnp {
     include!(concat!(env!("OUT_DIR"), "/resolve_disembargo_capnp.rs"));
 }
+pub mod cap_passing_capnp {
+    include!(concat!(env!("OUT_DIR"), "/cap_passing_capnp.rs"));
+}
 
 mod client;
 mod server;

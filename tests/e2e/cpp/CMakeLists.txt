@@ -19,6 +19,7 @@ set(SCHEMA_FILES
   matchmaking.capnp
   resolve_disembargo.capnp
   l3_l4_interop.capnp
+  cap_passing.capnp
 )
 
 set(CAPNP_SRCS)

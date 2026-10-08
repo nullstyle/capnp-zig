@@ -22,6 +22,7 @@
 #include "inventory.capnp.h"
 #include "matchmaking.capnp.h"
 #include "resolve_disembargo.capnp.h"
+#include "cap_passing.capnp.h"
 #include "l3_l4_interop_server.h"
 
 // ---------------------------------------------------------------------------
@@ -1050,6 +1051,72 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// TokenHost (pass_back and pipelined_params scenarios, SERVER side).
+//
+// mint() hands out host-owned Tokens. check() calls the Token it is given and
+// reports the tag it got and whether that call reached one of our own Tokens:
+// every HostTokenImpl counts its calls in the shared tally. A Token the client
+// passes back arrives as `receiverHosted`, and kj resolves it to our own
+// object; a Token pipelined from an unanswered mint() arrives as
+// `receiverAnswer` and resolves through that answer's pipeline. When the
+// pipelined answer failed (mintFail()), the Token is broken and check() fails
+// with mintFail()'s exception.
+// ---------------------------------------------------------------------------
+
+struct TokenTally {
+  uint64_t calls = 0;
+};
+
+class HostTokenImpl final : public Token::Server {
+public:
+  HostTokenImpl(uint32_t tag, std::shared_ptr<TokenTally> tally)
+    : tag_(tag), tally_(kj::mv(tally)) {}
+
+  kj::Promise<void> tag(TagContext context) override {
+    ++tally_->calls;
+    context.getResults().setTag(tag_);
+    return kj::READY_NOW;
+  }
+
+private:
+  uint32_t tag_;
+  std::shared_ptr<TokenTally> tally_;
+};
+
+class TokenHostImpl final : public TokenHost::Server {
+public:
+  kj::Promise<void> mint(MintContext context) override {
+    context.getResults().setToken(
+        kj::heap<HostTokenImpl>(context.getParams().getTag(), tally_));
+    return kj::READY_NOW;
+  }
+
+  kj::Promise<void> check(CheckContext context) override {
+    auto token = context.getParams().getToken();
+    uint64_t before = tally_->calls;
+    auto tally = tally_;
+    return token.tagRequest().send().then(
+        [context, before, tally](capnp::Response<Token::TagResults> response) mutable {
+          auto results = context.getResults();
+          results.setTag(response.getTag());
+          results.setLocal(tally->calls == before + 1);
+        });
+  }
+
+  kj::Promise<void> echo(EchoContext context) override {
+    context.getResults().setToken(context.getParams().getToken());
+    return kj::READY_NOW;
+  }
+
+  kj::Promise<void> mintFail(MintFailContext context) override {
+    return KJ_EXCEPTION(FAILED, "pipelined_params: deliberate mint failure");
+  }
+
+private:
+  std::shared_ptr<TokenTally> tally_ = std::make_shared<TokenTally>();
+};
+
+// ---------------------------------------------------------------------------
 // Multi-service bootstrap: expose all four services through a single bootstrap
 // ---------------------------------------------------------------------------
 
@@ -1126,9 +1193,13 @@ int main(int argc, char* argv[]) {
       }
     } else if (schema == "l3_l4_interop") {
       runL3L4InteropServer(*listener, io.waitScope);
+    } else if (schema == "pass_back" || schema == "pipelined_params") {
+      // One TokenHost serves both; the client picks the flow.
+      capnp::TwoPartyServer server(kj::heap<TokenHostImpl>());
+      server.listen(*listener).wait(io.waitScope);
     } else {
       std::cerr << "Unknown schema: " << schema << std::endl;
-      std::cerr << "Valid schemas: game_world, chat, inventory, matchmaking, resolve_disembargo, l3_l4_interop" << std::endl;
+      std::cerr << "Valid schemas: game_world, chat, inventory, matchmaking, resolve_disembargo, l3_l4_interop, pass_back, pipelined_params" << std::endl;
       return 1;
     }
   } catch (kj::Exception& e) {

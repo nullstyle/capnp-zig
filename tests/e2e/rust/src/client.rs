@@ -9,6 +9,7 @@ use futures::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
+use crate::cap_passing_capnp::{token, token_host};
 use crate::game_types_capnp::{Faction, Rarity, StatusCode};
 use crate::game_world_capnp::EntityKind;
 use crate::inventory_capnp::TradeState;
@@ -271,9 +272,185 @@ pub async fn run(host: &str, port: u16, schema: &str) -> Result<(), Box<dyn std:
                 Err("Some tests failed".into())
             }
         }
+        "pass_back" => {
+            let host: token_host::Client = rpc_system.bootstrap(side);
+            tokio::task::spawn_local(rpc_system);
+            let mut tap = TapReporter::new(3);
+            if let Err(e) = test_pass_back(&host, &mut tap).await {
+                tap.not_ok("pass_back scenario aborted", &e);
+            }
+            if tap.done() {
+                Ok(())
+            } else {
+                Err("Some tests failed".into())
+            }
+        }
+        "pipelined_params" => {
+            let host: token_host::Client = rpc_system.bootstrap(side);
+            tokio::task::spawn_local(rpc_system);
+            let mut tap = TapReporter::new(4);
+            test_pipelined_params(&host, &mut tap).await;
+            if tap.done() {
+                Ok(())
+            } else {
+                Err("Some tests failed".into())
+            }
+        }
         _ => {
             eprintln!("unknown schema: {}", schema);
             Err("Unknown schema".into())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// pass_back and pipelined_params (Rust-client -> TokenHost-server direction).
+// ---------------------------------------------------------------------------
+
+// Every TokenHost's mintFail() reason contains this text.
+const MINT_FAIL_MARKER: &str = "deliberate mint failure";
+
+// A Token this client hosts: tag() returns its tag and counts the call.
+struct ClientTokenImpl {
+    tag: u32,
+    calls: Rc<Cell<u32>>,
+}
+
+impl token::Server for ClientTokenImpl {
+    fn tag(
+        &mut self,
+        _params: token::TagParams,
+        mut results: token::TagResults,
+    ) -> Promise<(), Error> {
+        self.calls.set(self.calls.get() + 1);
+        results.get().set_tag(self.tag);
+        Promise::ok(())
+    }
+}
+
+// pass_back: pass two minted Tokens back to check() (each goes out as
+// `receiverHosted`); the server must call its own Token. Then hand the server
+// one of our own Tokens in echo(); it must come back as our own object.
+async fn test_pass_back(host: &token_host::Client, tap: &mut TapReporter) -> Result<(), String> {
+    for tag in [7u32, 8u32] {
+        let desc = format!("check(minted Token {}) called the server's own Token", tag);
+        let mut mint_req = host.mint_request();
+        mint_req.get().set_tag(tag);
+        let mint_res = mint_req
+            .send()
+            .promise
+            .await
+            .map_err(|e| format!("mint: {}", e))?;
+        let minted: token::Client = mint_res
+            .get()
+            .map_err(|e| e.to_string())?
+            .get_token()
+            .map_err(|e| e.to_string())?;
+
+        let mut check_req = host.check_request();
+        check_req.get().set_token(minted);
+        match check_req.send().promise.await {
+            Ok(res) => {
+                let r = res.get().map_err(|e| e.to_string())?;
+                if r.get_tag() == tag && r.get_local() {
+                    tap.ok(&desc);
+                } else {
+                    tap.not_ok(
+                        &desc,
+                        &format!("tag={}, local={}", r.get_tag(), r.get_local()),
+                    );
+                }
+            }
+            Err(e) => tap.not_ok(&desc, &e.to_string()),
+        }
+    }
+
+    let own_calls = Rc::new(Cell::new(0u32));
+    let own: token::Client = capnp_rpc::new_client(ClientTokenImpl {
+        tag: 900,
+        calls: own_calls.clone(),
+    });
+    let mut echo_req = host.echo_request();
+    echo_req.get().set_token(own.clone());
+    let echo_res = echo_req
+        .send()
+        .promise
+        .await
+        .map_err(|e| format!("echo: {}", e))?;
+    let echoed: token::Client = echo_res
+        .get()
+        .map_err(|e| e.to_string())?
+        .get_token()
+        .map_err(|e| e.to_string())?;
+    let tag_res = echoed
+        .tag_request()
+        .send()
+        .promise
+        .await
+        .map_err(|e| format!("tag() on the echoed Token: {}", e))?;
+    let got = tag_res.get().map_err(|e| e.to_string())?.get_tag();
+    let desc = "tag() on the echoed Token ran the client's own object";
+    if got == 900 && own_calls.get() == 1 {
+        tap.ok(desc);
+    } else {
+        tap.not_ok(desc, &format!("tag={}, own calls={}", got, own_calls.get()));
+    }
+    Ok(())
+}
+
+// pipelined_params: pass the `token` of an unanswered mint() as check()'s
+// param (capnp-rpc writes a `receiverAnswer` descriptor for a pipelined
+// capability). All four calls are sent before any of them is awaited.
+async fn test_pipelined_params(host: &token_host::Client, tap: &mut TapReporter) {
+    let mut mint_req = host.mint_request();
+    mint_req.get().set_tag(11);
+    let mint_p = mint_req.send();
+    let mut check_req = host.check_request();
+    check_req.get().set_token(mint_p.pipeline.get_token());
+    let check_p = check_req.send();
+
+    let mut fail_req = host.mint_fail_request();
+    fail_req.get().set_tag(12);
+    let fail_p = fail_req.send();
+    let mut check_fail_req = host.check_request();
+    check_fail_req.get().set_token(fail_p.pipeline.get_token());
+    let check_fail_p = check_fail_req.send();
+
+    let desc = "check(pipelined mint().token) called the server's own Token";
+    match check_p.promise.await {
+        Ok(res) => match res.get() {
+            Ok(r) if r.get_tag() == 11 && r.get_local() => tap.ok(desc),
+            Ok(r) => tap.not_ok(
+                desc,
+                &format!("tag={}, local={}", r.get_tag(), r.get_local()),
+            ),
+            Err(e) => tap.not_ok(desc, &e.to_string()),
+        },
+        Err(e) => tap.not_ok(desc, &e.to_string()),
+    }
+
+    match mint_p.promise.await {
+        Ok(_) => tap.ok("mint() returns results"),
+        Err(e) => tap.not_ok("mint() returns results", &e.to_string()),
+    }
+
+    let desc = "mintFail() fails with its exception";
+    match fail_p.promise.await {
+        Ok(_) => tap.not_ok(desc, "mintFail() returned results"),
+        Err(e) if e.to_string().contains(MINT_FAIL_MARKER) => tap.ok(desc),
+        Err(e) => tap.not_ok(desc, &e.to_string()),
+    }
+
+    let desc = "check(pipelined mintFail().token) fails with mintFail()'s exception";
+    match check_fail_p.promise.await {
+        Ok(_) => tap.not_ok(desc, "check() returned results"),
+        Err(e) => {
+            println!("# check(pipelined mintFail().token) error: {}", e);
+            if e.to_string().contains(MINT_FAIL_MARKER) {
+                tap.ok(desc);
+            } else {
+                tap.not_ok(desc, &e.to_string());
+            }
         }
     }
 }

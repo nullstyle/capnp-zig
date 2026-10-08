@@ -54,6 +54,10 @@ resolve_disembargo_capnp = SCHEMA_PARSER.load(
     os.path.join(SCHEMA_DIR, "resolve_disembargo.capnp"),
     imports=[SCHEMA_DIR],
 )
+cap_passing_capnp = SCHEMA_PARSER.load(
+    os.path.join(SCHEMA_DIR, "cap_passing.capnp"),
+    imports=[SCHEMA_DIR],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1008,6 +1012,93 @@ async def test_resolve_disembargo(host, port):
 
 
 # ===========================================================================
+# pass_back and pipelined_params (Python-client -> TokenHost-server direction)
+# ===========================================================================
+
+# Every TokenHost's mintFail() reason contains this text.
+MINT_FAIL_MARKER = "deliberate mint failure"
+
+
+class ClientTokenImpl(cap_passing_capnp.Token.Server):
+    """A Token this client hosts: tag() returns its tag and counts the call."""
+
+    def __init__(self, tag):
+        self._tag = tag
+        self.calls = 0
+
+    async def tag(self, _context, **kwargs):
+        self.calls += 1
+        _context.results.tag = self._tag
+
+
+async def test_pass_back(host, port):
+    """Pass two minted Tokens back to check() (each goes out as
+    `receiverHosted`); the server must call its own Token. Then hand the server
+    one of our own Tokens in echo(); it must come back as our own object."""
+    token_host, client = await connect(host, port, cap_passing_capnp.TokenHost)
+    try:
+        for tag in (7, 8):
+            minted = (await token_host.mint(tag=tag)).token
+            res = await token_host.check(token=minted)
+            tap.test(
+                f"check(minted Token {tag}) called the server's own Token",
+                res.tag == tag and res.local,
+                f"tag={res.tag}, local={res.local}",
+            )
+
+        own = ClientTokenImpl(900)
+        echoed = (await token_host.echo(token=own)).token
+        tag_res = await echoed.tag()
+        tap.test(
+            "tag() on the echoed Token ran the client's own object",
+            tag_res.tag == 900 and own.calls == 1,
+            f"tag={tag_res.tag}, own calls={own.calls}",
+        )
+    except Exception:
+        tap.not_ok("pass_back scenario", traceback.format_exc())
+
+
+async def test_pipelined_params(host, port):
+    """Pass the `token` of an unanswered mint() as check()'s param (pycapnp,
+    through kj, writes a `receiverAnswer` descriptor for a pipelined
+    capability). All four calls are sent before any of them is awaited."""
+    token_host, client = await connect(host, port, cap_passing_capnp.TokenHost)
+
+    mint_promise = token_host.mint(tag=11)
+    check_promise = token_host.check(token=mint_promise.token)
+    fail_promise = token_host.mintFail(tag=12)
+    check_fail_promise = token_host.check(token=fail_promise.token)
+
+    desc = "check(pipelined mint().token) called the server's own Token"
+    try:
+        res = await check_promise
+        tap.test(desc, res.tag == 11 and res.local, f"tag={res.tag}, local={res.local}")
+    except Exception:
+        tap.not_ok(desc, traceback.format_exc())
+
+    try:
+        await mint_promise
+        tap.ok("mint() returns results")
+    except Exception:
+        tap.not_ok("mint() returns results", traceback.format_exc())
+
+    desc = "mintFail() fails with its exception"
+    try:
+        await fail_promise
+        tap.not_ok(desc, "mintFail() returned results")
+    except Exception as exc:
+        tap.test(desc, MINT_FAIL_MARKER in str(exc), str(exc))
+
+    desc = "check(pipelined mintFail().token) fails with mintFail()'s exception"
+    try:
+        await check_fail_promise
+        tap.not_ok(desc, "check() returned results")
+    except Exception as exc:
+        print(f"# check(pipelined mintFail().token) error: {exc}")
+        tap.test(desc, MINT_FAIL_MARKER in str(exc), str(exc))
+
+
+# ===========================================================================
 # Main
 # ===========================================================================
 
@@ -1050,6 +1141,12 @@ async def main_async(host, port, schema):
     elif schema == "resolve_disembargo":
         print("# resolve_disembargo tests")
         await test_resolve_disembargo(host, port)
+    elif schema == "pass_back":
+        print("# pass_back tests")
+        await test_pass_back(host, port)
+    elif schema == "pipelined_params":
+        print("# pipelined_params tests")
+        await test_pipelined_params(host, port)
     else:
         print(f"# Unknown schema: {schema}", file=sys.stderr)
         return False
@@ -1067,7 +1164,7 @@ def main():
     parser.add_argument(
         "--schema",
         default=None,
-        help="Optional schema: game_world|chat|inventory|matchmaking|resolve_disembargo (or gameworld)",
+        help="Optional schema: game_world|chat|inventory|matchmaking|resolve_disembargo|pass_back|pipelined_params (or gameworld)",
     )
     args = parser.parse_args()
 

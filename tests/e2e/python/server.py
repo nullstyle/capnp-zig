@@ -52,6 +52,10 @@ matchmaking_capnp = SCHEMA_PARSER.load(
     os.path.join(SCHEMA_DIR, "matchmaking.capnp"),
     imports=[SCHEMA_DIR],
 )
+cap_passing_capnp = SCHEMA_PARSER.load(
+    os.path.join(SCHEMA_DIR, "cap_passing.capnp"),
+    imports=[SCHEMA_DIR],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -605,6 +609,51 @@ def _fill_match_info(b, m):
 
 
 # ===========================================================================
+# TokenHost (pass_back and pipelined_params scenarios, SERVER side)
+#
+# mint() hands out host-owned Tokens. check() calls the Token it is given and
+# reports the tag it got and whether that call reached one of our own Tokens:
+# every HostTokenImpl counts its calls on the host. A Token the client passes
+# back arrives as `receiverHosted` and resolves to our own object; a Token
+# pipelined from an unanswered mint() arrives as `receiverAnswer` and resolves
+# through that answer. When the pipelined answer failed (mintFail()), the Token
+# is broken and check() fails with mintFail()'s exception.
+# ===========================================================================
+
+MINT_FAIL_REASON = "pipelined_params: deliberate mint failure"
+
+
+class HostTokenImpl(cap_passing_capnp.Token.Server):
+    def __init__(self, host, tag):
+        self._host = host
+        self._tag = tag
+
+    async def tag(self, _context, **kwargs):
+        self._host.token_calls += 1
+        _context.results.tag = self._tag
+
+
+class TokenHostImpl(cap_passing_capnp.TokenHost.Server):
+    def __init__(self):
+        self.token_calls = 0
+
+    async def mint(self, tag, _context, **kwargs):
+        _context.results.token = HostTokenImpl(self, tag)
+
+    async def check(self, token, _context, **kwargs):
+        before = self.token_calls
+        response = await token.tag()
+        _context.results.tag = response.tag
+        _context.results.local = self.token_calls == before + 1
+
+    async def echo(self, token, _context, **kwargs):
+        _context.results.token = token
+
+    async def mintFail(self, tag, _context, **kwargs):
+        raise Exception(MINT_FAIL_REASON)
+
+
+# ===========================================================================
 # Server main
 # ===========================================================================
 
@@ -660,6 +709,9 @@ def build_services_for_schema(port, schema):
             "(pycapnp cannot host an unresolved+later-resolved promise cap); "
             "Python only drives this scenario as the client"
         )
+    if schema in ("pass_back", "pipelined_params"):
+        # One TokenHost serves both; the client picks the flow.
+        return [(port, TokenHostImpl, "TokenHost")]
     raise ValueError(f"unknown schema: {schema}")
 
 
@@ -684,7 +736,7 @@ def main():
     parser.add_argument(
         "--schema",
         default=None,
-        help="Optional schema: game_world|chat|inventory|matchmaking (or gameworld)",
+        help="Optional schema: game_world|chat|inventory|matchmaking|pass_back|pipelined_params (or gameworld)",
     )
     args = parser.parse_args()
 

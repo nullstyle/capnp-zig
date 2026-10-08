@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
 use std::rc::Rc;
@@ -12,6 +12,7 @@ use futures::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
+use crate::cap_passing_capnp::{token, token_host};
 use crate::chat_capnp::{chat_room, chat_service};
 use crate::game_types_capnp::{Faction, Rarity, StatusCode};
 use crate::game_world_capnp::{area_query, game_world, EntityKind};
@@ -1384,6 +1385,102 @@ impl reflector::Server for ReflectorImpl {
 }
 
 // ---------------------------------------------------------------------------
+// TokenHost (pass_back and pipelined_params scenarios, SERVER side).
+//
+// mint() hands out host-owned Tokens. check() calls the Token it is given and
+// reports the tag it got and whether that call reached one of our own Tokens:
+// every HostTokenImpl counts its calls in the shared `calls` cell. A Token the
+// client passes back arrives as `receiverHosted` and capnp-rpc resolves it to
+// our own export; a Token pipelined from an unanswered mint() arrives as
+// `receiverAnswer` and resolves through that answer's pipeline. When the
+// pipelined answer failed (mintFail()), the Token is broken and check() fails
+// with mintFail()'s error.
+// ---------------------------------------------------------------------------
+
+const MINT_FAIL_REASON: &str = "pipelined_params: deliberate mint failure";
+
+struct HostTokenImpl {
+    tag: u32,
+    calls: Rc<Cell<u64>>,
+}
+
+impl token::Server for HostTokenImpl {
+    fn tag(
+        &mut self,
+        _params: token::TagParams,
+        mut results: token::TagResults,
+    ) -> Promise<(), Error> {
+        self.calls.set(self.calls.get() + 1);
+        results.get().set_tag(self.tag);
+        Promise::ok(())
+    }
+}
+
+struct TokenHostImpl {
+    calls: Rc<Cell<u64>>,
+}
+
+impl TokenHostImpl {
+    fn new() -> Self {
+        Self {
+            calls: Rc::new(Cell::new(0)),
+        }
+    }
+}
+
+impl token_host::Server for TokenHostImpl {
+    fn mint(
+        &mut self,
+        params: token_host::MintParams,
+        mut results: token_host::MintResults,
+    ) -> Promise<(), Error> {
+        let tag = pry!(params.get()).get_tag();
+        let minted: token::Client = capnp_rpc::new_client(HostTokenImpl {
+            tag,
+            calls: self.calls.clone(),
+        });
+        results.get().set_token(minted);
+        Promise::ok(())
+    }
+
+    fn check(
+        &mut self,
+        params: token_host::CheckParams,
+        mut results: token_host::CheckResults,
+    ) -> Promise<(), Error> {
+        let checked: token::Client = pry!(pry!(params.get()).get_token());
+        let calls = self.calls.clone();
+        let before = calls.get();
+        Promise::from_future(async move {
+            let response = checked.tag_request().send().promise.await?;
+            let tag = response.get()?.get_tag();
+            let mut out = results.get();
+            out.set_tag(tag);
+            out.set_local(calls.get() == before + 1);
+            Ok(())
+        })
+    }
+
+    fn echo(
+        &mut self,
+        params: token_host::EchoParams,
+        mut results: token_host::EchoResults,
+    ) -> Promise<(), Error> {
+        let echoed: token::Client = pry!(pry!(params.get()).get_token());
+        results.get().set_token(echoed);
+        Promise::ok(())
+    }
+
+    fn mint_fail(
+        &mut self,
+        _params: token_host::MintFailParams,
+        _results: token_host::MintFailResults,
+    ) -> Promise<(), Error> {
+        Promise::err(Error::failed(MINT_FAIL_REASON.to_string()))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Server entry point
 // ---------------------------------------------------------------------------
 
@@ -1451,6 +1548,11 @@ pub async fn run(host: &str, port: u16, schema: &str) -> Result<(), Box<dyn std:
                 "resolve_disembargo" => {
                     let client: reflector::Client =
                         capnp_rpc::new_client(ReflectorImpl::new(disconnector_cell.clone()));
+                    client.client
+                }
+                // One TokenHost serves both; the client picks the flow.
+                "pass_back" | "pipelined_params" => {
+                    let client: token_host::Client = capnp_rpc::new_client(TokenHostImpl::new());
                     client.client
                 }
                 other => {

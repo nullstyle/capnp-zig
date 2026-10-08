@@ -7,12 +7,15 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	capnp "capnproto.org/go/capnp/v3"
 	"capnproto.org/go/capnp/v3/rpc"
 
+	"e2e-rpc-test/internal/cap_passing"
 	"e2e-rpc-test/internal/chat"
 	"e2e-rpc-test/internal/gametypes"
 	"e2e-rpc-test/internal/gameworld"
@@ -42,7 +45,7 @@ func tap(ok bool, desc string) {
 func main() {
 	host := flag.String("host", "127.0.0.1", "server host")
 	port := flag.Int("port", 4001, "server port")
-	schema := flag.String("schema", "gameworld", "schema to test: gameworld, chat, inventory, matchmaking, resolve_disembargo")
+	schema := flag.String("schema", "gameworld", "schema to test: gameworld, chat, inventory, matchmaking, resolve_disembargo, pass_back, pipelined_params")
 	flag.Parse()
 
 	addr := fmt.Sprintf("%s:%d", *host, *port)
@@ -69,6 +72,10 @@ func main() {
 		testMatchmaking(ctx, rpcConn)
 	case "resolve_disembargo":
 		testResolveDisembargo(ctx, rpcConn)
+	case "pass_back":
+		testPassBack(ctx, rpcConn)
+	case "pipelined_params":
+		testPipelinedParams(ctx, rpcConn)
 	default:
 		log.Fatalf("unknown schema: %s", *schema)
 	}
@@ -982,4 +989,139 @@ func testResolveDisembargo(ctx context.Context, rpcConn *rpc.Conn) {
 	_, disconnectErr := disconnectFut.Struct()
 	tap(disconnectErr != nil && capnp.IsDisconnected(disconnectErr),
 		"disconnectNow observes a disconnect-class error")
+}
+
+// ---------------------------------------------------------------------------
+// pass_back and pipelined_params (Go-client -> TokenHost-server direction).
+// ---------------------------------------------------------------------------
+
+// mintFailMarker appears in every TokenHost's mintFail() reason.
+const mintFailMarker = "deliberate mint failure"
+
+// clientToken is a Token this client hosts: tag() returns its tag and counts
+// the call.
+type clientToken struct {
+	tag   uint32
+	calls atomic.Uint32
+}
+
+func (t *clientToken) Tag(ctx context.Context, call cap_passing.Token_tag) error {
+	t.calls.Add(1)
+	res, err := call.AllocResults()
+	if err != nil {
+		return err
+	}
+	res.SetTag(t.tag)
+	return nil
+}
+
+var _ cap_passing.Token_Server = (*clientToken)(nil)
+
+// testPassBack passes two minted Tokens back to check() (each goes out as
+// `receiverHosted`); the server must call its own Token. Then it hands the
+// server one of its own Tokens in echo(); it must come back as its own object.
+func testPassBack(ctx context.Context, rpcConn *rpc.Conn) {
+	host := cap_passing.TokenHost(rpcConn.Bootstrap(ctx))
+	defer host.Release()
+
+	for _, tag := range []uint32{7, 8} {
+		desc := fmt.Sprintf("check(minted Token %d) called the server's own Token", tag)
+		mintFut, releaseMint := host.Mint(ctx, func(p cap_passing.TokenHost_mint_Params) error {
+			p.SetTag(tag)
+			return nil
+		})
+		mintRes, err := mintFut.Struct()
+		if err != nil {
+			releaseMint()
+			tap(false, fmt.Sprintf("%s: mint: %v", desc, err))
+			return
+		}
+		token := mintRes.Token().AddRef()
+		releaseMint()
+
+		checkFut, releaseCheck := host.Check(ctx, func(p cap_passing.TokenHost_check_Params) error {
+			return p.SetToken(token.AddRef())
+		})
+		checkRes, err := checkFut.Struct()
+		if err != nil {
+			tap(false, fmt.Sprintf("%s: %v", desc, err))
+		} else {
+			tap(checkRes.Tag() == tag && checkRes.Local(), desc)
+		}
+		releaseCheck()
+		token.Release()
+	}
+
+	own := &clientToken{tag: 900}
+	ownCap := cap_passing.Token_ServerToClient(own)
+	defer ownCap.Release()
+	const echoDesc = "tag() on the echoed Token ran the client's own object"
+	echoFut, releaseEcho := host.Echo(ctx, func(p cap_passing.TokenHost_echo_Params) error {
+		return p.SetToken(ownCap.AddRef())
+	})
+	defer releaseEcho()
+	echoRes, err := echoFut.Struct()
+	if err != nil {
+		tap(false, fmt.Sprintf("%s: echo: %v", echoDesc, err))
+		return
+	}
+	echoed := echoRes.Token().AddRef()
+	defer echoed.Release()
+	tagFut, releaseTag := echoed.Tag(ctx, nil)
+	defer releaseTag()
+	tagRes, err := tagFut.Struct()
+	if err != nil {
+		tap(false, fmt.Sprintf("%s: %v", echoDesc, err))
+		return
+	}
+	tap(tagRes.Tag() == 900 && own.calls.Load() == 1, echoDesc)
+}
+
+// testPipelinedParams passes the `token` of an unanswered mint() as check()'s
+// param (go-capnp writes a `receiverAnswer` descriptor for a pipelined client
+// whose question is still open). All four calls are sent before any of them
+// is waited on.
+func testPipelinedParams(ctx context.Context, rpcConn *rpc.Conn) {
+	host := cap_passing.TokenHost(rpcConn.Bootstrap(ctx))
+	defer host.Release()
+
+	mintFut, releaseMint := host.Mint(ctx, func(p cap_passing.TokenHost_mint_Params) error {
+		p.SetTag(11)
+		return nil
+	})
+	defer releaseMint()
+	checkFut, releaseCheck := host.Check(ctx, func(p cap_passing.TokenHost_check_Params) error {
+		return p.SetToken(mintFut.Token().AddRef())
+	})
+	defer releaseCheck()
+	failFut, releaseFail := host.MintFail(ctx, func(p cap_passing.TokenHost_mintFail_Params) error {
+		p.SetTag(12)
+		return nil
+	})
+	defer releaseFail()
+	checkFailFut, releaseCheckFail := host.Check(ctx, func(p cap_passing.TokenHost_check_Params) error {
+		return p.SetToken(failFut.Token().AddRef())
+	})
+	defer releaseCheckFail()
+
+	checkRes, err := checkFut.Struct()
+	if err != nil {
+		fmt.Printf("# check error: %v\n", err)
+		tap(false, "check(pipelined mint().token) called the server's own Token")
+	} else {
+		tap(checkRes.Tag() == 11 && checkRes.Local(), "check(pipelined mint().token) called the server's own Token")
+	}
+
+	_, err = mintFut.Struct()
+	tap(err == nil, "mint() returns results")
+
+	_, err = failFut.Struct()
+	tap(err != nil && strings.Contains(err.Error(), mintFailMarker), "mintFail() fails with its exception")
+
+	_, err = checkFailFut.Struct()
+	if err != nil {
+		fmt.Printf("# check(pipelined mintFail().token) error: %v\n", err)
+	}
+	tap(err != nil && strings.Contains(err.Error(), mintFailMarker),
+		"check(pipelined mintFail().token) fails with mintFail()'s exception")
 }
