@@ -794,3 +794,53 @@ test "a queued call cancelled by its Finish does not claim implicit release" {
     try std.testing.expectEqual(@as(u32, 1), try capture.releasedRefs(param_import_id));
     try std.testing.expectEqual(false, try capture.returnReleaseParamCaps(37));
 }
+
+test "a late Return keeps releaseParamCaps false when the early-Finish records are full" {
+    // The early-Finish tombstones share `max_active_inbound_questions`. A
+    // full tombstone map must not make the peer forget a param-cap grant:
+    // the explicit Release already went out, so a late Return that claimed
+    // `true` would make the caller release its export twice.
+    const allocator = std.testing.allocator;
+
+    var limits = peer_impl.PeerLimits{};
+    limits.max_active_inbound_questions = 1;
+    var peer = Peer.initDetachedWithLimits(allocator, limits);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = Capture{ .allocator = allocator };
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var handler_state: u8 = 0;
+    const target = try peer.addExport(.{ .ctx = &handler_state, .on_call = DefersAndIgnoresParamCap.onCall });
+
+    // Answer 40 takes the only tombstone.
+    const first = try buildInboundCallWithoutParamCaps(allocator, 40, target);
+    defer allocator.free(first);
+    try peer.handleFrame(first);
+    var finish_builder = protocol.MessageBuilder.init(allocator);
+    defer finish_builder.deinit();
+    try finish_builder.buildFinish(40, false, false);
+    const finish_40 = try finish_builder.finish();
+    defer allocator.free(finish_40);
+    try peer.handleFrame(finish_40);
+
+    const param_import_id: u32 = 4247;
+    const second = try buildInboundCallWithParamCap(allocator, 41, target, param_import_id);
+    defer allocator.free(second);
+    try peer.handleFrame(second);
+    try std.testing.expectEqual(@as(u32, 1), try capture.releasedRefs(param_import_id));
+
+    var finish_builder_41 = protocol.MessageBuilder.init(allocator);
+    defer finish_builder_41.deinit();
+    try finish_builder_41.buildFinish(41, false, false);
+    const finish_41 = try finish_builder_41.finish();
+    defer allocator.free(finish_41);
+    try peer.handleFrame(finish_41);
+    try peer.sendReturnEmptyStruct(41);
+
+    try std.testing.expectEqual(@as(u32, 1), try capture.releasedRefs(param_import_id));
+    try std.testing.expectEqual(false, try capture.returnReleaseParamCaps(41));
+    try peer.sendReturnEmptyStruct(40);
+}

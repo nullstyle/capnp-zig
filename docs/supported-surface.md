@@ -395,7 +395,8 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   remembers at most `limits.max_active_inbound_questions` finished,
   unanswered calls; past that the handler does not run. Any other late
   Return is still accepted, and it keeps
-  `releaseParamCaps = false` when the call's params granted capabilities.
+  `releaseParamCaps = false` when the call's params granted capabilities
+  (for up to `limits.max_active_inbound_questions` such unanswered calls).
   `Peer.resolvePromiseExportToExceptionTyped` rejects a promise export with an
   explicit `Exception.Type`. Experimental.
 - **Level 2 (persistence):** Save/Restore SturdyRef hooks are present

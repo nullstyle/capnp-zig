@@ -222,7 +222,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This affects hosts that answer after a Finish (deferred handlers,
   capnp-swift) and callers that cancel pipelined calls that carry
   capabilities. The Peer now remembers the grant past the Finish, and those
-  Returns say `false`. One new Experimental `Peer` field
+  Returns say `false`. It keeps that record even when its early-Finish
+  records are full. The record has its own bound,
+  `limits.max_active_inbound_questions` granting calls that the caller
+  finished and the host has not answered; past that bound a late Return
+  says `true` again. One new Experimental `Peer` field
   (`finished_early_param_grants`); no other API line changes.
 
 - **Codegen: a generated `setXClient` sent a local export in place of an
