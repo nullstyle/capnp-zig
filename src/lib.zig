@@ -59,6 +59,11 @@ pub const rpc = @import("rpc/mod.zig");
 /// `error.EventedBackendUnsupported` on every target.
 pub const io_backend = @import("io_backend.zig");
 
+/// A sans-IO RPC connection and its C ABI, for C and Swift hosts that own
+/// their sockets (Experimental). The `capnp_*` symbols are emitted only when
+/// a compilation references `native.abi`. See docs/native-abi.md.
+pub const native = @import("native/mod.zig");
+
 test {
     @import("std").testing.refAllDecls(@This());
 }

@@ -18,9 +18,24 @@ pub const schema_validation = @import("serialization/schema_validation.zig");
 pub const type_resolver = @import("serialization/type_resolver_api.zig");
 pub const canonical = @import("serialization/canonical.zig");
 pub const rpc = @import("rpc/mod_core.zig");
+/// Sans-IO RPC connection and C ABI (Experimental). See `lib.zig`. It needs
+/// only this core surface: capnp-swift builds it from `capnpc-zig-core`.
+pub const native = @import("native/mod.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
+}
+
+// The native shim's tests run here, with the module capnp-swift consumes
+// (`capnpc-zig-core`) as the test root, so its files are part of the root
+// module and their test blocks are collected: conn_test.zig (which also
+// pulls in effects.zig's), abi.zig's own (which pull in selftest.zig's), and
+// the header gate. The C ABI through the header is `zig build
+// test-native-abi`.
+test {
+    _ = @import("native/conn_test.zig");
+    _ = @import("native/abi_header_test.zig");
+    _ = native.abi;
 }
 
 // Every serialization declaration `lib.zig` exports must also be reachable

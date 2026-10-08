@@ -27,6 +27,15 @@ const Peer = rpc.peer.Peer;
 /// example powerpc64-linux-gnu).
 const embedder_allocator = if (builtin.link_libc) std.heap.c_allocator else std.heap.page_allocator;
 
+// The native C ABI capnp-swift ships from these libraries (src/native/,
+// handoff H7): referencing it emits the `capnp_*` symbols, so `check-ios`
+// compiles them for every target above and `check-fd-passing-off-symbols`
+// reads them. abi.zig takes its allocator from the root.
+comptime {
+    _ = core.native.abi;
+}
+pub const capnp_core_allocator: std.mem.Allocator = embedder_allocator;
+
 fn trapPanic(msg: []const u8, ra: ?usize) noreturn {
     _ = msg;
     _ = ra;

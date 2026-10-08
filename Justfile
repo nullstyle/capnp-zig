@@ -83,6 +83,15 @@ test-oom:
 test-fuzz-smoke:
     zig build {{ test_jobs }} test-fuzz-smoke --summary all
 
+# The native C ABI through src/native/include/capnp_core.h, linked from a
+# host static library (`zig build test` runs it too)
+test-native-abi:
+    zig build {{ test_jobs }} test-native-abi --summary all
+
+# Fuzz the native C ABI with random operation sequences (ReleaseSafe)
+fuzz-native-abi seconds="60":
+    zig build -Doptimize=ReleaseSafe fuzz-native-abi -- --seconds {{ seconds }}
+
 # Run documentation/example smoke coverage
 docs-smoke:
     zig build docs-smoke --summary all

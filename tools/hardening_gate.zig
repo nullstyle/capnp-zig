@@ -73,6 +73,11 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/integration/host_peer.zig", .kind = .catch_unreachable, .needle = "switch (inbound_caps.get(cap_idx) catch unreachable) {", .reason = "get fails only on index >= len; loop bound is inbound_caps.len() and the first param-scan loop already try-walked the same range" },
     .{ .path = "src/rpc/integration/host_peer.zig", .kind = .catch_unreachable, .needle = ".imported => mutable_caps.retainIndex(cap_idx) catch unreachable,", .reason = "retainIndex fails only on index >= len; mutable_caps is a struct copy sharing the same entries/retained slices, so the loop bound proves the index in-bounds" },
 
+    // The native shim (src/native/, capnp-swift handoff H7).
+    .{ .path = "src/native/abi.zig", .kind = .panic_call, .needle = "capnp_conn: concurrent or re-entrant call on one connection", .reason = "safe-build misuse guard (capnp_core.h: one caller at a time per connection), not input-driven protocol handling; the host's panic hook runs, then the core traps" },
+    .{ .path = "src/native/cap_remap.zig", .kind = .catch_unreachable, .needle = "mutable.retainIndex(i) catch unreachable; // i < len", .reason = "retainIndex fails only on index >= len; the loop bound is inbound.len(), and mutable is a struct copy sharing the same entries/retained slices (the host_peer.zig pattern)" },
+    .{ .path = "src/native/conn.zig", .kind = .swallowed_alloc_failure, .needle = "var decoded = protocol.DecodedMessage.init(self.allocator, bytes) catch continue;", .reason = "abortQueuedSince only asks whether the Peer already queued an Abort for a failed frame; a frame of ours it cannot decode under OOM is skipped, so at worst the shim queues a second Abort before CLOSE_REQUESTED. The connection fails either way, and no question's terminal depends on it" },
+
     .{ .path = "src/rpc/transport/tcp/connection.zig", .kind = .panic_call, .needle = "Connection method called from wrong thread", .reason = "debug misuse guard, not input-driven protocol handling" },
     .{ .path = "src/rpc/transport/tcp/stream_transport.zig", .kind = .panic_call, .needle = "cannot wake Windows receive cancellation", .reason = "unrecoverable failure alerting the current-thread pseudohandle, not a peer-controlled handle; returning would unwind live AFD receive storage and continuing would enter the known indefinite cancellation wait" },
     .{ .path = "src/rpc/transport/wake_lock.zig", .kind = .panic_call, .needle = "stuck-wake-lock diagnostic", .reason = "debug-only stuck-lock diagnostic: converts an unbounded spin (which reaches CI as an anonymous job timeout) into a named crash. Bound is ~2 orders of magnitude past any legitimate contention on these few-syscall critical sections, and is not reachable from network input" },
@@ -151,6 +156,9 @@ const unsafe_dirs = [_][]const u8{
     // like everything else here. Verified by probe: a fresh `catch
     // unreachable` added to `generator.zig` left this gate reporting "passed".
     "src/capnpc-zig",
+    // The native shim (capnp-swift handoff H7): it decodes remote frames and
+    // takes raw pointers and handles from C hosts.
+    "src/native",
 };
 
 const unsafe_files = [_][]const u8{
