@@ -7,6 +7,7 @@ const native_framer = @import("native_framer.zig");
 const native_outbound_queue = @import("native_outbound_queue.zig");
 const native_pending_data = @import("native_pending_data.zig");
 const quic_options = @import("options.zig");
+const quic_zig_adapter = @import("quic_zig_adapter.zig");
 
 const Role = endpoint_mod.Role;
 const NativeOptions = quic_options.NativeOptions;
@@ -232,7 +233,7 @@ pub const NativeEngine = struct {
 
         while (self.preamble_offset < self.preamble_len) {
             const remaining = self.preamble[self.preamble_offset..self.preamble_len];
-            const written = conn.streamWrite(quic_options.baseline_stream_id, remaining) catch |err| switch (err) {
+            const written = quic_zig_adapter.writeStream(conn, quic_options.baseline_stream_id, remaining) catch |err| switch (err) {
                 error.StreamNotFound => return false,
                 else => return err,
             };

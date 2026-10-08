@@ -47,6 +47,44 @@ pub fn tickServer(server: *quic_zig.Server, now_us: u64) !void {
     try server.tick(now_us);
 }
 
+/// Write to a stream of `conn`, and leave half of its memory budget for
+/// what the peer sends. Every stream write of the transport's engines goes
+/// through here (`writeStream` for their generic `conn`).
+///
+/// Since quic-zig v0.33.0 `max_connection_memory` bounds the application's
+/// own writes as back-pressure: a write takes what the budget leaves and
+/// returns short. It takes all of it, though, and the same budget holds
+/// what the peer sends, where running out is a fault: the peer's next
+/// STREAM frame finds no room, and quic-zig closes the connection with
+/// EXCESSIVE_LOAD. A small Finish, Release or pipelined call from an honest
+/// client in the middle of a large reply did that. So the transport's own
+/// writes stop once the connection holds half of its budget, the share
+/// that quic-zig's receive windows already keep to (a connection's window
+/// never grows past half of the budget). A short count, zero when nothing
+/// fits, is back-pressure as before. With no room the call still reaches
+/// quic-zig, with no bytes, which is what quic-zig does itself when its
+/// budget is full, so the stream errors stay the same.
+pub fn streamWrite(conn: *quic_zig.Connection, stream_id: u64, data: []const u8) !usize {
+    return conn.streamWrite(stream_id, data[0..@min(data.len, ownWriteRoom(conn))]);
+}
+
+/// The bytes the transport's own writes may still add to `conn`: half of
+/// `max_connection_memory`, less what the connection holds (send buffers,
+/// receive buffers, CRYPTO and DATAGRAM data together).
+pub fn ownWriteRoom(conn: *const quic_zig.Connection) usize {
+    const ceiling = conn.max_connection_memory / 2;
+    return std.math.lossyCast(usize, ceiling -| conn.bytes_resident);
+}
+
+/// `streamWrite` for the engines' generic `conn`: a quic-zig connection
+/// takes the write above; any other type (`EmbeddedSession`'s buffered
+/// view, which calls `streamWrite` itself, or a test double) its own
+/// `streamWrite`.
+pub fn writeStream(conn: anytype, stream_id: u64, data: []const u8) !usize {
+    if (@TypeOf(conn) == *quic_zig.Connection) return streamWrite(conn, stream_id, data);
+    return conn.streamWrite(stream_id, data);
+}
+
 pub fn ipAddressToPathAddress(addr: Net.IpAddress) quic_zig.conn.path.Address {
     // quic-zig's Address deliberately mirrors std.Io.net.IpAddress, so the
     // boundary is a one-to-one variant map.

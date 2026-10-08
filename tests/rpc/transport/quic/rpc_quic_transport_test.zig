@@ -1620,19 +1620,24 @@ test "quic native localhost streams large RPC data payload" {
     try client_state.expectOrder(&expected_order);
 }
 
-/// Server side of the memory-budget tests: counts each request and answers it
-/// with one large pre-built frame.
+/// Server side of the memory-budget tests: counts each frame and answers the
+/// first one with one large pre-built frame.
 const LargeReplyServerState = struct {
     reply: []const u8,
     messages: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     errors: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    closes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     last_error: ?anyerror = null,
 };
 
 fn replyWithLargeFrame(conn: *quic.Connection, _: []const u8) !void {
     const state: *LargeReplyServerState = @ptrCast(@alignCast(conn.context().?));
-    _ = state.messages.fetchAdd(1, .acq_rel);
-    try conn.sendFrame(state.reply);
+    if (state.messages.fetchAdd(1, .acq_rel) == 0) try conn.sendFrame(state.reply);
+}
+
+fn countLargeReplyServerClose(conn: *quic.Connection) void {
+    const state: *LargeReplyServerState = @ptrCast(@alignCast(conn.context().?));
+    _ = state.closes.fetchAdd(1, .acq_rel);
 }
 
 fn recordLargeReplyServerError(conn: *quic.Connection, err: anyerror) void {
@@ -1649,6 +1654,7 @@ const LargeReplyClientState = struct {
     messages: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     matched: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     errors: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    closes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     last_error: ?anyerror = null,
 };
 
@@ -1664,6 +1670,11 @@ fn recordLargeReplyClientError(conn: *quic.Connection, err: anyerror) void {
     state.last_error = err;
     _ = state.errors.fetchAdd(1, .acq_rel);
     conn.requestClose();
+}
+
+fn countLargeReplyClientClose(conn: *quic.Connection) void {
+    const state: *LargeReplyClientState = @ptrCast(@alignCast(conn.context().?));
+    _ = state.closes.fetchAdd(1, .acq_rel);
 }
 
 fn ignoreQuicClose(_: *quic.Connection) void {}
@@ -1750,6 +1761,108 @@ test "quic baseline: a reply larger than the server's connection memory budget a
 
 test "quic native: a reply larger than the server's connection memory budget arrives whole over a data stream (short writes are back-pressure)" {
     try expectReplyLargerThanMemoryBudget(.native);
+}
+
+/// What the peer sends needs room in the budget too. quic-zig's own write
+/// takes all of `max_connection_memory` that is free, and the next STREAM
+/// frame the peer sends then has no room: quic-zig closes the connection
+/// with EXCESSIVE_LOAD, which an honest client's Finish, Release or
+/// pipelined call can trigger in the middle of a large reply. capnp-zig's
+/// writes fill at most half of the budget (`quic_zig_adapter.streamWrite`),
+/// so here the client sends a small frame every millisecond while a 1 MiB
+/// reply goes through a 256 KiB budget, and the reply still arrives whole.
+fn expectReplyFillingMemoryBudgetBesideClientFrames(mode: quic.TransportMode) !void {
+    const allocator = std.testing.allocator;
+    const budget: u64 = 256 * 1024;
+    const reply = try buildCallFrameWithData(allocator, 0xB0D6E8, 1024 * 1024);
+    defer allocator.free(reply);
+    try std.testing.expect(reply.len > 4 * budget);
+    const request = try buildBootstrapFrame(allocator, 0xB0D7);
+    defer allocator.free(request);
+    const small = try buildBootstrapFrame(allocator, 0x5A11);
+    defer allocator.free(small);
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = mode,
+        .max_connection_memory = budget,
+    });
+    defer server.deinit();
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = mode,
+    });
+    defer client.deinit();
+
+    var server_state = LargeReplyServerState{ .reply = reply };
+    var client_state = LargeReplyClientState{ .expected = reply };
+    server.start(&server_state, replyWithLargeFrame, recordLargeReplyServerError, countLargeReplyServerClose);
+    client.start(&client_state, checkLargeReply, recordLargeReplyClientError, countLargeReplyClientClose);
+
+    try client.sendFrame(request);
+
+    var server_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&server});
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        server.requestClose();
+        client_thread.join();
+        server_thread.join();
+    };
+
+    // One small frame per millisecond until the reply is in (or a side
+    // fails or closes), at most 2,000.
+    const max_small_frames: usize = 2_000;
+    var small_frames: usize = 0;
+    var waited_ms: u64 = 0;
+    while (waited_ms < 20_000) : (waited_ms += 1) {
+        if (client_state.messages.load(.acquire) > 0) break;
+        if (client_state.errors.load(.acquire) > 0 or server_state.errors.load(.acquire) > 0) break;
+        if (client_state.closes.load(.acquire) > 0 or server_state.closes.load(.acquire) > 0) break;
+        if (small_frames < max_small_frames) {
+            try client.sendFrame(small);
+            small_frames += 1;
+        }
+        loopback.sleepMs(1);
+    }
+    client.requestClose();
+    server.requestClose();
+    client_thread.join();
+    server_thread.join();
+    joined = true;
+
+    const reply_matched = client_state.matched.load(.acquire);
+    if (reply_matched != 1) {
+        std.debug.print(
+            "reply not delivered: waited {d} ms, {d} small frames sent, server saw {d} frames, server close cause {s}, client close cause {s}\n",
+            .{ waited_ms, small_frames, server_state.messages.load(.acquire), @tagName(server.closeCause()), @tagName(client.closeCause()) },
+        );
+        if (server.quicCloseEvent()) |ev| std.debug.print("server QUIC close: code 0x{x}, reason \"{s}\"\n", .{ ev.error_code, ev.reason });
+    }
+    if (server_state.last_error) |err| std.debug.print("server failed the session: {s}\n", .{@errorName(err)});
+    try std.testing.expectEqual(@as(usize, 0), server_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), reply_matched);
+    // The first small frame goes out with the request; at least one more
+    // went out while the reply was on its way.
+    try std.testing.expect(small_frames >= 2);
+    try std.testing.expect(server.closeCause() != .transport_error);
+}
+
+test "quic baseline: client frames during a reply that fills the server's memory budget leave room (the reply arrives whole)" {
+    try expectReplyFillingMemoryBudgetBesideClientFrames(.baseline);
+}
+
+test "quic native: client frames during a reply that fills the server's memory budget leave room (the reply arrives whole)" {
+    try expectReplyFillingMemoryBudgetBesideClientFrames(.native);
 }
 
 test "quic native receiver takes back-to-back control frames larger together than its control buffer" {

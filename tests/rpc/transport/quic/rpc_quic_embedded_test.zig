@@ -23,6 +23,8 @@ const HostApp = struct {
     allocator: std.mem.Allocator,
     mode: quic.EmbeddedSessionOptions,
     state: *loopback.QuicEndpointState,
+    /// The seats' message callback; the default echoes each frame.
+    on_message: quic.EmbeddedSession.MessageCallback = echoEmbeddedMessage,
     seats: std.ArrayListUnmanaged(*quic.EmbeddedSession) = .empty,
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
@@ -37,7 +39,7 @@ const HostApp = struct {
         session.app = seat;
         seat.start(
             app.state,
-            echoEmbeddedMessage,
+            app.on_message,
             recordEmbeddedError,
             recordEmbeddedClose,
         );
@@ -507,6 +509,170 @@ fn runEmbeddedDataStreamRelease(allocator: std.mem.Allocator, frame_count: usize
 
 test "embedded native seat frees each data stream's buffer once the engine has read it" {
     try runEmbeddedDataStreamRelease(std.testing.allocator, 8);
+}
+
+/// The seat in the memory-budget test: `endpoint` is what `HostApp` hands
+/// each seat as its context, and the reply rides next to it.
+const LargeReplySeatState = struct {
+    endpoint: loopback.QuicEndpointState = .{},
+    reply: []const u8,
+};
+
+fn replyOnceWithLargeFrame(seat: *quic.EmbeddedSession, _: []const u8) anyerror!void {
+    const endpoint: *loopback.QuicEndpointState = @ptrCast(@alignCast(seat.context().?));
+    const state: *LargeReplySeatState = @fieldParentPtr("endpoint", endpoint);
+    if (endpoint.messages.fetchAdd(1, .acq_rel) == 0) try seat.sendFrame(state.reply);
+}
+
+/// The client in the memory-budget test: compares the reply with the frame
+/// the seat sent, byte for byte.
+const LargeReplyClientState = struct {
+    expected: []const u8,
+    messages: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    matched: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    errors: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    closes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+};
+
+fn checkEmbeddedLargeReply(conn: *quic.Connection, frame: []const u8) anyerror!void {
+    const state: *LargeReplyClientState = @ptrCast(@alignCast(conn.context().?));
+    if (std.mem.eql(u8, frame, state.expected)) _ = state.matched.fetchAdd(1, .acq_rel);
+    _ = state.messages.fetchAdd(1, .acq_rel);
+}
+
+fn recordEmbeddedLargeReplyClientError(conn: *quic.Connection, _: anyerror) void {
+    const state: *LargeReplyClientState = @ptrCast(@alignCast(conn.context().?));
+    _ = state.errors.fetchAdd(1, .acq_rel);
+    conn.requestClose();
+}
+
+fn countEmbeddedLargeReplyClientClose(conn: *quic.Connection) void {
+    const state: *LargeReplyClientState = @ptrCast(@alignCast(conn.context().?));
+    _ = state.closes.fetchAdd(1, .acq_rel);
+}
+
+/// The seat's writes leave half of the host's `max_connection_memory` for
+/// what the peer sends, as the owned loops' writes do
+/// (`quic_zig_adapter.streamWrite`). A 1 MiB reply goes through a 256 KiB
+/// budget while the client sends a small frame every millisecond, and
+/// arrives whole. A write that took the whole budget (quic-zig's own
+/// streamWrite) left no room for the client's next frame: quic-zig closed the
+/// connection with EXCESSIVE_LOAD.
+fn runEmbeddedLargeReplyBesideClientFrames(allocator: std.mem.Allocator, mode: quic.EmbeddedSessionOptions) !void {
+    const budget: u64 = 256 * 1024;
+    const reply = try loopback.buildCallFrameWithData(allocator, 0xB0D6E9, 1024 * 1024);
+    defer allocator.free(reply);
+    try std.testing.expect(reply.len > 4 * budget);
+    const request = try loopback.buildBootstrapFrame(allocator, 0xB0D8);
+    defer allocator.free(request);
+    const small = try loopback.buildBootstrapFrame(allocator, 0x5A12);
+    defer allocator.free(small);
+
+    var seat_state = LargeReplySeatState{ .reply = reply };
+    var host = HostApp{
+        .allocator = allocator,
+        .mode = mode,
+        .state = &seat_state.endpoint,
+        .on_message = replyOnceWithLargeFrame,
+    };
+    defer host.seats.deinit(allocator);
+
+    var driver = try D.init(.{
+        .allocator = allocator,
+        .app = &host,
+        .max_tracked_streams = 16,
+        .hooks = .{
+            .on_connect = HostApp.onConnect,
+            .on_handshake = HostApp.onHandshake,
+            .on_stream_open = HostApp.onStreamOpen,
+            .on_stream_data = HostApp.onStreamData,
+            .on_stream_end = HostApp.onStreamEnd,
+            .on_disconnect = HostApp.onDisconnect,
+        },
+    });
+    var listener = quic.Listener.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .alpn_protocols = &.{"capnp-rpc/1"},
+        .max_concurrent_connections = 4,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = mode.mode,
+        .max_connection_memory = budget,
+    }) catch |err| {
+        driver.deinit();
+        return err;
+    };
+    driver.attach(&listener.server);
+    // Same load-bearing deinit order as runEmbeddedEchoExchange.
+    defer driver.deinit();
+    defer listener.deinit();
+
+    var host_thread = try std.Thread.spawn(.{}, runHost, .{ &host, &listener, &driver });
+    defer {
+        host.stop.store(true, .release);
+        host_thread.join();
+    }
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = listener.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = mode.mode,
+    });
+    defer client.deinit();
+    var client_state = LargeReplyClientState{ .expected = reply };
+    client.start(&client_state, checkEmbeddedLargeReply, recordEmbeddedLargeReplyClientError, countEmbeddedLargeReplyClientClose);
+    try client.sendFrame(request);
+
+    var client_thread = try std.Thread.spawn(.{}, loopback.runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        client_thread.join();
+    };
+
+    const seat_endpoint = &seat_state.endpoint;
+    const max_small_frames: usize = 2_000;
+    var small_frames: usize = 0;
+    var waited_ms: u64 = 0;
+    while (waited_ms < 20_000) : (waited_ms += 1) {
+        if (client_state.messages.load(.acquire) > 0) break;
+        if (client_state.errors.load(.acquire) > 0 or seat_endpoint.errors.load(.acquire) > 0) break;
+        if (client_state.closes.load(.acquire) > 0 or seat_endpoint.closes.load(.acquire) > 0) break;
+        if (small_frames < max_small_frames) {
+            try client.sendFrame(small);
+            small_frames += 1;
+        }
+        loopback.sleepMs(1);
+    }
+    client.requestClose();
+    client_thread.join();
+    joined = true;
+
+    const reply_matched = client_state.matched.load(.acquire);
+    if (reply_matched != 1) {
+        std.debug.print(
+            "reply not delivered: waited {d} ms, {d} small frames sent, seat saw {d} frames, client close cause {s}\n",
+            .{ waited_ms, small_frames, seat_endpoint.messages.load(.acquire), @tagName(client.closeCause()) },
+        );
+        if (client.quicCloseEvent()) |ev| std.debug.print("client QUIC close: code 0x{x}, source {s}\n", .{ ev.error_code, @tagName(ev.source) });
+    }
+    try std.testing.expectEqual(@as(usize, 0), seat_endpoint.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), reply_matched);
+    // The first small frame goes out with the request; at least one more
+    // went out while the reply was on its way.
+    try std.testing.expect(small_frames >= 2);
+}
+
+test "embedded quic seat leaves memory budget for client frames during a large reply (baseline)" {
+    try runEmbeddedLargeReplyBesideClientFrames(std.testing.allocator, .{ .mode = .baseline });
+}
+
+test "embedded quic seat leaves memory budget for client frames during a large reply (native)" {
+    try runEmbeddedLargeReplyBesideClientFrames(std.testing.allocator, .{ .mode = .native });
 }
 
 // ---------------------------------------------------------------------------
