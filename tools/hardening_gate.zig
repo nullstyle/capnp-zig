@@ -15,6 +15,7 @@ const PatternKind = enum {
     disclosure_banner,
     disclosure_verbose_close_reason,
     disclosure_debug_details,
+    swallowed_alloc_failure,
 };
 
 const Allow = struct {
@@ -54,6 +55,20 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/peer/peer_transport_callbacks.zig", .kind = .optional_unwrap, .needle = "conn.context().?", .reason = "transport callback only installed with context" },
     .{ .path = "src/rpc/peer/return/peer_return_orchestration.zig", .kind = .optional_unwrap, .needle = "ret.results.?.cap_table", .reason = "guarded by Return results tag/path check" },
     .{ .path = "src/rpc/peer/call/peer_call_orchestration.zig", .kind = .unchecked_unreachable, .needle = ".queue_promise_export => unreachable", .reason = "filtered by handleCallImportedTargetForPeer before dispatch" },
+
+    // Swallowed allocation failures (`append/put/ensure... catch break|continue|{}`).
+    // capnp-swift handoff H8 found one in the teardown cancel pass
+    // (`forceCancelAllQuestions`): under OOM it skipped questions, which then
+    // waited for `Peer.deinit` for their terminal. That pass and the deadline
+    // sweep are now allocation-free. The entries below are Experimental
+    // Level-3 maintenance passes where skipping an item under OOM leaves it
+    // marked and the next pass retries it, so nothing is lost; each was
+    // reviewed for that property.
+    .{ .path = "src/rpc/peer/mod.zig", .kind = .swallowed_alloc_failure, .needle = "keys.append(self.allocator, kv.key_ptr.*) catch break;", .reason = "sweepThirdPartyAwaits (L3, Experimental): an await not collected under OOM stays parked with its deadline; the next checkDeadlines sweep, or the transport-close drain, collects it, and Peer.deinit frees any left. The sweep only frees ctx (no terminal callback), so a skip delays a free, never a terminal" },
+    .{ .path = "src/rpc/peer/mod.zig", .kind = .swallowed_alloc_failure, .needle = "retry_peers.append(allocator, provide_peer) catch {};", .reason = "drainOutboundProvidesOnRecipientPeer (L3, Experimental): requestOriginatedProvideFinish above already published the provide peer's Finish request (finish_on_maintenance / finish_requested); a peer missing from this best-effort immediate retry list gets the Finish from its next checkDeadlines -> retryDeferredFinishes" },
+    .{ .path = "src/rpc/peer/mod.zig", .kind = .swallowed_alloc_failure, .needle = "provide_ids.append(self.allocator, entry.key_ptr.*) catch break;", .reason = "retryDeferredFinishes (L3 Provide, Experimental): a maintenance pass; a question not collected under OOM keeps finish_on_maintenance and the next checkDeadlines retries it" },
+    .{ .path = "src/rpc/peer/mod.zig", .kind = .swallowed_alloc_failure, .needle = "retained_ids.append(self.allocator, entry.key_ptr.*) catch break;", .reason = "retryDeferredFinishes (transferred retained answers, Experimental): a maintenance pass; an entry not collected under OOM keeps finish_requested and the next checkDeadlines retries it" },
+    .{ .path = "src/rpc/peer/provision/peer_provision_hosting.zig", .kind = .swallowed_alloc_failure, .needle = "}) catch break;", .reason = "sweepExpiredParkedAcceptsOn (L3 provisions, Experimental): the append precedes the infallible removal, so an OOM leaves the expired parked Accept parked and intact; the next sweepExpiredParkedAccepts retries it" },
 
     .{ .path = "src/rpc/integration/host_peer.zig", .kind = .catch_unreachable, .needle = "switch (inbound_caps.get(cap_idx) catch unreachable) {", .reason = "get fails only on index >= len; loop bound is inbound_caps.len() and the first param-scan loop already try-walked the same range" },
     .{ .path = "src/rpc/integration/host_peer.zig", .kind = .catch_unreachable, .needle = ".imported => mutable_caps.retainIndex(cap_idx) catch unreachable,", .reason = "retainIndex fails only on index >= len; mutable_caps is a struct copy sharing the same entries/retained slices, so the loop bound proves the index in-bounds" },
@@ -207,6 +222,9 @@ fn printUsage() void {
         \\Static hardening gate for production source paths:
         \\  - bans unreviewed catch unreachable, @panic, .? unwraps,
         \\    unchecked unreachable, and @setRuntimeSafety(false)
+        \\  - bans unreviewed swallowed allocation failures: an allocating call
+        \\    (append/put/ensure.../dupe/alloc/create, or one passed an allocator)
+        \\    whose error is discarded by catch break, catch continue or catch {{}}
         \\  - bans unreviewed ReleaseFast/ReleaseSmall build-policy drift
         \\  - bans public disclosure drift for source paths, stack traces,
         \\    build identity strings, banners, and verbose close reasons
@@ -246,6 +264,7 @@ fn kindName(kind: PatternKind) []const u8 {
         .disclosure_banner => "disclosure banner",
         .disclosure_verbose_close_reason => "disclosure verbose close reason",
         .disclosure_debug_details => "disclosure debug details",
+        .swallowed_alloc_failure => "swallowed allocation failure",
     };
 }
 
@@ -331,6 +350,118 @@ fn adjustDepth(depth: usize, delta: isize) usize {
     if (amount >= depth) return 0;
     return depth - amount;
 }
+
+/// Calls that can fail with OutOfMemory. A statement that names one of these,
+/// or passes an `allocator`, and then swallows the failure is flagged.
+const alloc_call_needles = [_][]const u8{
+    ".append(",
+    ".appendSlice(",
+    ".appendNTimes(",
+    ".addOne(",
+    ".addManyAsSlice(",
+    ".insert(",
+    ".insertSlice(",
+    ".put(",
+    ".putNoClobber(",
+    ".getOrPut(",
+    ".getOrPutValue(",
+    ".getOrPutAdapted(",
+    ".ensureTotalCapacity(",
+    ".ensureTotalCapacityPrecise(",
+    ".ensureUnusedCapacity(",
+    ".dupe(",
+    ".dupeZ(",
+    ".alloc(",
+    ".alignedAlloc(",
+    ".allocSentinel(",
+    ".create(",
+    ".realloc(",
+    ".toOwnedSlice(",
+    "allocPrint(",
+};
+
+/// Position of a `catch break`, `catch continue` or `catch {}` in `code`: a
+/// failure discarded with no error binding and no handling.
+fn swallowingCatch(code: []const u8) ?usize {
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, code, index, "catch")) |pos| {
+        index = pos + "catch".len;
+        const before_ok = pos == 0 or !isIdentChar(code[pos - 1]);
+        if (!before_ok or (index < code.len and isIdentChar(code[index]))) continue;
+        const rest = std.mem.trimStart(u8, code[index..], " \t");
+        if (startsWithWord(rest, "break") or startsWithWord(rest, "continue")) return pos;
+        if (rest.len != 0 and rest[0] == '{') {
+            const inner = std.mem.trimStart(u8, rest[1..], " \t");
+            if (inner.len != 0 and inner[0] == '}') return pos;
+        }
+    }
+    return null;
+}
+
+fn startsWithWord(text: []const u8, word: []const u8) bool {
+    if (!std.mem.startsWith(u8, text, word)) return false;
+    return text.len == word.len or !isIdentChar(text[word.len]);
+}
+
+fn namesAllocation(statement: []const u8) bool {
+    for (alloc_call_needles) |needle| {
+        if (std.mem.indexOf(u8, statement, needle) != null) return true;
+    }
+    return hasWord(statement, "allocator") or std.mem.indexOf(u8, statement, ".allocator") != null;
+}
+
+fn parenDelta(code: []const u8) isize {
+    var delta: isize = 0;
+    for (code) |c| {
+        if (c == '(') delta += 1;
+        if (c == ')') delta -= 1;
+    }
+    return delta;
+}
+
+/// Tracks the statement a line belongs to, across continuation lines, so a
+/// multi-line call ending in `}) catch break;` is still matched to its name.
+const StatementScan = struct {
+    text: std.ArrayList(u8) = .empty,
+    paren_depth: usize = 0,
+
+    fn deinit(self: *StatementScan, allocator: std.mem.Allocator) void {
+        self.text.deinit(allocator);
+    }
+
+    fn reset(self: *StatementScan) void {
+        self.text.clearRetainingCapacity();
+        self.paren_depth = 0;
+    }
+
+    /// Add one sanitized line; report it when it swallows an allocation
+    /// failure from the statement it ends.
+    fn feed(
+        self: *StatementScan,
+        ctx: *Context,
+        path: []const u8,
+        line_no: usize,
+        raw_line: []const u8,
+        code: []const u8,
+    ) !void {
+        const start = self.text.items.len;
+        try self.text.appendSlice(ctx.allocator, code);
+        try self.text.append(ctx.allocator, ' ');
+        if (swallowingCatch(code)) |pos| {
+            if (namesAllocation(self.text.items[0 .. start + pos])) {
+                ctx.record(path, line_no, .swallowed_alloc_failure, raw_line);
+            }
+        }
+        self.paren_depth = adjustDepth(self.paren_depth, parenDelta(code));
+        const trimmed = std.mem.trimEnd(u8, code, " \t");
+        if (self.paren_depth == 0 and trimmed.len != 0) {
+            switch (trimmed[trimmed.len - 1]) {
+                ';', '{', '}', ',' => self.reset(),
+                else => {},
+            }
+        }
+    }
+};
 
 fn isZigTestStart(code: []const u8) bool {
     const trimmed = std.mem.trimStart(u8, code, " \t");
@@ -524,6 +655,8 @@ fn scanZigFile(ctx: *Context, path: []const u8, mode: ZigScanMode) !void {
 
     ctx.checked_files += 1;
     var test_depth: usize = 0;
+    var statement: StatementScan = .{};
+    defer statement.deinit(ctx.allocator);
     var line_no: usize = 1;
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |raw_line_with_cr| : (line_no += 1) {
@@ -538,10 +671,12 @@ fn scanZigFile(ctx: *Context, path: []const u8, mode: ZigScanMode) !void {
 
         if (isZigTestStart(code)) {
             test_depth = adjustDepth(0, braceDelta(code));
+            statement.reset();
             continue;
         }
 
         if (mode.unsafe) scanUnsafeCode(ctx, path, line_no, raw_line, code);
+        if (mode.unsafe) try statement.feed(ctx, path, line_no, raw_line, code);
         if (mode.disclosure) scanDisclosureCode(ctx, path, line_no, raw_line, code);
     }
 }

@@ -3708,8 +3708,20 @@ test "sendJoinExperimental rolls back the outbound question under OOM injection"
     try std.testing.checkAllAllocationFailures(std.testing.allocator, sendJoinExperimentalOomImpl, .{});
 }
 
-fn joinCoordinatorSendPartOomImpl(allocator: std.mem.Allocator) !void {
-    var capture = ReturnCapture{ .allocator = allocator };
+/// One point of the sweep below: the `fail_index`-th allocation inside
+/// `sendImportedCapPart`, and every one after it, fails. Returns false once
+/// the index is past every allocation the send makes.
+///
+/// Injection covers the send only. The cleanup runs with memory restored:
+/// its `cancelQuestion` drops a Finish it cannot send by design (logged; the
+/// local caller still gets its terminal), and `checkAllAllocationFailures`
+/// would report that as a swallowed OOM. That drop used to be masked: the
+/// synthetic terminal Return itself needed the heap and failed first. It no
+/// longer does (capnp-swift handoff H8).
+fn joinCoordinatorSendPartOomAt(fail_index: usize) !bool {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const allocator = failing.allocator();
+    var capture = ReturnCapture{ .allocator = std.testing.allocator };
     defer capture.deinit();
 
     var peer = Peer.initDetached(allocator);
@@ -3723,8 +3735,13 @@ fn joinCoordinatorSendPartOomImpl(allocator: std.mem.Allocator) !void {
     var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &peer, join_net.network(), 0x4a14, 1);
     defer coordinator.deinit();
 
+    failing.fail_index = failing.alloc_index + fail_index;
     const result = coordinator.sendImportedCapPart(&peer, 7, 1, 0);
+    const induced = failing.has_induced_failure;
+    failing.fail_index = std.math.maxInt(usize);
+
     if (result) |question_id| {
+        if (induced) return error.SwallowedOutOfMemoryError;
         try std.testing.expectEqual(@as(usize, 1), coordinator.question_ids.items.len);
         try std.testing.expectEqual(@as(usize, 1), coordinator.question_peers.items.len);
         try std.testing.expectEqual(@as(usize, 1), coordinator.question_finished.items.len);
@@ -3736,17 +3753,23 @@ fn joinCoordinatorSendPartOomImpl(allocator: std.mem.Allocator) !void {
         try coordinator.cancelPending("test cleanup");
         peer_test_hooks.removeQuestion(&peer, question_id);
         try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
+        return false;
     } else |err| {
+        if (err != error.OutOfMemory) return err;
+        try std.testing.expect(induced);
         try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
         try std.testing.expectEqual(@as(usize, 0), coordinator.question_ids.items.len);
         try std.testing.expectEqual(@as(usize, 0), coordinator.question_peers.items.len);
         try std.testing.expectEqual(@as(usize, 0), coordinator.question_finished.items.len);
-        return err;
+        return true;
     }
 }
 
 test "JoinCoordinator sendPart rolls back local state under OOM injection" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, joinCoordinatorSendPartOomImpl, .{});
+    var fail_index: usize = 0;
+    while (try joinCoordinatorSendPartOomAt(fail_index)) : (fail_index += 1) {}
+    // The sweep reached at least one injection point inside the send.
+    try std.testing.expect(fail_index > 0);
 }
 
 test "JoinCoordinator publishes result-peer backlink before synchronous peer deinit" {

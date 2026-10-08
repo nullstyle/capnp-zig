@@ -29,8 +29,14 @@ pub fn queuePendingCall(
     // re-validating-parsing every queued frame (an O(n)-decode amplifier). A
     // non-call/undecodable frame stores null; question id zero is valid and must
     // remain distinguishable so cancellation/failure drains still settle it.
+    // Out of memory is not "undecodable": queueing a real call with a null id
+    // would let the failure drain skip its terminal Return, so the enqueue
+    // fails instead and the caller answers the call.
     const call_question_id: ?u32 = blk: {
-        var decoded = protocol.DecodedMessage.init(allocator, copy) catch break :blk null;
+        var decoded = protocol.DecodedMessage.init(allocator, copy) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            break :blk null;
+        };
         defer decoded.deinit();
         if (decoded.tag != .call) break :blk null;
         const call = decoded.asCall() catch break :blk null;

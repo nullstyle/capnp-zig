@@ -1746,3 +1746,217 @@ test "a parked call answered with an exception at replay releases its param impo
     try std.testing.expectEqual(@as(usize, 1), capture.countTag(.release));
     try std.testing.expect(!peer.caps.hasImport(remote_export_id));
 }
+
+// ---------------------------------------------------------------------------
+// Exactly one terminal per question at transport close (capnp-swift handoff
+// H8): the cancel pass must not depend on the allocator, and it must never
+// deliver a second terminal to a question that already saw its Return.
+
+/// Counts a question's terminal callbacks; `disconnects` counts the synthetic
+/// Disconnected ones.
+const TerminalWaiter = struct {
+    fired: usize = 0,
+    disconnects: usize = 0,
+
+    fn onReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *TerminalWaiter = @ptrCast(@alignCast(ctx));
+        self.fired += 1;
+        if (ret.tag != .exception) return;
+        const ex = ret.exception orelse return;
+        if (std.mem.eql(u8, ex.reason, peer_impl.disconnected_reason)) self.disconnects += 1;
+    }
+};
+
+test "transport close ends every open question even when no allocation succeeds (H8)" {
+    // `capture` outlives the peer (deinit may still send frames).
+    var capture = newCapture(std.testing.allocator);
+    defer capture.deinit();
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var peer = Peer.initDetached(failing.allocator());
+    peer.disableThreadAffinity();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    try peer.caps.noteImport(7);
+    var waiters = [_]TerminalWaiter{ .{}, .{}, .{} };
+    for (&waiters) |*waiter| {
+        _ = try peer.sendCall(7, 0xABCD, 0, waiter, null, TerminalWaiter.onReturn);
+    }
+    try std.testing.expectEqual(@as(usize, 3), peer.questions.count());
+
+    // From here on every allocation and resize of the peer fails.
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    peer.notifyTransportClosed();
+    failing.fail_index = std.math.maxInt(usize);
+    failing.resize_fail_index = std.math.maxInt(usize);
+
+    // Every question got its Disconnected terminal from the close itself, not
+    // from the later deinit.
+    for (waiters) |waiter| {
+        try std.testing.expectEqual(@as(usize, 1), waiter.fired);
+        try std.testing.expectEqual(@as(usize, 1), waiter.disconnects);
+    }
+    try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
+
+    peer.deinit();
+    for (waiters) |waiter| try std.testing.expectEqual(@as(usize, 1), waiter.fired);
+}
+
+test "the deadline sweep cancels an expired question even when no allocation succeeds (H8)" {
+    var capture = newCapture(std.testing.allocator);
+    defer capture.deinit();
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var clock = capnpc.rpc.time.TestClock{};
+    var peer = Peer.initDetached(failing.allocator());
+    peer.disableThreadAffinity();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    peer.setClock(clock.clock());
+
+    try peer.caps.noteImport(7);
+    var waiter = TerminalWaiter{};
+    const qid = try peer.sendCall(7, 0xABCD, 0, &waiter, null, TerminalWaiter.onReturn);
+    try peer.setQuestionDeadline(qid, 5);
+    clock.advanceMs(10);
+
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    const cancelled = peer.checkDeadlines();
+    failing.fail_index = std.math.maxInt(usize);
+    failing.resize_fail_index = std.math.maxInt(usize);
+
+    // The expired call got its terminal in this tick, not at some later one.
+    try std.testing.expectEqual(@as(usize, 1), cancelled);
+    try std.testing.expectEqual(@as(usize, 1), waiter.fired);
+
+    peer.deinit();
+    try std.testing.expectEqual(@as(usize, 1), waiter.fired);
+}
+
+/// Fails exactly one allocation, the `fail_at`-th from arming, and lets the
+/// ones after it through: a transient OOM. `std.testing.FailingAllocator`
+/// fails every allocation after its index, which hides a swallowed failure
+/// whenever a later allocation in the same operation fails too.
+const OneShotFailingAllocator = struct {
+    backing: std.mem.Allocator,
+    remaining: ?usize = null,
+    induced: bool = false,
+
+    fn arm(self: *OneShotFailingAllocator, fail_at: usize) void {
+        self.remaining = fail_at;
+        self.induced = false;
+    }
+
+    fn allocator(self: *OneShotFailingAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = alloc,
+            .resize = resize,
+            .remap = remap,
+            .free = free,
+        } };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *OneShotFailingAllocator = @ptrCast(@alignCast(ctx));
+        if (self.remaining) |remaining| {
+            if (remaining == 0) {
+                self.remaining = null;
+                self.induced = true;
+                return null;
+            }
+            self.remaining = remaining - 1;
+        }
+        return self.backing.rawAlloc(len, alignment, ra);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+        const self: *OneShotFailingAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawResize(memory, alignment, new_len, ra);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+        const self: *OneShotFailingAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawRemap(memory, alignment, new_len, ra);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        const self: *OneShotFailingAllocator = @ptrCast(@alignCast(ctx));
+        self.backing.rawFree(memory, alignment, ra);
+    }
+};
+
+test "a call queued under a transient OOM still gets exactly one Return when its answer fails" {
+    // Queueing decodes the call's question id once, for the drains. An OOM
+    // there used to store the call with a null id, as if it were not a call,
+    // and the failure drain then skipped its Return. Fail each allocation of
+    // the enqueue in turn: either the enqueue fails (the caller answers the
+    // call) or the queued call gets its terminal.
+    var fail_at: usize = 0;
+    var finished = false;
+    while (!finished) : (fail_at += 1) {
+        var capture = newCapture(std.testing.allocator);
+        defer capture.deinit();
+        var one_shot = OneShotFailingAllocator{ .backing = std.testing.allocator };
+        var peer = Peer.initDetached(one_shot.allocator());
+        peer.disableThreadAffinity();
+        defer peer.deinit();
+        peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+        const child_frame = try buildCallFrame(std.testing.allocator, 100);
+        defer std.testing.allocator.free(child_frame);
+        var inbound = try cap_table.InboundCapTable.init(one_shot.allocator(), null, &peer.caps);
+
+        one_shot.arm(fail_at);
+        const queued = peer_test_hooks.queuePromisedCall(&peer, 5, child_frame, inbound);
+        const induced = one_shot.induced;
+        one_shot.remaining = null;
+
+        if (queued) |_| {
+            try peer.sendReturnException(5, "boom");
+            try std.testing.expectEqual(@as(usize, 1), capture.countReturns(100, .exception));
+            finished = !induced;
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            inbound.deinit();
+        }
+    }
+    try std.testing.expect(fail_at > 1);
+}
+
+test "close and deinit after a retained call's Return deliver no second terminal" {
+    // capnp-deno reported Return machinery re-delivering into spent questions
+    // at shutdown. Pin exactly-once for retained calls, with and without
+    // noFinishNeeded, across transport close and deinit.
+    for ([_]bool{ true, false }) |no_finish_needed| {
+        const allocator = std.testing.allocator;
+        var capture = newCapture(allocator);
+        defer capture.deinit();
+        var peer = Peer.initDetached(allocator);
+        peer.disableThreadAffinity();
+        peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+        try peer.caps.noteImport(7);
+        var waiter = TerminalWaiter{};
+        const qid = try peer.sendCallWithOptions(7, 0xABCD, 0, &waiter, null, TerminalWaiter.onReturn, .{
+            .result_lifetime = .retained,
+        });
+
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        var ret = try builder.beginReturn(qid, .results);
+        ret.setNoFinishNeeded(no_finish_needed);
+        var payload = try ret.payloadTyped();
+        _ = try payload.initContent();
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try peer.handleFrame(frame);
+        try std.testing.expectEqual(@as(usize, 1), waiter.fired);
+
+        peer.notifyTransportClosed();
+        try std.testing.expectEqual(@as(usize, 1), waiter.fired);
+        peer.deinit();
+        try std.testing.expectEqual(@as(usize, 1), waiter.fired);
+        try std.testing.expectEqual(@as(usize, 0), waiter.disconnects);
+    }
+}

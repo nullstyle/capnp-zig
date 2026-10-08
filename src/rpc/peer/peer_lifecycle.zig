@@ -32,6 +32,10 @@ pub fn Lifecycle(comptime Peer: type) type {
         const deadline_reason = Peer.deadline_reason_text;
         const shutdown_reason = Peer.shutdown_reason_text;
         const ensureCountLimit = Peer.ensureCountLimit;
+        /// Stack bytes for one synthetic exception Return (frame and decode)
+        /// in `deliverLocalException`. Fits the runtime's own reasons with
+        /// room to spare; longer caller-supplied reasons use the heap.
+        const synthetic_return_stack_bytes = 4096;
 
         /// Release all owned state: pending calls, resolved answers, export
         /// entries, and the capability table.
@@ -579,23 +583,31 @@ pub fn Lifecycle(comptime Peer: type) type {
 
             const now = self.clockNow() orelse return 0;
 
-            var expired: std.ArrayList(u32) = .empty;
-            defer expired.deinit(self.allocator);
+            // Allocation-free (capnp-swift handoff H8): the sweep used to copy
+            // the expired ids into a heap list with `append(...) catch break`,
+            // so under memory pressure it cancelled nothing that tick. It now
+            // settles expired questions in place. Callbacks run from this walk
+            // and may re-enter the peer (new calls, cancels, close): a cancel
+            // marks its entry `cancelled` (or removes a loopback one), so a
+            // revisit skips it; removals never move other entries; and a
+            // callback that grows the map rehashes it, so the walk restarts
+            // from the top. A callback that closes the transport empties the
+            // map and ends the walk. An id a re-entrant callback already
+            // retired surfaces as UnknownQuestion: it is already settled, so
+            // it is logged rather than reported.
+            var cancelled: usize = 0;
+            var capacity = self.questions.capacity();
             var it = self.questions.iterator();
-            while (it.next()) |kv| {
+            while (true) {
+                if (self.questions.capacity() != capacity) {
+                    capacity = self.questions.capacity();
+                    it = self.questions.iterator();
+                }
+                const kv = it.next() orelse break;
                 if (kv.value_ptr.cancelled or kv.value_ptr.finish_on_maintenance) continue;
                 const deadline = kv.value_ptr.deadline_ns orelse continue;
-                if (now >= deadline) expired.append(self.allocator, kv.key_ptr.*) catch break;
-            }
-
-            // Callbacks run, and failures are reported, from THIS loop, which
-            // walks the copied id list, never from the map iteration above: a
-            // callback that re-enters the peer (new calls, cancels, close) may
-            // mutate `self.questions` freely. An id a re-entrant callback
-            // already retired surfaces as UnknownQuestion: it is already
-            // settled, so it is logged rather than reported.
-            var cancelled: usize = 0;
-            for (expired.items) |question_id| {
+                if (now < deadline) continue;
+                const question_id = kv.key_ptr.*;
                 events.emitTimeout(self.observer, .peer, .unknown, .call_deadline, question_id);
                 cancelQuestionRouted(self, question_id, deadline_reason, .overloaded, .call_deadline) catch |err| {
                     const route: CancelFailureRoute = if (err == error.UnknownQuestion) .log else .call_deadline;
@@ -648,18 +660,25 @@ pub fn Lifecycle(comptime Peer: type) type {
             errdefer if (!callback_ran) {
                 if (question.deinit_ctx) |deinit_ctx| deinit_ctx(self.allocator, question.ctx);
             };
+            // The synthetic frame and its decode live in a stack buffer first,
+            // so a teardown under memory pressure still reaches the callback
+            // (capnp-swift handoff H8). A reason too long for the buffer falls
+            // back to the heap.
+            var synth_buffer: [synthetic_return_stack_bytes]u8 align(16) = undefined;
+            var synth_alloc_state = std.heap.BufferFirstAllocator.init(&synth_buffer, self.allocator);
+            const synth_allocator = synth_alloc_state.allocator();
             // Synthetic and LOCAL: delivered straight to our own question callback,
             // never sent, and never routed through `handleReturn`. Nothing consumes
             // its `releaseParamCaps`, so it keeps the rpc.capnp default.
             const frame = try peer_return_frames.buildReturnExceptionFrame(
-                self.allocator,
+                synth_allocator,
                 question_id,
                 reason,
                 ex_type,
                 true,
             );
-            defer self.allocator.free(frame);
-            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+            defer synth_allocator.free(frame);
+            var decoded = try protocol.DecodedMessage.init(synth_allocator, frame);
             defer decoded.deinit();
             const ret = try decoded.asReturn();
             var inbound_caps = try cap_table.InboundCapTable.init(self.allocator, null, &self.caps);
@@ -682,19 +701,42 @@ pub fn Lifecycle(comptime Peer: type) type {
             return forceCancelAllQuestionsRouted(self, reason, ex_type, .log);
         }
 
+        /// Allocation-free (capnp-swift handoff H8): the pass used to copy the
+        /// question ids into a heap list with `append(...) catch break`, so
+        /// under memory pressure it skipped questions, which then waited for
+        /// `Peer.deinit` for their terminal. Instead it marks every question
+        /// present at entry, then removes and settles marked entries in place.
+        /// Questions a callback adds during the pass are unmarked, so they are
+        /// left alone exactly as the old snapshot left them.
         fn forceCancelAllQuestionsRouted(
             self: *Peer,
             reason: []const u8,
             ex_type: protocol.ExceptionType,
             route: CancelFailureRoute,
         ) usize {
-            var ids: std.ArrayList(u32) = .empty;
-            defer ids.deinit(self.allocator);
-            var it = self.questions.keyIterator();
-            while (it.next()) |key| ids.append(self.allocator, key.*) catch break;
+            var marked: usize = 0;
+            var mark_it = self.questions.valueIterator();
+            while (mark_it.next()) |question| {
+                question.force_cancel_pending = true;
+                marked += 1;
+            }
 
             var cancelled: usize = 0;
-            for (ids.items) |question_id| {
+            // Removing an entry never moves the others, and an insert without a
+            // rehash lands in a free slot, so the walk resumes where it was. A
+            // callback that grows the map rehashes it: restart from the top
+            // (settled entries are gone, so nothing is visited twice).
+            var capacity = self.questions.capacity();
+            var it = self.questions.iterator();
+            while (marked > 0) {
+                if (self.questions.capacity() != capacity) {
+                    capacity = self.questions.capacity();
+                    it = self.questions.iterator();
+                }
+                const entry = it.next() orelse break;
+                if (!entry.value_ptr.force_cancel_pending) continue;
+                marked -= 1;
+                const question_id = entry.key_ptr.*;
                 const removed = self.questions.fetchRemove(question_id) orelse continue;
                 const question = removed.value;
                 const logical_question_id = self.retained_questions.logicalQuestionIdForWire(question_id) orelse question_id;

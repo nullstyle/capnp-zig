@@ -59,6 +59,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same way. The replay also releases the param capabilities of a call it
   answers with an exception; before, those import references leaked. No API
   line changes.
+- **RPC: under memory pressure, a transport close or the deadline sweep left
+  questions without a terminal (capnp-swift handoff H8).** The cancel pass
+  copied question ids into a heap list with `append(...) catch break`, so
+  when memory ran out it skipped the rest; those callers waited until
+  `Peer.deinit`. The deadline sweep had the same pattern. Even a question the
+  pass reached got no callback when the synthetic exception Return could not
+  be allocated, and a deadline-cancelled one was then never retried, so its
+  caller waited forever. Both passes are now allocation-free, and the
+  synthetic Return is built in a 4 KiB stack buffer (a longer reason falls
+  back to the heap). This affects every embedder whose transport can close,
+  or whose calls have deadlines, under memory pressure: capnp-swift can drop
+  its close-sweep shim. Explicit `cancelQuestion` now also delivers its
+  terminal without the heap. A pipelined call queued during a transient OOM
+  no longer loses its terminal Return either: the queue decodes the call's id
+  once, and an OOM there stored it as "not a call", which the failure drain
+  skipped. The enqueue now fails instead and the caller answers the call.
+  No API line changes. `zig build hardening` gains a rule that bans
+  unreviewed `catch break` / `catch continue` / `catch {}` after an
+  allocating call; five Experimental Level-3 maintenance passes are
+  allowlisted with the reason a skipped item is retried later.
 
 ## [0.22.0] - 2026-10-07
 
