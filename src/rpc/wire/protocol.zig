@@ -1120,11 +1120,23 @@ pub const MessageBuilder = struct {
     }
 
     pub fn buildResolveException(self: *MessageBuilder, promise_id: u32, reason: []const u8) !void {
+        return self.buildResolveExceptionTyped(promise_id, reason, .failed);
+    }
+
+    /// Experimental. `buildResolveException` carrying an explicit
+    /// `Exception.Type`, the retryability signal a remote acts on.
+    pub fn buildResolveExceptionTyped(
+        self: *MessageBuilder,
+        promise_id: u32,
+        reason: []const u8,
+        ex_type: ExceptionType,
+    ) !void {
         var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
         var resolve_builder = try root_builder.initResolve();
         try resolve_builder.setPromiseId(promise_id);
         var ex_builder = try resolve_builder.initException();
         try ex_builder.setReason(reason);
+        writeExceptionType(&ex_builder, ex_type);
     }
 
     pub fn buildDisembargoSenderLoopback(self: *MessageBuilder, target: MessageTarget, embargo_id: u32) !void {

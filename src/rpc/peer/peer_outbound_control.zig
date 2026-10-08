@@ -214,26 +214,22 @@ pub fn sendResolveException(
     reason: []const u8,
     send_builder: *const fn (*PeerType, *protocol.MessageBuilder) anyerror!void,
 ) !void {
-    var builder = protocol.MessageBuilder.init(peer.allocator);
-    defer builder.deinit();
-    try builder.buildResolveException(promise_id, reason);
-    try send_builder(peer, &builder);
+    return sendResolveExceptionTyped(PeerType, peer, promise_id, reason, .failed, send_builder);
 }
 
-pub fn sendResolveExceptionViaSendFrame(
+/// `sendResolveException` carrying an explicit `Exception.Type`.
+pub fn sendResolveExceptionTyped(
     comptime PeerType: type,
     peer: *PeerType,
     promise_id: u32,
     reason: []const u8,
-    comptime send_frame: *const fn (*PeerType, []const u8) anyerror!void,
+    ex_type: protocol.ExceptionType,
+    send_builder: *const fn (*PeerType, *protocol.MessageBuilder) anyerror!void,
 ) !void {
-    try sendResolveException(
-        PeerType,
-        peer,
-        promise_id,
-        reason,
-        sendBuilderForPeerFn(PeerType, send_frame),
-    );
+    var builder = protocol.MessageBuilder.init(peer.allocator);
+    defer builder.deinit();
+    try builder.buildResolveExceptionTyped(promise_id, reason, ex_type);
+    try send_builder(peer, &builder);
 }
 
 pub fn sendResolveExceptionForPeerFn(

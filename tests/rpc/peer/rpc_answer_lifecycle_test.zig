@@ -2289,3 +2289,49 @@ test "sendReturnCanceled refuses an answer the caller has not finished (H5)" {
     try std.testing.expectEqual(@as(usize, 0), capture.countTag(.@"return"));
     try peer.sendReturnEmptyStruct(13);
 }
+
+const CapturedResolveException = struct {
+    kind: protocol.ExceptionType,
+    reason_matches: bool,
+};
+
+fn capturedResolveException(capture: *ReturnCapture, promise_id: u32, reason: []const u8) !CapturedResolveException {
+    for (capture.frames.items) |frame| {
+        var decoded = protocol.DecodedMessage.init(capture.allocator, frame) catch continue;
+        defer decoded.deinit();
+        if (decoded.tag != .resolve) continue;
+        const res = try decoded.asResolve();
+        if (res.promise_id != promise_id) continue;
+        const ex = res.exception orelse return error.NotAnException;
+        return .{ .kind = ex.kind(), .reason_matches = std.mem.eql(u8, ex.reason, reason) };
+    }
+    return error.NoResolve;
+}
+
+test "resolvePromiseExportToExceptionTyped carries the exception type (H5)" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const typed = try peer.addPromiseExport();
+    try peer.resolvePromiseExportToExceptionTyped(typed, "busy", .overloaded);
+    const got = try capturedResolveException(&capture, typed, "busy");
+    try std.testing.expectEqual(protocol.ExceptionType.overloaded, got.kind);
+    try std.testing.expect(got.reason_matches);
+    // The promise is settled: a second resolution is refused.
+    try std.testing.expectError(
+        error.PromiseAlreadyResolved,
+        peer.resolvePromiseExportToExceptionTyped(typed, "again", .failed),
+    );
+
+    // The untyped (Stable) call still sends `failed`.
+    const plain = try peer.addPromiseExport();
+    try peer.resolvePromiseExportToException(plain, "gone");
+    const untyped = try capturedResolveException(&capture, plain, "gone");
+    try std.testing.expectEqual(protocol.ExceptionType.failed, untyped.kind);
+    try std.testing.expect(untyped.reason_matches);
+}

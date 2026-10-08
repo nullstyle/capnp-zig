@@ -40,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because the C++ reference rejects such a Return. The handler may answer
   from inside the callback. Embedders such as capnp-swift can cancel the
   handler's task and free the caller's id at once.
+- **`Peer.resolvePromiseExportToExceptionTyped` (capnp-swift handoff H5).**
+  `resolvePromiseExportToException` always sent type `failed`, so a host
+  could not tell a remote importer that a broken promise was `overloaded`,
+  `disconnected` or `unimplemented`. The typed variant mirrors
+  `sendReturnExceptionTyped`; the Stable call is unchanged and still sends
+  `failed`. The wire builder `MessageBuilder.buildResolveExceptionTyped` is
+  Experimental too. Calls already queued on the promise still fail with
+  "promise broken" and type `failed`, and a capnp-zig importer still drops
+  the reason and the type of an inbound `Resolve{exception}`.
 
 ### Fixed
 

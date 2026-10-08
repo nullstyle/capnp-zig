@@ -397,17 +397,30 @@ pub fn PromiseExports(comptime Peer: type) type {
 
         /// Resolve a previously exported promise to an exception.
         pub fn resolvePromiseExportToException(self: *Peer, promise_id: u32, reason: []const u8) !void {
+            return resolvePromiseExportToExceptionTyped(self, promise_id, reason, .failed);
+        }
+
+        /// Resolve a previously exported promise to an exception of
+        /// `ex_type`. Calls queued on the promise still fail with the
+        /// generic "promise broken" reason and type `failed`.
+        pub fn resolvePromiseExportToExceptionTyped(
+            self: *Peer,
+            promise_id: u32,
+            reason: []const u8,
+            ex_type: protocol.ExceptionType,
+        ) !void {
             self.assertThreadAffinity();
             var promise_entry = self.exports.getEntry(promise_id) orelse return error.UnknownExport;
             if (!promise_entry.value_ptr.is_promise) return error.ExportIsNotPromise;
             if (promise_entry.value_ptr.resolved != null) return error.PromiseAlreadyResolved;
 
-            try peer_outbound_control.sendResolveExceptionViaSendFrame(
+            try peer_outbound_control.sendResolveExceptionTyped(
                 Peer,
                 self,
                 promise_id,
                 reason,
-                Peer.sendFrame,
+                ex_type,
+                peer_outbound_control.sendBuilderForPeerFn(Peer, Peer.sendFrame),
             );
             promise_entry.value_ptr.resolved = .none;
             self.caps.clearExportPromise(promise_id);

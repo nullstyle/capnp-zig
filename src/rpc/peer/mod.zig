@@ -2905,6 +2905,18 @@ pub const Peer = struct {
         return PromiseExportsImpl.resolvePromiseExportToException(self, promise_id, reason);
     }
 
+    /// Experimental. `resolvePromiseExportToException` carrying an explicit
+    /// `Exception.Type`, mirroring `sendReturnExceptionTyped`. Body in
+    /// `peer_promise_exports.zig`.
+    pub fn resolvePromiseExportToExceptionTyped(
+        self: *Peer,
+        promise_id: u32,
+        reason: []const u8,
+        ex_type: protocol.ExceptionType,
+    ) !void {
+        return PromiseExportsImpl.resolvePromiseExportToExceptionTyped(self, promise_id, reason, ex_type);
+    }
+
     /// Body in `peer_resolve_inbound.zig`.
     fn handleResolve(self: *Peer, resolve_msg: protocol.Resolve) !void {
         return ResolveInboundImpl.handleResolve(self, resolve_msg);
