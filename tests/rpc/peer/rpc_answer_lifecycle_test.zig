@@ -1737,6 +1737,60 @@ test "calls parked on a promise export re-park when it resolves to another unres
     try std.testing.expectEqual(@as(?u32, 7), service.last_question_id);
 }
 
+test "fresh and replayed calls park on the last unresolved promise of a chain (H10)" {
+    // A resolves to B and B to C, all promise exports of ours; C is still
+    // unresolved. A fresh call on A and a call parked on an answer whose
+    // Return carries A must both wait on C, not on A or B, and run once C
+    // resolves.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const Deferred = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    var deferred_ctx: u8 = 0;
+    const deferred_export_id = try peer.addExport(.{ .ctx = &deferred_ctx, .on_call = Deferred.onCall });
+    var service = PromiseServiceState{};
+    const service_export_id = try peer.addExport(.{ .ctx = &service, .on_call = onPromiseServiceCall });
+    const a_id = try peer.addPromiseExport();
+    const b_id = try peer.addPromiseExport();
+    const c_id = try peer.addPromiseExport();
+    try peer.resolvePromiseExportToExport(b_id, c_id);
+    try peer.resolvePromiseExportToExport(a_id, b_id);
+
+    // q (5) is deferred; c (6) is pipelined on its result pointer 0.
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 5, deferred_export_id));
+    try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 6, 5));
+    try std.testing.expect(peer.pending_promises.contains(5));
+
+    // d (7) targets A directly.
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 7, a_id));
+
+    // q returns { ptr0 = A }: c replays and follows the chain too.
+    var results_state = AnswerHeldState{ .service_export_id = a_id };
+    try peer.sendReturnResults(5, &results_state, buildAnswerHeldServiceResults);
+
+    try std.testing.expect(peer.pending_export_promises.contains(c_id));
+    try std.testing.expect(!peer.pending_export_promises.contains(a_id));
+    try std.testing.expect(!peer.pending_export_promises.contains(b_id));
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(6, .exception));
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(7, .exception));
+    try std.testing.expectEqual(@as(u32, 0), service.calls);
+
+    try peer.resolvePromiseExportToExport(c_id, service_export_id);
+    try std.testing.expectEqual(@as(u32, 2), service.calls);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(6, .results));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(7, .results));
+    // E-order: d parked first, so c ran last.
+    try std.testing.expectEqual(@as(?u32, 6), service.last_question_id);
+}
+
 test "a parked call answered with an exception at replay releases its param imports" {
     // c parks on q with an unsatisfiable transform and one senderHosted param
     // cap (an import reference this vat now holds). When q returns, the
