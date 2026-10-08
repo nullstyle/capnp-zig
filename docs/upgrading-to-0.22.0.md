@@ -41,7 +41,7 @@ pattern.
 | Component | Version | Pin |
 |---|---|---|
 | Zig | `0.17.0` (tagged; no change since v0.19.0) | `mise.toml`: `zig = "0.17.0"`; `build.zig.zon`: `.minimum_zig_version = "0.17.0"` |
-| capnp-zig | `v0.22.0` | `capnpc_zig-0.22.0-...` (recorded here after the tag) |
+| capnp-zig | `v0.22.0` (tag at `9de73ba`) | `capnpc_zig-0.22.0-nUduFXZLSABdiMW50hJlX46zoC5FzVLSuN70Y78AhQUC` |
 | quic-zig | `v0.32.0` (tag at `ffdb251`) | `quic-0.32.0-DnSYvcGOPADCEZMispvPbD9RznRtyIGq77zHIgmS8iVl` |
 | boringssl-zig | `0.6.7` (`ff30fe99`), through quic; no change since v0.25.0 | none (quic pins it) |
 | http3-zig (optional) | `v0.5.5` (tag at `380ead3`) | `http3_zig-0.5.5-ayZ03DI5EwD2bajKDfR009PM7jlRI3lzSnrmT2PlWgS4` |
