@@ -196,7 +196,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Peer.sendCall` / `sendBootstrap` that do not register a `deinit_ctx`
   (generated clients do, and were not affected); capnp-deno guards its
   WASM L3 contexts against this re-delivery. The Peer now restores a
-  question only when its callback has not seen the Return. Retained calls,
+  question only when its callback has not seen the Return. When it retires
+  such a question, it also drops the question's Level-3 adopted-answer id
+  alias, so the alias cannot outlive it. Retained calls,
   with or without `noFinishNeeded`, never had this problem; a new test pins
   that. No API line changes.
 

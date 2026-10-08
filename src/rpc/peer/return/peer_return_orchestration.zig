@@ -207,12 +207,13 @@ pub fn handleReturnRegular(
     const keep_retained_answer = keepsRetainedAnswerOnReturnError(QuestionType, question);
     // From here on the caller has seen this Return (or is seeing it): any
     // later failure must not put the question back for a second terminal.
+    // `handleReturn` then retires the question, so the alias goes with it.
     delivered.* = true;
+    restore_adopted_answer = false;
     dispatch_question_return(peer, question, callback_ret, inbound_caps) catch |err| {
         if (!keep_retained_answer) return err;
         report_nonfatal_error(peer, err);
     };
-    restore_adopted_answer = false;
 
     if (ret.tag == .results and ret.results != null) {
         release_inbound_caps(peer, inbound_caps) catch |err| {
@@ -1348,5 +1349,110 @@ test "peer_return_orchestration handleReturnRegularForPeerFn applies adopted ans
     try std.testing.expectEqual(@as(u32, 42), peer.saw_answer_id);
     try std.testing.expectEqual(@as(usize, 0), peer.release_calls);
     try std.testing.expectEqual(@as(usize, 0), peer.finish_calls);
+    try std.testing.expect(!peer.adopted_third_party_answers.contains(77));
+}
+
+test "peer_return_orchestration drops the adopted alias with a delivered question whose callback fails" {
+    // A Level-3 adopted answer (wire id 77 aliasing original 42) whose
+    // callback fails with OutOfMemory. The callback saw the Return, so
+    // `handleReturn` retires the question instead of restoring it; the alias
+    // must go with it. Before, the alias came back alone: it counted against
+    // `max_adopted_third_party_answers` forever and rewrote the Return of a
+    // later question that reused id 77.
+    const InboundCaps = struct {};
+    const PeerState = struct {
+        adopted_third_party_answers: std.AutoHashMap(u32, u32),
+        callback_ctx: ?*anyopaque = null,
+        on_error: ?*const fn (ctx: ?*anyopaque, peer: *@This(), err: anyerror) void = null,
+
+        fn sendFinish(_: *@This(), _: u32, _: bool) !void {}
+        fn releaseInboundCaps(_: *@This(), _: *InboundCaps) !void {}
+    };
+    const Question = struct {
+        ctx: *anyopaque,
+        on_return: *const fn (*anyopaque, *PeerState, protocol.Return, *const InboundCaps) anyerror!void,
+        is_loopback: bool = false,
+        suppress_auto_finish: bool = false,
+    };
+    const Hooks = struct {
+        var restored: usize = 0;
+        var completed: usize = 0;
+
+        fn onReturn(_: *anyopaque, _: *PeerState, _: protocol.Return, _: *const InboundCaps) anyerror!void {
+            return error.OutOfMemory;
+        }
+        fn removeQuestion(_: *PeerState, _: u32) bool {
+            return true;
+        }
+        fn restoreQuestion(_: *PeerState, _: u32, _: Question) void {
+            restored += 1;
+        }
+        fn completeRemoval(_: *PeerState) void {
+            completed += 1;
+        }
+        fn handleMissing(_: *PeerState, _: []const u8, _: u32) !void {
+            return error.TestUnexpectedResult;
+        }
+        fn initInbound(_: *PeerState, _: protocol.Return) !InboundCaps {
+            return .{};
+        }
+        fn deinitInbound(_: *InboundCaps) void {}
+        fn handleAccept(_: *PeerState, _: u32, _: Question, _: ?message.AnyPointerReader, _: *const InboundCaps) !void {
+            return error.TestUnexpectedResult;
+        }
+        fn maybeFinish(_: *PeerState, _: Question, _: u32, _: bool) !void {}
+    };
+    Hooks.restored = 0;
+    Hooks.completed = 0;
+
+    var peer = PeerState{ .adopted_third_party_answers = std.AutoHashMap(u32, u32).init(std.testing.allocator) };
+    defer peer.adopted_third_party_answers.deinit();
+    try peer.adopted_third_party_answers.put(77, 42);
+
+    var marker: u32 = 0;
+    // No `restore_on_return_error` field: the question is restorable.
+    const question = Question{ .ctx = &marker, .on_return = Hooks.onReturn };
+    const QuestionHook = struct {
+        var q: Question = undefined;
+        fn get(_: *PeerState, _: u32) ?Question {
+            return q;
+        }
+    };
+    QuestionHook.q = question;
+    const ret = protocol.Return{
+        .answer_id = 77,
+        .release_param_caps = false,
+        .no_finish_needed = true,
+        .tag = .canceled,
+        .results = null,
+        .exception = null,
+        .take_from_other_question = null,
+    };
+    try std.testing.expectError(error.OutOfMemory, handleReturn(
+        PeerState,
+        Question,
+        InboundCaps,
+        &peer,
+        &.{},
+        ret,
+        QuestionHook.get,
+        Hooks.removeQuestion,
+        Hooks.restoreQuestion,
+        Hooks.completeRemoval,
+        Hooks.handleMissing,
+        Hooks.initInbound,
+        Hooks.deinitInbound,
+        Hooks.handleAccept,
+        Hooks.maybeFinish,
+        handleReturnRegularForPeerFn(
+            PeerState,
+            Question,
+            InboundCaps,
+            PeerState.releaseInboundCaps,
+            PeerState.sendFinish,
+        ),
+    ));
+    try std.testing.expectEqual(@as(usize, 0), Hooks.restored);
+    try std.testing.expectEqual(@as(usize, 1), Hooks.completed);
     try std.testing.expect(!peer.adopted_third_party_answers.contains(77));
 }
