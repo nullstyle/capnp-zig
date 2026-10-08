@@ -10,6 +10,12 @@ This guide walks you through defining a Cap'n Proto schema and using the generat
 > Text/Data fields. Run it with `zig build example-serialization`. Like the
 > snippets here, it wires the runtime through the `capnpc-zig-core` module.
 
+Every Zig block in this guide is compile-gated:
+`tests/docs/serialization_getting_started_snippets_test.zig` compiles and runs
+each one against the code the plugin generates from the schemas shown here,
+through the `capnpc-zig-core` module (`zig build test-docs-snippets`), and
+`zig build docs-smoke` fails if a block differs from that file.
+
 ## Prerequisites
 
 - **Tagged Zig 0.17** on `PATH` (`mise install` provides the pinned version)
@@ -23,16 +29,31 @@ This guide walks you through defining a Cap'n Proto schema and using the generat
 
 ## 1. Define Your Schema
 
-Create `schema/addressbook.capnp`:
+Create `schema/addressbook.capnp`. Its first line is a unique file ID, such
+as `@0xf02316ceb4253eb9;`; generate your own with `capnp id`. Then add the
+structs:
 
+<!-- verbatim: examples/addressbook.capnp -->
 ```capnp
-@0x9eb32e19f86ee174;
+struct AddressBook {
+  people @0 :List(Person);
+}
 
 struct Person {
-  name @0 :Text;
-  age  @1 :UInt32;
+  id @0 :UInt32;
+  name @1 :Text;
   email @2 :Text;
   phones @3 :List(PhoneNumber);
+  # Raw bytes — e.g. a tiny avatar thumbnail. Exercises the Data path.
+  avatar @4 :Data;
+
+  # Exactly one employment status is active at a time (unnamed union).
+  union {
+    unemployed @5 :Void;
+    employer @6 :Text;
+    school @7 :Text;
+    selfEmployed @8 :Void;
+  }
 
   struct PhoneNumber {
     number @0 :Text;
@@ -45,16 +66,15 @@ struct Person {
     work @2;
   }
 }
-
-struct AddressBook {
-  people @0 :List(Person);
-}
 ```
 
+This is the schema of the runnable example,
+[`examples/addressbook.capnp`](../examples/addressbook.capnp).
+
 Key points:
-- The `@0x...` line is a unique file ID — generate one with `capnp id`
 - Fields have ordinals (`@0`, `@1`, ...) that define their position in the binary layout
-- Structs, enums, and lists compose naturally
+- Structs, enums, lists, and unions compose naturally
+- A union holds exactly one of its fields at a time
 
 ## 2. Add capnpc-zig as a Dependency
 
@@ -68,7 +88,7 @@ zig fetch --save https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.22.
 That adds an entry like this (the command fills in the hash; do not
 hand-write it):
 
-```zig
+```zon
 .dependencies = .{
     .capnpc_zig = .{
         .url = "https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.22.0.tar.gz",
@@ -155,16 +175,15 @@ differs from the pinned plugin's output.
 
 Every generated struct has a `Builder` type for writing and a `Reader` type for reading. Here's how to build a `Person` message:
 
+<!-- verbatim-file: tests/docs/getting_started/build_person.zig -->
 ```zig
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const message = capnpc.message;
 const addressbook = @import("addressbook");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     // 1. Create a MessageBuilder
     var builder = message.MessageBuilder.init(allocator);
@@ -174,22 +193,22 @@ pub fn main() !void {
     var person = try addressbook.Person.Builder.init(&builder);
 
     // 3. Set fields
+    try person.setId(1);
     try person.setName("Alice Smith");
-    try person.setAge(30);
     try person.setEmail("alice@example.com");
 
     // 4. Serialize to bytes
     const bytes = try builder.toBytes();
     defer allocator.free(bytes);
 
-    // `bytes` now contains the framed Cap'n Proto message
-    std.debug.print("Serialized {d} bytes\n", .{bytes.len});
+    // `bytes` now holds the framed Cap'n Proto message: write it to a file
+    // or a socket, or read it back as in step 5.
 }
 ```
 
 ### How field setters work
 
-- **Primitives** (`setAge`) write directly into the struct's data section — no allocation
+- **Primitives** (`setId`) write directly into the struct's data section — no allocation
 - **Text/Data** (`setName`, `setEmail`) allocate space in the message segment and write a pointer
 - All setters return `!void` — text/data setters can fail on allocation; primitive setters are infallible but return `!void` for API consistency
 
@@ -197,6 +216,7 @@ pub fn main() !void {
 
 Reading is zero-copy — the `Reader` accesses bytes directly from the message buffer:
 
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
 ```zig
 // 1. Parse the framed message (`.{}` uses the default validation limits)
 var msg = try message.Message.init(allocator, bytes, .{});
@@ -206,22 +226,28 @@ defer msg.deinit();
 const person = try addressbook.Person.Reader.init(&msg);
 
 // 3. Read fields
-const name = try person.getName();   // []const u8, points into msg bytes
-const age = try person.getAge();     // u32
+const id = try person.getId(); // u32
+const name = try person.getName(); // []const u8, points into msg's bytes
 const email = try person.getEmail(); // []const u8
 
-std.debug.print("{s}, age {d}, {s}\n", .{ name, age, email });
+// The values step 4 wrote
+std.debug.assert(id == 1);
+std.debug.assert(std.mem.eql(u8, name, "Alice Smith"));
+std.debug.assert(std.mem.eql(u8, email, "alice@example.com"));
 ```
 
 ### Important: Reader lifetimes
 
-The slices returned by `getName()` and `getEmail()` point directly into the `Message`'s backing memory. Keep the `Message` alive as long as you need the data.
+The slices returned by `getName()` and `getEmail()` point directly into
+`bytes`, the buffer the `Message` was parsed from. Keep both the `Message` and
+`bytes` alive as long as you need the data.
 
 ## 6. Enums
 
 Cap'n Proto enums generate standard Zig enums backed by `u16`:
 
 **Schema:**
+<!-- verbatim: examples/addressbook.capnp -->
 ```capnp
 enum PhoneType {
   mobile @0;
@@ -230,27 +256,31 @@ enum PhoneType {
 }
 ```
 
-**Generated:**
+**Generated** (in `examples/addressbook.zig`; `capnpSchema` is the
+[reflection](reflection.md) handle):
+<!-- verbatim: examples/addressbook.zig -->
 ```zig
 pub const PhoneType = enum(u16) {
     Mobile = 0,
     Home = 1,
     Work = 2,
+    pub const capnpSchema = capnpc.reflection.SchemaRef{ .id = 0xf484ec504318ef92, .encoded_request = _capnp_file.CAPNP_SCHEMA_REQUEST };
 };
 ```
 
-**Usage:**
+**Usage** (`phone` is a `Person.PhoneNumber.Builder`):
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
 ```zig
 // Writing
 try phone.setType(.Mobile);
 
-// Reading
-const phone_type = try phone.getType();  // returns PhoneType enum
-switch (phone_type) {
-    .Mobile => std.debug.print("mobile\n", .{}),
-    .Home => std.debug.print("home\n", .{}),
-    .Work => std.debug.print("work\n", .{}),
-}
+// Reading (Readers and Builders both have getType)
+const phone_type = try phone.getType(); // a PhoneType
+const label = switch (phone_type) {
+    .Mobile => "mobile",
+    .Home => "home",
+    .Work => "work",
+};
 ```
 
 Generated enums stay exhaustive: `getType()` returns
@@ -258,98 +288,180 @@ Generated enums stay exhaustive: `getType()` returns
 not know. A proxy that needs to preserve that value can use the parallel raw
 ordinal view without changing normal typed application code:
 
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
 ```zig
 const ordinal = try phone.enumOrdinals().getType();
 try forwarded_phone.enumOrdinals().setType(ordinal);
-
-const types = try reader.getTypes();
-const first_ordinal = try types.getOrdinal(0);
-var forwarded_types = try builder.initTypes(types.len());
-try forwarded_types.setOrdinal(0, first_ordinal);
 ```
 
 The ordinal accessors return logical `u16` values, so enum defaults are applied
-for you. Existing typed getters/setters and enum-list `raw()` accessors remain
-available.
+for you. Enum lists have the same view (see [Enum lists](#enum-lists)).
 
 ## 7. Lists
 
+The address book has one kind of list, a list of structs. The other field
+shapes in the rest of this guide come from a second small schema,
+`tests/docs/schema/guide.capnp`, which the snippet test generates and compiles
+the same way:
+
+<!-- verbatim-file: tests/docs/schema/guide.capnp -->
+```capnp
+@0x8184fd32ded3382c;
+
+# Field shapes for docs/getting-started-serialization.md that the address
+# book does not have.
+
+struct Profile {
+  scores @0 :List(UInt32);
+  tags @1 :List(Text);
+  colors @2 :List(Color);
+  matrix @3 :List(List(UInt16));
+  address @4 :Address;
+  values @5 :AnyList;
+}
+
+struct Address {
+  street @0 :Text;
+  city @1 :Text;
+  zipCode @2 :UInt32;
+}
+
+enum Color {
+  red @0;
+  green @1;
+  blue @2;
+}
+
+struct Shape {
+  color @0 :Color;
+
+  union {
+    circle @1 :Float64; # radius
+    rectangle :group {
+      width @2 :Float32;
+      height @3 :Float32;
+    }
+  }
+}
+```
+
+In the snippets that use it, `builder` is a `Profile.Builder` and `reader` is a
+`Profile.Reader`.
+
 ### Primitive lists
 
+Writing:
+
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
 ```zig
-// Writing — init the list with a count, then set each element
-var scores = try builder.initScores(3);  // List(UInt32), 3 elements
+// Init the list with a count, then set each element
+const scores = try builder.initScores(3); // List(UInt32), 3 elements
 try scores.set(0, 100);
 try scores.set(1, 95);
 try scores.set(2, 87);
+```
 
-// Reading
+Read it back:
+
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
+```zig
 const scores = try reader.getScores();
-const len = scores.len();
-for (0..len) |i| {
-    const score = try scores.get(@intCast(i));
-    std.debug.print("score: {d}\n", .{score});
+var total: u32 = 0;
+for (0..scores.len()) |i| {
+    total += try scores.get(@intCast(i));
 }
 ```
 
 ### Struct lists
 
+With the address book, where `person` is a `Person.Builder`:
+
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
 ```zig
-// Writing — init returns a typed StructListBuilder
-var phones = try person.initPhones(2);
+// init returns a typed list builder
+const phones = try person.initPhones(2);
 var phone0 = try phones.get(0);
 try phone0.setNumber("555-1234");
 try phone0.setType(.Mobile);
 var phone1 = try phones.get(1);
 try phone1.setNumber("555-5678");
 try phone1.setType(.Work);
+```
 
-// Reading
+And reading, where `person` is a `Person.Reader`:
+
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
+```zig
 const phones = try person.getPhones();
+var work: usize = 0;
 for (0..phones.len()) |i| {
     const phone = try phones.get(@intCast(i));
-    const number = try phone.getNumber();
-    const phone_type = try phone.getType();
-    std.debug.print("{s} ({any})\n", .{ number, phone_type });
+    if (try phone.getType() == .Work) work += 1;
 }
 ```
 
 ### Text lists
 
+Writing:
+
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
 ```zig
-// Writing
-var tags = try builder.initTags(2);
+const tags = try builder.initTags(2);
 try tags.set(0, "zig");
 try tags.set(1, "capnproto");
-
-// Reading
-const tags = try reader.getTags();
-const tag = try tags.get(0);  // []const u8
 ```
+
+Reading:
+
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
+```zig
+const tags = try reader.getTags();
+const tag = try tags.get(0); // []const u8
+```
+
+### Enum lists
+
+Enum lists read and write typed values with `get` and `set`. To forward an
+enumerant this schema does not know, use the raw ordinals:
+
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
+```zig
+const colors = try reader.getColors();
+const first_ordinal = try colors.getOrdinal(0);
+const forwarded_colors = try builder.initColors(colors.len());
+try forwarded_colors.setOrdinal(0, first_ordinal);
+```
+
+Existing typed getters/setters and enum-list `raw()` accessors remain
+available.
 
 ### Nested lists
 
 For a field such as `matrix :List(List(UInt16))`, generated Readers and
 Builders keep the original raw pointer-list methods and add a typed recursive
-view:
+view. Typed construction:
 
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
 ```zig
-// Typed construction.
-var rows = try builder.nestedLists().initMatrix(2);
-var first = try rows.init(0, 3);
+const rows = try builder.nestedLists().initMatrix(2);
+const first = try rows.init(0, 3);
 try first.set(0, 10);
 try first.set(1, 20);
 try first.set(2, 30);
 try rows.setNull(1);
+```
 
-// Typed reading.
-const read_rows = try reader.nestedLists().getMatrix();
-const read_first = try read_rows.get(0);
-const value = try read_first.get(1); // 20
+Typed reading:
+
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
+```zig
+const rows = try reader.nestedLists().getMatrix();
+const first = try rows.get(0);
+std.debug.assert(try first.get(1) == 20);
 
 // A null inner-list pointer reads as an empty list, but remains observable.
-std.debug.assert(try read_rows.isNull(1));
-std.debug.assert((try read_rows.get(1)).len() == 0);
+std.debug.assert(try rows.isNull(1));
+std.debug.assert((try rows.get(1)).len() == 0);
 ```
 
 The same shape recurses for deeper schemas: a
@@ -367,29 +479,40 @@ API; an unresolved enum ID becomes an ordinal `u16` list.
 
 ## 8. Nested Structs
 
+With `profile` a `Profile.Builder`:
+
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
 ```zig
-// Writing — initAddress allocates a nested struct in the message
-var address = try person.initAddress();
+// initAddress allocates a nested struct in the message
+var address = try profile.initAddress();
 try address.setStreet("123 Main St");
 try address.setCity("Springfield");
 try address.setZipCode(62704);
+```
 
-// Reading
-const address = try person.getAddress();
+And reading, with `profile` a `Profile.Reader`:
+
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
+```zig
+const address = try profile.getAddress();
 const street = try address.getStreet();
 ```
 
 ## 9. Unions
 
 Cap'n Proto unions use a discriminant field to track which variant is active.
+The address book's `Person` has one (`unemployed`, `employer`, `school`,
+`selfEmployed`); this section uses the guide schema's `Shape`, whose
+`rectangle` arm is a group.
 
 **Schema:**
+<!-- verbatim: tests/docs/schema/guide.capnp -->
 ```capnp
 struct Shape {
   color @0 :Color;
 
   union {
-    circle @1 :Float64;       # radius
+    circle @1 :Float64; # radius
     rectangle :group {
       width @2 :Float32;
       height @3 :Float32;
@@ -398,62 +521,55 @@ struct Shape {
 }
 ```
 
-**Generated types:**
+**Generated:** the plugin emits, for `Shape`:
+
+- `Shape.WhichTag`, an enum with one tag per arm: `.circle` and `.rectangle`.
+- `Shape.Rectangle`, with its own `Reader` and `Builder`, for the group arm.
+- On `Shape.Reader`: `which()`, `whichOrdinal()`, `getColor()`,
+  `getCircle()`, and `getRectangle()`, which returns `!Rectangle.Reader`.
+- On `Shape.Builder`: `setColor()`, `setCircle()`, and `initRectangle()`,
+  which returns a `Rectangle.Builder`. Each union setter and init also sets
+  the discriminant.
+
+**Usage.** Here `builder` is a `MessageBuilder` and `msg` a `Message`, as in
+sections 4 and 5. Writing a circle:
+
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
 ```zig
-pub const Shape = struct {
-    pub const WhichTag = enum(u16) {
-        circle = 0,
-        rectangle = 1,
-    };
-
-    pub const Rectangle = struct {
-        pub const Reader = struct { ... };
-        pub const Builder = struct { ... };
-    };
-
-    pub const Reader = struct {
-        pub fn which(self: Reader) !WhichTag { ... }
-        pub fn getColor(self: Reader) !Color { ... }
-        pub fn getCircle(self: Reader) !f64 { ... }
-        pub fn getRectangle(self: Reader) Rectangle.Reader { ... }
-    };
-
-    pub const Builder = struct {
-        pub fn setColor(self: *Builder, value: Color) !void { ... }
-        pub fn setCircle(self: *Builder, value: f64) !void { ... }    // sets discriminant
-        pub fn initRectangle(self: *Builder) Rectangle.Builder { ... } // sets discriminant
-    };
-};
-```
-
-**Usage:**
-```zig
-// Writing a circle
 var shape = try Shape.Builder.init(&builder);
 try shape.setColor(.Red);
-try shape.setCircle(5.0);  // automatically sets discriminant to .circle
+try shape.setCircle(5.0); // sets the discriminant to .circle
+```
 
-// Writing a rectangle (group variant)
+Writing a rectangle (a group arm):
+
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
+```zig
 var shape = try Shape.Builder.init(&builder);
 try shape.setColor(.Blue);
-var rect = shape.initRectangle();  // sets discriminant to .rectangle
+var rect = shape.initRectangle(); // sets the discriminant to .rectangle
 try rect.setWidth(10.0);
 try rect.setHeight(20.0);
+```
 
-// Reading — always check which() first
+Reading:
+
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
+```zig
+// Always check which() first
 const shape = try Shape.Reader.init(&msg);
-switch (try shape.which()) {
-    .circle => {
+return switch (try shape.which()) {
+    .circle => blk: {
         const radius = try shape.getCircle();
-        std.debug.print("circle r={d}\n", .{radius});
+        break :blk std.math.pi * radius * radius;
     },
-    .rectangle => {
-        const rect = shape.getRectangle();
+    .rectangle => blk: {
+        const rect = try shape.getRectangle();
         const w = try rect.getWidth();
         const h = try rect.getHeight();
-        std.debug.print("rect {d}x{d}\n", .{ w, h });
+        break :blk w * h;
     },
-}
+};
 ```
 
 ### Union Default-Arm Semantics
@@ -471,6 +587,7 @@ This avoids subtle bugs where application code assumes a union arm was explicitl
 
 Cap'n Proto supports a packed encoding that compresses zero bytes, which is common in sparse messages:
 
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
 ```zig
 // Serialize to packed format
 const packed_bytes = try builder.toPackedBytes();
@@ -494,12 +611,15 @@ Cap'n Proto is designed for safe schema evolution. You can:
 This works because readers return type defaults for any field that falls outside the struct's data section. No versioning metadata is needed.
 
 For pointer fields, use the generated `hasXxx()` method when the distinction
-between absent and present-but-empty matters:
+between absent and present-but-empty matters. This returns `null` for an
+absent email:
 
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
 ```zig
 if (person.hasEmail()) {
-    const email = try person.getEmail(); // may still be ""
+    return try person.getEmail(); // present, but may still be ""
 }
+return null;
 ```
 
 `hasXxx()` is generated on Readers and Builders for Text, Data, struct, list,
@@ -519,14 +639,17 @@ Code generated before pointer-kind fidelity exposed `AnyPointer`, `AnyStruct`,
 `AnyList`, and bare `Capability` fields through the same erased
 `AnyPointerReader` / `AnyPointerBuilder` accessor. Those accessors are still
 present. For constrained slots, the parallel `pointerKinds()` view preserves
-the schema promise without making old callers change:
+the schema promise without making old callers change. This copies the
+guide schema's `values :AnyList` field as a list of `UInt32`:
 
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
 ```zig
 const any_list = try reader.pointerKinds().getValues();
 const words = try any_list.getU32List();
 
-var list_slot = try builder.pointerKinds().initValues();
-var output = try list_slot.initU32List(words.len());
+const list_slot = try builder.pointerKinds().initValues();
+const output = try list_slot.initU32List(words.len());
+for (0..words.len()) |i| try output.set(@intCast(i), try words.get(@intCast(i)));
 ```
 
 `AnyListReader.raw()` and each Builder shape wrapper return the erased
@@ -577,6 +700,7 @@ are rejected during generation rather than emitted ambiguously.
 Schema-aware validation and canonicalization have additive concrete-root entry
 points:
 
+<!-- verbatim: tests/docs/serialization_getting_started_snippets_test.zig -->
 ```zig
 try capnpc.schema_validation.validateMessageWithBrand(
     &msg,

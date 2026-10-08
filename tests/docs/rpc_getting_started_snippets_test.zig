@@ -10,21 +10,22 @@
 //! by arm. If the guide drifts from the shipped API, this file stops
 //! compiling (or these tests fail) under `zig build test-docs-snippets`.
 //!
-//! When editing docs/getting-started-rpc.md, keep each mirror below in
-//! sync with the section named in its comment.
+//! Each Zig block in docs/getting-started-rpc.md sits under a
+//! `<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->`
+//! marker, and `zig build docs-smoke` fails when a block is not an exact
+//! excerpt of this file. Change a mirror and its guide block together.
+
+// ---------------------------------------------------------------------------
+// Guide section 3, "The Server Half". Its first block is everything from
+// here through handlePing, so keep other imports below it.
+// ---------------------------------------------------------------------------
 
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const pingpong = @import("pingpong");
-const matchmaking = @import("matchmaking");
 
 const rpc = capnpc.rpc;
-const message = capnpc.message;
 const PingPong = pingpong.PingPong;
-
-// ---------------------------------------------------------------------------
-// Guide section 3, "The Server Half"
-// ---------------------------------------------------------------------------
 
 fn handlePing(
     _: *anyopaque,
@@ -36,6 +37,9 @@ fn handlePing(
     const value = try params.getCount();
     try results.setCount(value + 1);
 }
+
+const matchmaking = @import("matchmaking");
+const message = capnpc.message;
 
 /// Accept one connection and serve it until the client disconnects.
 fn serveOne(allocator: std.mem.Allocator, listener: *rpc.transport.tcp.Listener, server: *PingPong.Server) void {

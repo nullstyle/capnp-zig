@@ -355,7 +355,28 @@ pub fn buildImpl(b: *std.Build) !void {
     });
     registered_test_compile_steps.append(b.allocator, &rpc_getting_started_snippet_tests.step) catch @panic("OOM");
     const run_rpc_getting_started_snippet_tests = &b.addRunArtifact(rpc_getting_started_snippet_tests).step;
-    const run_serialization_getting_started_snippet_tests = addLibTest(b, "tests/docs/serialization_getting_started_snippets_test.zig", target, optimize, lib_module);
+    // README.md: its programs compile and run against the full module and
+    // the REAL generated addressbook (examples/addressbook.zig), which `just
+    // check-generated` keeps equal to the plugin's output. docs-smoke checks
+    // that every README Zig block is a verbatim copy of one of these files.
+    const readme_snippet_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/docs/readme_snippets_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "addressbook", .module = b.createModule(.{
+                    .root_source_file = b.path("examples/addressbook.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                    .imports = &.{.{ .name = "capnpc-zig", .module = lib_module }},
+                }) },
+            },
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &readme_snippet_tests.step) catch @panic("OOM");
+    const run_readme_snippet_tests = &b.addRunArtifact(readme_snippet_tests).step;
     const run_rpc_events_snippet_tests = addLibTest(b, "tests/docs/rpc_events_snippets_test.zig", target, optimize, lib_module);
     // docs/rpc-unix-sockets.md: its snippets run over a real socket file
     // (Linux, macOS; elsewhere the unsupported stubs are checked), and a
@@ -418,6 +439,41 @@ pub fn buildImpl(b: *std.Build) !void {
     });
     registered_test_compile_steps.append(b.allocator, &build_integration_snippet_tests.step) catch @panic("OOM");
     const run_build_integration_snippet_tests = &b.addRunArtifact(build_integration_snippet_tests).step;
+    // docs/getting-started-serialization.md, wired the way the guide tells a
+    // reader to: `capnpc-zig` is the serialization-only core module, and the
+    // generated modules import it. `addressbook` is the REAL generated
+    // examples/addressbook.zig; `guide` is generated here, by the plugin
+    // build above, from tests/docs/schema/guide.request.bin (the
+    // field shapes the address book lacks; `just gen` refreshes the request
+    // and `just check-generated` fails on drift). docs-smoke checks that
+    // every Zig block in the guide is a verbatim copy of these files.
+    const docs_guide_codegen = b.addRunArtifact(docs_codegen_plugin);
+    docs_guide_codegen.setStdIn(.{ .lazy_path = b.path("tests/docs/schema/guide.request.bin") });
+    const docs_guide_codegen_dir = docs_guide_codegen.addPrefixedOutputDirectoryArg("--output-dir=", "capnp-gen");
+    const serialization_getting_started_snippet_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/docs/serialization_getting_started_snippets_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = core_module },
+                .{ .name = "addressbook", .module = b.createModule(.{
+                    .root_source_file = b.path("examples/addressbook.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                    .imports = &.{.{ .name = "capnpc-zig", .module = core_module }},
+                }) },
+                .{ .name = "guide", .module = b.createModule(.{
+                    .root_source_file = docs_guide_codegen_dir.path(b, "guide.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                    .imports = &.{.{ .name = "capnpc-zig", .module = core_module }},
+                }) },
+            },
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &serialization_getting_started_snippet_tests.step) catch @panic("OOM");
+    const run_serialization_getting_started_snippet_tests = &b.addRunArtifact(serialization_getting_started_snippet_tests).step;
     const run_troubleshooting_contracts_snippet_tests = addLibTest(b, "tests/docs/troubleshooting_contracts_snippets_test.zig", target, optimize, lib_module);
     const run_quic_transport_disabled_snippet_tests: ?*std.Build.Step = if (!enable_quic)
         addLibTest(b, "tests/docs/quic_transport_disabled_snippets_test.zig", target, optimize, lib_module)
@@ -430,6 +486,7 @@ pub fn buildImpl(b: *std.Build) !void {
     const test_docs_snippets_step = b.step("test-docs-snippets", "Compile documentation snippet fixtures");
     test_docs_snippets_step.dependOn(run_rpc_getting_started_snippet_tests);
     test_docs_snippets_step.dependOn(run_serialization_getting_started_snippet_tests);
+    test_docs_snippets_step.dependOn(run_readme_snippet_tests);
     test_docs_snippets_step.dependOn(run_rpc_events_snippet_tests);
     test_docs_snippets_step.dependOn(run_rpc_unix_snippet_tests);
     test_docs_snippets_step.dependOn(run_build_integration_snippet_tests);

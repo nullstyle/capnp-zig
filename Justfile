@@ -305,6 +305,10 @@ gen:
     # clean-room build needs no schema compiler (docs/build-integration.md).
     uv run --no-project --python 3.13 "{{ capnp_tool }}" compiler -- compile -o- --src-prefix=tests/package_consumer/codegen/schema tests/package_consumer/codegen/schema/addressbook.capnp > zig-out/check-generated/addressbook.request.bin
     cp zig-out/check-generated/addressbook.request.bin tests/package_consumer/codegen/schema/addressbook.request.bin
+    # The serialization guide's second schema. `zig build test-docs-snippets`
+    # runs the plugin on this request, so the snippet gate needs no compiler.
+    uv run --no-project --python 3.13 "{{ capnp_tool }}" compiler -- compile -o- --src-prefix=tests/docs/schema tests/docs/schema/guide.capnp > zig-out/check-generated/guide.request.bin
+    cp zig-out/check-generated/guide.request.bin tests/docs/schema/guide.request.bin
     uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/example.capnp
     cp zig-out/check-generated/tests/test_schemas/example.zig src/wasm/generated/example.zig
     mkdir -p tests/serialization/generated
@@ -374,7 +378,7 @@ check-generated: gen
     # (stored thread ids are widened to u64), not on Windows. `gen` writes
     # the generated-shape corpus (tests/generated_shape/requests, diffed
     # below) but not the shape files: only `zig build generated-shape` does.
-    git diff --exit-code -- {{ generated_paths }} tests/package_consumer/codegen/schema/addressbook.request.bin tests/generated_shape/requests docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
+    git diff --exit-code -- {{ generated_paths }} tests/package_consumer/codegen/schema/addressbook.request.bin tests/docs/schema/guide.request.bin tests/generated_shape/requests docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
 
 # Assert the Zig on PATH is the one mise.toml pins — the same check
 # .github/actions/setup-zig makes, so a local gate proves the same thing CI's

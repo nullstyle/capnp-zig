@@ -27,6 +27,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capability-bearing results Return resolved into the accepting peer's L3
   event.
 
+### Fixed
+
+- **The README's first programs compile on Zig 0.17.0.** Both README
+  programs and the serialization guide's section 4 program used
+  `std.heap.GeneralPurposeAllocator`, which Zig 0.17.0 does not have. They
+  now take `init.gpa` from `main(init: std.process.Init)`. Anyone who copied
+  them hit a compile error before writing any code of their own.
+- **The README and the serialization guide match the code they describe.**
+  The README program left four locals unused and used `Person` without
+  importing it, so it did not compile. The guide used an `age` field that
+  `examples/addressbook.capnp` does not have, and its fragments declared
+  the same name twice. The union snippet left out the `try` that
+  `getRectangle()` needs. The README API reference showed
+  `Message.init` with two arguments; it takes three.
+- **The RPC guide's status and prerequisites are current.** It said the
+  runtime was "in production hardening" and told readers to build the
+  plugin from this repository. It now names the Stable core and the five
+  Experimental pieces it uses, and points codegen at the pinned plugin.
+
+### Documentation
+
+- **Every Zig block in README.md, docs/getting-started-serialization.md and
+  docs/getting-started-rpc.md is compiled.** Each block is a verbatim copy of
+  a file under `tests/docs/`, and `zig build test-docs-snippets` compiles and
+  runs those files against the real generated modules (the committed
+  `examples/addressbook.zig`, and a second guide schema generated during the
+  build). `zig build docs-smoke` fails when a block differs from its file or
+  has no `<!-- verbatim: ... -->` marker. The hand-written mock that the
+  serialization snippet test used is gone, so a broken snippet can no longer
+  pass. Contributors write doc code in `tests/docs/` first (CONTRIBUTING.md).
+- **New design note on importing both library roots in one build.**
+  [docs/notes/module-roots.md](docs/notes/module-roots.md) reproduces the
+  `file exists in modules` error, shows the pattern that works today, and
+  lists the options for removing the limit. Library authors who bind
+  `capnpc-zig-core` and serve native programs should read it. It changes no
+  code.
+
 ## [0.22.0] - 2026-10-07
 
 This release moves QUIC to quic-zig v0.32.0, which fixes a regression that

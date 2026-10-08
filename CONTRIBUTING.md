@@ -83,6 +83,12 @@ Windows is a first-class development OS (see the
 - New parser or protocol code handling untrusted bytes needs bounds-checked
   accessors and tests covering malformed input (see
   [docs/security-regression-matrix.md](docs/security-regression-matrix.md)).
+- Every Zig block in README.md and the two getting-started guides is copied
+  from a file under `tests/docs/` that `zig build test-docs-snippets`
+  compiles and runs. Write the code there first, then copy it into the doc
+  under a `<!-- verbatim: <file> -->` marker (`verbatim-file:` for a whole
+  program). `zig build docs-smoke` fails on an unmarked block or a copy that
+  differs from its file.
 
 ## Pull requests
 
