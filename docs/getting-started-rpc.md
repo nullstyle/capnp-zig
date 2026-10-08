@@ -2,15 +2,23 @@
 
 This guide walks you through defining a Cap'n Proto RPC interface and building a working client-server application in Zig. It assumes you've read the [serialization guide](getting-started-serialization.md).
 
-Every Zig snippet in this guide is compile-gated: `tests/docs/rpc_getting_started_snippets_test.zig` compiles them against the real library and the real generated modules (`zig build test-docs-snippets`), and the quickstart halves are additionally run against each other over a loopback socket. If a snippet here drifts from the shipped API, that build step fails.
+Every Zig snippet in this guide is compile-gated: `tests/docs/rpc_getting_started_snippets_test.zig` compiles them against the real library and the real generated modules (`zig build test-docs-snippets`), and the quickstart halves are additionally run against each other over a loopback socket. Each block is copied from that file, and `zig build docs-smoke` fails if the two differ. If a snippet here drifts from the shipped API, one of those steps fails.
 
-> **Status:** The RPC runtime is in production hardening (phase 7). The API documented here is the current supported surface; breaking changes are recorded in the [migration guide](rpc-migration-guide.md).
+> **Status:** Most of this guide is the Stable two-party RPC core
+> ([supported-surface.md](supported-surface.md)). A few pieces it uses are
+> Experimental and may change in a 0.x minor release: the sessions' `peer`
+> field, `Peer.setQuestionDeadline`, `Peer.clearQuestionDeadline`,
+> `Peer.cancelQuestion`, and `capnpc.io_backend`. Breaking changes are
+> recorded in the CHANGELOG and the [migration guide](rpc-migration-guide.md).
 
 ## Prerequisites
 
 - **Tagged Zig 0.17** on `PATH` (`mise install` provides the pinned version)
-- **Cap'n Proto compiler** (`capnp`) — for schema compilation
-- **capnpc-zig** — built from this repo (`zig build`)
+- **A Cap'n Proto schema compiler** to turn the schema into a
+  `CodeGeneratorRequest` (see
+  [The schema compiler](build-integration.md#the-schema-compiler))
+- **No `capnpc-zig` install.** Your `build.zig` builds the plugin from the
+  capnp-zig package you pin (section 2).
 
 ## 1. Define Your Interface
 
@@ -46,6 +54,7 @@ The generated `pingpong.zig` (checked in at `examples/pingpong.zig`) contains, p
 
 A server implements the vtable — one function per interface method. Handlers read `params`, write `results`, and run synchronously on the connection's thread when an inbound call arrives; returning an error sends an RPC exception back to the caller:
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
@@ -71,6 +80,7 @@ connection off a `Listener`, set the bootstrap capability, and serve it until
 the client disconnects. `ServerSession` owns the `Connection` + `Peer` and the
 teardown ordering, exactly like `ClientSession`.
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 /// Accept one connection and serve it until the client disconnects.
 fn serveOne(allocator: std.mem.Allocator, listener: *rpc.transport.tcp.Listener, server: *PingPong.Server) void {
@@ -89,6 +99,7 @@ spawn one `serveOne` per accepted connection, or keep using `Listener` +
 
 Bind the listener and hand it a server value:
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 fn startServer(allocator: std.mem.Allocator, io: std.Io) !void {
     const address = try std.Io.net.IpAddress.parse("127.0.0.1", 7001);
@@ -106,6 +117,7 @@ fn startServer(allocator: std.mem.Allocator, io: std.Io) !void {
 
 `io` is a `std.Io` instance. In a `main(init: std.process.Init)` entry point the simplest source is the process-provided one, via this repo's backend selector:
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 fn setupBackend(init: std.process.Init) !capnpc.io_backend.Backend {
     // .process_init reuses init.io; .threaded builds its own (.evented is unsupported at Zig 0.17.0).
@@ -119,6 +131,7 @@ then `const io = backend.io();` (and `defer backend.deinit();`). See `examples/r
 
 The client side is one call: `rpc.transport.tcp.connect` returns a heap-owned `*ClientSession` that bundles the `Connection` and `Peer` and encapsulates the whole teardown ordering.
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 const ClientState = struct {
     result: ?u32 = null,
@@ -146,6 +159,7 @@ fn runClient(
 
 The bootstrap callback unwraps the response into a typed `Client` and issues the first call. Inside generated callbacks you get a `*rpc.peer.Peer`; `ClientSession.fromPeer` recovers the owning session:
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 fn onBootstrap(
     ctx_ptr: *anyopaque,
@@ -166,6 +180,7 @@ fn onBootstrap(
 
 Each call takes a context pointer and two callbacks: a **build function** that populates the parameters before the message is sent, and a **return callback** that fires when the `Return` arrives. `callX` returns the question id (useful for [per-call deadlines](#timeouts) and [cancellation](#cancellation)); the context must stay alive until the return callback has fired.
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 fn buildPing(_: *anyopaque, params: *PingPong.Ping.Params.Builder) anyerror!void {
     try params.setCount(41);
@@ -204,6 +219,7 @@ fn onPingReturn(
 
 When you need the remote's exception reason, it is still on the union arm after `unwrap()` fails:
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 fn describeFailure(response: PingPong.Ping.Response) ?u32 {
     const results = response.unwrap() catch |err| {
@@ -220,6 +236,7 @@ fn describeFailure(response: PingPong.Ping.Response) ?u32 {
 
 A successful `BootstrapResponse.unwrap()` (and every generated `resolveX` helper on results that carry an interface) **retains** an import ref that the returned `Client` owns. Release it when you are done with the capability:
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 const App = struct {
     service: ?PingPong.Client = null,
@@ -249,6 +266,7 @@ From the e2e matchmaking schema (`tests/e2e/schemas/matchmaking.capnp`):
 findMatch @2 (player :PlayerInfo, mode :GameMode) -> (controller :MatchController, matchId :MatchId);
 ```
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 fn findAndReady(app: *MatchApp, service: matchmaking.MatchmakingService.Client) !void {
     // Send findMatch, then immediately call methods on the promised
@@ -266,6 +284,7 @@ Each pipelined call has its own return callback and question id, exactly like a 
 
 `ConnectOptions.default_call_timeout_ms` stamps a deadline on every outbound question at send time. It is **on by default: 30 seconds**. When it is enabled and you did not configure your own connection tick, `connect()` wires a 100ms tick automatically so deadlines actually fire. Pass `null` to disable both.
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 fn connectWithTimeouts(
     allocator: std.mem.Allocator,
@@ -290,6 +309,7 @@ A timeout does not end the session. If the callback returns that error (for exam
 
 `callX` returns the question id; override (or set) the deadline for that one call with `Peer.setQuestionDeadline`:
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 fn pingWithShortDeadline(session: *rpc.transport.tcp.ClientSession, state: *ClientState, client: PingPong.Client) !void {
     const qid = try client.callPing(state, buildPing, onPingReturn);
@@ -303,6 +323,7 @@ fn pingWithShortDeadline(session: *rpc.transport.tcp.ClientSession, state: *Clie
 
 Cancel an outstanding call with `Peer.cancelQuestion`. The local callback is delivered an exception `Return` carrying your reason immediately, and a `Finish` is sent so the remote can stop working; a late `Return` from the remote is absorbed silently.
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 fn abandonPing(session: *rpc.transport.tcp.ClientSession, qid: u32) !void {
     try session.peer.cancelQuestion(qid, "user clicked cancel");
@@ -319,6 +340,7 @@ You never have to time out on your own callback. Every outstanding question's `o
 
 The session is **thread-affine**: `connect`, calls, `run()`, `close()`, and `deinit()` all belong to one thread, and every callback fires inside `run()` on that thread (debug builds assert this). The two supported patterns are running the whole lifecycle on your own thread, or `connect` on thread A then `run()` on thread B — `run()` re-adopts affinity on entry, which is safe because nothing else may touch the session in between.
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 /// Graceful stop, from the session thread (e.g. inside any callback):
 fn stopGracefully(session: *rpc.transport.tcp.ClientSession) void {
@@ -340,6 +362,7 @@ Lifecycle rules:
 - **`deinit()`** — legal **only after `run()` has returned** (or if it was never called). It encapsulates the one blessed teardown ordering.
 - **`on_error` / `on_close`** (from `ConnectOptions`) fire on the `run()` thread. `on_close` must **not** call `deinit()` — it runs *inside* `run()`. Their `ctx` must outlive the session:
 
+<!-- verbatim: tests/docs/rpc_getting_started_snippets_test.zig -->
 ```zig
 fn onSessionError(ctx: ?*anyopaque, _: *rpc.transport.tcp.ClientSession, err: anyerror) void {
     const state: *ClientState = @ptrCast(@alignCast(ctx.?));

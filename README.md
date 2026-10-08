@@ -133,22 +133,21 @@ operating systems, gated per push in CI. The per-layer platform matrix
 
 Add `capnpc-zig` to your project and use the message serialization API directly:
 
+<!-- verbatim-file: tests/docs/readme/library.zig -->
 ```zig
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const message = capnpc.message;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     // Create a message builder
     var builder = message.MessageBuilder.init(allocator);
     defer builder.deinit();
 
     // Allocate a struct with 1 data word and 2 pointer words
-    var struct_builder = try builder.allocateStruct(1, 2);
+    const struct_builder = try builder.allocateStruct(1, 2);
 
     // Write primitive fields
     struct_builder.writeU32(0, 42);
@@ -162,52 +161,78 @@ pub fn main() !void {
     const bytes = try builder.toBytes();
     defer allocator.free(bytes);
 
-    // Deserialize
+    // Deserialize (`.{}` keeps the default validation limits)
     var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
 
-    // Read fields
-    const value1 = root.readU32(0); // 42
-    const value2 = root.readU32(4); // 100
-    const text1 = try root.readText(0); // "Hello"
-    const text2 = try root.readText(1); // "World"
+    // Read fields (text slices point into `bytes`; nothing is copied)
+    std.debug.assert(root.readU32(0) == 42);
+    std.debug.assert(root.readU32(4) == 100);
+    std.debug.assert(std.mem.eql(u8, try root.readText(0), "Hello"));
+    std.debug.assert(std.mem.eql(u8, try root.readText(1), "World"));
 }
 ```
 
 ### Generated Code Example
 
-For a Cap'n Proto schema like:
+Take the `Person` struct from the example schema
+[`examples/addressbook.capnp`](examples/addressbook.capnp):
 
+<!-- verbatim: examples/addressbook.capnp -->
 ```capnp
-@0x9eb32e19f86ee174;
-
 struct Person {
-  name @0 :Text;
-  age @1 :UInt32;
+  id @0 :UInt32;
+  name @1 :Text;
   email @2 :Text;
+  phones @3 :List(PhoneNumber);
+  # Raw bytes — e.g. a tiny avatar thumbnail. Exercises the Data path.
+  avatar @4 :Data;
+
+  # Exactly one employment status is active at a time (unnamed union).
+  union {
+    unemployed @5 :Void;
+    employer @6 :Text;
+    school @7 :Text;
+    selfEmployed @8 :Void;
+  }
+
+  struct PhoneNumber {
+    number @0 :Text;
+    type @1 :PhoneType;
+  }
+
+  enum PhoneType {
+    mobile @0;
+    home @1;
+    work @2;
+  }
 }
 ```
 
-The generated Zig code provides:
+Generate the schema with the plugin from your pinned package and import the
+result as `addressbook`. The generated `Person.Builder` and `Person.Reader`
+types give you named accessors:
 
+<!-- verbatim-file: tests/docs/readme/generated.zig -->
 ```zig
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
+// Generated from examples/addressbook.capnp; your build.zig names the module.
+const addressbook = @import("addressbook");
+const Person = addressbook.Person;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     // Create a Person
     var msg_builder = capnpc.message.MessageBuilder.init(allocator);
     defer msg_builder.deinit();
 
     var person_builder = try Person.Builder.init(&msg_builder);
+    try person_builder.setId(1);
     try person_builder.setName("Alice");
-    try person_builder.setAge(30);
     try person_builder.setEmail("alice@example.com");
 
     // Serialize
@@ -221,9 +246,9 @@ pub fn main() !void {
     const person_reader = try Person.Reader.init(&msg);
 
     // Access fields
-    const name = try person_reader.getName();
-    const age = person_reader.getAge();
-    const email = try person_reader.getEmail();
+    std.debug.assert(try person_reader.getId() == 1);
+    std.debug.assert(std.mem.eql(u8, try person_reader.getName(), "Alice"));
+    std.debug.assert(std.mem.eql(u8, try person_reader.getEmail(), "alice@example.com"));
 }
 ```
 
@@ -378,14 +403,20 @@ For the public-surface alias cleanup, see
 
 The RPC runtime accepts a `std.Io` value at every entry point (`rpc.transport.tcp.Listener.init`, `rpc.transport.tcp.Connection.init`, `rpc.transport.tcp.Transport.init`). To centralise backend selection, the library exports `capnpc.io_backend`:
 
+<!-- verbatim-file: tests/docs/readme/io_backend.zig -->
 ```zig
+const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
 pub fn main(init: std.process.Init) !void {
     var backend = try capnpc.io_backend.Backend.init(.process_init, init.gpa, init.io);
     defer backend.deinit();
     const io = backend.io();
-    // pass `io` to rpc.transport.tcp.Listener / rpc.transport.tcp.Connection / etc.
+
+    // Every RPC entry point takes `io`. Port 0 asks the OS for a free port.
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var listener = try capnpc.rpc.transport.tcp.Listener.init(init.gpa, io, address, .{});
+    defer listener.close();
 }
 ```
 
@@ -440,10 +471,12 @@ socket file. `unix.listen` returns a `tcp.Listener`, so `ServerSession.accept`
 serves it unchanged, and `unix.connect` returns a `*tcp.ClientSession`. Other
 targets get `error.UnixSocketsUnsupported`.
 
+<!-- verbatim: tests/docs/readme_snippets_test.zig -->
 ```zig
 var listener = try capnpc.rpc.transport.unix.listen(gpa, io, "/run/myapp/rpc.sock", .{});
 defer listener.close(); // removes the socket file, releases its lock
 const session = try capnpc.rpc.transport.unix.connect(gpa, io, "/run/myapp/rpc.sock", .{});
+defer session.deinit();
 ```
 
 `listen` holds `<path>.lock` for the listener's life, sets the socket file to
@@ -512,7 +545,7 @@ Creates Cap'n Proto messages.
 
 Reads Cap'n Proto messages.
 
-- `init(allocator: Allocator, data: []const u8) !Message` - Parse a message
+- `init(allocator: Allocator, data: []const u8, options: ValidationOptions) !Message` - Parse and validate a message (`.{}` keeps the default limits)
 - `deinit()` - Free resources
 - `getRootStruct() !StructReader` - Get the root struct
 

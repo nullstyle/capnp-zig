@@ -177,6 +177,89 @@ const verbatim_file_marker = "<!-- verbatim-file: ";
 /// package-preflight builds and runs this consumer from the filtered archive.
 const codegen_consumer_build = "tests/package_consumer/codegen/build.zig";
 
+/// The docs a new user copies code from first. Every ```zig block in them
+/// must sit under a verbatim marker that names a `.zig` file below one of
+/// `compiled_snippet_roots`, so no block reaches a reader without passing
+/// the compiler. Before this rule the README's first program used an
+/// allocator Zig 0.17.0 does not have, and no gate noticed.
+const compiled_zig_docs = [_][]const u8{
+    "README.md",
+    "docs/getting-started-serialization.md",
+    "docs/getting-started-rpc.md",
+};
+
+/// Trees a gate compiles: `zig build test-docs-snippets` compiles
+/// tests/docs (against the real generated modules), package-preflight
+/// builds tests/package_consumer, and `zig build check-compile` builds the
+/// examples.
+const compiled_snippet_roots = [_][]const u8{
+    "tests/docs/",
+    "tests/package_consumer/",
+    "examples/",
+};
+
+/// True when `line` is a verbatim marker (excerpt or whole file) naming a
+/// `.zig` file below one of `compiled_snippet_roots`.
+fn isCompiledZigMarker(line: []const u8) bool {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    const marker = if (std.mem.startsWith(u8, trimmed, verbatim_file_marker))
+        verbatim_file_marker
+    else if (std.mem.startsWith(u8, trimmed, verbatim_marker))
+        verbatim_marker
+    else
+        return false;
+    if (!std.mem.endsWith(u8, trimmed, verbatim_marker_end)) return false;
+    if (trimmed.len < marker.len + verbatim_marker_end.len) return false;
+    const source = trimmed[marker.len .. trimmed.len - verbatim_marker_end.len];
+    if (!std.mem.endsWith(u8, source, ".zig")) return false;
+    for (compiled_snippet_roots) |root| {
+        if (std.mem.startsWith(u8, source, root)) return true;
+    }
+    return false;
+}
+
+/// Indexes into `lines` of every opening ```zig fence that is not directly
+/// under a compiled-snippet marker. Closing fences are not openings, and,
+/// as in CommonMark, only a bare run of backticks closes a block, so a
+/// ```zig line inside another fenced block is text, not a fence.
+fn unmarkedZigFences(allocator: std.mem.Allocator, lines: []const []const u8) ![]usize {
+    var out: std.ArrayList(usize) = .empty;
+    errdefer out.deinit(allocator);
+    var in_fence = false;
+    for (lines, 0..) |line, i| {
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (!std.mem.startsWith(u8, trimmed, "```")) continue;
+        if (in_fence) {
+            if (std.mem.allEqual(u8, trimmed, '`')) in_fence = false;
+            continue;
+        }
+        in_fence = true;
+        const info = std.mem.trim(u8, trimmed[3..], " \t");
+        if (!std.mem.eql(u8, info, "zig")) continue;
+        if (i == 0 or !isCompiledZigMarker(lines[i - 1])) try out.append(allocator, i);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn verifyCompiledZigDocs(ctx: *Context) !void {
+    for (compiled_zig_docs) |path| {
+        ctx.checks += 1;
+        const doc = try readFile(ctx, path);
+        defer ctx.allocator.free(doc);
+        const lines = try splitLines(ctx.allocator, doc);
+        defer ctx.allocator.free(lines);
+        const unmarked = try unmarkedZigFences(ctx.allocator, lines);
+        defer ctx.allocator.free(unmarked);
+        for (unmarked) |index| {
+            ctx.fail(
+                "{s}:{d}: ```zig block has no compiled-snippet marker; put `{s}tests/docs/<file>.zig{s}` " ++
+                    "(or `{s}...{s}`) on the line above and copy the block from that file",
+                .{ path, index + 1, verbatim_marker, verbatim_marker_end, verbatim_file_marker, verbatim_marker_end },
+            );
+        }
+    }
+}
+
 /// A doc string that must carry the version declared in `build.zig.zon`.
 /// `{v}` expands to the bare version (`0.5.0`), so `v{v}` renders `v0.5.0`.
 ///
@@ -268,6 +351,9 @@ fn printUsage() void {
         \\  - checks documented build and Justfile recipes still exist
         \\  - rejects stale RPC public-surface names in source/examples/tests
         \\  - rejects stale event-loop/xev wording in active docs
+        \\  - requires doc blocks under verbatim markers to match the file they name
+        \\  - requires every Zig block in README and the getting-started guides
+        \\    to come from a file a gate compiles
         \\  - requires consumer-facing docs to carry the build.zig.zon version
         \\  - fails unreleased-feature caveats once build.zig.zon moves past them
         \\
@@ -611,6 +697,38 @@ test "blockEqualsFile accepts only the whole file, CRLF or LF" {
     try std.testing.expect(!blockEqualsFile(&.{ "pub fn build(b: *std.Build) void {", "    _ = b;", "", "}", "" }, file));
 }
 
+test "unmarkedZigFences flags every Zig block without a compiled-snippet marker" {
+    const allocator = std.testing.allocator;
+    const doc = [_][]const u8{
+        "<!-- verbatim: tests/docs/readme_snippets_test.zig -->", // 0
+        "```zig", // 1: marked, excerpt
+        "const x = 1;",
+        "```",
+        "<!-- verbatim-file: tests/docs/readme/library.zig -->", // 4
+        "```zig", // 5: marked, whole file
+        "```",
+        "```zig", // 7: no marker
+        "```",
+        "<!-- verbatim: README.md -->", // 9
+        "```zig", // 10: marker names a doc, not compiled code
+        "```",
+        "<!-- verbatim: src/lib.zig -->", // 12
+        "```zig", // 13: marker names a file no snippet gate compiles
+        "```",
+        "```bash", // 15: other languages are not gated
+        "```zig", // 16: inside the bash block, so text
+        "```",
+        "  ```zig", // 18: an indented fence is still a fence
+        "  ```",
+        "<!-- verbatim: examples/addressbook.capnp -->", // 20
+        "```zig", // 21: names a schema, not Zig
+        "```",
+    };
+    const unmarked = try unmarkedZigFences(allocator, &doc);
+    defer allocator.free(unmarked);
+    try std.testing.expectEqualSlices(usize, &.{ 7, 10, 13, 18, 21 }, unmarked);
+}
+
 test "unreleasedMarkerProblem flags caveats the manifest has moved past" {
     // The current release: the caveat still describes an unreleased feature.
     try std.testing.expectEqual(@as(?UnreleasedMarkerProblem, null), unreleasedMarkerProblem(
@@ -756,6 +874,7 @@ pub fn main(init: std.process.Init) !void {
     try verifyBuildAndJustfile(&ctx);
     verifyRequiredDocNeedles(&ctx);
     try verifyVerbatimBlocks(&ctx);
+    try verifyCompiledZigDocs(&ctx);
     try verifyVersionStamps(&ctx);
 
     if (ctx.failures != 0) {
