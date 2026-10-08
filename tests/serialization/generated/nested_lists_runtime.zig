@@ -261,7 +261,8 @@ pub const Service = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
         /// Experimental. The id space `cap_id` names. `init` leaves it
-        /// `.unspecified`; bootstrap and `resolveX` set `.imported`.
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
         origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
@@ -272,6 +273,8 @@ pub const Service = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 

@@ -145,6 +145,52 @@ test "encode outbound cap table prefers local promised export over import id col
     try std.testing.expectEqual(@as(u32, 77), desc.id.?);
 }
 
+test "encode sends an origin-tagged export that is still a promise as senderPromise" {
+    const allocator = std.testing.allocator;
+
+    var caps = cap_table.CapTable.init(allocator);
+    defer caps.deinit();
+
+    // A generated Client for one of our own exports (origin `.exported`)
+    // writes a senderHosted-tagged pointer. The tag fixes the id SPACE; the
+    // promise/hosted split inside it is live state, so a still-unresolved
+    // promise export must go out as senderPromise (the remote then expects
+    // its Resolve), even with an import of the same id present.
+    try caps.noteImport(77);
+    try caps.noteExport(77);
+    try caps.markExportPromise(77);
+    try caps.noteExport(78);
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var call = try builder.beginCall(13, 0x1234, 0);
+    try call.setTargetImportedCap(1);
+    var payload = try call.payloadTyped();
+    const any = try payload.initContent();
+    const params = try any.initStruct(0, 2);
+    const sender_hosted = cap_table.descriptors.originCodeForTag(.senderHosted);
+    try (try params.getAnyPointer(0)).setCapabilityOriginTagged(sender_hosted, 77);
+    try (try params.getAnyPointer(1)).setCapabilityOriginTagged(sender_hosted, 78);
+
+    try cap_table.encodeCallPayloadCaps(&caps, &call, null, null, null);
+
+    const bytes = try builder.finish();
+    defer allocator.free(bytes);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+    defer decoded.deinit();
+    const decoded_call = try decoded.asCall();
+    const cap_list = decoded_call.params.cap_table orelse return error.MissingCapTable;
+    try std.testing.expectEqual(@as(u32, 2), cap_list.len());
+    const promise_desc = try protocol.CapDescriptor.fromReader(try cap_list.get(0));
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderPromise, promise_desc.tag);
+    try std.testing.expectEqual(@as(u32, 77), promise_desc.id.?);
+    const hosted_desc = try protocol.CapDescriptor.fromReader(try cap_list.get(1));
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, hosted_desc.tag);
+    try std.testing.expectEqual(@as(u32, 78), hosted_desc.id.?);
+}
+
 test "encode outbound cap table rewrites capability pointer lists in struct payloads" {
     const allocator = std.testing.allocator;
 

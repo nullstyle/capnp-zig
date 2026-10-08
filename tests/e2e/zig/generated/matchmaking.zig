@@ -4716,7 +4716,8 @@ pub const MatchController = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
         /// Experimental. The id space `cap_id` names. `init` leaves it
-        /// `.unspecified`; bootstrap and `resolveX` set `.imported`.
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
         origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
@@ -4727,6 +4728,8 @@ pub const MatchController = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
@@ -4738,7 +4741,11 @@ pub const MatchController = struct {
             const ctx = try self.peer.allocator.create(GetInfo.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4756,7 +4763,11 @@ pub const MatchController = struct {
             const ctx = try self.peer.allocator.create(SignalReady.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, SignalReady.ordinal, ctx, SignalReady.callBuild, SignalReady.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, SignalReady.ordinal, ctx, SignalReady.callBuild, SignalReady.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, SignalReady.ordinal, ctx, SignalReady.callBuild, SignalReady.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4774,7 +4785,11 @@ pub const MatchController = struct {
             const ctx = try self.peer.allocator.create(ReportResult.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, ReportResult.ordinal, ctx, ReportResult.callBuild, ReportResult.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, ReportResult.ordinal, ctx, ReportResult.callBuild, ReportResult.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, ReportResult.ordinal, ctx, ReportResult.callBuild, ReportResult.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4792,7 +4807,11 @@ pub const MatchController = struct {
             const ctx = try self.peer.allocator.create(CancelMatch.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, CancelMatch.ordinal, ctx, CancelMatch.callBuild, CancelMatch.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, CancelMatch.ordinal, ctx, CancelMatch.callBuild, CancelMatch.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, CancelMatch.ordinal, ctx, CancelMatch.callBuild, CancelMatch.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -5809,6 +5828,7 @@ pub const MatchController = struct {
                     return self.raw.callGetInfo(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetInfoPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInfo.BuildFn, comptime callback: _Applied.GetInfo.Callback) !_Applied.GetInfo.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callGetInfo(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -6682,7 +6702,8 @@ pub const MatchmakingService = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
         /// Experimental. The id space `cap_id` names. `init` leaves it
-        /// `.unspecified`; bootstrap and `resolveX` set `.imported`.
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
         origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
@@ -6693,6 +6714,8 @@ pub const MatchmakingService = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
@@ -6704,7 +6727,11 @@ pub const MatchmakingService = struct {
             const ctx = try self.peer.allocator.create(Enqueue.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Enqueue.ordinal, ctx, Enqueue.callBuild, Enqueue.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, Enqueue.ordinal, ctx, Enqueue.callBuild, Enqueue.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Enqueue.ordinal, ctx, Enqueue.callBuild, Enqueue.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6722,7 +6749,11 @@ pub const MatchmakingService = struct {
             const ctx = try self.peer.allocator.create(Dequeue.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Dequeue.ordinal, ctx, Dequeue.callBuild, Dequeue.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, Dequeue.ordinal, ctx, Dequeue.callBuild, Dequeue.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Dequeue.ordinal, ctx, Dequeue.callBuild, Dequeue.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6740,7 +6771,11 @@ pub const MatchmakingService = struct {
             const ctx = try self.peer.allocator.create(FindMatch.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, FindMatch.ordinal, ctx, FindMatch.callBuild, FindMatch.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, FindMatch.ordinal, ctx, FindMatch.callBuild, FindMatch.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, FindMatch.ordinal, ctx, FindMatch.callBuild, FindMatch.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6758,7 +6793,11 @@ pub const MatchmakingService = struct {
             const ctx = try self.peer.allocator.create(GetQueueStats.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetQueueStats.ordinal, ctx, GetQueueStats.callBuild, GetQueueStats.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, GetQueueStats.ordinal, ctx, GetQueueStats.callBuild, GetQueueStats.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetQueueStats.ordinal, ctx, GetQueueStats.callBuild, GetQueueStats.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6776,7 +6815,11 @@ pub const MatchmakingService = struct {
             const ctx = try self.peer.allocator.create(GetMatchResult.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetMatchResult.ordinal, ctx, GetMatchResult.callBuild, GetMatchResult.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, GetMatchResult.ordinal, ctx, GetMatchResult.callBuild, GetMatchResult.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetMatchResult.ordinal, ctx, GetMatchResult.callBuild, GetMatchResult.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6791,6 +6834,7 @@ pub const MatchmakingService = struct {
         }
 
         pub fn callFindMatchPipelinedWithOptions(self: Client, user_ctx: *anyopaque, build: ?FindMatch.BuildFn, on_return: FindMatch.Callback, options: rpc.peer.CallOptions) !FindMatchPipeline {
+            if (self.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
             const qid = try self.callFindMatchWithOptions(user_ctx, build, on_return, options);
             return .{ .peer = self.peer, .question_id = qid };
         }
@@ -7842,7 +7886,12 @@ pub const MatchmakingService = struct {
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
                     .imported => |imported| return .{ .peer = peer, .cap_id = imported.id, .origin = .imported },
-                    else => return error.UnexpectedCapabilityType,
+                    .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                    .promised => |promised| switch (try peer.resolvePromisedAnswer(promised)) {
+                        .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                        else => return error.UnexpectedCapabilityType,
+                    },
+                    .none => return error.UnexpectedCapabilityType,
                 }
             }
 
@@ -7923,6 +7972,7 @@ pub const MatchmakingService = struct {
                 var any = try self._builder.getAnyPointer(0);
                 switch (client.origin) {
                     .imported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.receiverHosted), client.cap_id),
+                    .exported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.senderHosted), client.cap_id),
                     .unspecified => try any.setCapability(.{ .id = client.cap_id }),
                 }
             }
@@ -8541,6 +8591,7 @@ pub const MatchmakingService = struct {
                     return self.raw.callEnqueue(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callEnqueuePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Enqueue.BuildFn, comptime callback: _Applied.Enqueue.Callback) !_Applied.Enqueue.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callEnqueue(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -8553,6 +8604,7 @@ pub const MatchmakingService = struct {
                     return self.raw.callFindMatch(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callFindMatchPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.FindMatch.BuildFn, comptime callback: _Applied.FindMatch.Callback) !_Applied.FindMatch.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callFindMatch(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -8565,6 +8617,7 @@ pub const MatchmakingService = struct {
                     return self.raw.callGetMatchResult(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetMatchResultPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetMatchResult.BuildFn, comptime callback: _Applied.GetMatchResult.Callback) !_Applied.GetMatchResult.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callGetMatchResult(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }

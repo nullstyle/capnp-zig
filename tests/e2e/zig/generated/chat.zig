@@ -4327,7 +4327,8 @@ pub const ChatRoom = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
         /// Experimental. The id space `cap_id` names. `init` leaves it
-        /// `.unspecified`; bootstrap and `resolveX` set `.imported`.
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
         origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
@@ -4338,6 +4339,8 @@ pub const ChatRoom = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
@@ -4349,7 +4352,11 @@ pub const ChatRoom = struct {
             const ctx = try self.peer.allocator.create(SendMessage.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, SendMessage.ordinal, ctx, SendMessage.callBuild, SendMessage.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, SendMessage.ordinal, ctx, SendMessage.callBuild, SendMessage.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, SendMessage.ordinal, ctx, SendMessage.callBuild, SendMessage.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4367,7 +4374,11 @@ pub const ChatRoom = struct {
             const ctx = try self.peer.allocator.create(SendEmote.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, SendEmote.ordinal, ctx, SendEmote.callBuild, SendEmote.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, SendEmote.ordinal, ctx, SendEmote.callBuild, SendEmote.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, SendEmote.ordinal, ctx, SendEmote.callBuild, SendEmote.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4385,7 +4396,11 @@ pub const ChatRoom = struct {
             const ctx = try self.peer.allocator.create(GetHistory.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetHistory.ordinal, ctx, GetHistory.callBuild, GetHistory.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, GetHistory.ordinal, ctx, GetHistory.callBuild, GetHistory.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetHistory.ordinal, ctx, GetHistory.callBuild, GetHistory.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4403,7 +4418,11 @@ pub const ChatRoom = struct {
             const ctx = try self.peer.allocator.create(GetInfo.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4421,7 +4440,11 @@ pub const ChatRoom = struct {
             const ctx = try self.peer.allocator.create(Leave.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Leave.ordinal, ctx, Leave.callBuild, Leave.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, Leave.ordinal, ctx, Leave.callBuild, Leave.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Leave.ordinal, ctx, Leave.callBuild, Leave.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -5657,6 +5680,7 @@ pub const ChatRoom = struct {
                     return self.raw.callSendMessage(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSendMessagePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SendMessage.BuildFn, comptime callback: _Applied.SendMessage.Callback) !_Applied.SendMessage.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callSendMessage(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -5665,6 +5689,7 @@ pub const ChatRoom = struct {
                     return self.raw.callSendEmote(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSendEmotePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SendEmote.BuildFn, comptime callback: _Applied.SendEmote.Callback) !_Applied.SendEmote.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callSendEmote(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -5677,6 +5702,7 @@ pub const ChatRoom = struct {
                     return self.raw.callGetInfo(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetInfoPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInfo.BuildFn, comptime callback: _Applied.GetInfo.Callback) !_Applied.GetInfo.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callGetInfo(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -6391,7 +6417,8 @@ pub const ChatService = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
         /// Experimental. The id space `cap_id` names. `init` leaves it
-        /// `.unspecified`; bootstrap and `resolveX` set `.imported`.
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
         origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
@@ -6402,6 +6429,8 @@ pub const ChatService = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
@@ -6413,7 +6442,11 @@ pub const ChatService = struct {
             const ctx = try self.peer.allocator.create(CreateRoom.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, CreateRoom.ordinal, ctx, CreateRoom.callBuild, CreateRoom.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, CreateRoom.ordinal, ctx, CreateRoom.callBuild, CreateRoom.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, CreateRoom.ordinal, ctx, CreateRoom.callBuild, CreateRoom.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6431,7 +6464,11 @@ pub const ChatService = struct {
             const ctx = try self.peer.allocator.create(JoinRoom.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, JoinRoom.ordinal, ctx, JoinRoom.callBuild, JoinRoom.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, JoinRoom.ordinal, ctx, JoinRoom.callBuild, JoinRoom.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, JoinRoom.ordinal, ctx, JoinRoom.callBuild, JoinRoom.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6449,7 +6486,11 @@ pub const ChatService = struct {
             const ctx = try self.peer.allocator.create(ListRooms.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, ListRooms.ordinal, ctx, ListRooms.callBuild, ListRooms.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, ListRooms.ordinal, ctx, ListRooms.callBuild, ListRooms.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, ListRooms.ordinal, ctx, ListRooms.callBuild, ListRooms.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6467,7 +6508,11 @@ pub const ChatService = struct {
             const ctx = try self.peer.allocator.create(Whisper.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Whisper.ordinal, ctx, Whisper.callBuild, Whisper.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, Whisper.ordinal, ctx, Whisper.callBuild, Whisper.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Whisper.ordinal, ctx, Whisper.callBuild, Whisper.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -6482,6 +6527,7 @@ pub const ChatService = struct {
         }
 
         pub fn callCreateRoomPipelinedWithOptions(self: Client, user_ctx: *anyopaque, build: ?CreateRoom.BuildFn, on_return: CreateRoom.Callback, options: rpc.peer.CallOptions) !CreateRoomPipeline {
+            if (self.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
             const qid = try self.callCreateRoomWithOptions(user_ctx, build, on_return, options);
             return .{ .peer = self.peer, .question_id = qid };
         }
@@ -6491,6 +6537,7 @@ pub const ChatService = struct {
         }
 
         pub fn callJoinRoomPipelinedWithOptions(self: Client, user_ctx: *anyopaque, build: ?JoinRoom.BuildFn, on_return: JoinRoom.Callback, options: rpc.peer.CallOptions) !JoinRoomPipeline {
+            if (self.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
             const qid = try self.callJoinRoomWithOptions(user_ctx, build, on_return, options);
             return .{ .peer = self.peer, .question_id = qid };
         }
@@ -6934,7 +6981,12 @@ pub const ChatService = struct {
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
                     .imported => |imported| return .{ .peer = peer, .cap_id = imported.id, .origin = .imported },
-                    else => return error.UnexpectedCapabilityType,
+                    .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                    .promised => |promised| switch (try peer.resolvePromisedAnswer(promised)) {
+                        .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                        else => return error.UnexpectedCapabilityType,
+                    },
+                    .none => return error.UnexpectedCapabilityType,
                 }
             }
 
@@ -7046,6 +7098,7 @@ pub const ChatService = struct {
                 var any = try self._builder.getAnyPointer(0);
                 switch (client.origin) {
                     .imported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.receiverHosted), client.cap_id),
+                    .exported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.senderHosted), client.cap_id),
                     .unspecified => try any.setCapability(.{ .id = client.cap_id }),
                 }
             }
@@ -7388,7 +7441,12 @@ pub const ChatService = struct {
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
                     .imported => |imported| return .{ .peer = peer, .cap_id = imported.id, .origin = .imported },
-                    else => return error.UnexpectedCapabilityType,
+                    .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                    .promised => |promised| switch (try peer.resolvePromisedAnswer(promised)) {
+                        .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                        else => return error.UnexpectedCapabilityType,
+                    },
+                    .none => return error.UnexpectedCapabilityType,
                 }
             }
 
@@ -7475,6 +7533,7 @@ pub const ChatService = struct {
                 var any = try self._builder.getAnyPointer(0);
                 switch (client.origin) {
                     .imported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.receiverHosted), client.cap_id),
+                    .exported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.senderHosted), client.cap_id),
                     .unspecified => try any.setCapability(.{ .id = client.cap_id }),
                 }
             }
@@ -8134,6 +8193,7 @@ pub const ChatService = struct {
                     return self.raw.callCreateRoom(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callCreateRoomPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CreateRoom.BuildFn, comptime callback: _Applied.CreateRoom.Callback) !_Applied.CreateRoom.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callCreateRoom(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -8142,6 +8202,7 @@ pub const ChatService = struct {
                     return self.raw.callJoinRoom(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callJoinRoomPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.JoinRoom.BuildFn, comptime callback: _Applied.JoinRoom.Callback) !_Applied.JoinRoom.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callJoinRoom(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -8154,6 +8215,7 @@ pub const ChatService = struct {
                     return self.raw.callWhisper(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callWhisperPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Whisper.BuildFn, comptime callback: _Applied.Whisper.Callback) !_Applied.Whisper.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callWhisper(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }

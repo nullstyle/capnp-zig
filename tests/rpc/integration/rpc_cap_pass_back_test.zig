@@ -495,6 +495,170 @@ test "a server hands a client's capability back and the client receives its own 
     try expectExported(0, fx.client.promise_raw);
 }
 
+// -- Coming home: resolveX accepts the peer's own export ---------------------------
+
+test "resolveX turns a capability that came home into a callable local Client" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+
+    _ = try fx.reflect(.{});
+    const home_id = fx.server.home_export_id orelse return error.HomeNotExported;
+    fx.client.cb = fx.client.promise orelse return error.PromiseNotResolved;
+
+    // The server resolves `cb` with the generated resolveCb and calls it.
+    fx.server.invoke_mode = .resolve_and_call;
+    _ = try fx.invokeCap();
+
+    try std.testing.expectEqual(@as(?anyerror, null), fx.server.invoke_resolve_error);
+    try expectExported(home_id, fx.server.invoke_cb);
+    const cb = fx.server.invoke_cb_client orelse return error.ResolveCbDidNotRun;
+    try std.testing.expectEqual(home_id, cb.cap_id);
+    try std.testing.expectEqual(capnpc.rpc.peer.ClientOrigin.exported, cb.origin);
+    // getNumber reached the server's own `home` (base 1000), locally: no
+    // client decoy ran and the call never touched the wire.
+    try std.testing.expectEqual(@as(u32, 1), fx.server.home.calls);
+    try std.testing.expectEqual(@as(?u32, 1000), fx.server.invoke_cb_n);
+    try std.testing.expectEqual(@as(?u32, 1000), fx.client.invoke_observed);
+    try std.testing.expectEqual(@as(u32, 0), fx.decoy0.calls);
+    try std.testing.expectEqual(@as(u32, 0), fx.decoy1.calls);
+    for (fx.wire.events.items) |event| {
+        if (event.dir == .server_to_client and event.tag == .call) return error.LocalCallWentOnTheWire;
+    }
+
+    // release() on a local Client owns no import, so it sends nothing.
+    const releases_before = fx.wire.countReleases(.server_to_client, home_id);
+    cb.release();
+    try std.testing.expectEqual(releases_before, fx.wire.countReleases(.server_to_client, home_id));
+}
+
+test "release() on a local Client leaves an import with the same id alone" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+
+    _ = try fx.reflect(.{});
+    const home_id = fx.server.home_export_id orelse return error.HomeNotExported;
+
+    // invokeCap(cb = the client's decoy1, its export 1): the server resolves
+    // it to an import it keeps, so the server now holds export 1 (`home`)
+    // and import 1 (decoy1) at once.
+    fx.client.cb = CallSequence.Client.init(&fx.client_peer, 1);
+    fx.server.invoke_mode = .resolve_and_call;
+    _ = try fx.invokeCap();
+    try std.testing.expectEqual(@as(?u32, 900), fx.client.invoke_observed);
+    try std.testing.expectEqual(capnpc.rpc.peer.ClientOrigin.imported, fx.server.invoke_cb_client.?.origin);
+    try std.testing.expectEqual(home_id, fx.server.invoke_cb_client.?.cap_id);
+    try std.testing.expect(fx.server_peer.caps.hasExport(home_id));
+    try std.testing.expect(fx.server_peer.caps.hasImport(home_id));
+
+    // A local Client for `home` owns no import: its release() must not spend
+    // the server's reference to decoy1.
+    const local = CallSequence.Client{ .peer = &fx.server_peer, .cap_id = home_id, .origin = .exported };
+    local.release();
+    try std.testing.expectEqual(@as(usize, 0), fx.wire.countReleases(.server_to_client, home_id));
+    try std.testing.expect(fx.server_peer.caps.hasImport(home_id));
+}
+
+test "resolveX resolves a receiverAnswer param whose answer returned to a local Client" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+
+    // reflect, keeping the answer open (no Finish) so a later call can still
+    // name it.
+    const reflect_question = try fx.reflect(.{ .result_lifetime = .retained });
+    const home_id = fx.server.home_export_id orelse return error.HomeNotExported;
+
+    // invokeCap(cb = receiverAnswer(reflect, [promise])): a pipelined
+    // capability in params, the shape the C++ reference sends.
+    const ops = [_]protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = 0 }};
+    fx.client.cb_raw = try fx.client_peer.caps.noteReceiverAnswerOps(reflect_question, &ops);
+    fx.server.invoke_mode = .resolve_and_call;
+    _ = try fx.invokeCap();
+
+    const call = fx.wire.lastCall(Reflector.InvokeCap.ordinal) orelse return error.MissingInvokeCapCall;
+    try std.testing.expectEqual(protocol.CapDescriptorTag.receiverAnswer, call.cap_tags[0]);
+    try std.testing.expectEqual(@as(?anyerror, null), fx.server.invoke_resolve_error);
+    const cb = fx.server.invoke_cb_client orelse return error.ResolveCbDidNotRun;
+    try std.testing.expectEqual(home_id, cb.cap_id);
+    try std.testing.expectEqual(capnpc.rpc.peer.ClientOrigin.exported, cb.origin);
+    try std.testing.expectEqual(@as(?u32, 1000), fx.client.invoke_observed);
+    try std.testing.expectEqual(@as(u32, 0), fx.decoy1.calls);
+
+    try fx.client_peer.finishRetainedQuestion(reflect_question, true);
+}
+
+test "resolveX hands a local Client back out as the peer's own capability" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+
+    // First reflect: the client imports the server's `home`.
+    _ = try fx.reflect(.{});
+    const home_id = fx.server.home_export_id orelse return error.HomeNotExported;
+    const home = fx.client.promise orelse return error.PromiseNotResolved;
+
+    // Second reflect(target = home): the server resolves `target` (its own
+    // export, come home) and returns it with the generated setter.
+    fx.client.target = home;
+    fx.client.promise = null;
+    fx.client.promise_raw = null;
+    fx.server.reflect_mode = .echo_target;
+    const question_id = try fx.reflect(.{});
+    try expectExported(home_id, fx.server.reflect_target);
+    try std.testing.expectEqual(@as(?anyerror, null), fx.server.echo_resolve_error);
+
+    const ret = fx.wire.serverReturn(question_id) orelse return error.MissingReflectReturn;
+    try std.testing.expectEqual(@as(usize, 1), ret.cap_count);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, ret.cap_tags[0]);
+    try std.testing.expectEqual(home_id, ret.cap_ids[0]);
+    const again = fx.client.promise orelse return error.PromiseNotResolved;
+    try std.testing.expectEqual(home_id, again.cap_id);
+    try std.testing.expectEqual(capnpc.rpc.peer.ClientOrigin.imported, again.origin);
+}
+
+test "resolveX fails closed on a receiverAnswer param that resolves to an import" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+
+    // reflect(target = decoy0) with the echo server: the open answer's
+    // `promise` is the server's IMPORT of the client's decoy0.
+    fx.server.reflect_mode = .echo_target;
+    const reflect_question = try fx.reflect(.{ .result_lifetime = .retained });
+
+    const ops = [_]protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = 0 }};
+    fx.client.cb_raw = try fx.client_peer.caps.noteReceiverAnswerOps(reflect_question, &ops);
+    fx.server.invoke_mode = .resolve_and_call;
+    _ = try fx.invokeCap();
+
+    // A Client for that import would own no reference of its own, so its
+    // release() would spend a reference someone else holds: refuse it.
+    try std.testing.expectEqual(@as(?anyerror, error.UnexpectedCapabilityType), fx.server.invoke_resolve_error);
+    try std.testing.expect(fx.client.invoke_exception);
+    try std.testing.expectEqual(@as(u32, 0), fx.decoy0.calls);
+
+    try fx.client_peer.finishRetainedQuestion(reflect_question, true);
+}
+
+test "a local Client refuses pipelined calls instead of sending them to the wrong vat" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+
+    // The server's own bootstrap export, held as a local Client. A local
+    // call's question never reaches the wire, so a call pipelined on its
+    // answer has nowhere correct to go.
+    const local = Reflector.Client{ .peer = &fx.server_peer, .cap_id = 0, .origin = .exported };
+    const events_before = fx.wire.events.items.len;
+    try std.testing.expectError(
+        error.LocalCapabilityPipelineUnsupported,
+        local.callReflectPipelined(&fx.client, null, ClientState.onReflectReturn),
+    );
+    try std.testing.expectEqual(events_before, fx.wire.events.items.len);
+}
+
 test "a Builder reads back the capability a generated setXClient wrote" {
     var peer = Peer.initDetached(std.testing.allocator);
     defer peer.deinit();
@@ -509,4 +673,81 @@ test "a Builder reads back the capability a generated setXClient wrote" {
     try std.testing.expectEqual(@as(u32, 7), (try params.getCb()).id);
     try params.setCbClient(CallSequence.Client.init(&peer, 9));
     try std.testing.expectEqual(@as(u32, 9), (try params.getCb()).id);
+}
+
+/// Builds invokeCap params whose `cb` is a local Client of the server's own
+/// `home` export.
+const LocalParamCtx = struct {
+    peer: *Peer,
+    home_id: u32,
+    returned: bool = false,
+
+    fn build(ctx_ptr: *anyopaque, params: *Reflector.InvokeCapParams.Builder) anyerror!void {
+        const self: *LocalParamCtx = @ptrCast(@alignCast(ctx_ptr));
+        try params.setCbClient(.{ .peer = self.peer, .cap_id = self.home_id, .origin = .exported });
+    }
+
+    fn onReturn(ctx_ptr: *anyopaque, _: *Peer, _: Reflector.InvokeCap.Response, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *LocalParamCtx = @ptrCast(@alignCast(ctx_ptr));
+        self.returned = true;
+    }
+};
+
+test "a local Client call with a capability in its params fails closed" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+
+    _ = try fx.reflect(.{});
+    const home_id = fx.server.home_export_id orelse return error.HomeNotExported;
+    fx.server.invoke_mode = .resolve_and_call;
+
+    // The server calls its own Reflector (export 0) locally with
+    // cb = its own `home`. A local call goes through the loopback, which
+    // decodes the params' descriptors as if the remote had sent them, so
+    // `home` would arrive as an import with the same id (the client's
+    // decoy1). Refuse the call instead of handing over the wrong capability.
+    const local_reflector = Reflector.Client{ .peer = &fx.server_peer, .cap_id = 0, .origin = .exported };
+    var ctx = LocalParamCtx{ .peer = &fx.server_peer, .home_id = home_id };
+    const events_before = fx.wire.events.items.len;
+    try std.testing.expectError(
+        error.LocalCallParamCapsUnsupported,
+        local_reflector.callInvokeCap(&ctx, LocalParamCtx.build, LocalParamCtx.onReturn),
+    );
+    try std.testing.expect(!ctx.returned);
+    try std.testing.expectEqual(@as(?cap_table.ResolvedCap, null), fx.server.invoke_cb);
+    try std.testing.expectEqual(@as(u32, 0), fx.decoy1.calls);
+    try std.testing.expectEqual(events_before, fx.wire.events.items.len);
+    try std.testing.expect(!fx.server_peer.caps.hasImport(home_id));
+}
+
+test "resolveX fails with PromiseUnresolved for a receiverAnswer whose answer has not returned" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    // invokeCap params whose `cb` is receiverAnswer(question 5, [field 0]),
+    // decoded the way an inbound Call is. This peer has no answer 5.
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var call = try builder.beginCall(1, Reflector.interface_id, Reflector.InvokeCap.ordinal);
+    try call.setTargetImportedCap(0);
+    var payload = try call.payloadTyped();
+    var content = try payload.initContent();
+    var params = Reflector.InvokeCapParams.Builder.wrap(try content.initStruct(0, 1));
+    try params.setCbCapability(.{ .id = 0 });
+    var cap_list = try call.initCapTableTyped(1);
+    const ops = [_]protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = 0 }};
+    try protocol.CapDescriptor.writeReceiverAnswer((try cap_list.get(0))._builder, 5, &ops);
+    const bytes = try builder.finish();
+    defer allocator.free(bytes);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+    defer decoded.deinit();
+    const inbound_call = try decoded.asCall();
+    var caps = try cap_table.InboundCapTable.init(allocator, inbound_call.params.cap_table, &peer.caps);
+    defer caps.deinit();
+    const reader = Reflector.InvokeCapParams.Reader.wrap(try inbound_call.params.content.getStruct());
+
+    try std.testing.expectError(error.PromiseUnresolved, reader.resolveCb(&peer, &caps));
 }

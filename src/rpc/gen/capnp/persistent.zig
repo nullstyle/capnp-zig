@@ -306,7 +306,8 @@ pub const Persistent = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
         /// Experimental. The id space `cap_id` names. `init` leaves it
-        /// `.unspecified`; bootstrap and `resolveX` set `.imported`.
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
         origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
@@ -317,6 +318,8 @@ pub const Persistent = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
@@ -328,7 +331,11 @@ pub const Persistent = struct {
             const ctx = try self.peer.allocator.create(Save.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Save.ordinal, ctx, Save.callBuild, Save.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, Save.ordinal, ctx, Save.callBuild, Save.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Save.ordinal, ctx, Save.callBuild, Save.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -820,6 +827,7 @@ pub const Persistent = struct {
                     return self.raw.callSave(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSavePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Save.BuildFn, comptime callback: _Applied.Save.Callback) !_Applied.Save.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callSave(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }

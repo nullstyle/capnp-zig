@@ -476,6 +476,7 @@ pub fn Emitter(comptime G: type) type {
                     const result_node = self.getNode(entry.method.result_struct_type) orelse return error.InvalidStructNode;
                     if (!pipelined and needsData(self, result_node)) try writer.print(
                         \\            pub fn call{s}Pipelined(self: @This(), {s}ctx: *anyopaque, comptime build: ?{s}.BuildFn, comptime callback: {s}.Callback) !{s}.Results.Pipeline {{
+                        \\                if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                         \\                const qid = try self.call{s}({s}ctx, build, callback);
                         \\                return .{{ .peer = self.raw.peer, .question_id = qid }};
                         \\            }}

@@ -214,6 +214,18 @@ pub const ClientOrigin = enum {
     /// capability (`receiverHosted`) even when a local export has the same
     /// id.
     imported,
+    /// One of this peer's own exports that came back from the remote (a
+    /// `receiverHosted` descriptor, or a `receiverAnswer` whose answer
+    /// returned one). The generated `resolveX` makes these. Calls go
+    /// through the local loopback, `release()` does nothing (the Client
+    /// owns no import), and `setXClient` writes the export
+    /// (`senderHosted`, or `senderPromise` for an unresolved promise
+    /// export). A call whose params carry a capability fails with
+    /// `error.LocalCallParamCapsUnsupported`, and pipelined and streaming
+    /// calls fail with `error.LocalCapabilityPipelineUnsupported` and
+    /// `error.LocalCapabilityStreamingUnsupported`. The Client is valid while
+    /// the export lives.
+    exported,
 };
 
 const QuestionDeinitCtxFn = state.QuestionDeinitCtxFn;
@@ -3043,6 +3055,20 @@ pub const Peer = struct {
         options: CallOptions,
     ) !u32 {
         return CallSendImpl.sendCallResolvedWithOptions(self, target, interface_id, method_id, ctx, build, on_return, options);
+    }
+
+    /// Experimental generator plumbing. Body in `call/peer_call_send.zig`.
+    pub fn sendCallResolvedGeneratedWithOptions(
+        self: *Peer,
+        target: cap_table.ResolvedCap,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+        options: CallOptions,
+    ) !u32 {
+        return CallSendImpl.sendCallResolvedGeneratedWithOptions(self, target, interface_id, method_id, ctx, build, on_return, options);
     }
 
     /// Body in `call/peer_call_send.zig`.

@@ -122,19 +122,26 @@ fn classifyCap(table: *CapTable, cap_id: u32) error{UnknownCapabilityId}!protoco
 
 /// Resolve a payload capability pointer to its outbound descriptor variant.
 ///
-/// If the pointer carries an origin tag (forwarded or provided caps, whose true
-/// id-space is known at the boundary) that tag is authoritative — we NEVER
-/// re-derive the space from the bare id, which is ambiguous when the local
-/// export and remote import id spaces collide (a remote can force the collision;
-/// see `lifecycle.noteImport`). Only genuinely local, app-authored pointers
-/// (no origin tag) fall back to `classifyCap`, where the id is unambiguously one
-/// of our own tables by construction.
+/// If the pointer carries an origin tag (forwarded or provided caps, and the
+/// generated `setXClient` for a Client that knows its id space) that tag is
+/// authoritative — we NEVER re-derive the space from the bare id, which is
+/// ambiguous when the local export and remote import id spaces collide (both
+/// start at 0, and a remote can force the collision; see
+/// `lifecycle.noteImport`). Plain pointers (no origin tag) fall back to
+/// `classifyCap`, where a local export wins over an import with the same id.
+///
+/// The tag fixes the id SPACE. Inside the export space, whether an export is
+/// still an unresolved promise is live state, so a `senderHosted` tag on an
+/// export that is still a promise goes out as `senderPromise` (the remote
+/// must then expect its Resolve). A generated Client for one of our own
+/// exports writes `senderHosted` without knowing that state.
 fn resolveCapEntry(table: *CapTable, pointer_word: u64) !OutboundEntry {
     const info = try decodeCapabilityWithOrigin(pointer_word);
-    const tag = if (info.origin_code) |code|
-        try descriptors.tagForOriginCode(code)
-    else
-        try classifyCap(table, info.cap_id);
+    const tag = if (info.origin_code) |code| blk: {
+        const tagged = try descriptors.tagForOriginCode(code);
+        if (tagged == .senderHosted and table.isExportPromise(info.cap_id)) break :blk .senderPromise;
+        break :blk tagged;
+    } else try classifyCap(table, info.cap_id);
     return .{ .tag = tag, .id = info.cap_id };
 }
 

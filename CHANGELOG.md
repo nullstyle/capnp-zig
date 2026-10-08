@@ -17,6 +17,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrapper's `asAncestor` keeps the origin. See "Passing capabilities back"
   in docs/generated-api.md.
 
+- **The generated `resolveX` accepts a capability that came home.** Before,
+  it returned `error.UnexpectedCapabilityType` for anything but an import,
+  so a server could not take back a capability it had issued. Now one of
+  the peer's own exports (a `receiverHosted` descriptor, or a
+  `receiverAnswer` whose answer has returned an export) resolves to a Client
+  with the new origin `.exported`. Its `callX` runs the export's handler
+  through the local loopback (the new generator plumbing
+  `Peer.sendCallResolvedGeneratedWithOptions`), `release()` does nothing,
+  and `setXClient` writes the export back out, as `senderPromise` while it
+  is still a promise export. Calls that the local path cannot carry fail
+  instead of misrouting: a call with capabilities in its params
+  (`error.LocalCallParamCapsUnsupported`), `callXPipelined`
+  (`error.LocalCapabilityPipelineUnsupported`) and a `StreamClient`
+  streaming call (`error.LocalCapabilityStreamingUnsupported`). A
+  `receiverAnswer` that resolves to an import, and a null capability, still
+  fail with `error.UnexpectedCapabilityType`; a `receiverAnswer` whose
+  answer has not returned fails with `error.PromiseUnresolved`. This
+  affects servers that receive their own capabilities back, including from
+  C++, Go and Rust clients that pipeline a capability into params.
+
 - **Level-3 vat hosting over the WASM host ABI (feature bit `11`).** Four new
   exports surface the vat-wide `ProvisionIndex` so a vat represented by
   several module-local peers can serve an Accept arriving on one connection
@@ -61,6 +81,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   classification, where a local export wins, so code that wraps its own
   export ids in `Client.init` (as `tests/e2e/zig/main_client.zig` does)
   still works. Regenerate your bindings to get the fix.
+
+### Documentation
+
+- **docs/generated-api.md has a new section, "Passing capabilities back".**
+  It explains why one id can name both a local export and an import, what
+  each `Client.origin` means for `setXClient`, calls and `release()`, and
+  which capabilities `resolveX` accepts.
 
 ## [0.22.0] - 2026-10-07
 

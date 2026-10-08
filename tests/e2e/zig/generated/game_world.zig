@@ -4904,7 +4904,8 @@ pub const GameWorld = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
         /// Experimental. The id space `cap_id` names. `init` leaves it
-        /// `.unspecified`; bootstrap and `resolveX` set `.imported`.
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
         origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
@@ -4915,6 +4916,8 @@ pub const GameWorld = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
@@ -4926,7 +4929,11 @@ pub const GameWorld = struct {
             const ctx = try self.peer.allocator.create(SpawnEntity.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, SpawnEntity.ordinal, ctx, SpawnEntity.callBuild, SpawnEntity.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, SpawnEntity.ordinal, ctx, SpawnEntity.callBuild, SpawnEntity.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, SpawnEntity.ordinal, ctx, SpawnEntity.callBuild, SpawnEntity.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4944,7 +4951,11 @@ pub const GameWorld = struct {
             const ctx = try self.peer.allocator.create(DespawnEntity.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, DespawnEntity.ordinal, ctx, DespawnEntity.callBuild, DespawnEntity.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, DespawnEntity.ordinal, ctx, DespawnEntity.callBuild, DespawnEntity.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, DespawnEntity.ordinal, ctx, DespawnEntity.callBuild, DespawnEntity.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4962,7 +4973,11 @@ pub const GameWorld = struct {
             const ctx = try self.peer.allocator.create(GetEntity.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetEntity.ordinal, ctx, GetEntity.callBuild, GetEntity.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, GetEntity.ordinal, ctx, GetEntity.callBuild, GetEntity.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetEntity.ordinal, ctx, GetEntity.callBuild, GetEntity.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4980,7 +4995,11 @@ pub const GameWorld = struct {
             const ctx = try self.peer.allocator.create(MoveEntity.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, MoveEntity.ordinal, ctx, MoveEntity.callBuild, MoveEntity.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, MoveEntity.ordinal, ctx, MoveEntity.callBuild, MoveEntity.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, MoveEntity.ordinal, ctx, MoveEntity.callBuild, MoveEntity.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4998,7 +5017,11 @@ pub const GameWorld = struct {
             const ctx = try self.peer.allocator.create(DamageEntity.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, DamageEntity.ordinal, ctx, DamageEntity.callBuild, DamageEntity.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, DamageEntity.ordinal, ctx, DamageEntity.callBuild, DamageEntity.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, DamageEntity.ordinal, ctx, DamageEntity.callBuild, DamageEntity.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -5016,7 +5039,11 @@ pub const GameWorld = struct {
             const ctx = try self.peer.allocator.create(QueryArea.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, QueryArea.ordinal, ctx, QueryArea.callBuild, QueryArea.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, QueryArea.ordinal, ctx, QueryArea.callBuild, QueryArea.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, QueryArea.ordinal, ctx, QueryArea.callBuild, QueryArea.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -7206,6 +7233,7 @@ pub const GameWorld = struct {
                     return self.raw.callSpawnEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callSpawnEntityPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.SpawnEntity.BuildFn, comptime callback: _Applied.SpawnEntity.Callback) !_Applied.SpawnEntity.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callSpawnEntity(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -7218,6 +7246,7 @@ pub const GameWorld = struct {
                     return self.raw.callGetEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetEntityPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetEntity.BuildFn, comptime callback: _Applied.GetEntity.Callback) !_Applied.GetEntity.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callGetEntity(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -7226,6 +7255,7 @@ pub const GameWorld = struct {
                     return self.raw.callMoveEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callMoveEntityPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.MoveEntity.BuildFn, comptime callback: _Applied.MoveEntity.Callback) !_Applied.MoveEntity.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callMoveEntity(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -7234,6 +7264,7 @@ pub const GameWorld = struct {
                     return self.raw.callDamageEntity(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callDamageEntityPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.DamageEntity.BuildFn, comptime callback: _Applied.DamageEntity.Callback) !_Applied.DamageEntity.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callDamageEntity(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
