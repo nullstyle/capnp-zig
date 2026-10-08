@@ -165,6 +165,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Two new tests in `prehandshake.zig`: one fails the append, one sweeps
   every allocation failure with `checkAllAllocationFailures`.
 
+- **QUIC (Experimental): `WarmRedialClient.requestStop` could write into a
+  dead stack frame.** The live generation's connection is a local of the
+  run thread. `requestStop` read it under the client's lock, released the
+  lock, and only then closed it. A generation that ended on its own in that
+  gap (a stateless reset, an idle or handshake timeout, a peer close) tore
+  the connection down, and `run` could return and its thread exit, before
+  the close landed. The close then wrote into a dead or reused frame: a
+  crash, a corrupted stack on the run thread, or a byte written to an
+  unrelated descriptor. Any application that stops a running client from
+  another thread, the documented use, was exposed; the gap is a few
+  instructions wide, so a hit was rare. A stop could also reach a
+  connection that the run thread had already torn down, because the run
+  thread withdrew the connection only after its teardown. `requestStop` now
+  closes the connection while it holds the lock, and the run thread
+  withdraws the connection under the lock before any teardown. New test in
+  the QUIC peer suite ("WarmRedialClient.requestStop never writes into a
+  generation that ended on its own") forces the gap. On the old code it
+  finds the 3 bytes the stop wrote into the dead frame.
+
 ## [0.21.0] - 2026-10-06
 
 This release moves QUIC to quic-zig v0.30.1 (about 91 KB per connection

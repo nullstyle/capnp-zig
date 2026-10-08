@@ -173,6 +173,9 @@ pub const WarmRedialClient = struct {
     mu: std.Io.Mutex = .init,
     ticket: ?[]u8 = null,
     token: ?[]u8 = null,
+    /// The live generation's connection, a local of the run thread's
+    /// `runGeneration` frame. Use it only while holding `mu`: the run thread
+    /// clears it under `mu` before it tears the connection down.
     current_conn: ?*Connection = null,
     stop_requested: bool = false,
 
@@ -263,14 +266,19 @@ pub const WarmRedialClient = struct {
     }
 
     /// Cross-thread stop: ends the current generation and makes `run`
-    /// return after its teardown instead of redialing.
+    /// return after its teardown instead of redialing. Safe at any time,
+    /// including while a generation ends on its own.
     pub fn requestStop(self: *WarmRedialClient) void {
         self.mu.lockUncancelable(self.io);
+        defer self.mu.unlock(self.io);
         self.stop_requested = true;
-        const conn = self.current_conn;
-        self.mu.unlock(self.io);
-        // Cross-thread-safe by the QUIC connection's contract.
-        if (conn) |c| c.requestClose();
+        // Close under `mu`. `current_conn` lives in the run thread's stack
+        // frame, and the run thread clears it under `mu` before it tears the
+        // connection down. Once `mu` is released, the generation may end, the
+        // connection may be freed, and `run` may return. requestClose is
+        // cross-thread-safe by the QUIC connection's contract and takes no
+        // lock that the run thread holds while it waits for `mu`.
+        if (self.current_conn) |c| c.requestClose();
     }
 
     /// Blocking generation loop on the calling thread (the thread also
@@ -426,11 +434,12 @@ pub const WarmRedialClient = struct {
             if (self.stop_requested) return true;
             self.current_conn = &conn;
         }
-        defer {
-            self.mu.lockUncancelable(self.io);
-            self.current_conn = null;
-            self.mu.unlock(self.io);
-        }
+        // Unpublish before `conn.deinit()` on every path: the error-path
+        // defers run this before the `conn` defer above, and the normal path
+        // calls it before its teardown below. After it returns, no
+        // `requestStop` can reach `conn`.
+        var conn_published = true;
+        defer if (conn_published) self.unpublishConn();
 
         var peer = Peer.init(self.allocator, &conn);
         var peer_alive = true;
@@ -470,6 +479,9 @@ pub const WarmRedialClient = struct {
             if (quic_conn.earlyDataStatus() == .accepted) self.zero_rtt_generations +|= 1;
         }
 
+        // A `requestStop` that holds `mu` finishes its requestClose first.
+        self.unpublishConn();
+        conn_published = false;
         _ = peer.takeAttachedConnection(*Connection);
         peer.deinit();
         peer_alive = false;
@@ -477,6 +489,14 @@ pub const WarmRedialClient = struct {
         conn_alive = false;
 
         return self.stopRequested();
+    }
+
+    /// Withdraw the generation's connection from `requestStop`. It waits for
+    /// a `requestStop` that holds `mu` to finish with the connection.
+    fn unpublishConn(self: *WarmRedialClient) void {
+        self.mu.lockUncancelable(self.io);
+        defer self.mu.unlock(self.io);
+        self.current_conn = null;
     }
 
     fn stopRequested(self: *WarmRedialClient) bool {

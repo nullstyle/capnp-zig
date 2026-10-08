@@ -3553,6 +3553,230 @@ test "WarmRedialClient budget gives up when every generation idles out after its
 }
 
 // ---------------------------------------------------------------------------
+// WarmRedialClient.requestStop while a generation ends on its own. The
+// generation's connection is a local in the run thread's stack frame, and
+// requestStop reaches it through `current_conn`. Up to 52c3fe3, requestStop
+// read that pointer under `mu`, released `mu`, and only then called
+// requestClose. A generation that ended in that gap (a stateless reset, an
+// idle or handshake timeout, a peer close) tore the connection down and `run`
+// returned, so the stop wrote into a dead stack frame, or into whatever frame
+// had reused it.
+//
+// The natural gap is a few instructions wide, so the test forces it. The
+// client's `Io` parks the stopper right after it releases a contended `mu`.
+// The generation dials a server that never answers, so it ends on its own at
+// a short handshake timeout. The run thread then zeroes a stack area over the
+// dead generation's frame, and any byte the stop writes there shows up.
+// ---------------------------------------------------------------------------
+
+/// `std.testing.io` with one change: `futexWake` can park the calling thread
+/// right after it wakes a waiter on one chosen futex word. `std.Io.Mutex`
+/// calls `futexWake` from `unlock` when the mutex is contended. A thread
+/// armed here therefore stops just after it releases a contended mutex.
+const ParkAfterUnlockIo = struct {
+    const vtable: std.Io.VTable = blk: {
+        var v = std.testing.io.vtable.*;
+        v.futexWake = futexWake;
+        break :blk v;
+    };
+    /// Address of the futex word to park on (the client's `mu`), or 0.
+    var target: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
+    /// Set on the one thread that should park. The first park clears it.
+    threadlocal var armed: bool = false;
+    var parked: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+    var release: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+    /// A park ends here even without `release`, so a broken schedule fails
+    /// the test instead of hanging it.
+    const park_limit_ms: u64 = 10_000;
+
+    fn io() std.Io {
+        return .{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    }
+
+    fn reset(word: usize) void {
+        parked.store(false, .release);
+        release.store(false, .release);
+        target.store(word, .release);
+    }
+
+    fn futexWake(userdata: ?*anyopaque, ptr: *const u32, max_waiters: u32) void {
+        std.testing.io.vtable.futexWake(userdata, ptr, max_waiters);
+        if (!armed or @intFromPtr(ptr) != target.load(.acquire)) return;
+        armed = false;
+        parked.store(true, .release);
+        var waited_ms: u64 = 0;
+        while (!release.load(.acquire) and waited_ms < park_limit_ms) : (waited_ms += 1) {
+            loopback.sleepMs(1);
+        }
+    }
+};
+
+const StopRace = struct {
+    client: *quic.WarmRedialClient,
+    run_result: ?anyerror!quic.WarmRedialClient.Outcome = null,
+    /// Set by the stopper just before it calls requestStop.
+    stopper_started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Set once `victim` has zeroed its area; `area_lo` is valid from then.
+    victim_armed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    area_lo: usize = 0,
+    stopper_done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Nonzero bytes `victim` found in its area after the stop returned.
+    stray_bytes: usize = 0,
+
+    const area_bytes: usize = 512 * 1024;
+
+    fn runThread(self: *StopRace) void {
+        // Two calls from the same frame: `victim`'s area starts where
+        // `runClient`'s frame did and spans the generation's frame below it.
+        self.runClient();
+        self.victim();
+    }
+
+    noinline fn runClient(self: *StopRace) void {
+        self.run_result = self.client.run();
+    }
+
+    /// Zero a stack area over the frame `run` used, hold it until the stop has
+    /// returned, then count the bytes that are no longer zero.
+    noinline fn victim(self: *StopRace) void {
+        var area: [area_bytes]u8 = undefined;
+        // Volatile, so no optimization mode can assume the area stays zero.
+        const bytes: [*]volatile u8 = &area;
+        for (0..area_bytes) |i| bytes[i] = 0;
+        self.area_lo = @intFromPtr(&area);
+        self.victim_armed.store(true, .release);
+        var waited_ms: u64 = 0;
+        while (!self.stopper_done.load(.acquire) and waited_ms < ParkAfterUnlockIo.park_limit_ms) : (waited_ms += 1) {
+            loopback.sleepMs(1);
+        }
+        var stray: usize = 0;
+        for (0..area_bytes) |i| {
+            if (bytes[i] != 0) stray += 1;
+        }
+        self.stray_bytes = stray;
+    }
+
+    fn stopper(self: *StopRace) void {
+        ParkAfterUnlockIo.armed = true;
+        defer ParkAfterUnlockIo.armed = false;
+        self.stopper_started.store(true, .release);
+        self.client.requestStop();
+    }
+
+    fn onRebind(_: ?*anyopaque, _: *Peer, _: cap_table.ResolvedCap) void {}
+};
+
+/// Wait up to `limit_ms` for `flag`.
+fn waitFlag(flag: *const std.atomic.Value(bool), limit_ms: u64) bool {
+    var waited_ms: u64 = 0;
+    while (!flag.load(.acquire)) : (waited_ms += 1) {
+        if (waited_ms >= limit_ms) return false;
+        loopback.sleepMs(1);
+    }
+    return true;
+}
+
+fn runStopRace(allocator: std.mem.Allocator) !void {
+    // Never stepped: the client's Initials go unanswered, so a generation
+    // that nobody stops ends on its own at `handshake_timeout_ms`.
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+    });
+    defer server.deinit();
+
+    const handshake_timeout_ms: u64 = 1_000;
+    var client = try quic.WarmRedialClient.init(
+        allocator,
+        ParkAfterUnlockIo.io(),
+        .{
+            .remote_addr = server.getAddress(),
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+            .handshake_timeout_ms = handshake_timeout_ms,
+        },
+        RedialEcho.sturdy_ref,
+        .{ .max_redials = 0, .backoff_ms = 1 },
+        null,
+        StopRace.onRebind,
+        null,
+    );
+    defer client.deinit();
+    ParkAfterUnlockIo.reset(@intFromPtr(&client.mu.state));
+
+    var race = StopRace{ .client = &client };
+    const run_thread = try std.Thread.spawn(.{}, StopRace.runThread, .{&race});
+    var stop_thread: ?std.Thread = null;
+    var joined = false;
+    // A failed check lets both threads finish before `client` and `race` go
+    // out of scope.
+    defer if (!joined) {
+        ParkAfterUnlockIo.release.store(true, .release);
+        if (stop_thread) |t| t.join();
+        client.requestStop();
+        race.stopper_done.store(true, .release);
+        run_thread.join();
+    };
+
+    // The generation is live once it has published its connection.
+    var conn_addr: usize = 0;
+    var waited_ms: u64 = 0;
+    while (conn_addr == 0 and waited_ms < loopback.loopback_timeout_ms) : (waited_ms += 1) {
+        client.mu.lockUncancelable(client.io);
+        conn_addr = if (client.current_conn) |c| @intFromPtr(c) else 0;
+        client.mu.unlock(client.io);
+        if (conn_addr == 0) loopback.sleepMs(1);
+    }
+    try std.testing.expect(conn_addr != 0);
+
+    // Hold `mu` until the stopper waits on it, so its own unlock is contended
+    // and parks it. No `try` while `mu` is held: the cleanup above needs it.
+    client.mu.lockUncancelable(client.io);
+    const stopper_spawned = std.Thread.spawn(.{}, StopRace.stopper, .{&race});
+    var stopper_waits = false;
+    if (stopper_spawned) |t| {
+        stop_thread = t;
+        stopper_waits = waitFlag(&race.stopper_started, loopback.loopback_timeout_ms);
+        waited_ms = 0;
+        while (stopper_waits and client.mu.state.load(.acquire) != .contended) : (waited_ms += 1) {
+            if (waited_ms >= loopback.loopback_timeout_ms) stopper_waits = false else loopback.sleepMs(1);
+        }
+    } else |_| {}
+    client.mu.unlock(client.io);
+    _ = try stopper_spawned;
+    try std.testing.expect(stopper_waits);
+
+    // The stopper is parked, `mu` released. The generation ends, by the stop
+    // or by its handshake timeout, `run` returns, and the run thread zeroes
+    // its area. Only then does the stopper resume.
+    try std.testing.expect(waitFlag(&race.victim_armed, handshake_timeout_ms + loopback.loopback_timeout_ms));
+    try std.testing.expect(ParkAfterUnlockIo.parked.load(.acquire));
+    ParkAfterUnlockIo.release.store(true, .release);
+    if (stop_thread) |t| t.join();
+    race.stopper_done.store(true, .release);
+    run_thread.join();
+    joined = true;
+
+    // The area must cover the connection the stopper found, or the scan
+    // below proves nothing.
+    try std.testing.expect(conn_addr >= race.area_lo and conn_addr < race.area_lo + StopRace.area_bytes);
+    // The stop wrote nothing into the dead generation's frame.
+    try std.testing.expectEqual(@as(usize, 0), race.stray_bytes);
+    // It closed the live generation instead: `run` stopped on the stop's
+    // close, not on the handshake timeout.
+    const outcome = try (race.run_result orelse return error.NoOutcome);
+    try std.testing.expectEqual(@as(u32, 1), outcome.generations);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.local_close, outcome.last_cause);
+}
+
+test "WarmRedialClient.requestStop never writes into a generation that ended on its own" {
+    // Several fresh clients, each through the same forced interleaving.
+    for (0..4) |_| try runStopRace(std.testing.allocator);
+}
+
+// ---------------------------------------------------------------------------
 // Unauthenticated datagrams. UDP lets anyone who can reach an endpoint send
 // it a datagram, and a QUIC packet is authenticated only by its AEAD tag:
 // every header field in front of the tag (connection-ID lengths, the token
