@@ -21,7 +21,14 @@ const peer_return_frames = @import("./return/peer_return_frames.zig");
 /// run()-auto-adopt and hoisting the deinit affinity assert were both tried
 /// and REVERTED earlier in this sprint — the callback-deferred deinit branch
 /// must not assert, and run() frees `self` during teardown.
-pub fn Lifecycle(comptime Peer: type) type {
+///
+/// `finish_loopback_answer` applies the caller's Finish to one of the peer's
+/// own (loopback) answers in process; cancelling a loopback question uses it
+/// where a wire question sends a Finish frame (see `cancelQuestion`).
+pub fn Lifecycle(
+    comptime Peer: type,
+    comptime finish_loopback_answer: fn (*Peer, u32) anyerror!void,
+) type {
     return struct {
         const QuestionCallback = *const fn (ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void;
         const Question = state.Question(QuestionCallback);
@@ -453,8 +460,16 @@ pub fn Lifecycle(comptime Peer: type) type {
         /// to the remote. Per the Cap'n Proto RPC spec the remote still sends
         /// exactly one Return for the question (possibly `canceled`); the
         /// question entry stays in the table, marked cancelled, so that Return
-        /// is absorbed silently when it arrives. Loopback questions complete
-        /// locally and are removed outright.
+        /// is absorbed silently when it arrives.
+        ///
+        /// A loopback question (a call to one of this peer's own exports) has
+        /// its answer here too, so its Finish is applied in process
+        /// (`finish_loopback_answer`) instead of being sent: the local answer
+        /// is finished early exactly as a remote Finish finishes one, which
+        /// runs the answer-finished hook. The entry stays cancelled and keeps
+        /// its loopback marker until the handler's Return, so that Return is
+        /// delivered here and absorbed, never written to the transport, and
+        /// the id and the loopback slot stay taken until then.
         pub fn cancelQuestion(self: *Peer, question_id: u32, reason: []const u8) !void {
             return cancelQuestionTyped(self, question_id, reason, .failed);
         }
@@ -529,18 +544,37 @@ pub fn Lifecycle(comptime Peer: type) type {
             // caller-owned retained record remains.
             _ = self.retained_questions.retire(logical_question_id);
 
-            if (question.is_loopback) {
-                _ = self.loopback_questions.remove(wire_answer_id);
-                self.removeQuestion(wire_answer_id);
-                try deliverLocalException(self, question, logical_question_id, wire_answer_id, reason, ex_type, route);
-                return;
-            }
-
             // Delivery transfers ctx ownership to the callback; drop the
             // undelivered-cleanup hook so peer deinit cannot double-free.
             entry.cancelled = true;
             entry.deadline_ns = null;
             entry.deinit_ctx = null;
+
+            if (question.is_loopback) {
+                // The Finish below runs the host's callbacks (the
+                // answer-finished hook, the handler's Return) with this
+                // cancel still to finish. Hold the guard an inbound frame
+                // dispatches under (`handleFrameImpl`), so a transport close
+                // or deinit they cause waits until the caller has its
+                // exception.
+                self.enterJoinOperation();
+                defer self.leaveJoinOperation();
+                // The answer is this peer's own. Finish it here, as the
+                // remote would on receiving our Finish. The question keeps
+                // its loopback marker, so the handler's Return (sent from
+                // inside this Finish, or later) is delivered back to this
+                // peer and absorbed by the cancelled entry; it never reaches
+                // the transport. A failed Finish is tolerated like a failed
+                // send below: the marker alone keeps that Return local, and
+                // the caller still observes the exception. The Finish may
+                // re-enter and absorb the Return at once, so `entry` is not
+                // used past this point.
+                finish_loopback_answer(self, wire_answer_id) catch |err| {
+                    log.debug("cancel finish failed for loopback question {}: {}", .{ wire_answer_id, err });
+                };
+                try deliverLocalException(self, question, logical_question_id, wire_answer_id, reason, ex_type, route);
+                return;
+            }
 
             // Tell the remote we no longer want the answer. A send failure is
             // tolerated: the local caller still observes the exception, and
@@ -589,8 +623,8 @@ pub fn Lifecycle(comptime Peer: type) type {
             // the expired ids into a heap list with `append(...) catch break`,
             // so under memory pressure it cancelled nothing that tick. It now
             // settles expired questions in place. Callbacks run from this walk
-            // and may re-enter the peer (new calls, cancels, close): a cancel
-            // marks its entry `cancelled` (or removes a loopback one), so a
+            // and may re-enter the peer (new calls, cancels, close, a loopback
+            // handler's Return): a cancel marks its entry `cancelled`, so a
             // revisit skips it; removals never move other entries; and a
             // callback that grows the map rehashes it, so the walk restarts
             // from the top. A callback that closes the transport empties the
@@ -694,7 +728,13 @@ pub fn Lifecycle(comptime Peer: type) type {
 
         /// Remove and cancel every outstanding question (drain-bound
         /// enforcement). Unlike `cancelQuestion` this does not keep entries
-        /// for late Returns — the transport is about to close.
+        /// for late Returns — the transport is about to close. A loopback
+        /// question's handler may still answer: its loopback marker stays,
+        /// so that Return is delivered here and dropped
+        /// (`Peer.handleReturnFrom`), not written to the transport. Its local
+        /// answer is not finished: this pass runs host callbacks only for the
+        /// questions' terminals, never the answer-finished hook, during
+        /// teardown.
         ///
         /// This entry point serves teardown (`deinit`, transport close), so
         /// delivery failures are only logged; the drain-bound sweep uses the
@@ -743,7 +783,10 @@ pub fn Lifecycle(comptime Peer: type) type {
                 const question = removed.value;
                 const logical_question_id = self.retained_questions.logicalQuestionIdForWire(question_id) orelse question_id;
                 _ = self.retained_questions.retire(logical_question_id);
-                _ = self.loopback_questions.remove(question_id);
+                // A loopback question keeps its loopback marker: its handler
+                // may still answer, and that Return must come back to this
+                // peer (which absorbs it, the question being gone) rather
+                // than reach the transport. The marker goes with that Return.
                 // No wire Return will consume this question's param-export
                 // record; free it without spending the refs (transport teardown
                 // reconciles export state, as before the record existed).

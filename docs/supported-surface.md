@@ -357,10 +357,22 @@ cannot read the Return (it runs out of memory), the handler's
 `sendReturnResults` fails and its exception Return reaches the caller
 locally. When the Return callback fails with `error.OutOfMemory` after it
 saw the Return, the peer reports the error through `on_error`, and the
-handler's send succeeds. One known case still reaches the remote: a
-loopback call cancelled with `cancelQuestion` whose handler answers later
-(see Known limitations). Covered by
-`tests/rpc/integration/rpc_loopback_caps_test.zig`.
+handler's send succeeds.
+
+Cancelling a loopback call (`cancelQuestion`, `cancelQuestionTyped`, or a
+call deadline through `checkDeadlines`) is the caller's Finish, applied in
+process. The caller gets its exception at once, and the local answer is
+finished early, as a remote Finish finishes one: the answer-finished hook
+(`setAnswerFinishedHandler`) runs, with `release_result_caps = false`
+because a loopback Return holds no reference to release, and a call still
+queued on a promise export is answered `canceled`. The handler's later
+Return, results or exception, comes back to the peer and is dropped there;
+it never reaches the remote. Until that Return, the call keeps its question
+id and its `max_loopback_questions` slot, as a cancelled remote call keeps
+its id until the remote's Return, so a graceful `shutdown` waits for it (or
+for the drain bound). A loopback call that the drain bound or a transport
+close settles also drops its handler's later Return locally; no hook runs
+for it. Covered by `tests/rpc/integration/rpc_loopback_caps_test.zig`.
 
 The reflected-capability resolve/embargo handshake — a promise capability
 resolved to a *caller-hosted* cap (`Peer.resolvePromiseExportToImport`), driving
@@ -841,19 +853,10 @@ cooperating peer.
   own questions needs an `InboundCapTable` entry kind the Stable
   `ResolvedCap` does not have.
 
-- **A cancelled loopback call's late Return goes to the remote.**
-  `Peer.cancelQuestion` on a loopback call (see "Loopback calls with
-  capabilities") gives the caller its exception at once and forgets that
-  the answer is a loopback one. When the handler answers later, its Return
-  is written to the transport under the loopback answer id. The remote holds
-  no such question and reports a protocol error. A handler that answers
-  inside `on_call` cannot meet this case, and neither can a loopback call
-  that is not cancelled. The behavior predates the loopback capability fix.
-
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Apart from the pipelined-params
-and loopback items above, every limitation listed above is either a Level-3
-surface or a serialization compatibility gap. Historical resolved items are
+and loopback-pipelining items above, every limitation listed above is either
+a Level-3 surface or a serialization compatibility gap. Historical resolved items are
 listed below so release-to-release behavior changes stay auditable.
 
 ### Resolved since v0.9.0

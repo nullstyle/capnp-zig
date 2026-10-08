@@ -22,6 +22,7 @@ const capnpc = @import("capnpc-zig");
 const protocol = capnpc.rpc.wire.protocol;
 const cap_table = capnpc.rpc.caps.table;
 const descriptors = cap_table.descriptors;
+const rpc_time = capnpc.rpc.time;
 const Peer = capnpc.rpc.peer.Peer;
 
 const interface_id: u64 = 0xd1ce_10ab_0c0f_fee1;
@@ -1035,4 +1036,482 @@ test "a loopback Return whose callback runs out of memory sends nothing to the r
     try std.testing.expectEqual(@as(usize, 0), fx.server.loopback_questions.count());
     try std.testing.expect(!fx.server.active_inbound_questions.contains(question_id));
     try fx.expectBaselineRefs();
+}
+
+// -- (g) A cancelled loopback call ---------------------------------------------
+//
+// Cancelling a loopback call (`cancelQuestion`, or a call deadline through
+// `checkDeadlines`) is the in-process equivalent of the caller's Finish. The
+// local answer is told, and the handler's late Return comes back to this
+// peer, where the cancelled question absorbs it. It must never go to the
+// remote: the remote holds no question with that id. A capnp-zig remote
+// rejects that Return with `error.UnknownQuestion`, and any capability in its
+// results takes a wire reference on our export that nobody ever releases.
+
+/// How a test ends the caller's interest in a loopback call.
+const CancelBy = enum { cancel_question, cancel_question_typed, deadline };
+
+/// How the deferred handler answers once the caller has given up.
+const LateAnswer = enum { results, exception, canceled };
+
+/// A loopback call to a `DeferredProbe` the server exports: the handler
+/// records the call and answers later, from the test.
+const DeferredCall = struct {
+    deferred: DeferredProbe = .{},
+    deferred_id: u32 = undefined,
+    caller: ProbeCall = .{},
+    answer_id: u32 = undefined,
+    questions_before: usize = undefined,
+    events_before: usize = undefined,
+    /// What the server reports through `on_error`: a late Return the peer
+    /// could not place would land here.
+    errors: ErrorLog = .{},
+
+    fn start(self: *DeferredCall, fx: *Fixture) !void {
+        fx.server.callback_ctx = &self.errors;
+        fx.server.on_error = ErrorLog.onError;
+        self.deferred_id = try fx.server.addExport(self.deferred.exported());
+        self.questions_before = fx.server.questions.count();
+        self.events_before = fx.wire.events.items.len;
+        const question_id = try fx.server.sendCallResolved(
+            .{ .exported = .{ .id = self.deferred_id } },
+            interface_id,
+            probe_method,
+            &self.caller,
+            ProbeCall.build,
+            ProbeCall.onReturn,
+        );
+        self.answer_id = self.deferred.pending orelse return error.TestHandlerDidNotRun;
+        try std.testing.expectEqual(question_id, self.answer_id);
+        try std.testing.expectEqual(@as(u32, 0), self.caller.returns);
+    }
+
+    /// The results a late handler answers with: our export, our import
+    /// and an export with no import of the same id. Encoded for the wire,
+    /// each export would take a reference the remote must release.
+    fn lateResults(fx: *const Fixture, solo_id: u32) [3]CapRef {
+        return .{
+            .{ .origin = .senderHosted, .id = fx.home_id },
+            .{ .origin = .receiverHosted, .id = fx.decoy_import_id },
+            .{ .origin = null, .id = solo_id },
+        };
+    }
+
+    fn answer(self: *DeferredCall, fx: *Fixture, how: LateAnswer, refs: []const CapRef) !void {
+        switch (how) {
+            .results => {
+                var reply = CapList{ .refs = refs };
+                try fx.server.sendReturnResults(self.answer_id, &reply, CapList.buildReturn);
+            },
+            .exception => try fx.server.sendReturnException(self.answer_id, "too late"),
+            .canceled => try fx.server.sendReturnCanceled(self.answer_id),
+        }
+    }
+
+    /// The caller saw exactly one Return, the cancellation; nothing reached
+    /// the remote; the question, its loopback marker and the local answer
+    /// are gone; and no reference was taken or leaked.
+    fn expectSettledLocally(self: *const DeferredCall, fx: *Fixture, solo_id: u32) !void {
+        try std.testing.expectEqual(@as(u32, 1), self.caller.returns);
+        try std.testing.expect(self.caller.exception);
+        try std.testing.expectEqual(@as(?anyerror, null), self.errors.last);
+        try expectNoFramesSince(&fx.wire, self.events_before);
+        try std.testing.expectEqual(@as(usize, 0), fx.wire.queue.items.len);
+        try std.testing.expectEqual(self.questions_before, fx.server.questions.count());
+        try std.testing.expectEqual(@as(usize, 0), fx.server.loopback_questions.count());
+        try std.testing.expect(!(try fx.server.inboundQuestionIdInUse(self.answer_id)));
+        try std.testing.expect(!fx.server.finished_early_param_grants.contains(self.answer_id));
+        try fx.expectBaselineRefs();
+        try std.testing.expectEqual(@as(u32, 0), fx.server.exports.get(solo_id).?.ref_count);
+        try std.testing.expect(!fx.server.caps.hasImport(solo_id));
+        try std.testing.expectEqual(@as(u32, 0), fx.server.caps.imports.get(fx.decoy_import_id).?.loopback_ref_count);
+    }
+};
+
+fn cancelLoopbackCall(fx: *Fixture, clock: *rpc_time.TestClock, call: *const DeferredCall, by: CancelBy) !void {
+    switch (by) {
+        .cancel_question => try fx.server.cancelQuestion(call.answer_id, "caller gave up"),
+        .cancel_question_typed => try fx.server.cancelQuestionTyped(call.answer_id, "caller gave up", .overloaded),
+        .deadline => {
+            clock.advanceMs(10);
+            try std.testing.expectEqual(@as(usize, 1), fx.server.checkDeadlines());
+        },
+    }
+}
+
+/// A loopback call cancelled `by` while its handler holds the answer; the
+/// handler answers later with `how`, over a synchronous or a queued wire.
+fn expectLateAnswerAbsorbed(by: CancelBy, how: LateAnswer, queued_wire: bool) !void {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    var clock = rpc_time.TestClock{};
+    if (by == .deadline) {
+        fx.server.setClock(clock.clock());
+        fx.server.setTimeouts(.{ .default_call_timeout_ms = 10 });
+    }
+    const solo_id = try fx.server.addExport(fx.solo.exported());
+    const refs = DeferredCall.lateResults(&fx, solo_id);
+
+    var call = DeferredCall{};
+    try call.start(&fx);
+    fx.wire.queueing = queued_wire;
+    try cancelLoopbackCall(&fx, &clock, &call, by);
+    // The caller has its terminal now, and the answer is still the
+    // handler's to give.
+    try std.testing.expectEqual(@as(u32, 1), call.caller.returns);
+    try std.testing.expect(call.caller.exception);
+
+    try call.answer(&fx, how, &refs);
+    try expectNoFramesSince(&fx.wire, call.events_before);
+    try std.testing.expectEqual(@as(usize, 0), fx.wire.queue.items.len);
+    try fx.wire.flush();
+    try call.expectSettledLocally(&fx, solo_id);
+}
+
+test "a cancelled loopback call absorbs its handler's late results locally" {
+    try expectLateAnswerAbsorbed(.cancel_question, .results, false);
+}
+
+test "a cancelled loopback call absorbs its handler's late results locally over a queued wire" {
+    try expectLateAnswerAbsorbed(.cancel_question, .results, true);
+}
+
+test "a cancelled loopback call absorbs its handler's late exception locally" {
+    try expectLateAnswerAbsorbed(.cancel_question, .exception, false);
+}
+
+test "a loopback call cancelled with an exception type absorbs its handler's late results locally" {
+    try expectLateAnswerAbsorbed(.cancel_question_typed, .results, true);
+}
+
+test "a timed-out loopback call absorbs its handler's late results locally" {
+    try expectLateAnswerAbsorbed(.deadline, .results, false);
+}
+
+test "a timed-out loopback call absorbs its handler's late exception locally over a queued wire" {
+    try expectLateAnswerAbsorbed(.deadline, .exception, true);
+}
+
+test "a cancelled loopback call queued on a promise export is cancelled in place and never replays" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    var errors = ErrorLog{};
+    fx.server.callback_ctx = &errors;
+    fx.server.on_error = ErrorLog.onError;
+    const promise_id = try fx.server.addPromiseExport();
+
+    const before = fx.wire.events.items.len;
+    const questions_before = fx.server.questions.count();
+    var caller = ProbeCall{};
+    const question_id = try fx.server.sendCallResolved(
+        .{ .exported = .{ .id = promise_id } },
+        interface_id,
+        number_method,
+        &caller,
+        ProbeCall.build,
+        ProbeCall.onReturn,
+    );
+    // The call waits on the unresolved promise.
+    try std.testing.expectEqual(@as(u32, 0), caller.returns);
+    try std.testing.expect(fx.server.loopback_questions.contains(question_id));
+
+    // The cancel's Finish reaches the queued call, as a remote Finish does:
+    // the peer answers it `canceled` itself, and that Return comes back here.
+    try fx.server.cancelQuestion(question_id, "caller gave up");
+    try std.testing.expectEqual(@as(u32, 1), caller.returns);
+    try std.testing.expect(caller.exception);
+    try std.testing.expectEqual(questions_before, fx.server.questions.count());
+    try std.testing.expectEqual(@as(usize, 0), fx.server.loopback_questions.count());
+    try std.testing.expect(!(try fx.server.inboundQuestionIdInUse(question_id)));
+
+    // Resolving the promise replays nothing.
+    try fx.server.resolvePromiseExportToExport(promise_id, fx.home_id);
+    try std.testing.expectEqual(@as(u32, 0), fx.home.calls);
+    try std.testing.expectEqual(@as(u32, 1), caller.returns);
+    try std.testing.expectEqual(@as(?anyerror, null), errors.last);
+    for (fx.wire.events.items[before..]) |event| {
+        // Resolving a promise export announces it with a Resolve; nothing
+        // else may go out.
+        if (event.dir == .server_to_client and event.tag != .resolve) {
+            fx.wire.dump(before);
+            return error.TestLoopbackReachedTheWire;
+        }
+    }
+    try fx.expectBaselineRefs();
+}
+
+/// How the peer settles every outstanding question at once.
+const ForcedBy = enum { shutdown_drain, transport_close };
+
+/// A loopback call the peer settles itself, with no Finish for anyone:
+/// the shutdown drain bound, or the transport closing. The handler still
+/// holds the answer, and its late Return must still stay here.
+fn expectForcedLateAnswerAbsorbed(by: ForcedBy) !void {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    var clock = rpc_time.TestClock{};
+    fx.server.setClock(clock.clock());
+    fx.server.setTimeouts(.{ .shutdown_drain_timeout_ms = 10 });
+    const solo_id = try fx.server.addExport(fx.solo.exported());
+    const refs = DeferredCall.lateResults(&fx, solo_id);
+
+    var call = DeferredCall{};
+    try call.start(&fx);
+    switch (by) {
+        .shutdown_drain => {
+            fx.server.shutdown(null);
+            clock.advanceMs(10);
+            try std.testing.expectEqual(@as(usize, 1), fx.server.checkDeadlines());
+        },
+        .transport_close => fx.server.notifyTransportClosed(),
+    }
+    try std.testing.expectEqual(@as(u32, 1), call.caller.returns);
+    try std.testing.expect(call.caller.exception);
+
+    try call.answer(&fx, .results, &refs);
+    try call.expectSettledLocally(&fx, solo_id);
+}
+
+test "a loopback call the shutdown drain cancels absorbs its handler's late results locally" {
+    try expectForcedLateAnswerAbsorbed(.shutdown_drain);
+}
+
+test "a loopback call cancelled by transport close absorbs its handler's late results locally" {
+    try expectForcedLateAnswerAbsorbed(.transport_close);
+}
+
+test "a cancelled loopback call holds its loopback slot until its handler answers, then frees it once" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    fx.server.limits.max_loopback_questions = 1;
+    const solo_id = try fx.server.addExport(fx.solo.exported());
+    const refs = DeferredCall.lateResults(&fx, solo_id);
+
+    var call = DeferredCall{};
+    try call.start(&fx);
+    try fx.server.cancelQuestion(call.answer_id, "caller gave up");
+
+    // The handler still holds the answer: its Return must come back here,
+    // so the answer keeps its loopback slot, its id and its question.
+    try std.testing.expect(fx.server.loopback_questions.contains(call.answer_id));
+    try std.testing.expect(fx.server.questions.contains(call.answer_id));
+    var blocked = NumberCall{};
+    try std.testing.expectError(error.PeerLimitExceeded, fx.server.sendCallResolved(
+        .{ .exported = .{ .id = fx.home_id } },
+        interface_id,
+        number_method,
+        &blocked,
+        null,
+        NumberCall.onReturn,
+    ));
+
+    try call.answer(&fx, .results, &refs);
+    try call.expectSettledLocally(&fx, solo_id);
+
+    // The slot and the id are free again, exactly once: the next loopback
+    // call may take that very id and completes normally.
+    fx.server.next_loopback_question_id = call.answer_id;
+    var next = NumberCall{};
+    const next_id = try fx.server.sendCallResolved(
+        .{ .exported = .{ .id = fx.home_id } },
+        interface_id,
+        number_method,
+        &next,
+        null,
+        NumberCall.onReturn,
+    );
+    try std.testing.expectEqual(call.answer_id, next_id);
+    try std.testing.expectEqual(@as(?u32, 1000), next.n);
+    try std.testing.expectEqual(@as(usize, 0), fx.server.loopback_questions.count());
+    try std.testing.expectEqual(call.questions_before, fx.server.questions.count());
+    try expectNoFramesSince(&fx.wire, call.events_before);
+}
+
+test "a cancelled loopback call's id is not handed out again while its handler holds the answer" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    const solo_id = try fx.server.addExport(fx.solo.exported());
+    const refs = DeferredCall.lateResults(&fx, solo_id);
+
+    var call = DeferredCall{};
+    try call.start(&fx);
+    try fx.server.cancelQuestion(call.answer_id, "caller gave up");
+
+    // Point the allocator at the live id: it must step past it.
+    fx.server.next_loopback_question_id = call.answer_id;
+    var other = NumberCall{};
+    const other_id = try fx.server.sendCallResolved(
+        .{ .exported = .{ .id = fx.home_id } },
+        interface_id,
+        number_method,
+        &other,
+        null,
+        NumberCall.onReturn,
+    );
+    try std.testing.expect(other_id != call.answer_id);
+    try std.testing.expectEqual(@as(?u32, 1000), other.n);
+
+    // The late answer still reaches only the cancelled question.
+    try call.answer(&fx, .results, &refs);
+    try std.testing.expect(!other.exception);
+    try call.expectSettledLocally(&fx, solo_id);
+}
+
+test "a cancelled loopback call's id stays reserved by its loopback marker alone" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    const solo_id = try fx.server.addExport(fx.solo.exported());
+    const refs = DeferredCall.lateResults(&fx, solo_id);
+    // Fill the bounded finished-early record, so the cancel's Finish leaves
+    // no tombstone to reserve the answer id.
+    fx.server.limits.max_active_inbound_questions = 1;
+    try fx.server.finished_early_answers.put(12345, false);
+
+    var call = DeferredCall{};
+    try call.start(&fx);
+    try fx.server.cancelQuestion(call.answer_id, "caller gave up");
+    try std.testing.expect(!fx.server.finished_early_answers.contains(call.answer_id));
+    // Closing the transport settles every question, the cancelled one too.
+    // The handler still holds the answer, and only the loopback marker
+    // still names its id.
+    fx.server.notifyTransportClosed();
+    try std.testing.expect(!fx.server.questions.contains(call.answer_id));
+    try std.testing.expect(!(try fx.server.inboundQuestionIdInUse(call.answer_id)));
+    try std.testing.expect(fx.server.loopback_questions.contains(call.answer_id));
+
+    // A local call (still allowed after close) must not take that id.
+    fx.server.next_loopback_question_id = call.answer_id;
+    var other = NumberCall{};
+    const other_id = try fx.server.sendCallResolved(
+        .{ .exported = .{ .id = fx.home_id } },
+        interface_id,
+        number_method,
+        &other,
+        null,
+        NumberCall.onReturn,
+    );
+    try std.testing.expect(other_id != call.answer_id);
+    try std.testing.expectEqual(@as(?u32, 1000), other.n);
+
+    try call.answer(&fx, .results, &refs);
+    try call.expectSettledLocally(&fx, solo_id);
+}
+
+/// Records the answer-finished hook, and optionally answers from inside it.
+const FinishedHook = struct {
+    calls: u32 = 0,
+    answer_id: ?u32 = null,
+    release_result_caps: ?bool = null,
+    answer_inside: bool = false,
+    answer_error: ?anyerror = null,
+
+    fn onFinished(ctx_ptr: *anyopaque, peer: *Peer, answer_id: u32, release_result_caps: bool) void {
+        const self = castCtx(*FinishedHook, ctx_ptr);
+        self.calls += 1;
+        self.answer_id = answer_id;
+        self.release_result_caps = release_result_caps;
+        if (self.answer_inside) {
+            peer.sendReturnCanceled(answer_id) catch |err| {
+                self.answer_error = err;
+            };
+        }
+    }
+};
+
+fn expectFinishedHookOnCancel(by: CancelBy, answer_inside: bool) !void {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    var clock = rpc_time.TestClock{};
+    if (by == .deadline) {
+        fx.server.setClock(clock.clock());
+        fx.server.setTimeouts(.{ .default_call_timeout_ms = 10 });
+    }
+    const solo_id = try fx.server.addExport(fx.solo.exported());
+    var hook = FinishedHook{ .answer_inside = answer_inside };
+    fx.server.setAnswerFinishedHandler(&hook, FinishedHook.onFinished);
+
+    var call = DeferredCall{};
+    try call.start(&fx);
+    try std.testing.expectEqual(@as(u32, 0), hook.calls);
+    try cancelLoopbackCall(&fx, &clock, &call, by);
+
+    // The cancel is the caller's Finish: the host hears of it once. The
+    // loopback took no reference on the results, so there is none to
+    // release.
+    try std.testing.expectEqual(@as(u32, 1), hook.calls);
+    try std.testing.expectEqual(@as(?u32, call.answer_id), hook.answer_id);
+    try std.testing.expectEqual(@as(?bool, false), hook.release_result_caps);
+    try std.testing.expectEqual(@as(?anyerror, null), hook.answer_error);
+    if (!answer_inside) {
+        // The host settles the answer the way the hook asks it to.
+        try call.answer(&fx, .canceled, &.{});
+    }
+    try std.testing.expectEqual(@as(u32, 1), hook.calls);
+    try call.expectSettledLocally(&fx, solo_id);
+    // Once settled, the answer is owed nothing more.
+    try std.testing.expectError(error.AnswerNotOwed, fx.server.sendReturnCanceled(call.answer_id));
+}
+
+test "cancelling a loopback call runs the answer-finished hook for its local answer" {
+    try expectFinishedHookOnCancel(.cancel_question, false);
+}
+
+test "a loopback call's answer-finished hook may settle the answer from inside the hook" {
+    try expectFinishedHookOnCancel(.cancel_question, true);
+}
+
+test "a timed-out loopback call runs the answer-finished hook for its local answer" {
+    try expectFinishedHookOnCancel(.deadline, true);
+}
+
+test "a loopback call answered before it is cancelled does not run the answer-finished hook" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    var hook = FinishedHook{};
+    fx.server.setAnswerFinishedHandler(&hook, FinishedHook.onFinished);
+
+    const before = fx.wire.events.items.len;
+    const questions_before = fx.server.questions.count();
+    var caller = ProbeCall{};
+    const question_id = try fx.callProbe(&.{}, &caller);
+    try std.testing.expectEqual(@as(u32, 1), caller.returns);
+    try std.testing.expect(!caller.exception);
+
+    // Cancelling an answered loopback call changes nothing.
+    try std.testing.expectError(error.UnknownQuestion, fx.server.cancelQuestion(question_id, "too late to cancel"));
+    try std.testing.expectEqual(@as(u32, 0), hook.calls);
+    try std.testing.expectEqual(@as(u32, 1), caller.returns);
+    try std.testing.expect(!caller.exception);
+    try std.testing.expectEqual(questions_before, fx.server.questions.count());
+    try std.testing.expectEqual(@as(usize, 0), fx.server.loopback_questions.count());
+    try expectNoFramesSince(&fx.wire, before);
+    try fx.expectBaselineRefs();
+}
+
+test "cancelling a cancelled loopback call again is a no-op" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    const solo_id = try fx.server.addExport(fx.solo.exported());
+    const refs = DeferredCall.lateResults(&fx, solo_id);
+    var hook = FinishedHook{};
+    fx.server.setAnswerFinishedHandler(&hook, FinishedHook.onFinished);
+
+    var call = DeferredCall{};
+    try call.start(&fx);
+    try fx.server.cancelQuestion(call.answer_id, "caller gave up");
+    try fx.server.cancelQuestion(call.answer_id, "caller gave up twice");
+    try std.testing.expectEqual(@as(u32, 1), call.caller.returns);
+    try std.testing.expectEqual(@as(u32, 1), hook.calls);
+
+    try call.answer(&fx, .results, &refs);
+    try call.expectSettledLocally(&fx, solo_id);
 }

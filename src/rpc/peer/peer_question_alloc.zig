@@ -106,12 +106,13 @@ pub fn QuestionAlloc(comptime Peer: type) type {
         /// proxy reflected its first loopback call, also id 0.
         ///
         /// Loopback ids are drawn from the TOP of the space, descending, skipping
-        /// anything live in either namespace. A loopback call writes no frame
-        /// carrying one of these ids to a socket (the one known exception: a
-        /// loopback call cancelled with `cancelQuestion` whose handler answers
-        /// later, see docs/supported-surface.md), and every implementation (this
-        /// one included) hands out wire question ids ascending from 0, so the two
-        /// stay apart.
+        /// anything live in either namespace, and any id whose loopback marker
+        /// is still held: a cancelled loopback question keeps its marker until
+        /// its handler's Return comes back (`cancelQuestion`,
+        /// `forceCancelAllQuestions`). A loopback call writes no frame carrying
+        /// one of these ids to a socket, cancelled or not, and every
+        /// implementation (this one included) hands out wire question ids
+        /// ascending from 0, so the two stay apart.
         pub fn allocateLoopbackQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
             return allocateLoopbackQuestionWithRestore(self, ctx, on_return, true);
         }
@@ -128,6 +129,7 @@ pub fn QuestionAlloc(comptime Peer: type) type {
         ) !u32 {
             const scan_start = self.next_loopback_question_id;
             while (self.questions.contains(self.next_loopback_question_id) or
+                self.loopback_questions.contains(self.next_loopback_question_id) or
                 self.retained_questions.containsLogicalOrWire(self.next_loopback_question_id) or
                 (try self.inboundQuestionIdInUse(self.next_loopback_question_id)))
             {

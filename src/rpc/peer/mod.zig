@@ -715,7 +715,9 @@ pub const Peer = struct {
 
     // -- Loopback / sendResultsTo routing -----------------------------------
 
-    /// Questions whose Return should be delivered locally (calls to our own exports).
+    /// Questions whose Return should be delivered locally (calls to our own
+    /// exports). An entry lives until that Return is delivered, also after
+    /// the question is cancelled, so the handler's late Return stays local.
     loopback_questions: std.AutoHashMap(u32, void),
     /// Inbound calls with sendResultsTo=yourself.
     send_results_to_yourself: std.AutoHashMap(u32, void),
@@ -1592,7 +1594,7 @@ pub const Peer = struct {
     // peer_lifecycle.zig (Lifecycle(Peer).deinit). This frozen thunk keeps
     // the exact public signature.
 
-    const LifecycleImpl = peer_lifecycle.Lifecycle(Peer);
+    const LifecycleImpl = peer_lifecycle.Lifecycle(Peer, finishLoopbackAnswer);
     pub const disconnected_reason_text = disconnected_reason;
     pub const deadline_reason_text = deadline_reason;
     pub const shutdown_reason_text = shutdown_reason;
@@ -1638,14 +1640,23 @@ pub const Peer = struct {
     /// inbound call that this peer handed to the host and that has no Return
     /// yet: no Return was sent or begun for `answer_id`.
     ///
+    /// A loopback call (one of this peer's calls to its own export) has its
+    /// caller here too: `cancelQuestion`, `cancelQuestionTyped` or a call
+    /// deadline (`checkDeadlines`) on it is that caller's Finish, so the
+    /// handler runs for its answer as well, with `release_result_caps`
+    /// false. A loopback call that the shutdown drain bound or a transport
+    /// close settles gets no such Finish: the handler does not run for it,
+    /// and the peer drops its later Return.
+    ///
     /// The host should stop the work and answer soon, normally with
     /// `sendReturnCanceled`, which frees the caller's question id. Any later
     /// Return is still accepted, but send only one: once any Return goes out,
     /// `sendReturnCanceled` refuses the id with `error.AnswerNotOwed`.
     /// `release_result_caps` is the Finish's flag.
     ///
-    /// The handler runs inside `handleFrame`, after the Finish is fully
-    /// applied, at most once per answer. It may answer from inside the
+    /// The handler runs inside `handleFrame` (for a loopback call, inside
+    /// the cancel, before the caller's exception), after the Finish is
+    /// fully applied, at most once per answer. It may answer from inside the
     /// callback. It does not run for an answer the host already replied to,
     /// for a call the peer still holds queued, or for a call the peer
     /// forwarded on the host's behalf; the peer settles those itself. A
@@ -4777,6 +4788,29 @@ pub const Peer = struct {
         }
     }
 
+    /// Apply the caller's Finish to one of this peer's own answers: the
+    /// in-process Finish of a LOOPBACK question (`sendCallToExport`) that
+    /// `cancelQuestion` or a call deadline cancels. This peer is the callee
+    /// too, so nothing is sent; the answer is finished exactly as an inbound
+    /// Finish finishes one (`handleFinish`). It is finished early
+    /// (`finished_early_answers`), the answer-finished hook runs, and a call
+    /// still queued on a promise is cancelled. The cancelled question keeps
+    /// its loopback marker, so the handler's late Return is delivered back
+    /// here and absorbed by that question.
+    ///
+    /// `releaseResultCaps` is false: a loopback Return's results take no
+    /// reference (`encodeLoopbackReturnPayloadCaps`), and the cancelled
+    /// question absorbs it without taking one, so the late Return's sender
+    /// has nothing to release. True would have it release references it
+    /// never took.
+    fn finishLoopbackAnswer(self: *Peer, answer_id: u32) anyerror!void {
+        try self.handleFinish(.{
+            .question_id = answer_id,
+            .release_result_caps = false,
+            .require_early_cancellation = false,
+        });
+    }
+
     /// True when the caller finished inbound answer `answer_id` before its
     /// Return and the host still owes that Return: the Finish left a
     /// tombstone that no Return has consumed, no Return is being sent, and
@@ -5929,6 +5963,10 @@ pub const Peer = struct {
                 // remote releases any caps this Return carries. Per spec the
                 // remote sends exactly one Return per question — absorb it
                 // without importing caps or re-dispatching.
+                // A cancelled LOOPBACK question's Return is its own handler's
+                // late answer, delivered here instead of the wire; the
+                // in-process Finish asked for no result-cap release, and the
+                // loopback took no reference to release.
                 log.debug("absorbing return for cancelled question {}", .{ret.answer_id});
                 self.removeQuestion(ret.answer_id);
                 return;
@@ -5947,6 +5985,15 @@ pub const Peer = struct {
                     retained_return_id = original_id;
                 }
             }
+        } else if (origin == .loopback) {
+            // Only this peer writes a loopback Return, for one of its own
+            // questions. With the question gone, the peer settled it with no
+            // Return to wait for (the shutdown drain bound, transport close)
+            // while the handler still held the answer: drop the Return as a
+            // cancelled question absorbs one, without reading its
+            // capabilities. Nobody else is owed it.
+            log.debug("absorbing loopback return for settled question {}", .{ret.answer_id});
+            return;
         }
         defer if (latency_started_ns) |started| {
             if (self.clockNow()) |now| {

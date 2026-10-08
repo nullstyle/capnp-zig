@@ -212,12 +212,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handler's `sendReturnResults` fails, and the handler's exception Return
   reaches the caller locally. When the callback fails after it saw the
   Return, the peer reports the error through `on_error`, and the handler's
-  `sendReturnResults` succeeds: the call already has its one Return. One
-  case still reaches the remote: a loopback call cancelled with
-  `cancelQuestion` whose handler answers later (see Known limitations in
-  docs/supported-surface.md). Tests in
+  `sendReturnResults` succeeds: the call already has its one Return. The
+  late Return of a cancelled loopback call is the next entry. Tests in
   `tests/rpc/integration/rpc_loopback_caps_test.zig` and
   `tests/rpc/promises/rpc_peer_return_send_helpers_test.zig`.
+
+- **RPC: a cancelled loopback call's late Return went to the remote.** This
+  affects hosts that cancel a call to one of their own exports while its
+  handler holds the answer. The call is a loopback one: `sendCallResolved`
+  with an `.exported` target, `sendCall` on an import that resolved to one
+  of the peer's exports, or a generated local Client (origin `.exported`).
+  The cancel is `cancelQuestion`, `cancelQuestionTyped` or a call deadline
+  (`checkDeadlines`). The cancel dropped the loopback mark, so the handler's
+  later Return, results or exception, went to the remote under the loopback
+  answer id, which no remote question has. A capnp-zig remote rejects that
+  Return with `error.UnknownQuestion` and reports it through `on_error`, which
+  closes a `ClientSession` or `ServerSession`. The C++ reference
+  (`handleReturn` in `rpc.c++`) ignores a Return whose id has the top bit
+  set, as every loopback id has until a peer has made 2^31 loopback calls,
+  and then stops using pipeline-only calls on that connection. Below 2^31
+  it fails the connection with "Invalid question ID in Return message".
+  Either way each export in the late results took a wire reference that no
+  remote releases. The shutdown drain bound and a transport close did the
+  same for a loopback call they settled. Now a cancel or a call deadline is
+  the caller's Finish, applied to the local answer in process. The answer
+  is finished early as a remote Finish finishes one, so the Experimental
+  answer-finished hook (`setAnswerFinishedHandler`) runs for it with
+  `release_result_caps = false`, and a call still queued on a promise
+  export is answered `canceled`. The cancelled question keeps its loopback
+  mark until the handler's Return comes back, and absorbs it there: the
+  caller sees only the cancellation, nothing reaches the remote, and no
+  reference is taken. Until then the call keeps its question id and its
+  `max_loopback_questions` slot, as a cancelled remote call keeps its id
+  until the remote's Return, so a graceful `shutdown` waits for that Return
+  or the drain bound. Cancelling the same call again is a no-op instead of
+  `error.UnknownQuestion`. A loopback call that the drain bound or a
+  transport close settles keeps its mark too; its later Return is dropped
+  locally, and no hook runs. No API line changes. Tests in
+  `tests/rpc/integration/rpc_loopback_caps_test.zig`.
 
 - **RPC: a capability pipelined into a call's params reached the handler
   unresolved (capnp-swift handoff H9).** A caller that passes the result of
