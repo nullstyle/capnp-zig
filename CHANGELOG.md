@@ -46,6 +46,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queued call that replays also re-reads its `.promised` entries from its
   own frame copy; before, they pointed into the freed inbound frame. No API
   line changes. New tests in `tests/rpc/peer/rpc_answer_lifecycle_test.zig`.
+- **RPC: a call parked on an answer failed with "promised capability
+  unresolved" when that answer returned an unresolved promise export
+  (capnp-swift handoff H10).** This affects servers that defer or forward
+  their answers (capnp-swift's host, Zig apps with deferred handlers) and
+  clients that pipeline before the Return arrives, as the C++ reference
+  does. A parked call now replays through the same target plan as a fresh
+  call, so it parks again on the promise export and runs when that export
+  resolves. Calls parked on a promise export that resolves to another
+  still-unresolved promise export of ours, and fresh calls on such a chain,
+  now park on the last promise in the chain too; before, they failed the
+  same way. The replay also releases the param capabilities of a call it
+  answers with an exception; before, those import references leaked. No API
+  line changes.
 
 ## [0.22.0] - 2026-10-07
 

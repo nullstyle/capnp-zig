@@ -1574,3 +1574,175 @@ test "receiverAnswer param on a still-pending answer dispatches at once as .prom
 
     try peer.sendReturnEmptyStruct(10);
 }
+
+// ---------------------------------------------------------------------------
+// Parked calls whose answer resolves to a still-unresolved promise export
+// (capnp-swift handoff H10).
+//
+// A call pipelined on promisedAnswer(q) that arrives BEFORE q's Return parks
+// on q. When q's results carry a promise export P that is not resolved yet,
+// the call must park again, on P, and replay when P resolves: exactly what
+// happens to a call that arrives after the Return. This needs a server that
+// defers or forwards its answer, as capnp-swift's host does.
+
+const PromiseServiceState = struct {
+    calls: u32 = 0,
+    last_question_id: ?u32 = null,
+};
+
+fn onPromiseServiceCall(ctx_ptr: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+    const state: *PromiseServiceState = @ptrCast(@alignCast(ctx_ptr));
+    state.calls += 1;
+    state.last_question_id = call.question_id;
+    try p.sendReturnEmptyStruct(call.question_id);
+}
+
+test "call parked before a Return re-parks on the promise export the Return carries (H10)" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const Deferred = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    var deferred_ctx: u8 = 0;
+    const deferred_export_id = try peer.addExport(.{ .ctx = &deferred_ctx, .on_call = Deferred.onCall });
+    var service = PromiseServiceState{};
+    const service_export_id = try peer.addExport(.{ .ctx = &service, .on_call = onPromiseServiceCall });
+    const promise_export_id = try peer.addPromiseExport();
+
+    // q (5): the server defers its answer.
+    const q_frame = try buildExportCallFrame(allocator, 5, deferred_export_id);
+    defer allocator.free(q_frame);
+    try peer.handleFrame(q_frame);
+
+    // c (6): pipelined on q's result pointer 0, before q's Return.
+    const c_frame = try buildPipelinedCallFrame(allocator, 6, 5);
+    defer allocator.free(c_frame);
+    try peer.handleFrame(c_frame);
+    try std.testing.expect(peer.pending_promises.contains(5));
+
+    // q returns results { ptr0 = P }, P an unresolved promise export.
+    var results_state = AnswerHeldState{ .service_export_id = promise_export_id };
+    try peer.sendReturnResults(5, &results_state, buildAnswerHeldServiceResults);
+
+    // c must wait on P: no Return for it yet, and it sits in P's queue.
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(6, .exception));
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(6, .results));
+    try std.testing.expect(peer.pending_export_promises.contains(promise_export_id));
+    try std.testing.expectEqual(@as(u32, 0), service.calls);
+
+    // P resolves to the service: c replays onto it and is answered once.
+    try peer.resolvePromiseExportToExport(promise_export_id, service_export_id);
+    try std.testing.expectEqual(@as(u32, 1), service.calls);
+    try std.testing.expectEqual(@as(?u32, 6), service.last_question_id);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(6, .results));
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(6, .exception));
+    try std.testing.expect(!peer.pending_export_promises.contains(promise_export_id));
+}
+
+test "calls parked on a promise export re-park when it resolves to another unresolved promise (H10)" {
+    // The same defect one hop later: P resolves to P2, which is itself still
+    // a promise. Calls parked on P must move to P2, not fail.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var service = PromiseServiceState{};
+    const service_export_id = try peer.addExport(.{ .ctx = &service, .on_call = onPromiseServiceCall });
+    const outer_promise_id = try peer.addPromiseExport();
+    const inner_promise_id = try peer.addPromiseExport();
+
+    // c (6) targets P directly and parks on it.
+    const c_frame = try buildExportCallFrame(allocator, 6, outer_promise_id);
+    defer allocator.free(c_frame);
+    try peer.handleFrame(c_frame);
+    try std.testing.expect(peer.pending_export_promises.contains(outer_promise_id));
+
+    try peer.resolvePromiseExportToExport(outer_promise_id, inner_promise_id);
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(6, .exception));
+    try std.testing.expect(peer.pending_export_promises.contains(inner_promise_id));
+    try std.testing.expectEqual(@as(u32, 0), service.calls);
+
+    // A call arriving now on P follows the chain to P2 and parks behind c.
+    const d_frame = try buildExportCallFrame(allocator, 7, outer_promise_id);
+    defer allocator.free(d_frame);
+    try peer.handleFrame(d_frame);
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(7, .exception));
+
+    try peer.resolvePromiseExportToExport(inner_promise_id, service_export_id);
+    try std.testing.expectEqual(@as(u32, 2), service.calls);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(6, .results));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(7, .results));
+    // E-order: c (sent first) was delivered first.
+    try std.testing.expectEqual(@as(?u32, 7), service.last_question_id);
+}
+
+test "a parked call answered with an exception at replay releases its param imports" {
+    // c parks on q with an unsatisfiable transform and one senderHosted param
+    // cap (an import reference this vat now holds). When q returns, the
+    // replay answers c with an exception and must send the Release for that
+    // import. Before, the drain sent the exception and dropped the reference.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const Deferred = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    var deferred_ctx: u8 = 0;
+    const deferred_export_id = try peer.addExport(.{ .ctx = &deferred_ctx, .on_call = Deferred.onCall });
+    var service = PromiseServiceState{};
+    const service_export_id = try peer.addExport(.{ .ctx = &service, .on_call = onPromiseServiceCall });
+
+    const q_frame = try buildExportCallFrame(allocator, 5, deferred_export_id);
+    defer allocator.free(q_frame);
+    try peer.handleFrame(q_frame);
+
+    const remote_export_id: u32 = 77;
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        // [ptr0, ptr0]: the second step reads a struct field of a capability.
+        var call = try builder.beginCall(6, 0xABCD, 0);
+        try call.setTargetPromisedAnswerWithOps(5, &[_]protocol.PromisedAnswerOp{
+            .{ .tag = .getPointerField, .pointer_index = 0 },
+            .{ .tag = .getPointerField, .pointer_index = 0 },
+        });
+        var payload = try call.payloadTyped();
+        var any = try payload.initContent();
+        const params = try any.initStruct(0, 1);
+        var slot = try params.getAnyPointer(0);
+        try slot.setCapability(.{ .id = 0 });
+        var cap_list = try call.initCapTableTyped(1);
+        protocol.CapDescriptor.writeSenderHosted(try cap_list.get(0), remote_export_id);
+        const c_frame = try builder.finish();
+        defer allocator.free(c_frame);
+        try peer.handleFrame(c_frame);
+    }
+    try std.testing.expect(peer.pending_promises.contains(5));
+    try std.testing.expect(peer.caps.hasImport(remote_export_id));
+
+    var results_state = AnswerHeldState{ .service_export_id = service_export_id };
+    try peer.sendReturnResults(5, &results_state, buildAnswerHeldServiceResults);
+
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(6, .exception));
+    try std.testing.expectEqual(@as(u32, 0), service.calls);
+    try std.testing.expectEqual(@as(usize, 1), capture.countTag(.release));
+    try std.testing.expect(!peer.caps.hasImport(remote_export_id));
+}

@@ -65,6 +65,23 @@ pub fn deinitPendingCallOwnedFrameForPeerFn(
     }.call;
 }
 
+/// Replays one parked call on a promised-answer target after that answer
+/// resolved, running the same target plan a fresh call runs (see
+/// `routePromisedTargetCall`). Returns true when the call moved to another
+/// queue, which now owns its caps; false when it was answered or dispatched
+/// (the drain still owns the caps and releases them). An error means the call
+/// was neither queued nor dispatched: the drain answers it with an exception.
+pub fn ReplayPromisedCallFn(comptime PeerType: type, comptime InboundCapsType: type) type {
+    return *const fn (*PeerType, []const u8, protocol.Call, *InboundCapsType) anyerror!bool;
+}
+
+/// Replays one call parked on a promise export after that export resolved to
+/// `resolved` (never `.none`; the replay answers those "promise broken"
+/// itself). Same return contract as `ReplayPromisedCallFn`.
+pub fn ReplayExportCallFn(comptime PeerType: type, comptime InboundCapsType: type) type {
+    return *const fn (*PeerType, []const u8, protocol.Call, *InboundCapsType, cap_table.ResolvedCap) anyerror!bool;
+}
+
 pub fn recordResolvedAnswer(
     comptime PeerType: type,
     comptime ResolvedAnswerType: type,
@@ -76,12 +93,10 @@ pub fn recordResolvedAnswer(
     frame: []u8,
     resolved_answers: *std.AutoHashMap(u32, ResolvedAnswerType),
     pending_promises: *std.AutoHashMap(u32, std.ArrayList(PendingCallType)),
-    resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
-    handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
-    prepare_call_dispatch: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
+    replay_promised_call: ReplayPromisedCallFn(PeerType, InboundCapsType),
 ) !void {
     const resolved_entry = try resolved_answers.getOrPut(question_id);
     storeResolvedFrame(ResolvedAnswerType, allocator, question_id, resolved_entry, frame);
@@ -94,12 +109,10 @@ pub fn recordResolvedAnswer(
         peer,
         question_id,
         pending_promises,
-        resolve_promised_answer,
         send_return_exception,
-        handle_resolved_call,
         release_inbound_caps,
         report_nonfatal_error,
-        prepare_call_dispatch,
+        replay_promised_call,
     );
 }
 
@@ -120,12 +133,10 @@ pub fn recordResolvedAnswerAssumeCapacity(
     frame: []u8,
     resolved_answers: *std.AutoHashMap(u32, ResolvedAnswerType),
     pending_promises: *std.AutoHashMap(u32, std.ArrayList(PendingCallType)),
-    resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
-    handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
-    prepare_call_dispatch: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
+    replay_promised_call: ReplayPromisedCallFn(PeerType, InboundCapsType),
 ) void {
     const resolved_entry = resolved_answers.getOrPutAssumeCapacity(question_id);
     storeResolvedFrame(ResolvedAnswerType, allocator, question_id, resolved_entry, frame);
@@ -138,12 +149,10 @@ pub fn recordResolvedAnswerAssumeCapacity(
         peer,
         question_id,
         pending_promises,
-        resolve_promised_answer,
         send_return_exception,
-        handle_resolved_call,
         release_inbound_caps,
         report_nonfatal_error,
-        prepare_call_dispatch,
+        replay_promised_call,
     );
 }
 
@@ -161,6 +170,10 @@ fn storeResolvedFrame(
     resolved_entry.value_ptr.* = ResolvedAnswerType{ .frame = frame };
 }
 
+/// Replay, in arrival order, every call parked on answer `question_id`.
+/// A replayed call runs the full target plan again, so one whose answer
+/// turned out to be an unresolved promise export parks on that export (H10)
+/// instead of failing.
 fn drainPendingPromises(
     comptime PeerType: type,
     comptime PendingCallType: type,
@@ -169,18 +182,17 @@ fn drainPendingPromises(
     peer: *PeerType,
     question_id: u32,
     pending_promises: *std.AutoHashMap(u32, std.ArrayList(PendingCallType)),
-    resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
-    handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
-    prepare_call_dispatch: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
+    replay_promised_call: ReplayPromisedCallFn(PeerType, InboundCapsType),
 ) void {
     var pending = pending_promises.fetchRemove(question_id) orelse return;
     defer pending.value.deinit(allocator);
 
     for (pending.value.items) |*pending_call| {
-        defer pending_call.caps.deinit();
+        var caps_owned = true;
+        defer if (caps_owned) pending_call.caps.deinit();
         defer allocator.free(pending_call.frame);
 
         var decoded = protocol.DecodedMessage.init(allocator, pending_call.frame) catch |err| {
@@ -193,58 +205,21 @@ fn drainPendingPromises(
             report_nonfatal_error(peer, err);
             continue;
         };
-        const promised = call.target.promised_answer orelse continue;
-        const resolved = resolve_promised_answer(peer, promised) catch |err| {
+        if (call.target.promised_answer == null) continue;
+        const requeued = replay_promised_call(peer, pending_call.frame, call, &pending_call.caps) catch |err| blk: {
             send_return_exception(peer, call.question_id, @errorName(err)) catch |send_err| {
                 report_nonfatal_error(peer, send_err);
             };
-            continue;
+            break :blk false;
         };
-        dispatchQueuedCall(
-            PeerType,
-            InboundCapsType,
-            peer,
-            call,
-            &pending_call.caps,
-            resolved,
-            send_return_exception,
-            handle_resolved_call,
-            report_nonfatal_error,
-            prepare_call_dispatch,
-        );
+        if (requeued) {
+            caps_owned = false;
+            continue;
+        }
         release_inbound_caps(peer, &pending_call.caps) catch |err| {
             report_nonfatal_error(peer, err);
         };
     }
-}
-
-/// Dispatch one replayed queued call onto its now-resolved target. The
-/// caller still owns `inbound_caps` and releases them afterwards.
-/// `prepare_call_dispatch` resolves the call's `receiverAnswer` params against
-/// the answers recorded by now; it answers the call itself (and returns false)
-/// when one of those answers failed.
-fn dispatchQueuedCall(
-    comptime PeerType: type,
-    comptime InboundCapsType: type,
-    peer: *PeerType,
-    call: protocol.Call,
-    inbound_caps: *InboundCapsType,
-    resolved: cap_table.ResolvedCap,
-    send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
-    handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
-    report_nonfatal_error: *const fn (*PeerType, anyerror) void,
-    prepare_call_dispatch: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
-) void {
-    const dispatch = prepare_call_dispatch(peer, call, inbound_caps) catch |err| {
-        send_return_exception(peer, call.question_id, @errorName(err)) catch |send_err| {
-            report_nonfatal_error(peer, send_err);
-        };
-        return;
-    };
-    if (!dispatch) return;
-    handle_resolved_call(peer, call, inbound_caps, resolved) catch |err| {
-        report_nonfatal_error(peer, err);
-    };
 }
 
 pub fn replayResolvedPromiseExport(
@@ -256,17 +231,17 @@ pub fn replayResolvedPromiseExport(
     export_id: u32,
     resolved: cap_table.ResolvedCap,
     pending_export_promises: *std.AutoHashMap(u32, std.ArrayList(PendingCallType)),
-    handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
-    prepare_call_dispatch: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
+    replay_export_call: ReplayExportCallFn(PeerType, InboundCapsType),
 ) !void {
     var pending = pending_export_promises.fetchRemove(export_id) orelse return;
     defer pending.value.deinit(allocator);
 
     for (pending.value.items) |*pending_call| {
-        defer pending_call.caps.deinit();
+        var caps_owned = true;
+        defer if (caps_owned) pending_call.caps.deinit();
         defer allocator.free(pending_call.frame);
 
         var decoded = protocol.DecodedMessage.init(allocator, pending_call.frame) catch |err| {
@@ -285,18 +260,16 @@ pub fn replayResolvedPromiseExport(
                 report_nonfatal_error(peer, err);
             };
         } else {
-            dispatchQueuedCall(
-                PeerType,
-                InboundCapsType,
-                peer,
-                call,
-                &pending_call.caps,
-                resolved,
-                send_return_exception,
-                handle_resolved_call,
-                report_nonfatal_error,
-                prepare_call_dispatch,
-            );
+            const requeued = replay_export_call(peer, pending_call.frame, call, &pending_call.caps, resolved) catch |err| blk: {
+                send_return_exception(peer, call.question_id, @errorName(err)) catch |send_err| {
+                    report_nonfatal_error(peer, send_err);
+                };
+                break :blk false;
+            };
+            if (requeued) {
+                caps_owned = false;
+                continue;
+            }
         }
 
         release_inbound_caps(peer, &pending_call.caps) catch |err| {
@@ -408,16 +381,19 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
     };
 
     const Hooks = struct {
-        fn handleResolvedCall(
+        fn replayExportCall(
             peer: *FakePeer,
+            frame: []const u8,
             call: protocol.Call,
-            inbound_caps: *const DummyCaps,
+            inbound_caps: *DummyCaps,
             resolved: cap_table.ResolvedCap,
-        ) !void {
+        ) !bool {
+            _ = frame;
             _ = call;
             _ = inbound_caps;
             _ = resolved;
             peer.handled_count += 1;
+            return false;
         }
 
         fn sendReturnException(peer: *FakePeer, question_id: u32, reason: []const u8) !void {
@@ -429,13 +405,6 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
         fn releaseInboundCaps(peer: *FakePeer, inbound_caps: *DummyCaps) !void {
             _ = inbound_caps;
             peer.release_count += 1;
-        }
-
-        fn prepareCallDispatch(peer: *FakePeer, call: protocol.Call, inbound_caps: *DummyCaps) !bool {
-            _ = peer;
-            _ = call;
-            _ = inbound_caps;
-            return true;
         }
 
         fn reportNonfatal(peer: *FakePeer, err: anyerror) void {
@@ -481,11 +450,10 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
         99,
         .none,
         &pending,
-        Hooks.handleResolvedCall,
         Hooks.sendReturnException,
         Hooks.releaseInboundCaps,
         Hooks.reportNonfatal,
-        Hooks.prepareCallDispatch,
+        Hooks.replayExportCall,
     );
 
     try std.testing.expectEqual(@as(usize, 1), peer.exception_count);

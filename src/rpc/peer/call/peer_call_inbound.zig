@@ -143,12 +143,13 @@ pub fn CallInbound(comptime Peer: type) type {
                     Peer.sendReturnException,
                     handleResolvedCall,
                     prepareParamCapsForDispatch,
+                    peer_call_targets.promiseExportToParkOnForPeerFn(Peer),
                 ),
                 peer_call_orchestration.handleCallPromisedTargetForPeerFn(
                     Peer,
                     cap_table.InboundCapTable,
                     Peer.resolvePromisedAnswer,
-                    peer_call_targets.hasUnresolvedPromiseExportForPeerFn(Peer),
+                    peer_call_targets.promiseExportToParkOnForPeerFn(Peer),
                     Peer.lookupFailedAnswer,
                     queuePromisedCall,
                     queuePromiseExportCall,
@@ -365,12 +366,10 @@ pub fn CallInbound(comptime Peer: type) type {
                 reservation.frame_copy,
                 &self.resolved_answers,
                 &self.pending_promises,
-                Peer.resolvePromisedAnswer,
                 Peer.sendReturnException,
-                handleResolvedCall,
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
-                prepareParamCapsForDispatch,
+                replayQueuedPromisedCall,
             );
         }
 
@@ -391,12 +390,10 @@ pub fn CallInbound(comptime Peer: type) type {
                 frame,
                 &self.resolved_answers,
                 &self.pending_promises,
-                Peer.resolvePromisedAnswer,
                 Peer.sendReturnException,
-                handleResolvedCall,
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
-                prepareParamCapsForDispatch,
+                replayQueuedPromisedCall,
             );
         }
 
@@ -472,12 +469,82 @@ pub fn CallInbound(comptime Peer: type) type {
                 export_id,
                 resolved,
                 &self.pending_export_promises,
-                handleResolvedCall,
                 Peer.sendReturnException,
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
+                replayQueuedExportCall,
+            );
+        }
+
+        /// `handleResolvedCall` for a replayed call: a handler error is
+        /// reported, not answered, as the replay drains always did (the
+        /// handler may already have sent its Return).
+        fn handleResolvedCallReportingErrors(
+            self: *Peer,
+            call: protocol.Call,
+            inbound_caps: *const cap_table.InboundCapTable,
+            resolved: cap_table.ResolvedCap,
+        ) anyerror!void {
+            handleResolvedCall(self, call, inbound_caps, resolved) catch |err| {
+                peer_return_dispatch.reportNonfatalErrorForPeer(Peer, self, err);
+            };
+        }
+
+        /// Replay a call parked on a promised answer that just resolved (see
+        /// `pending_calls.ReplayPromisedCallFn`). It runs the same target plan
+        /// as a fresh call: a call whose answer turned out to be an unresolved
+        /// promise export parks again on that export and replays when it
+        /// resolves (capnp-swift handoff H10). Before, the drain dispatched
+        /// straight onto the export and failed the call with "promised
+        /// capability unresolved".
+        fn replayQueuedPromisedCall(
+            self: *Peer,
+            frame: []const u8,
+            call: protocol.Call,
+            inbound_caps: *cap_table.InboundCapTable,
+        ) anyerror!bool {
+            const promised = call.target.promised_answer orelse return error.MissingCallTarget;
+            return peer_call_orchestration.routePromisedTargetCall(
+                Peer,
+                cap_table.InboundCapTable,
+                self,
+                frame,
+                call,
+                promised,
+                inbound_caps,
+                Peer.resolvePromisedAnswer,
+                peer_call_targets.promiseExportToParkOnForPeerFn(Peer),
+                Peer.lookupFailedAnswer,
+                queuePromisedCall,
+                queuePromiseExportCall,
+                Peer.sendReturnException,
+                Peer.sendReturnExceptionTyped,
+                handleResolvedCallReportingErrors,
                 prepareParamCapsForDispatch,
             );
+        }
+
+        /// Replay a call parked on a promise export that just resolved to
+        /// `resolved` (see `pending_calls.ReplayExportCallFn`). When that
+        /// leads to another export of ours that is still a promise, the call
+        /// parks there (H10); otherwise it dispatches.
+        fn replayQueuedExportCall(
+            self: *Peer,
+            frame: []const u8,
+            call: protocol.Call,
+            inbound_caps: *cap_table.InboundCapTable,
+            resolved: cap_table.ResolvedCap,
+        ) anyerror!bool {
+            switch (resolved) {
+                .exported => |cap| if (peer_call_targets.promiseExportToParkOnForPeer(Peer, self, cap.id)) |park_id| {
+                    try queuePromiseExportCall(self, park_id, frame, inbound_caps.*);
+                    return true;
+                },
+                else => {},
+            }
+            if (!try prepareParamCapsForDispatch(self, call, inbound_caps)) return false;
+            try handleResolvedCallReportingErrors(self, call, inbound_caps, resolved);
+            return false;
         }
 
         pub fn adoptThirdPartyAnswer(
