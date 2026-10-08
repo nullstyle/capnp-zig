@@ -130,11 +130,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ApplicationCloseCode.normal`, as the owned server does, and a `destroy`
   before that pass carries the close out first. New tests: with the old
   code the client sees no close within 3 s.
-- **QUIC: quic-zig kept a pointer to the close reason inside the
-  session.** quic-zig's `Connection.close` queues the caller's reason slice
-  and reads it when it builds the CONNECTION_CLOSE. An `EmbeddedSession`
-  closed by an error and destroyed before the host sent that datagram sent
-  freed memory as the reason, when the host's quic-level
+- **QUIC (Experimental `EmbeddedSession`): quic-zig kept a pointer to the
+  close reason inside the session.** quic-zig's `Connection.close` queues the
+  caller's reason slice and reads it when it builds the CONNECTION_CLOSE. An
+  `EmbeddedSession` closed by an error and destroyed before the host sent
+  that datagram sent freed memory as the reason, when the host's quic-level
   `reveal_close_reason_on_wire` was on (it is off by default). capnp-zig now
   points the queued close at quic-zig's own copy of the reason. New test:
   with the old code the peer gets `UUUUUUUUUUUUUUU` (freed bytes) instead of
