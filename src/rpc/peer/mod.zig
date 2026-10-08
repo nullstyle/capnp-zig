@@ -220,11 +220,13 @@ pub const ClientOrigin = enum {
     /// through the local loopback, `release()` does nothing (the Client
     /// owns no import), and `setXClient` writes the export
     /// (`senderHosted`, or `senderPromise` for an unresolved promise
-    /// export). A call whose params carry a capability fails with
-    /// `error.LocalCallParamCapsUnsupported`, and pipelined and streaming
-    /// calls fail with `error.LocalCapabilityPipelineUnsupported` and
-    /// `error.LocalCapabilityStreamingUnsupported`. The Client is valid while
-    /// the export lives.
+    /// export). Capabilities in a call's params and results arrive as this
+    /// peer's own (`InboundCapTable.initLoopback`); a promise on one of our
+    /// questions in them fails with
+    /// `error.LoopbackPromisedCapabilityUnsupported`. Pipelined and
+    /// streaming calls fail with `error.LocalCapabilityPipelineUnsupported`
+    /// and `error.LocalCapabilityStreamingUnsupported`. The Client is valid
+    /// while the export lives.
     exported,
 };
 

@@ -675,50 +675,117 @@ test "a Builder reads back the capability a generated setXClient wrote" {
     try std.testing.expectEqual(@as(u32, 9), (try params.getCb()).id);
 }
 
-/// Builds invokeCap params whose `cb` is a local Client of the server's own
-/// `home` export.
+/// Builds invokeCap params whose `cb` is `cb` (or the raw capability
+/// `cb_raw`), and records what the local call observed.
 const LocalParamCtx = struct {
-    peer: *Peer,
-    home_id: u32,
+    cb: ?CallSequence.Client = null,
+    cb_raw: ?u32 = null,
     returned: bool = false,
+    observed: ?u32 = null,
+    exception: bool = false,
 
     fn build(ctx_ptr: *anyopaque, params: *Reflector.InvokeCapParams.Builder) anyerror!void {
         const self: *LocalParamCtx = @ptrCast(@alignCast(ctx_ptr));
-        try params.setCbClient(.{ .peer = self.peer, .cap_id = self.home_id, .origin = .exported });
+        if (self.cb_raw) |id| {
+            try params.setCbCapability(.{ .id = id });
+        } else {
+            try params.setCbClient(self.cb.?);
+        }
     }
 
-    fn onReturn(ctx_ptr: *anyopaque, _: *Peer, _: Reflector.InvokeCap.Response, _: *const cap_table.InboundCapTable) anyerror!void {
+    fn onReturn(ctx_ptr: *anyopaque, _: *Peer, response: Reflector.InvokeCap.Response, _: *const cap_table.InboundCapTable) anyerror!void {
         const self: *LocalParamCtx = @ptrCast(@alignCast(ctx_ptr));
         self.returned = true;
+        const results = response.unwrap() catch {
+            self.exception = true;
+            return;
+        };
+        self.observed = try results.getObserved();
     }
 };
 
-test "a local Client call with a capability in its params fails closed" {
+test "a local Client call hands its handler the peer's own export and import from its params" {
     var fx: Fixture = undefined;
     try fx.init(std.testing.allocator);
     defer fx.deinit();
 
     _ = try fx.reflect(.{});
     const home_id = fx.server.home_export_id orelse return error.HomeNotExported;
+    // invokeCap(cb = the client's decoy1): the server keeps its import of
+    // decoy1, so it holds export 1 (`home`) and import 1 at once.
+    fx.client.cb = CallSequence.Client.init(&fx.client_peer, 1);
     fx.server.invoke_mode = .resolve_and_call;
+    _ = try fx.invokeCap();
+    const decoy1_import = fx.server.invoke_cb_client orelse return error.ResolveCbDidNotRun;
+    try std.testing.expectEqual(capnpc.rpc.peer.ClientOrigin.imported, decoy1_import.origin);
+    try std.testing.expectEqual(home_id, decoy1_import.cap_id);
+    try std.testing.expect(fx.server_peer.caps.hasExport(home_id));
+    try std.testing.expect(fx.server_peer.caps.hasImport(home_id));
+    const decoy1_calls = fx.decoy1.calls;
 
     // The server calls its own Reflector (export 0) locally with
-    // cb = its own `home`. A local call goes through the loopback, which
-    // decodes the params' descriptors as if the remote had sent them, so
-    // `home` would arrive as an import with the same id (the client's
-    // decoy1). Refuse the call instead of handing over the wrong capability.
+    // cb = its own `home`. The handler resolves `home` to a local Client and
+    // reaches `home` (base 1000), not the client's decoy1. Nothing touches
+    // the wire.
     const local_reflector = Reflector.Client{ .peer = &fx.server_peer, .cap_id = 0, .origin = .exported };
-    var ctx = LocalParamCtx{ .peer = &fx.server_peer, .home_id = home_id };
+    var home_ctx = LocalParamCtx{ .cb = .{ .peer = &fx.server_peer, .cap_id = home_id, .origin = .exported } };
+    const events_before = fx.wire.events.items.len;
+    _ = try local_reflector.callInvokeCap(&home_ctx, LocalParamCtx.build, LocalParamCtx.onReturn);
+    try expectExported(home_id, fx.server.invoke_cb);
+    try std.testing.expectEqual(capnpc.rpc.peer.ClientOrigin.exported, fx.server.invoke_cb_client.?.origin);
+    try std.testing.expectEqual(@as(?u32, 1000), home_ctx.observed);
+    try std.testing.expectEqual(@as(u32, 1), fx.server.home.calls);
+    try std.testing.expectEqual(decoy1_calls, fx.decoy1.calls);
+    try std.testing.expectEqual(events_before, fx.wire.events.items.len);
+    try std.testing.expectEqual(@as(u32, 1), fx.server_peer.caps.imports.get(home_id).?.ref_count);
+
+    // cb = the server's import of decoy1: the handler gets an import Client
+    // and its call goes to the client's decoy1 (base 900).
+    var import_ctx = LocalParamCtx{ .cb = decoy1_import };
+    _ = try local_reflector.callInvokeCap(&import_ctx, LocalParamCtx.build, LocalParamCtx.onReturn);
+    const kept = fx.server.invoke_cb_client orelse return error.ResolveCbDidNotRun;
+    try std.testing.expectEqual(capnpc.rpc.peer.ClientOrigin.imported, kept.origin);
+    try std.testing.expectEqual(home_id, kept.cap_id);
+    try std.testing.expectEqual(@as(?u32, 900 + decoy1_calls), import_ctx.observed);
+    try std.testing.expectEqual(decoy1_calls + 1, fx.decoy1.calls);
+    try std.testing.expectEqual(@as(u32, 1), fx.server.home.calls);
+
+    // The handler's Client owns a reference the client never granted:
+    // releasing it sends nothing, and the server keeps its own reference.
+    const releases_before = fx.wire.countReleases(.server_to_client, home_id);
+    kept.release();
+    try std.testing.expectEqual(releases_before, fx.wire.countReleases(.server_to_client, home_id));
+    try std.testing.expectEqual(@as(u32, 1), fx.server_peer.caps.imports.get(home_id).?.ref_count);
+    // The server's own reference is the one the client counts.
+    decoy1_import.release();
+    try std.testing.expectEqual(releases_before + 1, fx.wire.countReleases(.server_to_client, home_id));
+    try std.testing.expect(!fx.server_peer.caps.hasImport(home_id));
+}
+
+test "a local Client call with a pipelined capability in its params fails closed" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+
+    fx.server.invoke_mode = .resolve_and_call;
+    // A promise on one of the server's own questions (a `receiverAnswer`
+    // once encoded). The loopback receiver is the server itself, which would
+    // read it as one of its ANSWERS, a different id space: the local call
+    // refuses it before anything is dispatched.
+    const ops = [_]protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = 0 }};
+    const pipelined_id = try fx.server_peer.caps.noteReceiverAnswerOps(5, &ops);
+    const local_reflector = Reflector.Client{ .peer = &fx.server_peer, .cap_id = 0, .origin = .exported };
+    var ctx = LocalParamCtx{ .cb_raw = pipelined_id };
     const events_before = fx.wire.events.items.len;
     try std.testing.expectError(
-        error.LocalCallParamCapsUnsupported,
+        error.LoopbackPromisedCapabilityUnsupported,
         local_reflector.callInvokeCap(&ctx, LocalParamCtx.build, LocalParamCtx.onReturn),
     );
     try std.testing.expect(!ctx.returned);
     try std.testing.expectEqual(@as(?cap_table.ResolvedCap, null), fx.server.invoke_cb);
-    try std.testing.expectEqual(@as(u32, 0), fx.decoy1.calls);
     try std.testing.expectEqual(events_before, fx.wire.events.items.len);
-    try std.testing.expect(!fx.server_peer.caps.hasImport(home_id));
+    try std.testing.expect(fx.server_peer.caps.hasReceiverAnswer(pipelined_id));
+    try std.testing.expectEqual(@as(usize, 0), fx.server_peer.loopback_questions.count());
 }
 
 test "resolveX fails with PromiseUnresolved for a receiverAnswer whose answer has not returned" {

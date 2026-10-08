@@ -120,7 +120,6 @@ pub fn CallSend(comptime Peer: type) type {
                         on_return,
                         options,
                         restore_on_return_error,
-                        Peer.handleLoopbackFrame,
                     );
                 }
             }
@@ -290,7 +289,6 @@ pub fn CallSend(comptime Peer: type) type {
                 on_return,
                 options,
                 true,
-                Peer.handleLoopbackFrame,
             );
         }
 
@@ -302,9 +300,12 @@ pub fn CallSend(comptime Peer: type) type {
         /// the question must never be restored after a callback error,
         /// because the callback has already freed its context.
         ///
-        /// A local call whose params carry a capability fails with
-        /// `error.LocalCallParamCapsUnsupported` before anything is
-        /// dispatched (see `handleLocalClientLoopbackFrame`).
+        /// Capabilities in the params and results of such a call reach the
+        /// handler and the callback as this peer's own: the loopback reads
+        /// their descriptors from our side (`InboundCapTable.initLoopback`).
+        /// A promise on one of our questions (`receiverAnswer`) has no such
+        /// entry and fails with `error.LoopbackPromisedCapabilityUnsupported`
+        /// before anything is dispatched.
         pub fn sendCallResolvedGeneratedWithOptions(
             self: *Peer,
             target: cap_table.ResolvedCap,
@@ -325,22 +326,7 @@ pub fn CallSend(comptime Peer: type) type {
                 on_return,
                 options,
                 false,
-                handleLocalClientLoopbackFrame,
             );
-        }
-
-        /// Loopback dispatch for a generated local Client's call. Refuses a
-        /// frame whose params carry capabilities. Returning an error here
-        /// rolls the send back (question and loopback mark) before any
-        /// handler runs.
-        fn handleLocalClientLoopbackFrame(self: *Peer, frame: []const u8) anyerror!void {
-            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
-            defer decoded.deinit();
-            const call = try decoded.asCall();
-            if (call.params.cap_table) |caps| {
-                if (caps.len() != 0) return error.LocalCallParamCapsUnsupported;
-            }
-            return self.handleLoopbackFrame(frame);
         }
 
         fn sendCallResolvedWithOptionsRestore(
@@ -353,7 +339,6 @@ pub fn CallSend(comptime Peer: type) type {
             on_return: QuestionCallback,
             options: CallOptions,
             restore_on_return_error: bool,
-            handle_loopback_frame: *const fn (*Peer, []const u8) anyerror!void,
         ) !u32 {
             self.assertThreadAffinity();
             if (self.is_shutting_down) return error.PeerShuttingDown;
@@ -418,7 +403,7 @@ pub fn CallSend(comptime Peer: type) type {
                         on_return,
                         allocate_loopback_question,
                         Peer.removeQuestion,
-                        handle_loopback_frame,
+                        Peer.handleLoopbackFrame,
                     );
                 },
                 .none => error.CapabilityUnavailable,
