@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-08
+
+This is an RPC correctness release. It fixes capabilities that reached the
+wrong object without an error (a generated `setXClient` passing an imported
+capability back, and loopback calls on the peer's own exports), resolves a
+capability pipelined into call params for the C++, Go, Rust and Python
+reference clients, and gives every question exactly one terminal under
+memory pressure, after a cancel and for forwarded calls. It adds
+Experimental embedder hooks and the `native` module (capnp-swift's sans-IO
+RPC connection and C ABI, now in capnp-zig), Level-3 vat hosting over the
+WASM host ABI, and a gate that compiles every Zig block in the README and
+the serialization guide. Two new cross-implementation e2e scenarios pass
+against all four references. No Stable API line changes. One `### Breaking`
+entry: generated code needs the 0.23.0 runtime (codegen ABI 2).
+docs/upgrading-to-0.23.0.md walks through the upgrade.
+
 ### Breaking
 
 - **Codegen: generated code needs the 0.23.0 runtime (codegen ABI 2).**
@@ -445,6 +461,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- `docs/upgrading-to-0.23.0.md` (new): who should take the RPC fixes, the
+  coordinated set (quic-zig v0.32.0 and http3-zig v0.5.5 unchanged), and a
+  checklist (regenerate with the same release's plugin, the failed-answer
+  param, `Client.origin`, loopback calls). `docs/native-abi.md` (new)
+  describes the `native` module.
 - **docs/generated-api.md has a new section, "Passing capabilities back".**
   It explains why one id can name both a local export and an import, what
   each `Client.origin` means for `setXClient`, calls and `release()`, and
@@ -6609,7 +6630,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/nullstyle/capnp-zig/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/nullstyle/capnp-zig/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/nullstyle/capnp-zig/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/nullstyle/capnp-zig/compare/v0.19.1...v0.20.0
