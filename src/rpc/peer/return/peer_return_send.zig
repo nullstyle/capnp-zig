@@ -582,10 +582,12 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// Experimental: answer a call whose caller sent Finish first.
         ///
         /// rpc.capnp reserves `canceled` for exactly that case; the C++
-        /// reference rejects it for a question still awaiting its Return. So
-        /// an answer the caller has not finished is refused before anything
-        /// is sent. Calls pipelined on the answer can never resolve now, so
-        /// each gets its own exception Return, as with
+        /// reference rejects it for a question still awaiting its Return, and
+        /// treats a Return for a question it already retired as a protocol
+        /// error. `Peer.sendReturnCanceled` therefore refuses, before anything
+        /// is sent, an answer the caller has not finished and one the host
+        /// does not owe a Return for. Calls pipelined on the answer can never
+        /// resolve now, so each gets its own exception Return, as with
         /// `sendReturnResultsSentElsewhere`.
         pub fn sendReturnCanceled(self: *Peer, answer_id: u32) !void {
             self.assertThreadAffinity();

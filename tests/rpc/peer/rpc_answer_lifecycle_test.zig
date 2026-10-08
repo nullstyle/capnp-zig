@@ -2290,6 +2290,80 @@ test "sendReturnCanceled refuses an answer the caller has not finished (H5)" {
     try peer.sendReturnEmptyStruct(13);
 }
 
+test "sendReturnCanceled refuses an answer that already got its late Return (H5)" {
+    // The documented race: the hook fires, the host queues the cancel, and its
+    // task finishes first with a normal late Return. That Return settles the
+    // answer, so the host's cancel must send nothing: the caller has retired
+    // the question, and the C++ reference rejects a second Return.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    var rec = FinishedRecorder{};
+    peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+
+    var host_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 7, export_id));
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 7, false));
+    try std.testing.expectEqual(@as(usize, 1), rec.count);
+
+    try peer.sendReturnEmptyStruct(7);
+    try std.testing.expectError(error.AnswerNotOwed, peer.sendReturnCanceled(7));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(7, .results));
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(7, .canceled));
+}
+
+test "sendReturnCanceled refuses an id that was never an inbound question (H5)" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    try std.testing.expectError(error.AnswerNotOwed, peer.sendReturnCanceled(99));
+    try std.testing.expectEqual(@as(usize, 0), capture.countTag(.@"return"));
+}
+
+test "answer-finished hook stays quiet once the peer stops tracking finished answers (H5)" {
+    // The early-Finish tombstones share `max_active_inbound_questions`. When
+    // they are full, the peer no longer knows that a Return is owed, so it
+    // does not tell the host, and `sendReturnCanceled` refuses the id. The
+    // host's ordinary Return is still accepted.
+    const allocator = std.testing.allocator;
+    var limits = peer_impl.PeerLimits{};
+    limits.max_active_inbound_questions = 1;
+    var peer = Peer.initDetachedWithLimits(allocator, limits);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    var rec = FinishedRecorder{};
+    peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+
+    var host_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 40, export_id));
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 40, false));
+    try std.testing.expectEqual(@as(usize, 1), rec.count);
+
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 41, export_id));
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 41, false));
+    try std.testing.expectEqual(@as(usize, 1), rec.count);
+    try std.testing.expectError(error.AnswerNotOwed, peer.sendReturnCanceled(41));
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(41, .canceled));
+
+    try peer.sendReturnException(41, "done");
+    try peer.sendReturnCanceled(40);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(40, .canceled));
+}
+
 const CapturedResolveException = struct {
     kind: protocol.ExceptionType,
     reason_matches: bool,

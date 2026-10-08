@@ -1629,7 +1629,9 @@ pub const Peer = struct {
     ///
     /// The host should stop the work and answer soon, normally with
     /// `sendReturnCanceled`, which frees the caller's question id. Any later
-    /// Return is still accepted. `release_result_caps` is the Finish's flag.
+    /// Return is still accepted, but send only one: once any Return goes out,
+    /// `sendReturnCanceled` refuses the id with `error.AnswerNotOwed`.
+    /// `release_result_caps` is the Finish's flag.
     ///
     /// The handler runs inside `handleFrame`, after the Finish is fully
     /// applied, at most once per answer. It may answer from inside the
@@ -1638,6 +1640,11 @@ pub const Peer = struct {
     /// forwarded on the host's behalf; the peer settles those itself. A
     /// queued call whose Finish set `requireEarlyCancellationWorkaround` is
     /// delivered later and never reported; answer it as usual.
+    ///
+    /// The peer remembers a finished, unanswered call in a record bounded by
+    /// `limits.max_active_inbound_questions`. When those records are full,
+    /// it does not run the handler for the next one, and the host's ordinary
+    /// Return answers it.
     ///
     /// Pass `null` for either argument to clear the handler.
     pub fn setAnswerFinishedHandler(self: *Peer, ctx: ?*anyopaque, handler: ?AnswerFinishedFn) void {
@@ -3801,10 +3808,18 @@ pub const Peer = struct {
 
     /// Experimental. Answer a call whose caller sent Finish first (see
     /// `setAnswerFinishedHandler`) with `Return{canceled}`, and fail the calls
-    /// pipelined on it with their own Return. Errors with
-    /// `error.AnswerNotFinished`, sending nothing, while the caller has not
-    /// finished the answer. Body in `return/peer_return_send.zig`.
+    /// pipelined on it with their own Return. Sends nothing and errors with
+    /// `error.AnswerNotFinished` while the caller has not finished the
+    /// answer, and with `error.AnswerNotOwed` when the peer does not know of
+    /// a Return the host still owes for it: the answer already got its
+    /// Return, the id was never an inbound question, the peer settles the
+    /// answer itself (a forwarded or still-queued call), or the peer stopped
+    /// tracking it (see `setAnswerFinishedHandler`). Body in
+    /// `return/peer_return_send.zig`.
     pub fn sendReturnCanceled(self: *Peer, answer_id: u32) !void {
+        self.assertThreadAffinity();
+        if (self.active_inbound_questions.contains(answer_id)) return error.AnswerNotFinished;
+        if (!self.hostOwesFinishedReturn(answer_id)) return error.AnswerNotOwed;
         return ReturnSendImpl.sendReturnCanceled(self, answer_id);
     }
 
@@ -4651,7 +4666,6 @@ pub const Peer = struct {
         const host_owes_return = self.answer_finished_fn != null and was_active and
             !was_resolving and !finished_completing_join and
             !self.resolved_answers.contains(qid) and !self.isForwardedAnswer(qid);
-        var tombstoned = false;
         if (!finished_completing_join) self.clearPendingJoinResultAnswer(qid);
         try self.clearPendingJoinRelay(qid, true, finish_msg.release_result_caps);
         // Cancellation race: a Finish for an in-flight inbound call (still
@@ -4666,7 +4680,6 @@ pub const Peer = struct {
             self.finished_early_answers.count() < self.limits.max_active_inbound_questions)
         {
             if (self.finished_early_answers.put(qid, finish_msg.release_result_caps)) |_| {
-                tombstoned = true;
                 if (params_granted_refs) {
                     self.finished_early_param_grants.put(qid, {}) catch |err| self.reportNonfatalError(err);
                 }
@@ -4725,15 +4738,30 @@ pub const Peer = struct {
         // cancelled itself) consumed the tombstone: then nobody owes one. A
         // call still queued (the Finish asked for delivery first) has not
         // reached the host. With no tombstone (the bounded map was full) the
-        // host is still told.
+        // peer no longer tracks the owed Return, so the host is not told:
+        // `sendReturnCanceled` would refuse the id.
         if (host_owes_return and !canceled_automatic_target and
-            (!tombstoned or self.finished_early_answers.contains(qid)) and
-            !self.hasQueuedPendingQuestionId(qid))
+            self.hostOwesFinishedReturn(qid))
         {
             if (self.answer_finished_fn) |notify| {
                 if (self.answer_finished_ctx) |ctx| notify(ctx, self, qid, finish_msg.release_result_caps);
             }
         }
+    }
+
+    /// True when the caller finished inbound answer `answer_id` before its
+    /// Return and the host still owes that Return: the Finish left a
+    /// tombstone that no Return has consumed, no Return is being sent, and
+    /// the peer does not settle the answer itself (a forward, a call it still
+    /// holds queued, a completing Join). The gate of the answer-finished hook
+    /// and of `sendReturnCanceled`.
+    fn hostOwesFinishedReturn(self: *Peer, answer_id: u32) bool {
+        return self.finished_early_answers.contains(answer_id) and
+            !self.active_inbound_questions.contains(answer_id) and
+            !self.resolving_answers.contains(answer_id) and
+            !self.completing_join_answers.contains(answer_id) and
+            !self.isForwardedAnswer(answer_id) and
+            !self.hasQueuedPendingQuestionId(answer_id);
     }
 
     /// True when the peer forwarded inbound answer `answer_id` to another

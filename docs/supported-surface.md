@@ -388,8 +388,13 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   handed and has not answered; not for an answer the host already replied to,
   a call the Peer still holds queued, or a call the Peer forwarded. The host
   then answers with `Peer.sendReturnCanceled`, which sends `Return{canceled}`
-  and fails the calls pipelined on that answer; it refuses an answer the caller
-  has not finished. Any other late Return is still accepted, and it keeps
+  and fails the calls pipelined on that answer. It refuses, sending nothing,
+  an answer the caller has not finished (`error.AnswerNotFinished`) and one
+  the host does not owe a Return for (`error.AnswerNotOwed`): it already got
+  a Return, the id is unknown, or the Peer settles it itself. The Peer
+  remembers at most `limits.max_active_inbound_questions` finished,
+  unanswered calls; past that the handler does not run. Any other late
+  Return is still accepted, and it keeps
   `releaseParamCaps = false` when the call's params granted capabilities.
   `Peer.resolvePromiseExportToExceptionTyped` rejects a promise export with an
   explicit `Exception.Type`. Experimental.

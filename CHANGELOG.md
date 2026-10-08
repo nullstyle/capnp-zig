@@ -68,9 +68,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sendReturnCanceled`, which sends `Return{canceled}` and fails the calls
   pipelined on that answer with their own Return. It refuses with
   `error.AnswerNotFinished` while the caller has not finished the answer,
-  because the C++ reference rejects such a Return. The handler may answer
+  because the C++ reference rejects such a Return. It refuses with
+  `error.AnswerNotOwed`, and sends nothing, when the answer already got a
+  Return (for example a late one the host's task sent first), when the id
+  was never an inbound question, and when the Peer settles the answer
+  itself. The handler may answer
   from inside the callback. Embedders such as capnp-swift can cancel the
-  handler's task and free the caller's id at once.
+  handler's task and free the caller's id at once. The Peer tracks finished,
+  unanswered calls in a record bounded by
+  `limits.max_active_inbound_questions`; when it is full, the handler does
+  not run and the host's ordinary Return answers the call.
 
 - **RPC: `Peer.resolvePromiseExportToExceptionTyped` (capnp-swift
   handoff H5).**
