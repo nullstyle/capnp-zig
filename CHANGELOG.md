@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **The QUIC error sets gain `AckFrequencyNotNegotiated` with quic-zig
+  v0.37.1 (Experimental).** quic-zig's connection error set has the new
+  error of `requestAckFrequency` and `requestImmediateAck`, and the
+  Experimental QUIC sets that carry it widen with it: `connect`,
+  `ClientSession.connect`, `Connection.initClient`, `Server.step` and
+  `stepOnce`, `endpoint.EndpointDriver.drainOutgoingDatagrams` and
+  `handleDatagram`, `listener.Listener.drainAcceptedSessionDatagrams`,
+  `drainSessionDatagrams` and `tick`, `listener.AcceptedSession.pollDatagram`,
+  `listener.Session.pollDatagram`, and `quic_app.Outbox.finish`, `flush`,
+  `flushAll`, `push` and `reset` (17 lines of
+  docs/api-snapshot-experimental-quic.txt; no Stable line changes).
+  capnp-zig calls neither function.
+  - **Migration:** add `error.AckFrequencyNotNegotiated` to any exhaustive
+    switch over those error sets. A build that also depends on quic
+    directly must pin quic-zig v0.37.1 with the same options as capnp-zig
+    (`.target`, `.release = optimize != .debug`, `.@"sanitize-c" = "trap"`),
+    or it builds two quic modules.
+- **An `EmbeddedSession` host that ticks its own `quic_zig.Server` touches
+  every connection first (Experimental behavior).** On quic-zig v0.36.0 and
+  later, a `Server.tick` right after a drain can skip the GC of a stream
+  that ended (see Changed): a Debug build asserts in quic-zig's
+  `Connection.tick`, and a release build holds the stream and the peer's
+  stream id until the next touch. capnp-zig's `Listener.tick` touches every
+  slot first; a host that calls `quic_zig.Server.tick` itself must too.
+  - **Migration:** before `server.tick(now_us)`, run
+    `for (server.iterator()) |slot| slot.conn.touch();`, or tick through
+    capnp-zig's `Listener.tick`.
+
 ### Added (Experimental)
 
 - **Host answer cancellation over the WASM host ABI (feature bit `12`).**
@@ -21,6 +51,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   peer settles the answer itself. ABI tests cover the export set, the
   feature bit, the kind-4 event for an unanswered host call, the canceled
   Return frame, both refusal paths, and handler clearing.
+
+### Changed
+
+- **QUIC: quic-zig v0.32.0 -> v0.37.1 (tag `b89270b`,
+  `quic-0.37.1-DnSYvTlfPwChWkn-M8TGtX81DkFobQDQQat0GMff1YRe`), in one step
+  over v0.33.0, v0.34.0, v0.35.0, v0.36.0 and v0.37.0.** The same option map,
+  exported modules and boringssl-zig (`ff30fe99`, 0.6.7). Every quic-zig call
+  capnp-zig makes is unchanged. No Stable API line changes; 17 Experimental
+  QUIC error sets widen by one error (see Breaking). What an application
+  sees:
+  - Throughput. One stream reaches the path's rate on the defaults: the
+    receive windows `quic.defaultTransportParams()` announces (1 MiB per
+    stream, 16 MiB per connection) are now the starting windows, doubled
+    while the reader keeps up, up to 8 MiB per stream and 16 MiB per
+    connection (never past half of `max_connection_memory`), and a stream's
+    send buffer (1 MiB) grows with the peer's credit, up to 16 MiB. The
+    engine moves a packet in about half the CPU. Measured with
+    `bench-quic --mode bulk --payload 1048576 --rtt-ms 20` (macOS,
+    ReleaseFast, a loopback relay adding 20 ms of round trip, 16 calls in
+    flight): baseline mode 22.6 -> 60.2 MB/s. Native mode with the same
+    flags did not finish on v0.32.0 (three runs, each ended by the idle
+    timeout after 27 to 44 calls; the cause was not isolated) and moves
+    44.8 MB/s. On plain loopback, 1 MiB calls go 109 -> 157 MB/s in both
+    modes, and `bench-check-quic`'s bulk case (64 KiB calls) 103.5 -> 153.9
+    MB/s; its allocation counts are unchanged.
+  - Memory. For a reader that keeps up, a connection can hold more than its
+    announced windows: receive windows up to 16 MiB and send buffers up to
+    the peer's credit, all inside `max_connection_memory` (32 MiB by
+    default). `ServerOptions.max_connection_memory` bounds a server, and its
+    receive windows then stop at half of it; a client keeps quic-zig's
+    default. A slow reader's windows never grow. An idle connection costs
+    about 22 KB of Zig heap (was about 92 KB), and a connection gives its
+    bulk buffers back when it idles. The nightly QUIC self-healing soak
+    (ReleaseSafe, 16 workers, 20 s, macOS, one run each) peaked at 34 MB of
+    RSS against 51 MB on v0.32.0, and its RSS gate passes.
+  - A stream write past `max_connection_memory` returns short where it
+    failed with `error.ExcessiveLoad`; the transport takes it as
+    back-pressure (see Fixed). `ExcessiveLoad` stays the fault for what a
+    peer puts in buffers.
+  - ACKs: a receiver acknowledges every second packet of a burst, and at
+    once a packet that arrives 1 ms or more after the one before, so a
+    request or a reply still gets its ACK right away. ACK frames carry up
+    to 255 ranges, and a reordering path cuts the window less. The ACK
+    Frequency extension (the draft's provisional codepoints) lets a bulk
+    sender ask a peer that supports it for fewer ACKs. A packet number is 2
+    to 4 bytes on the wire, never 1.
+  - A probe timeout to a silent peer carries previously sent stream data on
+    every probe. Since quic-zig v0.30.0 (capnp-zig v0.21.0 and later) the
+    second and later probes carried control frames only, so a request whose
+    packet and first copy were lost, with every ACK lost too, waited for
+    the idle timeout.
+  - capnp-zig passes none of the new quic-zig knobs through
+    (`auto_tune_receive_windows`, `max_stream_receive_window`,
+    `max_connection_receive_window`, `send_buffer_follows_credit`,
+    `max_buffered_send_cap`, `ack_quick_gap_us`, `ack_frequency_policy`),
+    and its loops do not use quic-zig's new ready API.
+  - One quic module per process: http3-zig main (`e5b3e28`, not released
+    yet) pins v0.37.1 with the same option map, and links next to this tree
+    with one quic module (measured: one `-Mquic=` and one `-Mboringssl=`,
+    Debug and ReleaseSafe). http3-zig v0.5.5 pins v0.32.0 and pairs with
+    capnp-zig v0.23.0 and v0.22.0.
+- **QUIC: the transport ticks every connection in full.** quic-zig v0.36.0
+  answers `tick` on a connection at rest from a cached deadline until
+  `Connection.touch`, and does not count a stream that the tick would free
+  as work. capnp-zig's loops send between the service pass and the tick,
+  so on v0.37.1 the tick skipped the GC of a stream that had just ended:
+  19 QUIC tests crashed in Debug on quic-zig's assert in `Connection.tick`,
+  and in ReleaseSafe two native connections stalled at 10,185 and 10,177 of
+  10,240 frames with both sides at rest (the peer's stream ids never came
+  back). Every tick now goes through `tickConnection` / `tickServer` in
+  `src/rpc/transport/quic/quic_zig_adapter.zig`, which touch first: the
+  tick of quic-zig v0.35.0 and earlier. `Listener.tick` touches every slot
+  before `Server.tick`. A host that ticks its own `quic_zig.Server` next to
+  an `EmbeddedSession` must touch each connection before `Server.tick`
+  ("Embedder rules" in docs/quic-transport.md). The report for quic-zig is
+  `docs/upstream/handoff-quic-zig-at-rest-stream-gc.md`.
+
+### Fixed
+
+- **QUIC: a reply larger than a server's `max_connection_memory` ended the
+  session.** Through quic-zig v0.32.0 (capnp-zig v0.23.0 and earlier) a
+  stream write past the connection's memory budget failed with
+  `error.ExcessiveLoad`, and the transport ended the session on it. quic-zig
+  v0.33.0 returns a short count instead, and both engines' outbound queues
+  take a short or zero write as back-pressure: the frame stays at the head
+  of the queue and the rest goes out as ACKs free memory. New tests in the
+  QUIC transport suite send a 1 MiB reply through a 256 KiB server budget,
+  in baseline and native mode; on quic-zig v0.32.0 both fail with "server
+  failed the session: ExcessiveLoad".
 
 ## [0.23.0] - 2026-10-08
 

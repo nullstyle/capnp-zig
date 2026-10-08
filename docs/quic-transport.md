@@ -44,10 +44,91 @@ Cap'n Proto RPC vat session. The payload above the QUIC transport is still the
 standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
 between peers, not the RPC protocol that `Peer` handles.
 
-The manifest pins the `quic` package at annotated tag `v0.32.0` (commit
-`ffdb251`), one step from v0.30.1 (v0.31.0 and v0.31.1 are included, not
-pinned). None of the three changes the wire, the embedder API or the option
-map.
+The manifest pins the `quic` package at annotated tag `v0.37.1` (commit
+`b89270b`), one step from v0.32.0: v0.33.0 through v0.37.0 are included, not
+pinned. The option map, the exported modules and boringssl-zig are the same,
+and no quic-zig call that capnp-zig makes changed. quic-zig's connection error
+set gained `AckFrequencyNotNegotiated`, so the Experimental QUIC error sets that
+carry it (`Connection.initClient`, `Server.step`, `Listener.tick` and 14 more)
+gain it too. Only `requestAckFrequency` and `requestImmediateAck` return it,
+and capnp-zig calls neither. What an application sees:
+
+- **One stream reaches the path's rate (v0.33.0).** The receive windows that
+  `defaultTransportParams()` announces (1 MiB per stream, 16 MiB per
+  connection) are where a connection starts, no longer what it keeps. When
+  the application read the last half window in less than two round trips,
+  quic-zig doubles the window, up to 8 MiB per stream and 16 MiB per
+  connection, and never past half of `max_connection_memory`. A slow
+  reader's window never grows. A stream's send buffer (1 MiB) grows with the
+  peer's credit, up to 16 MiB. capnp-zig passes none of the new quic-zig
+  knobs through (`auto_tune_receive_windows`, `max_stream_receive_window`,
+  `max_connection_receive_window`, `send_buffer_follows_credit`,
+  `max_buffered_send_cap`), so quic-zig's defaults apply on both sides.
+  Measured with `bench-quic --mode bulk --payload 1048576 --rtt-ms 20`
+  (macOS, ReleaseFast, a loopback relay that adds 20 ms of round trip,
+  16 calls in flight): baseline mode 22.6 MB/s on v0.32.0, 60.2 MB/s on
+  v0.37.1. Native mode with the same flags did not finish on v0.32.0 (three
+  runs, each ended by the idle timeout after 27 to 44 calls; the cause was
+  not isolated) and moves 44.8 MB/s on v0.37.1. On plain loopback, 1 MiB
+  calls go 109 -> 157 MB/s in both modes.
+- **Memory per connection.** A connection holds what its windows and send
+  buffers hold, and for a reader that keeps up those now grow: receive
+  windows up to 16 MiB, and send buffers up to what the peer's credit allows,
+  all inside `max_connection_memory` (32 MiB by default). Through v0.32.0 the
+  announced windows bounded it (1 MiB per stream, 16 MiB per connection).
+  On a server, `ServerOptions.max_connection_memory` bounds it, and the
+  receive windows then stop at half of it; a client keeps quic-zig's
+  default. An idle connection costs about 22 KB of Zig heap (it was about
+  92 KB), and one that served a bulk transfer gives its buffers back when it
+  idles (v0.36.0).
+- **A write past the memory budget waits (v0.33.0).** A stream write that
+  `max_connection_memory` has no room for takes what fits and returns a
+  short count (zero when nothing fits); it used to fail with
+  `error.ExcessiveLoad`. Both engines take a short write as back-pressure:
+  the frame stays at the head of the queue and goes out as ACKs free
+  memory. Through v0.32.0 a server whose own reply did not fit lost the
+  session with `ExcessiveLoad`. The transport suite's "a reply larger than
+  the server's connection memory budget arrives whole" tests (baseline and
+  native: 1 MiB through a 256 KiB budget) fail on v0.32.0 and pass now.
+  `ExcessiveLoad` is still the fault for what a peer puts in buffers.
+- **Every tick is a full tick (v0.36.0).** quic-zig v0.36.0 answers `tick`
+  on a connection at rest from a cached deadline until `Connection.touch`,
+  and its test for "at rest" does not count a stream that the next tick's
+  GC frees. capnp-zig's loops send (the poll that primes the cache) between
+  the service pass and the tick, so that tick skipped the GC of a stream
+  that had just ended. A Debug build asserts in quic-zig
+  (`Connection.zig:5352`); a release build kept the stream until the next
+  touch, and with it the stream id that the peer gets back when the stream
+  is freed, so a native connection with a full unidirectional window
+  stalled with both sides at rest. capnp-zig touches each connection before
+  it ticks (`tickConnection` and `tickServer` in
+  `src/rpc/transport/quic/quic_zig_adapter.zig`), which is the tick quic-zig
+  ran through v0.35.0. A host that ticks its own `quic_zig.Server` must do
+  the same ([Embedder rules](#embedder-rules)).
+  `docs/upstream/handoff-quic-zig-at-rest-stream-gc.md` is the report for
+  quic-zig.
+- **Fewer ACKs and less CPU (v0.34.0, v0.35.0, v0.37.0).** The engine moves
+  a packet in about half the CPU. A receiver acknowledges every second
+  packet of a burst, and at once a packet that arrives 1 ms or more after
+  the one before it (`ack_quick_gap_us`), so a request or a reply still gets
+  its ACK right away. An ACK frame carries up to 255 ranges, and a path that
+  reorders cuts the congestion window less often. The ACK Frequency
+  extension is on (draft-ietf-quic-ack-frequency, with the draft's
+  provisional codepoints): a bulk sender with a large window asks a peer
+  that supports it for fewer ACKs. On the wire a packet number is 2 to 4
+  bytes, never 1. capnp-zig does not use quic-zig's new ready API
+  (`Server.takeReady`, `tickDue`, `nextDeadline`): its loops sweep their
+  sessions, as before.
+- **Every probe timeout carries data (v0.37.1).** From quic-zig v0.30.0
+  (capnp-zig v0.21.0) the second and later probes to a silent peer re-sent
+  control frames only. A request whose packet and first copy were lost,
+  with every ACK lost too, then waited for the idle timeout. Every probe
+  carries previously sent stream data now.
+
+Through v0.32.0 (the pin of capnp-zig v0.22.0 and v0.23.0), the receive
+window an endpoint kept was the one it announced, and quic-zig's
+`max_buffered_send` (1 MiB) was a stream's whole send buffer. From that tag
+and the two before it:
 
 - **A dead peer is noticed one idle timeout after it stops answering, not
   two to three (v0.31.1).** Through v0.31.0, quic-zig restarted the idle
@@ -74,28 +155,23 @@ map.
   the path: about 3 s on a fresh connection with no RTT sample, tens of
   milliseconds on loopback, several hundred milliseconds or more on a WAN
   path.
-- **The receive window kept is the one announced (v0.32.0).** Through
+- **The receive window kept was the one announced (v0.32.0).** Through
   v0.31.1 the credit after the initial window was a fixed 1 MiB per stream
   and 16 MiB per connection, whatever the transport parameters said.
   `defaultTransportParams()` (`src/rpc/transport/quic/options.zig`)
   announces exactly those (`initial_max_stream_data_*` 1 MiB,
-  `initial_max_data` 16 MiB), so nothing changes with the defaults. A
-  `transport_params` that announces more now gets it for the whole stream
-  (a slow reader can then hold that much per stream, still bounded by
-  `max_connection_memory`); one that announces less gets less.
-- **A stream's send buffer is a quic-zig knob (v0.32.0).** quic-zig's
-  `Client.Config`, `Server.Config` and `Connection` have
-  `max_buffered_send` (default 1 MiB, the old fixed value): the bytes a
-  stream holds that the peer has not acknowledged in order, which bounds a
-  single stream to one buffer per round trip. capnp-zig does not pass it
-  through; every QUIC stream it opens keeps the 1 MiB default. To go past
-  it on a path whose bandwidth-delay product is larger, the sender needs
-  this buffer raised and the receiver a matching announced window.
-- ACK frames carry up to 64 ranges (were 16), and the loss thresholds that
-  widened for reordering shrink back after 16 round trips with no spurious
-  loss (v0.32.0). A client confirms its handshake on an ACK of a 1-RTT
-  packet of its own, and `Server.feed` leaves a datagram it reports as
-  `.dropped` as it came (v0.31.0).
+  `initial_max_data` 16 MiB). Since v0.33.0 the announced window is the
+  starting one (above).
+- **A stream's send buffer became a quic-zig knob (v0.32.0):**
+  `max_buffered_send` on quic-zig's `Client.Config`, `Server.Config` and
+  `Connection`, 1 MiB by default. Since v0.33.0 it is the floor, and the
+  buffer follows the peer's credit (above). capnp-zig does not pass it
+  through.
+- ACK frames carried up to 64 ranges (were 16; 255 since v0.37.0), and the
+  loss thresholds that widened for reordering shrink back after 16 round
+  trips with no spurious loss (v0.32.0). A client confirms its handshake on
+  an ACK of a 1-RTT packet of its own, and `Server.feed` leaves a datagram
+  it reports as `.dropped` as it came (v0.31.0).
 
 v0.30.1 made a probe timeout no loss (RFC 9002 section 6.2.4, so an ACK
 that was only late is no longer a window cut), bounded the handshake's probe
@@ -121,9 +197,12 @@ A process can hold only one `quic` module: every package that links quic-zig
 into the same build must pin the same tag and pass the same dependency options
 (`.target`, `.release`, `.@"sanitize-c" = "trap"`), or the build makes two quic
 modules, each with its own BoringSSL. Only packages that link into one program
-must share a pin: capnp-zig and http3-zig move together (capnp-zig v0.22.0 and
-http3-zig v0.5.5 both pin v0.32.0; capnp-zig v0.21.0 pairs with http3-zig
-v0.5.4 on v0.30.1), and a quic-zig security fix moves every package at once.
+must share a pin: capnp-zig and http3-zig move together, and a quic-zig
+security fix moves every package at once. This tree and http3-zig main
+(`e5b3e28`, not released yet) both pin v0.37.1, and link into one program with
+one quic module (one `-Mquic=` and one `-Mboringssl=`, Debug and ReleaseSafe).
+capnp-zig v0.22.0 and v0.23.0 pair with http3-zig v0.5.5 on v0.32.0, and
+capnp-zig v0.21.0 with http3-zig v0.5.4 on v0.30.1.
 Connection and server session loops drive
 `Connection.advance()` before waiting on datagrams and again during active
 service, then tick timers and drain outbound datagrams.
@@ -509,12 +588,23 @@ already obey both.
 1. Give the received datagrams to quic-zig (`Server.feed`).
 2. Call `driver.service`, then call `service(now_us)` on each
    `EmbeddedSession`.
-3. Call `Server.tick`.
+3. Touch every connection (`slot.conn.touch()` for each slot of
+   `Server.iterator()`), then call `Server.tick`. capnp-zig's
+   `Listener.tick` does both.
 
-The reason is quic-zig's stream GC. `tick` frees a stream when its receive
-half has ended. Sometimes every byte of a stream is read, and then its FIN or
-RESET arrives alone. If `tick` runs before the service pass, the stream is
-gone before the Driver reads it, and a read gets `StreamNotFound`. Through
+The touch is new with quic-zig v0.36.0. A connection at rest answers `tick`
+from a cached deadline until something touches it, and quic-zig does not
+count a stream that the tick would free as a reason to leave rest. A loop that
+sends between the service pass and the tick (the poll primes the cache) then
+skips the GC of a stream that just ended: a Debug build of quic-zig asserts
+in `Connection.tick`, and a release build keeps the stream, and the stream id
+the peer would get back, until the next touch. The touch makes the tick the
+full one that quic-zig ran through v0.35.0.
+
+The reason for the order is quic-zig's stream GC. `tick` frees a stream when
+its receive half has ended. Sometimes every byte of a stream is read, and then
+its FIN or RESET arrives alone. If `tick` runs before the service pass, the
+stream is gone before the Driver reads it, and a read gets `StreamNotFound`. Through
 quic-zig v0.27.0 the Driver then reported `.reaped`, so a clean end and a cut
 stream looked the same, and the RESET error code was lost.
 
@@ -1331,8 +1421,16 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   v0.21.0) a session that kept sending took two to three idle timeouts. The
   timeout is at least three probe timeouts, about 3 s before the first RTT
   sample.
-- A QUIC stream's send buffer is quic-zig's `max_buffered_send` default,
-  1 MiB; capnp-zig does not expose the knob.
+- capnp-zig does not expose quic-zig's flow-control and memory knobs other
+  than `ServerOptions.max_connection_memory`: a stream's send buffer starts
+  at quic-zig's `max_buffered_send` (1 MiB) and follows the peer's credit up
+  to 16 MiB, and the receive windows start at the announced ones and grow to
+  8 MiB per stream and 16 MiB per connection for a reader that keeps up.
+  A client's memory budget is quic-zig's default, 32 MiB per connection.
+- The transport ticks every connection in full (it touches each one first),
+  so it gets none of quic-zig v0.36.0's savings for connections at rest, and
+  its loops sweep every session per pass rather than use quic-zig's ready
+  API. A server with thousands of idle sessions pays for each one per pass.
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.
 - Mode mismatch is treated as malformed transport input and closes cleanly.
@@ -1340,6 +1438,6 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   BoringSSL with `sanitize-c = "trap"`. There, BoringSSL's 32-bit P-256 code
   (`third_party/fiat/p256_32.h`, under ECDSA verify) can trap in some TLS
   handshakes (quic-zig records it in its v0.28.1 notes, for boringssl-zig to
-  fix; boringssl-zig is unchanged through quic-zig v0.32.0, so it is still
+  fix; boringssl-zig is unchanged through quic-zig v0.37.1, so it is still
   open). capnp-zig's CI compiles QUIC for 32-bit x86 but does not run it there.
   64-bit targets are not affected.
