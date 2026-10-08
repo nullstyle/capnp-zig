@@ -142,6 +142,7 @@ pub fn CallInbound(comptime Peer: type) type {
                     ),
                     Peer.sendReturnException,
                     handleResolvedCall,
+                    prepareParamCapsForDispatch,
                 ),
                 peer_call_orchestration.handleCallPromisedTargetForPeerFn(
                     Peer,
@@ -156,6 +157,7 @@ pub fn CallInbound(comptime Peer: type) type {
                     handleResolvedCall,
                     Peer.releaseInboundCaps,
                     peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
+                    prepareParamCapsForDispatch,
                 ),
             ) catch |err| {
                 log.debug("call routing error for question {}: {}", .{ call.question_id, err });
@@ -172,6 +174,90 @@ pub fn CallInbound(comptime Peer: type) type {
                     return error.AutomaticThirdPartySourceSettlementFailed;
                 }
             }
+        }
+
+        /// Resolve the `receiverAnswer` capabilities in a Call's params
+        /// (capnp-swift handoff H9). A caller passes such a descriptor when it
+        /// pipelines the result of one of its own questions into another
+        /// call's arguments; `InboundCapTable.init` can only record it as a
+        /// `.promised` entry, since resolution needs this Peer's answer table.
+        ///
+        /// Runs immediately before the call dispatches (handler or forward),
+        /// never before it is queued: an answer's result exports are held only
+        /// until that answer's Finish, so resolving early could hand a replayed
+        /// call an export that is gone. For each `.promised` entry whose answer
+        /// is recorded:
+        ///
+        /// - an export of ours becomes `.exported` (the answer-held reference
+        ///   keeps it alive; like a `receiverHosted` entry it owns no ref);
+        /// - a null result becomes `.none`;
+        /// - an import we returned, or a promise on the remote's own answer,
+        ///   stays `.promised`: the descriptor grants this vat no wire
+        ///   reference, and an `.imported` entry promises the handler one.
+        ///
+        /// An entry whose answer is still pending (deferred or forwarded) or
+        /// unknown also stays `.promised`; the call is never delayed for it,
+        /// so later calls on the same target cannot overtake it.
+        ///
+        /// Each `.promised` entry is first re-read from `call`'s own cap
+        /// table. A queued call's table was decoded from the original inbound
+        /// frame, which is freed by the time the call replays from its copy.
+        ///
+        /// Returns the failure of the first named answer that returned an
+        /// exception (the caller fails the call with it), else null.
+        pub fn resolvePromisedParamCaps(
+            self: *Peer,
+            call: protocol.Call,
+            inbound_caps: *cap_table.InboundCapTable,
+        ) !?peer_call_targets.FailedAnswerView {
+            const has_promised = for (inbound_caps.entries) |entry| {
+                if (entry == .promised) break true;
+            } else false;
+            if (!has_promised) return null;
+            const list = call.params.cap_table orelse return null;
+            if (list.len() != inbound_caps.entries.len) return null;
+
+            for (inbound_caps.entries, 0..) |*entry, idx| {
+                if (entry.* != .promised) continue;
+                const descriptor = try protocol.CapDescriptor.fromReader(try list.get(@intCast(idx)));
+                const promised = descriptor.promised_answer orelse continue;
+                entry.* = .{ .promised = promised };
+
+                if (!self.resolved_answers.contains(promised.question_id)) {
+                    if (self.lookupFailedAnswer(promised.question_id)) |failed| return failed;
+                    continue;
+                }
+                const resolved = self.resolvePromisedAnswer(promised) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    // A transform the results cannot satisfy: leave the entry
+                    // as the caller sent it, as before this resolution existed.
+                    continue;
+                };
+                switch (resolved) {
+                    .exported => |cap| if (self.exports.contains(cap.id)) {
+                        entry.* = resolved;
+                    },
+                    .none => entry.* = .none,
+                    .imported, .promised => {},
+                }
+            }
+            return null;
+        }
+
+        /// `resolvePromisedParamCaps`, then fail the call when a named answer
+        /// failed. Returns false when the call was answered here and must not
+        /// dispatch. The failure is a copy of the answer's exception (reason
+        /// and type). The C++ reference instead dispatches the call with a
+        /// broken capability carrying that exception; `ResolvedCap` has no
+        /// broken variant, and a null capability would hide the failure.
+        pub fn prepareParamCapsForDispatch(
+            self: *Peer,
+            call: protocol.Call,
+            inbound_caps: *cap_table.InboundCapTable,
+        ) anyerror!bool {
+            const failed = try resolvePromisedParamCaps(self, call, inbound_caps) orelse return true;
+            try self.sendReturnExceptionTyped(call.question_id, failed.reason, failed.ex_type);
+            return false;
         }
 
         pub fn handleResolvedCall(
@@ -284,6 +370,7 @@ pub fn CallInbound(comptime Peer: type) type {
                 handleResolvedCall,
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
+                prepareParamCapsForDispatch,
             );
         }
 
@@ -309,6 +396,7 @@ pub fn CallInbound(comptime Peer: type) type {
                 handleResolvedCall,
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
+                prepareParamCapsForDispatch,
             );
         }
 
@@ -388,6 +476,7 @@ pub fn CallInbound(comptime Peer: type) type {
                 Peer.sendReturnException,
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
+                prepareParamCapsForDispatch,
             );
         }
 

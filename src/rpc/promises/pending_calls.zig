@@ -81,6 +81,7 @@ pub fn recordResolvedAnswer(
     handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+    prepare_call_dispatch: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
 ) !void {
     const resolved_entry = try resolved_answers.getOrPut(question_id);
     storeResolvedFrame(ResolvedAnswerType, allocator, question_id, resolved_entry, frame);
@@ -98,6 +99,7 @@ pub fn recordResolvedAnswer(
         handle_resolved_call,
         release_inbound_caps,
         report_nonfatal_error,
+        prepare_call_dispatch,
     );
 }
 
@@ -123,6 +125,7 @@ pub fn recordResolvedAnswerAssumeCapacity(
     handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+    prepare_call_dispatch: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
 ) void {
     const resolved_entry = resolved_answers.getOrPutAssumeCapacity(question_id);
     storeResolvedFrame(ResolvedAnswerType, allocator, question_id, resolved_entry, frame);
@@ -140,6 +143,7 @@ pub fn recordResolvedAnswerAssumeCapacity(
         handle_resolved_call,
         release_inbound_caps,
         report_nonfatal_error,
+        prepare_call_dispatch,
     );
 }
 
@@ -170,6 +174,7 @@ fn drainPendingPromises(
     handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+    prepare_call_dispatch: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
 ) void {
     var pending = pending_promises.fetchRemove(question_id) orelse return;
     defer pending.value.deinit(allocator);
@@ -195,13 +200,51 @@ fn drainPendingPromises(
             };
             continue;
         };
-        handle_resolved_call(peer, call, &pending_call.caps, resolved) catch |err| {
-            report_nonfatal_error(peer, err);
-        };
+        dispatchQueuedCall(
+            PeerType,
+            InboundCapsType,
+            peer,
+            call,
+            &pending_call.caps,
+            resolved,
+            send_return_exception,
+            handle_resolved_call,
+            report_nonfatal_error,
+            prepare_call_dispatch,
+        );
         release_inbound_caps(peer, &pending_call.caps) catch |err| {
             report_nonfatal_error(peer, err);
         };
     }
+}
+
+/// Dispatch one replayed queued call onto its now-resolved target. The
+/// caller still owns `inbound_caps` and releases them afterwards.
+/// `prepare_call_dispatch` resolves the call's `receiverAnswer` params against
+/// the answers recorded by now; it answers the call itself (and returns false)
+/// when one of those answers failed.
+fn dispatchQueuedCall(
+    comptime PeerType: type,
+    comptime InboundCapsType: type,
+    peer: *PeerType,
+    call: protocol.Call,
+    inbound_caps: *InboundCapsType,
+    resolved: cap_table.ResolvedCap,
+    send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
+    report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+    prepare_call_dispatch: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
+) void {
+    const dispatch = prepare_call_dispatch(peer, call, inbound_caps) catch |err| {
+        send_return_exception(peer, call.question_id, @errorName(err)) catch |send_err| {
+            report_nonfatal_error(peer, send_err);
+        };
+        return;
+    };
+    if (!dispatch) return;
+    handle_resolved_call(peer, call, inbound_caps, resolved) catch |err| {
+        report_nonfatal_error(peer, err);
+    };
 }
 
 pub fn replayResolvedPromiseExport(
@@ -217,6 +260,7 @@ pub fn replayResolvedPromiseExport(
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+    prepare_call_dispatch: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
 ) !void {
     var pending = pending_export_promises.fetchRemove(export_id) orelse return;
     defer pending.value.deinit(allocator);
@@ -241,9 +285,18 @@ pub fn replayResolvedPromiseExport(
                 report_nonfatal_error(peer, err);
             };
         } else {
-            handle_resolved_call(peer, call, &pending_call.caps, resolved) catch |err| {
-                report_nonfatal_error(peer, err);
-            };
+            dispatchQueuedCall(
+                PeerType,
+                InboundCapsType,
+                peer,
+                call,
+                &pending_call.caps,
+                resolved,
+                send_return_exception,
+                handle_resolved_call,
+                report_nonfatal_error,
+                prepare_call_dispatch,
+            );
         }
 
         release_inbound_caps(peer, &pending_call.caps) catch |err| {
@@ -378,6 +431,13 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
             peer.release_count += 1;
         }
 
+        fn prepareCallDispatch(peer: *FakePeer, call: protocol.Call, inbound_caps: *DummyCaps) !bool {
+            _ = peer;
+            _ = call;
+            _ = inbound_caps;
+            return true;
+        }
+
         fn reportNonfatal(peer: *FakePeer, err: anyerror) void {
             // This fake only counts reports; the assertion below is that the
             // count stays 0, so the specific error is deliberately unused.
@@ -425,6 +485,7 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
         Hooks.sendReturnException,
         Hooks.releaseInboundCaps,
         Hooks.reportNonfatal,
+        Hooks.prepareCallDispatch,
     );
 
     try std.testing.expectEqual(@as(usize, 1), peer.exception_count);

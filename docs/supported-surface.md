@@ -733,11 +733,29 @@ cooperating peer.
   suite covers send/OOM rollback, reentrant teardown, and transport close on
   both route endpoints.
 
+- **A pipelined capability in call params resolves only once its answer has
+  returned.** A caller that passes the result of one of its own unanswered
+  questions as an argument sends a `receiverAnswer` cap descriptor. Just
+  before the call dispatches, the Peer replaces that `.promised` entry with
+  the answer's result: `.exported` for an export of ours, `.none` for a null
+  result. A call whose named answer failed gets a copy of that exception
+  (the C++ reference instead passes a broken capability). This covers every
+  synchronous server, whose answers return before the next call is read.
+  The entry stays `.promised` in two cases. First, when the answer is still
+  pending (a deferred handler or a forwarded call): the call is not delayed,
+  because a delayed call could be overtaken by later calls on the same
+  target and would need `Disembargo` reflections held behind it. Second,
+  when the answer resolved to a capability the caller itself hosts: the
+  descriptor grants no wire reference, and an `.imported` entry would
+  promise the handler one. The C++ reference gives the handler a local
+  promise in both cases; that needs a promise capability with no wire
+  identity, which the Peer does not have.
+
 The forwarded-return intermediary case that shipped as the one remaining active
-v0.3.0 limitation is resolved as of v0.6.0. Every limitation listed above is
-either a Level-3 surface or a serialization compatibility gap; the frozen
-two-party RPC surface has no active limitation. Historical resolved items are listed
-below so release-to-release behavior changes stay auditable.
+v0.3.0 limitation is resolved as of v0.6.0. Apart from the pipelined-params
+item above, every limitation listed above is either a Level-3 surface or a
+serialization compatibility gap. Historical resolved items are listed below so
+release-to-release behavior changes stay auditable.
 
 ### Resolved since v0.9.0
 

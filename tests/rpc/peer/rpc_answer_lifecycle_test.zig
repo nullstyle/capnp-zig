@@ -1235,3 +1235,342 @@ test "successful call at the resolved_answers cap sends exactly one Return" {
     // The rejected call left no resolved-answer entry (still exactly `cap`).
     try std.testing.expectEqual(cap, peer.resolved_answers.count());
 }
+
+// ---------------------------------------------------------------------------
+// Pipelined capabilities in call PARAMS (capnp-swift handoff H9).
+//
+// A caller may pass a capability it does not hold yet: the result of one of
+// its own still-unanswered questions, as a `receiverAnswer` cap descriptor in
+// the params cap table. The C++ reference does this whenever a pipelined cap
+// is an argument. The receiving Peer must hand the handler the capability the
+// answer resolved to, not the raw `.promised` placeholder.
+
+/// Probe export: records what the Peer handed its handler for params cap 0.
+const ParamCapProbe = struct {
+    calls: u32 = 0,
+    seen: ?cap_table.ResolvedCap = null,
+
+    fn onCall(ctx_ptr: *anyopaque, p: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *ParamCapProbe = @ptrCast(@alignCast(ctx_ptr));
+        self.calls += 1;
+        const params = try call.params.content.getStruct();
+        const cap = try params.readCapability(0);
+        self.seen = try caps.resolveCapability(cap);
+        try p.sendReturnEmptyStruct(call.question_id);
+    }
+};
+
+/// A Call on export `target_export_id` whose params struct carries one
+/// capability: `receiverAnswer(answer_id, [getPointerField 0])`, i.e. the
+/// pointer-0 result of the caller's own question `answer_id`.
+fn buildPipelinedParamCallFrame(
+    allocator: std.mem.Allocator,
+    question_id: u32,
+    target_export_id: u32,
+    answer_id: u32,
+) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var call = try builder.beginCall(question_id, 0xABCD, 1);
+    try call.setTargetImportedCap(target_export_id);
+    var payload = try call.payloadTyped();
+    var any = try payload.initContent();
+    const params = try any.initStruct(0, 1);
+    var slot = try params.getAnyPointer(0);
+    try slot.setCapability(.{ .id = 0 });
+    var cap_list = try call.initCapTableTyped(1);
+    const entry = try cap_list.get(0);
+    try protocol.CapDescriptor.writeReceiverAnswer(entry._builder, answer_id, &[_]protocol.PromisedAnswerOp{
+        .{ .tag = .getPointerField, .pointer_index = 0 },
+    });
+    return builder.finish();
+}
+
+test "receiverAnswer param resolves to the answer's export before the handler runs (H9)" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const Handlers = struct {
+        fn onFactoryCall(ctx_ptr: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+            try p.sendReturnResults(call.question_id, ctx_ptr, buildAnswerHeldServiceResults);
+        }
+    };
+
+    // E: the capability q1's results carry. F: the factory that returns it.
+    var state = AnswerHeldState{};
+    state.service_export_id = try peer.addExport(.{ .ctx = &state, .on_call = onAnswerHeldServiceCall });
+    const factory_export_id = try peer.addExport(.{ .ctx = &state, .on_call = Handlers.onFactoryCall });
+    var probe = ParamCapProbe{};
+    const probe_export_id = try peer.addExport(.{ .ctx = &probe, .on_call = ParamCapProbe.onCall });
+
+    // q1: answered synchronously with results { ptr0 = E }.
+    const q1_frame = try buildExportCallFrame(allocator, 10, factory_export_id);
+    defer allocator.free(q1_frame);
+    try peer.handleFrame(q1_frame);
+    try std.testing.expect(peer.resolved_answers.contains(10));
+
+    // q3: the caller pipelines q1's result into q3's params before it has seen
+    // q1's Return (from this Peer's side the answer is already recorded).
+    const q3_frame = try buildPipelinedParamCallFrame(allocator, 11, probe_export_id, 10);
+    defer allocator.free(q3_frame);
+    try peer.handleFrame(q3_frame);
+
+    try std.testing.expectEqual(@as(u32, 1), probe.calls);
+    const seen = probe.seen orelse return error.ProbeNotCalled;
+    switch (seen) {
+        .exported => |exported| try std.testing.expectEqual(state.service_export_id, exported.id),
+        else => return error.ParamCapNotResolved,
+    }
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(11, .results));
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(11, .exception));
+}
+
+test "receiverAnswer param on a failed answer fails the call with that exception (H9)" {
+    // The C++ reference hands the handler a broken capability carrying the
+    // answer's exception. `ResolvedCap` has no broken variant, and a null cap
+    // would hide the failure, so the Peer fails the call itself with a copy of
+    // the answer's exception: same reason, same type.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const Handlers = struct {
+        fn onFailingCall(_: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+            try p.sendReturnExceptionTyped(call.question_id, "boom", .overloaded);
+        }
+    };
+    var failing_ctx: u8 = 0;
+    const failing_export_id = try peer.addExport(.{ .ctx = &failing_ctx, .on_call = Handlers.onFailingCall });
+    var probe = ParamCapProbe{};
+    const probe_export_id = try peer.addExport(.{ .ctx = &probe, .on_call = ParamCapProbe.onCall });
+
+    const q1_frame = try buildExportCallFrame(allocator, 10, failing_export_id);
+    defer allocator.free(q1_frame);
+    try peer.handleFrame(q1_frame);
+    try std.testing.expect(peer.failed_answers.contains(10));
+
+    const q3_frame = try buildPipelinedParamCallFrame(allocator, 11, probe_export_id, 10);
+    defer allocator.free(q3_frame);
+    try peer.handleFrame(q3_frame);
+
+    try std.testing.expectEqual(@as(u32, 0), probe.calls);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(11, .exception));
+    for (capture.frames.items) |frame| {
+        var decoded = try protocol.DecodedMessage.init(allocator, frame);
+        defer decoded.deinit();
+        if (decoded.tag != .@"return") continue;
+        const ret = try decoded.asReturn();
+        if (ret.answer_id != 11) continue;
+        const ex = ret.exception orelse return error.MissingException;
+        try std.testing.expectEqualStrings("boom", ex.reason);
+        try std.testing.expectEqual(protocol.ExceptionType.overloaded, ex.kind());
+    }
+}
+
+/// q3 for the queued-replay test: target `promisedAnswer(target_answer_id,
+/// [ptr0])`, params cap `receiverAnswer(param_answer_id, [ptr0])`.
+fn buildPipelinedTargetAndParamCallFrame(
+    allocator: std.mem.Allocator,
+    question_id: u32,
+    target_answer_id: u32,
+    param_answer_id: u32,
+) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var call = try builder.beginCall(question_id, 0xABCD, 1);
+    try call.setTargetPromisedAnswerWithOps(target_answer_id, &[_]protocol.PromisedAnswerOp{
+        .{ .tag = .getPointerField, .pointer_index = 0 },
+    });
+    var payload = try call.payloadTyped();
+    var any = try payload.initContent();
+    const params = try any.initStruct(0, 1);
+    var slot = try params.getAnyPointer(0);
+    try slot.setCapability(.{ .id = 0 });
+    var cap_list = try call.initCapTableTyped(1);
+    const entry = try cap_list.get(0);
+    try protocol.CapDescriptor.writeReceiverAnswer(entry._builder, param_answer_id, &[_]protocol.PromisedAnswerOp{
+        .{ .tag = .getPointerField, .pointer_index = 0 },
+    });
+    return builder.finish();
+}
+
+test "receiverAnswer param resolves when a queued call replays (H9)" {
+    // q3 targets a promise (q0, deferred) and carries q1's result in params.
+    // It parks until q0 returns; by then q1 is answered, so the replay must
+    // resolve the param. The replay reads the queued frame copy: the original
+    // inbound frame is freed before q0 returns.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const Deferred = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    const Handlers = struct {
+        fn onFactoryCall(ctx_ptr: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+            try p.sendReturnResults(call.question_id, ctx_ptr, buildAnswerHeldServiceResults);
+        }
+    };
+
+    var state = AnswerHeldState{};
+    state.service_export_id = try peer.addExport(.{ .ctx = &state, .on_call = onAnswerHeldServiceCall });
+    const factory_export_id = try peer.addExport(.{ .ctx = &state, .on_call = Handlers.onFactoryCall });
+    var deferred_ctx: u8 = 0;
+    const deferred_export_id = try peer.addExport(.{ .ctx = &deferred_ctx, .on_call = Deferred.onCall });
+    var probe = ParamCapProbe{};
+    const probe_export_id = try peer.addExport(.{ .ctx = &probe, .on_call = ParamCapProbe.onCall });
+
+    // q0: deferred; its eventual results carry the probe in pointer 0.
+    const q0_frame = try buildExportCallFrame(allocator, 5, deferred_export_id);
+    defer allocator.free(q0_frame);
+    try peer.handleFrame(q0_frame);
+
+    // q1: answered at once with results { ptr0 = E }.
+    const q1_frame = try buildExportCallFrame(allocator, 10, factory_export_id);
+    defer allocator.free(q1_frame);
+    try peer.handleFrame(q1_frame);
+
+    {
+        const q3_frame = try buildPipelinedTargetAndParamCallFrame(allocator, 11, 5, 10);
+        defer allocator.free(q3_frame);
+        try peer.handleFrame(q3_frame);
+    }
+    try std.testing.expect(peer.pending_promises.contains(5));
+    try std.testing.expectEqual(@as(u32, 0), probe.calls);
+
+    // q0 answers with the probe: the parked q3 replays onto it.
+    var probe_state = AnswerHeldState{ .service_export_id = probe_export_id };
+    try peer.sendReturnResults(5, &probe_state, buildAnswerHeldServiceResults);
+
+    try std.testing.expectEqual(@as(u32, 1), probe.calls);
+    const seen = probe.seen orelse return error.ProbeNotCalled;
+    switch (seen) {
+        .exported => |exported| try std.testing.expectEqual(state.service_export_id, exported.id),
+        else => return error.ParamCapNotResolved,
+    }
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(11, .results));
+}
+
+test "a replayed call's unresolved receiverAnswer param reads from the queued frame (H9)" {
+    // q3 parks on q0; its param names q1, which is still pending when q3
+    // replays, so the handler gets the `.promised` entry. That entry's
+    // transform must read the queued frame copy. Before the fix it still
+    // pointed into the original inbound frame, freed right after q3 queued.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const Probe = struct {
+        calls: u32 = 0,
+        question_id: ?u32 = null,
+        transform_len: ?u32 = null,
+        pointer_index: ?u16 = null,
+
+        fn onCall(ctx_ptr: *anyopaque, p: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            self.calls += 1;
+            const entry = try caps.get(0);
+            if (entry == .promised) {
+                self.question_id = entry.promised.question_id;
+                self.transform_len = entry.promised.transform.len();
+                const op = try entry.promised.transform.get(0);
+                self.pointer_index = op.pointer_index;
+            }
+            try p.sendReturnEmptyStruct(call.question_id);
+        }
+    };
+    const Deferred = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+
+    var deferred_ctx: u8 = 0;
+    const deferred_export_id = try peer.addExport(.{ .ctx = &deferred_ctx, .on_call = Deferred.onCall });
+    var probe = Probe{};
+    const probe_export_id = try peer.addExport(.{ .ctx = &probe, .on_call = Probe.onCall });
+
+    // q0 and q1 both stay pending.
+    for ([_]u32{ 5, 10 }) |qid| {
+        const frame = try buildExportCallFrame(allocator, qid, deferred_export_id);
+        defer allocator.free(frame);
+        try peer.handleFrame(frame);
+    }
+    {
+        const q3_frame = try buildPipelinedTargetAndParamCallFrame(allocator, 11, 5, 10);
+        defer allocator.free(q3_frame);
+        try peer.handleFrame(q3_frame);
+    }
+    try std.testing.expect(peer.pending_promises.contains(5));
+
+    var probe_state = AnswerHeldState{ .service_export_id = probe_export_id };
+    try peer.sendReturnResults(5, &probe_state, buildAnswerHeldServiceResults);
+
+    try std.testing.expectEqual(@as(u32, 1), probe.calls);
+    try std.testing.expectEqual(@as(?u32, 10), probe.question_id);
+    try std.testing.expectEqual(@as(?u32, 1), probe.transform_len);
+    try std.testing.expectEqual(@as(?u16, 0), probe.pointer_index);
+
+    try peer.sendReturnEmptyStruct(10);
+}
+
+test "receiverAnswer param on a still-pending answer dispatches at once as .promised (H9 limit)" {
+    // Deliberate limit, pinned so a change is a decision, not an accident:
+    // when the named answer is still pending (deferred or forwarded), the call
+    // is NOT delayed. Delaying it would let later calls on the same target
+    // overtake it (E-order) and would need Disembargo reflections queued
+    // behind it. The handler sees the `.promised` entry, as before.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const Deferred = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    var deferred_ctx: u8 = 0;
+    const deferred_export_id = try peer.addExport(.{ .ctx = &deferred_ctx, .on_call = Deferred.onCall });
+    var probe = ParamCapProbe{};
+    const probe_export_id = try peer.addExport(.{ .ctx = &probe, .on_call = ParamCapProbe.onCall });
+
+    const q1_frame = try buildExportCallFrame(allocator, 10, deferred_export_id);
+    defer allocator.free(q1_frame);
+    try peer.handleFrame(q1_frame);
+
+    const q3_frame = try buildPipelinedParamCallFrame(allocator, 11, probe_export_id, 10);
+    defer allocator.free(q3_frame);
+    try peer.handleFrame(q3_frame);
+
+    try std.testing.expectEqual(@as(u32, 1), probe.calls);
+    const seen = probe.seen orelse return error.ProbeNotCalled;
+    switch (seen) {
+        .promised => |promised| try std.testing.expectEqual(@as(u32, 10), promised.question_id),
+        else => return error.UnexpectedResolution,
+    }
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_promises.count());
+
+    try peer.sendReturnEmptyStruct(10);
+}

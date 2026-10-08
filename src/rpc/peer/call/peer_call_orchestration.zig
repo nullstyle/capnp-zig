@@ -189,6 +189,7 @@ pub fn handleCallImportedTargetForPeer(
     note_call_send_results: *const fn (*PeerType, protocol.Call) anyerror!void,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
     handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
+    prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
 ) !void {
     var inbound_caps = try InboundCapsType.init(peer.allocator, call.params.cap_table, &peer.caps);
     // Fd passing: imports the params noted take the fds their descriptors
@@ -235,6 +236,15 @@ pub fn handleCallImportedTargetForPeer(
 
     release_caps = true;
 
+    // Resolve `receiverAnswer` params just before a dispatch (H9); a call
+    // refused for some other reason keeps its params as sent.
+    switch (target_plan) {
+        .handle_resolved, .call_handler => {
+            if (!try prepare_param_caps(peer, call, &inbound_caps)) return;
+        },
+        else => {},
+    }
+
     const handler = if (exported_entry) |entry| entry.value_ptr.handler else null;
     try dispatchImportedTargetPlan(
         PeerType,
@@ -260,6 +270,7 @@ pub fn handleCallImportedTargetForPeerFn(
     comptime note_call_send_results: *const fn (*PeerType, protocol.Call) anyerror!void,
     comptime send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
     comptime handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
+    comptime prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
 ) *const fn (*PeerType, []const u8, protocol.Call, u32) anyerror!void {
     return struct {
         fn call(peer: *PeerType, frame: []const u8, call_msg: protocol.Call, export_id: u32) anyerror!void {
@@ -276,6 +287,7 @@ pub fn handleCallImportedTargetForPeerFn(
                 note_call_send_results,
                 send_return_exception,
                 handle_resolved_call,
+                prepare_param_caps,
             );
         }
     }.call;
@@ -298,6 +310,7 @@ pub fn handleCallPromisedTargetForPeer(
     handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+    prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
 ) !void {
     var inbound_caps = try InboundCapsType.init(peer.allocator, call.params.cap_table, &peer.caps);
     // Fd passing: imports the params noted take the fds their descriptors
@@ -357,6 +370,8 @@ pub fn handleCallPromisedTargetForPeer(
         },
         .handle_resolved => |resolved| {
             release_caps = true;
+            // Resolve `receiverAnswer` params just before the dispatch (H9).
+            if (!try prepare_param_caps(peer, call, &inbound_caps)) return;
             try handle_resolved_call(peer, call, &inbound_caps, resolved);
         },
     }
@@ -375,6 +390,7 @@ pub fn handleCallPromisedTargetForPeerFn(
     comptime handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     comptime release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     comptime report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+    comptime prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
 ) *const fn (*PeerType, []const u8, protocol.Call, protocol.PromisedAnswer) anyerror!void {
     return struct {
         fn call(peer: *PeerType, frame: []const u8, call_msg: protocol.Call, promised: protocol.PromisedAnswer) anyerror!void {
@@ -395,6 +411,7 @@ pub fn handleCallPromisedTargetForPeerFn(
                 handle_resolved_call,
                 release_inbound_caps,
                 report_nonfatal_error,
+                prepare_param_caps,
             );
         }
     }.call;
