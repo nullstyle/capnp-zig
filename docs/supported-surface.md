@@ -754,9 +754,9 @@ cooperating peer.
   result. A call whose named answer failed gets a copy of that exception
   (the C++ reference instead passes a broken capability). This covers every
   synchronous server, whose answers return before the next call is read.
-  Generated `resolveX` accessors still accept only `.imported` entries, so
-  a generated server cannot use the resolved `.exported` entry through them
-  yet; a handler can read it from the `InboundCapTable` directly.
+  A generated server's `resolveX` turns the resolved `.exported` entry into
+  a local Client (see "Passing capabilities back" in docs/generated-api.md);
+  a handler can also read it from the `InboundCapTable` directly.
   The entry stays `.promised` in two cases. First, when the answer is still
   pending (a deferred handler or a forwarded call): the call is not delayed,
   because a delayed call could be overtaken by later calls on the same

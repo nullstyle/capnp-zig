@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (Experimental)
 
-- **`rpc.peer.ClientOrigin` and the generated `Client.origin` field.** A
+- **Codegen: `rpc.peer.ClientOrigin` and the generated `Client.origin`
+  field.** A
   generated `Client` records which id space its `cap_id` names:
   `.unspecified` (the default, from `Client.init`) or `.imported` (set by
   bootstrap and `resolveX`). A Client that wraps an import id read from an
@@ -17,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrapper's `asAncestor` keeps the origin. See "Passing capabilities back"
   in docs/generated-api.md.
 
-- **The generated `resolveX` accepts a capability that came home.** Before,
+- **Codegen: the generated `resolveX` accepts a capability that came
+  home.** Before,
   it returned `error.UnexpectedCapabilityType` for anything but an import,
   so a server could not take back a capability it had issued. Now one of
   the peer's own exports (a `receiverHosted` descriptor, or a
@@ -37,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   affects servers that receive their own capabilities back, including from
   C++, Go and Rust clients that pipeline a capability into params.
 
-- **Level-3 vat hosting over the WASM host ABI (feature bit `11`).** Four new
+- **WASM: Level-3 vat hosting over the host ABI (feature bit `11`).** Four new
   exports surface the vat-wide `ProvisionIndex` so a vat represented by
   several module-local peers can serve an Accept arriving on one connection
   for a Provide received on a sibling connection (the VatC role):
@@ -54,7 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   headline flow: Provide into one VatC peer, Accept into its sibling, and a
   capability-bearing results Return resolved into the accepting peer's L3
   event.
-- **`Peer.setAnswerFinishedHandler` and `Peer.sendReturnCanceled`
+
+- **RPC: `Peer.setAnswerFinishedHandler` and `Peer.sendReturnCanceled`
   (capnp-swift handoff H5).** A host that answers calls later could not tell
   when the caller gave up: Finish only left an internal tombstone, and the
   caller's question id stayed taken until the host replied. The handler now
@@ -68,7 +71,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because the C++ reference rejects such a Return. The handler may answer
   from inside the callback. Embedders such as capnp-swift can cancel the
   handler's task and free the caller's id at once.
-- **`Peer.resolvePromiseExportToExceptionTyped` (capnp-swift handoff H5).**
+
+- **RPC: `Peer.resolvePromiseExportToExceptionTyped` (capnp-swift
+  handoff H5).**
   `resolvePromiseExportToException` always sent type `failed`, so a host
   could not tell a remote importer that a broken promise was `overloaded`,
   `disconnected` or `unimplemented`. The typed variant mirrors
@@ -77,15 +82,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Experimental too. Calls already queued on the promise still fail with
   "promise broken" and type `failed`, and a capnp-zig importer still drops
   the reason and the type of an inbound `Resolve{exception}`.
-- **`Peer.sendBootstrapWithOptions`: a retained bootstrap question.**
+
+- **RPC: `Peer.sendBootstrapWithOptions`, a retained bootstrap question.**
   `sendBootstrap` Finishes the bootstrap question right after its Return,
   so a caller that pipelines on the bootstrap after the Return races that
   Finish; capnp-swift never pipelines on its bootstrap for this reason. With
   `.result_lifetime = .retained` the answer stays open until the caller
   calls `finishRetainedQuestion`, as for retained calls, and counts against
   `max_retained_questions`. `sendBootstrap` is unchanged.
-- **`type_resolver`: generic parameter and brand resolution for foreign
-  code generators.** The frozen `schema.Type` union erases generics, and the
+
+- **Schema: `type_resolver`, generic parameter and brand resolution for
+  foreign code generators.** The frozen `schema.Type` union erases generics, and the
   resolver that reads the parallel `TypeMetadata` tree was internal, so a
   generator built on `request` and `schema` (capnpc-swift, for one) had to
   erase generics to AnyPointer or reimplement the brand rules. All three
@@ -93,6 +100,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a node and a brand, then `resolve`, `listElement`, `enter` and `validate`.
   It applies the rules capnpc-zig's own generator uses and allocates
   nothing. The internal resolver stays private; no Stable line changed.
+
+### Changed
+
+- **Codegen: generated code needs the 0.23.0 runtime (codegen ABI 2).** Generated
+  files now name `rpc.peer.ClientOrigin`, which older runtimes lack. A file
+  from the 0.23.0 plugin compiled against an older runtime stops at its
+  one-line version-skew error; upgrade the dependency together with the
+  plugin. Files generated by older plugins still compile against this
+  runtime.
 
 ### Fixed
 
@@ -112,12 +128,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved to a capability the caller hosts, the entry stays `.promised` as
   before. A queued call that replays also re-reads its `.promised` entries
   from its own frame copy; before, they pointed into the freed inbound
-  frame. Generated `resolveX` accessors still accept only `.imported`
-  entries, so a generated server reading such a parameter still gets
-  `UnexpectedCapabilityType` until codegen learns `.exported`; handlers that
-  read `InboundCapTable` directly, and embedders, get the resolved entry
-  now. No API line changes. New tests in
+  frame. A generated server's `resolveX` turns the resolved `.exported`
+  entry into a local Client (see the `resolveX` entry under Added
+  (Experimental)); handlers that read `InboundCapTable` directly, and
+  embedders, get the resolved entry too. No API line changes. New tests in
   `tests/rpc/peer/rpc_answer_lifecycle_test.zig`.
+
 - **RPC: a call parked on an answer failed with "promised capability
   unresolved" when that answer returned an unresolved promise export
   (capnp-swift handoff H10).** This affects servers that defer or forward
@@ -131,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same way. The replay also releases the param capabilities of a call it
   answers with an exception; before, those import references leaked. No API
   line changes.
+
 - **RPC: under memory pressure, a transport close or the deadline sweep left
   questions without a terminal (capnp-swift handoff H8).** The cancel pass
   copied question ids into a heap list with `append(...) catch break`, so
@@ -151,6 +168,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unreviewed `catch break` / `catch continue` / `catch {}` after an
   allocating call; five Experimental Level-3 maintenance passes are
   allowlisted with the reason a skipped item is retried later.
+
 - **RPC: a question could get a second terminal callback at transport close
   after an OOM in its Return handling.** When handling a Return failed with
   OutOfMemory after the question's callback had already run (the automatic
@@ -164,6 +182,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   question only when its callback has not seen the Return. Retained calls,
   with or without `noFinishNeeded`, never had this problem; a new test pins
   that. No API line changes.
+
 - **RPC: a Return sent after the caller's Finish made the caller release
   its param capabilities twice.** When a call's params grant capabilities,
   the Peer settles those references with explicit `Release` frames. If the
@@ -177,18 +196,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Returns say `false`. One new Experimental `Peer` field
   (`finished_early_param_grants`); no other API line changes.
 
-### Changed
-
-- **Generated code needs the 0.23.0 runtime (codegen ABI 2).** Generated
-  files now name `rpc.peer.ClientOrigin`, which older runtimes lack. A file
-  from the 0.23.0 plugin compiled against an older runtime stops at its
-  one-line version-skew error; upgrade the dependency together with the
-  plugin. Files generated by older plugins still compile against this
-  runtime.
-
-### Fixed
-
-- **A generated `setXClient` no longer sends a local export in place of an
+- **Codegen: a generated `setXClient` sent a local export in place of an
   import with the same id.** Export ids and import ids are separate spaces
   that both start at 0, so a peer that exports capabilities and imports
   them soon holds export N and import N at once. The setter wrote a bare
@@ -204,19 +212,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   export ids in `Client.init` (as `tests/e2e/zig/main_client.zig` does)
   still works. Regenerate your bindings to get the fix.
 
-- **The README's first programs compile on Zig 0.17.0.** Both README
+- **Docs: the README's first programs did not compile on Zig 0.17.0.** Both README
   programs and the serialization guide's section 4 program used
   `std.heap.GeneralPurposeAllocator`, which Zig 0.17.0 does not have. They
   now take `init.gpa` from `main(init: std.process.Init)`. Anyone who copied
   them hit a compile error before writing any code of their own.
-- **The README and the serialization guide match the code they describe.**
+
+- **Docs: the README and the serialization guide did not match the code
+  they describe.**
   The README program left four locals unused and used `Person` without
   importing it, so it did not compile. The guide used an `age` field that
   `examples/addressbook.capnp` does not have, and its fragments declared
   the same name twice. The union snippet left out the `try` that
   `getRectangle()` needs. The README API reference showed
   `Message.init` with two arguments; it takes three.
-- **The RPC guide's status and prerequisites are current.** It said the
+
+- **Docs: the RPC guide's status and prerequisites were out of date.** It said the
   runtime was "in production hardening" and told readers to build the
   plugin from this repository. It now names the Stable core and the five
   Experimental pieces it uses, and points codegen at the pinned plugin.
@@ -237,13 +248,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has no `<!-- verbatim: ... -->` marker. The hand-written mock that the
   serialization snippet test used is gone, so a broken snippet can no longer
   pass. Contributors write doc code in `tests/docs/` first (CONTRIBUTING.md).
+
 - **New design note on importing both library roots in one build.**
   [docs/notes/module-roots.md](docs/notes/module-roots.md) reproduces the
   `file exists in modules` error, shows the pattern that works today, and
   lists the options for removing the limit. Library authors who bind
   `capnpc-zig-core` and serve native programs should read it. It changes no
   code.
-
 
 ## [0.22.0] - 2026-10-07
 
