@@ -787,6 +787,68 @@ test "malformed frame: bad segment table -> the shim's Abort OUT_FRAME, then CLO
 }
 
 // ---------------------------------------------------------------------------
+// Pipelined params (handoff H9)
+// ---------------------------------------------------------------------------
+
+test "pipelined params: an answer that returned the caller's own capability is still refused" {
+    // Handoff H9 makes the Peer resolve a receiverAnswer params cap whose
+    // answer returned one of the CALLEE's exports (abi_test.zig's
+    // pipelining test, q4). Any other returned capability stays .promised:
+    // here B's answer to q1 echoes A's own export back, so B holds it as an
+    // import, and B's core still refuses q2 that names it.
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const ib = try connectPair(a, &ra, b, &rb);
+    const ea = try a.exportCap(200);
+    const pc = try msgCap(alloc, 1, 0);
+    defer alloc.free(pc);
+    const q1 = try a.call(ib, iface, 0, pc, &.{.{ .kind = .@"export", .id = ea }}, 0);
+    // Every frame B sends from here on is held in rb.frames, so q1 is still
+    // open on A when q2 names it.
+    while (try drainOne(a, &ra, b)) {} // q1 reaches B
+    try drainAll(b, &rb);
+    const c1 = rb.lastCall();
+    const ia = try rootCap(alloc, c1.msg, c1.caps);
+    try testing.expectEqual(effects.CapKind.import, ia.kind);
+    // B returns A's capability.
+    try b.returnResults(c1.answer_id, pc, &.{ia});
+    try drainAll(b, &rb);
+    try testing.expect(rb.frames.items.len > 0);
+
+    const path = [_]u16{0};
+    const q2 = try a.call(ib, iface, 3, pc, &.{.{ .kind = .promised, .id = q1, .ops = &path, .nops = 1 }}, 0);
+    const calls_before = rb.calls.items.len;
+    while (try drainOne(a, &ra, b)) {} // q2 reaches B's core, which refuses it
+    try drainAll(b, &rb);
+    try testing.expectEqual(calls_before, rb.calls.items.len);
+    for (rb.frames.items) |f| try a.pushBytes(f);
+    try pump(a, &ra, b, &rb);
+
+    const r1 = ra.returnFor(q1) orelse return error.TestNoReturn;
+    try testing.expectEqual(effects.ReturnKind.results, r1.kind);
+    const back = try rootCap(alloc, r1.msg, r1.caps);
+    try testing.expectEqual(effects.CapKind.@"export", back.kind);
+    try testing.expectEqual(ea, back.id);
+    const r2 = ra.returnFor(q2) orelse return error.TestNoReturn;
+    try testing.expectEqual(effects.ReturnKind.exception, r2.kind);
+    try testing.expectEqualStrings("PromisedCapUnsupported", r2.reason);
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(q1));
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(q2));
+    try a.finish(q1, false);
+    try a.finish(q2, false);
+    try b.release(ia.id, 1);
+    try pump(a, &ra, b, &rb);
+}
+
+// ---------------------------------------------------------------------------
 // Inbound copies are bounded by their frame (review finding: aliasing)
 // ---------------------------------------------------------------------------
 

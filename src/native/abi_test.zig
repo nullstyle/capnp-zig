@@ -831,11 +831,14 @@ test "pipelining: a call on a promised answer goes out at once, costs no extra r
     try testing.expectEqual(@as(u64, 1), try readU64(a, sa.returnFor(q2).?.msg));
     for ([_]u32{ q1, q2, q3 }) |q| try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_finish(sa.conn, q, 0));
 
-    // Once the callee has produced the answer, the Peer resolves a
-    // receiverAnswer params cap before the call dispatches (capnp-zig
-    // 0.23.0, handoff H9), so q4 reaches B's host with B's own export in its
-    // params. (Against capnp-zig 0.21.0 the entry stayed unresolved and B's
-    // core refused q4 with PromisedCapUnsupported, like q3.)
+    // Once the callee has produced the answer, and that answer's capability
+    // is one of the callee's exports, the Peer resolves a receiverAnswer
+    // params cap before the call dispatches (capnp-zig 0.23.0, handoff H9),
+    // so q4 reaches B's host with B's own export in its params. (Against
+    // capnp-zig 0.21.0 the entry stayed unresolved and B's core refused q4
+    // with PromisedCapUnsupported, like q3.) An answer that returned a
+    // capability the caller hosts, or a promise, still stays unresolved and
+    // is still refused.
     try pump(&sa, &sb); // the three Finish frames reach B
     const base = sa.frames.items.len;
     const q1b = try call(&sa, ib, 0, p1, &.{});

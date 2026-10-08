@@ -271,12 +271,17 @@ pub fn copyInbound(
             .imported => |imp| .{ .kind = .import, .id = imp.id },
             .exported => |exp| .{ .kind = .@"export", .id = exp.id },
             // A remote reference to one of OUR answers (receiverAnswer) that
-            // the Peer has not resolved yet (the answer is still pending).
-            // capnp-zig delivers such calls at once with the entry unresolved
-            // and offers no local promise client for it (its generated
-            // `resolveX` fails on it too), so the host could only get a null
-            // capability. Refuse instead: the caller gets an exception named
-            // after this error (a call), or RETURN{EXCEPTION} (results).
+            // the Peer did not resolve. Since capnp-zig 0.23.0 (handoff H9)
+            // it resolves only an answer that returned one of our exports
+            // (or null). The entry stays unresolved while the answer is
+            // pending, when it returned a capability the caller hosts (an
+            // import here) or a promise, and for a call parked until after
+            // the caller finished that answer. capnp-zig delivers such calls
+            // at once and offers no local promise client for the entry (its
+            // generated `resolveX` fails on it too), so the host could only
+            // get a null capability. Refuse instead: the caller gets an
+            // exception named after this error (a call), or RETURN{EXCEPTION}
+            // (results).
             .promised => return error.PromisedCapUnsupported,
         };
     }
