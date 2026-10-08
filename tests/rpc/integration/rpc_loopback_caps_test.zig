@@ -699,6 +699,30 @@ test "a pipelined capability in loopback params fails closed before the handler 
     try fx.expectBaselineRefs();
 }
 
+test "a pipelined capability in loopback results fails the call with an exception" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+
+    const ops = [_]protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = 0 }};
+    const pipelined_id = try fx.server.caps.noteReceiverAnswerOps(7, &ops);
+    const results = [_]CapRef{.{ .origin = .receiverAnswer, .id = pipelined_id }};
+    fx.probe.results = &results;
+
+    const before = fx.wire.events.items.len;
+    var caller = ProbeCall{};
+    _ = try fx.callProbe(&.{}, &caller);
+    // The handler ran, but its Return could not carry the capability: the
+    // caller gets an exception instead.
+    try std.testing.expectEqual(@as(u32, 1), fx.probe.calls);
+    try std.testing.expect(caller.returned);
+    try std.testing.expect(caller.exception);
+    try std.testing.expect(fx.server.caps.hasReceiverAnswer(pipelined_id));
+    try std.testing.expectEqual(@as(usize, 0), fx.server.loopback_questions.count());
+    try expectNoFramesSince(&fx.wire, before);
+    try fx.expectBaselineRefs();
+}
+
 // -- The resolved-import fast path of sendCall -----------------------------------
 
 test "sendCall on an import that resolved to our own export delivers loopback params the same way" {
