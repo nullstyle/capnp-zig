@@ -49,10 +49,27 @@ fn headerModule(
 ) *std.Build.Module {
     const header_c = b.addTranslateC(.{
         .root_source_file = b.path(header_path),
+        .target = headerTarget(b, target),
+        .optimize = optimize,
+    });
+    // A module of the real target, whatever target translated the header.
+    return b.createModule(.{
+        .root_source_file = header_c.getOutput(),
         .target = target,
         .optimize = optimize,
     });
-    return header_c.createModule();
+}
+
+/// The target translate-c reads the header for. The header includes
+/// <stddef.h> and <stdint.h>, and Zig ships no C headers for some CI cross
+/// targets (powerpc64-linux-gnu: clang then reads the host's SDK and
+/// fails). A Linux target without a libc of its own reads musl's headers
+/// instead: the same data model, so the same declarations.
+fn headerTarget(b: *std.Build, target: std.Build.ResolvedTarget) std.Build.ResolvedTarget {
+    if (target.result.os.tag != .linux or std.zig.target.canBuildLibC(&target.result)) return target;
+    var query = target.query;
+    query.abi = .musl;
+    return b.resolveTargetQuery(query);
 }
 
 pub const Steps = struct {
