@@ -120,10 +120,11 @@ disabled, removing the native-shell and Git Bash `pkg-config.BAT` failure path.
 A process can hold only one `quic` module: every package that links quic-zig
 into the same build must pin the same tag and pass the same dependency options
 (`.target`, `.release`, `.@"sanitize-c" = "trap"`), or the build makes two quic
-modules, each with its own BoringSSL. The quic packages move to a new quic-zig
-tag together. http3-zig v0.5.4 and qmsg v0.8.1 pin v0.30.1, as capnp-zig
-v0.21.0 does, and no release of theirs on v0.32.0 is known yet; until one is,
-a build that links this pin next to either makes two quic modules. Connection and server session loops drive
+modules, each with its own BoringSSL. Only packages that link into one program
+must share a pin: capnp-zig and http3-zig move together (capnp-zig v0.22.0 and
+http3-zig v0.5.5 both pin v0.32.0; capnp-zig v0.21.0 pairs with http3-zig
+v0.5.4 on v0.30.1), and a quic-zig security fix moves every package at once.
+Connection and server session loops drive
 `Connection.advance()` before waiting on datagrams and again during active
 service, then tick timers and drain outbound datagrams.
 

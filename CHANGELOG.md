@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-07
+
+This release moves QUIC to quic-zig v0.32.0, which fixes a regression that
+v0.21.0 shipped: a dead peer held its QUIC connection for two to three idle
+timeouts, not one. It also fixes seven defects in the Experimental QUIC
+close and teardown paths (three of them use-after-free risks for embedders
+of `EmbeddedSession` and users of `WarmRedialClient.requestStop`), and adds
+Level-3 three-party handoff origination to the WASM host ABI (feature bit
+`10`). capnp-zig v0.22.0 and http3-zig v0.5.5 pin the same quic-zig release
+with the same option map, so one program can link both with one quic
+module. No API line changes in any snapshot, and there is no Breaking
+entry. docs/upgrading-to-0.22.0.md walks through the upgrade.
+
 ### Added (Experimental)
 
 - **Level-3 three-party handoff origination over the WASM host ABI (feature
@@ -64,11 +77,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     reordering shrink back after 16 clean round trips, a client confirms
     its handshake on an ACK of a 1-RTT packet of its own, and quic-zig's
     `Server.feed` leaves a datagram it reports as `.dropped` as it came.
-  - **One quic module per process.** The quic packages move to a new
-    quic-zig tag together. http3-zig v0.5.4 and qmsg v0.8.1 pin v0.30.1;
-    no release of theirs on v0.32.0 is known yet, so until one is, a build
-    that links capnp-zig's `main` with `-Dquic=true` next to either makes
-    two quic modules.
+  - **One quic module per process.** http3-zig v0.5.5 (tag `380ead3`,
+    `http3_zig-0.5.5-ayZ03DI5EwD2bajKDfR009PM7jlRI3lzSnrmT2PlWgS4`) pins
+    quic-zig v0.32.0 with the same option map, so it links next to
+    capnp-zig v0.22.0 with one quic module (measured: one `-Mquic=` and one
+    `-Mboringssl=`, Debug and ReleaseSafe). http3-zig v0.5.4 pins v0.30.1
+    and pairs with capnp-zig v0.21.0 only. Only packages that link into one
+    program must share a pin now: capnp-zig and http3-zig move together;
+    qmsg (v0.8.2 is on v0.32.0), qmesh-zig, nest and mruby-quic move on
+    their own; a quic-zig security fix moves every package at once.
 
 ### Fixed
 
@@ -183,6 +200,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the QUIC peer suite ("WarmRedialClient.requestStop never writes into a
   generation that ended on its own") forces the gap. On the old code it
   finds the 3 bytes the stop wrote into the dead frame.
+
+### Documentation
+
+- `docs/upgrading-to-0.22.0.md` (new): the coordinated set (capnp-zig
+  v0.22.0, quic-zig v0.32.0, http3-zig v0.5.5), one quic module per
+  process under the per-cluster pin rule, and a checklist (the idle-timeout
+  floor, the `EmbeddedSession` close contract).
 
 ## [0.21.0] - 2026-10-06
 
@@ -6125,7 +6149,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/nullstyle/capnp-zig/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/nullstyle/capnp-zig/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/nullstyle/capnp-zig/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/nullstyle/capnp-zig/compare/v0.19.0...v0.19.1

@@ -1,6 +1,6 @@
 .{
     .name = .capnpc_zig,
-    .version = "0.21.0",
+    .version = "0.22.0",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         // Pinned to a TAG, not a raw commit: tags are immutable release
@@ -103,13 +103,13 @@
         // one build must pin the same tag and pass the same option map, or
         // the build makes two quic modules (and two BoringSSLs). The map is
         // `.target`, `.release`, `.@"sanitize-c" = "trap"` (build/modules.zig),
-        // the one nest/qmsg/qmesh use. capnp-zig v0.21.0 pinned v0.30.1,
-        // with the set (http3-zig v0.5.4, qmsg v0.8.1, qmesh-zig, nest,
-        // mruby-quic). By the owner's rule the quic packages move to a new
-        // quic tag together, so the set moves to v0.32.0 together; no
-        // http3-zig or qmsg release on v0.32.0 is known yet, and until one
-        // is, a build that links capnp-zig's main next to http3-zig v0.5.4
-        // or qmsg v0.8.1 makes two quic modules. The released http3-zig
+        // the one nest/qmsg/qmesh use. capnp-zig v0.21.0 pinned v0.30.1
+        // (pair: http3-zig v0.5.4). capnp-zig v0.22.0 pins v0.32.0 (pair:
+        // http3-zig v0.5.5; qmsg v0.8.2 is on v0.32.0 too). Since
+        // 2026-10-07 only packages that link into one program must share a
+        // pin: capnp-zig and http3-zig move together; qmsg, qmesh-zig, nest
+        // and mruby-quic move on their own; a quic-zig security fix moves
+        // every package at once. The released http3-zig
         // v0.5.2 cannot share this module: it builds its own quic module
         // from quic's src/root.zig and its own BoringSSL. http3-zig v0.5.3
         // and later take quic's exported quic and boringssl modules with
