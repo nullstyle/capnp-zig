@@ -230,6 +230,9 @@ pub const ClientOrigin = enum {
 
 const QuestionDeinitCtxFn = state.QuestionDeinitCtxFn;
 const ExportDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;
+
+/// Experimental. The callback `Peer.setAnswerFinishedHandler` installs.
+pub const AnswerFinishedFn = *const fn (ctx: *anyopaque, peer: *Peer, answer_id: u32, release_result_caps: bool) void;
 const Question = state.Question(QuestionCallback);
 const PendingThirdPartyAwait = state.PendingThirdPartyAwait(Question);
 
@@ -542,8 +545,9 @@ pub const Peer = struct {
     /// Return's `releaseParamCaps` flag: rpc.capnp forbids sending separate
     /// `Release` messages once that flag is true, so an answer that owes
     /// Releases must say `false`. Entries are created in `handleCall` and
-    /// removed by the Return (`sendReturnFrameWithLoopback`) or the Finish,
-    /// which is exactly the window in which the flag can be read.
+    /// removed by the Return (`sendReturnFrameWithLoopback`) or the Finish.
+    /// A Return sent after the Finish reads the flag from
+    /// `finished_early_param_grants` instead.
     active_inbound_questions: std.AutoHashMap(u32, bool),
     /// Answer IDs whose results Return is currently being synchronously delivered
     /// and may receive a reentrant Finish before the resolved answer is committed.
@@ -567,6 +571,13 @@ pub const Peer = struct {
     /// resolved answer, it commits first to drain queued promised calls, then
     /// immediately removes the recorded answer through normal Finish cleanup.
     finished_early_answers: std.AutoHashMap(u32, bool),
+    /// Finished-early answers whose Call params granted this vat import refs:
+    /// the `true` that `handleFinish` took out of `active_inbound_questions`.
+    /// This vat settles those refs with explicit `Release` frames whether or
+    /// not the caller finished first, so the late Return must still say
+    /// `releaseParamCaps = false` (`returnReleasesParamCaps`). Recorded only
+    /// with a tombstone, so it shares that bound; the Return consumes it.
+    finished_early_param_grants: std.AutoHashMap(u32, void),
     /// Inbound answers that already returned an EXCEPTION, kept until Finish
     /// (the mirror of `resolved_answers`, which records results only). A call
     /// pipelined on such an answer that arrives AFTER the exception Return
@@ -767,6 +778,9 @@ pub const Peer = struct {
 
     send_frame_ctx: ?*anyopaque = null,
     send_frame_override: ?SendFrameOverride = null,
+    /// Experimental: `setAnswerFinishedHandler`.
+    answer_finished_ctx: ?*anyopaque = null,
+    answer_finished_fn: ?AnswerFinishedFn = null,
 
     // -- Lifecycle callbacks -------------------------------------------------
 
@@ -979,6 +993,7 @@ pub const Peer = struct {
             .active_inbound_questions = std.AutoHashMap(u32, bool).init(allocator),
             .resolving_answers = std.AutoHashMap(u32, void).init(allocator),
             .finished_early_answers = std.AutoHashMap(u32, bool).init(allocator),
+            .finished_early_param_grants = std.AutoHashMap(u32, void).init(allocator),
             .failed_answers = std.AutoHashMap(u32, FailedAnswer).init(allocator),
             .pending_promises = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(allocator),
             .pending_export_promises = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(allocator),
@@ -1608,6 +1623,34 @@ pub const Peer = struct {
         self.send_frame_override = callback;
     }
 
+    /// Experimental. Call `handler` when the remote sends Finish for an
+    /// inbound call that this peer handed to the host and that has no Return
+    /// yet: no Return was sent or begun for `answer_id`.
+    ///
+    /// The host should stop the work and answer soon, normally with
+    /// `sendReturnCanceled`, which frees the caller's question id. Any later
+    /// Return is still accepted. `release_result_caps` is the Finish's flag.
+    ///
+    /// The handler runs inside `handleFrame`, after the Finish is fully
+    /// applied, at most once per answer. It may answer from inside the
+    /// callback. It does not run for an answer the host already replied to,
+    /// for a call the peer still holds queued, or for a call the peer
+    /// forwarded on the host's behalf; the peer settles those itself. A
+    /// queued call whose Finish set `requireEarlyCancellationWorkaround` is
+    /// delivered later and never reported; answer it as usual.
+    ///
+    /// Pass `null` for either argument to clear the handler.
+    pub fn setAnswerFinishedHandler(self: *Peer, ctx: ?*anyopaque, handler: ?AnswerFinishedFn) void {
+        self.assertThreadAffinity();
+        if (ctx == null or handler == null) {
+            self.answer_finished_ctx = null;
+            self.answer_finished_fn = null;
+            return;
+        }
+        self.answer_finished_ctx = ctx;
+        self.answer_finished_fn = handler;
+    }
+
     /// Return the message tag of the most recently processed inbound message, or `null` if none.
     pub fn getLastInboundTag(self: *const Peer) ?protocol.MessageTag {
         self.assertThreadAffinity();
@@ -2060,9 +2103,29 @@ pub const Peer = struct {
     /// Returns the question ID. When the remote peer responds, `on_return`
     /// is invoked with the bootstrap capability in the return payload.
     pub fn sendBootstrap(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+        return self.sendBootstrapWithOptions(ctx, on_return, .{});
+    }
+
+    /// Experimental. `sendBootstrap` taking the `CallOptions` of the
+    /// `sendCall*WithOptions` family.
+    ///
+    /// With `.result_lifetime = .retained` the Peer does not Finish the
+    /// bootstrap question after its Return. The caller may pipeline on the
+    /// answer (`sendCallPromisedWithOps` with the returned id) for as long as
+    /// it holds it, and ends it with `finishRetainedQuestion`. The question
+    /// counts against `PeerLimits.max_retained_questions`.
+    pub fn sendBootstrapWithOptions(
+        self: *Peer,
+        ctx: *anyopaque,
+        on_return: QuestionCallback,
+        options: CallOptions,
+    ) !u32 {
         self.assertThreadAffinity();
         if (self.is_shutting_down) return error.PeerShuttingDown;
-        const question_id = try self.allocateQuestion(ctx, on_return);
+        const question_id = switch (options.result_lifetime) {
+            .automatic => try self.allocateQuestion(ctx, on_return),
+            .retained => try self.allocateRetainedQuestion(ctx, on_return),
+        };
         errdefer self.removeQuestion(question_id);
 
         var builder = protocol.MessageBuilder.init(self.allocator);
@@ -2896,6 +2959,18 @@ pub const Peer = struct {
         return PromiseExportsImpl.resolvePromiseExportToException(self, promise_id, reason);
     }
 
+    /// Experimental. `resolvePromiseExportToException` carrying an explicit
+    /// `Exception.Type`, mirroring `sendReturnExceptionTyped`. Body in
+    /// `peer_promise_exports.zig`.
+    pub fn resolvePromiseExportToExceptionTyped(
+        self: *Peer,
+        promise_id: u32,
+        reason: []const u8,
+        ex_type: protocol.ExceptionType,
+    ) !void {
+        return PromiseExportsImpl.resolvePromiseExportToExceptionTyped(self, promise_id, reason, ex_type);
+    }
+
     /// Body in `peer_resolve_inbound.zig`.
     fn handleResolve(self: *Peer, resolve_msg: protocol.Resolve) !void {
         return ResolveInboundImpl.handleResolve(self, resolve_msg);
@@ -3724,6 +3799,15 @@ pub const Peer = struct {
         return ReturnSendImpl.sendReturnResultsSentElsewhere(self, answer_id);
     }
 
+    /// Experimental. Answer a call whose caller sent Finish first (see
+    /// `setAnswerFinishedHandler`) with `Return{canceled}`, and fail the calls
+    /// pipelined on it with their own Return. Errors with
+    /// `error.AnswerNotFinished`, sending nothing, while the caller has not
+    /// finished the answer. Body in `return/peer_return_send.zig`.
+    pub fn sendReturnCanceled(self: *Peer, answer_id: u32) !void {
+        return ReturnSendImpl.sendReturnCanceled(self, answer_id);
+    }
+
     fn sendReturnTag(self: *Peer, answer_id: u32, tag: protocol.ReturnTag) !void {
         return ReturnSendImpl.sendReturnTag(self, answer_id, tag);
     }
@@ -4103,14 +4187,21 @@ pub const Peer = struct {
     /// releases the caller's export twice; a compliant peer answers that with
     /// "Tried to release invalid export ID" and drops the connection.
     ///
-    /// Returns the schema default `true` for every answer with no
-    /// `active_inbound_questions` record: Bootstrap/Provide/Accept/Join Returns
+    /// A Return sent after the caller's Finish reads the grant from
+    /// `finished_early_param_grants`, since the Finish removed the record.
+    ///
+    /// Returns the schema default `true` for every answer with no record in
+    /// either map: Bootstrap/Provide/Accept/Join Returns
     /// (whose messages have no params cap table at all), the `sendResultsTo =
     /// thirdParty` refusal issued before the record exists, and any answer whose
     /// Call params carried no ref-granting descriptor. In all of those the
     /// caller recorded no param exports, so the flag is a no-op either way.
     pub fn returnReleasesParamCaps(self: *Peer, answer_id: u32) bool {
-        return !(self.active_inbound_questions.get(answer_id) orelse false);
+        if (self.active_inbound_questions.get(answer_id)) |owes_releases| return !owes_releases;
+        // The caller's Finish removed the record, not the grant: a late Return
+        // (or the Return{canceled} of a queued call the Finish cancels) still
+        // follows explicit Releases.
+        return !self.finished_early_param_grants.contains(answer_id);
     }
 
     fn onConnectionError(self: *Peer, err: anyerror) void {
@@ -4544,7 +4635,9 @@ pub const Peer = struct {
         // force-swallowed by the void FinishOps hook below.
         try self.detachProvisionForFinish(qid);
         if (!self.resolving_answers.contains(qid)) self.streaming.cancel(self, qid);
-        const was_active = self.active_inbound_questions.remove(qid);
+        const active_entry = self.active_inbound_questions.fetchRemove(qid);
+        const was_active = active_entry != null;
+        const params_granted_refs = if (active_entry) |entry| entry.value else false;
         const was_resolving = self.resolving_answers.contains(qid);
         // The failed-answer record lives exactly as long as resolved_answers
         // entries do: until the remote finishes the question.
@@ -4552,6 +4645,13 @@ pub const Peer = struct {
             self.allocator.free(failed.value.reason);
         }
         const finished_completing_join = self.finishCompletingJoinAnswer(qid, finish_msg.release_result_caps);
+        // Experimental `setAnswerFinishedHandler`: the host was handed this
+        // call and has not begun a Return for it. A forwarded call is the
+        // peer's own work; the Finish relay below settles it.
+        const host_owes_return = self.answer_finished_fn != null and was_active and
+            !was_resolving and !finished_completing_join and
+            !self.resolved_answers.contains(qid) and !self.isForwardedAnswer(qid);
+        var tombstoned = false;
         if (!finished_completing_join) self.clearPendingJoinResultAnswer(qid);
         try self.clearPendingJoinRelay(qid, true, finish_msg.release_result_caps);
         // Cancellation race: a Finish for an in-flight inbound call (still
@@ -4565,7 +4665,12 @@ pub const Peer = struct {
             !self.resolved_answers.contains(qid) and
             self.finished_early_answers.count() < self.limits.max_active_inbound_questions)
         {
-            self.finished_early_answers.put(qid, finish_msg.release_result_caps) catch |err| self.reportNonfatalError(err);
+            if (self.finished_early_answers.put(qid, finish_msg.release_result_caps)) |_| {
+                tombstoned = true;
+                if (params_granted_refs) {
+                    self.finished_early_param_grants.put(qid, {}) catch |err| self.reportNonfatalError(err);
+                }
+            } else |err| self.reportNonfatalError(err);
         }
         if (!finish_msg.require_early_cancellation) {
             // Default behavior: if Finish arrives before a promised-target call is
@@ -4616,6 +4721,30 @@ pub const Peer = struct {
         if (canceled_automatic_target) {
             _ = self.finished_early_answers.remove(qid);
         }
+        // A Return sent while this Finish was applied (a queued call the peer
+        // cancelled itself) consumed the tombstone: then nobody owes one. A
+        // call still queued (the Finish asked for delivery first) has not
+        // reached the host. With no tombstone (the bounded map was full) the
+        // host is still told.
+        if (host_owes_return and !canceled_automatic_target and
+            (!tombstoned or self.finished_early_answers.contains(qid)) and
+            !self.hasQueuedPendingQuestionId(qid))
+        {
+            if (self.answer_finished_fn) |notify| {
+                if (self.answer_finished_ctx) |ctx| notify(ctx, self, qid, finish_msg.release_result_caps);
+            }
+        }
+    }
+
+    /// True when the peer forwarded inbound answer `answer_id` to another
+    /// target and relays its Return itself, so the host owes nothing for it.
+    fn isForwardedAnswer(self: *const Peer, answer_id: u32) bool {
+        if (self.forwarded_tail_questions.contains(answer_id)) return true;
+        var it = self.forwarded_questions.valueIterator();
+        while (it.next()) |upstream_answer_id| {
+            if (upstream_answer_id.* == answer_id) return true;
+        }
+        return false;
     }
 
     fn cancelQueuedPendingQuestionInMap(

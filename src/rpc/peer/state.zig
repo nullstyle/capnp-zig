@@ -192,6 +192,10 @@ pub fn Question(comptime QuestionCallbackType: type) type {
         /// Finish before removing this question, so ownership is never lost.
         finish_on_maintenance: bool = false,
         finish_release_result_caps: bool = false,
+        /// Scratch mark for the allocation-free cancel-everything pass
+        /// (`forceCancelAllQuestions`): set on every question present when
+        /// the pass starts, so the pass settles exactly those.
+        force_cancel_pending: bool = false,
         /// When this outbound Call targeted an UNRESOLVED promise import, this
         /// records that promise import id. Used by the Level-3 recipient
         /// auto-pickup (`tryAutoPickupThirdParty`) to detect whether a

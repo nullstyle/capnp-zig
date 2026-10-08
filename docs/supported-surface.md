@@ -366,7 +366,20 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   caller-owned and transferred retained answers, while the redacted
   `retained_questions` resource reports pressure and rejection. This API is
   Experimental even though the existing automatic call surface remains
-  unchanged.
+  unchanged. `Peer.sendBootstrapWithOptions` takes the same options for the
+  bootstrap question, so a caller can pipeline on the bootstrap after its
+  Return; `sendBootstrap` keeps the automatic lifetime.
+- **Answering after the caller's Finish:** a host that answers calls later can
+  install `Peer.setAnswerFinishedHandler`. It runs, at most once per answer and
+  inside `handleFrame`, when the remote sends Finish for a call the host was
+  handed and has not answered; not for an answer the host already replied to,
+  a call the Peer still holds queued, or a call the Peer forwarded. The host
+  then answers with `Peer.sendReturnCanceled`, which sends `Return{canceled}`
+  and fails the calls pipelined on that answer; it refuses an answer the caller
+  has not finished. Any other late Return is still accepted, and it keeps
+  `releaseParamCaps = false` when the call's params granted capabilities.
+  `Peer.resolvePromiseExportToExceptionTyped` rejects a promise export with an
+  explicit `Exception.Type`. Experimental.
 - **Level 2 (persistence):** Save/Restore SturdyRef hooks are present
   (`rpc.peer` persistence surface) and documented in
   [`rpc-persistence.md`](rpc-persistence.md). Current mainline evidence covers
@@ -733,11 +746,32 @@ cooperating peer.
   suite covers send/OOM rollback, reentrant teardown, and transport close on
   both route endpoints.
 
+- **A pipelined capability in call params resolves only once its answer has
+  returned.** A caller that passes the result of one of its own unanswered
+  questions as an argument sends a `receiverAnswer` cap descriptor. Just
+  before the call dispatches, the Peer replaces that `.promised` entry with
+  the answer's result: `.exported` for an export of ours, `.none` for a null
+  result. A call whose named answer failed gets a copy of that exception
+  (the C++ reference instead passes a broken capability). This covers every
+  synchronous server, whose answers return before the next call is read.
+  Generated `resolveX` accessors still accept only `.imported` entries, so
+  a generated server cannot use the resolved `.exported` entry through them
+  yet; a handler can read it from the `InboundCapTable` directly.
+  The entry stays `.promised` in two cases. First, when the answer is still
+  pending (a deferred handler or a forwarded call): the call is not delayed,
+  because a delayed call could be overtaken by later calls on the same
+  target and would need `Disembargo` reflections held behind it. Second,
+  when the answer resolved to a capability the caller itself hosts: the
+  descriptor grants no wire reference, and an `.imported` entry would
+  promise the handler one. The C++ reference gives the handler a local
+  promise in both cases; that needs a promise capability with no wire
+  identity, which the Peer does not have.
+
 The forwarded-return intermediary case that shipped as the one remaining active
-v0.3.0 limitation is resolved as of v0.6.0. Every limitation listed above is
-either a Level-3 surface or a serialization compatibility gap; the frozen
-two-party RPC surface has no active limitation. Historical resolved items are listed
-below so release-to-release behavior changes stay auditable.
+v0.3.0 limitation is resolved as of v0.6.0. Apart from the pipelined-params
+item above, every limitation listed above is either a Level-3 surface or a
+serialization compatibility gap. Historical resolved items are listed below so
+release-to-release behavior changes stay auditable.
 
 ### Resolved since v0.9.0
 

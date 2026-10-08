@@ -189,6 +189,8 @@ pub fn handleCallImportedTargetForPeer(
     note_call_send_results: *const fn (*PeerType, protocol.Call) anyerror!void,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
     handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
+    prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
+    promise_export_to_park_on: *const fn (*PeerType, u32) ?u32,
 ) !void {
     var inbound_caps = try InboundCapsType.init(peer.allocator, call.params.cap_table, &peer.caps);
     // Fd passing: imports the params noted take the fds their descriptors
@@ -213,27 +215,44 @@ pub fn handleCallImportedTargetForPeer(
         if (exported_entry) |entry| entry.value_ptr.handler != null else false,
     );
 
-    switch (target_plan) {
-        .unknown_capability => {
-            release_caps = true;
-            try send_return_exception(peer, call.question_id, "unknown capability");
-            return;
+    if (target_plan == .unknown_capability) {
+        release_caps = true;
+        try send_return_exception(peer, call.question_id, "unknown capability");
+        return;
+    }
+
+    // An unresolved promise target parks on itself. A resolved one can lead
+    // to another export of ours that is still a promise (H10): park there.
+    const park_export_id: ?u32 = switch (target_plan) {
+        .queue_promise_export => export_id,
+        .handle_resolved => |resolved| switch (resolved) {
+            .exported => |cap| promise_export_to_park_on(peer, cap.id),
+            else => null,
         },
-        .queue_promise_export => {
-            // Queue ownership transfers inbound caps and frame bytes to pending
-            // state on success. If the queue is rejected (budget) or fails
-            // mid-insert (OOM), the caller retains ownership and must release
-            // the import refs noted by InboundCapTable.init — arm the release
-            // before the fallible call.
-            release_caps = true;
-            try queue_promise_export_call(peer, export_id, frame, inbound_caps);
-            inbound_caps_owned = false;
-            return;
-        },
-        else => {},
+        else => null,
+    };
+    if (park_export_id) |park_id| {
+        // Queue ownership transfers inbound caps and frame bytes to pending
+        // state on success. If the queue is rejected (budget) or fails
+        // mid-insert (OOM), the caller retains ownership and must release
+        // the import refs noted by InboundCapTable.init — arm the release
+        // before the fallible call.
+        release_caps = true;
+        try queue_promise_export_call(peer, park_id, frame, inbound_caps);
+        inbound_caps_owned = false;
+        return;
     }
 
     release_caps = true;
+
+    // Resolve `receiverAnswer` params just before a dispatch (H9); a call
+    // refused for some other reason keeps its params as sent.
+    switch (target_plan) {
+        .handle_resolved, .call_handler => {
+            if (!try prepare_param_caps(peer, call, &inbound_caps)) return;
+        },
+        else => {},
+    }
 
     const handler = if (exported_entry) |entry| entry.value_ptr.handler else null;
     try dispatchImportedTargetPlan(
@@ -260,6 +279,8 @@ pub fn handleCallImportedTargetForPeerFn(
     comptime note_call_send_results: *const fn (*PeerType, protocol.Call) anyerror!void,
     comptime send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
     comptime handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
+    comptime prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
+    comptime promise_export_to_park_on: *const fn (*PeerType, u32) ?u32,
 ) *const fn (*PeerType, []const u8, protocol.Call, u32) anyerror!void {
     return struct {
         fn call(peer: *PeerType, frame: []const u8, call_msg: protocol.Call, export_id: u32) anyerror!void {
@@ -276,9 +297,80 @@ pub fn handleCallImportedTargetForPeerFn(
                 note_call_send_results,
                 send_return_exception,
                 handle_resolved_call,
+                prepare_param_caps,
+                promise_export_to_park_on,
             );
         }
     }.call;
+}
+
+/// Route a call on a promised-answer target whose inbound caps are already
+/// built: a fresh inbound call, or a parked one replaying after the answer
+/// it waited on resolved (H10: a replay runs the same plan, so a call whose
+/// answer turned out to be an unresolved promise export parks again on that
+/// export instead of failing).
+///
+/// Returns true when the call moved to a queue, which then owns
+/// `inbound_caps` (by value) along with a copy of `frame`. Returns false when
+/// the call was answered or dispatched here; the caller still owns the caps
+/// and must release and free them. On error the caller still owns the caps,
+/// and no queue holds the call.
+pub fn routePromisedTargetCall(
+    comptime PeerType: type,
+    comptime InboundCapsType: type,
+    peer: *PeerType,
+    frame: []const u8,
+    call: protocol.Call,
+    promised: protocol.PromisedAnswer,
+    inbound_caps: *InboundCapsType,
+    resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
+    promise_export_to_park_on: *const fn (*PeerType, u32) ?u32,
+    lookup_failed_answer: *const fn (*PeerType, u32) ?peer_call_targets.FailedAnswerView,
+    queue_promised_call: *const fn (*PeerType, u32, []const u8, InboundCapsType) anyerror!void,
+    queue_promise_export_call: *const fn (*PeerType, u32, []const u8, InboundCapsType) anyerror!void,
+    send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    send_return_exception_typed: *const fn (*PeerType, u32, []const u8, protocol.ExceptionType) anyerror!void,
+    handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
+    prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
+) !bool {
+    const target_plan = peer_call_targets.planPromisedTarget(
+        PeerType,
+        peer,
+        promised,
+        resolve_promised_answer,
+        promise_export_to_park_on,
+        lookup_failed_answer,
+    );
+
+    switch (target_plan) {
+        .queue_promised_call => {
+            try queue_promised_call(peer, promised.question_id, frame, inbound_caps.*);
+            return true;
+        },
+        .queue_export_promise => |export_id| {
+            try queue_promise_export_call(peer, export_id, frame, inbound_caps.*);
+            return true;
+        },
+        .send_exception => |err| {
+            try send_return_exception(peer, call.question_id, @errorName(err));
+            return false;
+        },
+        .fail_broken_answer => |failed| {
+            // Pipelined on an answer that already returned an exception. The
+            // failure drain (`failQueuedPromisedCalls`) only reaches calls
+            // queued BEFORE the exception Return; this one arrived after, so
+            // fail it the same way — a copy of the answer's own exception,
+            // preserving the retryability signal.
+            try send_return_exception_typed(peer, call.question_id, failed.reason, failed.ex_type);
+            return false;
+        },
+        .handle_resolved => |resolved| {
+            // Resolve `receiverAnswer` params just before the dispatch (H9).
+            if (!try prepare_param_caps(peer, call, inbound_caps)) return false;
+            try handle_resolved_call(peer, call, inbound_caps, resolved);
+            return false;
+        },
+    }
 }
 
 pub fn handleCallPromisedTargetForPeer(
@@ -289,7 +381,7 @@ pub fn handleCallPromisedTargetForPeer(
     call: protocol.Call,
     promised: protocol.PromisedAnswer,
     resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
-    has_unresolved_promise_export: *const fn (*PeerType, u32) bool,
+    promise_export_to_park_on: *const fn (*PeerType, u32) ?u32,
     lookup_failed_answer: *const fn (*PeerType, u32) ?peer_call_targets.FailedAnswerView,
     queue_promised_call: *const fn (*PeerType, u32, []const u8, InboundCapsType) anyerror!void,
     queue_promise_export_call: *const fn (*PeerType, u32, []const u8, InboundCapsType) anyerror!void,
@@ -298,6 +390,7 @@ pub fn handleCallPromisedTargetForPeer(
     handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+    prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
 ) !void {
     var inbound_caps = try InboundCapsType.init(peer.allocator, call.params.cap_table, &peer.caps);
     // Fd passing: imports the params noted take the fds their descriptors
@@ -314,59 +407,36 @@ pub fn handleCallPromisedTargetForPeer(
         inbound_caps.deinit();
     };
 
-    const target_plan = peer_call_targets.planPromisedTarget(
+    // Every outcome either hands the caps to a queue (on success) or leaves
+    // them here to release: a queue rejected for budget or OOM leaves the
+    // import refs InboundCapTable.init noted with this caller. Arm the release
+    // before the fallible routing.
+    release_caps = true;
+    if (try routePromisedTargetCall(
         PeerType,
+        InboundCapsType,
         peer,
+        frame,
+        call,
         promised,
+        &inbound_caps,
         resolve_promised_answer,
-        has_unresolved_promise_export,
+        promise_export_to_park_on,
         lookup_failed_answer,
-    );
-
-    switch (target_plan) {
-        .queue_promised_call => {
-            // Ownership transfers to pending state on success; on queue
-            // rejection (budget) or mid-insert failure (OOM) the caller retains
-            // ownership and must release the noted import refs. Arm the release
-            // before the fallible call.
-            release_caps = true;
-            try queue_promised_call(peer, promised.question_id, frame, inbound_caps);
-            inbound_caps_owned = false;
-            return;
-        },
-        .queue_export_promise => |export_id| {
-            release_caps = true;
-            try queue_promise_export_call(peer, export_id, frame, inbound_caps);
-            inbound_caps_owned = false;
-            return;
-        },
-        .send_exception => |err| {
-            release_caps = true;
-            try send_return_exception(peer, call.question_id, @errorName(err));
-            return;
-        },
-        .fail_broken_answer => |failed| {
-            // Pipelined on an answer that already returned an exception. The
-            // failure drain (`failQueuedPromisedCalls`) only reaches calls
-            // queued BEFORE the exception Return; this one arrived after, so
-            // fail it the same way — a copy of the answer's own exception,
-            // preserving the retryability signal.
-            release_caps = true;
-            try send_return_exception_typed(peer, call.question_id, failed.reason, failed.ex_type);
-            return;
-        },
-        .handle_resolved => |resolved| {
-            release_caps = true;
-            try handle_resolved_call(peer, call, &inbound_caps, resolved);
-        },
-    }
+        queue_promised_call,
+        queue_promise_export_call,
+        send_return_exception,
+        send_return_exception_typed,
+        handle_resolved_call,
+        prepare_param_caps,
+    )) inbound_caps_owned = false;
 }
 
 pub fn handleCallPromisedTargetForPeerFn(
     comptime PeerType: type,
     comptime InboundCapsType: type,
     comptime resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
-    comptime has_unresolved_promise_export: *const fn (*PeerType, u32) bool,
+    comptime promise_export_to_park_on: *const fn (*PeerType, u32) ?u32,
     comptime lookup_failed_answer: *const fn (*PeerType, u32) ?peer_call_targets.FailedAnswerView,
     comptime queue_promised_call: *const fn (*PeerType, u32, []const u8, InboundCapsType) anyerror!void,
     comptime queue_promise_export_call: *const fn (*PeerType, u32, []const u8, InboundCapsType) anyerror!void,
@@ -375,6 +445,7 @@ pub fn handleCallPromisedTargetForPeerFn(
     comptime handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     comptime release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     comptime report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+    comptime prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
 ) *const fn (*PeerType, []const u8, protocol.Call, protocol.PromisedAnswer) anyerror!void {
     return struct {
         fn call(peer: *PeerType, frame: []const u8, call_msg: protocol.Call, promised: protocol.PromisedAnswer) anyerror!void {
@@ -386,7 +457,7 @@ pub fn handleCallPromisedTargetForPeerFn(
                 call_msg,
                 promised,
                 resolve_promised_answer,
-                has_unresolved_promise_export,
+                promise_export_to_park_on,
                 lookup_failed_answer,
                 queue_promised_call,
                 queue_promise_export_call,
@@ -395,6 +466,7 @@ pub fn handleCallPromisedTargetForPeerFn(
                 handle_resolved_call,
                 release_inbound_caps,
                 report_nonfatal_error,
+                prepare_param_caps,
             );
         }
     }.call;

@@ -34,6 +34,11 @@ pub const request = @import("serialization/request_reader.zig");
 /// Validates and canonicalizes Cap'n Proto schema graphs.
 pub const schema_validation = @import("serialization/schema_validation.zig");
 
+/// Resolves generic parameters and brands in a parsed schema (Experimental),
+/// for code generators built on `request` and `schema` that emit generics
+/// instead of erasing them. The rules capnpc-zig's own generator uses.
+pub const type_resolver = @import("serialization/type_resolver_api.zig");
+
 /// Spec-faithful, schema-FREE canonicalization of Cap'n Proto messages
 /// (Experimental). Walks the raw pointer graph the way the reference
 /// implementation's `canonicalize()`/`isCanonical()` do, so the output is

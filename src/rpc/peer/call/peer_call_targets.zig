@@ -49,7 +49,9 @@ pub fn planPromisedTarget(
     peer: *PeerType,
     promised: protocol.PromisedAnswer,
     resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
-    has_unresolved_promise_export: *const fn (*PeerType, u32) bool,
+    /// The unresolved promise export a call aimed at the given export must
+    /// park on, or null (see `promiseExportToParkOnForPeer`).
+    promise_export_to_park_on: *const fn (*PeerType, u32) ?u32,
     lookup_failed_answer: *const fn (*PeerType, u32) ?FailedAnswerView,
 ) PromisedTargetPlan {
     const resolved = resolve_promised_answer(peer, promised) catch |err| {
@@ -67,13 +69,41 @@ pub fn planPromisedTarget(
     };
 
     if (resolved == .exported) {
-        const export_id = resolved.exported.id;
-        if (has_unresolved_promise_export(peer, export_id)) {
-            return .{ .queue_export_promise = export_id };
+        if (promise_export_to_park_on(peer, resolved.exported.id)) |park_id| {
+            return .{ .queue_export_promise = park_id };
         }
     }
 
     return .{ .handle_resolved = resolved };
+}
+
+/// The promise export a call aimed at export `export_id` must park on, or
+/// null when it can dispatch now. Follows promise exports that resolved to
+/// another export of ours and returns the first one still unresolved; a call
+/// queued there replays when it resolves. Null for a concrete export, a
+/// promise that resolved elsewhere (an import, a broken promise), an unknown
+/// id, or a resolution cycle (bounded by the export count).
+pub fn promiseExportToParkOnForPeer(comptime PeerType: type, peer: *PeerType, export_id: u32) ?u32 {
+    var id = export_id;
+    var hops: usize = 0;
+    while (hops <= peer.exports.count()) : (hops += 1) {
+        const entry = peer.exports.getEntry(id) orelse return null;
+        if (!entry.value_ptr.is_promise) return null;
+        const resolved = entry.value_ptr.resolved orelse return id;
+        switch (resolved) {
+            .exported => |next| id = next.id,
+            else => return null,
+        }
+    }
+    return null;
+}
+
+pub fn promiseExportToParkOnForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) ?u32 {
+    return struct {
+        fn call(peer: *PeerType, export_id: u32) ?u32 {
+            return promiseExportToParkOnForPeer(PeerType, peer, export_id);
+        }
+    }.call;
 }
 
 pub fn hasUnresolvedPromiseExportForPeer(comptime PeerType: type, peer: *PeerType, export_id: u32) bool {
@@ -152,8 +182,8 @@ test "peer_call_targets promised target planning handles unresolved, failed-answ
             };
         }
 
-        fn hasUnresolvedPromiseExport(peer: *FakePeer, export_id: u32) bool {
-            return peer.mode == .exported_unresolved and export_id == 9;
+        fn promiseExportToParkOn(peer: *FakePeer, export_id: u32) ?u32 {
+            return if (peer.mode == .exported_unresolved and export_id == 9) export_id else null;
         }
 
         fn lookupFailedAnswer(peer: *FakePeer, question_id: u32) ?FailedAnswerView {
@@ -179,7 +209,7 @@ test "peer_call_targets promised target planning handles unresolved, failed-answ
             &peer,
             promised,
             Hooks.resolvePromisedAnswer,
-            Hooks.hasUnresolvedPromiseExport,
+            Hooks.promiseExportToParkOn,
             Hooks.lookupFailedAnswer,
         );
         try std.testing.expectEqual(PromisedTargetPlan.queue_promised_call, plan);
@@ -195,7 +225,7 @@ test "peer_call_targets promised target planning handles unresolved, failed-answ
             &peer,
             promised,
             Hooks.resolvePromisedAnswer,
-            Hooks.hasUnresolvedPromiseExport,
+            Hooks.promiseExportToParkOn,
             Hooks.lookupFailedAnswer,
         );
         switch (plan) {
@@ -214,7 +244,7 @@ test "peer_call_targets promised target planning handles unresolved, failed-answ
             &peer,
             promised,
             Hooks.resolvePromisedAnswer,
-            Hooks.hasUnresolvedPromiseExport,
+            Hooks.promiseExportToParkOn,
             Hooks.lookupFailedAnswer,
         );
         switch (plan) {
@@ -230,7 +260,7 @@ test "peer_call_targets promised target planning handles unresolved, failed-answ
             &peer,
             promised,
             Hooks.resolvePromisedAnswer,
-            Hooks.hasUnresolvedPromiseExport,
+            Hooks.promiseExportToParkOn,
             Hooks.lookupFailedAnswer,
         );
         switch (plan) {
@@ -246,7 +276,7 @@ test "peer_call_targets promised target planning handles unresolved, failed-answ
             &peer,
             promised,
             Hooks.resolvePromisedAnswer,
-            Hooks.hasUnresolvedPromiseExport,
+            Hooks.promiseExportToParkOn,
             Hooks.lookupFailedAnswer,
         );
         switch (plan) {
@@ -265,7 +295,7 @@ test "peer_call_targets promised target planning handles unresolved, failed-answ
             &peer,
             promised,
             Hooks.resolvePromisedAnswer,
-            Hooks.hasUnresolvedPromiseExport,
+            Hooks.promiseExportToParkOn,
             Hooks.lookupFailedAnswer,
         );
         switch (plan) {
@@ -311,4 +341,43 @@ test "peer_call_targets hasUnresolvedPromiseExportForPeerFn inspects export prom
 
     try peer.exports.put(1, .{ .is_promise = true, .resolved = .none });
     try std.testing.expect(!has_unresolved(&peer, 1));
+}
+
+test "peer_call_targets promiseExportToParkOnForPeer follows resolved promise exports" {
+    const FakeEntry = struct {
+        is_promise: bool = false,
+        resolved: ?cap_table.ResolvedCap = null,
+    };
+    const FakePeer = struct {
+        exports: std.AutoHashMap(u32, FakeEntry),
+    };
+
+    var peer = FakePeer{ .exports = std.AutoHashMap(u32, FakeEntry).init(std.testing.allocator) };
+    defer peer.exports.deinit();
+    const park_on = promiseExportToParkOnForPeerFn(FakePeer);
+
+    // Unknown and concrete exports dispatch now.
+    try std.testing.expectEqual(@as(?u32, null), park_on(&peer, 1));
+    try peer.exports.put(1, .{});
+    try std.testing.expectEqual(@as(?u32, null), park_on(&peer, 1));
+
+    // 2 -> 3 -> 4 (unresolved): park on 4, from any link of the chain.
+    try peer.exports.put(2, .{ .is_promise = true, .resolved = .{ .exported = .{ .id = 3 } } });
+    try peer.exports.put(3, .{ .is_promise = true, .resolved = .{ .exported = .{ .id = 4 } } });
+    try peer.exports.put(4, .{ .is_promise = true });
+    try std.testing.expectEqual(@as(?u32, 4), park_on(&peer, 2));
+    try std.testing.expectEqual(@as(?u32, 4), park_on(&peer, 4));
+
+    // Once 4 resolves to the concrete export 1, the chain dispatches.
+    try peer.exports.put(4, .{ .is_promise = true, .resolved = .{ .exported = .{ .id = 1 } } });
+    try std.testing.expectEqual(@as(?u32, null), park_on(&peer, 2));
+
+    // A promise resolved to an import or broken is not parked on.
+    try peer.exports.put(5, .{ .is_promise = true, .resolved = .{ .imported = .{ .id = 9 } } });
+    try std.testing.expectEqual(@as(?u32, null), park_on(&peer, 5));
+
+    // A resolution cycle ends the walk instead of looping.
+    try peer.exports.put(6, .{ .is_promise = true, .resolved = .{ .exported = .{ .id = 7 } } });
+    try peer.exports.put(7, .{ .is_promise = true, .resolved = .{ .exported = .{ .id = 6 } } });
+    try std.testing.expectEqual(@as(?u32, null), park_on(&peer, 6));
 }

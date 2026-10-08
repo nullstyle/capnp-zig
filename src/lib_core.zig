@@ -14,6 +14,8 @@ pub const codegen = @import("capnpc-zig/generator.zig");
 pub const codegen_abi = @import("codegen_abi.zig");
 pub const request = @import("serialization/request_reader.zig");
 pub const schema_validation = @import("serialization/schema_validation.zig");
+/// Generic parameter and brand resolution (Experimental). See `lib.zig`.
+pub const type_resolver = @import("serialization/type_resolver_api.zig");
 pub const canonical = @import("serialization/canonical.zig");
 pub const rpc = @import("rpc/mod_core.zig");
 

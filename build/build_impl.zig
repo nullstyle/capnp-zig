@@ -936,6 +936,17 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_schema_fidelity_tests = addLibTest(b, "tests/serialization/schema_fidelity_test.zig", target, optimize, lib_module);
     const run_brand_fidelity_internal_tests = addLibTest(b, "src/brand_fidelity_test.zig", target, optimize, lib_module);
     const run_canonical_tests = addLibTest(b, "tests/serialization/canonical_test.zig", target, optimize, lib_module);
+    // The Experimental `type_resolver` facade, run on the compiler's own
+    // request for a generic schema (a committed generated-shape fixture).
+    const run_type_resolver_api_tests = addLibTestWithFile(
+        b,
+        "tests/serialization/type_resolver_api_test.zig",
+        target,
+        optimize,
+        lib_module,
+        "generic-collections-request",
+        "tests/generated_shape/requests/generic_collections.request.bin",
+    );
 
     // RPC tests (domain-organized)
     const run_rpc_framing_tests = addLibTest(b, "tests/rpc/wire/rpc_framing_test.zig", target, optimize, lib_module);
@@ -1490,6 +1501,7 @@ pub fn buildImpl(b: *std.Build) !void {
     const test_schema_fidelity_step = b.step("test-schema-fidelity", "Run executable brand fidelity and upstream schema closure tests");
     test_schema_fidelity_step.dependOn(run_schema_fidelity_tests);
     test_schema_fidelity_step.dependOn(run_brand_fidelity_internal_tests);
+    test_schema_fidelity_step.dependOn(run_type_resolver_api_tests);
 
     const test_schema_evolution_step = b.step("test-schema-evolution", "Run checked-in V1/V2 schema-evolution API tests");
     test_schema_evolution_step.dependOn(run_schema_evolution_api_tests);
@@ -1528,6 +1540,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_serialization_step.dependOn(run_schema_validation_tests);
     test_serialization_step.dependOn(run_schema_fidelity_tests);
     test_serialization_step.dependOn(run_brand_fidelity_internal_tests);
+    test_serialization_step.dependOn(run_type_resolver_api_tests);
     test_serialization_step.dependOn(run_canonical_tests);
 
     const test_rpc_wire_step = b.step("test-rpc-wire", "Run RPC wire framing/protocol tests");

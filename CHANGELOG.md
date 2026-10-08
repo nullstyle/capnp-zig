@@ -54,6 +54,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   headline flow: Provide into one VatC peer, Accept into its sibling, and a
   capability-bearing results Return resolved into the accepting peer's L3
   event.
+- **`Peer.setAnswerFinishedHandler` and `Peer.sendReturnCanceled`
+  (capnp-swift handoff H5).** A host that answers calls later could not tell
+  when the caller gave up: Finish only left an internal tombstone, and the
+  caller's question id stayed taken until the host replied. The handler now
+  runs, at most once per answer and inside `handleFrame`, when the remote
+  sends Finish for a call the host was handed and has not answered. It does
+  not run once the host replied, for calls the Peer still holds queued, or
+  for calls the Peer forwarded. The host stops the work and answers with
+  `sendReturnCanceled`, which sends `Return{canceled}` and fails the calls
+  pipelined on that answer with their own Return. It refuses with
+  `error.AnswerNotFinished` while the caller has not finished the answer,
+  because the C++ reference rejects such a Return. The handler may answer
+  from inside the callback. Embedders such as capnp-swift can cancel the
+  handler's task and free the caller's id at once.
+- **`Peer.resolvePromiseExportToExceptionTyped` (capnp-swift handoff H5).**
+  `resolvePromiseExportToException` always sent type `failed`, so a host
+  could not tell a remote importer that a broken promise was `overloaded`,
+  `disconnected` or `unimplemented`. The typed variant mirrors
+  `sendReturnExceptionTyped`; the Stable call is unchanged and still sends
+  `failed`. The wire builder `MessageBuilder.buildResolveExceptionTyped` is
+  Experimental too. Calls already queued on the promise still fail with
+  "promise broken" and type `failed`, and a capnp-zig importer still drops
+  the reason and the type of an inbound `Resolve{exception}`.
+- **`Peer.sendBootstrapWithOptions`: a retained bootstrap question.**
+  `sendBootstrap` Finishes the bootstrap question right after its Return,
+  so a caller that pipelines on the bootstrap after the Return races that
+  Finish; capnp-swift never pipelines on its bootstrap for this reason. With
+  `.result_lifetime = .retained` the answer stays open until the caller
+  calls `finishRetainedQuestion`, as for retained calls, and counts against
+  `max_retained_questions`. `sendBootstrap` is unchanged.
+- **`type_resolver`: generic parameter and brand resolution for foreign
+  code generators.** The frozen `schema.Type` union erases generics, and the
+  resolver that reads the parallel `TypeMetadata` tree was internal, so a
+  generator built on `request` and `schema` (capnpc-swift, for one) had to
+  erase generics to AnyPointer or reimplement the brand rules. All three
+  library roots now export a small facade: `type_resolver.Context.init` for
+  a node and a brand, then `resolve`, `listElement`, `enter` and `validate`.
+  It applies the rules capnpc-zig's own generator uses and allocates
+  nothing. The internal resolver stays private; no Stable line changed.
+
+### Fixed
+
+- **RPC: a capability pipelined into a call's params reached the handler
+  unresolved (capnp-swift handoff H9).** A caller that passes the result of
+  one of its own unanswered questions as an argument sends a
+  `receiverAnswer` cap descriptor; the C++ reference does this for every
+  pipelined argument. The Peer handed the handler a `.promised` entry even
+  when that answer had already returned. This hit synchronous capnp-zig
+  servers called by C++, Go or Rust clients, and embedders such as
+  capnp-swift, which refuse a `.promised` entry. The Peer now resolves these
+  entries just before the call dispatches: an export of ours becomes
+  `.exported`, a null result becomes `.none`, and a call whose named answer
+  failed gets a copy of that answer's exception (the C++ reference instead
+  passes a broken capability; `ResolvedCap` has no such variant). The call
+  is never delayed: while the named answer is still pending, or when it
+  resolved to a capability the caller hosts, the entry stays `.promised` as
+  before. A queued call that replays also re-reads its `.promised` entries
+  from its own frame copy; before, they pointed into the freed inbound
+  frame. Generated `resolveX` accessors still accept only `.imported`
+  entries, so a generated server reading such a parameter still gets
+  `UnexpectedCapabilityType` until codegen learns `.exported`; handlers that
+  read `InboundCapTable` directly, and embedders, get the resolved entry
+  now. No API line changes. New tests in
+  `tests/rpc/peer/rpc_answer_lifecycle_test.zig`.
+- **RPC: a call parked on an answer failed with "promised capability
+  unresolved" when that answer returned an unresolved promise export
+  (capnp-swift handoff H10).** This affects servers that defer or forward
+  their answers (capnp-swift's host, Zig apps with deferred handlers) and
+  clients that pipeline before the Return arrives, as the C++ reference
+  does. A parked call now replays through the same target plan as a fresh
+  call, so it parks again on the promise export and runs when that export
+  resolves. Calls parked on a promise export that resolves to another
+  still-unresolved promise export of ours, and fresh calls on such a chain,
+  now park on the last promise in the chain too; before, they failed the
+  same way. The replay also releases the param capabilities of a call it
+  answers with an exception; before, those import references leaked. No API
+  line changes.
+- **RPC: under memory pressure, a transport close or the deadline sweep left
+  questions without a terminal (capnp-swift handoff H8).** The cancel pass
+  copied question ids into a heap list with `append(...) catch break`, so
+  when memory ran out it skipped the rest; those callers waited until
+  `Peer.deinit`. The deadline sweep had the same pattern. Even a question the
+  pass reached got no callback when the synthetic exception Return could not
+  be allocated, and a deadline-cancelled one was then never retried, so its
+  caller waited forever. Both passes are now allocation-free, and the
+  synthetic Return is built in a 4 KiB stack buffer (a longer reason falls
+  back to the heap). This affects every embedder whose transport can close,
+  or whose calls have deadlines, under memory pressure: capnp-swift can drop
+  its close-sweep shim. Explicit `cancelQuestion` now also delivers its
+  terminal without the heap. A pipelined call queued during a transient OOM
+  no longer loses its terminal Return either: the queue decodes the call's id
+  once, and an OOM there stored it as "not a call", which the failure drain
+  skipped. The enqueue now fails instead and the caller answers the call.
+  No API line changes. `zig build hardening` gains a rule that bans
+  unreviewed `catch break` / `catch continue` / `catch {}` after an
+  allocating call; five Experimental Level-3 maintenance passes are
+  allowlisted with the reason a skipped item is retried later.
+- **RPC: a question could get a second terminal callback at transport close
+  after an OOM in its Return handling.** When handling a Return failed with
+  OutOfMemory after the question's callback had already run (the automatic
+  Finish could not be built, or the callback itself returned
+  `error.OutOfMemory`), the Peer put the question back into its table. The
+  transport-close drain or `Peer.deinit` then delivered a second, synthetic
+  Disconnected Return into the same context. This affects callers of
+  `Peer.sendCall` / `sendBootstrap` that do not register a `deinit_ctx`
+  (generated clients do, and were not affected); capnp-deno guards its
+  WASM L3 contexts against this re-delivery. The Peer now restores a
+  question only when its callback has not seen the Return. Retained calls,
+  with or without `noFinishNeeded`, never had this problem; a new test pins
+  that. No API line changes.
+- **RPC: a Return sent after the caller's Finish made the caller release
+  its param capabilities twice.** When a call's params grant capabilities,
+  the Peer settles those references with explicit `Release` frames. If the
+  caller sent Finish first, the late Return still said
+  `releaseParamCaps = true`, and so did the `Return{canceled}` the Peer sends
+  for a queued call that the Finish cancels. The caller then released its
+  exports a second time; the C++ reference aborts the connection on that.
+  This affects hosts that answer after a Finish (deferred handlers,
+  capnp-swift) and callers that cancel pipelined calls that carry
+  capabilities. The Peer now remembers the grant past the Finish, and those
+  Returns say `false`. One new Experimental `Peer` field
+  (`finished_early_param_grants`); no other API line changes.
 
 ### Changed
 

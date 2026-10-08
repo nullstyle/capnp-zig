@@ -131,6 +131,10 @@ const experimental_overrides = [_]Rule{
     e("capnpc-zig.rpc.transport.tcp.client.ConnectOptions.join_timeout_ms"),
     e("capnpc-zig.rpc.transport.tcp.server.ServeOptions.join_timeout_ms"),
     e("capnpc-zig.rpc.wire.protocol.MessageBuilder.buildProvidePromisedAnswerWithOps"),
+    // Typed promise rejection (capnp-swift handoff H5) lands Experimental with
+    // the `Peer` method that sends it. Its untyped sibling
+    // `buildResolveException` stays frozen.
+    e("capnpc-zig.rpc.wire.protocol.MessageBuilder.buildResolveExceptionTyped"),
     e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.markThirdPartyHosted"),
     e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.getThirdPartyHosted"),
     e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.clearThirdPartyHosted"),

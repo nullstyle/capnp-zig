@@ -294,6 +294,14 @@ caller-bound method generics, typed data views, and generic capability pipelines
 through adapters around existing calls. Original erased signatures and their
 ownership rules remain unchanged. See [generated-api.md](generated-api.md).
 
+The `type_resolver` module (`src/serialization/type_resolver_api.zig`, exported
+by all three library roots) is Experimental. It lets a code generator built on
+the Stable `request` and `schema` modules resolve generic parameters and brands
+with the rules capnpc-zig's own generator uses: `Context.init` for a node and
+brand, then `resolve`, `listElement`, `enter` and `validate`. It is a facade
+over the internal resolver, which stays free to change; nothing in the Stable
+schema representation moved.
+
 Everything below is outside the frozen contract and may break at any 0.x minor
 bump. The L3 three-party arc in particular is **lightly soaked and
 Experimental**: main has a Zig↔C++ TCP success/failure matrix plus Go

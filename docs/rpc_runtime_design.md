@@ -157,7 +157,8 @@ terminal `Return` is dispatched, the peer sends `Finish`. The Experimental
 automatic Finish; generated interface `Client`, `PipelinedClient`, and
 `callXxxPipelined` methods expose matching `WithOptions` forms. Their existing
 methods delegate with `.automatic`, and streaming fire-and-forget calls remain
-automatic.
+automatic. `sendBootstrapWithOptions` applies the same policy to the bootstrap
+question; `sendBootstrap` delegates with `.automatic`.
 
 Retained registration is an atomic pre-send step, including synchronous
 loopback/transport Returns. The terminal callback runs at most once and makes
@@ -419,7 +420,17 @@ Contract:
   callback runs, while the peer's maps are still intact — so a callback that
   re-enters the peer is safe and waiters are resolved before any teardown.
 - Delivered **exactly once** per question (the question is removed from the
-  table as it is failed; `on_close`/`deinit` then see an empty table).
+  table as it is failed; `on_close`/`deinit` then see an empty table). A
+  question whose callback already saw a real `Return` is never put back in
+  the table, even when handling that `Return` failed afterwards (for example
+  the automatic `Finish` hit OutOfMemory), so no synthetic second terminal
+  follows.
+- Delivered **under memory pressure too**. The pass allocates nothing: it
+  marks the questions present at entry and settles them in place, and the
+  synthetic `Return` is built in a 4 KiB stack buffer first (a longer reason
+  falls back to the heap). The deadline sweep (`checkDeadlines`) works the
+  same way. capnp-swift handoff H8 found the earlier heap id list skipping
+  questions when an append failed.
 - The synthetic failure is **never** recorded in `resolved_answers` and is
   **never** replayed to pipelining/`pending_promises` — it is purely an
   outbound-question terminal signal, distinct from an inbound answer.
