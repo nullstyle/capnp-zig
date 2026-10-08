@@ -78,6 +78,10 @@ pub fn CallInbound(comptime Peer: type) type {
             if (try self.inboundQuestionIdInUse(call.question_id)) {
                 return error.DuplicateQuestionId;
             }
+            // A grant record can outlive its tombstone when a non-Return path
+            // retired the answer. The id is free again, so this call's own
+            // descriptors decide its flag.
+            _ = self.finished_early_param_grants.remove(call.question_id);
 
             // `sendResultsTo = thirdParty` asks this vat to connect to a third vat
             // and deliver the results there. Unless the host opted in, we cannot —

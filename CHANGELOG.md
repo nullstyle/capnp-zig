@@ -97,6 +97,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   question only when its callback has not seen the Return. Retained calls,
   with or without `noFinishNeeded`, never had this problem; a new test pins
   that. No API line changes.
+- **RPC: a Return sent after the caller's Finish made the caller release
+  its param capabilities twice.** When a call's params grant capabilities,
+  the Peer settles those references with explicit `Release` frames. If the
+  caller sent Finish first, the late Return still said
+  `releaseParamCaps = true`, and so did the `Return{canceled}` the Peer sends
+  for a queued call that the Finish cancels. The caller then released its
+  exports a second time; the C++ reference aborts the connection on that.
+  This affects hosts that answer after a Finish (deferred handlers,
+  capnp-swift) and callers that cancel pipelined calls that carry
+  capabilities. The Peer now remembers the grant past the Finish, and those
+  Returns say `false`. One new Experimental `Peer` field
+  (`finished_early_param_grants`); no other API line changes.
 
 ## [0.22.0] - 2026-10-07
 

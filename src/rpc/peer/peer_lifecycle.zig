@@ -142,6 +142,7 @@ pub fn Lifecycle(comptime Peer: type) type {
             self.active_inbound_questions.deinit();
             self.resolving_answers.deinit();
             self.finished_early_answers.deinit();
+            self.finished_early_param_grants.deinit();
             {
                 var f_it = self.failed_answers.valueIterator();
                 while (f_it.next()) |failed| self.allocator.free(failed.reason);

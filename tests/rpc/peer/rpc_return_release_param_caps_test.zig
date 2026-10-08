@@ -698,3 +698,99 @@ test "two peers settle a param-cap grant exactly once end to end" {
     try std.testing.expectEqual(@as(u32, 0), caller.question_param_export_refs.count());
     try std.testing.expect(!callee.caps.hasImport(param_export));
 }
+
+/// The async host shape: holds the call open and never touches the param cap,
+/// so the post-dispatch auto-release sends its Release before any Return.
+const DefersAndIgnoresParamCap = struct {
+    fn onCall(
+        _: *anyopaque,
+        _: *Peer,
+        _: protocol.Call,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {}
+};
+
+test "a Return sent after the caller's Finish still does not claim implicit release" {
+    const allocator = std.testing.allocator;
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = Capture{ .allocator = allocator };
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var handler_state: u8 = 0;
+    const target = try peer.addExport(.{ .ctx = &handler_state, .on_call = DefersAndIgnoresParamCap.onCall });
+
+    const param_import_id: u32 = 4245;
+    const call_frame = try buildInboundCallWithParamCap(allocator, 35, target, param_import_id);
+    defer allocator.free(call_frame);
+    try peer.handleFrame(call_frame);
+    // The grant is already settled by an explicit Release.
+    try std.testing.expectEqual(@as(u32, 1), try capture.releasedRefs(param_import_id));
+
+    // The caller cancels first; the host answers late.
+    var finish_builder = protocol.MessageBuilder.init(allocator);
+    defer finish_builder.deinit();
+    try finish_builder.buildFinish(35, false, false);
+    const finish_frame = try finish_builder.finish();
+    defer allocator.free(finish_frame);
+    try peer.handleFrame(finish_frame);
+    try peer.sendReturnEmptyStruct(35);
+
+    // Finish ended the call, not the grant: the late Return must still say
+    // `false`, or the caller retires its export a second time.
+    try std.testing.expectEqual(@as(u32, 1), try capture.releasedRefs(param_import_id));
+    try std.testing.expectEqual(false, try capture.returnReleaseParamCaps(35));
+}
+
+test "a queued call cancelled by its Finish does not claim implicit release" {
+    const allocator = std.testing.allocator;
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = Capture{ .allocator = allocator };
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var handler_state: u8 = 0;
+    const target = try peer.addExport(.{ .ctx = &handler_state, .on_call = DefersAndIgnoresParamCap.onCall });
+
+    // Answer 36 stays pending, so a call pipelined on it queues.
+    const parent = try buildInboundCallWithoutParamCaps(allocator, 36, target);
+    defer allocator.free(parent);
+    try peer.handleFrame(parent);
+
+    const param_import_id: u32 = 4246;
+    var call_builder = protocol.MessageBuilder.init(allocator);
+    defer call_builder.deinit();
+    var call = try call_builder.beginCall(37, 0xABCD, 0);
+    try call.setTargetPromisedAnswerWithOps(36, &[_]protocol.PromisedAnswerOp{
+        .{ .tag = .getPointerField, .pointer_index = 0 },
+    });
+    var payload = try call.payloadTyped();
+    const any = try payload.initContent();
+    try any.setCapability(.{ .id = 0 });
+    var cap_list = try call.initCapTableTyped(1);
+    protocol.CapDescriptor.writeSenderHosted(try cap_list.get(0), param_import_id);
+    const queued = try call_builder.finish();
+    defer allocator.free(queued);
+    try peer.handleFrame(queued);
+    try std.testing.expectEqual(@as(u32, 0), try capture.releasedRefs(param_import_id));
+
+    // The Finish cancels the queued call: the peer releases its param cap
+    // itself, then answers Return{canceled}.
+    var finish_builder = protocol.MessageBuilder.init(allocator);
+    defer finish_builder.deinit();
+    try finish_builder.buildFinish(37, false, false);
+    const finish_frame = try finish_builder.finish();
+    defer allocator.free(finish_frame);
+    try peer.handleFrame(finish_frame);
+
+    try std.testing.expectEqual(@as(u32, 1), try capture.releasedRefs(param_import_id));
+    try std.testing.expectEqual(false, try capture.returnReleaseParamCaps(37));
+}

@@ -508,8 +508,9 @@ pub const Peer = struct {
     /// Return's `releaseParamCaps` flag: rpc.capnp forbids sending separate
     /// `Release` messages once that flag is true, so an answer that owes
     /// Releases must say `false`. Entries are created in `handleCall` and
-    /// removed by the Return (`sendReturnFrameWithLoopback`) or the Finish,
-    /// which is exactly the window in which the flag can be read.
+    /// removed by the Return (`sendReturnFrameWithLoopback`) or the Finish.
+    /// A Return sent after the Finish reads the flag from
+    /// `finished_early_param_grants` instead.
     active_inbound_questions: std.AutoHashMap(u32, bool),
     /// Answer IDs whose results Return is currently being synchronously delivered
     /// and may receive a reentrant Finish before the resolved answer is committed.
@@ -533,6 +534,13 @@ pub const Peer = struct {
     /// resolved answer, it commits first to drain queued promised calls, then
     /// immediately removes the recorded answer through normal Finish cleanup.
     finished_early_answers: std.AutoHashMap(u32, bool),
+    /// Finished-early answers whose Call params granted this vat import refs:
+    /// the `true` that `handleFinish` took out of `active_inbound_questions`.
+    /// This vat settles those refs with explicit `Release` frames whether or
+    /// not the caller finished first, so the late Return must still say
+    /// `releaseParamCaps = false` (`returnReleasesParamCaps`). Recorded only
+    /// with a tombstone, so it shares that bound; the Return consumes it.
+    finished_early_param_grants: std.AutoHashMap(u32, void),
     /// Inbound answers that already returned an EXCEPTION, kept until Finish
     /// (the mirror of `resolved_answers`, which records results only). A call
     /// pipelined on such an answer that arrives AFTER the exception Return
@@ -945,6 +953,7 @@ pub const Peer = struct {
             .active_inbound_questions = std.AutoHashMap(u32, bool).init(allocator),
             .resolving_answers = std.AutoHashMap(u32, void).init(allocator),
             .finished_early_answers = std.AutoHashMap(u32, bool).init(allocator),
+            .finished_early_param_grants = std.AutoHashMap(u32, void).init(allocator),
             .failed_answers = std.AutoHashMap(u32, FailedAnswer).init(allocator),
             .pending_promises = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(allocator),
             .pending_export_promises = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(allocator),
@@ -4062,7 +4071,11 @@ pub const Peer = struct {
     /// Call params carried no ref-granting descriptor. In all of those the
     /// caller recorded no param exports, so the flag is a no-op either way.
     pub fn returnReleasesParamCaps(self: *Peer, answer_id: u32) bool {
-        return !(self.active_inbound_questions.get(answer_id) orelse false);
+        if (self.active_inbound_questions.get(answer_id)) |owes_releases| return !owes_releases;
+        // The caller's Finish removed the record, not the grant: a late Return
+        // (or the Return{canceled} of a queued call the Finish cancels) still
+        // follows explicit Releases.
+        return !self.finished_early_param_grants.contains(answer_id);
     }
 
     fn onConnectionError(self: *Peer, err: anyerror) void {
@@ -4496,7 +4509,9 @@ pub const Peer = struct {
         // force-swallowed by the void FinishOps hook below.
         try self.detachProvisionForFinish(qid);
         if (!self.resolving_answers.contains(qid)) self.streaming.cancel(self, qid);
-        const was_active = self.active_inbound_questions.remove(qid);
+        const active_entry = self.active_inbound_questions.fetchRemove(qid);
+        const was_active = active_entry != null;
+        const params_granted_refs = if (active_entry) |entry| entry.value else false;
         const was_resolving = self.resolving_answers.contains(qid);
         // The failed-answer record lives exactly as long as resolved_answers
         // entries do: until the remote finishes the question.
@@ -4517,7 +4532,11 @@ pub const Peer = struct {
             !self.resolved_answers.contains(qid) and
             self.finished_early_answers.count() < self.limits.max_active_inbound_questions)
         {
-            self.finished_early_answers.put(qid, finish_msg.release_result_caps) catch |err| self.reportNonfatalError(err);
+            if (self.finished_early_answers.put(qid, finish_msg.release_result_caps)) |_| {
+                if (params_granted_refs) {
+                    self.finished_early_param_grants.put(qid, {}) catch |err| self.reportNonfatalError(err);
+                }
+            } else |err| self.reportNonfatalError(err);
         }
         if (!finish_msg.require_early_cancellation) {
             // Default behavior: if Finish arrives before a promised-target call is
