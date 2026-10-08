@@ -108,9 +108,15 @@ pub fn QuestionAlloc(comptime Peer: type) type {
         /// Loopback ids are drawn from the TOP of the space, descending, skipping
         /// anything live in either namespace, and any id whose loopback marker
         /// is still held: a cancelled loopback question keeps its marker until
-        /// its handler's Return comes back (`cancelQuestion`,
-        /// `forceCancelAllQuestions`). A loopback call writes no frame carrying
-        /// one of these ids to a socket, cancelled or not, and every
+        /// its answer's Return comes back (`cancelQuestion`,
+        /// `forceCancelAllQuestions`). That Return is the handler's, or, for a
+        /// call the peer forwarded, the peer's own `canceled`, sent inside the
+        /// cancel. A loopback call writes no frame carrying one of these ids to
+        /// a socket, cancelled or not, as long as its answer gets one Return.
+        /// The marker goes with that Return, so a second one (the
+        /// `setAnswerFinishedHandler` doc says to send only one) is written to
+        /// the transport, as a second Return for a remote caller's answer
+        /// would be. Every
         /// implementation (this one included) hands out wire question ids
         /// ascending from 0, so the two stay apart.
         pub fn allocateLoopbackQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {

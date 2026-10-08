@@ -1651,15 +1651,18 @@ pub const Peer = struct {
     /// The host should stop the work and answer soon, normally with
     /// `sendReturnCanceled`, which frees the caller's question id. Any later
     /// Return is still accepted, but send only one: once any Return goes out,
-    /// `sendReturnCanceled` refuses the id with `error.AnswerNotOwed`.
-    /// `release_result_caps` is the Finish's flag.
+    /// `sendReturnCanceled` refuses the id with `error.AnswerNotOwed`, and
+    /// the peer writes a second Return to the transport, also for a loopback
+    /// call's answer. `release_result_caps` is the Finish's flag.
     ///
     /// The handler runs inside `handleFrame` (for a loopback call, inside
     /// the cancel, before the caller's exception), after the Finish is
     /// fully applied, at most once per answer. It may answer from inside the
     /// callback. It does not run for an answer the host already replied to,
     /// for a call the peer still holds queued, or for a call the peer
-    /// forwarded on the host's behalf; the peer settles those itself. A
+    /// forwarded on the host's behalf; the peer settles those itself (it
+    /// answers a forwarded call `canceled` when the Finish comes before the
+    /// forwarded call's Return). A
     /// queued call whose Finish set `requireEarlyCancellationWorkaround` is
     /// delivered later and never reported; answer it as usual.
     ///
@@ -3326,6 +3329,18 @@ pub const Peer = struct {
     /// In the common (non-race) order the forwarded return already arrived and
     /// removed the forwarded question before this Finish relay fires, so the
     /// neutralize step is a no-op beyond sending the Finish.
+    ///
+    /// In the race order under `.translate_to_caller`, the forwarded question's
+    /// Return was the only thing that would have answered the upstream
+    /// question, and neutralizing drops it. The upstream answer still owes its
+    /// caller exactly one Return (the caller keeps the question id until one
+    /// arrives, rpc.capnp `Call.questionId`), so it is answered `canceled`
+    /// here, as a Finish of a call the peer still holds queued is. The caller
+    /// may be this peer itself: a cancelled loopback call (`cancelQuestion`,
+    /// a call deadline) to a promise export resolved to an import arrives
+    /// here through `finishLoopbackAnswer`, and its cancelled question absorbs
+    /// the Return. `.sent_elsewhere` answered the upstream question
+    /// (`takeFromOtherQuestion`) when it forwarded, so it owes nothing.
     fn sendTailFinishAndNeutralize(self: *Peer, tail_question_id: u32, release_result_caps: bool) !void {
         try peer_outbound_control.sendFinishWithFlagsViaSendFrame(
             Peer,
@@ -3335,14 +3350,28 @@ pub const Peer = struct {
             false,
             Peer.sendFrameControl,
         );
+        var unanswered_upstream_id: ?u32 = null;
         if (self.questions.getPtr(tail_question_id)) |question| {
             if (question.deinit_ctx) |deinit_ctx| {
+                // Still pending and still owning its forward context: its
+                // Return has not been translated onto the upstream answer.
+                if (!question.cancelled and question.on_return == &onForwardedReturn) {
+                    const ctx: *const ForwardCallContext = castCtx(*const ForwardCallContext, question.ctx);
+                    if (ctx.mode == .translate_to_caller) unanswered_upstream_id = ctx.answer_id;
+                }
                 deinit_ctx(self.allocator, question.ctx);
                 question.deinit_ctx = null;
             }
             question.cancelled = true;
         }
         _ = self.forwarded_questions.remove(tail_question_id);
+        if (unanswered_upstream_id) |upstream_answer_id| {
+            // Nonfatal like the queued-call cancel: the Finish itself is
+            // applied either way.
+            ReturnSendImpl.sendReturnCanceled(self, upstream_answer_id) catch |err| {
+                self.reportNonfatalError(err);
+            };
+        }
     }
 
     pub fn neutralizeJoinRelayQuestion(self: *Peer, question_id: u32) void {
@@ -4796,7 +4825,10 @@ pub const Peer = struct {
     /// (`finished_early_answers`), the answer-finished hook runs, and a call
     /// still queued on a promise is cancelled. The cancelled question keeps
     /// its loopback marker, so the handler's late Return is delivered back
-    /// here and absorbed by that question.
+    /// here and absorbed by that question. A call the peer forwarded (a
+    /// promise export resolved to an import) has no handler: the Finish
+    /// relay answers it `canceled` (`sendTailFinishAndNeutralize`), and the
+    /// question absorbs that Return before this returns.
     ///
     /// `releaseResultCaps` is false: a loopback Return's results take no
     /// reference (`encodeLoopbackReturnPayloadCaps`), and the cancelled

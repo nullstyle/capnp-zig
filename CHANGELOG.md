@@ -242,14 +242,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   export is answered `canceled`. The cancelled question keeps its loopback
   mark until the handler's Return comes back, and absorbs it there: the
   caller sees only the cancellation, nothing reaches the remote, and no
-  reference is taken. Until then the call keeps its question id and its
-  `max_loopback_questions` slot, as a cancelled remote call keeps its id
-  until the remote's Return, so a graceful `shutdown` waits for that Return
-  or the drain bound. Cancelling the same call again is a no-op instead of
-  `error.UnknownQuestion`. A loopback call that the drain bound or a
-  transport close settles keeps its mark too; its later Return is dropped
-  locally, and no hook runs. No API line changes. Tests in
+  reference is taken. This holds while the handler sends one Return for
+  the answer, as `setAnswerFinishedHandler` requires: the mark goes with
+  the first, and a second Return is written to the transport, as a second
+  Return for a remote caller's answer is. Until the handler's Return the
+  call keeps its question id and its `max_loopback_questions` slot, as a
+  cancelled remote call keeps its id until the remote's Return, so a
+  graceful `shutdown` waits for that Return or the drain bound. A call to
+  a promise export that resolved to an import has no handler and settles
+  inside the cancel (next entry). Cancelling the same call again is a
+  no-op instead of `error.UnknownQuestion`. A loopback call that the drain
+  bound or a transport close settles keeps its mark too; its later Return
+  is dropped locally, and no hook runs. No API line changes. Tests in
   `tests/rpc/integration/rpc_loopback_caps_test.zig`.
+
+- **RPC: a forwarded call whose caller sent Finish first never got a
+  Return.** This affects hosts that resolve a promise export to an import
+  (`resolvePromiseExportToImport`, the reflected-capability shape). The
+  peer forwards a call on that promise to the import and later copies the
+  forwarded call's Return onto the original call. When the caller's Finish
+  came first, the peer finished the forwarded call and dropped its late
+  Return, so the original call never got one. A caller keeps a question
+  id until the callee's Return arrives (rpc.capnp, `Call.questionId`). A
+  capnp-zig caller kept the cancelled question for the life of the
+  connection. The C++ reference keeps such a question in its table,
+  awaiting the Return. The peer kept its finished-early record of the id,
+  and a call pipelined on the original call waited for ever. The caller can
+  also be the peer itself: a loopback call on such a promise
+  (`sendCallResolved` with an `.exported` target, or a generated local
+  Client with origin `.exported`), cancelled with `cancelQuestion`,
+  `cancelQuestionTyped` or a call deadline. That call kept its question,
+  its loopback mark and its `max_loopback_questions` slot until the
+  transport closed. A graceful `shutdown` waited for the drain bound and
+  never completed on a `Peer` that sets none (the `PeerTimeouts` default).
+  After 4096 such cancels (the default `max_loopback_questions`), every
+  loopback call on the connection failed with `error.PeerLimitExceeded`.
+  Now, when the Finish beats the forwarded call's Return, the peer answers
+  the original call `canceled` and fails each call pipelined on it with an
+  exception Return. The peer sends that Return only while the original
+  call has none. A C++ peer treats a Return for a question it has already
+  retired as a protocol error ("Invalid question ID in Return message",
+  `handleReturn` in `rpc.c++`) and drops the connection. A spec tail call
+  (`takeFromOtherQuestion`) answered its call when it forwarded it, and
+  gets no second Return. No API line changes. Tests in
+  `tests/rpc/integration/rpc_loopback_caps_test.zig` and
+  `tests/rpc/peer/rpc_peer_from_peer_zig_test.zig`.
 
 - **RPC: a capability pipelined into a call's params reached the handler
   unresolved (capnp-swift handoff H9).** A caller that passes the result of

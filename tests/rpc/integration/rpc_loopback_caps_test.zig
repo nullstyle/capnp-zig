@@ -87,6 +87,19 @@ const Wire = struct {
         if (peer) |target| try target.handleFrame(frame);
     }
 
+    /// Deliver the oldest queued frame only; anything its delivery sends
+    /// joins the back of the queue.
+    fn deliverNext(self: *Wire) !void {
+        if (self.queue.items.len == 0) return error.TestWireQueueEmpty;
+        const queued = self.queue.orderedRemove(0);
+        defer self.allocator.free(queued.bytes);
+        const peer = switch (queued.dir) {
+            .client_to_server => self.server_peer,
+            .server_to_client => self.client_peer,
+        };
+        if (peer) |target| try target.handleFrame(queued.bytes);
+    }
+
     /// Deliver queued frames in order, including any their delivery queues,
     /// then go back to synchronous delivery.
     fn flush(self: *Wire) !void {
@@ -140,6 +153,23 @@ const Wire = struct {
             if (event.dir == dir) n += 1;
         }
         return n;
+    }
+
+    /// `dir`'s `tag` frames for `id` from event index `since` on.
+    fn countTagged(self: *const Wire, dir: Dir, tag: protocol.MessageTag, id: u32, since: usize) usize {
+        var n: usize = 0;
+        for (self.events.items[since..]) |event| {
+            if (event.dir == dir and event.tag == tag and event.id == id) n += 1;
+        }
+        return n;
+    }
+
+    /// The id of `dir`'s first `tag` frame from event index `since` on.
+    fn firstTagged(self: *const Wire, dir: Dir, tag: protocol.MessageTag, since: usize) ?u32 {
+        for (self.events.items[since..]) |event| {
+            if (event.dir == dir and event.tag == tag) return event.id;
+        }
+        return null;
     }
 
     /// The reference count all of `dir`'s Release frames for `id` spent.
@@ -1128,10 +1158,10 @@ const DeferredCall = struct {
     }
 };
 
-fn cancelLoopbackCall(fx: *Fixture, clock: *rpc_time.TestClock, call: *const DeferredCall, by: CancelBy) !void {
+fn cancelLoopbackCall(fx: *Fixture, clock: *rpc_time.TestClock, question_id: u32, by: CancelBy) !void {
     switch (by) {
-        .cancel_question => try fx.server.cancelQuestion(call.answer_id, "caller gave up"),
-        .cancel_question_typed => try fx.server.cancelQuestionTyped(call.answer_id, "caller gave up", .overloaded),
+        .cancel_question => try fx.server.cancelQuestion(question_id, "caller gave up"),
+        .cancel_question_typed => try fx.server.cancelQuestionTyped(question_id, "caller gave up", .overloaded),
         .deadline => {
             clock.advanceMs(10);
             try std.testing.expectEqual(@as(usize, 1), fx.server.checkDeadlines());
@@ -1156,7 +1186,7 @@ fn expectLateAnswerAbsorbed(by: CancelBy, how: LateAnswer, queued_wire: bool) !v
     var call = DeferredCall{};
     try call.start(&fx);
     fx.wire.queueing = queued_wire;
-    try cancelLoopbackCall(&fx, &clock, &call, by);
+    try cancelLoopbackCall(&fx, &clock, call.answer_id, by);
     // The caller has its terminal now, and the answer is still the
     // handler's to give.
     try std.testing.expectEqual(@as(u32, 1), call.caller.returns);
@@ -1440,7 +1470,7 @@ fn expectFinishedHookOnCancel(by: CancelBy, answer_inside: bool) !void {
     var call = DeferredCall{};
     try call.start(&fx);
     try std.testing.expectEqual(@as(u32, 0), hook.calls);
-    try cancelLoopbackCall(&fx, &clock, &call, by);
+    try cancelLoopbackCall(&fx, &clock, call.answer_id, by);
 
     // The cancel is the caller's Finish: the host hears of it once. The
     // loopback took no reference on the results, so there is none to
@@ -1514,4 +1544,263 @@ test "cancelling a cancelled loopback call again is a no-op" {
 
     try call.answer(&fx, .results, &refs);
     try call.expectSettledLocally(&fx, solo_id);
+}
+
+// -- (h) A cancelled call the peer forwarded -----------------------------------
+//
+// A call to one of the peer's promise exports that resolved to an import has
+// no handler on this peer: the peer forwards it to the import and later
+// translates that question's Return onto the call (`translate_to_caller`).
+// When the caller finishes the call first, the peer finishes the forwarded
+// question and drops its late Return, so nothing else would ever answer the
+// call. The peer must answer it `canceled` itself: a caller keeps a question
+// id until its Return arrives, and so does a loopback caller.
+
+/// Records that a graceful `shutdown` completed.
+const ShutdownDone = struct {
+    var done: bool = false;
+
+    fn onComplete(_: *Peer) void {
+        done = true;
+    }
+};
+
+/// Shut `peer` down gracefully; it must complete at once, nothing being
+/// outstanding.
+fn expectShutdownCompletes(peer: *Peer) !void {
+    ShutdownDone.done = false;
+    peer.shutdown(ShutdownDone.onComplete);
+    try std.testing.expect(ShutdownDone.done);
+}
+
+/// A promise export of the server's, resolved to its import of the client's
+/// `decoy`: a call to it is forwarded to the client.
+fn addForwardingPromise(fx: *Fixture) !u32 {
+    const promise_id = try fx.server.addPromiseExport();
+    try fx.server.resolvePromiseExportToImport(promise_id, fx.decoy_import_id);
+    return promise_id;
+}
+
+/// A loopback call to a forwarding promise, cancelled `by` while the
+/// forwarded call still waits on a queued wire.
+fn expectForwardedLoopbackCancelSettles(by: CancelBy) !void {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    var clock = rpc_time.TestClock{};
+    if (by == .deadline) {
+        fx.server.setClock(clock.clock());
+        fx.server.setTimeouts(.{ .default_call_timeout_ms = 10 });
+    }
+    var server_errors = ErrorLog{};
+    fx.server.callback_ctx = &server_errors;
+    fx.server.on_error = ErrorLog.onError;
+    var client_errors = ErrorLog{};
+    fx.client.callback_ctx = &client_errors;
+    fx.client.on_error = ErrorLog.onError;
+    // The peer forwarded the call, so the host owes no answer and is not
+    // told of the Finish.
+    var hook = FinishedHook{};
+    fx.server.setAnswerFinishedHandler(&hook, FinishedHook.onFinished);
+    // One loopback slot: a call that keeps it blocks every later loopback
+    // call on the connection.
+    fx.server.limits.max_loopback_questions = 1;
+    const promise_id = try addForwardingPromise(&fx);
+
+    const before = fx.wire.events.items.len;
+    const questions_before = fx.server.questions.count();
+    fx.wire.queueing = true;
+    var caller = ProbeCall{};
+    const question_id = try fx.server.sendCallResolved(
+        .{ .exported = .{ .id = promise_id } },
+        interface_id,
+        number_method,
+        &caller,
+        ProbeCall.build,
+        ProbeCall.onReturn,
+    );
+    try std.testing.expect(fx.server.loopback_questions.contains(question_id));
+    // The peer forwarded the call to `decoy`; that Call waits on the wire.
+    const forwarded_id = fx.wire.firstTagged(.server_to_client, .call, before) orelse
+        return error.TestCallNotForwarded;
+    try std.testing.expectEqual(@as(u32, 0), caller.returns);
+    if (by == .deadline) {
+        // Only the loopback call times out.
+        fx.server.questions.getPtr(forwarded_id).?.deadline_ns = null;
+    }
+
+    try cancelLoopbackCall(&fx, &clock, question_id, by);
+    // The caller has its one Return, the cancellation, and the call is
+    // settled: no Return is owed to it any more.
+    try std.testing.expectEqual(@as(u32, 1), caller.returns);
+    try std.testing.expect(caller.exception);
+    try std.testing.expect(!fx.server.questions.contains(question_id));
+    try std.testing.expect(!fx.server.loopback_questions.contains(question_id));
+    try std.testing.expect(!(try fx.server.inboundQuestionIdInUse(question_id)));
+    try std.testing.expectEqual(@as(u32, 0), hook.calls);
+
+    // The forwarded call runs at the client; its late Return is dropped.
+    try fx.wire.flush();
+    try std.testing.expectEqual(@as(u32, 1), fx.decoy.calls);
+    try std.testing.expectEqual(@as(u32, 1), caller.returns);
+    try std.testing.expectEqual(questions_before, fx.server.questions.count());
+    try std.testing.expectEqual(@as(usize, 0), fx.server.loopback_questions.count());
+    // The remote saw the forwarded Call and its one Finish, and no Return
+    // under the loopback id.
+    try std.testing.expectEqual(@as(usize, 1), fx.wire.countTagged(.server_to_client, .finish, forwarded_id, before));
+    try std.testing.expectEqual(@as(usize, 0), fx.wire.countTagged(.server_to_client, .@"return", question_id, before));
+    try std.testing.expectEqual(@as(usize, 2), fx.wire.countSince(.server_to_client, before));
+    try std.testing.expectEqual(@as(?anyerror, null), server_errors.last);
+    try std.testing.expectEqual(@as(?anyerror, null), client_errors.last);
+    try fx.expectBaselineRefs();
+
+    // The loopback slot is free again: a plain loopback call goes through.
+    var next = NumberCall{};
+    _ = try fx.server.sendCallResolved(
+        .{ .exported = .{ .id = fx.home_id } },
+        interface_id,
+        number_method,
+        &next,
+        null,
+        NumberCall.onReturn,
+    );
+    try std.testing.expectEqual(@as(?u32, 1000), next.n);
+    try expectShutdownCompletes(&fx.server);
+}
+
+test "a cancelled loopback call the peer forwarded settles at once and frees its slot" {
+    try expectForwardedLoopbackCancelSettles(.cancel_question);
+}
+
+test "a loopback call the peer forwarded, cancelled with an exception type, settles at once" {
+    try expectForwardedLoopbackCancelSettles(.cancel_question_typed);
+}
+
+test "a timed-out loopback call the peer forwarded settles at once and frees its slot" {
+    try expectForwardedLoopbackCancelSettles(.deadline);
+}
+
+test "a remote caller that cancels a call the peer forwarded back to it still gets its one Return" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    var server_errors = ErrorLog{};
+    fx.server.callback_ctx = &server_errors;
+    fx.server.on_error = ErrorLog.onError;
+    var client_errors = ErrorLog{};
+    fx.client.callback_ctx = &client_errors;
+    fx.client.on_error = ErrorLog.onError;
+    const promise_id = try addForwardingPromise(&fx);
+
+    const before = fx.wire.events.items.len;
+    const client_questions_before = fx.client.questions.count();
+    const server_questions_before = fx.server.questions.count();
+    fx.wire.queueing = true;
+    var caller = ProbeCall{};
+    const question_id = try fx.client.sendCallResolved(
+        .{ .imported = .{ .id = promise_id } },
+        interface_id,
+        number_method,
+        &caller,
+        ProbeCall.build,
+        ProbeCall.onReturn,
+    );
+    // The server takes the call and forwards it back to the client's `decoy`.
+    try fx.wire.deliverNext();
+    const forwarded_id = fx.wire.firstTagged(.server_to_client, .call, before) orelse
+        return error.TestCallNotForwarded;
+    // The client gives up before the forwarded call runs: its Finish reaches
+    // the server before the forwarded question's Return does.
+    try fx.client.cancelQuestion(question_id, "caller gave up");
+    try std.testing.expectEqual(@as(u32, 1), caller.returns);
+    try fx.wire.flush();
+
+    try std.testing.expectEqual(@as(u32, 1), fx.decoy.calls);
+    try std.testing.expectEqual(@as(u32, 1), caller.returns);
+    // The server finished the forwarded question once and answered the
+    // client's call once.
+    try std.testing.expectEqual(@as(usize, 1), fx.wire.countTagged(.server_to_client, .finish, forwarded_id, before));
+    try std.testing.expectEqual(@as(usize, 1), fx.wire.countTagged(.server_to_client, .@"return", question_id, before));
+    // That Return retired the client's question, and the server keeps
+    // nothing for the call.
+    try std.testing.expectEqual(client_questions_before, fx.client.questions.count());
+    try std.testing.expectEqual(server_questions_before, fx.server.questions.count());
+    try std.testing.expect(!(try fx.server.inboundQuestionIdInUse(question_id)));
+    try std.testing.expectEqual(@as(?anyerror, null), server_errors.last);
+    try std.testing.expectEqual(@as(?anyerror, null), client_errors.last);
+    try fx.expectBaselineRefs();
+    try expectShutdownCompletes(&fx.client);
+}
+
+test "a call pipelined on a forwarded call its caller cancelled fails instead of waiting for ever" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+    var server_errors = ErrorLog{};
+    fx.server.callback_ctx = &server_errors;
+    fx.server.on_error = ErrorLog.onError;
+    var client_errors = ErrorLog{};
+    fx.client.callback_ctx = &client_errors;
+    fx.client.on_error = ErrorLog.onError;
+    const promise_id = try addForwardingPromise(&fx);
+    // Move the client's question ids past the id the server gives its
+    // forwarded question: `inboundAnswerQuestionIdInUse` also looks an
+    // inbound id up among the server's own forwarded (outbound) question
+    // ids, and would refuse the pipelined call as a duplicate.
+    for (0..2) |_| {
+        var warmup = NumberCall{};
+        _ = try fx.client.sendCallResolved(
+            .{ .imported = .{ .id = fx.home_id } },
+            interface_id,
+            number_method,
+            &warmup,
+            null,
+            NumberCall.onReturn,
+        );
+        try std.testing.expect(warmup.n != null);
+    }
+
+    const before = fx.wire.events.items.len;
+    const client_questions_before = fx.client.questions.count();
+    fx.wire.queueing = true;
+    var caller = ProbeCall{};
+    const question_id = try fx.client.sendCallResolved(
+        .{ .imported = .{ .id = promise_id } },
+        interface_id,
+        number_method,
+        &caller,
+        ProbeCall.build,
+        ProbeCall.onReturn,
+    );
+    // A call on the first call's result, sent before the first returns.
+    var pipelined = ProbeCall{};
+    const pipelined_id = try fx.client.sendCallPromised(
+        .{ .question_id = question_id, .transform = .{ .list = null } },
+        interface_id,
+        number_method,
+        &pipelined,
+        ProbeCall.build,
+        ProbeCall.onReturn,
+    );
+    // The server forwards the first call and holds the pipelined one for
+    // the first call's results.
+    try fx.wire.deliverNext();
+    try fx.wire.deliverNext();
+    try std.testing.expectEqual(@as(u32, 0), pipelined.returns);
+    try fx.client.cancelQuestion(question_id, "caller gave up");
+    try fx.wire.flush();
+
+    // The first call can never have results now, so the pipelined call
+    // gets its one Return, an exception, and nothing is left waiting.
+    try std.testing.expectEqual(@as(u32, 1), caller.returns);
+    try std.testing.expectEqual(@as(u32, 1), pipelined.returns);
+    try std.testing.expect(pipelined.exception);
+    try std.testing.expectEqual(@as(usize, 1), fx.wire.countTagged(.server_to_client, .@"return", question_id, before));
+    try std.testing.expectEqual(@as(usize, 1), fx.wire.countTagged(.server_to_client, .@"return", pipelined_id, before));
+    try std.testing.expectEqual(client_questions_before, fx.client.questions.count());
+    try std.testing.expect(!(try fx.server.inboundQuestionIdInUse(question_id)));
+    try std.testing.expect(!(try fx.server.inboundQuestionIdInUse(pipelined_id)));
+    try std.testing.expectEqual(@as(?anyerror, null), server_errors.last);
+    try std.testing.expectEqual(@as(?anyerror, null), client_errors.last);
+    try expectShutdownCompletes(&fx.client);
 }

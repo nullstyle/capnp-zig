@@ -469,7 +469,9 @@ pub fn Lifecycle(
         /// runs the answer-finished hook. The entry stays cancelled and keeps
         /// its loopback marker until the handler's Return, so that Return is
         /// delivered here and absorbed, never written to the transport, and
-        /// the id and the loopback slot stay taken until then.
+        /// the id and the loopback slot stay taken until then. A call the
+        /// peer forwarded has no handler; the Finish answers it `canceled`
+        /// at once, so it settles inside this cancel.
         pub fn cancelQuestion(self: *Peer, question_id: u32, reason: []const u8) !void {
             return cancelQuestionTyped(self, question_id, reason, .failed);
         }

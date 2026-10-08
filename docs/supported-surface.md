@@ -367,12 +367,19 @@ finished early, as a remote Finish finishes one: the answer-finished hook
 because a loopback Return holds no reference to release, and a call still
 queued on a promise export is answered `canceled`. The handler's later
 Return, results or exception, comes back to the peer and is dropped there;
-it never reaches the remote. Until that Return, the call keeps its question
-id and its `max_loopback_questions` slot, as a cancelled remote call keeps
-its id until the remote's Return, so a graceful `shutdown` waits for it (or
-for the drain bound). A loopback call that the drain bound or a transport
-close settles also drops its handler's later Return locally; no hook runs
-for it. Covered by `tests/rpc/integration/rpc_loopback_caps_test.zig`.
+it never reaches the remote, provided the handler sends one Return for the
+answer, as `setAnswerFinishedHandler` asks. A second Return is written to
+the transport, as a second Return for a remote caller's answer would be.
+Until the handler's Return, the call keeps its question id and its
+`max_loopback_questions` slot, as a cancelled remote call keeps its id
+until the remote's Return, so a graceful `shutdown` waits for it (or for
+the drain bound). A call to a promise export that resolved to an import has
+no handler: the peer forwarded it to the import. Its cancel finishes the
+forwarded call and answers the loopback call `canceled` at once, so the
+call frees its id and slot inside the cancel, and the hook does not run.
+A loopback call that the drain bound or a transport close settles also
+drops its handler's later Return locally; no hook runs for it. Covered by
+`tests/rpc/integration/rpc_loopback_caps_test.zig`.
 
 The reflected-capability resolve/embargo handshake — a promise capability
 resolved to a *caller-hosted* cap (`Peer.resolvePromiseExportToImport`), driving
@@ -381,8 +388,12 @@ the `resolve_disembargo` e2e scenario. As of 0.3.0 (W1) capnp-zig relays the
 reflected call as a plain `sendResultsTo=caller` call and translates the results
 straight back onto the caller's pipelined question, a shape **all four** reference
 clients consume: the go-capnp and capnp-rpc client directions are de-SKIPped and
-now pass. The scenario also exercises **server-invokes-a-client-cap** (cap in call
-params) and **disconnect-mid-call** cross-impl (E2). The one remaining `SKIP` is
+now pass. A caller that sends Finish before the reflected call returns gets
+`Return{canceled}` for its question: the peer finishes the reflected call and
+drops its late Return (Zig↔Zig coverage in
+`tests/rpc/integration/rpc_loopback_caps_test.zig`). The scenario also
+exercises **server-invokes-a-client-cap** (cap in call params) and
+**disconnect-mid-call** cross-impl (E2). The one remaining `SKIP` is
 `zig-client → python-server`: pycapnp cannot host the reflecting server. The
 matrix is asymmetric only because of that single reference-library gap, not
 capnp-zig behavior — see Known limitations #4.
