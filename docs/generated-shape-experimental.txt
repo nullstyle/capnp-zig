@@ -14,6 +14,7 @@ compact.generic_rpc.CAPNP_SCHEMA_REQUEST: const []const u8
 compact.generic_rpc.ConflictData.Apply: fn (comptime anytype) type
 compact.generic_rpc.ConflictData.Client.callEchoWithOptions: fn (generic_rpc.ConflictData.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.ConflictData.Client.cap_id: field u32
+compact.generic_rpc.ConflictData.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc.ConflictData.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc.ConflictData.PipelinedClient.callEchoWithOptions: fn (generic_rpc.ConflictData.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.ConflictData.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -29,6 +30,7 @@ compact.generic_rpc.ConflictData.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *g
 compact.generic_rpc.ConflictText.Apply: fn (comptime anytype) type
 compact.generic_rpc.ConflictText.Client.callEchoWithOptions: fn (generic_rpc.ConflictText.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.ConflictText.Client.cap_id: field u32
+compact.generic_rpc.ConflictText.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc.ConflictText.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc.ConflictText.PipelinedClient.callEchoWithOptions: fn (generic_rpc.ConflictText.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.ConflictText.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -44,6 +46,7 @@ compact.generic_rpc.ConflictText.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *g
 compact.generic_rpc.Conflicting.Apply: fn (comptime anytype) type
 compact.generic_rpc.Conflicting.Client.callEchoWithOptions: fn (generic_rpc.Conflicting.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.Conflicting.Client.cap_id: field u32
+compact.generic_rpc.Conflicting.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc.Conflicting.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc.Conflicting.PipelinedClient.callEchoWithOptions: fn (generic_rpc.Conflicting.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.Conflicting.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -77,6 +80,7 @@ compact.generic_rpc.Constraints.capnpSchema: const capnpc-zig.reflection.SchemaR
 compact.generic_rpc.DataChild.Apply: fn (comptime anytype) type
 compact.generic_rpc.DataChild.Client.callEchoWithOptions: fn (generic_rpc.DataChild.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.DataChild.Client.cap_id: field u32
+compact.generic_rpc.DataChild.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc.DataChild.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc.DataChild.PipelinedClient.callEchoWithOptions: fn (generic_rpc.DataChild.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.DataChild.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -125,6 +129,7 @@ compact.generic_rpc.Defaults.capnpSchema: const capnpc-zig.reflection.SchemaRef
 compact.generic_rpc.Diamond.Apply: fn (comptime anytype) type
 compact.generic_rpc.Diamond.Client.callEchoWithOptions: fn (generic_rpc.Diamond.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.Diamond.Client.cap_id: field u32
+compact.generic_rpc.Diamond.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc.Diamond.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc.Diamond.PipelinedClient.callEchoWithOptions: fn (generic_rpc.Diamond.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.Diamond.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -141,6 +146,7 @@ compact.generic_rpc.Factory.Apply: fn (comptime anytype) type
 compact.generic_rpc.Factory.Client.callGetServiceWithOptions: fn (generic_rpc.Factory.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.Factory.GetServiceParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.Factory.GetService.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.Factory.Client.callIdentityWithOptions: fn (generic_rpc.Factory.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.Factory.IdentityParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.Factory.Identity.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.Factory.Client.cap_id: field u32
+compact.generic_rpc.Factory.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc.Factory.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc.Factory.GetService.CallContext.build: field ?*const fn (*anyopaque, *generic_rpc.Factory.GetServiceParams.Builder) anyerror!void
 compact.generic_rpc.Factory.GetService.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.Factory.GetService.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -244,6 +250,7 @@ compact.generic_rpc.Factory.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *generi
 compact.generic_rpc.HolderFactory.Apply: fn (comptime anytype) type
 compact.generic_rpc.HolderFactory.Client.callGetWithOptions: fn (generic_rpc.HolderFactory.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.HolderFactory.GetParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.HolderFactory.Get.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.HolderFactory.Client.cap_id: field u32
+compact.generic_rpc.HolderFactory.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc.HolderFactory.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc.HolderFactory.Get.CallContext.build: field ?*const fn (*anyopaque, *generic_rpc.HolderFactory.GetParams.Builder) anyerror!void
 compact.generic_rpc.HolderFactory.Get.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.HolderFactory.Get.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -314,6 +321,7 @@ compact.generic_rpc.HolderFactory.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *
 compact.generic_rpc.Left.Apply: fn (comptime anytype) type
 compact.generic_rpc.Left.Client.callEchoWithOptions: fn (generic_rpc.Left.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.Left.Client.cap_id: field u32
+compact.generic_rpc.Left.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc.Left.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc.Left.PipelinedClient.callEchoWithOptions: fn (generic_rpc.Left.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.Left.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -329,6 +337,7 @@ compact.generic_rpc.Left.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *generic_r
 compact.generic_rpc.NamedMethods.Apply: fn (comptime anytype) type
 compact.generic_rpc.NamedMethods.Client.callIdentityWithOptions: fn (generic_rpc.NamedMethods.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.Box.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.NamedMethods.Identity.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.NamedMethods.Client.cap_id: field u32
+compact.generic_rpc.NamedMethods.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc.NamedMethods.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc.NamedMethods.Identity.CallContext.build: field ?*const fn (*anyopaque, *generic_rpc.Box.Builder) anyerror!void
 compact.generic_rpc.NamedMethods.Identity.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.NamedMethods.Identity.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -369,6 +378,7 @@ compact.generic_rpc.PlainHolder.capnpSchema: const capnpc-zig.reflection.SchemaR
 compact.generic_rpc.PlainService.Apply: fn (comptime anytype) type
 compact.generic_rpc.PlainService.Client.callEchoWithOptions: fn (generic_rpc.PlainService.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.PlainService.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.PlainService.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.PlainService.Client.cap_id: field u32
+compact.generic_rpc.PlainService.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc.PlainService.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc.PlainService.Echo.CallContext.build: field ?*const fn (*anyopaque, *generic_rpc.PlainService.EchoParams.Builder) anyerror!void
 compact.generic_rpc.PlainService.Echo.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.PlainService.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -413,6 +423,7 @@ compact.generic_rpc.PlainService.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *g
 compact.generic_rpc.Right.Apply: fn (comptime anytype) type
 compact.generic_rpc.Right.Client.callEchoWithOptions: fn (generic_rpc.Right.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.Right.Client.cap_id: field u32
+compact.generic_rpc.Right.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc.Right.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc.Right.PipelinedClient.callEchoWithOptions: fn (generic_rpc.Right.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.Right.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -429,6 +440,7 @@ compact.generic_rpc.Service.Apply: fn (comptime anytype) type
 compact.generic_rpc.Service.Client.callEchoWithOptions: fn (generic_rpc.Service.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.Service.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.Service.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.Service.Client.callGetBoxWithOptions: fn (generic_rpc.Service.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.Service.GetBoxParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.Service.GetBox.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.Service.Client.cap_id: field u32
+compact.generic_rpc.Service.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc.Service.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc.Service.Echo.CallContext.build: field ?*const fn (*anyopaque, *generic_rpc.Service.EchoParams.Builder) anyerror!void
 compact.generic_rpc.Service.Echo.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.Service.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -508,6 +520,7 @@ compact.generic_rpc.Service.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *generi
 compact.generic_rpc.TextChild.Apply: fn (comptime anytype) type
 compact.generic_rpc.TextChild.Client.callEchoWithOptions: fn (generic_rpc.TextChild.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.TextChild.Client.cap_id: field u32
+compact.generic_rpc.TextChild.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc.TextChild.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc.TextChild.PipelinedClient.callEchoWithOptions: fn (generic_rpc.TextChild.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc.TextChild.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -527,6 +540,7 @@ compact.generic_rpc_external.CAPNP_SCHEMA_REQUEST: const []const u8
 compact.generic_rpc_external.Middle.Apply: fn (comptime anytype) type
 compact.generic_rpc_external.Middle.Client.callEchoWithOptions: fn (generic_rpc_external.Middle.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc_external.Middle.Client.cap_id: field u32
+compact.generic_rpc_external.Middle.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc_external.Middle.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc_external.Middle.PipelinedClient.callEchoWithOptions: fn (generic_rpc_external.Middle.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc_external.Middle.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -542,6 +556,7 @@ compact.generic_rpc_external.Middle.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer,
 compact.generic_rpc_external.Parent.Apply: fn (comptime anytype) type
 compact.generic_rpc_external.Parent.Client.callEchoWithOptions: fn (generic_rpc_external.Parent.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.generic_rpc_external.Parent.Client.cap_id: field u32
+compact.generic_rpc_external.Parent.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.generic_rpc_external.Parent.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.generic_rpc_external.Parent.Echo.CallContext.build: field ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void
 compact.generic_rpc_external.Parent.Echo.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -721,6 +736,7 @@ compact.kvstore.KvClientNotifier.Apply: fn (comptime anytype) type
 compact.kvstore.KvClientNotifier.Client.callKeysChangedWithOptions: fn (kvstore.KvClientNotifier.Client, *anyopaque, ?*const fn (*anyopaque, *kvstore.KvClientNotifier.KeysChangedParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvClientNotifier.KeysChanged.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.kvstore.KvClientNotifier.Client.callStateResetRequiredWithOptions: fn (kvstore.KvClientNotifier.Client, *anyopaque, ?*const fn (*anyopaque, *kvstore.KvClientNotifier.StateResetRequiredParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvClientNotifier.StateResetRequired.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.kvstore.KvClientNotifier.Client.cap_id: field u32
+compact.kvstore.KvClientNotifier.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.kvstore.KvClientNotifier.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.kvstore.KvClientNotifier.KeysChanged.CallContext.build: field ?*const fn (*anyopaque, *kvstore.KvClientNotifier.KeysChangedParams.Builder) anyerror!void
 compact.kvstore.KvClientNotifier.KeysChanged.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvClientNotifier.KeysChanged.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -803,6 +819,7 @@ compact.kvstore.KvStore.Client.callSetWatchedKeysWithOptions: fn (kvstore.KvStor
 compact.kvstore.KvStore.Client.callSubscribeWithOptions: fn (kvstore.KvStore.Client, *anyopaque, ?*const fn (*anyopaque, *kvstore.KvStore.SubscribeParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvStore.Subscribe.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.kvstore.KvStore.Client.callWriteBatchWithOptions: fn (kvstore.KvStore.Client, *anyopaque, ?*const fn (*anyopaque, *kvstore.KvStore.WriteBatchParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvStore.WriteBatch.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 compact.kvstore.KvStore.Client.cap_id: field u32
+compact.kvstore.KvStore.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 compact.kvstore.KvStore.Client.peer: field *capnpc-zig.rpc.peer.Peer
 compact.kvstore.KvStore.CreateBackup.CallContext.build: field ?*const fn (*anyopaque, *kvstore.KvStore.CreateBackupParams.Builder) anyerror!void
 compact.kvstore.KvStore.CreateBackup.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvStore.CreateBackup.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -1132,6 +1149,7 @@ full.annotations.Person_field_annotations: const [1]annotations.Person_field_ann
 full.annotations.Service.Apply: fn (comptime anytype) type
 full.annotations.Service.Client.callPingWithOptions: fn (annotations.Service.Client, *anyopaque, ?*const fn (*anyopaque, *annotations.Service.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, annotations.Service.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.annotations.Service.Client.cap_id: field u32
+full.annotations.Service.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.annotations.Service.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.annotations.Service.Ping.CallContext.build: field ?*const fn (*anyopaque, *annotations.Service.PingParams.Builder) anyerror!void
 full.annotations.Service.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, annotations.Service.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -1666,6 +1684,7 @@ full.brand_pointer_fidelity.Box.branded: struct
 full.brand_pointer_fidelity.Box.capnpSchema: const capnpc-zig.reflection.SchemaRef
 full.brand_pointer_fidelity.BrandedDerived.Apply: fn (comptime anytype) type
 full.brand_pointer_fidelity.BrandedDerived.Client.cap_id: field u32
+full.brand_pointer_fidelity.BrandedDerived.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.brand_pointer_fidelity.BrandedDerived.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.brand_pointer_fidelity.BrandedDerived.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
 full.brand_pointer_fidelity.BrandedDerived.PipelinedClient.pointer_count: field u8 = 0
@@ -2113,6 +2132,7 @@ full.brand_pointer_fidelity.Fidelity.Reader.whichOrdinal: fn (brand_pointer_fide
 full.brand_pointer_fidelity.Fidelity.capnpSchema: const capnpc-zig.reflection.SchemaRef
 full.brand_pointer_fidelity.GenericBase.Apply: fn (comptime anytype) type
 full.brand_pointer_fidelity.GenericBase.Client.cap_id: field u32
+full.brand_pointer_fidelity.GenericBase.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.brand_pointer_fidelity.GenericBase.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.brand_pointer_fidelity.GenericBase.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
 full.brand_pointer_fidelity.GenericBase.PipelinedClient.pointer_count: field u8 = 0
@@ -2157,6 +2177,7 @@ full.brand_pointer_fidelity.GenericMethods.CallResults.Reader.capnpSchema: const
 full.brand_pointer_fidelity.GenericMethods.CallResults.capnpSchema: const capnpc-zig.reflection.SchemaRef
 full.brand_pointer_fidelity.GenericMethods.Client.callCallWithOptions: fn (brand_pointer_fidelity.GenericMethods.Client, *anyopaque, ?*const fn (*anyopaque, *brand_pointer_fidelity.GenericMethods.CallParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, brand_pointer_fidelity.GenericMethods.Call.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.brand_pointer_fidelity.GenericMethods.Client.cap_id: field u32
+full.brand_pointer_fidelity.GenericMethods.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.brand_pointer_fidelity.GenericMethods.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.brand_pointer_fidelity.GenericMethods.PipelinedClient.callCallWithOptions: fn (brand_pointer_fidelity.GenericMethods.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *brand_pointer_fidelity.GenericMethods.CallParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, brand_pointer_fidelity.GenericMethods.Call.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.brand_pointer_fidelity.GenericMethods.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -2217,6 +2238,7 @@ full.brand_pointer_fidelity.OuterGeneric.CallResults.Reader.capnpSchema: const c
 full.brand_pointer_fidelity.OuterGeneric.CallResults.capnpSchema: const capnpc-zig.reflection.SchemaRef
 full.brand_pointer_fidelity.OuterGeneric.Client.callCallWithOptions: fn (brand_pointer_fidelity.OuterGeneric.Client, *anyopaque, ?*const fn (*anyopaque, *brand_pointer_fidelity.OuterGeneric.CallParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, brand_pointer_fidelity.OuterGeneric.Call.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.brand_pointer_fidelity.OuterGeneric.Client.cap_id: field u32
+full.brand_pointer_fidelity.OuterGeneric.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.brand_pointer_fidelity.OuterGeneric.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.brand_pointer_fidelity.OuterGeneric.PipelinedClient.callCallWithOptions: fn (brand_pointer_fidelity.OuterGeneric.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *brand_pointer_fidelity.OuterGeneric.CallParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, brand_pointer_fidelity.OuterGeneric.Call.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.brand_pointer_fidelity.OuterGeneric.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -2232,6 +2254,7 @@ full.brand_pointer_fidelity.OuterGeneric.setBootstrap: fn (*capnpc-zig.rpc.peer.
 full.brand_pointer_fidelity.Service.Apply: fn (comptime anytype) type
 full.brand_pointer_fidelity.Service.Client.callPingWithOptions: fn (brand_pointer_fidelity.Service.Client, *anyopaque, ?*const fn (*anyopaque, *brand_pointer_fidelity.Service.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, brand_pointer_fidelity.Service.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.brand_pointer_fidelity.Service.Client.cap_id: field u32
+full.brand_pointer_fidelity.Service.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.brand_pointer_fidelity.Service.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.brand_pointer_fidelity.Service.Ping.CallContext.build: field ?*const fn (*anyopaque, *brand_pointer_fidelity.Service.PingParams.Builder) anyerror!void
 full.brand_pointer_fidelity.Service.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, brand_pointer_fidelity.Service.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -2312,6 +2335,7 @@ full.edge_codegen.EdgeHolder.Reader.resolveService: fn (edge_codegen.EdgeHolder.
 full.edge_codegen.EdgeHolder.capnpSchema: const capnpc-zig.reflection.SchemaRef
 full.edge_codegen.Empty.Apply: fn (comptime anytype) type
 full.edge_codegen.Empty.Client.cap_id: field u32
+full.edge_codegen.Empty.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.edge_codegen.Empty.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.edge_codegen.Empty.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
 full.edge_codegen.Empty.PipelinedClient.pointer_count: field u8 = 0
@@ -2374,6 +2398,7 @@ full.enum_evolution_v1.Evolution.capnpSchema: const capnpc-zig.reflection.Schema
 full.enum_evolution_v1.Service.Apply: fn (comptime anytype) type
 full.enum_evolution_v1.Service.Client.callPingWithOptions: fn (enum_evolution_v1.Service.Client, *anyopaque, ?*const fn (*anyopaque, *enum_evolution_v1.Service.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, enum_evolution_v1.Service.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.enum_evolution_v1.Service.Client.cap_id: field u32
+full.enum_evolution_v1.Service.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.enum_evolution_v1.Service.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.enum_evolution_v1.Service.Ping.CallContext.build: field ?*const fn (*anyopaque, *enum_evolution_v1.Service.PingParams.Builder) anyerror!void
 full.enum_evolution_v1.Service.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, enum_evolution_v1.Service.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -2548,6 +2573,7 @@ full.generic_rpc.CAPNP_SCHEMA_REQUEST: const []const u8
 full.generic_rpc.ConflictData.Apply: fn (comptime anytype) type
 full.generic_rpc.ConflictData.Client.callEchoWithOptions: fn (generic_rpc.ConflictData.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.ConflictData.Client.cap_id: field u32
+full.generic_rpc.ConflictData.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc.ConflictData.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc.ConflictData.PipelinedClient.callEchoWithOptions: fn (generic_rpc.ConflictData.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.ConflictData.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -2563,6 +2589,7 @@ full.generic_rpc.ConflictData.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *gene
 full.generic_rpc.ConflictText.Apply: fn (comptime anytype) type
 full.generic_rpc.ConflictText.Client.callEchoWithOptions: fn (generic_rpc.ConflictText.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.ConflictText.Client.cap_id: field u32
+full.generic_rpc.ConflictText.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc.ConflictText.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc.ConflictText.PipelinedClient.callEchoWithOptions: fn (generic_rpc.ConflictText.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.ConflictText.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -2578,6 +2605,7 @@ full.generic_rpc.ConflictText.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *gene
 full.generic_rpc.Conflicting.Apply: fn (comptime anytype) type
 full.generic_rpc.Conflicting.Client.callEchoWithOptions: fn (generic_rpc.Conflicting.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.Conflicting.Client.cap_id: field u32
+full.generic_rpc.Conflicting.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc.Conflicting.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc.Conflicting.PipelinedClient.callEchoWithOptions: fn (generic_rpc.Conflicting.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.Conflicting.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -2611,6 +2639,7 @@ full.generic_rpc.Constraints.capnpSchema: const capnpc-zig.reflection.SchemaRef
 full.generic_rpc.DataChild.Apply: fn (comptime anytype) type
 full.generic_rpc.DataChild.Client.callEchoWithOptions: fn (generic_rpc.DataChild.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.DataChild.Client.cap_id: field u32
+full.generic_rpc.DataChild.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc.DataChild.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc.DataChild.PipelinedClient.callEchoWithOptions: fn (generic_rpc.DataChild.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.DataChild.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -2659,6 +2688,7 @@ full.generic_rpc.Defaults.capnpSchema: const capnpc-zig.reflection.SchemaRef
 full.generic_rpc.Diamond.Apply: fn (comptime anytype) type
 full.generic_rpc.Diamond.Client.callEchoWithOptions: fn (generic_rpc.Diamond.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.Diamond.Client.cap_id: field u32
+full.generic_rpc.Diamond.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc.Diamond.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc.Diamond.PipelinedClient.callEchoWithOptions: fn (generic_rpc.Diamond.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.Diamond.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -2675,6 +2705,7 @@ full.generic_rpc.Factory.Apply: fn (comptime anytype) type
 full.generic_rpc.Factory.Client.callGetServiceWithOptions: fn (generic_rpc.Factory.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.Factory.GetServiceParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.Factory.GetService.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.Factory.Client.callIdentityWithOptions: fn (generic_rpc.Factory.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.Factory.IdentityParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.Factory.Identity.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.Factory.Client.cap_id: field u32
+full.generic_rpc.Factory.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc.Factory.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc.Factory.GetService.CallContext.build: field ?*const fn (*anyopaque, *generic_rpc.Factory.GetServiceParams.Builder) anyerror!void
 full.generic_rpc.Factory.GetService.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.Factory.GetService.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -2778,6 +2809,7 @@ full.generic_rpc.Factory.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *generic_r
 full.generic_rpc.HolderFactory.Apply: fn (comptime anytype) type
 full.generic_rpc.HolderFactory.Client.callGetWithOptions: fn (generic_rpc.HolderFactory.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.HolderFactory.GetParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.HolderFactory.Get.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.HolderFactory.Client.cap_id: field u32
+full.generic_rpc.HolderFactory.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc.HolderFactory.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc.HolderFactory.Get.CallContext.build: field ?*const fn (*anyopaque, *generic_rpc.HolderFactory.GetParams.Builder) anyerror!void
 full.generic_rpc.HolderFactory.Get.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.HolderFactory.Get.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -2848,6 +2880,7 @@ full.generic_rpc.HolderFactory.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *gen
 full.generic_rpc.Left.Apply: fn (comptime anytype) type
 full.generic_rpc.Left.Client.callEchoWithOptions: fn (generic_rpc.Left.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.Left.Client.cap_id: field u32
+full.generic_rpc.Left.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc.Left.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc.Left.PipelinedClient.callEchoWithOptions: fn (generic_rpc.Left.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.Left.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -2863,6 +2896,7 @@ full.generic_rpc.Left.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *generic_rpc.
 full.generic_rpc.NamedMethods.Apply: fn (comptime anytype) type
 full.generic_rpc.NamedMethods.Client.callIdentityWithOptions: fn (generic_rpc.NamedMethods.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.Box.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.NamedMethods.Identity.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.NamedMethods.Client.cap_id: field u32
+full.generic_rpc.NamedMethods.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc.NamedMethods.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc.NamedMethods.Identity.CallContext.build: field ?*const fn (*anyopaque, *generic_rpc.Box.Builder) anyerror!void
 full.generic_rpc.NamedMethods.Identity.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.NamedMethods.Identity.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -2903,6 +2937,7 @@ full.generic_rpc.PlainHolder.capnpSchema: const capnpc-zig.reflection.SchemaRef
 full.generic_rpc.PlainService.Apply: fn (comptime anytype) type
 full.generic_rpc.PlainService.Client.callEchoWithOptions: fn (generic_rpc.PlainService.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.PlainService.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.PlainService.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.PlainService.Client.cap_id: field u32
+full.generic_rpc.PlainService.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc.PlainService.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc.PlainService.Echo.CallContext.build: field ?*const fn (*anyopaque, *generic_rpc.PlainService.EchoParams.Builder) anyerror!void
 full.generic_rpc.PlainService.Echo.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.PlainService.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -2947,6 +2982,7 @@ full.generic_rpc.PlainService.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *gene
 full.generic_rpc.Right.Apply: fn (comptime anytype) type
 full.generic_rpc.Right.Client.callEchoWithOptions: fn (generic_rpc.Right.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.Right.Client.cap_id: field u32
+full.generic_rpc.Right.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc.Right.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc.Right.PipelinedClient.callEchoWithOptions: fn (generic_rpc.Right.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.Right.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -2963,6 +2999,7 @@ full.generic_rpc.Service.Apply: fn (comptime anytype) type
 full.generic_rpc.Service.Client.callEchoWithOptions: fn (generic_rpc.Service.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.Service.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.Service.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.Service.Client.callGetBoxWithOptions: fn (generic_rpc.Service.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc.Service.GetBoxParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.Service.GetBox.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.Service.Client.cap_id: field u32
+full.generic_rpc.Service.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc.Service.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc.Service.Echo.CallContext.build: field ?*const fn (*anyopaque, *generic_rpc.Service.EchoParams.Builder) anyerror!void
 full.generic_rpc.Service.Echo.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc.Service.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -3042,6 +3079,7 @@ full.generic_rpc.Service.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *generic_r
 full.generic_rpc.TextChild.Apply: fn (comptime anytype) type
 full.generic_rpc.TextChild.Client.callEchoWithOptions: fn (generic_rpc.TextChild.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.TextChild.Client.cap_id: field u32
+full.generic_rpc.TextChild.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc.TextChild.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc.TextChild.PipelinedClient.callEchoWithOptions: fn (generic_rpc.TextChild.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc.TextChild.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -3061,6 +3099,7 @@ full.generic_rpc_external.CAPNP_SCHEMA_REQUEST: const []const u8
 full.generic_rpc_external.Middle.Apply: fn (comptime anytype) type
 full.generic_rpc_external.Middle.Client.callEchoWithOptions: fn (generic_rpc_external.Middle.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc_external.Middle.Client.cap_id: field u32
+full.generic_rpc_external.Middle.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc_external.Middle.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc_external.Middle.PipelinedClient.callEchoWithOptions: fn (generic_rpc_external.Middle.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc_external.Middle.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -3076,6 +3115,7 @@ full.generic_rpc_external.Middle.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *g
 full.generic_rpc_external.Parent.Apply: fn (comptime anytype) type
 full.generic_rpc_external.Parent.Client.callEchoWithOptions: fn (generic_rpc_external.Parent.Client, *anyopaque, ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.generic_rpc_external.Parent.Client.cap_id: field u32
+full.generic_rpc_external.Parent.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.generic_rpc_external.Parent.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.generic_rpc_external.Parent.Echo.CallContext.build: field ?*const fn (*anyopaque, *generic_rpc_external.Parent.EchoParams.Builder) anyerror!void
 full.generic_rpc_external.Parent.Echo.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, generic_rpc_external.Parent.Echo.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -3123,6 +3163,7 @@ full.generic_rpc_external.capnpSchemaManifestJson: fn () []const u8
 full.inherited_method_collision.Base.Apply: fn (comptime anytype) type
 full.inherited_method_collision.Base.Client.callPingWithOptions: fn (inherited_method_collision.Base.Client, *anyopaque, ?*const fn (*anyopaque, *inherited_method_collision.Base.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, inherited_method_collision.Base.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.inherited_method_collision.Base.Client.cap_id: field u32
+full.inherited_method_collision.Base.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.inherited_method_collision.Base.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.inherited_method_collision.Base.Ping.CallContext.build: field ?*const fn (*anyopaque, *inherited_method_collision.Base.PingParams.Builder) anyerror!void
 full.inherited_method_collision.Base.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, inherited_method_collision.Base.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -3170,6 +3211,7 @@ full.inherited_method_collision.Derived.Apply: fn (comptime anytype) type
 full.inherited_method_collision.Derived.Client.callPingFromBaseWithOptions: fn (inherited_method_collision.Derived.Client, *anyopaque, ?*const fn (*anyopaque, *inherited_method_collision.Base.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, inherited_method_collision.Base.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.inherited_method_collision.Derived.Client.callPingWithOptions: fn (inherited_method_collision.Derived.Client, *anyopaque, ?*const fn (*anyopaque, *inherited_method_collision.Derived.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, inherited_method_collision.Derived.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.inherited_method_collision.Derived.Client.cap_id: field u32
+full.inherited_method_collision.Derived.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.inherited_method_collision.Derived.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.inherited_method_collision.Derived.Ping.CallContext.build: field ?*const fn (*anyopaque, *inherited_method_collision.Derived.PingParams.Builder) anyerror!void
 full.inherited_method_collision.Derived.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, inherited_method_collision.Derived.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -3525,6 +3567,7 @@ full.kvstore.KvClientNotifier.Apply: fn (comptime anytype) type
 full.kvstore.KvClientNotifier.Client.callKeysChangedWithOptions: fn (kvstore.KvClientNotifier.Client, *anyopaque, ?*const fn (*anyopaque, *kvstore.KvClientNotifier.KeysChangedParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvClientNotifier.KeysChanged.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.kvstore.KvClientNotifier.Client.callStateResetRequiredWithOptions: fn (kvstore.KvClientNotifier.Client, *anyopaque, ?*const fn (*anyopaque, *kvstore.KvClientNotifier.StateResetRequiredParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvClientNotifier.StateResetRequired.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.kvstore.KvClientNotifier.Client.cap_id: field u32
+full.kvstore.KvClientNotifier.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.kvstore.KvClientNotifier.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.kvstore.KvClientNotifier.KeysChanged.CallContext.build: field ?*const fn (*anyopaque, *kvstore.KvClientNotifier.KeysChangedParams.Builder) anyerror!void
 full.kvstore.KvClientNotifier.KeysChanged.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvClientNotifier.KeysChanged.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -3607,6 +3650,7 @@ full.kvstore.KvStore.Client.callSetWatchedKeysWithOptions: fn (kvstore.KvStore.C
 full.kvstore.KvStore.Client.callSubscribeWithOptions: fn (kvstore.KvStore.Client, *anyopaque, ?*const fn (*anyopaque, *kvstore.KvStore.SubscribeParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvStore.Subscribe.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.kvstore.KvStore.Client.callWriteBatchWithOptions: fn (kvstore.KvStore.Client, *anyopaque, ?*const fn (*anyopaque, *kvstore.KvStore.WriteBatchParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvStore.WriteBatch.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.kvstore.KvStore.Client.cap_id: field u32
+full.kvstore.KvStore.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.kvstore.KvStore.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.kvstore.KvStore.CreateBackup.CallContext.build: field ?*const fn (*anyopaque, *kvstore.KvStore.CreateBackupParams.Builder) anyerror!void
 full.kvstore.KvStore.CreateBackup.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvStore.CreateBackup.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -3920,6 +3964,7 @@ full.nested_collisions.Outer2.capnpSchema: const capnpc-zig.reflection.SchemaRef
 full.nested_collisions.Svc1.Apply: fn (comptime anytype) type
 full.nested_collisions.Svc1.Client.callDoItWithOptions: fn (nested_collisions.Svc1.Client, *anyopaque, ?*const fn (*anyopaque, *nested_collisions.Svc1.DoItParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_collisions.Svc1.DoIt.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.nested_collisions.Svc1.Client.cap_id: field u32
+full.nested_collisions.Svc1.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.nested_collisions.Svc1.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.nested_collisions.Svc1.DoIt.CallContext.build: field ?*const fn (*anyopaque, *nested_collisions.Svc1.DoItParams.Builder) anyerror!void
 full.nested_collisions.Svc1.DoIt.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_collisions.Svc1.DoIt.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -3964,6 +4009,7 @@ full.nested_collisions.Svc1.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *nested
 full.nested_collisions.Svc2.Apply: fn (comptime anytype) type
 full.nested_collisions.Svc2.Client.callDoItWithOptions: fn (nested_collisions.Svc2.Client, *anyopaque, ?*const fn (*anyopaque, *nested_collisions.Svc2.DoItParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_collisions.Svc2.DoIt.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.nested_collisions.Svc2.Client.cap_id: field u32
+full.nested_collisions.Svc2.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.nested_collisions.Svc2.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.nested_collisions.Svc2.DoIt.CallContext.build: field ?*const fn (*anyopaque, *nested_collisions.Svc2.DoItParams.Builder) anyerror!void
 full.nested_collisions.Svc2.DoIt.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_collisions.Svc2.DoIt.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4011,10 +4057,12 @@ full.nested_interface_collisions.Alpha.Client.callOpenPipelined: fn (nested_inte
 full.nested_interface_collisions.Alpha.Client.callOpenPipelinedWithOptions: fn (nested_interface_collisions.Alpha.Client, *anyopaque, ?*const fn (*anyopaque, *nested_interface_collisions.Alpha.OpenParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_interface_collisions.Alpha.Open.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!nested_interface_collisions.Alpha.OpenPipeline
 full.nested_interface_collisions.Alpha.Client.callOpenWithOptions: fn (nested_interface_collisions.Alpha.Client, *anyopaque, ?*const fn (*anyopaque, *nested_interface_collisions.Alpha.OpenParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_interface_collisions.Alpha.Open.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.nested_interface_collisions.Alpha.Client.cap_id: field u32
+full.nested_interface_collisions.Alpha.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.nested_interface_collisions.Alpha.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.nested_interface_collisions.Alpha.Handle.Apply: fn (comptime anytype) type
 full.nested_interface_collisions.Alpha.Handle.Client.callPingWithOptions: fn (nested_interface_collisions.Alpha.Handle.Client, *anyopaque, ?*const fn (*anyopaque, *nested_interface_collisions.Alpha.Handle.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_interface_collisions.Alpha.Handle.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.nested_interface_collisions.Alpha.Handle.Client.cap_id: field u32
+full.nested_interface_collisions.Alpha.Handle.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.nested_interface_collisions.Alpha.Handle.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.nested_interface_collisions.Alpha.Handle.Ping.CallContext.build: field ?*const fn (*anyopaque, *nested_interface_collisions.Alpha.Handle.PingParams.Builder) anyerror!void
 full.nested_interface_collisions.Alpha.Handle.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_interface_collisions.Alpha.Handle.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4114,10 +4162,12 @@ full.nested_interface_collisions.Beta.Client.callOpenPipelined: fn (nested_inter
 full.nested_interface_collisions.Beta.Client.callOpenPipelinedWithOptions: fn (nested_interface_collisions.Beta.Client, *anyopaque, ?*const fn (*anyopaque, *nested_interface_collisions.Beta.OpenParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_interface_collisions.Beta.Open.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!nested_interface_collisions.Beta.OpenPipeline
 full.nested_interface_collisions.Beta.Client.callOpenWithOptions: fn (nested_interface_collisions.Beta.Client, *anyopaque, ?*const fn (*anyopaque, *nested_interface_collisions.Beta.OpenParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_interface_collisions.Beta.Open.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.nested_interface_collisions.Beta.Client.cap_id: field u32
+full.nested_interface_collisions.Beta.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.nested_interface_collisions.Beta.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.nested_interface_collisions.Beta.Handle.Apply: fn (comptime anytype) type
 full.nested_interface_collisions.Beta.Handle.Client.callPongWithOptions: fn (nested_interface_collisions.Beta.Handle.Client, *anyopaque, ?*const fn (*anyopaque, *nested_interface_collisions.Beta.Handle.PongParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_interface_collisions.Beta.Handle.Pong.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.nested_interface_collisions.Beta.Handle.Client.cap_id: field u32
+full.nested_interface_collisions.Beta.Handle.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.nested_interface_collisions.Beta.Handle.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.nested_interface_collisions.Beta.Handle.PipelinedClient.callPongWithOptions: fn (nested_interface_collisions.Beta.Handle.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *nested_interface_collisions.Beta.Handle.PongParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_interface_collisions.Beta.Handle.Pong.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.nested_interface_collisions.Beta.Handle.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -4222,6 +4272,7 @@ full.nested_interfaces.Outer.Client.callGetInnerPipelined: fn (nested_interfaces
 full.nested_interfaces.Outer.Client.callGetInnerPipelinedWithOptions: fn (nested_interfaces.Outer.Client, *anyopaque, ?*const fn (*anyopaque, *nested_interfaces.Outer.GetInnerParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_interfaces.Outer.GetInner.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!nested_interfaces.Outer.GetInnerPipeline
 full.nested_interfaces.Outer.Client.callGetInnerWithOptions: fn (nested_interfaces.Outer.Client, *anyopaque, ?*const fn (*anyopaque, *nested_interfaces.Outer.GetInnerParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_interfaces.Outer.GetInner.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.nested_interfaces.Outer.Client.cap_id: field u32
+full.nested_interfaces.Outer.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.nested_interfaces.Outer.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.nested_interfaces.Outer.GetInner.CallContext.build: field ?*const fn (*anyopaque, *nested_interfaces.Outer.GetInnerParams.Builder) anyerror!void
 full.nested_interfaces.Outer.GetInner.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_interfaces.Outer.GetInner.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4261,6 +4312,7 @@ full.nested_interfaces.Outer.GetInnerResults.capnpSchema: const capnpc-zig.refle
 full.nested_interfaces.Outer.Inner.Apply: fn (comptime anytype) type
 full.nested_interfaces.Outer.Inner.Client.callPingWithOptions: fn (nested_interfaces.Outer.Inner.Client, *anyopaque, ?*const fn (*anyopaque, *nested_interfaces.Outer.Inner.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_interfaces.Outer.Inner.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.nested_interfaces.Outer.Inner.Client.cap_id: field u32
+full.nested_interfaces.Outer.Inner.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.nested_interfaces.Outer.Inner.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.nested_interfaces.Outer.Inner.Ping.CallContext.build: field ?*const fn (*anyopaque, *nested_interfaces.Outer.Inner.PingParams.Builder) anyerror!void
 full.nested_interfaces.Outer.Inner.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, nested_interfaces.Outer.Inner.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4319,6 +4371,7 @@ full.persistent.CAPNP_SCHEMA_REQUEST: const []const u8
 full.persistent.Persistent.Apply: fn (comptime anytype) type
 full.persistent.Persistent.Client.callSaveWithOptions: fn (persistent.Persistent.Client, *anyopaque, ?*const fn (*anyopaque, *persistent.Persistent.SaveParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, persistent.Persistent.Save.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.persistent.Persistent.Client.cap_id: field u32
+full.persistent.Persistent.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.persistent.Persistent.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.persistent.Persistent.PipelinedClient.callSaveWithOptions: fn (persistent.Persistent.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *persistent.Persistent.SaveParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, persistent.Persistent.Save.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.persistent.Persistent.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -4371,6 +4424,7 @@ full.pingpong.CAPNP_SCHEMA_REQUEST: const []const u8
 full.pingpong.PingPong.Apply: fn (comptime anytype) type
 full.pingpong.PingPong.Client.callPingWithOptions: fn (pingpong.PingPong.Client, *anyopaque, ?*const fn (*anyopaque, *pingpong.PingPong.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, pingpong.PingPong.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.pingpong.PingPong.Client.cap_id: field u32
+full.pingpong.PingPong.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.pingpong.PingPong.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.pingpong.PingPong.Ping.CallContext.build: field ?*const fn (*anyopaque, *pingpong.PingPong.PingParams.Builder) anyerror!void
 full.pingpong.PingPong.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, pingpong.PingPong.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4418,6 +4472,7 @@ full.rpc_inherited_external.CAPNP_SCHEMA_REQUEST: const []const u8
 full.rpc_inherited_external.First.Apply: fn (comptime anytype) type
 full.rpc_inherited_external.First.Client.callPingWithOptions: fn (rpc_inherited_external.First.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_external.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_external.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_external.First.Client.cap_id: field u32
+full.rpc_inherited_external.First.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_external.First.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_external.First.Ping.CallContext.build: field ?*const fn (*anyopaque, *rpc_inherited_external.First.PingParams.Builder) anyerror!void
 full.rpc_inherited_external.First.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_external.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4463,6 +4518,7 @@ full.rpc_inherited_external.capnpSchemaManifestJson: fn () []const u8
 full.rpc_inherited_paths.A.B.Apply: fn (comptime anytype) type
 full.rpc_inherited_paths.A.B.Client.callPingWithOptions: fn (rpc_inherited_paths.A.B.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.A.B.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.A.B.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.A.B.Client.cap_id: field u32
+full.rpc_inherited_paths.A.B.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.A.B.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.A.B.Ping.CallContext.build: field ?*const fn (*anyopaque, *rpc_inherited_paths.A.B.PingParams.Builder) anyerror!void
 full.rpc_inherited_paths.A.B.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.A.B.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4513,6 +4569,7 @@ full.rpc_inherited_paths.A.capnpSchema: const capnpc-zig.reflection.SchemaRef
 full.rpc_inherited_paths.AB.Apply: fn (comptime anytype) type
 full.rpc_inherited_paths.AB.Client.callPingWithOptions: fn (rpc_inherited_paths.AB.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.AB.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.AB.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.AB.Client.cap_id: field u32
+full.rpc_inherited_paths.AB.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.AB.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.AB.Ping.CallContext.build: field ?*const fn (*anyopaque, *rpc_inherited_paths.AB.PingParams.Builder) anyerror!void
 full.rpc_inherited_paths.AB.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.AB.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4562,6 +4619,7 @@ full.rpc_inherited_paths.Both.Client.callPingFromSecondPipelined: fn (rpc_inheri
 full.rpc_inherited_paths.Both.Client.callPingFromSecondPipelinedWithOptions: fn (rpc_inherited_paths.Both.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.Second.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.Second.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!rpc_inherited_paths.Second.PingPipeline
 full.rpc_inherited_paths.Both.Client.callPingFromSecondWithOptions: fn (rpc_inherited_paths.Both.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.Second.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.Second.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Both.Client.cap_id: field u32
+full.rpc_inherited_paths.Both.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.Both.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.Both.PipelinedClient.callPingFromFirstWithOptions: fn (rpc_inherited_paths.Both.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Both.PipelinedClient.callPingFromSecondWithOptions: fn (rpc_inherited_paths.Both.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.Second.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.Second.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
@@ -4583,6 +4641,7 @@ full.rpc_inherited_paths.CompanionBase.Client.callPingPipelined: fn (rpc_inherit
 full.rpc_inherited_paths.CompanionBase.Client.callPingPipelinedWithOptions: fn (rpc_inherited_paths.CompanionBase.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.CompanionBase.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.CompanionBase.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!rpc_inherited_paths.CompanionBase.PingPipeline
 full.rpc_inherited_paths.CompanionBase.Client.callPingWithOptions: fn (rpc_inherited_paths.CompanionBase.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.CompanionBase.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.CompanionBase.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.CompanionBase.Client.cap_id: field u32
+full.rpc_inherited_paths.CompanionBase.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.CompanionBase.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.CompanionBase.Ping.CallContext.build: field ?*const fn (*anyopaque, *rpc_inherited_paths.CompanionBase.PingParams.Builder) anyerror!void
 full.rpc_inherited_paths.CompanionBase.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.CompanionBase.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4635,6 +4694,7 @@ full.rpc_inherited_paths.CompanionBaseWithOptions.Client.callPingPipelined: fn (
 full.rpc_inherited_paths.CompanionBaseWithOptions.Client.callPingPipelinedWithOptions: fn (rpc_inherited_paths.CompanionBaseWithOptions.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.CompanionBaseWithOptions.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.CompanionBaseWithOptions.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!rpc_inherited_paths.CompanionBaseWithOptions.PingPipeline
 full.rpc_inherited_paths.CompanionBaseWithOptions.Client.callPingWithOptions: fn (rpc_inherited_paths.CompanionBaseWithOptions.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.CompanionBaseWithOptions.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.CompanionBaseWithOptions.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.CompanionBaseWithOptions.Client.cap_id: field u32
+full.rpc_inherited_paths.CompanionBaseWithOptions.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.CompanionBaseWithOptions.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.CompanionBaseWithOptions.Ping.CallContext.build: field ?*const fn (*anyopaque, *rpc_inherited_paths.CompanionBaseWithOptions.PingParams.Builder) anyerror!void
 full.rpc_inherited_paths.CompanionBaseWithOptions.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.CompanionBaseWithOptions.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4689,6 +4749,7 @@ full.rpc_inherited_paths.Companions.Client.callPingFromCompanionBase_cdcde10962f
 full.rpc_inherited_paths.Companions.Client.callPingFromCompanionBase_cdcde10962f5eb1fWithOptions: fn (rpc_inherited_paths.Companions.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.CompanionBase.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.CompanionBase.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Companions.Client.callPingWithOptions: fn (rpc_inherited_paths.Companions.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.Companions.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.Companions.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Companions.Client.cap_id: field u32
+full.rpc_inherited_paths.Companions.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.Companions.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.Companions.Ping.CallContext.build: field ?*const fn (*anyopaque, *rpc_inherited_paths.Companions.PingParams.Builder) anyerror!void
 full.rpc_inherited_paths.Companions.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.Companions.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4768,6 +4829,7 @@ full.rpc_inherited_paths.Diamond.Client.callPingPipelined: fn (rpc_inherited_pat
 full.rpc_inherited_paths.Diamond.Client.callPingPipelinedWithOptions: fn (rpc_inherited_paths.Diamond.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!rpc_inherited_paths.First.PingPipeline
 full.rpc_inherited_paths.Diamond.Client.callPingWithOptions: fn (rpc_inherited_paths.Diamond.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Diamond.Client.cap_id: field u32
+full.rpc_inherited_paths.Diamond.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.Diamond.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.Diamond.PipelinedClient.callPingWithOptions: fn (rpc_inherited_paths.Diamond.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Diamond.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -4784,6 +4846,7 @@ full.rpc_inherited_paths.Fallback.Apply: fn (comptime anytype) type
 full.rpc_inherited_paths.Fallback.Client.callPingFromAB_ca1fd246754ef5bdWithOptions: fn (rpc_inherited_paths.Fallback.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.A.B.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.A.B.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Fallback.Client.callPingFromAB_d6c9ac3ac16b809bWithOptions: fn (rpc_inherited_paths.Fallback.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.AB.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.AB.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Fallback.Client.cap_id: field u32
+full.rpc_inherited_paths.Fallback.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.Fallback.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.Fallback.PipelinedClient.callPingFromAB_ca1fd246754ef5bdWithOptions: fn (rpc_inherited_paths.Fallback.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.A.B.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.A.B.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Fallback.PipelinedClient.callPingFromAB_d6c9ac3ac16b809bWithOptions: fn (rpc_inherited_paths.Fallback.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.AB.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.AB.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
@@ -4806,6 +4869,7 @@ full.rpc_inherited_paths.FamilyNames.Client.callPingFromCompanionBase_cdcde10962
 full.rpc_inherited_paths.FamilyNames.Client.callPingFromCompanionBase_cdcde10962f5eb1fPipelinedWithOptions: fn (rpc_inherited_paths.FamilyNames.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.CompanionBase.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.CompanionBase.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!rpc_inherited_paths.CompanionBase.PingPipeline
 full.rpc_inherited_paths.FamilyNames.Client.callPingFromCompanionBase_cdcde10962f5eb1fWithOptions: fn (rpc_inherited_paths.FamilyNames.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.CompanionBase.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.CompanionBase.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.FamilyNames.Client.cap_id: field u32
+full.rpc_inherited_paths.FamilyNames.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.FamilyNames.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.FamilyNames.PipelinedClient.callPingFromCompanionBaseWithOptions_beb4094e5bcb2ad7WithOptions: fn (rpc_inherited_paths.FamilyNames.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.CompanionBaseWithOptions.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.CompanionBaseWithOptions.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.FamilyNames.PipelinedClient.callPingFromCompanionBase_cdcde10962f5eb1fWithOptions: fn (rpc_inherited_paths.FamilyNames.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.CompanionBase.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.CompanionBase.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
@@ -4826,6 +4890,7 @@ full.rpc_inherited_paths.FamilyOnly.Client.callPingFromCompanionBasePipelinedWit
 full.rpc_inherited_paths.FamilyOnly.Client.callPingFromCompanionBaseWithOptions: fn (rpc_inherited_paths.FamilyOnly.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.CompanionBase.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.CompanionBase.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.FamilyOnly.Client.callPingWithOptionsWithOptions: fn (rpc_inherited_paths.FamilyOnly.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.FamilyOnly.PingWithOptionsParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.FamilyOnly.PingWithOptions.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.FamilyOnly.Client.cap_id: field u32
+full.rpc_inherited_paths.FamilyOnly.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.FamilyOnly.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.FamilyOnly.PingWithOptions.CallContext.build: field ?*const fn (*anyopaque, *rpc_inherited_paths.FamilyOnly.PingWithOptionsParams.Builder) anyerror!void
 full.rpc_inherited_paths.FamilyOnly.PingWithOptions.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.FamilyOnly.PingWithOptions.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4874,6 +4939,7 @@ full.rpc_inherited_paths.First.Client.callPingPipelined: fn (rpc_inherited_paths
 full.rpc_inherited_paths.First.Client.callPingPipelinedWithOptions: fn (rpc_inherited_paths.First.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!rpc_inherited_paths.First.PingPipeline
 full.rpc_inherited_paths.First.Client.callPingWithOptions: fn (rpc_inherited_paths.First.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.First.Client.cap_id: field u32
+full.rpc_inherited_paths.First.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.First.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.First.Ping.CallContext.build: field ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void
 full.rpc_inherited_paths.First.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4927,6 +4993,7 @@ full.rpc_inherited_paths.Imported.Client.callPingFromFirstPipelinedWithOptions: 
 full.rpc_inherited_paths.Imported.Client.callPingFromFirstWithOptions: fn (rpc_inherited_paths.Imported.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Imported.Client.callPingFromRpcInheritedExternalFirstWithOptions: fn (rpc_inherited_paths.Imported.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_external.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_external.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Imported.Client.cap_id: field u32
+full.rpc_inherited_paths.Imported.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.Imported.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.Imported.PipelinedClient.callPingFromFirstWithOptions: fn (rpc_inherited_paths.Imported.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Imported.PipelinedClient.callPingFromRpcInheritedExternalFirstWithOptions: fn (rpc_inherited_paths.Imported.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_external.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_external.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
@@ -4944,6 +5011,7 @@ full.rpc_inherited_paths.Imported.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *
 full.rpc_inherited_paths.Leaf.Apply: fn (comptime anytype) type
 full.rpc_inherited_paths.Leaf.Client.callPingWithOptions: fn (rpc_inherited_paths.Leaf.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.Leaf.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.Leaf.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Leaf.Client.cap_id: field u32
+full.rpc_inherited_paths.Leaf.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.Leaf.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.Leaf.Ping.CallContext.build: field ?*const fn (*anyopaque, *rpc_inherited_paths.Leaf.PingParams.Builder) anyerror!void
 full.rpc_inherited_paths.Leaf.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.Leaf.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -4990,6 +5058,7 @@ full.rpc_inherited_paths.Left.Client.callPingPipelined: fn (rpc_inherited_paths.
 full.rpc_inherited_paths.Left.Client.callPingPipelinedWithOptions: fn (rpc_inherited_paths.Left.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!rpc_inherited_paths.First.PingPipeline
 full.rpc_inherited_paths.Left.Client.callPingWithOptions: fn (rpc_inherited_paths.Left.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Left.Client.cap_id: field u32
+full.rpc_inherited_paths.Left.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.Left.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.Left.PipelinedClient.callPingWithOptions: fn (rpc_inherited_paths.Left.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Left.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -5011,6 +5080,7 @@ full.rpc_inherited_paths.Own.Client.callPingFromSecondPipelinedWithOptions: fn (
 full.rpc_inherited_paths.Own.Client.callPingFromSecondWithOptions: fn (rpc_inherited_paths.Own.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.Second.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.Second.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Own.Client.callPingWithOptions: fn (rpc_inherited_paths.Own.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.Own.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.Own.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Own.Client.cap_id: field u32
+full.rpc_inherited_paths.Own.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.Own.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.Own.Ping.CallContext.build: field ?*const fn (*anyopaque, *rpc_inherited_paths.Own.PingParams.Builder) anyerror!void
 full.rpc_inherited_paths.Own.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.Own.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -5061,6 +5131,7 @@ full.rpc_inherited_paths.Right.Client.callPingPipelined: fn (rpc_inherited_paths
 full.rpc_inherited_paths.Right.Client.callPingPipelinedWithOptions: fn (rpc_inherited_paths.Right.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!rpc_inherited_paths.First.PingPipeline
 full.rpc_inherited_paths.Right.Client.callPingWithOptions: fn (rpc_inherited_paths.Right.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Right.Client.cap_id: field u32
+full.rpc_inherited_paths.Right.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.Right.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.Right.PipelinedClient.callPingWithOptions: fn (rpc_inherited_paths.Right.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.First.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.First.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Right.PipelinedClient.peer: field *capnpc-zig.rpc.peer.Peer
@@ -5078,6 +5149,7 @@ full.rpc_inherited_paths.Second.Client.callPingPipelined: fn (rpc_inherited_path
 full.rpc_inherited_paths.Second.Client.callPingPipelinedWithOptions: fn (rpc_inherited_paths.Second.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.Second.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.Second.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!rpc_inherited_paths.Second.PingPipeline
 full.rpc_inherited_paths.Second.Client.callPingWithOptions: fn (rpc_inherited_paths.Second.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_inherited_paths.Second.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.Second.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_inherited_paths.Second.Client.cap_id: field u32
+full.rpc_inherited_paths.Second.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_inherited_paths.Second.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_inherited_paths.Second.Ping.CallContext.build: field ?*const fn (*anyopaque, *rpc_inherited_paths.Second.PingParams.Builder) anyerror!void
 full.rpc_inherited_paths.Second.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_inherited_paths.Second.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -5132,6 +5204,7 @@ full.rpc_nested.CAPNP_SCHEMA_REQUEST: const []const u8
 full.rpc_nested.RpcNested.Apply: fn (comptime anytype) type
 full.rpc_nested.RpcNested.Client.callPingWithOptions: fn (rpc_nested.RpcNested.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_nested.RpcNested.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_nested.RpcNested.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_nested.RpcNested.Client.cap_id: field u32
+full.rpc_nested.RpcNested.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_nested.RpcNested.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_nested.RpcNested.Ping.CallContext.build: field ?*const fn (*anyopaque, *rpc_nested.RpcNested.PingParams.Builder) anyerror!void
 full.rpc_nested.RpcNested.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_nested.RpcNested.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -5184,6 +5257,7 @@ full.rpc_pipeline_paths.Factory.Client.callNestedPipelined: fn (rpc_pipeline_pat
 full.rpc_pipeline_paths.Factory.Client.callNestedPipelinedWithOptions: fn (rpc_pipeline_paths.Factory.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_pipeline_paths.Factory.NestedParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_pipeline_paths.Factory.Nested.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!rpc_pipeline_paths.Factory.NestedPipeline
 full.rpc_pipeline_paths.Factory.Client.callNestedWithOptions: fn (rpc_pipeline_paths.Factory.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_pipeline_paths.Factory.NestedParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_pipeline_paths.Factory.Nested.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_pipeline_paths.Factory.Client.cap_id: field u32
+full.rpc_pipeline_paths.Factory.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_pipeline_paths.Factory.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_pipeline_paths.Factory.Direct.CallContext.build: field ?*const fn (*anyopaque, *rpc_pipeline_paths.Factory.DirectParams.Builder) anyerror!void
 full.rpc_pipeline_paths.Factory.Direct.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_pipeline_paths.Factory.Direct.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -5315,6 +5389,7 @@ full.rpc_pipeline_paths.Holder.capnpSchema: const capnpc-zig.reflection.SchemaRe
 full.rpc_pipeline_paths.Service.Apply: fn (comptime anytype) type
 full.rpc_pipeline_paths.Service.Client.callPingWithOptions: fn (rpc_pipeline_paths.Service.Client, *anyopaque, ?*const fn (*anyopaque, *rpc_pipeline_paths.Service.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_pipeline_paths.Service.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.rpc_pipeline_paths.Service.Client.cap_id: field u32
+full.rpc_pipeline_paths.Service.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.rpc_pipeline_paths.Service.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.rpc_pipeline_paths.Service.Ping.CallContext.build: field ?*const fn (*anyopaque, *rpc_pipeline_paths.Service.PingParams.Builder) anyerror!void
 full.rpc_pipeline_paths.Service.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, rpc_pipeline_paths.Service.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -5383,6 +5458,7 @@ full.streaming.CapabilityStream.Apply: fn (comptime anytype) type
 full.streaming.CapabilityStream.Client.callFinishWithOptions: fn (streaming.CapabilityStream.Client, *anyopaque, ?*const fn (*anyopaque, *streaming.CapabilityStream.FinishParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, streaming.CapabilityStream.Finish.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.streaming.CapabilityStream.Client.callPushWithOptions: fn (streaming.CapabilityStream.Client, *anyopaque, ?*const fn (*anyopaque, *streaming.CapabilityStream.PushParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, streaming.CapabilityStream.Push.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.streaming.CapabilityStream.Client.cap_id: field u32
+full.streaming.CapabilityStream.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.streaming.CapabilityStream.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.streaming.CapabilityStream.Finish.CallContext.build: field ?*const fn (*anyopaque, *streaming.CapabilityStream.FinishParams.Builder) anyerror!void
 full.streaming.CapabilityStream.Finish.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, streaming.CapabilityStream.Finish.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -5476,6 +5552,7 @@ full.streaming.CapabilityStream.setBootstrap: fn (*capnpc-zig.rpc.peer.Peer, *st
 full.streaming.StreamCapability.Apply: fn (comptime anytype) type
 full.streaming.StreamCapability.Client.callPingWithOptions: fn (streaming.StreamCapability.Client, *anyopaque, ?*const fn (*anyopaque, *streaming.StreamCapability.PingParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, streaming.StreamCapability.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.streaming.StreamCapability.Client.cap_id: field u32
+full.streaming.StreamCapability.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.streaming.StreamCapability.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.streaming.StreamCapability.Ping.CallContext.build: field ?*const fn (*anyopaque, *streaming.StreamCapability.PingParams.Builder) anyerror!void
 full.streaming.StreamCapability.Ping.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, streaming.StreamCapability.Ping.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -5522,6 +5599,7 @@ full.streaming.TestStreaming.Client.callDoStreamIWithOptions: fn (streaming.Test
 full.streaming.TestStreaming.Client.callDoStreamJWithOptions: fn (streaming.TestStreaming.Client, *anyopaque, ?*const fn (*anyopaque, *streaming.TestStreaming.DoStreamJParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, streaming.TestStreaming.DoStreamJ.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.streaming.TestStreaming.Client.callFinishStreamWithOptions: fn (streaming.TestStreaming.Client, *anyopaque, ?*const fn (*anyopaque, *streaming.TestStreaming.FinishStreamParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, streaming.TestStreaming.FinishStream.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.streaming.TestStreaming.Client.cap_id: field u32
+full.streaming.TestStreaming.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.streaming.TestStreaming.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.streaming.TestStreaming.DoStreamI.CallContext.build: field ?*const fn (*anyopaque, *streaming.TestStreaming.DoStreamIParams.Builder) anyerror!void
 full.streaming.TestStreaming.DoStreamI.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, streaming.TestStreaming.DoStreamI.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -5669,6 +5747,7 @@ full.zig_field_names.Probe.Apply: fn (comptime anytype) type
 full.zig_field_names.Probe.Client.callTypeWithOptions: fn (zig_field_names.Probe.Client, *anyopaque, ?*const fn (*anyopaque, *zig_field_names.Probe.TypeParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, zig_field_names.Probe.Type.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.zig_field_names.Probe.Client.callVoidWithOptions: fn (zig_field_names.Probe.Client, *anyopaque, ?*const fn (*anyopaque, *zig_field_names.Probe.VoidParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, zig_field_names.Probe.Void.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.zig_field_names.Probe.Client.cap_id: field u32
+full.zig_field_names.Probe.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 full.zig_field_names.Probe.Client.peer: field *capnpc-zig.rpc.peer.Peer
 full.zig_field_names.Probe.PipelinedClient.callTypeWithOptions: fn (zig_field_names.Probe.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *zig_field_names.Probe.TypeParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, zig_field_names.Probe.Type.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 full.zig_field_names.Probe.PipelinedClient.callVoidWithOptions: fn (zig_field_names.Probe.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *zig_field_names.Probe.VoidParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, zig_field_names.Probe.Void.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
@@ -5810,6 +5889,7 @@ no-reflection.kvstore.KvClientNotifier.Apply: fn (comptime anytype) type
 no-reflection.kvstore.KvClientNotifier.Client.callKeysChangedWithOptions: fn (kvstore.KvClientNotifier.Client, *anyopaque, ?*const fn (*anyopaque, *kvstore.KvClientNotifier.KeysChangedParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvClientNotifier.KeysChanged.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 no-reflection.kvstore.KvClientNotifier.Client.callStateResetRequiredWithOptions: fn (kvstore.KvClientNotifier.Client, *anyopaque, ?*const fn (*anyopaque, *kvstore.KvClientNotifier.StateResetRequiredParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvClientNotifier.StateResetRequired.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 no-reflection.kvstore.KvClientNotifier.Client.cap_id: field u32
+no-reflection.kvstore.KvClientNotifier.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 no-reflection.kvstore.KvClientNotifier.Client.peer: field *capnpc-zig.rpc.peer.Peer
 no-reflection.kvstore.KvClientNotifier.KeysChanged.CallContext.build: field ?*const fn (*anyopaque, *kvstore.KvClientNotifier.KeysChangedParams.Builder) anyerror!void
 no-reflection.kvstore.KvClientNotifier.KeysChanged.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvClientNotifier.KeysChanged.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void
@@ -5879,6 +5959,7 @@ no-reflection.kvstore.KvStore.Client.callSetWatchedKeysWithOptions: fn (kvstore.
 no-reflection.kvstore.KvStore.Client.callSubscribeWithOptions: fn (kvstore.KvStore.Client, *anyopaque, ?*const fn (*anyopaque, *kvstore.KvStore.SubscribeParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvStore.Subscribe.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 no-reflection.kvstore.KvStore.Client.callWriteBatchWithOptions: fn (kvstore.KvStore.Client, *anyopaque, ?*const fn (*anyopaque, *kvstore.KvStore.WriteBatchParams.Builder) anyerror!void, *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvStore.WriteBatch.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void, capnpc-zig.rpc.peer.CallOptions) anyerror!u32
 no-reflection.kvstore.KvStore.Client.cap_id: field u32
+no-reflection.kvstore.KvStore.Client.origin: field capnpc-zig.rpc.peer.ClientOrigin = .unspecified
 no-reflection.kvstore.KvStore.Client.peer: field *capnpc-zig.rpc.peer.Peer
 no-reflection.kvstore.KvStore.CreateBackup.CallContext.build: field ?*const fn (*anyopaque, *kvstore.KvStore.CreateBackupParams.Builder) anyerror!void
 no-reflection.kvstore.KvStore.CreateBackup.CallContext.callback: field *const fn (*anyopaque, *capnpc-zig.rpc.peer.Peer, kvstore.KvStore.CreateBackup.Response, *const capnpc-zig.rpc.caps.table.InboundCapTable) anyerror!void

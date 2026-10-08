@@ -194,6 +194,28 @@ pub const PeerTimeouts = state.PeerTimeouts;
 pub const ResultLifetime = retained_question_state.ResultLifetime;
 pub const CallOptions = retained_question_state.CallOptions;
 
+/// Experimental. The id space that a generated `Client`'s `cap_id` names.
+///
+/// A peer's export ids and its import ids are separate spaces that both
+/// start at 0 (an import id is the id the remote chose for its export), so
+/// one bare id can name a local export and an import at the same time. The
+/// generated `setXClient` setters read this to write the capability back
+/// out as the right one.
+pub const ClientOrigin = enum {
+    /// Not recorded: a Client built with `Client.init`. `setXClient` writes
+    /// a plain capability pointer, and the outbound encoder classifies the
+    /// bare id: a local export wins over an import with the same id. This
+    /// is the behavior before 0.23.0, kept for code that wraps its own
+    /// export ids in `Client.init`.
+    unspecified,
+    /// An import: a capability the remote vat hosts. The Clients the runtime
+    /// makes from imports (bootstrap and the generated `resolveX`) carry this
+    /// origin, and `setXClient` writes them back as the remote's own
+    /// capability (`receiverHosted`) even when a local export has the same
+    /// id.
+    imported,
+};
+
 const QuestionDeinitCtxFn = state.QuestionDeinitCtxFn;
 const ExportDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;
 const Question = state.Question(QuestionCallback);

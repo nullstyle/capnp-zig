@@ -151,6 +151,27 @@ Diamond inheritance is deduplicated, and calls retain the original declaring
 interface ID and method ordinal. An interface ID suffix disambiguates normalized
 qualified-name collisions.
 
+## Passing capabilities back
+
+A peer's export ids and its import ids are separate spaces, and both start at
+0: an import id is the id the remote chose for its export. So a peer that
+exports capabilities and also imports them soon holds export N and import N at
+once. A generated `Client` records which space its `cap_id` names in the
+Experimental `origin` field (`rpc.peer.ClientOrigin`):
+
+- Bootstrap and `resolveX` return Clients with `.imported`. `setXClient`
+  writes them as the remote's own capability (`receiverHosted`), so a
+  capability passed back to the vat that issued it reaches that vat's object,
+  never a local export with the same id.
+- `Client.init(peer, id)` leaves `.unspecified`. `setXClient` then writes a
+  bare id, and the outbound encoder picks a local export over an import with
+  the same id, as before 0.23.0. Code that wraps its own export ids in
+  `Client.init` keeps working. Code that wraps an import id it read from an
+  `InboundCapTable` should set `.origin = .imported`.
+
+`setXCapability` and the `set` of a `List(Interface)` builder take a raw
+`message.Capability`, so they always write a bare id.
+
 ## Typed generic RPC applications
 
 For a schema `interface Service(T) { echo @0 (value :T) -> (value :T); }`,

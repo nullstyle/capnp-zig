@@ -18,10 +18,10 @@
 
 /// The generated-code ABI this runtime implements. The plugin built from the
 /// same tree stamps this value into every file it generates.
-pub const version: u32 = 1;
+pub const version: u32 = 2;
 
 /// The oldest generated-code ABI this runtime still compiles.
 pub const oldest_supported: u32 = 1;
 
 /// The first capnpc-zig release whose runtime implements `version`.
-pub const release: []const u8 = "0.19.0";
+pub const release: []const u8 = "0.23.0";

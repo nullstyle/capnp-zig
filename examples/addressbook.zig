@@ -8,8 +8,8 @@ const std = @import("std");
 const capnpc = capnpc_runtime: {
     const @"capnpc-zig runtime" = @import("capnpc-zig");
     const @"runtime ABI" = if (@hasDecl(@"capnpc-zig runtime", "codegen_abi")) @"capnpc-zig runtime".codegen_abi.version else 0;
-    if (@"runtime ABI" < 1) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 1, which needs the capnpc-zig 0.19.0 runtime or newer, but the imported runtime provides ABI {d}. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.", .{@"runtime ABI"}));
-    if (@"capnpc-zig runtime".codegen_abi.oldest_supported > 1) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 1, but the imported capnpc-zig runtime (ABI {d}) only supports ABI {d} and newer. Regenerate the file with the capnpc-zig {s} plugin or newer.", .{ @"runtime ABI", @"capnpc-zig runtime".codegen_abi.oldest_supported, @"capnpc-zig runtime".codegen_abi.release }));
+    if (@"runtime ABI" < 2) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 2, which needs the capnpc-zig 0.23.0 runtime or newer, but the imported runtime provides ABI {d}. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.", .{@"runtime ABI"}));
+    if (@"capnpc-zig runtime".codegen_abi.oldest_supported > 2) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 2, but the imported capnpc-zig runtime (ABI {d}) only supports ABI {d} and newer. Regenerate the file with the capnpc-zig {s} plugin or newer.", .{ @"runtime ABI", @"capnpc-zig runtime".codegen_abi.oldest_supported, @"capnpc-zig runtime".codegen_abi.release }));
     break :capnpc_runtime @"capnpc-zig runtime";
 };
 const message = capnpc.message;

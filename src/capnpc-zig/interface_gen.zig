@@ -86,7 +86,10 @@ pub fn Interface(comptime G: type) type {
             // --- Client ---
             try writer.writeAll("    pub const Client = struct {\n");
             try writer.writeAll("        peer: *rpc.peer.Peer,\n");
-            try writer.writeAll("        cap_id: u32,\n\n");
+            try writer.writeAll("        cap_id: u32,\n");
+            try writer.writeAll("        /// Experimental. The id space `cap_id` names. `init` leaves it\n");
+            try writer.writeAll("        /// `.unspecified`; bootstrap and `resolveX` set `.imported`.\n");
+            try writer.writeAll("        origin: rpc.peer.ClientOrigin = .unspecified,\n\n");
             try writer.print("        pub fn init(peer: *rpc.peer.Peer, cap_id: u32) {s}Client {{\n", .{qual});
             try writer.writeAll("            return .{ .peer = peer, .cap_id = cap_id };\n");
             try writer.writeAll("        }\n\n");
@@ -220,7 +223,7 @@ pub fn Interface(comptime G: type) type {
             try writer.writeAll("                try mutable_caps.retainCapability(cap);\n");
             try writer.writeAll("                const resolved = try caps.resolveCapability(cap);\n");
             try writer.writeAll("                switch (resolved) {\n");
-            try writer.print("                    .imported => |imported| response = .{{ .client = {s}Client.init(peer, imported.id) }},\n", .{qual});
+            try writer.writeAll("                    .imported => |imported| response = .{ .client = .{ .peer = peer, .cap_id = imported.id, .origin = .imported } },\n");
             try writer.writeAll("                    else => return error.UnexpectedBootstrapCapability,\n");
             try writer.writeAll("                }\n");
             try writer.writeAll("            },\n");

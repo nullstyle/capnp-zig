@@ -383,7 +383,7 @@ ahead of your `build.zig.zon`) fails with one error that names the runtime
 release to move to:
 
 ```
-error: capnpc-zig version skew: this file was generated for codegen ABI 1, which needs the capnpc-zig 0.19.0 runtime or newer, but the imported runtime provides ABI 0. ...
+error: capnpc-zig version skew: this file was generated for codegen ABI 2, which needs the capnpc-zig 0.23.0 runtime or newer, but the imported runtime provides ABI 1. ...
 ```
 
 Upgrade the dependency, or regenerate with the plugin from the same release.
