@@ -292,7 +292,7 @@ pub const Listener = struct {
     }
 
     pub fn tick(self: *Listener, now_us: u64) !void {
-        try self.server.tick(now_us);
+        try quic_zig_adapter.tickServer(&self.server, now_us);
     }
 
     pub fn reapClosedSessions(self: *Listener) usize {

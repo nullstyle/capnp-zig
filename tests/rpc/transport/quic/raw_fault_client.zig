@@ -167,6 +167,11 @@ pub const RawFaultClient = struct {
         try self.drainOutgoing(now_us);
 
         now_us = self.nowUs();
+        // The touch keeps the tick a full one, as the transport's own loops
+        // do (`tickConnection` in src/rpc/transport/quic/quic_zig_adapter.zig):
+        // since quic-zig v0.36.0 a tick after a drain can skip the GC of a
+        // stream that ended, and a Debug build asserts there.
+        self.client.conn.touch();
         try self.client.conn.tick(now_us);
         try self.drainOutgoing(now_us);
     }

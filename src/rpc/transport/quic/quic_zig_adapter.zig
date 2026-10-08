@@ -20,6 +20,33 @@ pub fn requestUdpSocketBuffers(handle: Net.Socket.Handle, recv_bytes: ?usize, se
     if (send_bytes) |bytes| quic_zig.transport.setSendBufferSize(handle, bytes) catch {};
 }
 
+/// Tick a quic-zig connection the full way, as every quic-zig through
+/// v0.35.0 did. Every tick in capnp-zig's loops goes through here or
+/// `tickServer`.
+///
+/// Since quic-zig v0.36.0 a connection at rest answers `tick` from a cached
+/// deadline until `Connection.touch`, and a Debug build runs the full tick
+/// as well and asserts that it changed nothing. "At rest" does not count a
+/// stream that the next tick's GC frees, and capnp-zig drains a connection
+/// (the poll that primes the cache) after the service pass that reads a
+/// stream to its end and before the tick (service before tick, "Embedder
+/// rules" in docs/quic-transport.md). So the GC waited for the next touch:
+/// a Debug build hit the assert, and a release build kept the stream, and
+/// held back the stream id the peer gets once it is freed. A native
+/// connection whose uni window was full then stalled with both sides at
+/// rest. The touch makes the tick a full one again.
+pub fn tickConnection(conn: *quic_zig.Connection, now_us: u64) !void {
+    conn.touch();
+    try conn.tick(now_us);
+}
+
+/// `quic_zig.Server.tick` (a tick of every slot) with each connection
+/// touched first; see `tickConnection`.
+pub fn tickServer(server: *quic_zig.Server, now_us: u64) !void {
+    for (server.iterator()) |slot| slot.conn.touch();
+    try server.tick(now_us);
+}
+
 pub fn ipAddressToPathAddress(addr: Net.IpAddress) quic_zig.conn.path.Address {
     // quic-zig's Address deliberately mirrors std.Io.net.IpAddress, so the
     // boundary is a one-to-one variant map.

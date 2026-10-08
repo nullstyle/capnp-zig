@@ -6,6 +6,16 @@
         // Pinned to a TAG, not a raw commit: tags are immutable release
         // points, so the pin is auditable and reproducible.
         //
+        // v0.37.1 (commit b89270b), one step from v0.32.0 over five tags: the
+        // same option map, modules and boringssl-zig, and no change in any
+        // quic call capnp-zig makes. docs/quic-transport.md has the detail.
+        //   0.33.0 windows auto-tune to 8/16 MiB; a write past the budget returns short
+        //   0.34.0 about half the CPU per packet; raw-Connection breaks capnp-zig avoids
+        //   0.35.0 an ACK per second packet of a burst; reordering cuts the window less
+        //   0.36.0 an idle connection ~22 KB of heap, was ~92 KB; Server ready API
+        //   0.37.0 ACK frames carry 255 ranges; the ACK Frequency extension
+        //   0.37.1 every probe timeout carries previously sent stream data
+        //
         // v0.32.0 (commit ffdb251): no wire change, no embedder API change,
         // the same option map and modules. The receive window an endpoint
         // keeps is the one it announces (it was a fixed 1 MiB per stream and
@@ -104,22 +114,23 @@
         // the build makes two quic modules (and two BoringSSLs). The map is
         // `.target`, `.release`, `.@"sanitize-c" = "trap"` (build/modules.zig),
         // the one nest/qmsg/qmesh use. capnp-zig v0.21.0 pinned v0.30.1
-        // (pair: http3-zig v0.5.4). capnp-zig v0.22.0 pins v0.32.0 (pair:
-        // http3-zig v0.5.5; qmsg v0.8.2 is on v0.32.0 too). Since
-        // 2026-10-07 only packages that link into one program must share a
-        // pin: capnp-zig and http3-zig move together; qmsg, qmesh-zig, nest
-        // and mruby-quic move on their own; a quic-zig security fix moves
-        // every package at once. The released http3-zig
+        // (pair: http3-zig v0.5.4); v0.22.0 and v0.23.0 pin v0.32.0 (pair:
+        // http3-zig v0.5.5). This tree pins v0.37.1, as http3-zig main
+        // e5b3e28 does (not released yet). Since 2026-10-07 only packages
+        // that link into one program must share a pin: capnp-zig and
+        // http3-zig (cluster B) move together; qmsg, qmesh-zig, nest and
+        // mruby-quic (cluster A) move on their own; a quic-zig security fix
+        // moves every package at once. The released http3-zig
         // v0.5.2 cannot share this module: it builds its own quic module
         // from quic's src/root.zig and its own BoringSSL. http3-zig v0.5.3
         // and later take quic's exported quic and boringssl modules with
         // this option map, so they share this one when they pin the same tag.
-        // boringssl-zig is unchanged since v0.25.0 (v0.32.0 too): ff30fe99
+        // boringssl-zig is unchanged since v0.25.0 (v0.37.1 too): ff30fe99
         // (0.6.7, BoringSSL aef0e2df), which links Windows ws2_32 with
         // pkg-config lookup disabled.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.32.0.tar.gz",
-            .hash = "quic-0.32.0-DnSYvcGOPADCEZMispvPbD9RznRtyIGq77zHIgmS8iVl",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.37.1.tar.gz",
+            .hash = "quic-0.37.1-DnSYvTlfPwChWkn-M8TGtX81DkFobQDQQat0GMff1YRe",
             .lazy = true,
         },
     },
