@@ -186,6 +186,7 @@ pub fn handleReturnRegular(
     release_inbound_caps: *const fn (*PeerType, *const InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
     maybe_send_auto_finish: *const fn (*PeerType, QuestionType, u32, bool) anyerror!void,
+    delivered: *bool,
 ) !void {
     var callback_ret = ret;
     var restore_adopted_answer = false;
@@ -204,6 +205,9 @@ pub fn handleReturnRegular(
     };
 
     const keep_retained_answer = keepsRetainedAnswerOnReturnError(QuestionType, question);
+    // From here on the caller has seen this Return (or is seeing it): any
+    // later failure must not put the question back for a second terminal.
+    delivered.* = true;
     dispatch_question_return(peer, question, callback_ret, inbound_caps) catch |err| {
         if (!keep_retained_answer) return err;
         report_nonfatal_error(peer, err);
@@ -230,6 +234,7 @@ pub fn handleReturnRegularForPeer(
     question: QuestionType,
     ret: protocol.Return,
     inbound_caps: *const InboundCapsType,
+    delivered: *bool,
 ) !void {
     try handleReturnRegular(
         PeerType,
@@ -245,6 +250,7 @@ pub fn handleReturnRegularForPeer(
         peer_return_dispatch.releaseInboundCapsForPeerFn(PeerType, InboundCapsType, release_inbound_caps_mut),
         peer_return_dispatch.reportNonfatalErrorForPeerFn(PeerType),
         peer_return_dispatch.maybeSendAutoFinishForPeerFn(PeerType, QuestionType, send_finish),
+        delivered,
     );
 }
 
@@ -254,13 +260,14 @@ pub fn handleReturnRegularForPeerFn(
     comptime InboundCapsType: type,
     comptime release_inbound_caps_mut: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     comptime send_finish: *const fn (*PeerType, u32, bool) anyerror!void,
-) *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) anyerror!void {
+) *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType, *bool) anyerror!void {
     return struct {
         fn call(
             peer: *PeerType,
             question: QuestionType,
             ret: protocol.Return,
             inbound_caps: *const InboundCapsType,
+            delivered: *bool,
         ) anyerror!void {
             try handleReturnRegularForPeer(
                 PeerType,
@@ -272,6 +279,7 @@ pub fn handleReturnRegularForPeerFn(
                 question,
                 ret,
                 inbound_caps,
+                delivered,
             );
         }
     }.call;
@@ -293,7 +301,7 @@ pub fn handleReturn(
     deinit_inbound_caps: *const fn (*InboundCapsType) void,
     handle_return_accept_from_third_party: *const fn (*PeerType, u32, QuestionType, ?message.AnyPointerReader, *const InboundCapsType) anyerror!void,
     maybe_send_auto_finish: *const fn (*PeerType, QuestionType, u32, bool) anyerror!void,
-    handle_return_regular: *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) anyerror!void,
+    handle_return_regular: *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType, *bool) anyerror!void,
 ) anyerror!void {
     const question = get_question(peer, ret.answer_id) orelse {
         try handle_missing_return_question(peer, frame, ret.answer_id);
@@ -305,8 +313,13 @@ pub fn handleReturn(
 
     if (!remove_question_for_return(peer, ret.answer_id)) return error.UnknownQuestion;
     var restore_question = true;
+    // Set once the question's callback is about to see this Return. A failure
+    // after that point (an automatic Finish that cannot be built, a callback
+    // that itself fails with OutOfMemory) must not restore the question:
+    // transport close or deinit would then deliver it a second terminal.
+    var delivered = false;
     errdefer if (restore_question) {
-        if (shouldRestoreQuestionOnReturnError(QuestionType, question)) {
+        if (!delivered and shouldRestoreQuestionOnReturnError(QuestionType, question)) {
             restore_question_for_return(peer, ret.answer_id, question);
         } else {
             complete_question_removal(peer);
@@ -337,7 +350,7 @@ pub fn handleReturn(
         return;
     }
 
-    try handle_return_regular(peer, question, ret, &inbound_caps);
+    try handle_return_regular(peer, question, ret, &inbound_caps, &delivered);
     restore_question = false;
     complete_question_removal(peer);
 }
@@ -409,7 +422,8 @@ test "peer_return_orchestration handles missing question via callback" {
             _ = no_finish_needed;
         }
 
-        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) !void {
+        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound, delivered: *bool) !void {
+            _ = delivered;
             _ = state;
             _ = question;
             _ = ret;
@@ -523,7 +537,8 @@ test "peer_return_orchestration regular path invokes regular handler and deinit"
             state.finish_calls += 1;
         }
 
-        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) !void {
+        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound, delivered: *bool) !void {
+            _ = delivered;
             _ = inbound;
             std.testing.expectEqual(@as(u32, 9), question.marker) catch unreachable;
             std.testing.expectEqual(protocol.ReturnTag.canceled, ret.tag) catch unreachable;
@@ -644,7 +659,8 @@ test "peer_return_orchestration accept path invokes accept handler and maybe-fin
             state.finish_calls += 1;
         }
 
-        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) !void {
+        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound, delivered: *bool) !void {
+            _ = delivered;
             _ = question;
             _ = ret;
             _ = inbound;
@@ -759,7 +775,8 @@ test "peer_return_orchestration init failure does not remove question" {
             return error.TestUnexpectedResult;
         }
 
-        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) !void {
+        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound, delivered: *bool) !void {
+            _ = delivered;
             _ = state;
             _ = question;
             _ = ret;
@@ -873,7 +890,8 @@ test "peer_return_orchestration handler failure restores question and does not c
             return error.TestUnexpectedResult;
         }
 
-        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) !void {
+        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound, delivered: *bool) !void {
+            _ = delivered;
             _ = inbound;
             try std.testing.expectEqual(@as(u32, 9), question.marker);
             try std.testing.expectEqual(protocol.ReturnTag.canceled, ret.tag);
@@ -919,6 +937,80 @@ test "peer_return_orchestration handler failure restores question and does not c
     try std.testing.expectEqual(@as(u32, 9), state.restored_marker);
     try std.testing.expectEqual(@as(usize, 0), state.complete_calls);
     try std.testing.expectEqual(@as(usize, 1), state.regular_calls);
+}
+
+test "peer_return_orchestration failure after delivery never restores the question" {
+    // The callback already saw the Return; a later failure (here an
+    // OutOfMemory from the automatic Finish) completes the removal instead
+    // of restoring the question for a second terminal.
+    const Question = struct { marker: u32 };
+    const State = struct {
+        restore_calls: usize = 0,
+        complete_calls: usize = 0,
+    };
+    const Inbound = struct {};
+    const Hooks = struct {
+        fn getQuestion(_: *State, _: u32) ?Question {
+            return .{ .marker = 9 };
+        }
+        fn removeQuestion(_: *State, _: u32) bool {
+            return true;
+        }
+        fn restoreQuestion(state: *State, _: u32, _: Question) void {
+            state.restore_calls += 1;
+        }
+        fn completeRemoval(state: *State) void {
+            state.complete_calls += 1;
+        }
+        fn handleMissing(_: *State, _: []const u8, _: u32) !void {
+            return error.TestUnexpectedResult;
+        }
+        fn initInbound(_: *State, _: protocol.Return) !Inbound {
+            return .{};
+        }
+        fn deinitInbound(_: *Inbound) void {}
+        fn handleAccept(_: *State, _: u32, _: Question, _: ?message.AnyPointerReader, _: *const Inbound) !void {
+            return error.TestUnexpectedResult;
+        }
+        fn maybeFinish(_: *State, _: Question, _: u32, _: bool) !void {
+            return error.TestUnexpectedResult;
+        }
+        fn handleRegular(_: *State, _: Question, _: protocol.Return, _: *const Inbound, delivered: *bool) !void {
+            delivered.* = true;
+            return error.OutOfMemory;
+        }
+    };
+
+    var state = State{};
+    const ret = protocol.Return{
+        .answer_id = 3,
+        .release_param_caps = false,
+        .no_finish_needed = false,
+        .tag = .canceled,
+        .results = null,
+        .exception = null,
+        .take_from_other_question = null,
+    };
+    try std.testing.expectError(error.OutOfMemory, handleReturn(
+        State,
+        Question,
+        Inbound,
+        &state,
+        &.{},
+        ret,
+        Hooks.getQuestion,
+        Hooks.removeQuestion,
+        Hooks.restoreQuestion,
+        Hooks.completeRemoval,
+        Hooks.handleMissing,
+        Hooks.initInbound,
+        Hooks.deinitInbound,
+        Hooks.handleAccept,
+        Hooks.maybeFinish,
+        Hooks.handleRegular,
+    ));
+    try std.testing.expectEqual(@as(usize, 0), state.restore_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.complete_calls);
 }
 
 test "peer_return_orchestration handler failure completes one-shot question removal" {
@@ -988,7 +1080,8 @@ test "peer_return_orchestration handler failure completes one-shot question remo
             _ = no_finish_needed;
         }
 
-        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) !void {
+        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound, delivered: *bool) !void {
+            _ = delivered;
             _ = state;
             _ = inbound;
             try std.testing.expectEqual(@as(u32, 9), question.marker);
@@ -1247,7 +1340,9 @@ test "peer_return_orchestration handleReturnRegularForPeerFn applies adopted ans
     );
     // The returned hook is `anyerror!void`; propagate rather than ignore so a
     // dispatch failure fails the test instead of being silently swallowed.
-    try handle_regular(&peer, question, ret, &inbound);
+    var delivered = false;
+    try handle_regular(&peer, question, ret, &inbound, &delivered);
+    try std.testing.expect(delivered);
 
     try std.testing.expectEqual(@as(usize, 1), peer.callback_calls);
     try std.testing.expectEqual(@as(u32, 42), peer.saw_answer_id);

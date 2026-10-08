@@ -1924,6 +1924,87 @@ test "a call queued under a transient OOM still gets exactly one Return when its
     try std.testing.expect(fail_at > 1);
 }
 
+/// A finished results Return for `answer_id` with an empty struct payload.
+fn buildEmptyResultsReturnFrame(allocator: std.mem.Allocator, answer_id: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var ret = try builder.beginReturn(answer_id, .results);
+    var payload = try ret.payloadTyped();
+    _ = try payload.initContent();
+    return builder.finish();
+}
+
+test "a transient OOM after a Return's callback ran never re-delivers it at close" {
+    // Return handling can fail AFTER the question's callback has run: the
+    // automatic Finish cannot be built. The question then went back into the
+    // questions table, and transport close delivered it a second, synthetic
+    // Disconnected terminal: a second callback into a spent context
+    // (capnp-deno's WASM ABI guards its L3 contexts against exactly this).
+    // Fail each allocation of the Return's handling in turn: the caller must
+    // see one terminal in total across the Return, the close and deinit.
+    const allocator = std.testing.allocator;
+    var fail_at: usize = 0;
+    var finished = false;
+    while (!finished) : (fail_at += 1) {
+        var capture = newCapture(allocator);
+        defer capture.deinit();
+        var one_shot = OneShotFailingAllocator{ .backing = allocator };
+        var peer = Peer.initDetached(one_shot.allocator());
+        peer.disableThreadAffinity();
+        peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+        try peer.caps.noteImport(7);
+        var waiter = TerminalWaiter{};
+        const qid = try peer.sendCall(7, 0xABCD, 0, &waiter, null, TerminalWaiter.onReturn);
+        const frame = try buildEmptyResultsReturnFrame(allocator, qid);
+        defer allocator.free(frame);
+
+        one_shot.arm(fail_at);
+        peer.handleFrame(frame) catch |err| try std.testing.expectEqual(error.OutOfMemory, err);
+        finished = !one_shot.induced;
+        one_shot.remaining = null;
+
+        // An OOM before the callback leaves the question open, and the close
+        // gives it its one (Disconnected) terminal; an OOM after it must not.
+        peer.notifyTransportClosed();
+        peer.deinit();
+        try std.testing.expectEqual(@as(usize, 1), waiter.fired);
+    }
+    try std.testing.expect(fail_at > 1);
+}
+
+test "a callback that fails with OOM is not re-delivered at close" {
+    // The callback itself ran and saw the Return; its OutOfMemory propagates
+    // out of handleFrame, but the question must not come back for a second,
+    // synthetic terminal.
+    const allocator = std.testing.allocator;
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const OomOnce = struct {
+        fired: usize = 0,
+        fn onReturn(ctx: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.fired += 1;
+            if (self.fired == 1) return error.OutOfMemory;
+        }
+    };
+    try peer.caps.noteImport(7);
+    var waiter = OomOnce{};
+    const qid = try peer.sendCall(7, 0xABCD, 0, &waiter, null, OomOnce.onReturn);
+    const frame = try buildEmptyResultsReturnFrame(allocator, qid);
+    defer allocator.free(frame);
+
+    try std.testing.expectError(error.OutOfMemory, peer.handleFrame(frame));
+    try std.testing.expect(!peer.questions.contains(qid));
+    peer.notifyTransportClosed();
+    peer.deinit();
+    try std.testing.expectEqual(@as(usize, 1), waiter.fired);
+}
+
 test "close and deinit after a retained call's Return deliver no second terminal" {
     // capnp-deno reported Return machinery re-delivering into spent questions
     // at shutdown. Pin exactly-once for retained calls, with and without

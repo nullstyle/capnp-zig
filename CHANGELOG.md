@@ -79,6 +79,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unreviewed `catch break` / `catch continue` / `catch {}` after an
   allocating call; five Experimental Level-3 maintenance passes are
   allowlisted with the reason a skipped item is retried later.
+- **RPC: a question could get a second terminal callback at transport close
+  after an OOM in its Return handling.** When handling a Return failed with
+  OutOfMemory after the question's callback had already run (the automatic
+  Finish could not be built, or the callback itself returned
+  `error.OutOfMemory`), the Peer put the question back into its table. The
+  transport-close drain or `Peer.deinit` then delivered a second, synthetic
+  Disconnected Return into the same context. This affects callers of
+  `Peer.sendCall` / `sendBootstrap` that do not register a `deinit_ctx`
+  (generated clients do, and were not affected); capnp-deno guards its
+  WASM L3 contexts against this re-delivery. The Peer now restores a
+  question only when its callback has not seen the Return. Retained calls,
+  with or without `noFinishNeeded`, never had this problem; a new test pins
+  that. No API line changes.
 
 ## [0.22.0] - 2026-10-07
 
