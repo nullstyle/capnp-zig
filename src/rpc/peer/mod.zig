@@ -4139,8 +4139,11 @@ pub const Peer = struct {
     /// releases the caller's export twice; a compliant peer answers that with
     /// "Tried to release invalid export ID" and drops the connection.
     ///
-    /// Returns the schema default `true` for every answer with no
-    /// `active_inbound_questions` record: Bootstrap/Provide/Accept/Join Returns
+    /// A Return sent after the caller's Finish reads the grant from
+    /// `finished_early_param_grants`, since the Finish removed the record.
+    ///
+    /// Returns the schema default `true` for every answer with no record in
+    /// either map: Bootstrap/Provide/Accept/Join Returns
     /// (whose messages have no params cap table at all), the `sendResultsTo =
     /// thirdParty` refusal issued before the record exists, and any answer whose
     /// Call params carried no ref-granting descriptor. In all of those the
