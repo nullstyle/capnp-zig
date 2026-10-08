@@ -273,6 +273,12 @@ fn encodePayloadCaps(
 
     try collectCapsFromPointer(&outbound, table, &view.msg, builder, any_reader.segment_id, any_reader.pointer_pos, any_reader.pointer_word, max_traversal_depth);
 
+    // The loopback decode refuses a cap table longer than it reads
+    // (`InboundCapTable.initLoopback`); refuse it here, before dispatch.
+    if (destination == .loopback and outbound.entries.items.len > lifecycle.max_table_size) {
+        return error.CapTableFull;
+    }
+
     var cap_list = try payload_builder.initCapTable(@intCast(outbound.entries.items.len));
 
     for (outbound.entries.items, 0..) |entry, idx| {
@@ -379,9 +385,11 @@ pub fn encodeCallPayloadCapsWithEffects(
 /// loopback decode (`InboundCapTable.initLoopback`) maps every descriptor
 /// back to our own cap table. A promise on one of our questions
 /// (`receiverAnswer`) fails with `error.LoopbackPromisedCapabilityUnsupported`,
-/// and a descriptor naming an export or import this peer does not hold with
-/// `error.UnknownExport` / `error.UnknownImport`, before anything is
-/// dispatched: the encode refuses everything the loopback decode would.
+/// a descriptor naming an export or import this peer does not hold with
+/// `error.UnknownExport` / `error.UnknownImport`, and a cap table longer
+/// than `max_table_size` with `error.CapTableFull`, before anything is
+/// dispatched. The loopback decode can then fail only for want of memory
+/// or a reference count.
 pub fn encodeLoopbackCallPayloadCaps(table: *CapTable, call: *protocol.CallBuilder) !void {
     var effects = OutboundCapEffects.init(table.allocator, null, null);
     defer effects.deinit();

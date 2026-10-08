@@ -185,7 +185,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   export's removal. In the params, `sendCallResolved` or `sendCall` fails
   with `error.UnknownExport` or `error.UnknownImport`, and nothing is
   dispatched. An unknown export failed this way before too; an unknown
-  import used to reach the caller as an exception Return instead. In the
+  import used to reach the caller as an exception Return instead. Params
+  that need more cap table entries than the peer reads (`max_table_size`)
+  now fail the same way, with `error.CapTableFull`. In the
   results, the handler's `sendReturnResults` fails with the same error. The
   caller receives an exception Return when the handler lets that error out
   of `on_call`; a handler that answers later must settle the answer itself.

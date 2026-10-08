@@ -847,6 +847,36 @@ test "a loopback call whose params name an import the peer does not hold fails b
     try expectParamsRefused(.receiverHosted, error.UnknownImport);
 }
 
+test "a loopback call whose params need more cap table entries than the peer reads fails before dispatch" {
+    var fx: Fixture = undefined;
+    try fx.init(std.testing.allocator);
+    defer fx.deinit();
+
+    // The loopback decode refuses a cap table longer than `max_table_size`.
+    // One export written once as `senderHosted` and once as `senderPromise`
+    // takes two entries, so just over half the table's worth of exports
+    // fills a payload past the limit without the peer holding too many.
+    const export_count = cap_table.max_table_size / 2 + 1;
+    const refs = try std.testing.allocator.alloc(CapRef, export_count * 2);
+    defer std.testing.allocator.free(refs);
+    var index: usize = 0;
+    while (index < export_count) : (index += 1) {
+        const id = try fx.server.addExport(fx.solo.exported());
+        refs[2 * index] = .{ .origin = .senderHosted, .id = id };
+        refs[2 * index + 1] = .{ .origin = .senderPromise, .id = id };
+    }
+
+    const before = fx.wire.events.items.len;
+    const questions_before = fx.server.questions.count();
+    var caller = ProbeCall{};
+    try std.testing.expectError(error.CapTableFull, fx.callProbe(refs, &caller));
+    try std.testing.expectEqual(@as(u32, 0), fx.probe.calls);
+    try std.testing.expectEqual(@as(u32, 0), caller.returns);
+    try std.testing.expectEqual(questions_before, fx.server.questions.count());
+    try std.testing.expectEqual(@as(usize, 0), fx.server.loopback_questions.count());
+    try expectNoFramesSince(&fx.wire, before);
+}
+
 /// A handler whose loopback results name a capability the peer does not
 /// hold: its `sendReturnResults` fails, the handler lets the error out of
 /// `on_call`, and the caller receives an exception Return.
