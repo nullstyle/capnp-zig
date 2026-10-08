@@ -152,6 +152,17 @@ const experimental_overrides = [_]Rule{
     e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.releaseHandoffImportPin"),
     e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.removeImportIfFullyReleased"),
     p("capnpc-zig.rpc.caps.table.lifecycle.CapTable.HandoffImportUnpin"),
+    // Loopback capability plumbing: the decode and encode of a Call or
+    // Return this peer dispatches to itself, and the loopback import
+    // references they take. It lives on the otherwise-Stable cap table but
+    // is new, additive machinery behind the Stable `Peer.sendCallResolved`,
+    // so it starts Experimental.
+    e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.noteLoopbackImportRef"),
+    e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.spendImportRef"),
+    p("capnpc-zig.rpc.caps.table.lifecycle.CapTable.ImportRefSpend"),
+    e("capnpc-zig.rpc.caps.table.inbound.InboundCapTable.initLoopback"),
+    e("capnpc-zig.rpc.caps.table.outbound.encodeLoopbackCallPayloadCaps"),
+    e("capnpc-zig.rpc.caps.table.outbound.encodeLoopbackReturnPayloadCaps"),
 };
 
 // NOTE ON `rpc.wire.protocol.*` third-party encoders: symbols like

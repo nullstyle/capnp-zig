@@ -57,6 +57,12 @@ pub fn sendCallToImport(
 /// never crosses the wire, so no param-export record is taken — the record
 /// exists to consume a REMOTE Return's releaseParamCaps, and loopback
 /// Returns are produced locally.
+///
+/// The params' capabilities are encoded for the loopback
+/// (`encodeLoopbackCallPayloadCaps`): no wire reference is taken on our
+/// exports, because no remote will ever Release one, and `handle_frame`
+/// must read the descriptors back from our own side
+/// (`InboundCapTable.initLoopback`).
 pub fn sendCallToExport(
     comptime PeerType: type,
     comptime QuestionType: type,
@@ -64,9 +70,6 @@ pub fn sendCallToExport(
     comptime QuestionCallbackType: type,
     allocator: std.mem.Allocator,
     caps: *cap_table.CapTable,
-    outbound_ctx: ?*anyopaque,
-    on_outbound_cap: ?cap_table.CapEntryCallback,
-    on_outbound_cap_rollback: ?cap_table.CapEntryRollbackCallback,
     peer: *PeerType,
     questions: *std.AutoHashMap(u32, QuestionType),
     loopback_questions: *std.AutoHashMap(u32, void),
@@ -99,16 +102,10 @@ pub fn sendCallToExport(
         try build_fn(ctx, &call);
     }
 
-    var effects = cap_table.OutboundCapEffects.init(allocator, outbound_ctx, on_outbound_cap_rollback);
-    defer effects.deinit();
-    var effects_committed = false;
-    errdefer if (!effects_committed) effects.rollback();
-    try cap_table.encodeCallPayloadCapsWithEffects(caps, &call, on_outbound_cap, &effects);
+    try cap_table.outbound.encodeLoopbackCallPayloadCaps(caps, &call);
     const bytes = try builder.finish();
     defer allocator.free(bytes);
     try handle_frame(peer, bytes);
-    cap_table.commitOutboundCapEffects(caps, &effects);
-    effects_committed = true;
     return question_id;
 }
 
@@ -360,9 +357,6 @@ test "peer_call_sender sendCallToExport marks loopback question and dispatches f
         QuestionCallback,
         state.allocator,
         &state.caps,
-        null,
-        null,
-        null,
         &state,
         &state.questions,
         &state.loopback_questions,

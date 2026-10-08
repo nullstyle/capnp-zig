@@ -224,6 +224,17 @@ fn collectCapsFromPointer(
     }
 }
 
+/// Where an encoded payload goes.
+const EncodeDestination = enum {
+    /// To the remote, over the transport.
+    wire,
+    /// Back into this peer (a loopback Call or Return). The receiver is this
+    /// peer itself: it takes no wire reference, so no callback runs, and it
+    /// holds the capability itself, so a third-party handoff mark does not
+    /// apply.
+    loopback,
+};
+
 /// Encode capability descriptors into the outbound payload's cap table.
 ///
 // SAFETY: writePointerWord only mutates capability pointers after they have been fully
@@ -234,6 +245,7 @@ fn encodePayloadCaps(
     payload: protocol.PayloadBuilder,
     on_entry: ?CapEntryCallback,
     effects: *OutboundCapEffects,
+    destination: EncodeDestination,
 ) !?ResolvedCap {
     var payload_builder = payload;
     var outbound = OutboundCapTable.init(table.allocator);
@@ -265,6 +277,19 @@ fn encodePayloadCaps(
 
     for (outbound.entries.items, 0..) |entry, idx| {
         var elem = try cap_list.get(@intCast(idx));
+
+        if (destination == .loopback) {
+            switch (entry.tag) {
+                .senderHosted => try elem.setSenderHosted(entry.id),
+                .senderPromise => try elem.setSenderPromise(entry.id),
+                .receiverHosted => try elem.setReceiverHosted(entry.id),
+                // A promise on one of our questions has no entry on the
+                // loopback receiver's side (see `InboundCapTable.initLoopback`).
+                .receiverAnswer => return error.LoopbackPromisedCapabilityUnsupported,
+                else => {},
+            }
+            continue;
+        }
 
         // ORIGINATION override: a cap marked for three-party handoff is emitted
         // as `thirdPartyHosted{ id = ThirdPartyToContact, vineId }` instead of
@@ -328,7 +353,30 @@ pub fn encodeCallPayloadCapsWithEffects(
     effects: *OutboundCapEffects,
 ) !void {
     const payload = try call.payloadTyped();
-    _ = try encodePayloadCaps(table, payload, on_entry, effects);
+    _ = try encodePayloadCaps(table, payload, on_entry, effects, .wire);
+}
+
+/// Encode the cap table of a LOOPBACK Call: one this peer dispatches to its
+/// own export instead of sending. Descriptors are written from our side, as
+/// for the wire, but nothing is staged: the receiver (this peer) takes no
+/// wire reference on our exports and keeps no third-party handoff, and the
+/// loopback decode (`InboundCapTable.initLoopback`) maps every descriptor
+/// back to our own cap table. A promise on one of our questions
+/// (`receiverAnswer`) fails with `error.LoopbackPromisedCapabilityUnsupported`
+/// before anything is dispatched.
+pub fn encodeLoopbackCallPayloadCaps(table: *CapTable, call: *protocol.CallBuilder) !void {
+    var effects = OutboundCapEffects.init(table.allocator, null, null);
+    defer effects.deinit();
+    const payload = try call.payloadTyped();
+    _ = try encodePayloadCaps(table, payload, null, &effects, .loopback);
+}
+
+/// `encodeLoopbackCallPayloadCaps` for the results of a LOOPBACK Return.
+pub fn encodeLoopbackReturnPayloadCaps(table: *CapTable, ret: *protocol.ReturnBuilder) !void {
+    var effects = OutboundCapEffects.init(table.allocator, null, null);
+    defer effects.deinit();
+    const payload = try ret.payloadTyped();
+    _ = try encodePayloadCaps(table, payload, null, &effects, .loopback);
 }
 
 pub fn encodeCallPayloadCaps(
@@ -352,7 +400,7 @@ pub fn encodeReturnPayloadCapsWithEffects(
     effects: *OutboundCapEffects,
 ) !?ResolvedCap {
     const payload = try ret.payloadTyped();
-    return encodePayloadCaps(table, payload, on_entry, effects);
+    return encodePayloadCaps(table, payload, on_entry, effects, .wire);
 }
 
 pub fn encodeReturnPayloadCaps(

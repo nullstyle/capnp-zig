@@ -4143,9 +4143,16 @@ pub const Peer = struct {
         return ExportReleaseImpl.releaseResolvedCap(self, resolved);
     }
 
-    /// Body in `peer_export_release.zig`.
+    /// Deliver the Return of a loopback question: one this peer answered for
+    /// itself (`sendCallToExport`). This peer encoded the frame, so its
+    /// results are read back from our own side (`InboundCapTable.initLoopback`):
+    /// our export arrives as `.exported`, our import as `.imported` with a
+    /// loopback reference, never as the remote's capability with the same id.
     pub fn deliverLoopbackReturn(self: *Peer, frame: []const u8) !void {
-        return ExportReleaseImpl.deliverLoopbackReturn(self, frame);
+        var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+        defer decoded.deinit();
+        if (decoded.tag != .@"return") return error.UnexpectedMessage;
+        try self.handleReturnFrom(frame, try decoded.asReturn(), .loopback);
     }
 
     /// Body in `peer_export_release.zig`.
@@ -4342,6 +4349,12 @@ pub const Peer = struct {
     /// capabilities deliberately remain callable after transport close (the
     /// L3 disconnect-after-Provide contract), while public/transport ingress
     /// is rejected by `handleFrame` once close has been notified.
+    ///
+    /// A Call whose question is one of this peer's loopback questions
+    /// (`sendCallToExport` registers it before dispatching) was encoded by
+    /// this peer, so its capability descriptors are read from our own side
+    /// (`InboundCapTable.initLoopback`); its Return comes back through
+    /// `deliverLoopbackReturn`.
     pub fn handleLoopbackFrame(self: *Peer, frame: []const u8) !void {
         self.assertThreadAffinity();
         return self.handleFrameImpl(frame, .loopback);
@@ -5861,7 +5874,19 @@ pub const Peer = struct {
         return inbound;
     }
 
+    /// The inbound cap table of a loopback Return (`deliverLoopbackReturn`):
+    /// this peer encoded its results, so they map to our own cap table. No
+    /// fd travels with a loopback Return.
+    fn initLoopbackReturnInboundCaps(self: *Peer, ret: protocol.Return) anyerror!cap_table.InboundCapTable {
+        const cap_list = if (ret.tag == .results and ret.results != null) ret.results.?.cap_table else null;
+        return cap_table.InboundCapTable.initLoopback(self.allocator, cap_list, &self.caps);
+    }
+
     pub fn handleReturn(self: *Peer, frame: []const u8, ret: protocol.Return) anyerror!void {
+        return self.handleReturnFrom(frame, ret, .transport);
+    }
+
+    fn handleReturnFrom(self: *Peer, frame: []const u8, ret: protocol.Return, comptime origin: FrameOrigin) anyerror!void {
         // The wire effect of a Return on our sent param caps is independent
         // of local dispatch: the moment the remote sent this frame it either
         // dropped the refs (releaseParamCaps=true, the default) or committed
@@ -5939,7 +5964,10 @@ pub const Peer = struct {
             peer_return_orchestration.restoreQuestionForReturnForPeerFn(Peer, Question),
             peer_return_orchestration.completeQuestionRemovalForPeerFn(Peer),
             Peer.handleMissingReturnQuestion,
-            initReturnInboundCaps,
+            switch (origin) {
+                .transport => initReturnInboundCaps,
+                .loopback => initLoopbackReturnInboundCaps,
+            },
             peer_return_orchestration.deinitInboundCapsForTypeFn(cap_table.InboundCapTable),
             third_party.adoption.handleReturnAcceptFromThirdPartyForPeerFn(
                 Peer,
@@ -6086,7 +6114,7 @@ pub const Peer = struct {
             self: *Peer,
             inbound: *cap_table.InboundCapTable,
         ) !std.AutoHashMap(u32, u32) {
-            const release_import = peer_cap_lifecycle.releaseImportRefForPeerFn(Peer);
+            const spend_import_ref = peer_cap_lifecycle.spendImportRefForPeerFn(Peer);
             var releases = std.AutoHashMap(u32, u32).init(self.allocator);
             errdefer releases.deinit();
             var idx: u32 = 0;
@@ -6095,10 +6123,11 @@ pub const Peer = struct {
                 const entry = try inbound.get(idx);
                 switch (entry) {
                     .imported => |cap| {
-                        const removed = release_import(self, cap.id);
-                        if (removed) {
+                        const spent = spend_import_ref(self, cap.id);
+                        if (spent.fully_released) {
                             try Peer.releaseResolvedImport(self, cap.id);
                         }
+                        if (!spent.wire) continue;
                         const slot = try releases.getOrPut(cap.id);
                         if (!slot.found_existing) {
                             slot.value_ptr.* = 1;

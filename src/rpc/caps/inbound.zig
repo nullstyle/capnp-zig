@@ -69,6 +69,64 @@ pub const InboundCapTable = struct {
         };
     }
 
+    /// Build the cap table of a LOOPBACK payload: a Call or Return this peer
+    /// encoded and then dispatched to itself instead of sending it.
+    ///
+    /// Our own encoder wrote its descriptors from OUR side, so they are read
+    /// back from our side too, never as if the remote had sent them:
+    ///
+    /// - `senderHosted`/`senderPromise` name one of our exports: `.exported`.
+    ///   It takes no reference, like any `.exported` entry.
+    /// - `receiverHosted` names one of our imports: `.imported`, holding one
+    ///   loopback reference (`CapTable.noteLoopbackImportRef`) that the
+    ///   receiver spends like any import reference. Spending it never sends
+    ///   a Release: the remote granted nothing.
+    /// - `receiverAnswer` names an answer on the REMOTE (a promise on one of
+    ///   our own questions). An inbound `.promised` entry means one of OUR
+    ///   answers, so no entry can carry it without being read in the wrong
+    ///   id space: `error.LoopbackPromisedCapabilityUnsupported`. The
+    ///   loopback encoder refuses it first (`outbound.encodeLoopbackCallPayloadCaps`).
+    /// - `thirdPartyHosted` never comes from the loopback encoder:
+    ///   `error.LoopbackThirdPartyCapabilityUnsupported`.
+    ///
+    /// A descriptor naming an export or import this peer does not hold fails
+    /// with `error.UnknownExport` / `error.UnknownImport`.
+    pub fn initLoopback(
+        allocator: std.mem.Allocator,
+        list_opt: ?message.StructListReader,
+        table: *CapTable,
+    ) !InboundCapTable {
+        const list = list_opt orelse return init(allocator, null, table);
+
+        const count = list.len();
+        if (count > max_table_size) return error.CapTableFull;
+        var entries = try allocator.alloc(ResolvedCap, count);
+        errdefer allocator.free(entries);
+        const retained = try allocator.alloc(bool, count);
+        errdefer allocator.free(retained);
+        @memset(retained, false);
+        var processed: u32 = 0;
+        errdefer {
+            // Give back the loopback references already taken.
+            for (entries[0..processed]) |entry| {
+                if (entry == .imported) {
+                    _ = table.spendImportRef(entry.imported.id);
+                }
+            }
+        }
+        while (processed < count) : (processed += 1) {
+            const reader = try list.get(processed);
+            const descriptor = try protocol.CapDescriptor.fromReader(reader);
+            entries[processed] = try resolveLoopbackDescriptor(table, descriptor);
+        }
+
+        return .{
+            .allocator = allocator,
+            .entries = entries,
+            .retained = retained,
+        };
+    }
+
     pub fn deinit(self: *InboundCapTable) void {
         for (self.owned_promised) |*owned| {
             owned.deinit(self.allocator);
@@ -178,6 +236,27 @@ fn resolveDescriptor(table: *CapTable, descriptor: protocol.CapDescriptor) !Reso
             try table.noteImport(third.vine_id);
             return .{ .imported = .{ .id = third.vine_id } };
         },
+    };
+}
+
+/// `resolveDescriptor` for a loopback payload (see
+/// `InboundCapTable.initLoopback`): the descriptor was written from our own
+/// side, so it maps to our own cap table.
+fn resolveLoopbackDescriptor(table: *CapTable, descriptor: protocol.CapDescriptor) !ResolvedCap {
+    return switch (descriptor.tag) {
+        .none => .none,
+        .senderHosted, .senderPromise => {
+            const id = descriptor.id orelse return error.MissingCapDescriptorId;
+            if (!table.hasExport(id)) return error.UnknownExport;
+            return .{ .exported = .{ .id = id } };
+        },
+        .receiverHosted => {
+            const id = descriptor.id orelse return error.MissingCapDescriptorId;
+            try table.noteLoopbackImportRef(id);
+            return .{ .imported = .{ .id = id } };
+        },
+        .receiverAnswer => error.LoopbackPromisedCapabilityUnsupported,
+        .thirdPartyHosted => error.LoopbackThirdPartyCapabilityUnsupported,
     };
 }
 

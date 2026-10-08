@@ -41,8 +41,10 @@ pub fn ExportRelease(comptime Peer: type) type {
                 self,
                 import_id,
                 count,
-                peer_cap_lifecycle.importRefCountForPeerFn(Peer),
-                peer_cap_lifecycle.releaseImportRefForPeerFn(Peer),
+                // Loopback references count: a holder may own one, and
+                // spending it sends no Release (CapTable.spendImportRef).
+                peer_cap_lifecycle.heldImportRefCountForPeerFn(Peer),
+                peer_cap_lifecycle.spendImportRefForPeerFn(Peer),
                 releaseResolvedImport,
                 // The withhold seam: defers the Release while a handoff pin
                 // lives (see sendReleaseDeferringHandoffPin).
@@ -76,8 +78,10 @@ pub fn ExportRelease(comptime Peer: type) type {
                 self,
                 import_id,
                 count,
+                // The host takes over WIRE references only; a loopback
+                // reference stays with its local holder.
                 peer_cap_lifecycle.importRefCountForPeerFn(Peer),
-                peer_cap_lifecycle.releaseImportRefForPeerFn(Peer),
+                peer_cap_lifecycle.spendWireImportRefForPeerFn(Peer),
                 releaseResolvedImport,
                 noopSendReleaseForForgottenImport,
             );
@@ -486,7 +490,9 @@ pub fn ExportRelease(comptime Peer: type) type {
                 self.allocator,
                 self,
                 inbound,
-                peer_cap_lifecycle.releaseImportRefForPeerFn(Peer),
+                // A loopback table's `.imported` entries hold loopback
+                // references, spent first and without a Release.
+                peer_cap_lifecycle.spendImportRefForPeerFn(Peer),
                 releaseResolvedImport,
                 // The withhold seam: defers the Release while a handoff pin
                 // lives (see sendReleaseDeferringHandoffPin).
@@ -584,13 +590,6 @@ pub fn ExportRelease(comptime Peer: type) type {
                 .imported => |cap| try releaseImport(self, cap.id, 1),
                 else => {},
             }
-        }
-
-        pub fn deliverLoopbackReturn(self: *Peer, frame: []const u8) !void {
-            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
-            defer decoded.deinit();
-            if (decoded.tag != .@"return") return error.UnexpectedMessage;
-            try self.handleReturn(frame, try decoded.asReturn());
         }
 
         /// Re-resolve a stored (ops-based) provide target against this peer's own

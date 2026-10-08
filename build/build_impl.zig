@@ -1134,6 +1134,22 @@ pub fn buildImpl(b: *std.Build) !void {
     registered_test_compile_steps.append(b.allocator, &rpc_cap_pass_back_tests.step) catch @panic("OOM");
     const run_rpc_cap_pass_back_tests = &b.addRunArtifact(rpc_cap_pass_back_tests).step;
 
+    // Loopback calls with capabilities in params and results, through the
+    // raw Peer API (`sendCallResolved(.exported)` and sendCall's
+    // resolved-import fast path), over two in-process peers.
+    const rpc_loopback_caps_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc/integration/rpc_loopback_caps_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &rpc_loopback_caps_tests.step) catch @panic("OOM");
+    const run_rpc_loopback_caps_tests = &b.addRunArtifact(rpc_loopback_caps_tests).step;
+
     const wasm_host_abi_test_module = b.createModule(.{
         .root_source_file = b.path("src/wasm/capnp_host_abi.zig"),
         .target = target,
@@ -1648,6 +1664,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_integration_step.dependOn(run_rpc_persistence_reconnect_tests);
     test_rpc_integration_step.dependOn(run_rpc_typed_pipelining_tests);
     test_rpc_integration_step.dependOn(run_rpc_cap_pass_back_tests);
+    test_rpc_integration_step.dependOn(run_rpc_loopback_caps_tests);
 
     const test_rpc_step = b.step("test-rpc", "Run all RPC tests");
     test_rpc_step.dependOn(test_rpc_wire_step);

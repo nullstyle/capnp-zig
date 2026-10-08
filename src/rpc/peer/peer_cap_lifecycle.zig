@@ -1,7 +1,10 @@
 const std = @import("std");
 const log = std.log.scoped(.rpc_peer);
 const protocol = @import("../wire/protocol.zig");
+const cap_lifecycle = @import("../caps/lifecycle.zig");
 const peer_fds = @import("./peer_fds.zig");
+
+pub const ImportRefSpend = cap_lifecycle.CapTable.ImportRefSpend;
 
 pub fn handleRelease(
     comptime PeerType: type,
@@ -12,32 +15,37 @@ pub fn handleRelease(
     try on_release_export(peer, release.id, release.reference_count);
 }
 
+/// Spend up to `count` of the references held on import `import_id`, then
+/// send one Release for the WIRE references among them. A loopback
+/// reference (`CapTable.noteLoopbackImportRef`) was never granted by the
+/// remote, so spending one sends nothing.
 pub fn releaseImport(
     comptime PeerType: type,
     peer: *PeerType,
     import_id: u32,
     count: u32,
     get_import_ref_count: *const fn (*PeerType, u32) u32,
-    release_import_ref: *const fn (*PeerType, u32) bool,
+    spend_import_ref: *const fn (*PeerType, u32) ImportRefSpend,
     release_resolved_import: *const fn (*PeerType, u32) anyerror!void,
     send_release: *const fn (*PeerType, u32, u32) anyerror!void,
 ) !void {
     if (count == 0) return;
     var remaining = count;
-    var released: u32 = 0;
-    var removed = false;
+    var wire_released: u32 = 0;
+    var fully_released = false;
     while (remaining > 0) : (remaining -= 1) {
         if (get_import_ref_count(peer, import_id) == 0) break;
-        released += 1;
-        if (release_import_ref(peer, import_id)) removed = true;
+        const spent = spend_import_ref(peer, import_id);
+        if (spent.wire) wire_released += 1;
+        if (spent.fully_released) fully_released = true;
     }
-    if (released == 0) return;
-    if (removed) {
+    if (fully_released) {
         try release_resolved_import(peer, import_id);
     }
-    try send_release(peer, import_id, released);
+    if (wire_released > 0) try send_release(peer, import_id, wire_released);
 }
 
+/// The wire references held on an import.
 pub fn importRefCountForPeer(comptime PeerType: type, peer: *PeerType, import_id: u32) u32 {
     const import_entry = peer.caps.imports.get(import_id) orelse return 0;
     return import_entry.ref_count;
@@ -47,6 +55,21 @@ pub fn importRefCountForPeerFn(comptime PeerType: type) *const fn (*PeerType, u3
     return struct {
         fn call(peer: *PeerType, import_id: u32) u32 {
             return importRefCountForPeer(PeerType, peer, import_id);
+        }
+    }.call;
+}
+
+/// Every reference a holder can spend on an import: its wire references
+/// plus its loopback references.
+pub fn heldImportRefCountForPeer(comptime PeerType: type, peer: *PeerType, import_id: u32) u32 {
+    const import_entry = peer.caps.imports.get(import_id) orelse return 0;
+    return import_entry.ref_count +| import_entry.loopback_ref_count;
+}
+
+pub fn heldImportRefCountForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) u32 {
+    return struct {
+        fn call(peer: *PeerType, import_id: u32) u32 {
+            return heldImportRefCountForPeer(PeerType, peer, import_id);
         }
     }.call;
 }
@@ -62,6 +85,34 @@ pub fn releaseImportRefForPeerFn(comptime PeerType: type) *const fn (*PeerType, 
     return struct {
         fn call(peer: *PeerType, import_id: u32) bool {
             return releaseImportRefForPeer(PeerType, peer, import_id);
+        }
+    }.call;
+}
+
+/// A holder spends one reference on an import: a loopback reference first,
+/// else a wire reference (`CapTable.spendImportRef`).
+pub fn spendImportRefForPeer(comptime PeerType: type, peer: *PeerType, import_id: u32) ImportRefSpend {
+    const spent = peer.caps.spendImportRef(import_id);
+    // Fd passing: an import that left the table closes its fd.
+    if (comptime @hasField(PeerType, "fds")) peer_fds.PeerFds(PeerType).importReleased(peer, import_id);
+    return spent;
+}
+
+pub fn spendImportRefForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) ImportRefSpend {
+    return struct {
+        fn call(peer: *PeerType, import_id: u32) ImportRefSpend {
+            return spendImportRefForPeer(PeerType, peer, import_id);
+        }
+    }.call;
+}
+
+/// `spendImportRefForPeerFn` restricted to wire references, for callers
+/// that hand wire references themselves to someone else
+/// (`Peer.forgetImportRefsForHost`).
+pub fn spendWireImportRefForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) ImportRefSpend {
+    return struct {
+        fn call(peer: *PeerType, import_id: u32) ImportRefSpend {
+            return .{ .wire = true, .fully_released = releaseImportRefForPeer(PeerType, peer, import_id) };
         }
     }.call;
 }
@@ -522,12 +573,12 @@ test "peer_cap_lifecycle releaseImport sends release and only releases resolved 
             return state.ref_count;
         }
 
-        fn releaseImportRef(state: *@This(), import_id: u32) bool {
+        fn releaseImportRef(state: *@This(), import_id: u32) ImportRefSpend {
             _ = import_id;
             state.release_import_calls += 1;
-            if (state.ref_count == 0) return false;
+            if (state.ref_count == 0) return .{ .wire = false, .fully_released = false };
             state.ref_count -= 1;
-            return state.ref_count == 0;
+            return .{ .wire = true, .fully_released = state.ref_count == 0 };
         }
 
         fn releaseResolved(state: *@This(), promise_id: u32) !void {
@@ -572,12 +623,12 @@ test "peer_cap_lifecycle releaseImport only sends decremented ref count" {
             return state.ref_count;
         }
 
-        fn releaseImportRef(state: *@This(), import_id: u32) bool {
+        fn releaseImportRef(state: *@This(), import_id: u32) ImportRefSpend {
             _ = import_id;
             state.release_import_calls += 1;
-            if (state.ref_count == 0) return false;
+            if (state.ref_count == 0) return .{ .wire = false, .fully_released = false };
             state.ref_count -= 1;
-            return state.ref_count == 0;
+            return .{ .wire = true, .fully_released = state.ref_count == 0 };
         }
 
         fn releaseResolved(_: *@This(), _: u32) !void {}
@@ -602,6 +653,51 @@ test "peer_cap_lifecycle releaseImport only sends decremented ref count" {
     try std.testing.expectEqual(@as(usize, 2), state.release_import_calls);
     try std.testing.expectEqual(@as(usize, 1), state.send_release_calls);
     try std.testing.expectEqual(@as(u32, 2), state.last_send_count);
+}
+
+test "peer_cap_lifecycle releaseImport sends a Release only for wire references" {
+    const State = struct {
+        /// Loopback references are spent first and owe the remote nothing.
+        loopback: u32 = 2,
+        wire: u32 = 1,
+        release_resolved_calls: usize = 0,
+        send_release_calls: usize = 0,
+        last_send_count: u32 = 0,
+
+        fn getRefCount(state: *@This(), _: u32) u32 {
+            return state.loopback + state.wire;
+        }
+
+        fn spend(state: *@This(), _: u32) ImportRefSpend {
+            if (state.loopback > 0) {
+                state.loopback -= 1;
+                return .{ .wire = false, .fully_released = false };
+            }
+            state.wire -= 1;
+            return .{ .wire = true, .fully_released = state.wire == 0 };
+        }
+
+        fn releaseResolved(state: *@This(), _: u32) !void {
+            state.release_resolved_calls += 1;
+        }
+
+        fn sendRelease(state: *@This(), _: u32, count: u32) !void {
+            state.send_release_calls += 1;
+            state.last_send_count = count;
+        }
+    };
+
+    // Two holders let go of loopback references: nothing goes out.
+    var state = State{};
+    try releaseImport(State, &state, 9, 2, State.getRefCount, State.spend, State.releaseResolved, State.sendRelease);
+    try std.testing.expectEqual(@as(usize, 0), state.send_release_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.release_resolved_calls);
+
+    // The last holder spends the wire reference: one Release, count 1.
+    try releaseImport(State, &state, 9, 1, State.getRefCount, State.spend, State.releaseResolved, State.sendRelease);
+    try std.testing.expectEqual(@as(usize, 1), state.send_release_calls);
+    try std.testing.expectEqual(@as(u32, 1), state.last_send_count);
+    try std.testing.expectEqual(@as(usize, 1), state.release_resolved_calls);
 }
 
 test "peer_cap_lifecycle releaseImportRefForPeerFn delegates to peer cap table" {

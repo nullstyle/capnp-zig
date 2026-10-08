@@ -331,20 +331,28 @@ capnpc-zig.rpc.caps.descriptors: struct
 capnpc-zig.rpc.caps.inbound: struct
 capnpc-zig.rpc.caps.lifecycle: struct
 capnpc-zig.rpc.caps.outbound: struct
+capnpc-zig.rpc.caps.table.inbound.InboundCapTable.initLoopback: fn (mem.Allocator, ?serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).StructListReader, *rpc.caps.lifecycle.CapTable) error{CannotUpgradeBitList,CapTableFull,IndexOutOfBounds,InvalidDiscriminant,InvalidFarPointer,InvalidInlineCompositePointer,InvalidPointer,InvalidRootPointer,InvalidSegmentId,LoopbackPromisedCapabilityUnsupported,LoopbackThirdPartyCapabilityUnsupported,MissingCapDescriptorId,MissingPromisedAnswer,MissingThirdPartyCapDescriptor,OutOfBounds,OutOfMemory,PointerDepthLimit,RefCountOverflow,TransformTooLong,TruncatedMessage,UnknownExport,UnknownImport}!rpc.caps.inbound.InboundCapTable
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.HandoffImportUnpin.deferred_release: field u32
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.HandoffImportUnpin.last_pin_released: field bool
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.HandoffImportUnpin: struct
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.ImportRefSpend.fully_released: field bool
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.ImportRefSpend.wire: field bool
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.ImportRefSpend: struct
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.clearThirdPartyHosted: fn (*rpc.caps.lifecycle.CapTable, u32) void
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.deferReleaseWhilePinned: fn (*rpc.caps.lifecycle.CapTable, u32, u32) error{RefCountOverflow}!bool
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.getThirdPartyHosted: fn (*const rpc.caps.lifecycle.CapTable, u32) ?rpc.caps.lifecycle.ThirdPartyHostedRecord
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.markThirdPartyHosted: fn (*rpc.caps.lifecycle.CapTable, u32, []const u8, u32) error{OutOfMemory}!void
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.noteHandoffImportPin: fn (*rpc.caps.lifecycle.CapTable, u32) error{RefCountOverflow,UnknownImport}!void
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.noteLoopbackImportRef: fn (*rpc.caps.lifecycle.CapTable, u32) error{RefCountOverflow,UnknownImport}!void
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.releaseHandoffImportPin: fn (*rpc.caps.lifecycle.CapTable, u32) rpc.caps.lifecycle.CapTable.HandoffImportUnpin
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.removeImportIfFullyReleased: fn (*rpc.caps.lifecycle.CapTable, u32) bool
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.rollbackHandoffImportPin: fn (*rpc.caps.lifecycle.CapTable, u32) void
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.spendImportRef: fn (*rpc.caps.lifecycle.CapTable, u32) rpc.caps.lifecycle.CapTable.ImportRefSpend
 capnpc-zig.rpc.caps.table.lifecycle.ThirdPartyHostedRecord.contact_payload: field []u8
 capnpc-zig.rpc.caps.table.lifecycle.ThirdPartyHostedRecord.vine_id: field u32
 capnpc-zig.rpc.caps.table.lifecycle.ThirdPartyHostedRecord: struct
+capnpc-zig.rpc.caps.table.outbound.encodeLoopbackCallPayloadCaps: fn (*rpc.caps.lifecycle.CapTable, *rpc.wire.protocol.CallBuilder) anyerror!void
+capnpc-zig.rpc.caps.table.outbound.encodeLoopbackReturnPayloadCaps: fn (*rpc.caps.lifecycle.CapTable, *rpc.wire.protocol.ReturnBuilder) anyerror!void
 capnpc-zig.rpc.caps.table.payload_remap.clonePayloadWithRemappedCapsWithOptions: fn (comptime type, anytype, *serialization.message.MessageBuilder, rpc.gen.capnp.rpc.Payload.Builder, rpc.wire.protocol.Payload, *const rpc.caps.inbound.InboundCapTable, anytype, serialization.copy_budget.Options) anyerror!void
 capnpc-zig.rpc.caps: struct
 capnpc-zig.rpc.events.BackpressureEvent.attempted_bytes: field ?usize = null

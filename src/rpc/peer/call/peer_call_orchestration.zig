@@ -176,6 +176,27 @@ pub fn handleResolvedExportedCallForPeerFn(
     }.call;
 }
 
+/// The inbound cap table of `call`'s params. A call whose question is one of
+/// this peer's own loopback questions (`sendCallToExport` registers it before
+/// dispatching the frame) was encoded by this peer: its descriptors are read
+/// from our own side (`InboundCapTable.initLoopback`). Every other call came
+/// from the remote. Loopback question ids are drawn apart from the remote's
+/// question ids and stay in the answer namespace while the call is open, so
+/// a remote Call cannot claim one (`DuplicateQuestionId`).
+fn initCallInboundCaps(
+    comptime PeerType: type,
+    comptime InboundCapsType: type,
+    peer: *PeerType,
+    call: protocol.Call,
+) !InboundCapsType {
+    if (comptime @hasField(PeerType, "loopback_questions") and @hasDecl(InboundCapsType, "initLoopback")) {
+        if (peer.loopback_questions.contains(call.question_id)) {
+            return InboundCapsType.initLoopback(peer.allocator, call.params.cap_table, &peer.caps);
+        }
+    }
+    return InboundCapsType.init(peer.allocator, call.params.cap_table, &peer.caps);
+}
+
 pub fn handleCallImportedTargetForPeer(
     comptime PeerType: type,
     comptime InboundCapsType: type,
@@ -192,7 +213,7 @@ pub fn handleCallImportedTargetForPeer(
     prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
     promise_export_to_park_on: *const fn (*PeerType, u32) ?u32,
 ) !void {
-    var inbound_caps = try InboundCapsType.init(peer.allocator, call.params.cap_table, &peer.caps);
+    var inbound_caps = try initCallInboundCaps(PeerType, InboundCapsType, peer, call);
     // Fd passing: imports the params noted take the fds their descriptors
     // name, before any handler can ask for them.
     if (comptime @hasField(PeerType, "fds")) peer_fds.PeerFds(PeerType).adoptPayload(peer, call.params.cap_table);
@@ -392,7 +413,7 @@ pub fn handleCallPromisedTargetForPeer(
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
     prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
 ) !void {
-    var inbound_caps = try InboundCapsType.init(peer.allocator, call.params.cap_table, &peer.caps);
+    var inbound_caps = try initCallInboundCaps(PeerType, InboundCapsType, peer, call);
     // Fd passing: imports the params noted take the fds their descriptors
     // name, before any handler can ask for them.
     if (comptime @hasField(PeerType, "fds")) peer_fds.PeerFds(PeerType).adoptPayload(peer, call.params.cap_table);

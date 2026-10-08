@@ -68,7 +68,6 @@ pub fn ReturnSend(comptime Peer: type) type {
             // build fn keeps the last word for answers it settles itself.
             ret.setReleaseParamCaps(self.returnReleasesParamCaps(answer_id));
             try build(ctx, &ret);
-            _ = try cap_table.encodeReturnPayloadCapsWithEffects(&self.caps, &ret, Peer.onOutboundCap, &effects);
 
             // Capture before delivery: sendReturnFrameWithLoopback consumes the
             // loopback marker. Do not record a resolved answer for loopback
@@ -85,6 +84,15 @@ pub fn ReturnSend(comptime Peer: type) type {
             // immediately applies the Finish cleanup. Skipping the reservation
             // would strand those parked calls with no Return at all.
             const is_loopback = self.loopback_questions.contains(answer_id);
+
+            // A loopback Return comes straight back to this peer, which reads
+            // its results from our own side (`deliverLoopbackReturn`): it
+            // takes no wire reference on our exports, so none is noted.
+            if (is_loopback) {
+                try cap_table.outbound.encodeLoopbackReturnPayloadCaps(&self.caps, &ret);
+            } else {
+                _ = try cap_table.encodeReturnPayloadCapsWithEffects(&self.caps, &ret, Peer.onOutboundCap, &effects);
+            }
 
             // Fd passing: a Return that goes on the wire carries the fds of
             // its senderHosted results (`peer_fds.zig`); a loopback one never
@@ -245,19 +253,22 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// the resolved answer for later PromisedAnswer resolution.
         pub fn sendPrebuiltReturnFrame(self: *Peer, ret: protocol.Return, frame: []const u8) !void {
             self.assertThreadAffinity();
-            var rollback_outbound_refs = true;
-            errdefer if (rollback_outbound_refs) {
-                rollbackOutboundReturnCapRefs(self, ret) catch |err| {
-                    log.debug("failed to roll back outbound prebuilt return refs: {}", .{err});
-                };
-            };
-            try noteOutboundReturnCapRefs(self, ret);
-            clearSendResultsRouting(self, ret.answer_id);
             // Capture before delivery consumes the loopback marker. Finished-early
             // answers still reserve (see sendReturnResults): the post-send commit
             // step re-checks the tombstone map and commits-then-cleans so calls
             // pipelined on the answer replay instead of being stranded.
             const is_loopback = self.loopback_questions.contains(ret.answer_id);
+            // A loopback Return's results are read back from our own side
+            // (`deliverLoopbackReturn`), which takes no wire reference on our
+            // exports: note none.
+            var rollback_outbound_refs = !is_loopback;
+            errdefer if (rollback_outbound_refs) {
+                rollbackOutboundReturnCapRefs(self, ret) catch |err| {
+                    log.debug("failed to roll back outbound prebuilt return refs: {}", .{err});
+                };
+            };
+            if (!is_loopback) try noteOutboundReturnCapRefs(self, ret);
+            clearSendResultsRouting(self, ret.answer_id);
 
             // See sendReturnResults: loopback answers may not be recorded — no
             // Finish will clear them and the id would be poisoned for reuse.

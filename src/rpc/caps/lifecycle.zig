@@ -217,12 +217,53 @@ pub const CapTable = struct {
         // cleanup instead.
         if (entry.value_ptr.handoff_pin_count > 0) return false;
         // Wire references are exhausted. Keep the entry alive if a promise-held
-        // pin still leases it; otherwise remove it. Either way the wire side is
-        // fully released (return true) so the Release frame is still sent once.
-        if (entry.value_ptr.promise_ref_count == 0) {
+        // pin or a loopback reference still leases it; otherwise remove it.
+        // Either way the wire side is fully released (return true) so the
+        // Release frame is still sent once.
+        if (entry.value_ptr.promise_ref_count == 0 and entry.value_ptr.loopback_ref_count == 0) {
             _ = self.imports.remove(remote_id);
         }
         return true;
+    }
+
+    /// Take one loopback reference on import `remote_id`: a loopback Call or
+    /// Return (one this peer encoded and dispatched to itself) carried the
+    /// import as `receiverHosted`, and its receiver now holds the import as
+    /// `.imported` like any received capability. The remote granted nothing
+    /// for it, so it is counted apart from the wire `ref_count` and spending
+    /// it never sends a Release (`spendImportRef`). The import must already
+    /// exist.
+    pub fn noteLoopbackImportRef(self: *CapTable, remote_id: u32) error{ RefCountOverflow, UnknownImport }!void {
+        var entry = self.imports.getEntry(remote_id) orelse return error.UnknownImport;
+        entry.value_ptr.loopback_ref_count = std.math.add(u32, entry.value_ptr.loopback_ref_count, 1) catch return error.RefCountOverflow;
+    }
+
+    /// What `spendImportRef` did with the reference it spent.
+    pub const ImportRefSpend = struct {
+        /// A wire reference was spent: the caller owes the remote one
+        /// Release for it. False when a loopback reference was spent (the
+        /// remote never granted it) or no reference was held.
+        wire: bool,
+        /// The import is fully released here, with the meaning of
+        /// `releaseImport`'s result: the caller performs the
+        /// resolved-import cleanup.
+        fully_released: bool,
+    };
+
+    /// Spend one reference a holder owns on import `remote_id`. A holder
+    /// cannot tell a loopback reference from a wire one, and need not: they
+    /// are interchangeable. Loopback references are spent first, so the
+    /// remote's export lives until the last local holder lets go, and the
+    /// wire Releases still add up to exactly the references the remote
+    /// granted.
+    pub fn spendImportRef(self: *CapTable, remote_id: u32) ImportRefSpend {
+        const entry = self.imports.getEntry(remote_id) orelse return .{ .wire = false, .fully_released = false };
+        if (entry.value_ptr.loopback_ref_count > 0) {
+            entry.value_ptr.loopback_ref_count -= 1;
+            return .{ .wire = false, .fully_released = self.removeImportIfFullyReleased(remote_id) };
+        }
+        const wire = entry.value_ptr.ref_count > 0;
+        return .{ .wire = wire, .fully_released = self.releaseImport(remote_id) };
     }
 
     /// Take a promise-held pin on an import: a promise export that resolved to
@@ -315,7 +356,8 @@ pub const CapTable = struct {
     }
 
     /// Removal half of the handoff unpin: after the deferred emission, remove
-    /// the entry iff no wire refs, promise pins, or handoff pins remain.
+    /// the entry iff no wire refs, loopback refs, promise pins, or handoff
+    /// pins remain.
     /// Returns true when removed here — the caller must then perform the same
     /// resolved-import cleanup the generic release path performs on removal
     /// (retention-under-pin deferred exactly that cleanup). Re-checks the live
@@ -324,6 +366,7 @@ pub const CapTable = struct {
     pub fn removeImportIfFullyReleased(self: *CapTable, remote_id: u32) bool {
         const entry = self.imports.getEntry(remote_id) orelse return false;
         if (entry.value_ptr.ref_count != 0) return false;
+        if (entry.value_ptr.loopback_ref_count != 0) return false;
         if (entry.value_ptr.promise_ref_count != 0) return false;
         if (entry.value_ptr.handoff_pin_count != 0) return false;
         _ = self.imports.remove(remote_id);
@@ -342,6 +385,7 @@ pub const CapTable = struct {
         entry.value_ptr.promise_ref_count -= 1;
         if (entry.value_ptr.promise_ref_count == 0 and
             entry.value_ptr.ref_count == 0 and
+            entry.value_ptr.loopback_ref_count == 0 and
             entry.value_ptr.handoff_pin_count == 0)
         {
             _ = self.imports.remove(remote_id);
@@ -381,6 +425,11 @@ const ImportEntry = struct {
     /// Wire references: one per cap descriptor the remote handed us for this
     /// import, released by outbound Release messages when we drop them.
     ref_count: u32,
+    /// Loopback references: one per `receiverHosted` descriptor a loopback
+    /// Call or Return delivered (`noteLoopbackImportRef`). The remote never
+    /// granted them, so spending one never sends a Release; holders spend
+    /// these first (`spendImportRef`). The entry survives while any remain.
+    loopback_ref_count: u32 = 0,
     /// Promise-held pins: local lifetime leases taken when one of our promise
     /// exports resolves to this import (see `notePromiseImportRef`). NOT wire
     /// references — releasing a pin never sends a Release. The entry survives

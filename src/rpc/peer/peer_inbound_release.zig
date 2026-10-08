@@ -1,12 +1,17 @@
 const std = @import("std");
 const cap_table = @import("../caps/table.zig");
 
+const ImportRefSpend = cap_table.CapTable.ImportRefSpend;
+
+/// Spend the reference each unretained `.imported` entry holds, then send
+/// one Release per import for the WIRE references among them. An entry of a
+/// loopback table holds a loopback reference, which owes the remote nothing.
 pub fn releaseInboundCaps(
     comptime PeerType: type,
     allocator: std.mem.Allocator,
     peer: *PeerType,
     inbound: *cap_table.InboundCapTable,
-    release_import: *const fn (*PeerType, u32) bool,
+    spend_import_ref: *const fn (*PeerType, u32) ImportRefSpend,
     release_resolved_import: *const fn (*PeerType, u32) anyerror!void,
     send_release: *const fn (*PeerType, u32, u32) anyerror!void,
 ) !void {
@@ -15,7 +20,7 @@ pub fn releaseInboundCaps(
         allocator,
         peer,
         inbound,
-        release_import,
+        spend_import_ref,
         release_resolved_import,
     );
     defer releases.deinit();
@@ -31,7 +36,7 @@ fn collectReleaseCounts(
     allocator: std.mem.Allocator,
     peer: *PeerType,
     inbound: *cap_table.InboundCapTable,
-    release_import: *const fn (*PeerType, u32) bool,
+    spend_import_ref: *const fn (*PeerType, u32) ImportRefSpend,
     release_resolved_import: *const fn (*PeerType, u32) anyerror!void,
 ) !std.AutoHashMap(u32, u32) {
     var releases = std.AutoHashMap(u32, u32).init(allocator);
@@ -43,10 +48,11 @@ fn collectReleaseCounts(
         const entry = try inbound.get(idx);
         switch (entry) {
             .imported => |cap| {
-                const removed = release_import(peer, cap.id);
-                if (removed) {
+                const spent = spend_import_ref(peer, cap.id);
+                if (spent.fully_released) {
                     try release_resolved_import(peer, cap.id);
                 }
+                if (!spent.wire) continue;
                 const slot = try releases.getOrPut(cap.id);
                 if (!slot.found_existing) {
                     slot.value_ptr.* = 1;
@@ -82,9 +88,9 @@ test "peer_inbound_release aggregates sendRelease counts and handles resolved-im
     };
 
     const Hooks = struct {
-        fn releaseImport(state: *State, import_id: u32) bool {
+        fn releaseImport(state: *State, import_id: u32) ImportRefSpend {
             state.release_import_calls += 1;
-            return import_id == 7;
+            return .{ .wire = true, .fully_released = import_id == 7 };
         }
 
         fn releaseResolvedImport(state: *State, promise_id: u32) !void {
@@ -143,8 +149,8 @@ test "peer_inbound_release skips retained entries and propagates sendRelease err
     };
 
     const Hooks = struct {
-        fn releaseImport(_: *State, _: u32) bool {
-            return false;
+        fn releaseImport(_: *State, _: u32) ImportRefSpend {
+            return .{ .wire = true, .fully_released = false };
         }
 
         fn releaseResolvedImport(_: *State, _: u32) !void {
@@ -182,4 +188,43 @@ test "peer_inbound_release skips retained entries and propagates sendRelease err
     );
     try std.testing.expectError(error.TestExpectedError, err);
     try std.testing.expectEqual(@as(usize, 1), state.send_calls);
+}
+
+test "peer_inbound_release sends no Release for a loopback reference" {
+    var caps = cap_table.CapTable.init(std.testing.allocator);
+    defer caps.deinit();
+    try caps.noteImport(6);
+    try caps.noteLoopbackImportRef(6);
+
+    const State = struct {
+        caps: *cap_table.CapTable,
+        send_calls: usize = 0,
+
+        fn spend(state: *@This(), import_id: u32) ImportRefSpend {
+            return state.caps.spendImportRef(import_id);
+        }
+
+        fn releaseResolvedImport(_: *@This(), _: u32) !void {}
+
+        fn sendRelease(state: *@This(), _: u32, _: u32) !void {
+            state.send_calls += 1;
+        }
+    };
+
+    // A loopback table: its `.imported` entry holds the loopback reference.
+    var inbound = cap_table.InboundCapTable{
+        .allocator = std.testing.allocator,
+        .entries = try std.testing.allocator.alloc(cap_table.ResolvedCap, 1),
+        .retained = try std.testing.allocator.alloc(bool, 1),
+    };
+    defer inbound.deinit();
+    inbound.entries[0] = .{ .imported = .{ .id = 6 } };
+    inbound.retained[0] = false;
+
+    var state = State{ .caps = &caps };
+    try releaseInboundCaps(State, std.testing.allocator, &state, &inbound, State.spend, State.releaseResolvedImport, State.sendRelease);
+    try std.testing.expectEqual(@as(usize, 0), state.send_calls);
+    // The wire reference the remote granted is still held.
+    try std.testing.expectEqual(@as(u32, 1), caps.imports.get(6).?.ref_count);
+    try std.testing.expectEqual(@as(u32, 0), caps.imports.get(6).?.loopback_ref_count);
 }
