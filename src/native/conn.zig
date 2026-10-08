@@ -131,12 +131,18 @@ const LengthCodec = struct {
 pub const Stats = struct {
     /// Questions that ended through their `on_return` callback.
     terminal_via_on_return: u64 = 0,
-    /// Questions that ended ONLY through `deinit_ctx` (claims.json #5:
-    /// synthetic-Return OOM, swept third-party awaits).
+    /// Questions that ended ONLY through `deinit_ctx` (claims.json #5). Since
+    /// capnp-zig 0.23.0 (handoff H8) the Peer delivers cancels, deadlines and
+    /// disconnects through on_return even without memory; what is left is a
+    /// question the remote answered with `awaitFromThirdParty`, which the
+    /// Peer parks outside its question table and frees through `deinit_ctx`
+    /// when its third-party sweep (transport close, deadline) collects it.
     terminal_via_deinit_ctx: u64 = 0,
     /// Questions `transportClosed` ended itself because the Peer left them
-    /// open (capnp-zig v0.20.0 skips every question when its cancel list
-    /// cannot be allocated; handoff H8).
+    /// open. Since 0.23.0 that is a parked `awaitFromThirdParty` question
+    /// the Peer's third-party sweep could not collect (its key list is
+    /// allocated; under OOM it skips). Before H8 it was every question under
+    /// OOM.
     terminal_via_close_sweep: u64 = 0,
     exports_dropped: u64 = 0,
     events_dropped: u64 = 0,
@@ -334,11 +340,13 @@ pub const Conn = struct {
         self.transport_closed = true;
         self.local_disconnect = true;
         self.peer.notifyTransportClosed();
-        // The Peer may leave questions open: under OOM capnp-zig v0.20.0
-        // cancels none of them (its id list is allocated, `catch break`;
-        // handoff H8), and claims.json #5 lets terminals come later. End
-        // every one still open here. If the Peer calls back for one later,
-        // that callback only frees its context.
+        // The Peer may leave questions open, and claims.json #5 lets their
+        // terminals come later. Since capnp-zig 0.23.0 (handoff H8) its
+        // cancel pass allocates nothing, but a question parked on
+        // `awaitFromThirdParty` is collected by a sweep whose key list is
+        // allocated (`catch break`), so under OOM it stays open. End every
+        // one still open here. If the Peer calls back for one later, that
+        // callback only frees its context.
         self.sweepOpenQuestions();
     }
 

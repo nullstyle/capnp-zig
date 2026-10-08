@@ -1100,73 +1100,123 @@ test "clock: a bootstrap sent before the first tick is timed from creation, not 
 // Stats (review finding: u32 counters trapped on overflow)
 // ---------------------------------------------------------------------------
 
-test "stats: every counter saturates instead of trapping on a long-lived connection" {
+/// Answer A's open question `qid` with Return{awaitFromThirdParty}, as a
+/// three-party-capable callee may. A's Peer parks the question outside its
+/// question table until a ThirdPartyAnswer adopts it (none does here), and a
+/// parked question ends only through `deinit_ctx` (its third-party sweep) or,
+/// when that sweep cannot allocate, the shim's close sweep.
+fn parkOnThirdPartyAwait(alloc: std.mem.Allocator, a: *Conn, qid: u32) !void {
+    var completion_builder = message.MessageBuilder.init(alloc);
+    defer completion_builder.deinit();
+    const completion_root = try completion_builder.initRootAnyPointer();
+    try completion_root.setText("native-conn-test-completion");
+    const completion_bytes = try completion_builder.toBytes();
+    defer alloc.free(completion_bytes);
+    var completion_message = try message.Message.init(alloc, completion_bytes, .{});
+    defer completion_message.deinit();
+    const completion = try completion_message.getRootAnyPointer();
+
+    var builder = protocol.MessageBuilder.init(alloc);
+    defer builder.deinit();
+    var ret = try builder.beginReturn(qid, .awaitFromThirdParty);
+    try ret.setAcceptFromThirdParty(completion);
+    const frame = try builder.finish();
+    defer alloc.free(frame);
+    try a.pushBytes(frame);
+}
+
+/// One `Stats` counter, each with its own scenario in `driveCounter`.
+const Counter = enum { on_return, deinit_ctx, close_sweep, exports_dropped, events_dropped };
+
+/// Run `counter`'s path once on a fresh connection A whose counter starts at
+/// `start`, and return that counter after. A allocates through a
+/// FailingAllocator, so a scenario can take its memory away.
+fn driveCounter(counter: Counter, start: u64) !u64 {
     const alloc = testing.allocator;
-    const max = std.math.maxInt(u64);
+    var failing = std.testing.FailingAllocator.init(alloc, .{});
+    const a = try Conn.init(failing.allocator(), .{ .now_ns = 0, .observer = counter == .events_dropped });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
     const p = try msgU64(alloc, 1);
     defer alloc.free(p);
 
-    // on_return, exports_dropped and deinit_ctx-only terminals.
-    {
-        var failing = std.testing.FailingAllocator.init(alloc, .{});
-        const a = try Conn.init(failing.allocator(), .{ .now_ns = 0 });
-        defer a.deinit();
-        const b = try Conn.init(alloc, .{ .now_ns = 0 });
-        defer b.deinit();
-        var ra = Rec.init(alloc);
-        defer ra.deinit();
-        var rb = Rec.init(alloc);
-        defer rb.deinit();
-        a.stats = .{ .terminal_via_on_return = max, .terminal_via_deinit_ctx = max, .exports_dropped = max };
-
-        const ib = try connectPair(a, &ra, b, &rb); // a: on_return
-        const ea = try a.exportCap(200);
-        const pc = try msgCap(alloc, 1, 0);
-        defer alloc.free(pc);
-        const q1 = try a.call(ib, iface, 0, pc, &.{.{ .kind = .@"export", .id = ea }}, 0);
-        try pump(a, &ra, b, &rb);
-        const ia = try rootCap(alloc, rb.lastCall().msg, rb.lastCall().caps);
-        try b.release(ia.id, 1); // a: exports_dropped
-        try pump(a, &ra, b, &rb);
-        try testing.expectEqual(@as(usize, 1), ra.dropped.items.len);
-
-        // As in the deinit_ctx-only disconnect test: allow the cancel list,
-        // fail every synthetic Return.
-        failing.fail_index = failing.alloc_index + 1;
-        failing.resize_fail_index = failing.resize_index;
-        a.transportClosed(); // a: deinit_ctx
-        failing.fail_index = std.math.maxInt(usize);
-        failing.resize_fail_index = std.math.maxInt(usize);
-        try drainAll(a, &ra);
-        try testing.expectEqual(@as(usize, 1), ra.countReturns(q1));
-        try testing.expectEqual(Stats{
-            .terminal_via_on_return = max,
-            .terminal_via_deinit_ctx = max,
-            .exports_dropped = max,
-        }, a.stats);
+    switch (counter) {
+        .on_return => {
+            a.stats.terminal_via_on_return = start;
+            _ = try connectPair(a, &ra, b, &rb); // the bootstrap's RETURN
+            return a.stats.terminal_via_on_return;
+        },
+        .exports_dropped => {
+            const ib = try connectPair(a, &ra, b, &rb);
+            const ea = try a.exportCap(200);
+            const pc = try msgCap(alloc, 1, 0);
+            defer alloc.free(pc);
+            _ = try a.call(ib, iface, 0, pc, &.{.{ .kind = .@"export", .id = ea }}, 0);
+            try pump(a, &ra, b, &rb);
+            const ia = try rootCap(alloc, rb.lastCall().msg, rb.lastCall().caps);
+            a.stats.exports_dropped = start;
+            try b.release(ia.id, 1);
+            try pump(a, &ra, b, &rb);
+            try testing.expectEqual(@as(usize, 1), ra.dropped.items.len);
+            return a.stats.exports_dropped;
+        },
+        .deinit_ctx, .close_sweep => {
+            const ib = try connectPair(a, &ra, b, &rb);
+            const q1 = try a.call(ib, iface, 0, p, &.{}, 0);
+            try pump(a, &ra, b, &rb);
+            try parkOnThirdPartyAwait(alloc, a, q1);
+            try drainAll(a, &ra); // A's Finish for the intermediate answer
+            try testing.expectEqual(@as(usize, 0), ra.countReturns(q1));
+            const field = switch (counter) {
+                .deinit_ctx => &a.stats.terminal_via_deinit_ctx,
+                else => &a.stats.terminal_via_close_sweep,
+            };
+            field.* = start;
+            // deinit_ctx: the Peer's third-party sweep collects the parked
+            // question and frees it through deinit_ctx. close_sweep: with no
+            // memory that sweep cannot allocate its key list and skips it,
+            // so the shim's own sweep ends it (and Peer.deinit later frees
+            // the context without a second terminal).
+            if (counter == .close_sweep) failing.fail_index = failing.alloc_index;
+            a.transportClosed();
+            failing.fail_index = std.math.maxInt(usize);
+            try drainAll(a, &ra);
+            try testing.expectEqual(@as(usize, 1), ra.countReturns(q1));
+            const r = ra.returnFor(q1) orelse return error.TestNoReturn;
+            try testing.expectEqual(effects.ReturnKind.disconnected, r.kind);
+            try testing.expectEqual(@as(u16, 2), r.exception_type);
+            return field.*;
+        },
+        .events_dropped => {
+            _ = try connectPair(a, &ra, b, &rb);
+            a.stats.events_dropped = start;
+            // The close events find no memory for their effect nodes.
+            failing.fail_index = failing.alloc_index;
+            a.transportClosed();
+            failing.fail_index = std.math.maxInt(usize);
+            return a.stats.events_dropped;
+        },
     }
+}
 
-    // The close sweep (no memory at all at transportClosed).
-    {
-        var failing = std.testing.FailingAllocator.init(alloc, .{});
-        const a = try Conn.init(failing.allocator(), .{ .now_ns = 0 });
-        defer a.deinit();
-        const b = try Conn.init(alloc, .{ .now_ns = 0 });
-        defer b.deinit();
-        var ra = Rec.init(alloc);
-        defer ra.deinit();
-        var rb = Rec.init(alloc);
-        defer rb.deinit();
-        const ib = try connectPair(a, &ra, b, &rb);
-        const q1 = try a.call(ib, iface, 0, p, &.{}, 0);
-        try pump(a, &ra, b, &rb);
-        a.stats.terminal_via_close_sweep = max;
-        failing.fail_index = failing.alloc_index;
-        a.transportClosed();
-        failing.fail_index = std.math.maxInt(usize);
-        try drainAll(a, &ra);
-        try testing.expectEqual(@as(usize, 1), ra.countReturns(q1));
-        try testing.expectEqual(max, a.stats.terminal_via_close_sweep);
+test "stats: every counter counts its own path, and saturates instead of trapping" {
+    const max = std.math.maxInt(u64);
+    for (std.enums.values(Counter)) |counter| {
+        // From 0 the scenario reaches the counter's path (exactly once,
+        // except for events: transportClosed emits more than one)...
+        const from_zero = try driveCounter(counter, 0);
+        if (counter == .events_dropped) {
+            try testing.expect(from_zero >= 1);
+        } else {
+            try testing.expectEqual(@as(u64, 1), from_zero);
+        }
+        // ...and from the top it saturates instead of trapping.
+        try testing.expectEqual(max, try driveCounter(counter, max));
     }
 }
 
