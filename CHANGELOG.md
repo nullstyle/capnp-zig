@@ -140,6 +140,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the old code the peer gets `UUUUUUUUUUUUUUU` (freed bytes) instead of
   `rpc frame error`.
 
+- **QUIC: `Server.deinit` showed its close callbacks sessions it had
+  already destroyed (Experimental).** It tore sessions down from the end of
+  the list but left each one listed. While one session's close callback
+  ran, the sessions after it were freed yet still listed: `sessionCount`
+  was stale, `sessionAt` returned a freed pointer and `sessionById` read
+  freed memory. This hits an application whose `on_close` (or a question
+  callback that a closing `Peer` cancels) calls one of those accessors
+  while `Server.deinit` or `PeerServer.deinit` closes two or more live
+  sessions. No capnp-zig code does that. `deinit` now pops each session
+  before its callback, as the reap path already did, so a close callback
+  sees neither its own session nor a destroyed one. New test in the QUIC
+  transport suite ("quic Server.deinit never shows a close callback a
+  destroyed session", three live sessions): on the old code its callbacks
+  saw 3 destroyed sessions.
+
 ## [0.21.0] - 2026-10-06
 
 This release moves QUIC to quic-zig v0.30.1 (about 91 KB per connection

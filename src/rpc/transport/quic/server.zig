@@ -137,16 +137,20 @@ pub const Server = struct {
     /// state they borrow are destroyed here, so a late cross-thread
     /// `wake`/`close`/`sendFrame` is a use-after-free. See
     /// `ServerSession.wake` for the per-session contract.
+    ///
+    /// Each live session leaves the session list before its close callback
+    /// fires, so `sessionCount`, `sessionAt` and `sessionById` called from
+    /// that callback see only the sessions not yet torn down.
     pub fn deinit(self: *Server) void {
         self.requestClose();
         self.udp_receive.cancel(self.io);
-        var i: usize = self.sessions.items.len;
-        while (i > 0) {
-            i -= 1;
-            // Fire on_close exactly once for every still-live session before
-            // dropping it, so tearing down the server with active sessions
-            // notifies their owners (matching connection_loop.run).
-            const session = self.sessions.items[i];
+        // Fire on_close exactly once for every still-live session before
+        // dropping it, so tearing down the server with active sessions
+        // notifies their owners (matching connection_loop.run). Pop each
+        // session before its callback, as `removeSessionAt` does: the
+        // callback runs user code that may walk the list (`sessionAt`,
+        // `sessionById`), and the list must never hold a destroyed session.
+        while (self.sessions.pop()) |session| {
             // The quic connection is still alive here, so a certificate it
             // already recorded (peer close, idle timeout, stateless reset)
             // reaches the owner instead of being lost as `.unknown`.

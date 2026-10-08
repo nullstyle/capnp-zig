@@ -1322,6 +1322,124 @@ test "quic fanout server fires on_close for a live session on deinit" {
     try std.testing.expectEqual(@as(usize, 1), server_state.closes.load(.acquire));
 }
 
+/// Close callback state for the Server.deinit session-list test. Each close
+/// callback walks the server's session list, the way an owner that looks up
+/// its siblings (`sessionAt`, `sessionById`) would.
+const DeinitSessionListProbe = struct {
+    const max_sessions = 3;
+
+    server: *quic.Server,
+    expected_sessions: usize,
+    closes: usize = 0,
+    /// Sessions whose close callback already ran. Server.deinit destroys
+    /// each one right after its callback, so these pointers are freed.
+    closed: [max_sessions]?*quic.ServerSession = @splat(null),
+    count_mismatches: usize = 0,
+    freed_entries_seen: usize = 0,
+    self_entries_seen: usize = 0,
+    lookup_misses: usize = 0,
+};
+
+fn ignoreProbeFrame(_: *quic.ServerSession, _: []const u8) !void {}
+
+fn ignoreProbeError(_: *quic.ServerSession, _: anyerror) void {}
+
+fn inspectSessionListOnClose(session: *quic.ServerSession) void {
+    const probe: *DeinitSessionListProbe = @ptrCast(@alignCast(session.context() orelse return));
+    const closed_before = probe.closes;
+    if (closed_before >= probe.closed.len) return;
+    // The closing session and every one closed before it are gone.
+    if (probe.server.sessionCount() != probe.expected_sessions - closed_before - 1) {
+        probe.count_mismatches += 1;
+    }
+    var index: usize = 0;
+    while (probe.server.sessionAt(index)) |listed| : (index += 1) {
+        // Compare pointers only: dereferencing a destroyed session is the
+        // defect under test.
+        for (probe.closed[0..closed_before]) |closed| {
+            if (closed == listed) probe.freed_entries_seen += 1;
+        }
+        if (listed == session) probe.self_entries_seen += 1;
+    }
+    // sessionById reads `.id` from every listed entry, so only call it once
+    // the list holds no destroyed session.
+    if (probe.freed_entries_seen == 0) {
+        index = 0;
+        while (probe.server.sessionAt(index)) |listed| : (index += 1) {
+            if (probe.server.sessionById(listed.id) != listed) probe.lookup_misses += 1;
+        }
+    }
+    probe.closed[closed_before] = session;
+    probe.closes += 1;
+}
+
+fn stopProbeClients(clients: []quic.Connection, threads: []const std.Thread) void {
+    for (clients) |*client| client.requestClose();
+    for (threads) |thread| thread.join();
+}
+
+test "quic Server.deinit never shows a close callback a destroyed session" {
+    const allocator = std.testing.allocator;
+    const session_total = DeinitSessionListProbe.max_sessions;
+
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = session_total,
+    });
+    var server_deinited = false;
+    defer if (!server_deinited) server.deinit();
+
+    const server_addr = server.getAddress();
+    var clients: [session_total]quic.Connection = undefined;
+    var clients_inited: usize = 0;
+    defer for (clients[0..clients_inited]) |*client| client.deinit();
+    while (clients_inited < session_total) : (clients_inited += 1) {
+        clients[clients_inited] = try quic.Connection.initClient(allocator, std.testing.io, .{
+            .remote_addr = server_addr,
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        });
+    }
+
+    var client_states: [session_total]QuicEndpointState = @splat(.{});
+    var threads: [session_total]std.Thread = undefined;
+    var threads_running: usize = 0;
+    defer stopProbeClients(clients[0..threads_running], threads[0..threads_running]);
+    while (threads_running < session_total) : (threads_running += 1) {
+        const client = &clients[threads_running];
+        client.start(&client_states[threads_running], captureQuicMessage, recordQuicError, recordQuicClose);
+        threads[threads_running] = try std.Thread.spawn(.{}, runQuicConnection, .{client});
+    }
+
+    try waitForFanoutSessions(&server, session_total);
+    try std.testing.expectEqual(@as(usize, session_total), server.sessionCount());
+
+    var probe = DeinitSessionListProbe{ .server = &server, .expected_sessions = session_total };
+    for (0..session_total) |index| {
+        const session = server.sessionAt(index) orelse return error.TestUnexpectedResult;
+        session.start(&probe, ignoreProbeFrame, ignoreProbeError, inspectSessionListOnClose);
+    }
+
+    // Stop the clients without stepping the server, so every session is
+    // still live and listed when deinit runs.
+    stopProbeClients(clients[0..threads_running], threads[0..threads_running]);
+    threads_running = 0;
+    try std.testing.expectEqual(@as(usize, session_total), server.sessionCount());
+
+    server.deinit();
+    server_deinited = true;
+
+    try std.testing.expectEqual(@as(usize, session_total), probe.closes);
+    try std.testing.expectEqual(@as(usize, 0), probe.freed_entries_seen);
+    try std.testing.expectEqual(@as(usize, 0), probe.self_entries_seen);
+    try std.testing.expectEqual(@as(usize, 0), probe.count_mismatches);
+    try std.testing.expectEqual(@as(usize, 0), probe.lookup_misses);
+}
+
 test "quic fanout server survives a spoofed oversized datagram and keeps serving" {
     // UDP is unauthenticated, so any host that can reach this port can send an
     // oversized datagram. `Server.run` closes the server on a failed step, so
