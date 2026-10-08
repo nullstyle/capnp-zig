@@ -126,6 +126,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It applies the rules capnpc-zig's own generator uses and allocates
   nothing. The internal resolver stays private; no Stable line changed.
 
+- **Native: a sans-IO RPC connection and its C ABI (capnp-swift handoff
+  H7).** capnp-swift's core moved here as the `native` module, in all three
+  library roots (it needs only `capnpc-zig-core`). `native.conn.Conn` is a
+  detached `Peer` with a framer and an effect queue: the host pushes bytes
+  in, drives time and drains effects (frames to send, one RETURN per
+  question, inbound calls, dropped exports, events). `native.abi` is its C
+  ABI (`capnp_conn_*`, `capnp_call`, `capnp_bootstrap`, ...), declared by
+  `src/native/include/capnp_core.h`, which ships in the package. The
+  `capnp_*` symbols are emitted only in a compilation whose root references
+  `native.abi`, so other users get no exported symbols. The root may declare
+  `capnp_core_allocator` and `capnp_core_version_string`; a library that
+  does not link libc must declare the allocator (a compile error names
+  it). New gates: the
+  shim's tests and a header gate (every export has a matching prototype, and
+  the reverse) in `zig build test`, `zig build test-native-abi` (the ABI
+  through the translated header, linked from a static library),
+  `zig build fuzz-native-abi` (3 seconds in `test-fuzz-smoke`, 10 minutes in
+  Nightly), the ABI in the `check-ios` libraries, and a C consumer in
+  `zig build package-preflight`. This affects C and Swift embedders;
+  capnp-swift can drop its copy and build from this module. See
+  docs/native-abi.md. No Stable line changes.
+
 ### Changed
 
 - **RPC: a call whose pipelined param names a failed answer now fails with
@@ -336,12 +358,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caller waited forever. Both passes are now allocation-free, and the
   synthetic Return is built in a 4 KiB stack buffer (a longer reason falls
   back to the heap). This affects every embedder whose transport can close,
-  or whose calls have deadlines, under memory pressure: capnp-swift can drop
-  its close-sweep shim. Explicit `cancelQuestion` now also delivers its
-  terminal without the heap. A pipelined call queued during a transient OOM
-  no longer loses its terminal Return either: the queue decodes the call's id
-  once, and an OOM there stored it as "not a call", which the failure drain
-  skipped. The enqueue now fails instead and the caller answers the call.
+  or whose calls have deadlines, under memory pressure. One case remains: a
+  question the remote answered with `awaitFromThirdParty` is parked outside
+  the question table, and the sweep that frees it at transport close
+  (through `deinit_ctx`, not a Return) still allocates its key list, so
+  under OOM it is freed only at `Peer.deinit`. The native shim's close
+  sweep (see Added (Experimental)) ends such a question itself. Explicit
+  `cancelQuestion` now also delivers its terminal without the heap. A
+  pipelined call queued during a transient OOM no longer loses its terminal
+  Return either: the queue decodes the call's id once, and an OOM there
+  stored it as "not a call", which the failure drain skipped. The enqueue
+  now fails instead and the caller answers the call.
   No API line changes. `zig build hardening` gains a rule that bans
   unreviewed `catch break` / `catch continue` / `catch {}` after an
   allocating call; five Experimental Level-3 maintenance passes are

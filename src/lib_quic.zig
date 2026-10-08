@@ -49,6 +49,9 @@ pub const rpc = @import("rpc/mod_quic.zig");
 /// `error.EventedBackendUnsupported` on every target.
 pub const io_backend = @import("io_backend.zig");
 
+/// Sans-IO RPC connection and C ABI (Experimental). See `lib.zig`.
+pub const native = @import("native/mod.zig");
+
 test {
     @import("std").testing.refAllDecls(@This());
 }

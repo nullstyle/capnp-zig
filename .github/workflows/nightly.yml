@@ -119,6 +119,13 @@ jobs:
       - name: Fuzz each target with a measured activity floor
         run: mise exec -- zig run tools/fuzz_evidence.zig -- --runs=10000
 
+      # Random operation sequences over the native C ABI (src/native/,
+      # capnp-swift handoff H7). Not coverage-guided: a seeded driver that
+      # exits 1 on the first violated invariant and prints the seed to
+      # replay. `test-fuzz-smoke` runs it for 3 seconds on every push.
+      - name: Fuzz the native C ABI (10 minutes, ReleaseSafe)
+        run: mise exec -- zig build -Doptimize=ReleaseSafe fuzz-native-abi -- --seconds 600
+
       - name: Preserve fuzz receipts, reports, and replay corpus
         if: always()
         uses: actions/upload-artifact@v4

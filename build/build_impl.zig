@@ -845,6 +845,9 @@ pub fn buildImpl(b: *std.Build) !void {
         .imports = build_options_imports,
     });
     core_tests_module.addImport("capnpc-zig", core_tests_module);
+    // src/native/abi.zig's tests (collected through src/lib_core.zig) read
+    // capnp_core.h through translate-c and as text: the header-drift gate.
+    @import("./native.zig").addHeaderImports(b, core_tests_module, target, optimize);
     const core_tests = b.addTest(.{
         .root_module = core_tests_module,
     });
@@ -1972,6 +1975,10 @@ pub fn buildImpl(b: *std.Build) !void {
     // `check-fd-passing-off-symbols`. Their root's host test joins `test`.
     const apple = @import("./apple.zig").register(b, target, optimize, capnp_build_options_module);
 
+    // The native shim's C ABI gates (`test-native-abi`, `fuzz-native-abi`).
+    const native = @import("./native.zig").register(b, target, optimize, core_module);
+    test_fuzz_smoke_step.dependOn(native.fuzz_smoke);
+
     // Test step runs all tests
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(test_serialization_step);
@@ -2000,6 +2007,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_step.dependOn(test_snapshot_render_step);
     test_step.dependOn(test_release_drift_step);
     for (apple.host_tests) |host_test| test_step.dependOn(host_test);
+    test_step.dependOn(native.test_abi);
 
     // Configure these after the suites are complete. Windows can warm their
     // exact compile prerequisites in parallel, then run the unchanged suites

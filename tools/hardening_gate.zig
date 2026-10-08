@@ -64,7 +64,7 @@ const allowlist = [_]Allow{
     // Level-3 maintenance passes where skipping an item under OOM leaves it
     // marked and the next pass retries it, so nothing is lost; each was
     // reviewed for that property.
-    .{ .path = "src/rpc/peer/mod.zig", .kind = .swallowed_alloc_failure, .needle = "keys.append(self.allocator, kv.key_ptr.*) catch break;", .reason = "sweepThirdPartyAwaits (L3, Experimental): an await not collected under OOM stays parked with its deadline; the next checkDeadlines sweep, or the transport-close drain, collects it, and Peer.deinit frees any left. The sweep only frees ctx (no terminal callback), so a skip delays a free, never a terminal" },
+    .{ .path = "src/rpc/peer/mod.zig", .kind = .swallowed_alloc_failure, .needle = "keys.append(self.allocator, kv.key_ptr.*) catch break;", .reason = "sweepThirdPartyAwaits (L3, Experimental): an await not collected under OOM stays parked with its deadline; the next checkDeadlines sweep, or the transport-close drain, collects it, and Peer.deinit frees any left. The sweep only frees ctx (no terminal callback), so a skip delays a free, never a terminal. Where deinit_ctx IS the terminal (native/conn.zig), a skip at transport close leaves the question open and the shim's close sweep (sweepOpenQuestions) ends it; conn_test.zig drives both paths" },
     .{ .path = "src/rpc/peer/mod.zig", .kind = .swallowed_alloc_failure, .needle = "retry_peers.append(allocator, provide_peer) catch {};", .reason = "drainOutboundProvidesOnRecipientPeer (L3, Experimental): requestOriginatedProvideFinish above already published the provide peer's Finish request (finish_on_maintenance / finish_requested); a peer missing from this best-effort immediate retry list gets the Finish from its next checkDeadlines -> retryDeferredFinishes" },
     .{ .path = "src/rpc/peer/mod.zig", .kind = .swallowed_alloc_failure, .needle = "provide_ids.append(self.allocator, entry.key_ptr.*) catch break;", .reason = "retryDeferredFinishes (L3 Provide, Experimental): a maintenance pass; a question not collected under OOM keeps finish_on_maintenance and the next checkDeadlines retries it" },
     .{ .path = "src/rpc/peer/mod.zig", .kind = .swallowed_alloc_failure, .needle = "retained_ids.append(self.allocator, entry.key_ptr.*) catch break;", .reason = "retryDeferredFinishes (transferred retained answers, Experimental): a maintenance pass; an entry not collected under OOM keeps finish_requested and the next checkDeadlines retries it" },
@@ -72,6 +72,11 @@ const allowlist = [_]Allow{
 
     .{ .path = "src/rpc/integration/host_peer.zig", .kind = .catch_unreachable, .needle = "switch (inbound_caps.get(cap_idx) catch unreachable) {", .reason = "get fails only on index >= len; loop bound is inbound_caps.len() and the first param-scan loop already try-walked the same range" },
     .{ .path = "src/rpc/integration/host_peer.zig", .kind = .catch_unreachable, .needle = ".imported => mutable_caps.retainIndex(cap_idx) catch unreachable,", .reason = "retainIndex fails only on index >= len; mutable_caps is a struct copy sharing the same entries/retained slices, so the loop bound proves the index in-bounds" },
+
+    // The native shim (src/native/, capnp-swift handoff H7).
+    .{ .path = "src/native/abi.zig", .kind = .panic_call, .needle = "capnp_conn: concurrent or re-entrant call on one connection", .reason = "safe-build misuse guard (capnp_core.h: one caller at a time per connection), not input-driven protocol handling; the host's panic hook runs, then the core traps" },
+    .{ .path = "src/native/cap_remap.zig", .kind = .catch_unreachable, .needle = "mutable.retainIndex(i) catch unreachable; // i < len", .reason = "retainIndex fails only on index >= len; the loop bound is inbound.len(), and mutable is a struct copy sharing the same entries/retained slices (the host_peer.zig pattern)" },
+    .{ .path = "src/native/conn.zig", .kind = .swallowed_alloc_failure, .needle = "var decoded = protocol.DecodedMessage.init(self.allocator, bytes) catch continue;", .reason = "abortQueuedSince only asks whether the Peer already queued an Abort for a failed frame; a frame of ours it cannot decode under OOM is skipped, so at worst the shim queues a second Abort before CLOSE_REQUESTED. The connection fails either way, and no question's terminal depends on it" },
 
     .{ .path = "src/rpc/transport/tcp/connection.zig", .kind = .panic_call, .needle = "Connection method called from wrong thread", .reason = "debug misuse guard, not input-driven protocol handling" },
     .{ .path = "src/rpc/transport/tcp/stream_transport.zig", .kind = .panic_call, .needle = "cannot wake Windows receive cancellation", .reason = "unrecoverable failure alerting the current-thread pseudohandle, not a peer-controlled handle; returning would unwind live AFD receive storage and continuing would enter the known indefinite cancellation wait" },
@@ -151,6 +156,9 @@ const unsafe_dirs = [_][]const u8{
     // like everything else here. Verified by probe: a fresh `catch
     // unreachable` added to `generator.zig` left this gate reporting "passed".
     "src/capnpc-zig",
+    // The native shim (capnp-swift handoff H7): it decodes remote frames and
+    // takes raw pointers and handles from C hosts.
+    "src/native",
 };
 
 const unsafe_files = [_][]const u8{

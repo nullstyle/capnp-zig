@@ -323,7 +323,7 @@ read/write transport. Organized by domain:
 
 ### Public API (`src/lib.zig`)
 
-Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation`, `canonical`, `reflection`, `rpc`, `io_backend`
+Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation`, `canonical`, `reflection`, `rpc`, `io_backend`, `native` (a sans-IO connection and its C ABI, Experimental; [docs/native-abi.md](docs/native-abi.md))
 
 ## Project Structure
 

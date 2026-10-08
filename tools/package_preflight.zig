@@ -30,6 +30,11 @@ const build_cases = [_]BuildCase{
     .{ .profile = "core", .optimize = "ReleaseSafe" },
     .{ .profile = "quic", .optimize = "Debug" },
     .{ .profile = "quic", .optimize = "ReleaseSafe" },
+    // The native C ABI as an embedder ships it (docs/native-abi.md): a
+    // static library over `capnpc-zig-core` built with `-Dfd-passing=false`,
+    // and a C program that includes the packaged header and links it.
+    .{ .profile = "native", .optimize = "Debug" },
+    .{ .profile = "native", .optimize = "ReleaseSafe" },
 };
 
 const allowed_package_roots = [_][]const u8{
@@ -54,7 +59,8 @@ fn printUsage() void {
         \\  - archives and re-fetches that filtered result (never a path dependency)
         \\  - runs the documented pinned-plugin codegen consumer (dep.artifact
         \\    "capnpc-zig" on a checked-in request) and proves its gen-check
-        \\  - builds and runs default, core, and QUIC consumers in Debug/ReleaseSafe
+        \\  - builds and runs default, core, QUIC and native C ABI consumers in
+        \\    Debug/ReleaseSafe
         \\  - proves normal/core builds do not fetch the lazy QUIC dependency
         \\  - runs the packaged compiler plugin and compares checked-in output
         \\
@@ -724,7 +730,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     std.debug.print(
-        "package preflight passed: filtered archive, pinned-plugin codegen consumer, default/core{s}, packaged plugin, clean worktree\n",
+        "package preflight passed: filtered archive, pinned-plugin codegen consumer, default/core{s}, native C ABI, packaged plugin, clean worktree\n",
         .{if (ctx.skip_quic) " (QUIC skipped)" else "/QUIC"},
     );
     if (ctx.keep_temp) std.debug.print("kept preflight workspace at {s}\n", .{ctx.work_abs});
