@@ -2335,3 +2335,113 @@ test "resolvePromiseExportToExceptionTyped carries the exception type (H5)" {
     try std.testing.expectEqual(protocol.ExceptionType.failed, untyped.kind);
     try std.testing.expect(untyped.reason_matches);
 }
+
+// ---------------------------------------------------------------------------
+// A retained bootstrap question (`sendBootstrapWithOptions`).
+//
+// `sendBootstrap` Finishes the bootstrap question right after its Return, so
+// a caller that pipelines on it after the Return races that Finish. With
+// `.result_lifetime = .retained` the answer stays open until the caller
+// finishes it, as for retained calls.
+
+const BootstrapWaiter = struct {
+    returns: usize = 0,
+    tag: ?protocol.ReturnTag = null,
+
+    fn onReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        self.returns += 1;
+        self.tag = ret.tag;
+    }
+};
+
+/// The remote's bootstrap Return: results content is capability 0, which the
+/// cap table names as the remote's export `export_id`.
+fn buildBootstrapCapReturnFrame(allocator: std.mem.Allocator, answer_id: u32, export_id: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var ret = try builder.beginReturn(answer_id, .results);
+    var payload = try ret.payloadTyped();
+    const any = try payload.initContent();
+    try any.setCapability(.{ .id = 0 });
+    var cap_list = try ret.initCapTableTyped(1);
+    protocol.CapDescriptor.writeSenderHosted(try cap_list.get(0), export_id);
+    return builder.finish();
+}
+
+fn countFinishes(capture: *ReturnCapture, question_id: u32) !usize {
+    var n: usize = 0;
+    for (capture.frames.items) |frame| {
+        var decoded = protocol.DecodedMessage.init(capture.allocator, frame) catch continue;
+        defer decoded.deinit();
+        if (decoded.tag != .finish) continue;
+        if ((try decoded.asFinish()).question_id == question_id) n += 1;
+    }
+    return n;
+}
+
+test "a retained bootstrap stays open for pipelining until the caller finishes it" {
+    const allocator = std.testing.allocator;
+    // The capture outlives the peer: deinit releases the bootstrap import.
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var waiter = BootstrapWaiter{};
+    const qid = try peer.sendBootstrapWithOptions(&waiter, BootstrapWaiter.onReturn, .{
+        .result_lifetime = .retained,
+    });
+    try std.testing.expectEqual(@as(usize, 1), capture.countTag(.bootstrap));
+    try std.testing.expectEqual(@as(usize, 1), peer.stats().retained_questions);
+    try std.testing.expectError(error.RetainedQuestionPending, peer.finishRetainedQuestion(qid, false));
+
+    try deliverFrame(&peer, allocator, buildBootstrapCapReturnFrame(allocator, qid, 5));
+    try std.testing.expectEqual(@as(usize, 1), waiter.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.results, waiter.tag.?);
+    // No automatic Finish: the answer is still the caller's to pipeline on.
+    try std.testing.expectEqual(@as(usize, 0), try countFinishes(&capture, qid));
+
+    var pipelined = BootstrapWaiter{};
+    const call_qid = try peer.sendCallPromisedWithOps(qid, &.{}, 0xABCD, 0, &pipelined, null, BootstrapWaiter.onReturn);
+    var found_pipelined_call = false;
+    for (capture.frames.items) |frame| {
+        var decoded = try protocol.DecodedMessage.init(allocator, frame);
+        defer decoded.deinit();
+        if (decoded.tag != .call) continue;
+        const call = try decoded.asCall();
+        if (call.question_id != call_qid) continue;
+        try std.testing.expectEqual(protocol.MessageTargetTag.promisedAnswer, call.target.tag);
+        try std.testing.expectEqual(qid, call.target.promised_answer.?.question_id);
+        found_pipelined_call = true;
+    }
+    try std.testing.expect(found_pipelined_call);
+    try std.testing.expectEqual(@as(usize, 0), try countFinishes(&capture, qid));
+
+    // The caller ends it: exactly one Finish, and the record is gone.
+    try peer.finishRetainedQuestion(qid, false);
+    try std.testing.expectEqual(@as(usize, 1), try countFinishes(&capture, qid));
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().retained_questions);
+    try std.testing.expectError(error.UnknownRetainedQuestion, peer.finishRetainedQuestion(qid, false));
+}
+
+test "sendBootstrap still finishes the bootstrap question right after its Return" {
+    const allocator = std.testing.allocator;
+    // The capture outlives the peer: deinit releases the bootstrap import.
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var waiter = BootstrapWaiter{};
+    const qid = try peer.sendBootstrap(&waiter, BootstrapWaiter.onReturn);
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().retained_questions);
+    try deliverFrame(&peer, allocator, buildBootstrapCapReturnFrame(allocator, qid, 5));
+    try std.testing.expectEqual(@as(usize, 1), waiter.returns);
+    try std.testing.expectEqual(@as(usize, 1), try countFinishes(&capture, qid));
+    try std.testing.expectError(error.UnknownRetainedQuestion, peer.finishRetainedQuestion(qid, false));
+}

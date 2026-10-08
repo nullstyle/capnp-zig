@@ -2069,9 +2069,29 @@ pub const Peer = struct {
     /// Returns the question ID. When the remote peer responds, `on_return`
     /// is invoked with the bootstrap capability in the return payload.
     pub fn sendBootstrap(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+        return self.sendBootstrapWithOptions(ctx, on_return, .{});
+    }
+
+    /// Experimental. `sendBootstrap` taking the `CallOptions` of the
+    /// `sendCall*WithOptions` family.
+    ///
+    /// With `.result_lifetime = .retained` the Peer does not Finish the
+    /// bootstrap question after its Return. The caller may pipeline on the
+    /// answer (`sendCallPromisedWithOps` with the returned id) for as long as
+    /// it holds it, and ends it with `finishRetainedQuestion`. The question
+    /// counts against `PeerLimits.max_retained_questions`.
+    pub fn sendBootstrapWithOptions(
+        self: *Peer,
+        ctx: *anyopaque,
+        on_return: QuestionCallback,
+        options: CallOptions,
+    ) !u32 {
         self.assertThreadAffinity();
         if (self.is_shutting_down) return error.PeerShuttingDown;
-        const question_id = try self.allocateQuestion(ctx, on_return);
+        const question_id = switch (options.result_lifetime) {
+            .automatic => try self.allocateQuestion(ctx, on_return),
+            .retained => try self.allocateRetainedQuestion(ctx, on_return),
+        };
         errdefer self.removeQuestion(question_id);
 
         var builder = protocol.MessageBuilder.init(self.allocator);

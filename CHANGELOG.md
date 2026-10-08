@@ -49,6 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Experimental too. Calls already queued on the promise still fail with
   "promise broken" and type `failed`, and a capnp-zig importer still drops
   the reason and the type of an inbound `Resolve{exception}`.
+- **`Peer.sendBootstrapWithOptions`: a retained bootstrap question.**
+  `sendBootstrap` Finishes the bootstrap question right after its Return,
+  so a caller that pipelines on the bootstrap after the Return races that
+  Finish; capnp-swift never pipelines on its bootstrap for this reason. With
+  `.result_lifetime = .retained` the answer stays open until the caller
+  calls `finishRetainedQuestion`, as for retained calls, and counts against
+  `max_retained_questions`. `sendBootstrap` is unchanged.
 
 ### Fixed
 
