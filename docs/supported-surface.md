@@ -328,6 +328,21 @@ param references (Bootstrap/Provide/Accept/Join, calls with cap-free params, the
 schema default `true`, where the flag is a no-op. Applications do not set this
 flag; a handler's only obligation is to retain a param cap it intends to keep.
 
+**Loopback calls with capabilities.** A call to one of the peer's own
+exports never leaves the process: `Peer.sendCallResolved` with an
+`.exported` target, `sendCall` on an import that resolved to one of the
+peer's exports, and a generated local Client (origin `.exported`). The peer
+encodes such a call itself and reads it back from its own side, so the
+capabilities in its params and in its Return's results arrive as the peer's
+own: its export as `.exported`, its import as `.imported`, even while export
+N and import N both exist. The import arrives with a loopback reference: the
+receiver keeps it or lets it go like any import reference, and spending it
+sends no `Release`, because the remote granted nothing. No frame of a
+loopback call reaches the remote. A promise on one of the peer's own
+questions (`receiverAnswer`) cannot travel in a loopback call
+(`error.LoopbackPromisedCapabilityUnsupported`, see Known limitations).
+Covered by `tests/rpc/integration/rpc_loopback_caps_test.zig`.
+
 The reflected-capability resolve/embargo handshake — a promise capability
 resolved to a *caller-hosted* cap (`Peer.resolvePromiseExportToImport`), driving
 the `senderLoopback`/`receiverLoopback` `Disembargo` — is exercised end to end by
@@ -791,11 +806,25 @@ cooperating peer.
   local promise in the first two cases; that needs a promise capability
   with no wire identity, which the Peer does not have.
 
+- **A loopback call cannot carry a pipelined capability.** A promise on one
+  of the peer's own questions (`receiverAnswer`) cannot travel in a call to
+  one of the peer's own exports (see "Loopback calls with capabilities").
+  In the params, the call fails with
+  `error.LoopbackPromisedCapabilityUnsupported` before anything is
+  dispatched, and the capability stays the caller's to send elsewhere. In
+  the results, the handler's `sendReturnResults` fails with that error, and
+  the caller receives an exception Return. The receiver of a loopback call
+  is the peer itself, which reads an inbound promised capability as one of
+  its own ANSWERS: that is a different id space, and a match there would
+  name an unrelated capability. Representing a promise on one of the peer's
+  own questions needs an `InboundCapTable` entry kind the Stable
+  `ResolvedCap` does not have.
+
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Apart from the pipelined-params
-item above, every limitation listed above is either a Level-3 surface or a
-serialization compatibility gap. Historical resolved items are listed below so
-release-to-release behavior changes stay auditable.
+and loopback items above, every limitation listed above is either a Level-3
+surface or a serialization compatibility gap. Historical resolved items are
+listed below so release-to-release behavior changes stay auditable.
 
 ### Resolved since v0.9.0
 

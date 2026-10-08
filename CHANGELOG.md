@@ -41,9 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through the local loopback (the new generator plumbing
   `Peer.sendCallResolvedGeneratedWithOptions`), `release()` does nothing,
   and `setXClient` writes the export back out, as `senderPromise` while it
-  is still a promise export. Calls that the local path cannot carry fail
-  instead of misrouting: a call with capabilities in its params
-  (`error.LocalCallParamCapsUnsupported`), `callXPipelined`
+  is still a promise export. Capabilities in the params and results of such
+  a call arrive as the peer's own (see the loopback entry under Fixed).
+  Calls that the local path cannot carry fail instead of misrouting: a call
+  with a promise on one of the peer's own questions in its params
+  (`error.LoopbackPromisedCapabilityUnsupported`), `callXPipelined`
   (`error.LocalCapabilityPipelineUnsupported`) and a `StreamClient`
   streaming call (`error.LocalCapabilityStreamingUnsupported`). A
   `receiverAnswer` that resolves to an import, and a null capability, still
@@ -157,6 +159,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generated in its own request by `just gen`.
 
 ### Fixed
+
+- **RPC: a loopback call handed its handler the remote's capabilities
+  instead of the peer's own.** This affects Stable `Peer` API users who call
+  one of their own exports with capabilities in the params or results:
+  `sendCallResolved` with an `.exported` target, or `sendCall` on an import
+  that resolved to one of their exports. The peer encodes such a call
+  itself, but it read the descriptors back as if the remote had sent them.
+  Its export N arrived as import N, so a call on it reached whatever the
+  remote exports as N. Its import N arrived as its own export N, or failed
+  when it had no such export. Each export in a loopback call also leaked a
+  wire reference and became an import that the peer then released: the
+  remote got a `Release` it was never owed, which could free a capability
+  the peer still held. The peer now reads a loopback Call and its Return
+  from its own side. Its export arrives as `.exported`. Its import arrives
+  as `.imported` with a loopback reference, which the receiver keeps or
+  releases like any import reference; releasing it sends no `Release`. No
+  frame of a loopback call reaches the remote. A promise on one of the
+  peer's own questions (`receiverAnswer`) in a loopback call now fails with
+  `error.LoopbackPromisedCapabilityUnsupported` before the handler runs;
+  before, the handler could resolve it against an unrelated answer. New
+  Experimental lines: `CapTable.noteLoopbackImportRef`,
+  `CapTable.spendImportRef`, `CapTable.ImportRefSpend`,
+  `InboundCapTable.initLoopback`, and
+  `outbound.encodeLoopbackCallPayloadCaps` / `encodeLoopbackReturnPayloadCaps`.
+  No Stable line changes. New tests in
+  `tests/rpc/integration/rpc_loopback_caps_test.zig`.
 
 - **RPC: a capability pipelined into a call's params reached the handler
   unresolved (capnp-swift handoff H9).** A caller that passes the result of
