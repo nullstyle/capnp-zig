@@ -80,3 +80,16 @@ calls `Server.tick`. That is the full tick of v0.35.0 and earlier, so
 capnp-zig gets none of the rest cache's savings for ticks. Its embedder
 docs ask a host that ticks its own `Server` to do the same. When quic-zig
 fixes the defect, capnp-zig can drop the touches.
+
+The ready API has the same gap, and no `Server.tick` to put a touch in
+front of. `tickDue` ticks only the slots whose deadline has passed, through
+the same `Connection.tick`, so a slot that a drain left at rest with a
+reclaimable stream keeps it until its next timer or datagram. quic-zig's
+own `runUdpServer` loop (`on_iteration` hook, then `tickDue`, then the
+`takeReady` drain; `transport/udp_server.zig`) is such a host. capnp-zig's
+embedder docs ask a ready-API host to touch and then tick each connection
+that carries a capnp-zig seat after its service pass; the touch also puts
+the slot on the ready list (`wake_hook`), so the drain sends what the tick
+queued. A fix has to reach this path as well as `Server.tick`: a
+reclaimable stream must get a tick that runs the GC even when no deadline
+has passed.
