@@ -48,7 +48,7 @@ stays at quic-zig v0.32.0.
 | Component | Version | Pin |
 |---|---|---|
 | Zig | `0.17.0` (tagged; no change since v0.19.0) | `mise.toml`: `zig = "0.17.0"`; `build.zig.zon`: `.minimum_zig_version = "0.17.0"` |
-| capnp-zig | `v0.23.0` | `capnpc_zig-0.23.0-...` (recorded here after the tag) |
+| capnp-zig | `v0.23.0` (tag at `aca9824`) | `capnpc_zig-0.23.0-nUduFUsRTgCn5wyHqoKC0ZXgBemZlU7y6bWBmH3RpW9U` |
 | quic-zig | `v0.32.0` (tag at `ffdb251`; no change since v0.22.0) | `quic-0.32.0-DnSYvcGOPADCEZMispvPbD9RznRtyIGq77zHIgmS8iVl` |
 | http3-zig (optional) | `v0.5.5` (tag at `380ead3`) | `http3_zig-0.5.5-ayZ03DI5EwD2bajKDfR009PM7jlRI3lzSnrmT2PlWgS4` |
 
