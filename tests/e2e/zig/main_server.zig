@@ -12,6 +12,7 @@ const chat = @import("generated/chat.zig");
 const inventory = @import("generated/inventory.zig");
 const matchmaking = @import("generated/matchmaking.zig");
 const resolve_disembargo = @import("generated/resolve_disembargo.zig");
+const cap_passing = @import("generated/cap_passing.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -21,6 +22,10 @@ const Schema = enum {
     inventory,
     matchmaking,
     resolve_disembargo,
+    // Both serve the same TokenHost (tests/e2e/schemas/cap_passing.capnp);
+    // the client picks the flow.
+    pass_back,
+    pipelined_params,
 };
 
 const CliArgs = struct {
@@ -37,6 +42,7 @@ const App = struct {
     inventory_service: InventoryService,
     matchmaking_service: MatchmakingService,
     reflect_service: ReflectorService,
+    token_host_service: TokenHostService,
 
     fn init(allocator: Allocator, schema: Schema) !App {
         return .{
@@ -47,6 +53,7 @@ const App = struct {
             .inventory_service = InventoryService.init(allocator),
             .matchmaking_service = MatchmakingService.init(allocator),
             .reflect_service = ReflectorService.init(),
+            .token_host_service = TokenHostService.init(allocator),
         };
     }
 
@@ -56,9 +63,11 @@ const App = struct {
         self.inventory_service.bind();
         self.matchmaking_service.bind();
         self.reflect_service.bind();
+        self.token_host_service.bind();
     }
 
     fn deinit(self: *App) void {
+        self.token_host_service.deinit();
         self.matchmaking_service.deinit();
         self.inventory_service.deinit();
         self.chat_service.deinit();
@@ -671,12 +680,243 @@ fn onDisconnectNow(
     if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 }
 
+// ---------------------------------------------------------------------------
+// pass_back and pipelined_params scenarios (reference-client -> Zig-server
+// direction). Both serve this TokenHost; the client picks the flow.
+//
+// - pass_back: the client mints Tokens, then passes them back to check(). They
+//   arrive as `receiverHosted` descriptors naming our own exports, so the
+//   generated resolveToken must hand us a local Client (origin `.exported`)
+//   whose tag() runs our own HostToken. echo() takes a capability the client
+//   hosts and returns it with the generated setTokenClient, which must write
+//   it back as the client's own capability (`receiverHosted`).
+// - pipelined_params: the client passes mint()'s `token` as check()'s param
+//   before mint() returns (a `receiverAnswer` descriptor). The Peer resolves
+//   it before check() dispatches, because mint() answered synchronously. When
+//   the named answer failed (mintFail()), the Peer fails check() with a copy
+//   of that answer's exception and check() never runs.
+//
+// `token_calls` counts every tag() call that reaches one of our HostTokens,
+// so check() can report whether its call reached our own object.
+// ---------------------------------------------------------------------------
+
+/// A Token minted by the host. Owned by `TokenHostService.tokens`; its export
+/// may go away when the client releases it, but the memory stays until
+/// `TokenHostService.deinit`.
+const HostToken = struct {
+    host: *TokenHostService,
+    tag: u32,
+    server: cap_passing.Token.Server,
+};
+
+/// The reason mintFail() fails with. Clients look for it in the exception
+/// that check() returns for a Token pipelined on mintFail().
+const mint_fail_reason = "pipelined_params: deliberate mint failure";
+
+const TokenHostService = struct {
+    allocator: Allocator,
+    tokens: std.ArrayList(*HostToken) = .empty,
+    token_calls: u64 = 0,
+    server: cap_passing.TokenHost.Server,
+
+    fn init(allocator: Allocator) TokenHostService {
+        return .{
+            .allocator = allocator,
+            .server = .{
+                .ctx = undefined,
+                .vtable = .{
+                    .mint = onTokenHostMint,
+                    // check() calls the Token and answers from the tag()
+                    // callback, so it owns its ReturnSender.
+                    .check = undefined,
+                    .check_deferred = onTokenHostCheck,
+                    // echo() releases the Token it resolved only after its
+                    // Return is on the wire.
+                    .echo = undefined,
+                    .echo_deferred = onTokenHostEcho,
+                    .mintFail = undefined,
+                    .mintFail_deferred = onTokenHostMintFail,
+                },
+            },
+        };
+    }
+
+    fn bind(self: *TokenHostService) void {
+        self.server.ctx = self;
+    }
+
+    fn deinit(self: *TokenHostService) void {
+        for (self.tokens.items) |token| self.allocator.destroy(token);
+        self.tokens.deinit(self.allocator);
+    }
+};
+
+fn onHostTokenTag(
+    ctx_ptr: *anyopaque,
+    _: *rpc.peer.Peer,
+    _: cap_passing.Token.TagParams.Reader,
+    results: *cap_passing.Token.TagResults.Builder,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const token: *HostToken = @ptrCast(@alignCast(ctx_ptr));
+    token.host.token_calls += 1;
+    try results.setTag(token.tag);
+}
+
+fn onTokenHostMint(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    params: cap_passing.TokenHost.MintParams.Reader,
+    results: *cap_passing.TokenHost.MintResults.Builder,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const service: *TokenHostService = @ptrCast(@alignCast(ctx_ptr));
+    const tag = try params.getTag();
+    // The list owns the token from its creation on, so a failed export below
+    // leaves nothing to free here and nothing freed twice at deinit.
+    try service.tokens.ensureUnusedCapacity(service.allocator, 1);
+    const token = try service.allocator.create(HostToken);
+    service.tokens.appendAssumeCapacity(token);
+    token.* = .{
+        .host = service,
+        .tag = tag,
+        .server = .{ .ctx = token, .vtable = .{ .tag = onHostTokenTag } },
+    };
+    try results.setTokenServer(peer, &token.server);
+}
+
+/// check(): carried from the handler into the tag() callback.
+const CheckCtx = struct {
+    service: *TokenHostService,
+    sender: cap_passing.TokenHost.Check.ReturnSender,
+    token: cap_passing.Token.Client,
+    calls_before: u64,
+    tag: u32 = 0,
+    local: bool = false,
+    // While callTag is still on the handler's stack, points at its flag: the
+    // callback sets it before freeing this context, because a local Token
+    // answers synchronously and callTag can still fail after that.
+    settled_flag: ?*bool = null,
+
+    fn build(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
+        const self: *const CheckCtx = @ptrCast(@alignCast(ctx_ptr));
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        var results = cap_passing.TokenHost.CheckResults.Builder.wrap(try any.initStruct(1, 0));
+        try results.setTag(self.tag);
+        try results.setLocal(self.local);
+    }
+};
+
+fn onTokenHostCheck(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    params: cap_passing.TokenHost.CheckParams.Reader,
+    caps: *const rpc.caps.table.InboundCapTable,
+    sender: cap_passing.TokenHost.Check.ReturnSender,
+) !void {
+    const service: *TokenHostService = @ptrCast(@alignCast(ctx_ptr));
+    // One of our own Tokens comes back as a local Client (origin `.exported`,
+    // owns no import); a Token the caller hosts comes back as an import.
+    const token = try params.resolveToken(peer, caps);
+    const ctx = peer.allocator.create(CheckCtx) catch |err| {
+        token.release();
+        return err;
+    };
+    var settled = false;
+    ctx.* = .{
+        .service = service,
+        .sender = sender,
+        .token = token,
+        .calls_before = service.token_calls,
+        .settled_flag = &settled,
+    };
+    _ = token.callTag(ctx, null, onTokenHostCheckTagReturn) catch |err| {
+        // After the callback ran, it owns the cleanup.
+        if (!settled) {
+            peer.allocator.destroy(ctx);
+            token.release();
+        }
+        return err;
+    };
+    if (!settled) ctx.settled_flag = null;
+}
+
+fn onTokenHostCheckTagReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: cap_passing.Token.Tag.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const ctx: *CheckCtx = @ptrCast(@alignCast(ctx_ptr));
+    if (ctx.settled_flag) |flag| flag.* = true;
+    defer peer.allocator.destroy(ctx);
+    // Release our import, if the Token is one, only after check()'s Return.
+    defer ctx.token.release();
+
+    const results = response.unwrap() catch |err| {
+        const reason = switch (response) {
+            .exception => |ex| ex.reason,
+            else => @errorName(err),
+        };
+        try ctx.sender.sendException(reason);
+        return;
+    };
+    ctx.tag = try results.getTag();
+    // Local means the call ran one of our own HostTokens, and ran nothing
+    // else of ours.
+    ctx.local = ctx.token.origin == .exported and ctx.service.token_calls == ctx.calls_before + 1;
+    try ctx.sender.sendResults(ctx, CheckCtx.build);
+}
+
+/// echo(): the resolved Token, written back with the generated setter.
+const EchoReturnCtx = struct {
+    token: cap_passing.Token.Client,
+
+    fn build(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
+        const self: *const EchoReturnCtx = @ptrCast(@alignCast(ctx_ptr));
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        var results = cap_passing.TokenHost.EchoResults.Builder.wrap(try any.initStruct(0, 1));
+        try results.setTokenClient(self.token);
+    }
+};
+
+fn onTokenHostEcho(
+    _: *anyopaque,
+    peer: *rpc.peer.Peer,
+    params: cap_passing.TokenHost.EchoParams.Reader,
+    caps: *const rpc.caps.table.InboundCapTable,
+    sender: cap_passing.TokenHost.Echo.ReturnSender,
+) !void {
+    // A Token the caller hosts resolves to an import we now own (origin
+    // `.imported`); setTokenClient must write it as `receiverHosted`, the
+    // caller's own capability, even when we export something under the same
+    // id. Release our reference only once the Return is sent.
+    const token = try params.resolveToken(peer, caps);
+    defer token.release();
+    var ret_ctx = EchoReturnCtx{ .token = token };
+    try sender.sendResults(&ret_ctx, EchoReturnCtx.build);
+}
+
+fn onTokenHostMintFail(
+    _: *anyopaque,
+    _: *rpc.peer.Peer,
+    _: cap_passing.TokenHost.MintFailParams.Reader,
+    _: *const rpc.caps.table.InboundCapTable,
+    sender: cap_passing.TokenHost.MintFail.ReturnSender,
+) !void {
+    try sender.sendException(mint_fail_reason);
+}
+
 fn parseSchema(text: []const u8) !Schema {
     if (std.mem.eql(u8, text, "game_world")) return .game_world;
     if (std.mem.eql(u8, text, "chat")) return .chat;
     if (std.mem.eql(u8, text, "inventory")) return .inventory;
     if (std.mem.eql(u8, text, "matchmaking")) return .matchmaking;
     if (std.mem.eql(u8, text, "resolve_disembargo")) return .resolve_disembargo;
+    if (std.mem.eql(u8, text, "pass_back")) return .pass_back;
+    if (std.mem.eql(u8, text, "pipelined_params")) return .pipelined_params;
     return error.InvalidSchema;
 }
 
@@ -1942,6 +2182,7 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, _: *rpc.transport.tcp.Con
         .inventory => inventory.InventoryService.setBootstrap(peer, &app.inventory_service.server),
         .matchmaking => matchmaking.MatchmakingService.setBootstrap(peer, &app.matchmaking_service.server),
         .resolve_disembargo => resolve_disembargo.Reflector.setBootstrap(peer, &app.reflect_service.server),
+        .pass_back, .pipelined_params => cap_passing.TokenHost.setBootstrap(peer, &app.token_host_service.server),
     };
 
     _ = bootstrap_result catch |err| {
@@ -1955,7 +2196,7 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, _: *rpc.transport.tcp.Con
 
 fn usage() void {
     std.debug.print(
-        \\Usage: e2e-zig-server [--host 0.0.0.0|unix:/path] [--port 4700] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo]
+        \\Usage: e2e-zig-server [--host 0.0.0.0|unix:/path] [--port 4700] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo|pass_back|pipelined_params]
         \\  --host unix:/path serves on an AF_UNIX socket at /path (Linux and macOS; --port is ignored)
         \\
     , .{});

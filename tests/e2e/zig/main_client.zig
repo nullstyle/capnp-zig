@@ -10,6 +10,7 @@ const chat = @import("generated/chat.zig");
 const inventory = @import("generated/inventory.zig");
 const matchmaking = @import("generated/matchmaking.zig");
 const resolve_disembargo = @import("generated/resolve_disembargo.zig");
+const cap_passing = @import("generated/cap_passing.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -19,6 +20,9 @@ const Schema = enum {
     inventory,
     matchmaking,
     resolve_disembargo,
+    // Both run against the same TokenHost (tests/e2e/schemas/cap_passing.capnp).
+    pass_back,
+    pipelined_params,
 };
 
 const CliArgs = struct {
@@ -98,6 +102,24 @@ const ClientApp = struct {
     rd_invoke_cb_target: ?resolve_disembargo.CallSequence.Client = null,
     // The value the SERVER observed by invoking rd_invoke_cb.getNumber() itself.
     rd_invoke_observed: ?u32 = null,
+
+    // pass_back and pipelined_params scenario state
+    cp_host: ?cap_passing.TokenHost.Client = null,
+    // Tokens this client hosts. pass_back exports all of them before it
+    // bootstraps, so they hold export ids 0, 1, 2, ...
+    cp_own: [cp_own_token_count]ClientToken = undefined,
+    cp_own_ids: [cp_own_token_count]u32 = undefined,
+    cp_own_exported: usize = 0,
+    // Tokens the server minted, as resolveToken returned them (imports).
+    cp_minted: [cp_minted_tags.len]?cap_passing.Token.Client = @splat(null),
+    cp_minted_count: usize = 0,
+    cp_check_index: usize = 0,
+    // pass_back: the client's own Token that echo() sends.
+    cp_echo_token: ?cap_passing.Token.Client = null,
+    // pipelined_params: the receiverAnswer cap id the next check() writes.
+    pp_check_cap: u32 = 0,
+    pp_outstanding: u32 = 0,
+    pp_mint_returned: bool = false,
 };
 
 // Client-hosted CallSequence: getNumber() returns a per-connection monotonic
@@ -161,6 +183,8 @@ fn parseSchema(text: []const u8) !Schema {
     if (std.mem.eql(u8, text, "inventory")) return .inventory;
     if (std.mem.eql(u8, text, "matchmaking")) return .matchmaking;
     if (std.mem.eql(u8, text, "resolve_disembargo")) return .resolve_disembargo;
+    if (std.mem.eql(u8, text, "pass_back")) return .pass_back;
+    if (std.mem.eql(u8, text, "pipelined_params")) return .pipelined_params;
     return error.InvalidSchema;
 }
 
@@ -238,6 +262,16 @@ fn finish(app: *ClientApp, peer: *rpc.peer.Peer) void {
     if (app.rd_reflector) |client| {
         client.release();
         app.rd_reflector = null;
+    }
+    // pass_back / pipelined_params: the minted Token imports (retained by
+    // resolveToken) and the TokenHost bootstrap import.
+    for (&app.cp_minted) |*slot| {
+        if (slot.*) |client| client.release();
+        slot.* = null;
+    }
+    if (app.cp_host) |client| {
+        client.release();
+        app.cp_host = null;
     }
     app.done = true;
     if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
@@ -1126,9 +1160,371 @@ fn onDisconnectNowReturn(
     finish(app, peer);
 }
 
+// ---------------------------------------------------------------------------
+// pass_back and pipelined_params scenarios (Zig-client -> reference-server
+// direction), against the TokenHost in tests/e2e/schemas/cap_passing.capnp.
+// ---------------------------------------------------------------------------
+
+/// The tags pass_back mints, in order.
+const cp_minted_tags = [_]u32{ 7, 8 };
+/// pass_back's own Tokens carry tags 900, 901, ...
+const cp_own_base_tag: u32 = 900;
+/// How many Tokens pass_back exports before it bootstraps. Every reference
+/// server numbers its exports from 0, so the bootstrap and the two minted
+/// Tokens land on import ids inside this range.
+const cp_own_token_count = 8;
+/// The tag pipelined_params mints.
+const pp_minted_tag: u32 = 11;
+/// Every TokenHost's mintFail() reason contains this text.
+const mint_fail_marker = "deliberate mint failure";
+
+/// A Token this client hosts: tag() returns its tag and counts the call.
+const ClientToken = struct {
+    tag: u32,
+    calls: u32 = 0,
+    server: cap_passing.Token.Server,
+};
+
+fn onClientTokenTag(
+    ctx_ptr: *anyopaque,
+    _: *rpc.peer.Peer,
+    _: cap_passing.Token.TagParams.Reader,
+    results: *cap_passing.Token.TagResults.Builder,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const self: *ClientToken = @ptrCast(@alignCast(ctx_ptr));
+    self.calls += 1;
+    try results.setTag(self.tag);
+}
+
+fn ownTokenCalls(app: *const ClientApp) u32 {
+    var total: u32 = 0;
+    for (app.cp_own[0..app.cp_own_exported]) |token| total += token.calls;
+    return total;
+}
+
+fn exceptionHasMarker(response: anytype) bool {
+    return switch (response) {
+        .exception => |ex| std.mem.indexOf(u8, ex.reason, mint_fail_marker) != null,
+        else => false,
+    };
+}
+
+// -- pass_back ----------------------------------------------------------------
+//
+// The client passes back Tokens it imported from the server, through the
+// generated setTokenClient, and the server must receive its OWN Tokens
+// (`receiverHosted`): check() calls each one and reports the tag it got and
+// whether the call reached one of the server's own Tokens.
+//
+// The client exports eight Tokens of its own before it bootstraps, the way a
+// bidirectional app exports callbacks. Export ids and import ids are separate
+// spaces that both start at 0, so the import ids of the minted Tokens are also
+// local export ids (asserted below). A setter that wrote a bare id would send
+// the client's own Token with that id instead, the server would call the
+// client, and check() would report a 9xx tag and `local == false`.
+//
+// echo() covers the results direction: the client hands the server one of its
+// own Tokens, the server hands it straight back, and the client must receive
+// its own Token (the generated resolveToken returns a local Client, origin
+// `.exported`) whose tag() runs the client's own object.
+
+fn bootstrapPassBack(app: *ClientApp, peer: *rpc.peer.Peer) !void {
+    while (app.cp_own_exported < cp_own_token_count) : (app.cp_own_exported += 1) {
+        const index = app.cp_own_exported;
+        const token = &app.cp_own[index];
+        token.* = .{
+            .tag = cp_own_base_tag + @as(u32, @intCast(index)),
+            .server = .{ .ctx = token, .vtable = .{ .tag = onClientTokenTag } },
+        };
+        app.cp_own_ids[index] = try cap_passing.Token.exportServer(peer, &token.server);
+    }
+    app.cp_echo_token = .{ .peer = peer, .cap_id = app.cp_own_ids[0], .origin = .exported };
+    _ = try cap_passing.TokenHost.Client.fromBootstrap(peer, app, onPassBackBootstrap);
+}
+
+fn onPassBackBootstrap(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, response: cap_passing.TokenHost.BootstrapResponse) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    const host = response.unwrap() catch {
+        failAndFinish(app, peer, "bootstrap token host capability");
+        return;
+    };
+    app.cp_host = host;
+    _ = try host.callMint(app, buildPassBackMint, onPassBackMintReturn);
+}
+
+fn buildPassBackMint(ctx_ptr: *anyopaque, params: *cap_passing.TokenHost.MintParams.Builder) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    try params.setTag(cp_minted_tags[app.cp_minted_count]);
+}
+
+fn onPassBackMintReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: cap_passing.TokenHost.Mint.Response,
+    caps: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "mint returns results");
+        return;
+    };
+    const token = results.resolveToken(peer, caps) catch {
+        failAndFinish(app, peer, "mint returns a Token capability");
+        return;
+    };
+    app.cp_minted[app.cp_minted_count] = token;
+    app.cp_minted_count += 1;
+    app.tap.ok(token.origin == .imported, "mint returns an imported Token");
+
+    const host = app.cp_host orelse {
+        failAndFinish(app, peer, "token host client available");
+        return;
+    };
+    if (app.cp_minted_count < cp_minted_tags.len) {
+        _ = try host.callMint(app, buildPassBackMint, onPassBackMintReturn);
+        return;
+    }
+
+    var collides = true;
+    for (app.cp_minted) |slot| {
+        const minted = slot orelse continue;
+        if (!peer.caps.hasExport(minted.cap_id)) collides = false;
+    }
+    app.tap.ok(collides, "precondition: each minted Token's import id is also a local export id");
+
+    app.cp_check_index = 0;
+    _ = try host.callCheck(app, buildPassBackCheck, onPassBackCheckReturn);
+}
+
+fn buildPassBackCheck(ctx_ptr: *anyopaque, params: *cap_passing.TokenHost.CheckParams.Builder) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    // The Client resolveToken returned records that it holds an import, so
+    // the generated setter writes the server's own capability.
+    const token = app.cp_minted[app.cp_check_index] orelse return error.MissingMintedToken;
+    try params.setTokenClient(token);
+}
+
+fn onPassBackCheckReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: cap_passing.TokenHost.Check.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "check returns results");
+        return;
+    };
+    const want_tag = cp_minted_tags[app.cp_check_index];
+    const reached_own = (try results.getTag()) == want_tag and try results.getLocal();
+    app.tap.ok(reached_own, if (app.cp_check_index == 0)
+        "check(minted Token 7) called the server's own Token"
+    else
+        "check(minted Token 8) called the server's own Token");
+
+    app.cp_check_index += 1;
+    const host = app.cp_host orelse {
+        failAndFinish(app, peer, "token host client available");
+        return;
+    };
+    if (app.cp_check_index < cp_minted_tags.len) {
+        _ = try host.callCheck(app, buildPassBackCheck, onPassBackCheckReturn);
+        return;
+    }
+
+    app.tap.ok(ownTokenCalls(app) == 0, "check() never called a Token the client hosts");
+    _ = try host.callEcho(app, buildPassBackEcho, onPassBackEchoReturn);
+}
+
+fn buildPassBackEcho(ctx_ptr: *anyopaque, params: *cap_passing.TokenHost.EchoParams.Builder) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    const token = app.cp_echo_token orelse return error.MissingEchoToken;
+    try params.setTokenClient(token);
+}
+
+fn onPassBackEchoReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: cap_passing.TokenHost.Echo.Response,
+    caps: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "echo returns results");
+        return;
+    };
+    const echoed = results.resolveToken(peer, caps) catch {
+        failAndFinish(app, peer, "echo returns a Token capability");
+        return;
+    };
+    const came_home = echoed.origin == .exported and echoed.cap_id == app.cp_own_ids[0];
+    app.tap.ok(came_home, "echo returns the client's own Token");
+    if (!came_home) {
+        echoed.release();
+        finish(app, peer);
+        return;
+    }
+    // Call it inside this callback: the server's Release of echo()'s param
+    // grant can follow this Return, and the export goes away with it.
+    _ = try echoed.callTag(app, null, onPassBackEchoTagReturn);
+}
+
+fn onPassBackEchoTagReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: cap_passing.Token.Tag.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "tag() on the echoed Token returns results");
+        return;
+    };
+    const own = &app.cp_own[0];
+    app.tap.ok(
+        (try results.getTag()) == own.tag and own.calls == 1 and ownTokenCalls(app) == 1,
+        "tag() on the echoed Token ran the client's own object",
+    );
+    finish(app, peer);
+}
+
+// -- pipelined_params ---------------------------------------------------------
+//
+// The client passes the `token` result of its own unanswered mint() as
+// check()'s param: a `receiverAnswer` descriptor, the shape the C++ reference
+// sends for every pipelined argument. All four calls leave back to back
+// before any Return can arrive:
+//
+//   q1 = mint(11)
+//   q2 = check(token = q1.token)        -> (11, local): the server's own Token
+//   q3 = mintFail(12)                   -> exception
+//   q4 = check(token = q3.token)        -> exception carrying q3's reason
+//
+// The generated client API has no setter for a pipelined capability, so the
+// client registers the promised answer with `CapTable.noteReceiverAnswerOps`
+// and writes the id it returns with setTokenCapability.
+
+fn bootstrapPipelinedParams(app: *ClientApp, peer: *rpc.peer.Peer) !void {
+    _ = try cap_passing.TokenHost.Client.fromBootstrap(peer, app, onPipelinedParamsBootstrap);
+}
+
+fn onPipelinedParamsBootstrap(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, response: cap_passing.TokenHost.BootstrapResponse) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    const host = response.unwrap() catch {
+        failAndFinish(app, peer, "bootstrap token host capability");
+        return;
+    };
+    app.cp_host = host;
+
+    app.pp_outstanding = 4;
+    const mint_question = try host.callMint(app, buildPipelinedMint, onPipelinedMintReturn);
+    try sendPipelinedCheck(app, peer, host, mint_question, onPipelinedCheckReturn);
+    const fail_question = try host.callMintFail(app, buildPipelinedMintFail, onPipelinedMintFailReturn);
+    try sendPipelinedCheck(app, peer, host, fail_question, onPipelinedCheckFailReturn);
+    app.tap.ok(!app.pp_mint_returned, "check() calls sent before mint() returned");
+}
+
+fn sendPipelinedCheck(
+    app: *ClientApp,
+    peer: *rpc.peer.Peer,
+    host: cap_passing.TokenHost.Client,
+    question_id: u32,
+    on_return: cap_passing.TokenHost.Check.Callback,
+) !void {
+    // `token` is pointer field 0 of the named question's results.
+    const ops = [_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = 0 }};
+    app.pp_check_cap = try peer.caps.noteReceiverAnswerOps(question_id, &ops);
+    _ = try host.callCheck(app, buildPipelinedCheck, on_return);
+}
+
+fn buildPipelinedMint(_: *anyopaque, params: *cap_passing.TokenHost.MintParams.Builder) !void {
+    try params.setTag(pp_minted_tag);
+}
+
+fn buildPipelinedMintFail(_: *anyopaque, params: *cap_passing.TokenHost.MintFailParams.Builder) !void {
+    try params.setTag(pp_minted_tag + 1);
+}
+
+fn buildPipelinedCheck(ctx_ptr: *anyopaque, params: *cap_passing.TokenHost.CheckParams.Builder) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    // The id names a receiverAnswer entry, so the outbound encoder writes a
+    // `receiverAnswer` descriptor for it.
+    try params.setTokenCapability(.{ .id = app.pp_check_cap });
+}
+
+fn pipelinedParamsReturned(app: *ClientApp, peer: *rpc.peer.Peer) void {
+    app.pp_outstanding -= 1;
+    if (app.pp_outstanding == 0) finish(app, peer);
+}
+
+fn onPipelinedMintReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: cap_passing.TokenHost.Mint.Response,
+    caps: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    app.pp_mint_returned = true;
+    defer pipelinedParamsReturned(app, peer);
+    const results = response.unwrap() catch {
+        app.tap.ok(false, "mint() returns an imported Token");
+        return;
+    };
+    const token = results.resolveToken(peer, caps) catch {
+        app.tap.ok(false, "mint() returns an imported Token");
+        return;
+    };
+    app.cp_minted[0] = token;
+    app.tap.ok(token.origin == .imported, "mint() returns an imported Token");
+}
+
+fn onPipelinedCheckReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: cap_passing.TokenHost.Check.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    defer pipelinedParamsReturned(app, peer);
+    const desc = "check(pipelined mint().token) called the server's own Token";
+    const results = response.unwrap() catch {
+        if (response == .exception) std.debug.print("# check exception: {s}\n", .{response.exception.reason});
+        app.tap.ok(false, desc);
+        return;
+    };
+    app.tap.ok((try results.getTag()) == pp_minted_tag and try results.getLocal(), desc);
+}
+
+fn onPipelinedMintFailReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: cap_passing.TokenHost.MintFail.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    defer pipelinedParamsReturned(app, peer);
+    app.tap.ok(exceptionHasMarker(response), "mintFail() fails with its exception");
+}
+
+fn onPipelinedCheckFailReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: cap_passing.TokenHost.Check.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    defer pipelinedParamsReturned(app, peer);
+    switch (response) {
+        .exception => |ex| std.debug.print("# check(pipelined mintFail().token) exception: {s}\n", .{ex.reason}),
+        else => {},
+    }
+    app.tap.ok(exceptionHasMarker(response), "check(pipelined mintFail().token) fails with mintFail()'s exception");
+}
+
 fn usage() void {
     std.debug.print(
-        \\Usage: e2e-zig-client [--host 127.0.0.1|unix:/path] [--port 4000] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo]
+        \\Usage: e2e-zig-client [--host 127.0.0.1|unix:/path] [--port 4000] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo|pass_back|pipelined_params]
         \\  --host unix:/path dials the AF_UNIX socket at /path (Linux and macOS; --port is ignored)
         \\
     , .{});
@@ -1197,6 +1593,8 @@ pub fn main(init: std.process.Init) !void {
         .inventory => bootstrapInventory(&app, peer),
         .matchmaking => bootstrapMatchmaking(&app, peer),
         .resolve_disembargo => bootstrapResolveDisembargo(&app, peer),
+        .pass_back => bootstrapPassBack(&app, peer),
+        .pipelined_params => bootstrapPipelinedParams(&app, peer),
     };
 
     start_result catch |err| {

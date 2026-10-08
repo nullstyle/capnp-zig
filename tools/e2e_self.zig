@@ -23,7 +23,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const schemas = [_][]const u8{ "game_world", "chat", "inventory", "matchmaking" };
+const schemas = [_][]const u8{ "game_world", "chat", "inventory", "matchmaking", "pass_back", "pipelined_params" };
 const server_ready_timeout_ms: i64 = 30_000;
 const client_timeout_ms: i64 = 60_000;
 
