@@ -8,8 +8,8 @@ const std = @import("std");
 const capnpc = capnpc_runtime: {
     const @"capnpc-zig runtime" = @import("capnpc-zig");
     const @"runtime ABI" = if (@hasDecl(@"capnpc-zig runtime", "codegen_abi")) @"capnpc-zig runtime".codegen_abi.version else 0;
-    if (@"runtime ABI" < 1) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 1, which needs the capnpc-zig 0.19.0 runtime or newer, but the imported runtime provides ABI {d}. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.", .{@"runtime ABI"}));
-    if (@"capnpc-zig runtime".codegen_abi.oldest_supported > 1) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 1, but the imported capnpc-zig runtime (ABI {d}) only supports ABI {d} and newer. Regenerate the file with the capnpc-zig {s} plugin or newer.", .{ @"runtime ABI", @"capnpc-zig runtime".codegen_abi.oldest_supported, @"capnpc-zig runtime".codegen_abi.release }));
+    if (@"runtime ABI" < 2) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 2, which needs the capnpc-zig 0.23.0 runtime or newer, but the imported runtime provides ABI {d}. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.", .{@"runtime ABI"}));
+    if (@"capnpc-zig runtime".codegen_abi.oldest_supported > 2) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 2, but the imported capnpc-zig runtime (ABI {d}) only supports ABI {d} and newer. Regenerate the file with the capnpc-zig {s} plugin or newer.", .{ @"runtime ABI", @"capnpc-zig runtime".codegen_abi.oldest_supported, @"capnpc-zig runtime".codegen_abi.release }));
     break :capnpc_runtime @"capnpc-zig runtime";
 };
 const message = capnpc.message;
@@ -2975,6 +2975,10 @@ pub const CallSequence = struct {
     pub const Client = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
+        /// Experimental. The id space `cap_id` names. `init` leaves it
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
+        origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
             return .{ .peer = peer, .cap_id = cap_id };
@@ -2984,6 +2988,8 @@ pub const CallSequence = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
@@ -2995,7 +3001,11 @@ pub const CallSequence = struct {
             const ctx = try self.peer.allocator.create(GetNumber.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetNumber.ordinal, ctx, GetNumber.callBuild, GetNumber.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, GetNumber.ordinal, ctx, GetNumber.callBuild, GetNumber.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetNumber.ordinal, ctx, GetNumber.callBuild, GetNumber.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3100,7 +3110,7 @@ pub const CallSequence = struct {
                 try mutable_caps.retainCapability(cap);
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
-                    .imported => |imported| response = .{ .client = Client.init(peer, imported.id) },
+                    .imported => |imported| response = .{ .client = .{ .peer = peer, .cap_id = imported.id, .origin = .imported } },
                     else => return error.UnexpectedBootstrapCapability,
                 }
             },
@@ -3944,6 +3954,10 @@ pub const Reflector = struct {
     pub const Client = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
+        /// Experimental. The id space `cap_id` names. `init` leaves it
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
+        origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
             return .{ .peer = peer, .cap_id = cap_id };
@@ -3953,6 +3967,8 @@ pub const Reflector = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
@@ -3964,7 +3980,11 @@ pub const Reflector = struct {
             const ctx = try self.peer.allocator.create(Reflect.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Reflect.ordinal, ctx, Reflect.callBuild, Reflect.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, Reflect.ordinal, ctx, Reflect.callBuild, Reflect.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Reflect.ordinal, ctx, Reflect.callBuild, Reflect.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3982,7 +4002,11 @@ pub const Reflector = struct {
             const ctx = try self.peer.allocator.create(ResolveNow.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, ResolveNow.ordinal, ctx, ResolveNow.callBuild, ResolveNow.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, ResolveNow.ordinal, ctx, ResolveNow.callBuild, ResolveNow.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, ResolveNow.ordinal, ctx, ResolveNow.callBuild, ResolveNow.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4000,7 +4024,11 @@ pub const Reflector = struct {
             const ctx = try self.peer.allocator.create(InvokeCap.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, InvokeCap.ordinal, ctx, InvokeCap.callBuild, InvokeCap.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, InvokeCap.ordinal, ctx, InvokeCap.callBuild, InvokeCap.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, InvokeCap.ordinal, ctx, InvokeCap.callBuild, InvokeCap.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4018,7 +4046,11 @@ pub const Reflector = struct {
             const ctx = try self.peer.allocator.create(DisconnectNow.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, DisconnectNow.ordinal, ctx, DisconnectNow.callBuild, DisconnectNow.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, DisconnectNow.ordinal, ctx, DisconnectNow.callBuild, DisconnectNow.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, DisconnectNow.ordinal, ctx, DisconnectNow.callBuild, DisconnectNow.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4033,6 +4065,7 @@ pub const Reflector = struct {
         }
 
         pub fn callReflectPipelinedWithOptions(self: Client, user_ctx: *anyopaque, build: ?Reflect.BuildFn, on_return: Reflect.Callback, options: rpc.peer.CallOptions) !ReflectPipeline {
+            if (self.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
             const qid = try self.callReflectWithOptions(user_ctx, build, on_return, options);
             return .{ .peer = self.peer, .question_id = qid };
         }
@@ -4207,7 +4240,7 @@ pub const Reflector = struct {
                 try mutable_caps.retainCapability(cap);
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
-                    .imported => |imported| response = .{ .client = Client.init(peer, imported.id) },
+                    .imported => |imported| response = .{ .client = .{ .peer = peer, .cap_id = imported.id, .origin = .imported } },
                     else => return error.UnexpectedBootstrapCapability,
                 }
             },
@@ -4298,8 +4331,13 @@ pub const Reflector = struct {
                 try mutable_caps.retainCapability(cap);
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
-                    .imported => |imported| return CallSequence.Client.init(peer, imported.id),
-                    else => return error.UnexpectedCapabilityType,
+                    .imported => |imported| return .{ .peer = peer, .cap_id = imported.id, .origin = .imported },
+                    .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                    .promised => |promised| switch (try peer.resolvePromisedAnswer(promised)) {
+                        .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                        else => return error.UnexpectedCapabilityType,
+                    },
+                    .none => return error.UnexpectedCapabilityType,
                 }
             }
         };
@@ -4353,7 +4391,11 @@ pub const Reflector = struct {
 
             pub fn setTargetClient(self: *Builder, client: CallSequence.Client) message.BuildError!void {
                 var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(.{ .id = client.cap_id });
+                switch (client.origin) {
+                    .imported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.receiverHosted), client.cap_id),
+                    .exported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.senderHosted), client.cap_id),
+                    .unspecified => try any.setCapability(.{ .id = client.cap_id }),
+                }
             }
         };
         pub fn Apply(comptime bindings: anytype) type {
@@ -4451,8 +4493,13 @@ pub const Reflector = struct {
                 try mutable_caps.retainCapability(cap);
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
-                    .imported => |imported| return CallSequence.Client.init(peer, imported.id),
-                    else => return error.UnexpectedCapabilityType,
+                    .imported => |imported| return .{ .peer = peer, .cap_id = imported.id, .origin = .imported },
+                    .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                    .promised => |promised| switch (try peer.resolvePromisedAnswer(promised)) {
+                        .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                        else => return error.UnexpectedCapabilityType,
+                    },
+                    .none => return error.UnexpectedCapabilityType,
                 }
             }
         };
@@ -4506,7 +4553,11 @@ pub const Reflector = struct {
 
             pub fn setPromiseClient(self: *Builder, client: CallSequence.Client) message.BuildError!void {
                 var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(.{ .id = client.cap_id });
+                switch (client.origin) {
+                    .imported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.receiverHosted), client.cap_id),
+                    .exported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.senderHosted), client.cap_id),
+                    .unspecified => try any.setCapability(.{ .id = client.cap_id }),
+                }
             }
         };
         pub fn Apply(comptime bindings: anytype) type {
@@ -4680,8 +4731,13 @@ pub const Reflector = struct {
                 try mutable_caps.retainCapability(cap);
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
-                    .imported => |imported| return CallSequence.Client.init(peer, imported.id),
-                    else => return error.UnexpectedCapabilityType,
+                    .imported => |imported| return .{ .peer = peer, .cap_id = imported.id, .origin = .imported },
+                    .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                    .promised => |promised| switch (try peer.resolvePromisedAnswer(promised)) {
+                        .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                        else => return error.UnexpectedCapabilityType,
+                    },
+                    .none => return error.UnexpectedCapabilityType,
                 }
             }
         };
@@ -4735,7 +4791,11 @@ pub const Reflector = struct {
 
             pub fn setCbClient(self: *Builder, client: CallSequence.Client) message.BuildError!void {
                 var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(.{ .id = client.cap_id });
+                switch (client.origin) {
+                    .imported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.receiverHosted), client.cap_id),
+                    .exported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.senderHosted), client.cap_id),
+                    .unspecified => try any.setCapability(.{ .id = client.cap_id }),
+                }
             }
         };
         pub fn Apply(comptime bindings: anytype) type {
@@ -4980,6 +5040,7 @@ pub const Reflector = struct {
                     return self.raw.callReflect(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callReflectPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Reflect.BuildFn, comptime callback: _Applied.Reflect.Callback) !_Applied.Reflect.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callReflect(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }

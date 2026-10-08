@@ -8,8 +8,8 @@ const std = @import("std");
 const capnpc = capnpc_runtime: {
     const @"capnpc-zig runtime" = @import("capnpc-zig");
     const @"runtime ABI" = if (@hasDecl(@"capnpc-zig runtime", "codegen_abi")) @"capnpc-zig runtime".codegen_abi.version else 0;
-    if (@"runtime ABI" < 1) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 1, which needs the capnpc-zig 0.19.0 runtime or newer, but the imported runtime provides ABI {d}. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.", .{@"runtime ABI"}));
-    if (@"capnpc-zig runtime".codegen_abi.oldest_supported > 1) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 1, but the imported capnpc-zig runtime (ABI {d}) only supports ABI {d} and newer. Regenerate the file with the capnpc-zig {s} plugin or newer.", .{ @"runtime ABI", @"capnpc-zig runtime".codegen_abi.oldest_supported, @"capnpc-zig runtime".codegen_abi.release }));
+    if (@"runtime ABI" < 2) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 2, which needs the capnpc-zig 0.23.0 runtime or newer, but the imported runtime provides ABI {d}. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.", .{@"runtime ABI"}));
+    if (@"capnpc-zig runtime".codegen_abi.oldest_supported > 2) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 2, but the imported capnpc-zig runtime (ABI {d}) only supports ABI {d} and newer. Regenerate the file with the capnpc-zig {s} plugin or newer.", .{ @"runtime ABI", @"capnpc-zig runtime".codegen_abi.oldest_supported, @"capnpc-zig runtime".codegen_abi.release }));
     break :capnpc_runtime @"capnpc-zig runtime";
 };
 const message = capnpc.message;
@@ -361,6 +361,10 @@ pub const PingPong = struct {
     pub const Client = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
+        /// Experimental. The id space `cap_id` names. `init` leaves it
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
+        origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
             return .{ .peer = peer, .cap_id = cap_id };
@@ -370,6 +374,8 @@ pub const PingPong = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
@@ -381,7 +387,11 @@ pub const PingPong = struct {
             const ctx = try self.peer.allocator.create(Ping.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Ping.ordinal, ctx, Ping.callBuild, Ping.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, Ping.ordinal, ctx, Ping.callBuild, Ping.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Ping.ordinal, ctx, Ping.callBuild, Ping.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -486,7 +496,7 @@ pub const PingPong = struct {
                 try mutable_caps.retainCapability(cap);
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
-                    .imported => |imported| response = .{ .client = Client.init(peer, imported.id) },
+                    .imported => |imported| response = .{ .client = .{ .peer = peer, .cap_id = imported.id, .origin = .imported } },
                     else => return error.UnexpectedBootstrapCapability,
                 }
             },

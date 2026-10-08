@@ -1098,6 +1098,31 @@ pub fn buildImpl(b: *std.Build) !void {
     registered_test_compile_steps.append(b.allocator, &rpc_typed_pipelining_tests.step) catch @panic("OOM");
     const run_rpc_typed_pipelining_tests = &b.addRunArtifact(rpc_typed_pipelining_tests).step;
 
+    // Capability pass-back through the GENERATED client setters and resolvers
+    // (`setXClient`, `resolveX`), Zig to Zig over two in-process peers. The
+    // resolve_disembargo bindings carry the interface-typed params it needs.
+    const e2e_resolve_disembargo_module = b.createModule(.{
+        .root_source_file = b.path("tests/e2e/zig/generated/resolve_disembargo.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "capnpc-zig", .module = lib_module },
+        },
+    });
+    const rpc_cap_pass_back_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc/integration/rpc_cap_pass_back_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "resolve_disembargo", .module = e2e_resolve_disembargo_module },
+            },
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &rpc_cap_pass_back_tests.step) catch @panic("OOM");
+    const run_rpc_cap_pass_back_tests = &b.addRunArtifact(rpc_cap_pass_back_tests).step;
+
     const wasm_host_abi_test_module = b.createModule(.{
         .root_source_file = b.path("src/wasm/capnp_host_abi.zig"),
         .target = target,
@@ -1609,6 +1634,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_integration_step.dependOn(run_rpc_unix_worker_pool_tests);
     test_rpc_integration_step.dependOn(run_rpc_persistence_reconnect_tests);
     test_rpc_integration_step.dependOn(run_rpc_typed_pipelining_tests);
+    test_rpc_integration_step.dependOn(run_rpc_cap_pass_back_tests);
 
     const test_rpc_step = b.step("test-rpc", "Run all RPC tests");
     test_rpc_step.dependOn(test_rpc_wire_step);

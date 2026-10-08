@@ -8,8 +8,8 @@ const std = @import("std");
 const capnpc = capnpc_runtime: {
     const @"capnpc-zig runtime" = @import("capnpc-zig");
     const @"runtime ABI" = if (@hasDecl(@"capnpc-zig runtime", "codegen_abi")) @"capnpc-zig runtime".codegen_abi.version else 0;
-    if (@"runtime ABI" < 1) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 1, which needs the capnpc-zig 0.19.0 runtime or newer, but the imported runtime provides ABI {d}. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.", .{@"runtime ABI"}));
-    if (@"capnpc-zig runtime".codegen_abi.oldest_supported > 1) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 1, but the imported capnpc-zig runtime (ABI {d}) only supports ABI {d} and newer. Regenerate the file with the capnpc-zig {s} plugin or newer.", .{ @"runtime ABI", @"capnpc-zig runtime".codegen_abi.oldest_supported, @"capnpc-zig runtime".codegen_abi.release }));
+    if (@"runtime ABI" < 2) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 2, which needs the capnpc-zig 0.23.0 runtime or newer, but the imported runtime provides ABI {d}. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.", .{@"runtime ABI"}));
+    if (@"capnpc-zig runtime".codegen_abi.oldest_supported > 2) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 2, but the imported capnpc-zig runtime (ABI {d}) only supports ABI {d} and newer. Regenerate the file with the capnpc-zig {s} plugin or newer.", .{ @"runtime ABI", @"capnpc-zig runtime".codegen_abi.oldest_supported, @"capnpc-zig runtime".codegen_abi.release }));
     break :capnpc_runtime @"capnpc-zig runtime";
 };
 const message = capnpc.message;
@@ -1436,6 +1436,10 @@ pub const KvClientNotifier = struct {
     pub const Client = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
+        /// Experimental. The id space `cap_id` names. `init` leaves it
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
+        origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
             return .{ .peer = peer, .cap_id = cap_id };
@@ -1445,6 +1449,8 @@ pub const KvClientNotifier = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
@@ -1456,7 +1462,11 @@ pub const KvClientNotifier = struct {
             const ctx = try self.peer.allocator.create(KeysChanged.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, KeysChanged.ordinal, ctx, KeysChanged.callBuild, KeysChanged.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, KeysChanged.ordinal, ctx, KeysChanged.callBuild, KeysChanged.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, KeysChanged.ordinal, ctx, KeysChanged.callBuild, KeysChanged.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -1474,7 +1484,11 @@ pub const KvClientNotifier = struct {
             const ctx = try self.peer.allocator.create(StateResetRequired.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, StateResetRequired.ordinal, ctx, StateResetRequired.callBuild, StateResetRequired.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, StateResetRequired.ordinal, ctx, StateResetRequired.callBuild, StateResetRequired.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, StateResetRequired.ordinal, ctx, StateResetRequired.callBuild, StateResetRequired.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -1601,7 +1615,7 @@ pub const KvClientNotifier = struct {
                 try mutable_caps.retainCapability(cap);
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
-                    .imported => |imported| response = .{ .client = Client.init(peer, imported.id) },
+                    .imported => |imported| response = .{ .client = .{ .peer = peer, .cap_id = imported.id, .origin = .imported } },
                     else => return error.UnexpectedBootstrapCapability,
                 }
             },
@@ -3227,6 +3241,10 @@ pub const KvStore = struct {
     pub const Client = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
+        /// Experimental. The id space `cap_id` names. `init` leaves it
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
+        origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
             return .{ .peer = peer, .cap_id = cap_id };
@@ -3236,6 +3254,8 @@ pub const KvStore = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
@@ -3247,7 +3267,11 @@ pub const KvStore = struct {
             const ctx = try self.peer.allocator.create(Get.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Get.ordinal, ctx, Get.callBuild, Get.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, Get.ordinal, ctx, Get.callBuild, Get.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Get.ordinal, ctx, Get.callBuild, Get.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3265,7 +3289,11 @@ pub const KvStore = struct {
             const ctx = try self.peer.allocator.create(WriteBatch.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, WriteBatch.ordinal, ctx, WriteBatch.callBuild, WriteBatch.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, WriteBatch.ordinal, ctx, WriteBatch.callBuild, WriteBatch.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, WriteBatch.ordinal, ctx, WriteBatch.callBuild, WriteBatch.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3283,7 +3311,11 @@ pub const KvStore = struct {
             const ctx = try self.peer.allocator.create(List.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, List.ordinal, ctx, List.callBuild, List.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, List.ordinal, ctx, List.callBuild, List.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, List.ordinal, ctx, List.callBuild, List.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3301,7 +3333,11 @@ pub const KvStore = struct {
             const ctx = try self.peer.allocator.create(Subscribe.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Subscribe.ordinal, ctx, Subscribe.callBuild, Subscribe.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, Subscribe.ordinal, ctx, Subscribe.callBuild, Subscribe.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Subscribe.ordinal, ctx, Subscribe.callBuild, Subscribe.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3319,7 +3355,11 @@ pub const KvStore = struct {
             const ctx = try self.peer.allocator.create(SetWatchedKeys.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, SetWatchedKeys.ordinal, ctx, SetWatchedKeys.callBuild, SetWatchedKeys.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, SetWatchedKeys.ordinal, ctx, SetWatchedKeys.callBuild, SetWatchedKeys.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, SetWatchedKeys.ordinal, ctx, SetWatchedKeys.callBuild, SetWatchedKeys.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3337,7 +3377,11 @@ pub const KvStore = struct {
             const ctx = try self.peer.allocator.create(CreateBackup.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, CreateBackup.ordinal, ctx, CreateBackup.callBuild, CreateBackup.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, CreateBackup.ordinal, ctx, CreateBackup.callBuild, CreateBackup.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, CreateBackup.ordinal, ctx, CreateBackup.callBuild, CreateBackup.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3355,7 +3399,11 @@ pub const KvStore = struct {
             const ctx = try self.peer.allocator.create(ListBackups.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, ListBackups.ordinal, ctx, ListBackups.callBuild, ListBackups.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, ListBackups.ordinal, ctx, ListBackups.callBuild, ListBackups.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, ListBackups.ordinal, ctx, ListBackups.callBuild, ListBackups.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3373,7 +3421,11 @@ pub const KvStore = struct {
             const ctx = try self.peer.allocator.create(RestoreFromBackup.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, RestoreFromBackup.ordinal, ctx, RestoreFromBackup.callBuild, RestoreFromBackup.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, RestoreFromBackup.ordinal, ctx, RestoreFromBackup.callBuild, RestoreFromBackup.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, RestoreFromBackup.ordinal, ctx, RestoreFromBackup.callBuild, RestoreFromBackup.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -3632,7 +3684,7 @@ pub const KvStore = struct {
                 try mutable_caps.retainCapability(cap);
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
-                    .imported => |imported| response = .{ .client = Client.init(peer, imported.id) },
+                    .imported => |imported| response = .{ .client = .{ .peer = peer, .cap_id = imported.id, .origin = .imported } },
                     else => return error.UnexpectedBootstrapCapability,
                 }
             },
@@ -4310,8 +4362,13 @@ pub const KvStore = struct {
                 try mutable_caps.retainCapability(cap);
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
-                    .imported => |imported| return KvClientNotifier.Client.init(peer, imported.id),
-                    else => return error.UnexpectedCapabilityType,
+                    .imported => |imported| return .{ .peer = peer, .cap_id = imported.id, .origin = .imported },
+                    .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                    .promised => |promised| switch (try peer.resolvePromisedAnswer(promised)) {
+                        .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                        else => return error.UnexpectedCapabilityType,
+                    },
+                    .none => return error.UnexpectedCapabilityType,
                 }
             }
         };
@@ -4365,7 +4422,11 @@ pub const KvStore = struct {
 
             pub fn setNotifierClient(self: *Builder, client: KvClientNotifier.Client) message.BuildError!void {
                 var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(.{ .id = client.cap_id });
+                switch (client.origin) {
+                    .imported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.receiverHosted), client.cap_id),
+                    .exported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.senderHosted), client.cap_id),
+                    .unspecified => try any.setCapability(.{ .id = client.cap_id }),
+                }
             }
         };
         pub fn Apply(comptime bindings: anytype) type {
@@ -5086,6 +5147,7 @@ pub const KvStore = struct {
                     return self.raw.callGet(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.Get.BuildFn, comptime callback: _Applied.Get.Callback) !_Applied.Get.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callGet(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -5110,6 +5172,7 @@ pub const KvStore = struct {
                     return self.raw.callCreateBackup(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callCreateBackupPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.CreateBackup.BuildFn, comptime callback: _Applied.CreateBackup.Callback) !_Applied.CreateBackup.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callCreateBackup(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }

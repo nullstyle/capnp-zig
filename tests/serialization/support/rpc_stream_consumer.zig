@@ -130,6 +130,22 @@ test "stream result is bundled and generated stream calls acknowledge" {
     try std.testing.expect(state.drained);
 }
 
+test "a StreamClient over a local Client refuses to stream" {
+    var peer = Peer.initDetached(std.testing.allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&peer, State.send);
+    var state = State{};
+    var server = g.TestStreaming.Server{ .ctx = &state, .vtable = .{ .doStreamI = State.i, .doStreamJ = State.j, .finishStream = State.finish } };
+    const id = try g.TestStreaming.exportServer(&peer, &server);
+    // A Client for this peer's own export (what `resolveX` returns when the
+    // capability came home). Stream flow control runs over the wire, which a
+    // local export does not have: refuse before anything is sent or counted.
+    var client = g.TestStreaming.StreamClient.init(.{ .peer = &peer, .cap_id = id, .origin = .exported });
+    try std.testing.expectError(error.LocalCapabilityStreamingUnsupported, client.callDoStreamI(&state, State.build));
+    try std.testing.expectEqual(@as(u32, 0), state.total);
+    try std.testing.expectEqual(@as(u32, 0), client.stream.in_flight);
+}
+
 const Capture = struct {
     peer: *Peer,
     fail_after_call: bool = false,

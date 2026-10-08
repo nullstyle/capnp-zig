@@ -515,6 +515,7 @@ capnpc-zig.rpc.generated.persistent.Persistent.Client.callSaveWithOptions: fn (r
 capnpc-zig.rpc.generated.persistent.Persistent.Client.cap_id: field u32
 capnpc-zig.rpc.generated.persistent.Persistent.Client.fromBootstrap: fn (*rpc.peer.mod.Peer, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.gen.capnp.persistent.Persistent.BootstrapResponse) anyerror!void) anyerror!u32
 capnpc-zig.rpc.generated.persistent.Persistent.Client.init: fn (*rpc.peer.mod.Peer, u32) rpc.gen.capnp.persistent.Persistent.Client
+capnpc-zig.rpc.generated.persistent.Persistent.Client.origin: field rpc.peer.mod.ClientOrigin = .unspecified
 capnpc-zig.rpc.generated.persistent.Persistent.Client.peer: field *rpc.peer.mod.Peer
 capnpc-zig.rpc.generated.persistent.Persistent.Client.release: fn (rpc.gen.capnp.persistent.Persistent.Client) void
 capnpc-zig.rpc.generated.persistent.Persistent.Client: struct
@@ -1670,6 +1671,10 @@ capnpc-zig.rpc.integration.worker_pool: struct
 capnpc-zig.rpc.integration: struct
 capnpc-zig.rpc.peer.CallOptions.result_lifetime: field rpc.peer.retained_questions.ResultLifetime = .automatic
 capnpc-zig.rpc.peer.CallOptions: struct
+capnpc-zig.rpc.peer.ClientOrigin.exported: enumerant = 2
+capnpc-zig.rpc.peer.ClientOrigin.imported: enumerant = 1
+capnpc-zig.rpc.peer.ClientOrigin.unspecified: enumerant = 0
+capnpc-zig.rpc.peer.ClientOrigin: enum
 capnpc-zig.rpc.peer.EntropySource.ctx: field *anyopaque
 capnpc-zig.rpc.peer.EntropySource.fill: field *const fn (*anyopaque, []u8) void
 capnpc-zig.rpc.peer.EntropySource.fromCsprng: fn (*Random.ChaCha) rpc.peer.mod.EntropySource
@@ -2235,6 +2240,7 @@ capnpc-zig.rpc.peer.Peer.sendCallGeneratedWithOptions: fn (*rpc.peer.mod.Peer, u
 capnpc-zig.rpc.peer.Peer.sendCallPromisedWithOpsGeneratedWithOptions: fn (*rpc.peer.mod.Peer, u32, []const rpc.wire.protocol.PromisedAnswerOp, u64, u16, *anyopaque, ?*const fn (*anyopaque, *rpc.wire.protocol.CallBuilder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void, rpc.peer.retained_questions.CallOptions) anyerror!u32
 capnpc-zig.rpc.peer.Peer.sendCallPromisedWithOpsWithOptions: fn (*rpc.peer.mod.Peer, u32, []const rpc.wire.protocol.PromisedAnswerOp, u64, u16, *anyopaque, ?*const fn (*anyopaque, *rpc.wire.protocol.CallBuilder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void, rpc.peer.retained_questions.CallOptions) anyerror!u32
 capnpc-zig.rpc.peer.Peer.sendCallPromisedWithOptions: fn (*rpc.peer.mod.Peer, rpc.wire.protocol.PromisedAnswer, u64, u16, *anyopaque, ?*const fn (*anyopaque, *rpc.wire.protocol.CallBuilder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void, rpc.peer.retained_questions.CallOptions) anyerror!u32
+capnpc-zig.rpc.peer.Peer.sendCallResolvedGeneratedWithOptions: fn (*rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap, u64, u16, *anyopaque, ?*const fn (*anyopaque, *rpc.wire.protocol.CallBuilder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void, rpc.peer.retained_questions.CallOptions) anyerror!u32
 capnpc-zig.rpc.peer.Peer.sendCallResolvedWithOptions: fn (*rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap, u64, u16, *anyopaque, ?*const fn (*anyopaque, *rpc.wire.protocol.CallBuilder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void, rpc.peer.retained_questions.CallOptions) anyerror!u32
 capnpc-zig.rpc.peer.Peer.sendCallWithOptions: fn (*rpc.peer.mod.Peer, u32, u64, u16, *anyopaque, ?*const fn (*anyopaque, *rpc.wire.protocol.CallBuilder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void, rpc.peer.retained_questions.CallOptions) anyerror!u32
 capnpc-zig.rpc.peer.Peer.sendFinishForHost: fn (*rpc.peer.mod.Peer, u32, bool, bool) anyerror!void

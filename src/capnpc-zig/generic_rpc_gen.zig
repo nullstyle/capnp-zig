@@ -454,7 +454,10 @@ pub fn Emitter(comptime G: type) type {
                 if (!pipelined and branded_ancestors.len > 0) {
                     try writer.writeAll("            pub fn asAncestor(self: @This(), comptime @\"ancestor type\": type) @\"ancestor type\".Client {\n                if (comptime !(false");
                     for (branded_ancestors, 0..) |_, index| try writer.print(" or @\"ancestor type\" == _Ancestor{}", .{index});
-                    try writer.writeAll(")) @compileError(\"requested type is not an ancestor application\");\n                return @\"ancestor type\".Client.init(self.raw.peer, self.raw.cap_id);\n            }\n");
+                    // Keep the id space the Client recorded (`raw.origin`), or
+                    // a setXClient through the ancestor view would write an
+                    // import as a bare id again.
+                    try writer.writeAll(")) @compileError(\"requested type is not an ancestor application\");\n                var ancestor = @\"ancestor type\".Client.init(self.raw.peer, self.raw.cap_id);\n                ancestor.raw.origin = self.raw.origin;\n                return ancestor;\n            }\n");
                 }
                 for (methods.items) |entry| {
                     if (entry.ambiguous) continue;
@@ -473,6 +476,7 @@ pub fn Emitter(comptime G: type) type {
                     const result_node = self.getNode(entry.method.result_struct_type) orelse return error.InvalidStructNode;
                     if (!pipelined and needsData(self, result_node)) try writer.print(
                         \\            pub fn call{s}Pipelined(self: @This(), {s}ctx: *anyopaque, comptime build: ?{s}.BuildFn, comptime callback: {s}.Callback) !{s}.Results.Pipeline {{
+                        \\                if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                         \\                const qid = try self.call{s}({s}ctx, build, callback);
                         \\                return .{{ .peer = self.raw.peer, .question_id = qid }};
                         \\            }}

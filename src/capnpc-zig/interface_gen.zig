@@ -86,7 +86,11 @@ pub fn Interface(comptime G: type) type {
             // --- Client ---
             try writer.writeAll("    pub const Client = struct {\n");
             try writer.writeAll("        peer: *rpc.peer.Peer,\n");
-            try writer.writeAll("        cap_id: u32,\n\n");
+            try writer.writeAll("        cap_id: u32,\n");
+            try writer.writeAll("        /// Experimental. The id space `cap_id` names. `init` leaves it\n");
+            try writer.writeAll("        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and\n");
+            try writer.writeAll("        /// `resolveX` sets `.exported` for this peer's own export.\n");
+            try writer.writeAll("        origin: rpc.peer.ClientOrigin = .unspecified,\n\n");
             try writer.print("        pub fn init(peer: *rpc.peer.Peer, cap_id: u32) {s}Client {{\n", .{qual});
             try writer.writeAll("            return .{ .peer = peer, .cap_id = cap_id };\n");
             try writer.writeAll("        }\n\n");
@@ -94,6 +98,8 @@ pub fn Interface(comptime G: type) type {
             try writer.writeAll("        /// retainCapability). Call at most once per owned Client; best-effort —\n");
             try writer.writeAll("        /// peer teardown's import release is the backstop.\n");
             try writer.print("        pub fn release(self: {s}Client) void {{\n", .{qual});
+            try writer.writeAll("            // A Client for this peer's own export owns no import.\n");
+            try writer.writeAll("            if (self.origin == .exported) return;\n");
             try writer.writeAll("            self.peer.releaseImport(self.cap_id, 1) catch {};\n");
             try writer.writeAll("        }\n\n");
 
@@ -220,7 +226,7 @@ pub fn Interface(comptime G: type) type {
             try writer.writeAll("                try mutable_caps.retainCapability(cap);\n");
             try writer.writeAll("                const resolved = try caps.resolveCapability(cap);\n");
             try writer.writeAll("                switch (resolved) {\n");
-            try writer.print("                    .imported => |imported| response = .{{ .client = {s}Client.init(peer, imported.id) }},\n", .{qual});
+            try writer.writeAll("                    .imported => |imported| response = .{ .client = .{ .peer = peer, .cap_id = imported.id, .origin = .imported } },\n");
             try writer.writeAll("                    else => return error.UnexpectedBootstrapCapability,\n");
             try writer.writeAll("                }\n");
             try writer.writeAll("            },\n");
@@ -751,9 +757,17 @@ pub fn Interface(comptime G: type) type {
             try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
             try writer.writeAll("            var settled = false;\n");
             try writer.writeAll("            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };\n");
-            try writer.print("            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn, options) catch |err| {{\n", .{
+            // A Client for this peer's own export calls it through the local
+            // loopback; every other Client calls an import.
+            try writer.writeAll("            const sent = if (self.origin == .exported)\n");
+            try writer.print("                self.peer.sendCallResolvedGeneratedWithOptions(.{{ .exported = .{{ .id = self.cap_id }} }}, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn, options)\n", .{
                 p.iface_id, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
             });
+            try writer.writeAll("            else\n");
+            try writer.print("                self.peer.sendCallGeneratedWithOptions(self.cap_id, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn, options);\n", .{
+                p.iface_id, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
+            });
+            try writer.writeAll("            const question_id = sent catch |err| {\n");
             try writer.writeAll("                if (!settled) self.peer.allocator.destroy(ctx);\n");
             try writer.writeAll("                return err;\n");
             try writer.writeAll("            };\n");
@@ -822,6 +836,9 @@ pub fn Interface(comptime G: type) type {
                     p.call_name, qual, p.method_prefix, p.dot, p.zig_name,
                 });
                 try writer.writeAll("            if (self.stream.hasFailed()) return self.stream.stream_error.?;\n");
+                // Streaming flow control runs over the wire; a Client for this
+                // peer's own export has no wire path to stream on.
+                try writer.writeAll("            if (self.client.origin == .exported) return error.LocalCapabilityStreamingUnsupported;\n");
                 // A transport callback may request teardown before this wrapper
                 // has installed its infallible pending-context destructor.
                 try writer.writeAll("            const peer = self.client.peer;\n            peer.enterStreamingOperation();\n            defer peer.leaveStreamingOperation();\n");
@@ -888,6 +905,9 @@ pub fn Interface(comptime G: type) type {
             try writer.print("        pub fn call{s}PipelinedWithOptions(self: {s}Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback, options: rpc.peer.CallOptions) !{s}{s}{s} {{\n", .{
                 member_name, qual, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, pipeline_name,
             });
+            // A local call's question never reaches the wire, so a pipelined
+            // call on its answer could only be sent somewhere wrong.
+            try writer.writeAll("            if (self.origin == .exported) return error.LocalCapabilityPipelineUnsupported;\n");
             try writer.print("            const qid = try self.call{s}WithOptions(user_ctx, build, on_return, options);\n", .{member_name});
             try writer.writeAll("            return .{ .peer = self.peer, .question_id = qid };\n");
             try writer.writeAll("        }\n\n");

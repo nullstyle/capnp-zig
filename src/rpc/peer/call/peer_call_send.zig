@@ -120,6 +120,7 @@ pub fn CallSend(comptime Peer: type) type {
                         on_return,
                         options,
                         restore_on_return_error,
+                        Peer.handleLoopbackFrame,
                     );
                 }
             }
@@ -289,7 +290,62 @@ pub fn CallSend(comptime Peer: type) type {
                 on_return,
                 options,
                 true,
+                Peer.handleLoopbackFrame,
             );
+        }
+
+        /// Generator plumbing for heap-owned typed call contexts; see
+        /// `sendCallGeneratedWithOptions`. A generated `Client` whose origin
+        /// is `.exported` (one of this peer's own exports, come back from the
+        /// remote) calls through here with an `.exported` target. That call
+        /// takes the local loopback, so its Return can run INSIDE this send;
+        /// the question must never be restored after a callback error,
+        /// because the callback has already freed its context.
+        ///
+        /// A local call whose params carry a capability fails with
+        /// `error.LocalCallParamCapsUnsupported` before anything is
+        /// dispatched: the loopback decodes the params' descriptors as if the
+        /// remote had sent them, so one of our own exports would arrive as an
+        /// import with the same id (see `handleLocalClientLoopbackFrame`).
+        pub fn sendCallResolvedGeneratedWithOptions(
+            self: *Peer,
+            target: cap_table.ResolvedCap,
+            interface_id: u64,
+            method_id: u16,
+            ctx: *anyopaque,
+            build: ?CallBuildFn,
+            on_return: QuestionCallback,
+            options: CallOptions,
+        ) !u32 {
+            return sendCallResolvedWithOptionsRestore(
+                self,
+                target,
+                interface_id,
+                method_id,
+                ctx,
+                build,
+                on_return,
+                options,
+                false,
+                handleLocalClientLoopbackFrame,
+            );
+        }
+
+        /// Loopback dispatch for a generated local Client's call. Refuses a
+        /// frame whose params carry capabilities: the loopback hands the
+        /// frame to `handleFrame`, which reads its descriptors from the
+        /// remote's point of view (a `senderHosted` export of ours becomes an
+        /// import with the same id). Returning an error here rolls the send
+        /// back (question, loopback mark and export references) before any
+        /// handler runs.
+        fn handleLocalClientLoopbackFrame(self: *Peer, frame: []const u8) anyerror!void {
+            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+            defer decoded.deinit();
+            const call = try decoded.asCall();
+            if (call.params.cap_table) |caps| {
+                if (caps.len() != 0) return error.LocalCallParamCapsUnsupported;
+            }
+            return self.handleLoopbackFrame(frame);
         }
 
         fn sendCallResolvedWithOptionsRestore(
@@ -302,6 +358,7 @@ pub fn CallSend(comptime Peer: type) type {
             on_return: QuestionCallback,
             options: CallOptions,
             restore_on_return_error: bool,
+            handle_loopback_frame: *const fn (*Peer, []const u8) anyerror!void,
         ) !u32 {
             self.assertThreadAffinity();
             if (self.is_shutting_down) return error.PeerShuttingDown;
@@ -369,7 +426,7 @@ pub fn CallSend(comptime Peer: type) type {
                         on_return,
                         allocate_loopback_question,
                         Peer.removeQuestion,
-                        Peer.handleLoopbackFrame,
+                        handle_loopback_frame,
                     );
                 },
                 .none => error.CapabilityUnavailable,

@@ -194,6 +194,40 @@ pub const PeerTimeouts = state.PeerTimeouts;
 pub const ResultLifetime = retained_question_state.ResultLifetime;
 pub const CallOptions = retained_question_state.CallOptions;
 
+/// Experimental. The id space that a generated `Client`'s `cap_id` names.
+///
+/// A peer's export ids and its import ids are separate spaces that both
+/// start at 0 (an import id is the id the remote chose for its export), so
+/// one bare id can name a local export and an import at the same time. The
+/// generated `setXClient` setters read this to write the capability back
+/// out as the right one.
+pub const ClientOrigin = enum {
+    /// Not recorded: a Client built with `Client.init`. `setXClient` writes
+    /// a plain capability pointer, and the outbound encoder classifies the
+    /// bare id: a local export wins over an import with the same id. This
+    /// is the behavior before 0.23.0, kept for code that wraps its own
+    /// export ids in `Client.init`.
+    unspecified,
+    /// An import: a capability the remote vat hosts. The Clients the runtime
+    /// makes from imports (bootstrap and the generated `resolveX`) carry this
+    /// origin, and `setXClient` writes them back as the remote's own
+    /// capability (`receiverHosted`) even when a local export has the same
+    /// id.
+    imported,
+    /// One of this peer's own exports that came back from the remote (a
+    /// `receiverHosted` descriptor, or a `receiverAnswer` whose answer
+    /// returned one). The generated `resolveX` makes these. Calls go
+    /// through the local loopback, `release()` does nothing (the Client
+    /// owns no import), and `setXClient` writes the export
+    /// (`senderHosted`, or `senderPromise` for an unresolved promise
+    /// export). A call whose params carry a capability fails with
+    /// `error.LocalCallParamCapsUnsupported`, and pipelined and streaming
+    /// calls fail with `error.LocalCapabilityPipelineUnsupported` and
+    /// `error.LocalCapabilityStreamingUnsupported`. The Client is valid while
+    /// the export lives.
+    exported,
+};
+
 const QuestionDeinitCtxFn = state.QuestionDeinitCtxFn;
 const ExportDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;
 const Question = state.Question(QuestionCallback);
@@ -3021,6 +3055,20 @@ pub const Peer = struct {
         options: CallOptions,
     ) !u32 {
         return CallSendImpl.sendCallResolvedWithOptions(self, target, interface_id, method_id, ctx, build, on_return, options);
+    }
+
+    /// Experimental generator plumbing. Body in `call/peer_call_send.zig`.
+    pub fn sendCallResolvedGeneratedWithOptions(
+        self: *Peer,
+        target: cap_table.ResolvedCap,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+        options: CallOptions,
+    ) !u32 {
+        return CallSendImpl.sendCallResolvedGeneratedWithOptions(self, target, interface_id, method_id, ctx, build, on_return, options);
     }
 
     /// Body in `call/peer_call_send.zig`.

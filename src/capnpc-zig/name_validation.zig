@@ -533,6 +533,7 @@ pub fn Validation(comptime G: type) type {
             defer client_scope.deinit();
             try client_scope.addCopy("peer");
             try client_scope.addCopy("cap_id");
+            try client_scope.addCopy("origin");
             try client_scope.addCopy("init");
             try client_scope.addCopy("fromBootstrap");
 

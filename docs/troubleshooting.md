@@ -493,7 +493,7 @@ older than the release that compiles fd passing out on iOS.
 ### `capnpc-zig version skew` in a generated file
 
 ```
-error: capnpc-zig version skew: this file was generated for codegen ABI 1, which needs the capnpc-zig 0.19.0 runtime or newer, but the imported runtime provides ABI 0. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.
+error: capnpc-zig version skew: this file was generated for codegen ABI 2, which needs the capnpc-zig 0.23.0 runtime or newer, but the imported runtime provides ABI 1. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.
 ```
 
 The plugin that generated the file is newer than the capnp-zig runtime your

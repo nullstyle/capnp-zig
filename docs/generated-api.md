@@ -151,6 +151,45 @@ Diamond inheritance is deduplicated, and calls retain the original declaring
 interface ID and method ordinal. An interface ID suffix disambiguates normalized
 qualified-name collisions.
 
+## Passing capabilities back
+
+A peer's export ids and its import ids are separate spaces, and both start at
+0: an import id is the id the remote chose for its export. So a peer that
+exports capabilities and also imports them soon holds export N and import N at
+once. A generated `Client` records which space its `cap_id` names in the
+Experimental `origin` field (`rpc.peer.ClientOrigin`):
+
+- Bootstrap and `resolveX` return Clients with `.imported`. `setXClient`
+  writes them as the remote's own capability (`receiverHosted`), so a
+  capability passed back to the vat that issued it reaches that vat's object,
+  never a local export with the same id.
+- `resolveX` returns a Client with `.exported` when the capability is one of
+  this peer's own exports that came back home: a `receiverHosted`
+  descriptor, or a `receiverAnswer` whose answer has already returned an
+  export. Its `callX` runs the export's handler through the local loopback,
+  its `release()` does nothing (it owns no import), and `setXClient` writes
+  the export (`senderHosted`, or `senderPromise` while it is an unresolved
+  promise export). It is valid while the export lives. Three kinds of call
+  fail on it instead of going somewhere wrong: a call whose params carry a
+  capability (`error.LocalCallParamCapsUnsupported`; the loopback would
+  read the params' descriptors from the remote's side), `callXPipelined`
+  (`error.LocalCapabilityPipelineUnsupported`; a local call's question never
+  reaches the wire), and a `StreamClient` streaming call
+  (`error.LocalCapabilityStreamingUnsupported`).
+- `resolveX` still fails with `error.UnexpectedCapabilityType` for a null
+  capability, and for a `receiverAnswer` that resolves to an import: a
+  Client for that import would own no reference, so its `release()` would
+  spend one that someone else holds. A `receiverAnswer` whose answer has not
+  returned fails with `error.PromiseUnresolved`.
+- `Client.init(peer, id)` leaves `.unspecified`. `setXClient` then writes a
+  bare id, and the outbound encoder picks a local export over an import with
+  the same id, as before 0.23.0. Code that wraps its own export ids in
+  `Client.init` keeps working. Code that wraps an import id it read from an
+  `InboundCapTable` should set `.origin = .imported`.
+
+`setXCapability` and the `set` of a `List(Interface)` builder take a raw
+`message.Capability`, so they always write a bare id.
+
 ## Typed generic RPC applications
 
 For a schema `interface Service(T) { echo @0 (value :T) -> (value :T); }`,

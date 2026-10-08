@@ -8,8 +8,8 @@ const std = @import("std");
 const capnpc = capnpc_runtime: {
     const @"capnpc-zig runtime" = @import("capnpc-zig");
     const @"runtime ABI" = if (@hasDecl(@"capnpc-zig runtime", "codegen_abi")) @"capnpc-zig runtime".codegen_abi.version else 0;
-    if (@"runtime ABI" < 1) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 1, which needs the capnpc-zig 0.19.0 runtime or newer, but the imported runtime provides ABI {d}. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.", .{@"runtime ABI"}));
-    if (@"capnpc-zig runtime".codegen_abi.oldest_supported > 1) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 1, but the imported capnpc-zig runtime (ABI {d}) only supports ABI {d} and newer. Regenerate the file with the capnpc-zig {s} plugin or newer.", .{ @"runtime ABI", @"capnpc-zig runtime".codegen_abi.oldest_supported, @"capnpc-zig runtime".codegen_abi.release }));
+    if (@"runtime ABI" < 2) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 2, which needs the capnpc-zig 0.23.0 runtime or newer, but the imported runtime provides ABI {d}. Upgrade the capnpc-zig dependency, or regenerate the file with the plugin that matches it.", .{@"runtime ABI"}));
+    if (@"capnpc-zig runtime".codegen_abi.oldest_supported > 2) @compileError(std.fmt.comptimePrint("capnpc-zig version skew: this file was generated for codegen ABI 2, but the imported capnpc-zig runtime (ABI {d}) only supports ABI {d} and newer. Regenerate the file with the capnpc-zig {s} plugin or newer.", .{ @"runtime ABI", @"capnpc-zig runtime".codegen_abi.oldest_supported, @"capnpc-zig runtime".codegen_abi.release }));
     break :capnpc_runtime @"capnpc-zig runtime";
 };
 const message = capnpc.message;
@@ -4464,6 +4464,10 @@ pub const TradeSession = struct {
     pub const Client = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
+        /// Experimental. The id space `cap_id` names. `init` leaves it
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
+        origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
             return .{ .peer = peer, .cap_id = cap_id };
@@ -4473,6 +4477,8 @@ pub const TradeSession = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
@@ -4484,7 +4490,11 @@ pub const TradeSession = struct {
             const ctx = try self.peer.allocator.create(OfferItems.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4502,7 +4512,11 @@ pub const TradeSession = struct {
             const ctx = try self.peer.allocator.create(RemoveItems.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4520,7 +4534,11 @@ pub const TradeSession = struct {
             const ctx = try self.peer.allocator.create(Accept.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4538,7 +4556,11 @@ pub const TradeSession = struct {
             const ctx = try self.peer.allocator.create(Confirm.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4556,7 +4578,11 @@ pub const TradeSession = struct {
             const ctx = try self.peer.allocator.create(Cancel.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4574,7 +4600,11 @@ pub const TradeSession = struct {
             const ctx = try self.peer.allocator.create(ViewOtherOffer.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4592,7 +4622,11 @@ pub const TradeSession = struct {
             const ctx = try self.peer.allocator.create(GetState.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -4829,7 +4863,7 @@ pub const TradeSession = struct {
                 try mutable_caps.retainCapability(cap);
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
-                    .imported => |imported| response = .{ .client = Client.init(peer, imported.id) },
+                    .imported => |imported| response = .{ .client = .{ .peer = peer, .cap_id = imported.id, .origin = .imported } },
                     else => return error.UnexpectedBootstrapCapability,
                 }
             },
@@ -6183,6 +6217,7 @@ pub const TradeSession = struct {
                     return self.raw.callOfferItems(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callOfferItemsPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.OfferItems.BuildFn, comptime callback: _Applied.OfferItems.Callback) !_Applied.OfferItems.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callOfferItems(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -6191,6 +6226,7 @@ pub const TradeSession = struct {
                     return self.raw.callRemoveItems(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callRemoveItemsPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.RemoveItems.BuildFn, comptime callback: _Applied.RemoveItems.Callback) !_Applied.RemoveItems.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callRemoveItems(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -6211,6 +6247,7 @@ pub const TradeSession = struct {
                     return self.raw.callViewOtherOffer(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callViewOtherOfferPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.ViewOtherOffer.BuildFn, comptime callback: _Applied.ViewOtherOffer.Callback) !_Applied.ViewOtherOffer.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callViewOtherOffer(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -7099,6 +7136,10 @@ pub const InventoryService = struct {
     pub const Client = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
+        /// Experimental. The id space `cap_id` names. `init` leaves it
+        /// `.unspecified`; bootstrap and `resolveX` set `.imported`, and
+        /// `resolveX` sets `.exported` for this peer's own export.
+        origin: rpc.peer.ClientOrigin = .unspecified,
 
         pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {
             return .{ .peer = peer, .cap_id = cap_id };
@@ -7108,6 +7149,8 @@ pub const InventoryService = struct {
         /// retainCapability). Call at most once per owned Client; best-effort —
         /// peer teardown's import release is the backstop.
         pub fn release(self: Client) void {
+            // A Client for this peer's own export owns no import.
+            if (self.origin == .exported) return;
             self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
@@ -7119,7 +7162,11 @@ pub const InventoryService = struct {
             const ctx = try self.peer.allocator.create(GetInventory.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -7137,7 +7184,11 @@ pub const InventoryService = struct {
             const ctx = try self.peer.allocator.create(AddItem.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -7155,7 +7206,11 @@ pub const InventoryService = struct {
             const ctx = try self.peer.allocator.create(RemoveItem.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -7173,7 +7228,11 @@ pub const InventoryService = struct {
             const ctx = try self.peer.allocator.create(StartTrade.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -7191,7 +7250,11 @@ pub const InventoryService = struct {
             const ctx = try self.peer.allocator.create(FilterByRarity.CallContext);
             var settled = false;
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
-            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn, options) catch |err| {
+            const sent = if (self.origin == .exported)
+                self.peer.sendCallResolvedGeneratedWithOptions(.{ .exported = .{ .id = self.cap_id } }, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn, options)
+            else
+                self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn, options);
+            const question_id = sent catch |err| {
                 if (!settled) self.peer.allocator.destroy(ctx);
                 return err;
             };
@@ -7206,6 +7269,7 @@ pub const InventoryService = struct {
         }
 
         pub fn callStartTradePipelinedWithOptions(self: Client, user_ctx: *anyopaque, build: ?StartTrade.BuildFn, on_return: StartTrade.Callback, options: rpc.peer.CallOptions) !StartTradePipeline {
+            if (self.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
             const qid = try self.callStartTradeWithOptions(user_ctx, build, on_return, options);
             return .{ .peer = self.peer, .question_id = qid };
         }
@@ -7402,7 +7466,7 @@ pub const InventoryService = struct {
                 try mutable_caps.retainCapability(cap);
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
-                    .imported => |imported| response = .{ .client = Client.init(peer, imported.id) },
+                    .imported => |imported| response = .{ .client = .{ .peer = peer, .cap_id = imported.id, .origin = .imported } },
                     else => return error.UnexpectedBootstrapCapability,
                 }
             },
@@ -8720,8 +8784,13 @@ pub const InventoryService = struct {
                 try mutable_caps.retainCapability(cap);
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
-                    .imported => |imported| return TradeSession.Client.init(peer, imported.id),
-                    else => return error.UnexpectedCapabilityType,
+                    .imported => |imported| return .{ .peer = peer, .cap_id = imported.id, .origin = .imported },
+                    .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                    .promised => |promised| switch (try peer.resolvePromisedAnswer(promised)) {
+                        .exported => |exported| return .{ .peer = peer, .cap_id = exported.id, .origin = .exported },
+                        else => return error.UnexpectedCapabilityType,
+                    },
+                    .none => return error.UnexpectedCapabilityType,
                 }
             }
 
@@ -8806,7 +8875,11 @@ pub const InventoryService = struct {
 
             pub fn setSessionClient(self: *Builder, client: TradeSession.Client) message.BuildError!void {
                 var any = try self._builder.getAnyPointer(0);
-                try any.setCapability(.{ .id = client.cap_id });
+                switch (client.origin) {
+                    .imported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.receiverHosted), client.cap_id),
+                    .exported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.senderHosted), client.cap_id),
+                    .unspecified => try any.setCapability(.{ .id = client.cap_id }),
+                }
             }
 
             pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
@@ -9186,6 +9259,7 @@ pub const InventoryService = struct {
                     return self.raw.callGetInventory(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callGetInventoryPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.GetInventory.BuildFn, comptime callback: _Applied.GetInventory.Callback) !_Applied.GetInventory.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callGetInventory(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -9194,6 +9268,7 @@ pub const InventoryService = struct {
                     return self.raw.callAddItem(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callAddItemPipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.AddItem.BuildFn, comptime callback: _Applied.AddItem.Callback) !_Applied.AddItem.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callAddItem(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }
@@ -9206,6 +9281,7 @@ pub const InventoryService = struct {
                     return self.raw.callStartTrade(ctx, if (build != null) @"client adapter".build else null, @"client adapter".callback);
                 }
                 pub fn callStartTradePipelined(self: @This(), ctx: *anyopaque, comptime build: ?_Applied.StartTrade.BuildFn, comptime callback: _Applied.StartTrade.Callback) !_Applied.StartTrade.Results.Pipeline {
+                    if (self.raw.origin == .exported) return error.LocalCapabilityPipelineUnsupported;
                     const qid = try self.callStartTrade(ctx, build, callback);
                     return .{ .peer = self.raw.peer, .question_id = qid };
                 }

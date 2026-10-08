@@ -2772,8 +2772,7 @@ pub const StructGenerator = struct {
                         try writer.writeAll("            try mutable_caps.retainCapability(cap);\n");
                         try writer.writeAll("            const resolved = try caps.resolveCapability(cap);\n");
                         try writer.writeAll("            switch (resolved) {\n");
-                        try writer.print("                .imported => |imported| return {s}.Client.init(peer, imported.id),\n", .{iface_name});
-                        try writer.writeAll("                else => return error.UnexpectedCapabilityType,\n");
+                        try writeResolveClientArms("                ", writer);
                         try writer.writeAll("            }\n");
                         try writer.writeAll("        }\n\n");
                     }
@@ -2884,8 +2883,7 @@ pub const StructGenerator = struct {
             try writer.writeAll("            try mutable_caps.retainCapability(cap);\n");
             try writer.writeAll("            const resolved = try caps.resolveCapability(cap);\n");
             try writer.writeAll("            switch (resolved) {\n");
-            try writer.print("                .imported => |imported| return {s}.Client.init(peer, imported.id),\n", .{iface_name});
-            try writer.writeAll("                else => return error.UnexpectedCapabilityType,\n");
+            try writeResolveClientArms("                ", writer);
             try writer.writeAll("            }\n");
             try writer.writeAll("        }\n\n");
         }
@@ -3298,8 +3296,7 @@ pub const StructGenerator = struct {
             try writer.writeAll("                try mutable_caps.retainCapability(cap);\n");
             try writer.writeAll("                const resolved = try caps.resolveCapability(cap);\n");
             try writer.writeAll("                switch (resolved) {\n");
-            try writer.print("                    .imported => |imported| return {s}.Client.init(peer, imported.id),\n", .{iface_name});
-            try writer.writeAll("                    else => return error.UnexpectedCapabilityType,\n");
+            try writeResolveClientArms("                    ", writer);
             try writer.writeAll("                }\n");
             try writer.writeAll("            }\n\n");
         }
@@ -3396,7 +3393,7 @@ pub const StructGenerator = struct {
                     try writer.print("            pub fn set{s}Client(self: *@This(), client: {s}.Client) " ++ build_error_union ++ "void {{\n", .{ cap_name, iface_name });
                     try self.writeUnionDiscriminant(field, parent_struct_info, "                ", writer);
                     try writer.print("                var any = try self._builder.getAnyPointer({});\n", .{slot.offset});
-                    try writer.writeAll("                try any.setCapability(.{ .id = client.cap_id });\n");
+                    try writeClientCapabilityBody("                ", writer);
                     try writer.writeAll("            }\n\n");
                 }
 
@@ -4538,8 +4535,39 @@ pub const StructGenerator = struct {
         try writer.print("        pub fn set{s}Client(self: *{s}, client: {s}.Client) " ++ build_error_union ++ "void {{\n", .{ cap_name, self.builder_ref, iface_name });
         try self.writeUnionDiscriminant(field, parent_struct_info, "            ", writer);
         try writer.print("            var any = try self._builder.getAnyPointer({});\n", .{slot_offset});
-        try writer.writeAll("            try any.setCapability(.{ .id = client.cap_id });\n");
+        try writeClientCapabilityBody("            ", writer);
         try writer.writeAll("        }\n\n");
+    }
+
+    /// The body of a generated `setXxxClient` after `var any = ...`: write
+    /// the Client's capability pointer tagged with the id space it came from.
+    /// An import must go back out as the remote's own capability
+    /// (`receiverHosted`); a bare id would resolve to a local export with the
+    /// same id first, because export and import ids both start at 0.
+    fn writeClientCapabilityBody(indent: []const u8, writer: anytype) !void {
+        try writer.print("{s}switch (client.origin) {{\n", .{indent});
+        try writer.print("{s}    .imported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.receiverHosted), client.cap_id),\n", .{indent});
+        try writer.print("{s}    .exported => try any.setCapabilityOriginTagged(rpc.caps.table.descriptors.originCodeForTag(.senderHosted), client.cap_id),\n", .{indent});
+        try writer.print("{s}    .unspecified => try any.setCapability(.{{ .id = client.cap_id }}),\n", .{indent});
+        try writer.print("{s}}}\n", .{indent});
+    }
+
+    /// The arms of a generated `resolveXxx` switch over the inbound
+    /// `ResolvedCap`. An import becomes an `.imported` Client that owns the
+    /// reference `retainCapability` kept. This peer's own export, come back
+    /// as `receiverHosted`, becomes an `.exported` (local) Client. A
+    /// `receiverAnswer` resolves through this peer's answer table once the
+    /// answer has returned; only an export result is accepted there, since a
+    /// Client for an import reached that way would own no reference of its
+    /// own and its `release()` would spend someone else's.
+    fn writeResolveClientArms(indent: []const u8, writer: anytype) !void {
+        try writer.print("{s}.imported => |imported| return .{{ .peer = peer, .cap_id = imported.id, .origin = .imported }},\n", .{indent});
+        try writer.print("{s}.exported => |exported| return .{{ .peer = peer, .cap_id = exported.id, .origin = .exported }},\n", .{indent});
+        try writer.print("{s}.promised => |promised| switch (try peer.resolvePromisedAnswer(promised)) {{\n", .{indent});
+        try writer.print("{s}    .exported => |exported| return .{{ .peer = peer, .cap_id = exported.id, .origin = .exported }},\n", .{indent});
+        try writer.print("{s}    else => return error.UnexpectedCapabilityType,\n", .{indent});
+        try writer.print("{s}}},\n", .{indent});
+        try writer.print("{s}.none => return error.UnexpectedCapabilityType,\n", .{indent});
     }
 
     /// Emit a numeric setter body with optional XOR-default handling.

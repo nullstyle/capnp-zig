@@ -214,6 +214,15 @@ test "accepted conflicting ancestor bindings require an explicit typed ancestor 
     try std.testing.expectEqual(@as(u32, 19), data.raw.cap_id);
     try std.testing.expect(@TypeOf(text) != @TypeOf(data));
     _ = Type.Raw.Client.callEcho;
+
+    // The ancestor view keeps the id space the Client recorded, so a
+    // setXClient through it still writes an import as the remote's own
+    // capability.
+    try std.testing.expectEqual(rpc.peer.ClientOrigin.unspecified, text.raw.origin);
+    var imported = Type.Client.init(&peer, 19);
+    imported.raw.origin = .imported;
+    try std.testing.expectEqual(rpc.peer.ClientOrigin.imported, imported.asAncestor(g.ConflictText.Apply(.{})).raw.origin);
+    try std.testing.expectEqual(rpc.peer.ClientOrigin.imported, imported.asAncestor(g.ConflictData.Apply(.{})).raw.origin);
 }
 
 const NamedText = g.NamedMethods.Apply(.{}).Identity.Apply(.{ .U = capnp.generic.Text });

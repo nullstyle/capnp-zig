@@ -2467,7 +2467,11 @@ pub const AnyPointerBuilder = struct {
             3,
         );
         if (resolved.pointer_word == 0) return error.InvalidPointer;
-        return .{ .id = try decodeCapabilityPointer(resolved.pointer_word) };
+        // A builder can hold an origin-tagged intermediate pointer
+        // (`setCapabilityOriginTagged`, written by the generated
+        // `setXClient` for an import). Read its id back; the origin is for
+        // the outbound encoder. Readers of wire bytes stay strict.
+        return .{ .id = (try capability_remap.decodeCapabilityWithOrigin(resolved.pointer_word)).cap_id };
     }
 
     /// Write a text (string) value at this pointer position.
