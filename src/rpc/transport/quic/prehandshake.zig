@@ -74,8 +74,11 @@ pub const Buffer = struct {
             return Error.PrehandshakeBufferFull;
         }
         const bytes = try self.allocator.dupe(u8, chunk);
-        self.total_bytes += chunk.len;
+        // A failed append must leave neither the copy nor its count behind:
+        // the copy would leak, and the inflated count would trip the cap early.
+        errdefer self.allocator.free(bytes);
         try self.events.append(self.allocator, .{ .data = .{ .id = id, .bytes = bytes } });
+        self.total_bytes += chunk.len;
     }
 
     pub fn recordEnd(self: *Buffer, id: u64, kind: EndKind) Error!void {
@@ -186,6 +189,61 @@ test "prehandshake buffer enforces its cap" {
 
     try buffer.recordData(0, "12345678");
     try std.testing.expectError(Error.PrehandshakeBufferFull, buffer.recordData(0, "9"));
+}
+
+test "prehandshake buffer recordData keeps no copy and no count when the event append fails" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var buffer = Buffer.init(failing.allocator());
+    defer buffer.deinit();
+    buffer.max_total_bytes = 16;
+
+    // Allocation 0 copies the chunk. Allocation 1 grows the event list and
+    // fails, so the copy is never recorded.
+    try std.testing.expectError(Error.OutOfMemory, buffer.recordData(0, "early-0rtt-bytes"));
+    try std.testing.expect(failing.has_induced_failure);
+    try std.testing.expect(buffer.isEmpty());
+    try std.testing.expectEqual(@as(usize, 0), buffer.total_bytes);
+    try std.testing.expectEqual(failing.allocations, failing.deallocations);
+
+    // The failed call must not eat into the cap: the same 16 bytes fit once
+    // memory is back.
+    failing.fail_index = std.math.maxInt(usize);
+    try buffer.recordData(0, "early-0rtt-bytes");
+    try std.testing.expectEqual(@as(usize, 16), buffer.total_bytes);
+}
+
+fn recordedDataBytes(buffer: *const Buffer) usize {
+    var total: usize = 0;
+    for (buffer.events.items) |event| switch (event) {
+        .data => |data| total += data.bytes.len,
+        else => {},
+    };
+    return total;
+}
+
+fn recordEarlyStreams(allocator: std.mem.Allocator) !void {
+    var buffer = Buffer.init(allocator);
+    defer buffer.deinit();
+    // Enough chunks that the event list also grows inside recordData, not
+    // only in recordOpen.
+    const chunks = [_][]const u8{
+        "Boot", "strap", "side", "more", "early", "bytes",
+        "than", "one",   "list", "grow", "will",  "hold",
+    };
+    try buffer.recordOpen(0, true);
+    for (chunks, 0..) |chunk, index| {
+        buffer.recordData(@intCast(index % 2), chunk) catch |err| {
+            // The byte count must match what is actually held.
+            try std.testing.expectEqual(recordedDataBytes(&buffer), buffer.total_bytes);
+            return err;
+        };
+    }
+    try buffer.recordEnd(0, .fin);
+    try std.testing.expectEqual(recordedDataBytes(&buffer), buffer.total_bytes);
+}
+
+test "prehandshake buffer survives every allocation failure without a leak" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, recordEarlyStreams, .{});
 }
 
 test "prehandshake buffer open is idempotent per id" {

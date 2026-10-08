@@ -154,6 +154,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transport suite ("quic Server.deinit never shows a close callback a
   destroyed session", three live sessions): on the old code its callbacks
   saw 3 destroyed sessions.
+- **QUIC: `prehandshake.Buffer.recordData` leaked its copy of a chunk and
+  overcounted when the event append ran out of memory (Experimental).** It
+  copied the chunk and raised `total_bytes` before the append. When the
+  append failed with `error.OutOfMemory`, nothing freed the copy, and
+  `total_bytes` kept the chunk's length, so the 512 KiB cap tripped early.
+  This hits a host that buffers 0-RTT stream data before the handshake
+  (mruby-quic, capnp-qmsg-demo) under memory pressure. The copy is now
+  freed on failure, and the count rises only after the append succeeds.
+  Two new tests in `prehandshake.zig`: one fails the append, one sweeps
+  every allocation failure with `checkAllAllocationFailures`.
 
 ## [0.21.0] - 2026-10-06
 
