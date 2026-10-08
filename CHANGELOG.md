@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (Experimental)
+
+- **Host answer cancellation over the WASM host ABI (feature bit `12`).**
+  Two new exports surface the answer-finished seam: with
+  `capnp_peer_set_answer_finished_handler` enabled, a Finish from the
+  caller of a host-handed call that has not been answered delivers a
+  kind-4 record on the event channel (payload: the 4-byte answer id), and
+  `capnp_peer_send_return_canceled` answers such a call with
+  `Return{canceled}`, failing the calls pipelined on it and freeing the
+  caller's question id. It refuses with `AnswerNotFinished` before the
+  caller finishes and `AnswerNotOwed` once any Return went out or when the
+  peer settles the answer itself. ABI tests cover the export set, the
+  feature bit, the kind-4 event for an unanswered host call, the canceled
+  Return frame, both refusal paths, and handler clearing.
+
 ## [0.23.0] - 2026-10-08
 
 This is an RPC correctness release. It fixes capabilities that reached the

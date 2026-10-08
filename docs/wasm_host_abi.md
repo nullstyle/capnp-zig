@@ -107,6 +107,10 @@ does not reserve these bits in another project's ABI or imply compatibility.
   `capnp_peer_register_pending_third_party_await`, and the
   `capnp_peer_pop_l3_event` event channel; see
   [Level-3 handoff exports](#level-3-three-party-handoff-exports-experimental)).
+- bit `12`: experimental host answer cancellation exports are present
+  (`capnp_peer_set_answer_finished_handler`,
+  `capnp_peer_send_return_canceled`; kind-4 event records on the event
+  channel).
 - bit `11`: experimental Level-3 vat hosting exports are present
   (`capnp_provision_index_new`, `capnp_provision_index_free`,
   `capnp_peer_attach_provision_index`, `capnp_peer_detach_provision_index`;
@@ -567,6 +571,31 @@ Borrow rule:
   and clears error state. No previously returned allocation or peer handle may
   be used afterwards.
 
+
+
+## Host answer cancellation exports (experimental)
+
+Feature bit `12`. A host that answers calls later can learn when the caller
+gives up: with the handler enabled, a Finish from the caller of a
+host-handed call that has not been answered delivers a kind-4 record
+through the event channel (`[0..4) kind=4, [4..8) answer_id,
+[8..12) payload_len=4, [12..16) answer_id little-endian`). The host should
+stop the work and answer with `capnp_peer_send_return_canceled`, which
+sends `Return{canceled}` and frees the caller's question id; calls
+pipelined on that answer fail with their own Return. It refuses with an
+error while the caller has not finished the answer (`AnswerNotFinished`)
+or when no Return is owed (`AnswerNotOwed`).
+
+```c
+u32 capnp_peer_set_answer_finished_handler(u32 peer, u32 enabled);
+u32 capnp_peer_send_return_canceled(u32 peer, u32 answer_id);
+```
+
+The handler does not run for answers the host already replied to, calls
+the peer still holds queued, or forwarded calls — the peer settles those
+itself. Records for finished-but-unanswered calls are bounded by the
+peer's `max_active_inbound_questions`; when full, the handler is skipped
+and the host's ordinary Return answers the call.
 
 ## Level-3 vat hosting exports (experimental)
 

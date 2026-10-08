@@ -1978,3 +1978,110 @@ test "l3 vat hosting feature bit is advertised" {
     const flags: u64 = @as(u64, flags_lo);
     try std.testing.expect((flags & (@as(u64, 1) << 11)) != 0);
 }
+
+fn hasAnswerCancellationExports(comptime ModuleType: type) bool {
+    return @hasDecl(ModuleType, "capnp_peer_set_answer_finished_handler") and
+        @hasDecl(ModuleType, "capnp_peer_send_return_canceled");
+}
+
+test "wasm host ABI exposes host answer cancellation export set" {
+    try std.testing.expect(hasAnswerCancellationExports(abi));
+
+    const Empty = struct {};
+    try std.testing.expect(!hasAnswerCancellationExports(Empty));
+}
+
+test "answer cancellation feature bit is advertised" {
+    const flags: u64 = @as(u64, abi.capnp_wasm_feature_flags_lo());
+    try std.testing.expect((flags & (@as(u64, 1) << 12)) != 0);
+}
+
+test "answer cancellation: Finish for an unanswered host call delivers a kind-4 event and sendReturnCanceled answers it" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const server = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(server);
+    try std.testing.expect(server != 0);
+
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_set_answer_finished_handler(server, 1));
+
+    // An inbound Call the host never answers.
+    const question_id = try queuePlainCall(std.testing.allocator, server, 9);
+    const finish = try encodeFinishFrame(std.testing.allocator, question_id, true);
+    defer std.testing.allocator.free(finish);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+        server,
+        toAbiPtr(finish.ptr),
+        @intCast(finish.len),
+    ));
+
+    var event_ptr: abi.AbiPtr = 0;
+    var event_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_pop_l3_event(
+        server,
+        toAbiPtr(&event_ptr),
+        toAbiPtr(&event_len),
+    ));
+    const event = AbiBuffer{ .ptr = event_ptr, .len = event_len };
+    defer event.free();
+    try std.testing.expectEqual(@as(u32, 4), readAbiInt(u32, event.ptr));
+    try std.testing.expectEqual(question_id, readAbiInt(u32, event.ptr + 4));
+    try std.testing.expectEqual(@as(u32, 4), readAbiInt(u32, event.ptr + 8));
+    try std.testing.expectEqual(question_id, readAbiInt(u32, event.ptr + 12));
+
+    // Answering with Return{canceled} emits exactly that outbound frame.
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_send_return_canceled(server, question_id));
+    const answer = try popOutFrameCopy(std.testing.allocator, server);
+    defer std.testing.allocator.free(answer);
+    var decoded = try protocol.DecodedMessage.init(std.testing.allocator, answer);
+    defer decoded.deinit();
+    const ret = try decoded.asReturn();
+    try std.testing.expectEqual(protocol.ReturnTag.canceled, ret.tag);
+    try std.testing.expectEqual(question_id, ret.answer_id);
+
+    // The id is spent: a second cancel refuses with AnswerNotOwed.
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_send_return_canceled(server, question_id));
+    const snap = try takeErrorSnapshot();
+    try std.testing.expect(std.mem.indexOf(u8, snap.msg, "AnswerNotOwed") != null);
+
+    // Disabling the handler clears it (a later Finish reports nothing).
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_set_answer_finished_handler(server, 0));
+}
+
+test "answer cancellation: sendReturnCanceled refuses before the caller finishes" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const server = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(server);
+    try std.testing.expect(server != 0);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_set_answer_finished_handler(server, 1));
+
+    const question_id = try queuePlainCall(std.testing.allocator, server, 4);
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_send_return_canceled(server, question_id));
+    const snap = try takeErrorSnapshot();
+    try std.testing.expect(std.mem.indexOf(u8, snap.msg, "AnswerNotFinished") != null);
+}
+
+/// Queue an inbound Call on the bootstrap import and pop its host call,
+/// leaving the answer owed to the host. Returns the question id.
+fn queuePlainCall(allocator: std.mem.Allocator, peer: u32, question_id: u32) !u32 {
+    const pending = try queuePendingHostCall(allocator, peer, question_id, 0xA100, 3);
+    defer {
+        std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_free_host_call_frame(
+            peer,
+            pending.frame_ptr,
+            pending.frame_len,
+        )) catch unreachable;
+    }
+    return pending.question_id;
+}
+
+/// A Finish frame for `question_id`.
+fn encodeFinishFrame(allocator: std.mem.Allocator, question_id: u32, release_result_caps: bool) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildFinish(question_id, release_result_caps, false);
+    return builder.finish();
+}

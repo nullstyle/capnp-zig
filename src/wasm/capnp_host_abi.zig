@@ -102,6 +102,12 @@ const FEATURE_L3_HANDOFF: u64 = 1 << 10;
 /// sibling connection (the VatC role). Inbound Provides register into the
 /// attached index and inbound Accepts route through it automatically.
 const FEATURE_L3_VAT_HOSTING: u64 = 1 << 11;
+/// Experimental host answer cancellation: answer-finished events (the
+/// caller sent Finish for a call the host was handed and has not
+/// answered) delivered as kind-4 records on the event channel, plus
+/// `capnp_peer_send_return_canceled` to answer such a call with
+/// `Return{canceled}` and free the caller's question id.
+const FEATURE_HOST_ANSWER_CANCELLATION: u64 = 1 << 12;
 const ABI_FEATURE_FLAGS: u64 = FEATURE_ABI_RANGE |
     FEATURE_ERROR_TAKE |
     FEATURE_PEER_LIMITS |
@@ -113,7 +119,8 @@ const ABI_FEATURE_FLAGS: u64 = FEATURE_ABI_RANGE |
     FEATURE_HOST_CALL_RETURN_FRAME |
     FEATURE_HOST_CALL_PARAM_CAP_RETENTION |
     FEATURE_L3_HANDOFF |
-    FEATURE_L3_VAT_HOSTING;
+    FEATURE_L3_VAT_HOSTING |
+    FEATURE_HOST_ANSWER_CANCELLATION;
 
 const ERROR_ALLOC: u32 = 1;
 const ERROR_INVALID_ARG: u32 = 2;
@@ -146,6 +153,9 @@ const L3_MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
 const L3_EVENT_KIND_ACCEPT_RETURN: u32 = 1;
 const L3_EVENT_KIND_AWAIT_RETURN: u32 = 2;
 const L3_EVENT_KIND_RETURN_EXCEPTION: u32 = 3;
+/// Kind 4 (feature bit 12): the caller Finished a host-handed call that has
+/// no Return yet; the payload is the 4-byte little-endian answer id.
+const EVENT_KIND_ANSWER_FINISHED: u32 = 4;
 
 const EXAMPLE_MAX_FRAME_BYTES: usize = 1024 * 1024;
 const EXAMPLE_MAX_JSON_BYTES: usize = 1024 * 1024;
@@ -174,6 +184,8 @@ const PeerState = struct {
     /// Live L3 return contexts (accepts and pending awaits), keyed by the
     /// context pointer so exactly-once delivery can unregister before free.
     l3_return_ctxs: std.AutoHashMap(usize, *L3ReturnCtx) = undefined,
+    /// Answer-finished handler context, non-null while the handler is set.
+    answer_finished_ctx: ?*AnswerFinishedCtx = null,
 
     fn init(self: *PeerState) !void {
         self.outstanding_host_call_frames = std.AutoHashMap(usize, u32).init(allocator);
@@ -203,6 +215,7 @@ const PeerState = struct {
         self.last_popped = null;
         self.bootstrap_stub_export_id = null;
         self.l3_event_bytes = 0;
+        self.answer_finished_ctx = null;
     }
 
     fn deinit(self: *PeerState) void {
@@ -216,6 +229,13 @@ const PeerState = struct {
             self.host.freeHostCallFrame(frame_ptr[0..entry.value_ptr.*]);
         }
         self.outstanding_host_call_frames.deinit();
+        // Clear the answer-finished handler first so the peer's shutdown
+        // drain cannot fire it into state about to be freed.
+        if (self.answer_finished_ctx) |ctx| {
+            self.host.peer.setAnswerFinishedHandler(null, null);
+            allocator.destroy(ctx);
+            self.answer_finished_ctx = null;
+        }
         // Drain the peer FIRST: its shutdown delivers a synthetic exception
         // Return to every open question, firing L3 callbacks that queue
         // events into state that must still be alive (the delivered flag
@@ -327,6 +347,34 @@ const L3ReturnCtx = struct {
 /// carrying the reason instead. Event-queue overflow is logged and dropped:
 /// the embedder bounds it by draining between pumps; the alternative would
 /// be blocking inside the peer.
+/// Per-peer answer-finished context. One per peer that enables the
+/// handler; freed when the handler is cleared or the peer is destroyed.
+const AnswerFinishedCtx = struct {
+    state: *PeerState,
+};
+
+/// Deliver an answer-finished notification as a kind-4 event record: the
+/// caller sent Finish for a host-handed call with no Return yet, so the
+/// host should stop the work and answer with
+/// `capnp_peer_send_return_canceled` (which frees the caller's question
+/// id). Queue overflow is logged and dropped, matching the L3 events.
+fn onAnswerFinished(
+    ctx_ptr: *anyopaque,
+    peer: *Peer,
+    answer_id: u32,
+    release_result_caps: bool,
+) void {
+    _ = peer;
+    _ = release_result_caps;
+    const ctx: *AnswerFinishedCtx = @ptrCast(@alignCast(ctx_ptr));
+    const state = ctx.state;
+    var payload: [4]u8 = undefined;
+    std.mem.writeInt(u32, &payload, answer_id, .little);
+    state.queueL3Event(EVENT_KIND_ANSWER_FINISHED, answer_id, &payload) catch |err| {
+        log.debug("answer-finished event dropped: {}", .{err});
+    };
+}
+
 fn onL3Return(
     ctx_ptr: *anyopaque,
     peer: *Peer,
@@ -1937,6 +1985,79 @@ pub export fn capnp_peer_attach_provision_index(peer: u32, index: u32) u32 {
     };
     state.host.peer.attachProvisionIndex(idx) catch |err| {
         setError(ERROR_L3_HANDOFF, @errorName(err));
+        return 0;
+    };
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Experimental host answer cancellation (feature bit 12).
+// ---------------------------------------------------------------------------
+
+/// Enable or disable answer-finished notifications for a peer (feature bit
+/// 12). When enabled, a Finish from the caller of a host-handed call that
+/// has not been answered delivers a kind-4 record through
+/// `capnp_peer_pop_l3_event` (payload: 4-byte little-endian answer id); the
+/// host should stop the work and answer with
+/// `capnp_peer_send_return_canceled`. Disabling clears the handler; queued
+/// events remain drainable.
+/// Thread-safe on native targets (mutex-protected).
+pub export fn capnp_peer_set_answer_finished_handler(peer: u32, enabled: u32) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    clearErrorState();
+
+    const state = getPeerState(peer) orelse {
+        setError(ERROR_UNKNOWN_PEER, "unknown peer handle");
+        return 0;
+    };
+    if (enabled != 0 and enabled != 1) {
+        setError(ERROR_INVALID_ARG, "bool flag must be 0 or 1");
+        return 0;
+    }
+
+    if (enabled == 0) {
+        if (state.answer_finished_ctx) |ctx| {
+            state.host.peer.setAnswerFinishedHandler(null, null);
+            allocator.destroy(ctx);
+            state.answer_finished_ctx = null;
+        }
+        return 1;
+    }
+
+    if (state.answer_finished_ctx == null) {
+        const ctx = allocator.create(AnswerFinishedCtx) catch {
+            setError(ERROR_ALLOC, "answer-finished context allocation failed");
+            return 0;
+        };
+        ctx.* = .{ .state = state };
+        state.answer_finished_ctx = ctx;
+        state.host.peer.setAnswerFinishedHandler(ctx, onAnswerFinished);
+    }
+    return 1;
+}
+
+/// Answer a call whose caller sent Finish first with `Return{canceled}` and
+/// free the caller's question id (feature bit 12); calls pipelined on that
+/// answer fail with their own Return. Refuses with an error while the
+/// caller has not finished the answer (`AnswerNotFinished`) or when no
+/// Return is owed for the id (`AnswerNotOwed`: already answered, never an
+/// inbound question, or a call the peer settles itself).
+/// Thread-safe on native targets (mutex-protected).
+pub export fn capnp_peer_send_return_canceled(peer: u32, answer_id: u32) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    clearErrorState();
+
+    const state = getPeerState(peer) orelse {
+        setError(ERROR_UNKNOWN_PEER, "unknown peer handle");
+        return 0;
+    };
+
+    state.host.peer.sendReturnCanceled(answer_id) catch |err| {
+        setError(ERROR_PEER_CONTROL, @errorName(err));
         return 0;
     };
     return 1;
