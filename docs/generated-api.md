@@ -169,8 +169,10 @@ Experimental `origin` field (`rpc.peer.ClientOrigin`):
   export. Its `callX` runs the export's handler through the local loopback,
   its `release()` does nothing (it owns no import), and `setXClient` writes
   the export (`senderHosted`, or `senderPromise` while it is an unresolved
-  promise export). It is valid while the export lives. Capabilities in the
-  params and results of its calls arrive as this peer's own: the handler's
+  promise export). It is valid while the export lives; written into a call
+  or a Return after the export went, it fails that send with
+  `error.UnknownExport`. Capabilities in the params and results of its
+  calls arrive as this peer's own: the handler's
   `resolveX` gives a local Client for one of the peer's exports and an
   import Client for one of its imports. That import Client owns a loopback
   reference, so its `release()` sends no `Release` (see "Loopback calls

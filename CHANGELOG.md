@@ -174,17 +174,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the peer still held. The peer now reads a loopback Call and its Return
   from its own side. Its export arrives as `.exported`. Its import arrives
   as `.imported` with a loopback reference, which the receiver keeps or
-  releases like any import reference; releasing it sends no `Release`. No
-  frame of a loopback call reaches the remote. A promise on one of the
-  peer's own questions (`receiverAnswer`) in a loopback call now fails with
-  `error.LoopbackPromisedCapabilityUnsupported` before the handler runs;
-  before, the handler could resolve it against an unrelated answer. New
-  Experimental lines: `CapTable.noteLoopbackImportRef`,
+  releases like any import reference; releasing it sends no `Release`. A
+  well-formed loopback call sends nothing to the remote. A promise on one of
+  the peer's own questions (`receiverAnswer`) in a loopback call now fails
+  with `error.LoopbackPromisedCapabilityUnsupported` before the handler
+  runs; before, the handler could resolve it against an unrelated answer.
+  A capability the peer no longer holds fails the same way. Such a
+  capability is written with its id space attached after its export or
+  import went, for example by a generated local Client kept past its
+  export's removal. In the params, `sendCallResolved` or `sendCall` fails
+  with `error.UnknownExport` or `error.UnknownImport`, and nothing is
+  dispatched. An unknown export failed this way before too; an unknown
+  import used to reach the caller as an exception Return instead. In the
+  results, the handler's `sendReturnResults` fails with the same error. The
+  caller receives an exception Return when the handler lets that error out
+  of `on_call`; a handler that answers later must settle the answer itself.
+  New Experimental lines: `CapTable.noteLoopbackImportRef`,
   `CapTable.spendImportRef`, `CapTable.ImportRefSpend`,
   `InboundCapTable.initLoopback`, and
   `outbound.encodeLoopbackCallPayloadCaps` / `encodeLoopbackReturnPayloadCaps`.
   No Stable line changes. New tests in
   `tests/rpc/integration/rpc_loopback_caps_test.zig`.
+
+- **RPC: a loopback Return whose delivery failed went to the remote.** This
+  affects Stable `Peer` API users who make loopback calls:
+  `sendCallResolved` with an `.exported` target, or `sendCall` on an import
+  that resolved to one of their exports. The peer dropped the loopback mark
+  before it delivered the Return. When delivery failed, the exception
+  Return that followed went to the remote under the loopback answer id. The
+  remote holds no such question and reports a protocol error, and the
+  caller's question could stay open. Two failures did this: an error while
+  the peer read the Return's capabilities, such as running out of memory,
+  and a Return callback that failed with `error.OutOfMemory`. The peer now
+  keeps the mark until the Return is delivered. When the read fails, the
+  handler's `sendReturnResults` fails, and the handler's exception Return
+  reaches the caller locally. When the callback fails after it saw the
+  Return, the peer reports the error through `on_error`, and the handler's
+  `sendReturnResults` succeeds: the call already has its one Return. One
+  case still reaches the remote: a loopback call cancelled with
+  `cancelQuestion` whose handler answers later (see Known limitations in
+  docs/supported-surface.md). Tests in
+  `tests/rpc/integration/rpc_loopback_caps_test.zig` and
+  `tests/rpc/promises/rpc_peer_return_send_helpers_test.zig`.
 
 - **RPC: a capability pipelined into a call's params reached the handler
   unresolved (capnp-swift handoff H9).** A caller that passes the result of

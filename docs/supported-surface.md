@@ -337,11 +337,30 @@ capabilities in its params and in its Return's results arrive as the peer's
 own: its export as `.exported`, its import as `.imported`, even while export
 N and import N both exist. The import arrives with a loopback reference: the
 receiver keeps it or lets it go like any import reference, and spending it
-sends no `Release`, because the remote granted nothing. No frame of a
-loopback call reaches the remote. A promise on one of the peer's own
-questions (`receiverAnswer`) cannot travel in a loopback call
+sends no `Release`, because the remote granted nothing. A well-formed
+loopback call sends nothing to the remote. A promise on one of the peer's
+own questions (`receiverAnswer`) cannot travel in a loopback call
 (`error.LoopbackPromisedCapabilityUnsupported`, see Known limitations).
-Covered by `tests/rpc/integration/rpc_loopback_caps_test.zig`.
+
+A loopback call also refuses a capability the peer does not hold: one
+written with its id space attached after its export or import went, such as
+a generated local Client kept past its export's removal. In the params, the
+call fails with `error.UnknownExport` or `error.UnknownImport` before
+anything is dispatched. In the results, the handler's `sendReturnResults`
+fails with that error before the Return leaves the handler. The caller
+receives an exception Return when the handler lets the error out of
+`on_call`. A handler that answers later gets the error back and must settle
+the answer itself, for example with `sendReturnException`.
+
+A loopback Return that fails on delivery stays local too. When the peer
+cannot read the Return (it runs out of memory), the handler's
+`sendReturnResults` fails and its exception Return reaches the caller
+locally. When the Return callback fails with `error.OutOfMemory` after it
+saw the Return, the peer reports the error through `on_error`, and the
+handler's send succeeds. One known case still reaches the remote: a
+loopback call cancelled with `cancelQuestion` whose handler answers later
+(see Known limitations). Covered by
+`tests/rpc/integration/rpc_loopback_caps_test.zig`.
 
 The reflected-capability resolve/embargo handshake — a promise capability
 resolved to a *caller-hosted* cap (`Peer.resolvePromiseExportToImport`), driving
@@ -812,13 +831,24 @@ cooperating peer.
   In the params, the call fails with
   `error.LoopbackPromisedCapabilityUnsupported` before anything is
   dispatched, and the capability stays the caller's to send elsewhere. In
-  the results, the handler's `sendReturnResults` fails with that error, and
-  the caller receives an exception Return. The receiver of a loopback call
+  the results, the handler's `sendReturnResults` fails with that error. The
+  caller receives an exception Return when the handler lets that error out
+  of `on_call`; a handler that answers later must settle the answer itself.
+  The receiver of a loopback call
   is the peer itself, which reads an inbound promised capability as one of
   its own ANSWERS: that is a different id space, and a match there would
   name an unrelated capability. Representing a promise on one of the peer's
   own questions needs an `InboundCapTable` entry kind the Stable
   `ResolvedCap` does not have.
+
+- **A cancelled loopback call's late Return goes to the remote.**
+  `Peer.cancelQuestion` on a loopback call (see "Loopback calls with
+  capabilities") gives the caller its exception at once and forgets that
+  the answer is a loopback one. When the handler answers later, its Return
+  is written to the transport under the loopback answer id. The remote holds
+  no such question and reports a protocol error. A handler that answers
+  inside `on_call` cannot meet this case, and neither can a loopback call
+  that is not cancelled. The behavior predates the loopback capability fix.
 
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Apart from the pipelined-params

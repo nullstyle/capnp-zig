@@ -106,9 +106,12 @@ pub fn QuestionAlloc(comptime Peer: type) type {
         /// proxy reflected its first loopback call, also id 0.
         ///
         /// Loopback ids are drawn from the TOP of the space, descending, skipping
-        /// anything live in either namespace. No frame carrying one of these ids is
-        /// ever written to a socket, and every implementation (this one included)
-        /// hands out wire question ids ascending from 0, so the two stay apart.
+        /// anything live in either namespace. A loopback call writes no frame
+        /// carrying one of these ids to a socket (the one known exception: a
+        /// loopback call cancelled with `cancelQuestion` whose handler answers
+        /// later, see docs/supported-surface.md), and every implementation (this
+        /// one included) hands out wire question ids ascending from 0, so the two
+        /// stay apart.
         pub fn allocateLoopbackQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
             return allocateLoopbackQuestionWithRestore(self, ctx, on_return, true);
         }
