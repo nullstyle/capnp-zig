@@ -5880,7 +5880,8 @@ pub const Peer = struct {
     /// this peer encoded its results, so they map to our own cap table. No
     /// fd travels with a loopback Return.
     fn initLoopbackReturnInboundCaps(self: *Peer, ret: protocol.Return) anyerror!cap_table.InboundCapTable {
-        const cap_list = if (ret.tag == .results and ret.results != null) ret.results.?.cap_table else null;
+        const results = if (ret.tag == .results) ret.results else null;
+        const cap_list = if (results) |payload| payload.cap_table else null;
         return cap_table.InboundCapTable.initLoopback(self.allocator, cap_list, &self.caps);
     }
 
