@@ -434,7 +434,11 @@ RPC, `capnpc-zig-core` otherwise. Make every `b.dependency("capnpc_zig", ...)`
 in the graph pass the same options (Zig reuses one instance per option set),
 and pass the module down to library modules. A library that wraps capnp-zig
 should forward `quic` and `fd-passing` from its own build options instead of
-hard-coding them.
+hard-coding them. A library that binds `capnpc-zig-core` (to stay safe for
+wasm32) can offer native programs a second instance of its module bound to
+`capnpc-zig`; code written against core compiles against the full module.
+[docs/notes/module-roots.md](notes/module-roots.md) shows the pattern and the
+options for removing this limit.
 
 ### `no module named 'capnp_build_options'`
 

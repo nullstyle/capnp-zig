@@ -57,6 +57,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has no `<!-- verbatim: ... -->` marker. The hand-written mock that the
   serialization snippet test used is gone, so a broken snippet can no longer
   pass. Contributors write doc code in `tests/docs/` first (CONTRIBUTING.md).
+- **New design note on importing both library roots in one build.**
+  [docs/notes/module-roots.md](docs/notes/module-roots.md) reproduces the
+  `file exists in modules` error, shows the pattern that works today, and
+  lists the options for removing the limit. Library authors who bind
+  `capnpc-zig-core` and serve native programs should read it. It changes no
+  code.
 
 ## [0.22.0] - 2026-10-07
 
