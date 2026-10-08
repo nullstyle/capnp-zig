@@ -56,6 +56,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.result_lifetime = .retained` the answer stays open until the caller
   calls `finishRetainedQuestion`, as for retained calls, and counts against
   `max_retained_questions`. `sendBootstrap` is unchanged.
+- **`type_resolver`: generic parameter and brand resolution for foreign
+  code generators.** The frozen `schema.Type` union erases generics, and the
+  resolver that reads the parallel `TypeMetadata` tree was internal, so a
+  generator built on `request` and `schema` (capnpc-swift, for one) had to
+  erase generics to AnyPointer or reimplement the brand rules. All three
+  library roots now export a small facade: `type_resolver.Context.init` for
+  a node and a brand, then `resolve`, `listElement`, `enter` and `validate`.
+  It applies the rules capnpc-zig's own generator uses and allocates
+  nothing. The internal resolver stays private; no Stable line changed.
 
 ### Fixed
 
