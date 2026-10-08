@@ -4,11 +4,13 @@
  * A sans-IO Cap'n Proto RPC core: the host (Swift) owns every socket, pushes
  * received bytes in, and pulls outbound frames and events out. The core never
  * touches a socket and never calls into the host except through the panic
- * hook. See docs/plan-2026-10-06.md sections 4 and 4.1.
+ * hook. See docs/native-abi.md in capnp-zig; the design is capnp-swift's
+ * docs/plan-2026-10-06.md sections 4 and 4.1.
  *
- * Implemented in Zig (core/src/abi.zig); built into the static
- * CapnpCore.xcframework. Every function declared here must be exported there
- * with the same shape (enforced by `zig build test` in core/).
+ * Implemented in Zig (src/native/abi.zig in the capnp-zig package); built
+ * into an embedder's static library (capnp-swift: CapnpCore.xcframework).
+ * Every function declared here must be exported there with the same shape
+ * (enforced by `zig build test` in capnp-zig; docs/native-abi.md).
  */
 #ifndef CAPNP_CORE_H
 #define CAPNP_CORE_H
@@ -57,8 +59,9 @@ void capnp_core_set_panic_hook(capnp_core_panic_hook hook);
 /* ---- Test hook (not part of the supported API) ------------------------- */
 
 /* TEST HOOK ONLY. Executes a trap instruction inside a known Zig frame
- * (core/src/abi.zig) so tooling can prove crash symbolication works. It does
- * not run the panic hook. Never call it from production code. */
+ * (src/native/abi.zig in the capnp-zig package) so tooling can prove crash
+ * symbolication works. It does not run the panic hook. Never call it from
+ * production code. */
 __attribute__((noreturn)) void capnp_core_debug_trap(void);
 
 /* TEST HOOK ONLY. Runs a bootstrap + call round trip between two in-process

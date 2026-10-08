@@ -103,17 +103,22 @@ pub export fn capnp_core_set_panic_hook(hook: ?PanicHook) callconv(.c) void {
 // TEST HOOK -- not part of the supported API.
 // ---------------------------------------------------------------------------
 
-/// TEST HOOK ONLY. Executes `@trap` inside `debugTrapFrame` below so
-/// `scripts/check-dsym.sh` can prove a trapping Zig frame symbolicates to
-/// `core/src/abi.zig:<line>` from an app's dSYM. It does not run the panic
-/// hook (a trap is not a panic). Never call it from production code.
+/// TEST HOOK ONLY. Executes `@trap` inside `debugTrapFrame` below so an
+/// embedder's crash tooling (capnp-swift's `scripts/check-dsym.sh`) can
+/// prove a trapping Zig frame symbolicates to this file and line from an
+/// app's dSYM. Built from the capnp-zig package, DWARF names this file
+/// under the package directory, which changes with every pin (for example
+/// `zig-pkg/capnpc_zig-<version>-<hash>/src/native/abi.zig`): derive the
+/// directory from the pinned package, or match the suffix
+/// `src/native/abi.zig:<line>`. It does not run the panic hook (a trap is
+/// not a panic). Never call it from production code.
 pub export fn capnp_core_debug_trap() callconv(.c) noreturn {
     debugTrapFrame();
 }
 
-/// The frame `check-dsym.sh` expects to see. `noinline` keeps it a real frame
-/// in every optimize mode; the script greps this file for the marker below to
-/// learn the expected line, so the two cannot drift.
+/// The frame that tooling expects to see. `noinline` keeps it a real frame
+/// in every optimize mode; capnp-swift's script greps this file for the
+/// marker below to learn the expected line, so the two cannot drift.
 noinline fn debugTrapFrame() noreturn {
     @trap(); // CAPNP_CORE_DEBUG_TRAP_LINE
 }

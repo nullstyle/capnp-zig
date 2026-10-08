@@ -109,6 +109,14 @@ not link libc must declare `capnp_core_allocator`:
 | `capnp_core_allocator` | `std.mem.Allocator` | in a test build, a counting wrapper around `std.testing.allocator`; else the C allocator when libc is linked; else a compile error in a library, and `std.heap.page_allocator` (at least one page per allocation) in an executable |
 | `capnp_core_version_string` | `[:0]const u8` | `"core unknown / capnp-zig unknown / unknown"` |
 
+`capnp_core_debug_trap` (a test hook) traps in `src/native/abi.zig` on the
+line marked `CAPNP_CORE_DEBUG_TRAP_LINE`, so crash tooling can check that a
+Zig frame symbolicates. In a library built from the package, the debug info
+names that file under the package directory, which changes with every pin
+(`zig-pkg/capnpc_zig-<version>-<hash>/src/native/abi.zig`): derive the
+directory from the pinned package, or match the suffix
+`src/native/abi.zig:<line>`.
+
 A library for iOS also needs the std overrides that
 [build-integration.md](build-integration.md#ios-the-core-as-a-static-library-experimental)
 lists. Zig code can skip the C ABI and use `native.conn.Conn` directly.
