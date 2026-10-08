@@ -264,8 +264,9 @@ resolution/embargo. In 0.3.0 this core is **Stable and frozen**: its public
 entry points are the categorized Stable set in [`api-snapshot.txt`](api-snapshot.txt),
 CI-gated by `zig build check-api`. It is proven bidirectionally against the C++,
 Go, Python, and Rust reference implementations in the cross-implementation e2e
-matrix (returned-capability invocation, typed pipelining with E-order, and
-capability release).
+matrix (returned-capability invocation, typed pipelining with E-order,
+capability release, capability pass-back, and pipelined capabilities in call
+params).
 
 **Performance + soak evidence.** The two-party core carries committed regression
 evidence: `bench-rpc` measures round-trip latency (p50/p99) + calls/sec against
@@ -339,6 +340,18 @@ params) and **disconnect-mid-call** cross-impl (E2). The one remaining `SKIP` is
 `zig-client → python-server`: pycapnp cannot host the reflecting server. The
 matrix is asymmetric only because of that single reference-library gap, not
 capnp-zig behavior — see Known limitations #4.
+
+Two scenarios cover capabilities that go back to the vat that issued them,
+in both directions against all four reference implementations, with no
+`SKIP`. `pass_back` passes a capability the client imported from the server
+back in call params (`receiverHosted`) and checks that the server's call
+reaches its own object; it checks the same for a capability returned in
+results. The capnp-zig client exports capabilities of its own first, so the
+import ids it passes back are also local export ids. `pipelined_params`
+passes the result of an unanswered question as a call param
+(`receiverAnswer`): the server must resolve it to its own capability, and a
+param pipelined on a question that failed must fail with that question's
+exception. Both share `tests/e2e/schemas/cap_passing.capnp`.
 
 Note this cross-implementation matrix runs **per push on the Linux CI tier**
 (the `e2e-zig` job), alongside the Zig↔Zig self-interop e2e

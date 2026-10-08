@@ -16,6 +16,25 @@ The interoperability scenarios are game-domain RPC contracts:
 - `inventory`
 - `matchmaking`
 
+Protocol scenarios:
+- `resolve_disembargo`: a promise resolved to a capability the caller hosts,
+  and the Disembargo that follows.
+- `l3_l4_interop`: Level-3 handoff (C++ only, Zig client only).
+- `pass_back`: the client passes a capability it imported from the server
+  back in `check()`'s params, and the server must receive its own capability
+  (`receiverHosted`); `echo()` covers the same in results. The Zig client
+  exports eight capabilities of its own first, so the import ids it passes
+  back are also local export ids.
+- `pipelined_params`: the client passes the result of an unanswered call as
+  another call's param (`receiverAnswer`). The server must resolve it to its
+  own capability, and a param pipelined on a failed call must fail with that
+  call's exception.
+
+`pass_back` and `pipelined_params` share one schema,
+`schemas/cap_passing.capnp`: every backend serves the same `TokenHost` for
+both, and the client picks the flow. Both also run Zig to Zig in
+`zig build e2e-self` and `e2e-self-unix`.
+
 ## Reference Backends
 
 Current required backends:
