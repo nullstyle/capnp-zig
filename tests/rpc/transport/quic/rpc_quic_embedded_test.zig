@@ -553,13 +553,15 @@ fn countEmbeddedLargeReplyClientClose(conn: *quic.Connection) void {
     _ = state.closes.fetchAdd(1, .acq_rel);
 }
 
-/// The seat's writes leave half of the host's `max_connection_memory` for
-/// what the peer sends, as the owned loops' writes do
-/// (`quic_zig_adapter.streamWrite`). A 1 MiB reply goes through a 256 KiB
-/// budget while the client sends a small frame every millisecond, and
-/// arrives whole. A write that took the whole budget (quic-zig's own
-/// streamWrite) left no room for the client's next frame: quic-zig closed the
-/// connection with EXCESSIVE_LOAD.
+/// The seat's writes leave the host's `max_connection_memory` room for what
+/// the peer sends, as the owned loops' writes do. A 1 MiB reply goes through
+/// a 256 KiB budget while the client sends a small frame every millisecond,
+/// and arrives whole. Through quic-zig v0.37.2 a write took the whole budget
+/// and left no room for the client's next frame: quic-zig closed the
+/// connection with EXCESSIVE_LOAD, and capnp-zig v0.24.0 capped the seat's
+/// writes at half of the budget. Since v0.38.0 quic-zig's write stops short
+/// of the receive side's share (the connection window, which the host's
+/// `Listener` announces at most half of the budget for).
 fn runEmbeddedLargeReplyBesideClientFrames(allocator: std.mem.Allocator, mode: quic.EmbeddedSessionOptions) !void {
     const budget: u64 = 256 * 1024;
     const reply = try loopback.buildCallFrameWithData(allocator, 0xB0D6E9, 1024 * 1024);

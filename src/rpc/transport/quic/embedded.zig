@@ -12,7 +12,6 @@ const mode_router = @import("mode_router.zig");
 const native_engine = @import("native_engine.zig");
 const peer_streams = @import("peer_streams.zig");
 const quic_options = @import("options.zig");
-const quic_zig_adapter = @import("quic_zig_adapter.zig");
 
 const BaselineEngine = baseline_engine.BaselineEngine;
 const NativeEngine = native_engine.NativeEngine;
@@ -752,7 +751,7 @@ pub const EmbeddedSession = struct {
         }
 
         pub fn streamWrite(self: BufferedConn, stream_id: u64, data: []const u8) !usize {
-            return quic_zig_adapter.streamWrite(self.session.conn, stream_id, data);
+            return self.session.conn.streamWrite(stream_id, data);
         }
 
         pub fn streamFinish(self: BufferedConn, stream_id: u64) !void {

@@ -5,7 +5,6 @@ const events = @import("../../events.zig");
 const endpoint_mod = @import("endpoint.zig");
 const native_framer = @import("native_framer.zig");
 const options = @import("options.zig");
-const quic_zig_adapter = @import("quic_zig_adapter.zig");
 
 const Role = endpoint_mod.Role;
 
@@ -233,7 +232,7 @@ pub const OutboundQueue = struct {
 
         const stream_id = item.stream_id orelse return error.InvalidFrame;
         while (item.data_offset < item.bytes.len) {
-            const written = quic_zig_adapter.writeStream(conn, stream_id, item.bytes[item.data_offset..]) catch |err| switch (err) {
+            const written = conn.streamWrite(stream_id, item.bytes[item.data_offset..]) catch |err| switch (err) {
                 error.StreamNotFound => return error.InvalidFrame,
                 else => return err,
             };
@@ -250,7 +249,7 @@ pub const OutboundQueue = struct {
     fn writeQueuedControl(conn: anytype, item: *QueuedFrame) !bool {
         const control = item.control orelse return error.InvalidFrame;
         while (item.control_offset < control.len) {
-            const written = quic_zig_adapter.writeStream(conn, options.baseline_stream_id, control[item.control_offset..]) catch |err| switch (err) {
+            const written = conn.streamWrite(options.baseline_stream_id, control[item.control_offset..]) catch |err| switch (err) {
                 error.StreamNotFound => return false,
                 else => return err,
             };

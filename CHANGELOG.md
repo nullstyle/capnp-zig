@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **QUIC: quic-zig v0.37.2 -> v0.38.0 (tag `77be067`,
+  `quic-0.38.0-DnSYve_hPwBp5d2c8QUoZiNWi-rHT6QFR4pK2DueXEAC`).** The same
+  option map, exported modules and boringssl-zig (`ff30fe99`, 0.6.7). No
+  quic-zig signature or error set that capnp-zig uses changed, and no API
+  snapshot line moves. One memory budget (`max_connection_memory`) holds
+  what a connection writes and what its peer sends, and v0.38.0 keeps a
+  receive reserve in it: a stream write stops short of the connection
+  window (never below 16 MiB or half of the budget, whichever is smaller),
+  and under pressure the receive buffers give back the bytes the
+  application has read before quic-zig refuses a peer's frame. So an
+  honest peer never ends a connection with EXCESSIVE_LOAD, as long as the
+  connection window is at most half of the budget (next item). What an
+  application sees:
+  - The four-times rule of v0.24.0 is gone. A server no longer needs a
+    budget of four times the larger of its window and 16 MiB (64 MiB with
+    the defaults) to rule out EXCESSIVE_LOAD from an honest peer: a budget
+    of twice the window does, so the 32 MiB default does, and a client
+    (32 MiB, at most a 16 MiB window) does too.
+  - capnp-zig's half-budget write cap (v0.24.0, `streamWrite` in
+    `quic_zig_adapter.zig`) is gone. The engines and an `EmbeddedSession`
+    write straight to quic-zig, whose write keeps the reserve. A short
+    write, zero when nothing fits, is still back-pressure.
+  - A slow reader's unread bytes stay in the budget and leave the writer
+    less until the application reads: a short write, not a fault.
+  http3-zig main pins the same tag (since `5197931`), and the two mains
+  link into one program with one quic module (one `-Mquic=` and one
+  `-Mboringssl=` in an uncached `zig build --verbose`, Debug and
+  ReleaseSafe).
+- **A server announces at most half of `max_connection_memory` as its
+  connection window.** On quic-zig v0.38.0 a window larger than half of the
+  budget takes from what the connection may write, and a window as large as
+  the budget leaves nothing: every write returns zero and the connection
+  stalls with no error. A server with a budget of 16 MiB or less and the
+  default window (16 MiB, `defaultTransportParams()`) would write nothing.
+  `serverConfigFromOptions` (and so `Listener`, `Server`,
+  `Connection.initServer` and `serve`) now announces `initial_max_data` of
+  at most half of the budget (`transportParamsWithinBudget` in
+  `src/rpc/transport/quic/options.zig`); the stream windows stay. Nothing
+  changes at the defaults (a 16 MiB window, a 32 MiB budget). A smaller
+  budget is now also a smaller window: a 4 MiB budget announces 2 MiB, a
+  256 KiB budget 128 KiB. Below twice the configured window (32 MiB with
+  the default window) that has two more consequences:
+  - Native mode's largest data-stream frame follows the smaller window
+    (about the smaller of the uni stream window and the connection window,
+    plus the sender's 1 MiB send buffer). With the default stream windows a
+    server budget below 2 MiB now lowers the largest frame the server
+    receives to about 1 MiB plus half of the budget, below the 2 MiB of the
+    defaults; a larger frame stalls with no error, as one over 2 MiB already
+    did. Measured with a 1.5 MiB budget: 1.17 MiB arrives, 1.875 MiB does
+    not (docs/quic-transport.md, "Current Limits").
+  - The announced window is part of quic-zig's 0-RTT context. Moving such a
+    server from v0.24.0 (which announced the configured window at any
+    budget), or changing its budget across a restart, refuses 0-RTT on the
+    tickets issued before the change, for one ticket lifetime. The sessions
+    still resume, and a staged frame goes at 1-RTT. A budget of 32 MiB or
+    more keeps the default window and 0-RTT.
+
+  A client needs no clamp: it keeps quic-zig's 32 MiB budget, and quic-zig
+  refuses a window above 16 MiB (`error.InvalidValue`). An embedder that
+  builds its own quic-zig config keeps the rule itself
+  (docs/quic-transport.md, "Embedder rules"). Tests:
+  the clamp in the config, and a 4 KiB reply through a 256 KiB server
+  budget with the default window, baseline and native (on v0.38.0 without
+  the clamp, no reply arrives); the budget and window of the quic-zig
+  connection `Connection.initClient` creates (a client budget of 16 MiB
+  fails it); and a crash-restart with a 24 MiB budget refuses 0-RTT (without
+  the clamp it is accepted), one with 64 MiB keeps it.
+
 ### Fixed
 
 - **QUIC: a client whose connection closed with frames still queued never
@@ -80,7 +150,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the announced window and 16 MiB (64 MiB with the defaults) rules it
     out, and a client (fixed at 32 MiB) cannot. The
     budget also does not lower the announced windows; it caps only their
-    growth.
+    growth. quic-zig v0.38.0, on main since (see Changed), removes the
+    four-times rule.
   - Soak RSS: the tagged figures (34 MB against 51 MB) came from one run
     before the final pin. Seven runs each after the tag replace them.
   - Native frames over about 2 MiB: the tagged text said the connection

@@ -424,6 +424,47 @@ test "quic server options propagate quic_zig hardening controls" {
     try std.testing.expectEqual(@as(?u64, 5), config.log_source_rate_limit.resolve(0));
 }
 
+test "quic server config announces at most half of max_connection_memory as its connection window" {
+    const defaults = quic.defaultTransportParams();
+    const base: quic.ServerOptions = .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+    };
+
+    // The default budget (32 MiB) holds the default window (16 MiB) twice:
+    // nothing changes.
+    const at_default = try quic.serverConfigFromOptions(std.testing.allocator, base);
+    try std.testing.expectEqual(quic.default_quic_max_connection_memory, at_default.max_connection_memory);
+    try std.testing.expectEqual(defaults.initial_max_data, at_default.transport_params.initial_max_data);
+    try std.testing.expect(2 * defaults.initial_max_data <= quic.default_quic_max_connection_memory);
+
+    // A 4 MiB budget announces a 2 MiB connection window; the stream windows
+    // and every other parameter stay as given.
+    var small = base;
+    small.max_connection_memory = 4 * 1024 * 1024;
+    const clamped = try quic.serverConfigFromOptions(std.testing.allocator, small);
+    try std.testing.expectEqual(@as(u64, 2 * 1024 * 1024), clamped.transport_params.initial_max_data);
+    var expected = defaults;
+    expected.initial_max_data = 2 * 1024 * 1024;
+    try std.testing.expectEqualDeep(expected, clamped.transport_params);
+
+    // A window already at or below half of the budget is left alone.
+    var narrow = small;
+    narrow.transport_params.initial_max_data = 1024 * 1024;
+    const kept = try quic.serverConfigFromOptions(std.testing.allocator, narrow);
+    try std.testing.expectEqual(@as(u64, 1024 * 1024), kept.transport_params.initial_max_data);
+
+    // The production preset's budget goes through the same rule.
+    const hardened = quic.withProductionServerHardening(base, .{
+        .retry_token_key = @splat(0x71),
+        .stateless_reset_key = @splat(0x72),
+        .max_connection_memory = 8 * 1024 * 1024,
+    });
+    const hardened_config = try quic.serverConfigFromOptions(std.testing.allocator, hardened);
+    try std.testing.expectEqual(@as(u64, 4 * 1024 * 1024), hardened_config.transport_params.initial_max_data);
+}
+
 test "quic production hardening preset enables retry and rate gates" {
     const retry_key: quic.ServerRetryTokenKey = @splat(0x33);
     const new_token_key: quic.ServerNewTokenKey = @splat(0x44);
@@ -1763,14 +1804,17 @@ test "quic native: a reply larger than the server's connection memory budget arr
     try expectReplyLargerThanMemoryBudget(.native);
 }
 
-/// What the peer sends needs room in the budget too. quic-zig's own write
-/// takes all of `max_connection_memory` that is free, and the next STREAM
-/// frame the peer sends then has no room: quic-zig closes the connection
-/// with EXCESSIVE_LOAD, which an honest client's Finish, Release or
-/// pipelined call can trigger in the middle of a large reply. capnp-zig's
-/// writes fill at most half of the budget (`quic_zig_adapter.streamWrite`),
-/// so here the client sends a small frame every millisecond while a 1 MiB
-/// reply goes through a 256 KiB budget, and the reply still arrives whole.
+/// What the peer sends needs room in the budget too. Through quic-zig
+/// v0.37.2 a write took all of `max_connection_memory` that was free, and
+/// the next STREAM frame the peer sent then had no room: quic-zig closed the
+/// connection with EXCESSIVE_LOAD, which an honest client's Finish, Release
+/// or pipelined call triggered in the middle of a large reply. capnp-zig
+/// v0.24.0 capped its own writes at half of the budget. Since v0.38.0
+/// quic-zig's write stops short of the receive side's share (the connection
+/// window, which the server announces at most half of the budget for), and
+/// capnp-zig writes straight to it. Here the client sends a small frame
+/// every millisecond while a 1 MiB reply goes through a 256 KiB budget, and
+/// the reply still arrives whole.
 fn expectReplyFillingMemoryBudgetBesideClientFrames(mode: quic.TransportMode) !void {
     const allocator = std.testing.allocator;
     const budget: u64 = 256 * 1024;
@@ -1863,6 +1907,137 @@ test "quic baseline: client frames during a reply that fills the server's memory
 
 test "quic native: client frames during a reply that fills the server's memory budget leave room (the reply arrives whole)" {
     try expectReplyFillingMemoryBudgetBesideClientFrames(.native);
+}
+
+/// Since quic-zig v0.38.0 a stream write stops short of the receive side's
+/// share of `max_connection_memory`: the connection window as announced, or
+/// the window cap (16 MiB or half of the budget, whichever is smaller) if
+/// that is larger. A server with a 256 KiB budget that announced the default
+/// 16 MiB window could write nothing: no error, no close, the connection
+/// stalled. The server announces at most half of its budget as its
+/// connection window (`transportParamsWithinBudget` in
+/// `serverConfigFromOptions`), so one request and a 4 KiB reply go through.
+/// The wait is the watchdog for the stall.
+fn expectReplyThroughBudgetBelowDefaultWindow(mode: quic.TransportMode) !void {
+    const allocator = std.testing.allocator;
+    const budget: u64 = 256 * 1024;
+    // As given, the server asks for a window larger than its budget.
+    try std.testing.expect(quic.defaultTransportParams().initial_max_data > budget);
+    const reply = try buildCallFrameWithData(allocator, 0xB0D6EA, 4 * 1024);
+    defer allocator.free(reply);
+    const request = try buildBootstrapFrame(allocator, 0xB0D9);
+    defer allocator.free(request);
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = mode,
+        .max_connection_memory = budget,
+    });
+    defer server.deinit();
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = mode,
+    });
+    defer client.deinit();
+
+    var server_state = LargeReplyServerState{ .reply = reply };
+    var client_state = LargeReplyClientState{ .expected = reply };
+    server.start(&server_state, replyWithLargeFrame, recordLargeReplyServerError, countLargeReplyServerClose);
+    client.start(&client_state, checkLargeReply, recordLargeReplyClientError, countLargeReplyClientClose);
+
+    try client.sendFrame(request);
+
+    var server_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&server});
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        server.requestClose();
+        client_thread.join();
+        server_thread.join();
+    };
+
+    // A 4 KiB reply on loopback takes milliseconds; the stall lasts until
+    // the idle timeout (30 s).
+    const wait_ms: u64 = 10_000;
+    var waited_ms: u64 = 0;
+    while (waited_ms < wait_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        if (client_state.messages.load(.acquire) > 0) break;
+        if (client_state.errors.load(.acquire) > 0 or server_state.errors.load(.acquire) > 0) break;
+        if (client_state.closes.load(.acquire) > 0 or server_state.closes.load(.acquire) > 0) break;
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+    client.requestClose();
+    server.requestClose();
+    client_thread.join();
+    server_thread.join();
+    joined = true;
+
+    const reply_matched = client_state.matched.load(.acquire);
+    if (reply_matched != 1) {
+        std.debug.print(
+            "reply not delivered: waited {d} ms, server saw {d} frames, server close cause {s}, client close cause {s}\n",
+            .{ waited_ms, server_state.messages.load(.acquire), @tagName(server.closeCause()), @tagName(client.closeCause()) },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 0), server_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), server_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), reply_matched);
+}
+
+test "quic baseline: a server whose memory budget is below the default window still writes (it announces half of its budget)" {
+    try expectReplyThroughBudgetBelowDefaultWindow(.baseline);
+}
+
+test "quic native: a server whose memory budget is below the default window still writes (it announces half of its budget)" {
+    try expectReplyThroughBudgetBelowDefaultWindow(.native);
+}
+
+// What `Connection.initClient` gives the quic-zig connection it creates: a
+// budget of `default_quic_max_connection_memory` (32 MiB), and a connection
+// window of at most half of it, so that the client's writes keep at least
+// half of the budget (since quic-zig v0.38.0 a larger window takes from
+// them, and a window as large as the budget leaves none). The default window
+// is the largest quic-zig accepts (16 MiB, next test). Read from the
+// connection itself, so a budget wired wrongly in endpoint_factory.zig fails
+// here, not only as a stall in a loopback test.
+test "quic client's quic-zig connection gets the client budget and announces at most half of it" {
+    var client = try quic.Connection.initClient(std.testing.allocator, std.testing.io, .{
+        .remote_addr = .{ .ip4 = .loopback(9) },
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+    });
+    defer client.deinit();
+    const q = client.endpoint.activeQuicConnection() orelse return error.QuicConnectionGone;
+    try std.testing.expectEqual(quic.default_quic_max_connection_memory, q.max_connection_memory);
+    const announced = q.localTransportParams().initial_max_data;
+    try std.testing.expectEqual(quic.defaultTransportParams().initial_max_data, announced);
+    try std.testing.expect(announced <= q.max_connection_memory / 2);
+}
+
+// A pin on quic-zig, not on capnp-zig's wiring (the test above checks
+// that): quic-zig refuses a connection window above 16 MiB, half of the
+// client's 32 MiB budget, so `ClientOptions.transport_params` cannot
+// announce one that takes the client's writes below half of the budget. A
+// comptime check in endpoint_factory.zig holds the two values together;
+// if quic-zig raised its limit, that check fails the build first.
+test "quic-zig refuses a client connection window above 16 MiB, half of the client budget" {
+    var params = quic.defaultTransportParams();
+    params.initial_max_data = quic.default_quic_max_connection_memory / 2 + 1;
+    try std.testing.expectError(error.InvalidValue, quic.Connection.initClient(std.testing.allocator, std.testing.io, .{
+        .remote_addr = .{ .ip4 = .loopback(9) },
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .transport_params = params,
+    }));
 }
 
 test "quic native receiver takes back-to-back control frames larger together than its control buffer" {
@@ -3369,6 +3544,9 @@ const TicketServer = struct {
     new_token_clock: ?*const fn () u64 = null,
     new_token_max_clock_skew_us: u64 = 0,
     early_dispatch: quic.early_dispatch.Mode = .restore_only,
+    /// `ServerOptions.max_connection_memory`, through the preset; null keeps
+    /// the preset's (32 MiB).
+    max_connection_memory: ?u64 = null,
 
     fn options(self: TicketServer, listen_addr: std.Io.net.IpAddress) quic.ServerOptions {
         var out = quic.withProductionServerHardening(.{
@@ -3387,6 +3565,7 @@ const TicketServer = struct {
             .session_ticket_key = self.key,
             .previous_session_ticket_key = self.previous_key,
             .previous_session_ticket_key_until_us = self.previous_key_until_us,
+            .max_connection_memory = self.max_connection_memory orelse quic.default_quic_max_connection_memory,
         });
         // Only the dispatch half of `.restore_only` varies: 0-RTT stays on,
         // and only the context bound into the tickets changes.
@@ -3650,6 +3829,33 @@ test "session ticket key: a crash-restart with another early_dispatch refuses 0-
         .before = .{ .key = &ticket_key },
         .after = .{ .key = &ticket_key, .early_dispatch = .hold_until_handshake },
     });
+}
+
+test "session ticket key: a crash-restart with a budget below 32 MiB refuses 0-RTT (the budget sets the announced window)" {
+    // The same key: the session resumes. Below twice the configured window
+    // (32 MiB with the default 16 MiB window), `max_connection_memory` sets
+    // the connection window the server announces, half of the budget
+    // (`transportParamsWithinBudget`), and quic-zig binds the announced
+    // window into the 0-RTT context, so BoringSSL refuses the early data.
+    // 24 MiB announces 12 MiB where the predecessor announced 16 MiB, as a
+    // server moved from capnp-zig v0.24.0 (16 MiB at any budget) does. The
+    // staged frame still arrives, at 1-RTT.
+    try expectTicketRestartRejected(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key, .max_connection_memory = 24 * 1024 * 1024 },
+    });
+}
+
+test "session ticket key: a crash-restart with a budget of 32 MiB or more keeps 0-RTT (the announced window stays)" {
+    // Control for the test above: 64 MiB announces the configured 16 MiB, as
+    // the predecessor's 32 MiB did, so the 0-RTT context is the same.
+    const outcome = try crashRestartResumedDial(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key, .max_connection_memory = 64 * 1024 * 1024 },
+        .same_client_port = true,
+    });
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, outcome.status);
+    try std.testing.expect(outcome.restored_before_handshake);
 }
 
 test "session ticket key: a new new_token_key after a crash-restart costs a Retry, not the early restore" {

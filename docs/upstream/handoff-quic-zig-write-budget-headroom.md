@@ -10,8 +10,13 @@
 > audit of capnp-zig v0.24.0 found that fix 1 below alone (a reserve of one
 > window) was not a guarantee, because of the 2x receive charge; v0.38.0
 > handles that with the compaction. capnp-zig v0.24.0 pins v0.37.2 and keeps
-> its half-budget cap (below); moving to v0.38.0 is the owner's decision.
-> The text below is the report as sent.
+> its half-budget cap (below). capnp-zig main has since moved to v0.38.0 and
+> dropped the cap: the engines and the embedded seat write straight to
+> quic-zig again. One rule stays with the embedder: a connection window
+> larger than half of the budget takes from the writes (a window as large as
+> the budget leaves none), so capnp-zig's servers announce at most half of
+> `max_connection_memory` (`transportParamsWithinBudget` in
+> `src/rpc/transport/quic/options.zig`). The text below is the report as sent.
 
 For the agent working on nullstyle/quic-zig. Self-contained; the evidence
 comes from capnp-zig (same machine, /Users/nullstyle/prj/zig/capnp-zig).

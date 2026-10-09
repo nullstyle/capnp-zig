@@ -23,6 +23,23 @@ pub const CreatedEndpoint = struct {
     }
 };
 
+/// A client's memory budget: quic-zig's default, 32 MiB. `ClientOptions` has
+/// no knob for it.
+const client_max_connection_memory = quic_options.default_quic_max_connection_memory;
+
+comptime {
+    // A connection window larger than half of the budget takes from what the
+    // connection may write (quic-zig v0.38.0), and the server clamps its
+    // window for that (`transportParamsWithinBudget`). A client needs no
+    // clamp: quic-zig refuses a window above
+    // `max_initial_connection_receive_window` (16 MiB) with
+    // `error.InvalidValue`, and that is half of the client's budget. If either
+    // value moves, clamp the client's window as the server does. The transport
+    // test "quic client's quic-zig connection gets the client budget and
+    // announces at most half of it" reads both back from the connection.
+    std.debug.assert(quic_zig.conn.state.max_initial_connection_receive_window <= client_max_connection_memory / 2);
+}
+
 pub fn initClient(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -40,7 +57,11 @@ pub fn initClient(
         .allocator = allocator,
         .server_name = options.server_name,
         .alpn_protocols = options.alpn_protocols,
+        // At most half of `client_max_connection_memory` by construction
+        // (see the comptime check above `initClient`); a larger window is
+        // refused.
         .transport_params = options.transport_params,
+        .max_connection_memory = client_max_connection_memory,
         .ca_pem = options.ca_pem,
         .insecure_skip_verify = options.insecure_skip_verify,
         // Forwarded so the documented per-flip opt-outs are reachable from
