@@ -74,19 +74,19 @@ and capnp-zig calls neither. What an application sees:
   not isolated) and moves 44.8 MB/s on v0.37.1. On plain loopback, 1 MiB
   calls go 109 -> 157 MB/s in both modes.
 - **Memory per connection.** A connection holds what its windows and send
-  buffers hold, and for a reader that keeps up those now grow: receive
-  windows up to 16 MiB, and send buffers up to what the peer's credit allows,
-  all inside `max_connection_memory` (32 MiB by default), of which
-  capnp-zig's own writes take at most half (next item). Through v0.32.0 the
-  announced windows bounded it (1 MiB per stream, 16 MiB per connection).
-  On a server, `ServerOptions.max_connection_memory` bounds it, and the
-  receive windows then stop at half of it; a client keeps quic-zig's
-  default. quic-zig's part of an idle connection is about 22 KB of Zig heap
-  (it was about 92 KB), and one that served a bulk transfer gives its
-  buffers back when it idles (v0.36.0). capnp-zig's own buffers come on
-  top: a 64 KiB stream read buffer for each session of a fanout `Server`,
-  and a 64 KiB stream read buffer plus a 64 KiB UDP receive buffer for each
-  client `Connection` (`stream_read_buffer_size`, `udp_rx_buffer_size`).
+  buffers hold, and for a reader that keeps up those now grow: receive windows
+  up to 16 MiB, and send buffers up to what the peer's credit allows, all inside
+  `max_connection_memory` (32 MiB by default), of which capnp-zig's own writes
+  take at most half (next item). Through v0.32.0 the announced windows bounded
+  it (1 MiB per stream, 16 MiB per connection). On a server,
+  `ServerOptions.max_connection_memory` bounds it, and the receive windows then
+  grow no further than half of it (the announced windows are not lowered); a
+  client keeps quic-zig's default. quic-zig's part of an idle connection is
+  about 22 KB of Zig heap (it was about 92 KB), and one that served a bulk
+  transfer gives its buffers back when it idles (v0.36.0). capnp-zig's own
+  buffers come on top: a 64 KiB stream read buffer for each session of a fanout
+  `Server`, and a 64 KiB stream read buffer plus a 64 KiB UDP receive buffer for
+  each client `Connection` (`stream_read_buffer_size`, `udp_rx_buffer_size`).
 - **A write past the memory budget waits (v0.33.0), and capnp-zig's writes
   leave half of the budget free.** A quic-zig stream write that
   `max_connection_memory` has no room for takes what fits and returns a
@@ -112,7 +112,8 @@ and capnp-zig calls neither. What an application sees:
   sends: see [Current Limits](#current-limits).
 - **Connections at rest (v0.36.0, fixed in v0.37.2).** Since v0.36.0 a
   connection with nothing to do answers `tick` from a cached deadline.
-  capnp-zig's move to v0.37.1 found two defects there. A connection at rest
+  capnp-zig's move to v0.37.1 found one defect there, and quic-zig's test
+  for the fix found a second. A connection at rest
   skipped the GC of a stream that had just ended: a Debug build asserted in
   quic-zig (`Connection.zig:5352`, 19 QUIC tests), and in a release build a
   native connection with a full unidirectional window stalled with both
@@ -130,7 +131,7 @@ and capnp-zig calls neither. What an application sees:
   extension is on (draft-ietf-quic-ack-frequency, with the draft's
   provisional codepoints): a bulk sender with a large window asks a peer
   that supports it for fewer ACKs. On the wire a packet number is 2 to 4
-  bytes, never 1. capnp-zig does not use quic-zig's new ready API
+  bytes, never 1 (v0.33.0). capnp-zig does not use quic-zig's new ready API
   (`Server.takeReady`, `tickDue`, `nextDeadline`): its loops sweep their
   sessions, as before.
 - **Every probe timeout carries data (v0.37.1).** From quic-zig v0.30.0
@@ -808,15 +809,20 @@ Recommended hardening posture:
   only with matching application-level size limits. Bounded is not tight:
   capnp-zig's own writes use at most half of `max_connection_memory`, and
   the other half must hold what an honest peer sends ahead of the reader,
-  up to the connection window you announce (`initial_max_data`, 16 MiB by
-  default). Below twice that window, a peer that follows the protocol can
-  end a connection with EXCESSIVE_LOAD ([Current Limits](#current-limits)).
+  up to the connection window, which quic-zig can charge at up to twice its
+  size. Twice the window is the floor, not a guarantee. Only a server
+  budget of at least four times the larger of the announced
+  `initial_max_data` and 16 MiB (64 MiB with the defaults) rules out
+  EXCESSIVE_LOAD from a peer that follows the protocol, and a client
+  cannot rule it out ([Current Limits](#current-limits)).
 - Register `log_callback` or `qlog_callback` for diagnostics in controlled
   environments, and rate-limit exposed log paths with
   `log_source_rate_limit`.
 - For native mode, keep the default `NativeOptions` first. If large application
   frames are common, prefer raising `max_pending_data_bytes` within your message
-  budget over making every frame inline.
+  budget over making every frame inline. A native frame larger than about
+  2 MiB needs a larger `transport_params.initial_max_stream_data_uni` on
+  the receiver ([Current Limits](#current-limits)).
 
 ### Stateless-reset key
 
@@ -1430,37 +1436,46 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   v0.21.0) a session that kept sending took two to three idle timeouts. The
   timeout is at least three probe timeouts, about 3 s before the first RTT
   sample.
-- capnp-zig does not expose quic-zig's flow-control and memory knobs other
-  than `ServerOptions.max_connection_memory`: a stream's send buffer starts
-  at quic-zig's `max_buffered_send` (1 MiB) and follows the peer's credit up
+- capnp-zig exposes the windows it announces, through `transport_params`
+  on `ClientOptions` and `ServerOptions`, and
+  `ServerOptions.max_connection_memory`. It does not expose quic-zig's other
+  flow-control and memory knobs: a stream's send buffer starts at
+  quic-zig's `max_buffered_send` (1 MiB) and follows the peer's credit up
   to 16 MiB, and the receive windows start at the announced ones and grow to
   8 MiB per stream and 16 MiB per connection for a reader that keeps up.
   A client's memory budget is quic-zig's default, 32 MiB per connection.
-- `max_connection_memory` bounds what a connection holds, not what the peer
-  may send. capnp-zig's own writes keep to half of it; the other half must
-  hold what the peer sends ahead of the reader, up to the windows the
-  receiver announces (`transport_params`: 1 MiB per stream and 16 MiB per
-  connection by default; the budget does not lower them), and quic-zig
-  charges a receive buffer up to twice its unread bytes until it compacts.
-  When that does not fit, quic-zig closes the connection with
-  EXCESSIVE_LOAD, honest peer or not. A budget below twice the announced
-  connection window (`initial_max_data`, 16 MiB by default, which the
-  32 MiB default budget matches) relies on the reader keeping up: keep it
-  well above the largest frame you expect in either direction plus the
-  requests in flight.
+- `max_connection_memory` bounds what a connection holds, not what the peer may
+  send. capnp-zig's own writes keep to half of it; the other half must hold what
+  the peer sends ahead of the reader, up to the connection window. That window
+  starts at the one the receiver announces (`transport_params`: 1 MiB per stream
+  and 16 MiB per connection by default; the budget does not lower them) and
+  grows for a reader that keeps up, and quic-zig charges a receive buffer up to
+  twice its unread bytes until it compacts. When that does not fit, quic-zig
+  closes the connection with EXCESSIVE_LOAD, honest peer or not. So twice the
+  announced connection window (`initial_max_data`, 16 MiB by default; the 32 MiB
+  default budget is exactly that) is the floor, not a guarantee. quic-zig grows
+  the connection window, for a reader that keeps up, up to 16 MiB or half the
+  budget, whichever is smaller. So only a server budget of at least four times
+  the larger of the announced `initial_max_data` and 16 MiB rules it out: 64 MiB
+  with the defaults. A client keeps quic-zig's 32 MiB budget, so a client cannot
+  rule it out. At the defaults a connection relies on the reader keeping up.
+  Keep the budget well above the largest frame you expect in either direction
+  plus the requests in flight.
 - Native mode does not deliver a data-stream frame larger than about the
-  receiver's uni stream window plus the sender's 1 MiB send buffer (about
-  2 MiB with the default windows): the connection stalls with no error
-  until the idle timeout. The sender writes a frame's control envelope only
-  after the whole data stream is in quic-zig's send buffer, and the receiver
-  reads a data stream only after its envelope arrives, so neither side moves
-  once the receiver's window and the sender's buffer are full (and the
-  window cannot grow while nothing reads it). Measured on quic-zig v0.37.1
-  and v0.32.0 alike: 1.9 MiB arrives, 2 MiB and 3 MiB do not, while
-  `max_message_bytes` allows 64 MiB. Until it is fixed, use baseline mode for
-  frames that large, or raise the receiver's
-  `transport_params.initial_max_stream_data_uni` above the largest frame
-  (6 MiB arrived with 8 MiB).
+  receiver's uni stream window plus the sender's 1 MiB send buffer (about 2 MiB
+  with the default windows): the transfer stalls with no error. At the idle
+  timeout the receiving side ends, but a client that is sending the frame does
+  not: its `Connection.run` keeps running and its close callback never runs,
+  because the frame never leaves its outbound queue (seen with bench-quic on
+  v0.24.0 and v0.23.0). The sender writes a frame's control envelope only after
+  the whole data stream is in quic-zig's send buffer, and the receiver reads a
+  data stream only after its envelope arrives, so neither side moves once the
+  receiver's window and the sender's buffer are full (and the window cannot grow
+  while nothing reads it). Measured on quic-zig v0.37.1 and v0.32.0 alike: 1.9
+  MiB arrives, 2 MiB and 3 MiB do not, while `max_message_bytes` allows 64 MiB.
+  Until it is fixed, use baseline mode for frames that large, or raise the
+  receiver's `transport_params.initial_max_stream_data_uni` above the largest
+  frame (6 MiB arrived with 8 MiB).
 - The transport's loops sweep every session per pass rather than use
   quic-zig's ready API. The tick of an idle connection answers from its
   cached deadline, but a server with thousands of idle sessions still visits

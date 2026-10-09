@@ -8,11 +8,13 @@ release, paired with http3-zig v0.5.6. It bundles these changes:
   about 22 KB of heap (was about 92 KB), and every probe timeout carries
   previously sent data.
 - A reply larger than a server's `max_connection_memory` no longer ends the
-  session. capnp-zig's own stream writes stop at half of that budget, so
-  the peer's frames always have room.
-- The move found two quic-zig defects with idle connections (a stream that
-  ended was not freed, and a server connection never came to rest).
-  quic-zig v0.37.2 fixes both, so capnp-zig needs no workaround.
+  session. capnp-zig's own stream writes stop at half of that budget. This
+  leaves the other half for what the peer sends. That half is not a
+  guarantee: see step 4.
+- The move found a quic-zig defect with idle connections: a stream that
+  ended was not freed. quic-zig's test for the fix found a second one: a
+  server connection never came to rest. quic-zig v0.37.2 fixes both, so
+  capnp-zig needs no workaround.
 - Host answer cancellation over the WASM host ABI (feature bit `12`).
 
 The Zig toolchain does not change: it stays at tagged 0.17.0.
@@ -42,7 +44,7 @@ ABI get no behavior change. This release has no security advisory.
 | Component | Version | Pin |
 |---|---|---|
 | Zig | `0.17.0` (tagged; no change since v0.19.0) | `mise.toml`: `zig = "0.17.0"`; `build.zig.zon`: `.minimum_zig_version = "0.17.0"` |
-| capnp-zig | `v0.24.0` | `capnpc_zig-0.24.0-...` |
+| capnp-zig | `v0.24.0` (tag at `a37ff29`) | `capnpc_zig-0.24.0-nUduFRkzTgBixM8yEHI86em1ok5kwn55pxbhz20HoXoA` |
 | quic-zig | `v0.37.2` (tag at `51a34c0`) | `quic-0.37.2-DnSYvb2bPwDUgMMPDFV3tX0CgvsCbn2u2ed60n4tUtZ-` |
 | http3-zig (optional) | `v0.5.6` (tag at `6566fa2`) | `http3_zig-0.5.6-ayZ03MVFEwB0H8S3-2BwZg_r2C92DUPQAPlUWF4SkWuU` |
 
@@ -73,11 +75,18 @@ capnp-zig v0.23.0 and v0.22.0.
    never returns it in practice: only `requestAckFrequency` and
    `requestImmediateAck` do, and capnp-zig calls neither.
 
-4. **Keep `max_connection_memory` at least twice the announced connection
-   window.** The defaults (32 MiB budget, 16 MiB window) already match. The
-   budget bounds what a connection holds, not what the peer sends, so a
-   smaller budget can still end a connection when an honest peer sends
-   ahead of the reader ("Current Limits" in docs/quic-transport.md).
+4. **Size `max_connection_memory` from the connection window.** Twice the
+   announced window is the floor, not a guarantee. capnp-zig's own writes
+   can hold half of the budget, and quic-zig can charge a receive buffer up
+   to twice its unread bytes until it compacts. quic-zig also grows the
+   connection window to 16 MiB (or half the budget, if smaller) for a
+   reader that keeps up. So only a server budget of at least four times the
+   larger of the announced `initial_max_data` and 16 MiB rules out
+   EXCESSIVE_LOAD from an honest peer: 64 MiB with the defaults. A client
+   keeps quic-zig's 32 MiB budget, so a client cannot rule it out. At the
+   defaults (32 MiB budget, 16 MiB window) a connection relies on the
+   reader keeping up. The budget bounds what a connection holds, not what
+   the peer sends ("Current Limits" in docs/quic-transport.md).
 
 5. **Expect more memory per busy connection.** For a reader that keeps up,
    receive windows grow up to 16 MiB and send buffers follow the peer's
@@ -85,9 +94,12 @@ capnp-zig v0.23.0 and v0.22.0.
    never grow. Budget servers with `ServerOptions.max_connection_memory`.
 
 6. **Native mode: frames over about 2 MiB stall with the default
-   windows.** This is not new (v0.23.0 stalls the same way). Use baseline
-   mode for such frames, or raise the receiver's
-   `transport_params.initial_max_stream_data_uni` above the largest frame.
+   windows.** At the idle timeout the receiving side ends. A client that is
+   sending the frame does not end: its `Connection.run` keeps running,
+   because the frame never leaves its outbound queue. This is not new
+   (v0.23.0 stalls the same way). Use baseline mode for such frames, or
+   raise the receiver's `transport_params.initial_max_stream_data_uni`
+   above the largest frame.
 
 7. **An `EmbeddedSession` host keeps the same loop.** Feed, then service,
    then tick, as before ("Embedder rules" in docs/quic-transport.md). No

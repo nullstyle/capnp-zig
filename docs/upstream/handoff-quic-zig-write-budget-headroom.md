@@ -1,11 +1,17 @@
 # HANDOFF — quic-zig: a local streamWrite fills the whole memory budget
 
-> **Status: OPEN, accepted as a design item (2026-10-08).** Found by
-> capnp-zig on its move from quic-zig v0.32.0 to v0.37.1. The quic-zig
-> session put it on its next sprint's candidate list (a receive reserve
-> inside `max_connection_memory`, so an embedder need not cap its own
-> writes). quic-zig v0.37.2 does not change it. capnp-zig works around it
-> (below), so nothing downstream is blocked.
+> **Status: FIXED in quic-zig v0.38.0 (tag `77be067`, 2026-10-09).** Found
+> by capnp-zig on its move from quic-zig v0.32.0 to v0.37.1. In v0.38.0
+> `streamWrite` stops short of the receive side's share (the connection
+> window, never below the window cap, 16 MiB or half the budget, whichever
+> is smaller), and under pressure the
+> receive buffers give back their consumed prefix before quic-zig refuses a
+> peer's frame, so an honest peer does not meet EXCESSIVE_LOAD. A post-tag
+> audit of capnp-zig v0.24.0 found that fix 1 below alone (a reserve of one
+> window) was not a guarantee, because of the 2x receive charge; v0.38.0
+> handles that with the compaction. capnp-zig v0.24.0 pins v0.37.2 and keeps
+> its half-budget cap (below); moving to v0.38.0 is the owner's decision.
+> The text below is the report as sent.
 
 For the agent working on nullstyle/quic-zig. Self-contained; the evidence
 comes from capnp-zig (same machine, /Users/nullstyle/prj/zig/capnp-zig).

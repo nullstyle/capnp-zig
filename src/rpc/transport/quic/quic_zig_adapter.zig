@@ -31,12 +31,15 @@ pub fn requestUdpSocketBuffers(handle: Net.Socket.Handle, recv_bytes: ?usize, se
 /// STREAM frame finds no room, and quic-zig closes the connection with
 /// EXCESSIVE_LOAD. A small Finish, Release or pipelined call from an honest
 /// client in the middle of a large reply did that. So the transport's own
-/// writes stop once the connection holds half of its budget, the share
-/// that quic-zig's receive windows already keep to (a connection's window
-/// never grows past half of the budget). A short count, zero when nothing
-/// fits, is back-pressure as before. With no room the call still reaches
-/// quic-zig, with no bytes, which is what quic-zig does itself when its
-/// budget is full, so the stream errors stay the same.
+/// writes stop once the connection holds half of its budget, the most that
+/// quic-zig lets a connection window grow to for a budget of 32 MiB or less
+/// (its cap is 16 MiB or half the budget, whichever is smaller). Half is a
+/// floor, not a guarantee: quic-zig can charge a receive buffer up to twice
+/// its unread bytes, and the budget does not lower the announced windows
+/// ("Current Limits" in docs/quic-transport.md). A short count, zero when
+/// nothing fits, is back-pressure as before. With no room the call still
+/// reaches quic-zig, with no bytes, which is what quic-zig does itself when
+/// its budget is full, so the stream errors stay the same.
 pub fn streamWrite(conn: *quic_zig.Connection, stream_id: u64, data: []const u8) !usize {
     return conn.streamWrite(stream_id, data[0..@min(data.len, ownWriteRoom(conn))]);
 }

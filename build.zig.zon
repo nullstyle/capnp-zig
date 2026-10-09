@@ -17,8 +17,9 @@
         //   0.36.0 quic-zig's idle connection ~22 KB of heap, was ~92 KB; Server ready API
         //   0.37.0 ACK frames carry 255 ranges; the ACK Frequency extension
         //   0.37.1 every probe timeout carries previously sent stream data
-        //   0.37.2 a connection at rest frees its ended streams; a server comes
-        //          to rest (both found by capnp-zig on v0.37.1)
+        //   0.37.2 a connection at rest frees its ended streams (found by
+        //          capnp-zig on v0.37.1); a server comes to rest (found by
+        //          quic-zig's test for that fix)
         //
         // v0.32.0 (commit ffdb251): no wire change, no embedder API change,
         // the same option map and modules. The receive window an endpoint
