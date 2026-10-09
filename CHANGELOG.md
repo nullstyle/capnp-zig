@@ -46,7 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs before the reap, and the server's steps wait while the connection
   drains). On v0.24.0 the four client tests run into the watchdog, and the
   two server tests fail on the close-callback timing and on steps that wait
-  no time.
+  no time. Two more pin down the seat: an `EmbeddedSession` whose client
+  vanishes with the same reply queued, in baseline and native mode, closes
+  while its connection drains, before the host's reap; they pass on v0.24.0
+  too.
 
 ### Documentation
 
