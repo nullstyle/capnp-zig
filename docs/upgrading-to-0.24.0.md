@@ -99,7 +99,11 @@ capnp-zig v0.23.0 and v0.22.0.
    because the frame never leaves its outbound queue. This is not new
    (v0.23.0 stalls the same way). Use baseline mode for such frames, or
    raise the receiver's `transport_params.initial_max_stream_data_uni`
-   above the largest frame.
+   above the largest frame. The same hang hits any client whose connection
+   closes while frames are still queued, for example a back-pressured
+   client whose server dies without a close. Fixed after v0.24.0 (see
+   CHANGELOG.md): such a client ends at its idle timeout. The stall itself
+   is not fixed.
 
 7. **An `EmbeddedSession` host keeps the same loop.** Feed, then service,
    then tick, as before ("Embedder rules" in docs/quic-transport.md). No
