@@ -49,13 +49,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `src/rpc/transport/quic/options.zig`); the stream windows stay. Nothing
   changes at the defaults (a 16 MiB window, a 32 MiB budget). A smaller
   budget is now also a smaller window: a 4 MiB budget announces 2 MiB, a
-  256 KiB budget 128 KiB. A client needs no clamp: it keeps quic-zig's
-  32 MiB budget, and quic-zig refuses a window above 16 MiB
-  (`error.InvalidValue`). An embedder that builds its own quic-zig config
-  keeps the rule itself (docs/quic-transport.md, "Embedder rules"). Tests:
+  256 KiB budget 128 KiB. Below twice the configured window (32 MiB with
+  the default window) that has two more consequences:
+  - Native mode's largest data-stream frame follows the smaller window
+    (about the smaller of the uni stream window and the connection window,
+    plus the sender's 1 MiB send buffer). With the default stream windows a
+    server budget below 2 MiB now lowers the largest frame the server
+    receives to about 1 MiB plus half of the budget, below the 2 MiB of the
+    defaults; a larger frame stalls with no error, as one over 2 MiB already
+    did. Measured with a 1.5 MiB budget: 1.17 MiB arrives, 1.875 MiB does
+    not (docs/quic-transport.md, "Current Limits").
+  - The announced window is part of quic-zig's 0-RTT context. Moving such a
+    server from v0.24.0 (which announced the configured window at any
+    budget), or changing its budget across a restart, refuses 0-RTT on the
+    tickets issued before the change, for one ticket lifetime. The sessions
+    still resume, and a staged frame goes at 1-RTT. A budget of 32 MiB or
+    more keeps the default window and 0-RTT.
+
+  A client needs no clamp: it keeps quic-zig's 32 MiB budget, and quic-zig
+  refuses a window above 16 MiB (`error.InvalidValue`). An embedder that
+  builds its own quic-zig config keeps the rule itself
+  (docs/quic-transport.md, "Embedder rules"). Tests:
   the clamp in the config, and a 4 KiB reply through a 256 KiB server
-  budget with the default window, baseline and native; on v0.38.0 without
-  the clamp, no reply arrives.
+  budget with the default window, baseline and native (on v0.38.0 without
+  the clamp, no reply arrives); the budget and window of the quic-zig
+  connection `Connection.initClient` creates (a client budget of 16 MiB
+  fails it); and a crash-restart with a 24 MiB budget refuses 0-RTT (without
+  the clamp it is accepted), one with 64 MiB keeps it.
 
 ### Documentation
 

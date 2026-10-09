@@ -559,6 +559,11 @@ pub const ServerOptions = struct {
     /// peer's share out of the writes, the connection window, so the server
     /// announces at most half of the budget as its connection window
     /// (`transport_params.initial_max_data`; `transportParamsWithinBudget`).
+    /// Below twice the configured window (32 MiB with the default 16 MiB
+    /// window) the budget therefore sets the announced window, which is part
+    /// of the 0-RTT context (changing the budget across a restart refuses
+    /// 0-RTT on older tickets) and bounds native mode's largest data-stream
+    /// frame (docs/quic-transport.md, "Current Limits").
     max_connection_memory: u64 = default_quic_max_connection_memory,
     /// Listener-wide and per-source bandwidth ceilings. quic-zig's `.default`
     /// for these three is "off" — the right ceiling is deployment-specific —

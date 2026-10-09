@@ -124,6 +124,16 @@ and capnp-zig calls neither. What an application sees:
   closes with EXCESSIVE_LOAD within 2 ms). It also sends a 4 KiB reply
   through the same budget with the default window (on v0.38.0 without the
   clamp, no reply arrives).
+
+  A server whose budget is below twice its configured window (32 MiB with
+  the default 16 MiB window) announces a smaller window than v0.24.0 did, and
+  that has two more consequences. Native mode's largest data-stream frame
+  follows the smaller window: about 1 MiB plus half of the budget with the
+  default stream windows, below the defaults' 2 MiB once the budget is below
+  2 MiB ("Current Limits"). And the announced window is part of the 0-RTT
+  context, so moving such a server from v0.24.0, or changing its budget
+  across a restart, refuses 0-RTT on the tickets issued before; the sessions
+  still resume ("Session-ticket key").
 - **Connections at rest (v0.36.0, fixed in v0.37.2).** Since v0.36.0 a
   connection with nothing to do answers `tick` from a cached deadline.
   capnp-zig's move to v0.37.1 found one defect there, and quic-zig's test
@@ -1166,12 +1176,22 @@ out of logs. An embedder that feeds its own clock to that server also owns
 the clock rules below.
 
 A restarted server accepts 0-RTT data only when it runs with the same ALPN,
-transport mode and `early_dispatch` as the process that issued the ticket.
-The server binds the mode and `early_dispatch` into quic-zig's
-`early_data_application_context` (quic-zig adds the primary ALPN and the
-replay-relevant transport parameters), and BoringSSL refuses early data
-whose context differs, or whose negotiated ALPN differs; the session still
-resumes.
+transport mode, `early_dispatch` and announced transport parameters as the
+process that issued the ticket. The server binds the mode and
+`early_dispatch` into quic-zig's `early_data_application_context` (quic-zig
+adds the primary ALPN and the replay-relevant transport parameters, the
+connection window `initial_max_data` among them), and BoringSSL refuses
+early data whose context differs, or whose negotiated ALPN differs; the
+session still resumes, and a staged frame goes at 1-RTT. The announced
+connection window depends on `max_connection_memory` too: a server announces
+at most half of its budget ("A write past the memory budget waits" at the
+top of this guide), so below twice the configured window (32 MiB with the
+default 16 MiB window) the budget sets the window. Changing such a budget
+across a restart, or moving such a server from capnp-zig v0.24.0 (which
+announced the configured window at any budget), refuses 0-RTT on the
+tickets issued before the change, for one ticket lifetime. A budget of
+32 MiB or more leaves the default window, and 0-RTT, as they are (transport
+tests "session ticket key: a crash-restart with a budget ...").
 
 **Rotation.** `Server.rotateSessionTicketKey(&new_key)` changes the key with
 no restart and no lost ticket (quic-zig v0.27.0). New tickets are sealed
@@ -1484,20 +1504,28 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   above the largest frame you expect in either direction plus the requests
   in flight.
 - Native mode does not deliver a data-stream frame larger than about the
-  receiver's uni stream window plus the sender's 1 MiB send buffer (about 2 MiB
-  with the default windows): the transfer stalls with no error. At the idle
-  timeout the receiving side ends, but a client that is sending the frame does
-  not: its `Connection.run` keeps running and its close callback never runs,
-  because the frame never leaves its outbound queue (seen with bench-quic on
-  v0.24.0 and v0.23.0). The sender writes a frame's control envelope only after
-  the whole data stream is in quic-zig's send buffer, and the receiver reads a
-  data stream only after its envelope arrives, so neither side moves once the
-  receiver's window and the sender's buffer are full (and the window cannot grow
-  while nothing reads it). Measured on quic-zig v0.37.1 and v0.32.0 alike: 1.9
-  MiB arrives, 2 MiB and 3 MiB do not, while `max_message_bytes` allows 64 MiB.
+  receiver's uni stream window or its connection window, whichever is smaller,
+  plus the sender's 1 MiB send buffer (about 2 MiB with the default windows):
+  the transfer stalls with no error. At the idle timeout the receiving side
+  ends, but a client that is sending the frame does not: its `Connection.run`
+  keeps running and its close callback never runs, because the frame never
+  leaves its outbound queue (seen with bench-quic on v0.24.0 and v0.23.0). The
+  sender writes a frame's control envelope only after the whole data stream is
+  in quic-zig's send buffer, and the receiver reads a data stream only after
+  its envelope arrives, so neither side moves once the receiver's window and
+  the sender's buffer are full (and the window cannot grow while nothing reads
+  it). Measured on quic-zig v0.37.1 and v0.32.0 alike: 1.9 MiB arrives, 2 MiB
+  and 3 MiB do not, while `max_message_bytes` allows 64 MiB.
+  A server announces at most half of its `max_connection_memory` as its
+  connection window, so with the default stream windows a server budget below
+  2 MiB lowers the largest frame it receives to about 1 MiB plus half of the
+  budget (capnp-zig v0.24.0 announced the configured window at any budget).
+  Measured on quic-zig v0.38.0 with a 1.5 MiB server budget: 1.17 MiB arrives,
+  1.875 MiB does not, as with a 32 MiB budget and a 768 KiB connection window.
   Until it is fixed, use baseline mode for frames that large, or raise the
   receiver's `transport_params.initial_max_stream_data_uni` above the largest
-  frame (6 MiB arrived with 8 MiB).
+  frame (6 MiB arrived with 8 MiB) and keep its connection window above it
+  too (on a server, at most half of `max_connection_memory`).
 - The transport's loops sweep every session per pass rather than use
   quic-zig's ready API. The tick of an idle connection answers from its
   cached deadline, but a server with thousands of idle sessions still visits

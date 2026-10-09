@@ -3544,6 +3544,9 @@ const TicketServer = struct {
     new_token_clock: ?*const fn () u64 = null,
     new_token_max_clock_skew_us: u64 = 0,
     early_dispatch: quic.early_dispatch.Mode = .restore_only,
+    /// `ServerOptions.max_connection_memory`, through the preset; null keeps
+    /// the preset's (32 MiB).
+    max_connection_memory: ?u64 = null,
 
     fn options(self: TicketServer, listen_addr: std.Io.net.IpAddress) quic.ServerOptions {
         var out = quic.withProductionServerHardening(.{
@@ -3562,6 +3565,7 @@ const TicketServer = struct {
             .session_ticket_key = self.key,
             .previous_session_ticket_key = self.previous_key,
             .previous_session_ticket_key_until_us = self.previous_key_until_us,
+            .max_connection_memory = self.max_connection_memory orelse quic.default_quic_max_connection_memory,
         });
         // Only the dispatch half of `.restore_only` varies: 0-RTT stays on,
         // and only the context bound into the tickets changes.
@@ -3825,6 +3829,33 @@ test "session ticket key: a crash-restart with another early_dispatch refuses 0-
         .before = .{ .key = &ticket_key },
         .after = .{ .key = &ticket_key, .early_dispatch = .hold_until_handshake },
     });
+}
+
+test "session ticket key: a crash-restart with a budget below 32 MiB refuses 0-RTT (the budget sets the announced window)" {
+    // The same key: the session resumes. Below twice the configured window
+    // (32 MiB with the default 16 MiB window), `max_connection_memory` sets
+    // the connection window the server announces, half of the budget
+    // (`transportParamsWithinBudget`), and quic-zig binds the announced
+    // window into the 0-RTT context, so BoringSSL refuses the early data.
+    // 24 MiB announces 12 MiB where the predecessor announced 16 MiB, as a
+    // server moved from capnp-zig v0.24.0 (16 MiB at any budget) does. The
+    // staged frame still arrives, at 1-RTT.
+    try expectTicketRestartRejected(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key, .max_connection_memory = 24 * 1024 * 1024 },
+    });
+}
+
+test "session ticket key: a crash-restart with a budget of 32 MiB or more keeps 0-RTT (the announced window stays)" {
+    // Control for the test above: 64 MiB announces the configured 16 MiB, as
+    // the predecessor's 32 MiB did, so the 0-RTT context is the same.
+    const outcome = try crashRestartResumedDial(.{
+        .before = .{ .key = &ticket_key },
+        .after = .{ .key = &ticket_key, .max_connection_memory = 64 * 1024 * 1024 },
+        .same_client_port = true,
+    });
+    try std.testing.expectEqual(quic.EarlyDataStatus.accepted, outcome.status);
+    try std.testing.expect(outcome.restored_before_handshake);
 }
 
 test "session ticket key: a new new_token_key after a crash-restart costs a Retry, not the early restore" {
