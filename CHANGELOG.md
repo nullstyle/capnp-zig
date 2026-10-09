@@ -19,16 +19,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leave. A client whose connection closed with frames queued stayed in
   `Connection.run`, stepping with no wait (a non-empty queue counted as
   immediate work); its close callback never ran, and a `Peer` on it never
-  settled its pending questions. Two ways in: the native large-frame stall
-  (a frame over about 2 MiB with the default windows: the receiver ended at
-  the idle timeout and the sending client did not; seen with bench-quic on
-  v0.24.0 and v0.23.0), and any back-pressured client, baseline or native,
-  whose server died without a CONNECTION_CLOSE while frames were queued.
-  The condition dates from the first QUIC transport (v0.2.0). A closed QUIC
-  connection now ends the transport at once: `run` closes the engines,
-  records the close cause (`DisconnectCause.idle_timeout` in both cases
-  above) and runs the close callback, where a `Peer` settles every pending
-  question as disconnected. The owned `Server` had the same condition: a
+  settled its pending questions. Three ways in, baseline or native alike.
+  The likely most common: the server closes the connection (it shuts down,
+  or a server `Peer` aborts it) while the client still has frames queued.
+  The client drains on that CONNECTION_CLOSE and never ended, not even at
+  its idle timeout, because nothing reaps a client's connection. Then the
+  native large-frame stall (a frame over about 2 MiB with the default
+  windows: the receiver ended at the idle timeout and the sending client
+  did not; seen with bench-quic on v0.24.0 and v0.23.0). And a
+  back-pressured client whose server died without a CONNECTION_CLOSE while
+  frames were queued. The condition dates from the first QUIC transport
+  (v0.2.0). A closed QUIC connection now ends the transport at once: `run`
+  closes the engines, records the close cause
+  (`DisconnectCause.peer_close` at once after the server's close,
+  `DisconnectCause.idle_timeout` in the other two cases) and runs the close
+  callback, where a `Peer` settles every pending question as
+  disconnected. The owned `Server` had the same condition: a
   session with frames queued got its close callback only at quic-zig's reap
   at the end of the draining period. It now closes the session in the step
   that sees its connection closed. Neither loop counts a closed
@@ -46,10 +52,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs before the reap, and the server's steps wait while the connection
   drains). On v0.24.0 the four client tests run into the watchdog, and the
   two server tests fail on the close-callback timing and on steps that wait
-  no time. Two more pin down the seat: an `EmbeddedSession` whose client
-  vanishes with the same reply queued, in baseline and native mode, closes
-  while its connection drains, before the host's reap; they pass on v0.24.0
-  too.
+  no time. Two more cover the server's close: a back-pressured client in
+  baseline and native mode whose server closes while 1.5 MiB is still
+  queued ends at once with `.peer_close` (a 30 s idle timeout, so no timer
+  can end it, and a 3 s bound). On v0.24.0 both fail at the bound, and
+  with a 500 ms idle timeout they still had not ended after 5 s. Two more
+  pin down the seat: an `EmbeddedSession` whose client vanishes with the
+  same reply queued, in baseline and native mode, closes while its
+  connection drains, before the host's reap; they pass on v0.24.0 too.
 
 ### Documentation
 

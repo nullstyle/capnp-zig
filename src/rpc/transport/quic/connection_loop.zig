@@ -192,11 +192,12 @@ fn isTransportClosed(driver: endpoint_mod.EndpointDriver) bool {
 ///
 /// Through v0.24.0 a connection that had completed its handshake ended only
 /// once that queue was empty. A client whose connection closed with frames
-/// queued (the native large-frame stall at the idle timeout, a
-/// back-pressured client whose server died) never left `run`: its close
-/// callback never ran and its questions waited forever. v0.24.0 already
-/// ended a connection that closed during the handshake (the peer's refusal,
-/// which quic-zig delivers since v0.26.0) at once.
+/// queued (the server's close while the client was sending, the native
+/// large-frame stall at the idle timeout, a back-pressured client whose
+/// server died) never left `run`: nothing reaps a client's connection, so
+/// its close callback never ran and its questions waited forever. v0.24.0
+/// already ended a connection that closed during the handshake (the peer's
+/// refusal, which quic-zig delivers since v0.26.0) at once.
 fn closedForGood(conn: anytype) bool {
     return conn.isClosed();
 }
