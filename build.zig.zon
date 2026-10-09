@@ -9,13 +9,18 @@
         // v0.38.0 (commit 77be067). capnp-zig v0.24.0 pinned v0.37.2 (commit
         // 51a34c0), one step from v0.32.0 over six tags. Through v0.38.0: the
         // same option map, modules and boringssl-zig, and no signature change
-        // in any quic call capnp-zig makes. One behavior changed twice: a
-        // stream write at the memory budget returns short (0.33.0), and it
-        // leaves the receive side its share of the budget, the connection
-        // window (0.38.0). So the v0.24.0 half-budget write cap is gone, and
-        // a server announces at most half of its budget as its connection
-        // window (options.zig `transportParamsWithinBudget`).
-        // docs/quic-transport.md has the detail.
+        // in any quic call capnp-zig makes except one wider error set:
+        // quic-zig's connection error set gained `AckFrequencyNotNegotiated`
+        // (0.37.0), and so did the Experimental QUIC error sets that carry it
+        // (the 0.24.0 Breaking entry). Only `requestAckFrequency` and
+        // `requestImmediateAck` return it, and capnp-zig calls neither. One
+        // behavior that capnp-zig adapts to changed twice: a stream write at
+        // the memory budget returns short (0.33.0), and it leaves the receive
+        // side its share of the budget, the connection window (0.38.0). So
+        // the v0.24.0 half-budget write cap is gone, and a server announces
+        // at most half of its budget as its connection window (options.zig
+        // `transportParamsWithinBudget`). docs/quic-transport.md has the
+        // detail.
         //   0.33.0 windows auto-tune to 8/16 MiB; a write past the budget returns short
         //   0.34.0 about half the CPU per packet; raw-Connection breaks capnp-zig avoids
         //   0.35.0 an ACK per second packet of a burst; reordering cuts the window less

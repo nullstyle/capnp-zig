@@ -109,11 +109,15 @@ and capnp-zig calls neither. What an application sees:
   head of the queue and goes out as ACKs free memory.
 
   The rule is simple: the connection window must be at most half of the
-  budget, and then an honest peer never meets EXCESSIVE_LOAD. A larger
-  window takes from the writes, and a window as large as the budget leaves
-  none: every write returns zero, and the connection stalls with no error.
-  So a server announces at most half of `max_connection_memory` as its
-  connection window (`transport_params.initial_max_data`, clamped by
+  budget, so that at least half of the budget is left for writes. quic-zig
+  keeps the window's share free for the peer's stream data, so a larger
+  window takes from the writes, not from the peer. A window as large as the
+  budget leaves no room to write: every write returns zero, and the
+  connection stalls with no error. A window larger than the budget can also
+  let an honest peer's stream data overrun the budget, and quic-zig closes
+  the connection with EXCESSIVE_LOAD. So a server announces at most half of
+  `max_connection_memory` as its connection window
+  (`transport_params.initial_max_data`, clamped by
   `serverConfigFromOptions`; `transportParamsWithinBudget` in
   `src/rpc/transport/quic/options.zig`). The stream windows stay. A client
   cannot announce more than 16 MiB (quic-zig refuses a larger window), half
@@ -121,19 +125,20 @@ and capnp-zig calls neither. What an application sees:
   256 KiB server budget in baseline and native mode: alone (fails on
   v0.32.0), and with a small client frame every millisecond, from the owned
   loop and from an embedded seat (on v0.37.2 without the write cap each
-  closes with EXCESSIVE_LOAD within 2 ms). It also sends a 4 KiB reply
-  through the same budget with the default window (on v0.38.0 without the
-  clamp, no reply arrives).
+  closes with EXCESSIVE_LOAD within 2 ms in ReleaseSafe). It also sends a
+  4 KiB reply through the same budget with the default window (on v0.38.0
+  without the clamp, no reply arrives).
 
   A server whose budget is below twice its configured window (32 MiB with
   the default 16 MiB window) announces a smaller window than v0.24.0 did, and
   that has two more consequences. Native mode's largest data-stream frame
-  follows the smaller window: about 1 MiB plus half of the budget with the
-  default stream windows, below the defaults' 2 MiB once the budget is below
-  2 MiB ("Current Limits"). And the announced window is part of the 0-RTT
-  context, so moving such a server from v0.24.0, or changing its budget
-  across a restart, refuses 0-RTT on the tickets issued before; the sessions
-  still resume ("Session-ticket key").
+  follows the smaller window. With the default stream windows, a budget
+  below 2 MiB lowers it to about 1 MiB plus half of the budget, below the
+  defaults' 2 MiB. From 2 MiB up it stays about 2 MiB ("Current Limits").
+  And the announced window is part of the 0-RTT context, so moving such a
+  server from v0.24.0, or changing its budget across a restart, refuses
+  0-RTT on the tickets issued before; the sessions still resume
+  ("Session-ticket key").
 - **Connections at rest (v0.36.0, fixed in v0.37.2).** Since v0.36.0 a
   connection with nothing to do answers `tick` from a cached deadline.
   capnp-zig's move to v0.37.1 found one defect there, and quic-zig's test
@@ -844,16 +849,20 @@ Recommended hardening posture:
   only with matching application-level size limits. The connection window
   must be at most half of `max_connection_memory`, and the server clamps
   what it announces to that, so a smaller budget is also a smaller window:
-  less that the peer can send ahead of the reader. Then a peer that follows
-  the protocol never meets EXCESSIVE_LOAD ([Current Limits](#current-limits)).
+  less that the peer can send ahead of the reader. The other half is left
+  for writes ([Current Limits](#current-limits)).
 - Register `log_callback` or `qlog_callback` for diagnostics in controlled
   environments, and rate-limit exposed log paths with
   `log_source_rate_limit`.
 - For native mode, keep the default `NativeOptions` first. If large application
   frames are common, prefer raising `max_pending_data_bytes` within your message
-  budget over making every frame inline. A native frame larger than about
-  2 MiB needs a larger `transport_params.initial_max_stream_data_uni` on
-  the receiver ([Current Limits](#current-limits)).
+  budget over making every frame inline. A native frame stalls once it is
+  larger than about 2 MiB with the default windows, or less on a server whose
+  budget is below 2 MiB. For a larger frame, raise the receiver's
+  `transport_params.initial_max_stream_data_uni` above the frame and keep its
+  connection window (`initial_max_data`) above it too. A server announces at
+  most half of `max_connection_memory` as that window, so its budget must be
+  more than twice the frame ([Current Limits](#current-limits)).
 
 ### Stateless-reset key
 
@@ -1388,10 +1397,14 @@ server, so the host's clock needs the same property, or the host sets
 there a persisted `new_token_key` needs `new_token_clock`; capnp-zig does
 not use that loop.)
 
-So a heal after a crash-restart runs its restore early whenever the
-restarted server loads the same ticket key (and the same ALPN, transport
-mode and `early_dispatch`). With both keys persisted and the heal redialing
-from the port that earned its NEW_TOKEN, it also skips the Retry.
+So a heal after a crash-restart runs its restore early when the restarted
+server loads the same ticket key and runs with the same ALPN, transport
+mode, `early_dispatch` and announced transport parameters. Below twice the
+configured window (32 MiB with the default window), `max_connection_memory`
+sets the announced window, so keep the budget the same too. A move from
+capnp-zig v0.24.0 at such a budget refuses 0-RTT on the old tickets
+(above). With both keys persisted and the heal redialing from the port that
+earned its NEW_TOKEN, it also skips the Retry.
 
 The tests pin this. In the transport suite, "a server crash-restarted with
 the same key accepts the resumed dial's 0-RTT" (no Retry), "after a Retry
@@ -1483,17 +1496,20 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   flow-control and memory knobs: a stream's send buffer starts at
   quic-zig's `max_buffered_send` (1 MiB) and follows the peer's credit up
   to 16 MiB, and the receive windows start at the announced ones and grow to
-  8 MiB per stream and 16 MiB per connection for a reader that keeps up.
-  A client's memory budget is quic-zig's default, 32 MiB per connection.
+  8 MiB per stream and 16 MiB per connection for a reader that keeps up,
+  and never past half of `max_connection_memory`. A client's memory budget
+  is quic-zig's default, 32 MiB per connection.
 - `max_connection_memory` holds both what a connection writes and what the peer
   sends ahead of the reader. Since quic-zig v0.38.0 the writes stop short of
   the receive side's share, the connection window (never below 16 MiB or half
   of the budget, whichever is smaller), and under pressure the receive buffers
   give back the bytes the application has read before a peer's frame is
-  refused. So the connection window must be at most half of the budget, and
-  then an honest peer never meets EXCESSIVE_LOAD. A larger window takes from
-  the writes, and a window as large as the budget leaves none: the connection
-  stalls with no error. A server announces at most half of its budget as its
+  refused. So the peer's stream data inside the window has room. The
+  connection window must be at most half of the budget, to leave at least
+  half of it for writes. A larger window takes from the writes, and a window
+  as large as the budget leaves none: the connection stalls with no error. A
+  window larger than the budget can also let an honest peer overrun the
+  budget. A server announces at most half of its budget as its
   connection window (`serverConfigFromOptions` clamps
   `transport_params.initial_max_data`; a 256 KiB budget announces 128 KiB). A
   client cannot announce more than 16 MiB, half of its 32 MiB budget. An
@@ -1504,7 +1520,8 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   in flight.
 - Native mode does not deliver a data-stream frame larger than about the
   receiver's uni stream window or its connection window, whichever is smaller,
-  plus the sender's 1 MiB send buffer (about 2 MiB with the default windows):
+  plus the sender's send buffer (1 MiB with the default windows, so about
+  2 MiB in all; less on a server whose budget is below 2 MiB, see below):
   the transfer stalls with no error. At the idle timeout both sides end with
   `DisconnectCause.idle_timeout`, and a `Peer` on the sending client settles
   the call as disconnected. Through v0.24.0 a client that was sending the
@@ -1523,10 +1540,17 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   budget (capnp-zig v0.24.0 announced the configured window at any budget).
   Measured on quic-zig v0.38.0 with a 1.5 MiB server budget: 1.17 MiB arrives,
   1.875 MiB does not, as with a 32 MiB budget and a 768 KiB connection window.
-  Until the stall is fixed, use baseline mode for frames that large, or raise
-  the receiver's `transport_params.initial_max_stream_data_uni` above the
-  largest frame (6 MiB arrived with 8 MiB) and keep its connection window
-  above it too (on a server, at most half of `max_connection_memory`).
+  Such a server's writes also stop once the connection holds half of its
+  budget. So its send buffer holds less than 1 MiB, and the largest frame it
+  sends is also about 1 MiB plus half of the budget. This follows from
+  quic-zig's write rule (v0.24.0's own write cap gave the same limit); it is
+  not measured. Until the stall is fixed, use baseline mode for frames that
+  large, or raise the receiver's `transport_params.initial_max_stream_data_uni`
+  above the largest frame (6 MiB arrived with 8 MiB) and keep its connection
+  window above it too (on a server, at most half of `max_connection_memory`).
+  quic-zig refuses either window above 16 MiB (`error.InvalidValue`), so a
+  window cannot be raised above a frame of 16 MiB or more: send such frames
+  in baseline mode.
 - The transport's loops sweep every session per pass rather than use
   quic-zig's ready API. The tick of an idle connection answers from its
   cached deadline, but a server with thousands of idle sessions still visits

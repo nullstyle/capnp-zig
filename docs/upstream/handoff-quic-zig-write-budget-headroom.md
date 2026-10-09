@@ -4,17 +4,17 @@
 > by capnp-zig on its move from quic-zig v0.32.0 to v0.37.1. In v0.38.0
 > `streamWrite` stops short of the receive side's share (the connection
 > window, never below the window cap, 16 MiB or half the budget, whichever
-> is smaller), and under pressure the
-> receive buffers give back their consumed prefix before quic-zig refuses a
-> peer's frame, so an honest peer does not meet EXCESSIVE_LOAD. A post-tag
-> audit of capnp-zig v0.24.0 found that fix 1 below alone (a reserve of one
-> window) was not a guarantee, because of the 2x receive charge; v0.38.0
-> handles that with the compaction. capnp-zig v0.24.0 pins v0.37.2 and keeps
-> its half-budget cap (below). capnp-zig main has since moved to v0.38.0 and
-> dropped the cap: the engines and the embedded seat write straight to
-> quic-zig again. One rule stays with the embedder: a connection window
-> larger than half of the budget takes from the writes (a window as large as
-> the budget leaves none), so capnp-zig's servers announce at most half of
+> is smaller), and under pressure the receive buffers give back their
+> consumed prefix before quic-zig refuses a peer's frame, so an honest
+> peer's stream data inside the window has room. A post-tag audit of
+> capnp-zig v0.24.0 found that fix 1 below alone (a reserve of one window)
+> was not a guarantee, because of the 2x receive charge; v0.38.0 handles
+> that with the compaction. capnp-zig v0.24.0 pins v0.37.2 and keeps its
+> half-budget cap (below). capnp-zig v0.25.0 moves to v0.38.0 and drops the
+> cap: the engines and the embedded seat write straight to quic-zig again.
+> One rule stays with the embedder: a connection window larger than half of
+> the budget takes from the writes (a window as large as the budget leaves
+> none), so capnp-zig's servers announce at most half of
 > `max_connection_memory` (`transportParamsWithinBudget` in
 > `src/rpc/transport/quic/options.zig`). The text below is the report as sent.
 

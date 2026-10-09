@@ -10,10 +10,12 @@ release, paired with http3-zig v0.5.7. It bundles these changes:
   and in the native large-frame stall. The bug dates from the first QUIC
   transport.
 - quic-zig moves from v0.37.2 to v0.38.0. Its memory budget keeps a
-  receive reserve, so an honest peer no longer ends a connection with
-  EXCESSIVE_LOAD while the connection window is at most half of the budget.
-- capnp-zig's half-budget write cap (v0.24.0) is gone, and so is v0.24.0's
-  four-times budget rule.
+  receive reserve, so an honest peer's stream data no longer ends a
+  connection with EXCESSIVE_LOAD while the connection window is no larger
+  than the budget. A window above half of the budget leaves the writes
+  less than half.
+- capnp-zig's half-budget write cap (v0.24.0) is gone. So is the
+  four-times budget rule from the corrected 0.24.0 notes.
 - A server now announces at most half of its `max_connection_memory` as
   its connection window.
 
@@ -29,9 +31,11 @@ authoritative list of changes.
   down while the client still had frames queued never ended, not even at
   its idle timeout. Now it ends at once with `DisconnectCause.peer_close`,
   and its pending calls fail as disconnected.
-- **QUIC servers.** A session whose connection closes now gets its close
-  callback in the same step, not at the end of quic-zig's draining period.
-  The server no longer steps without waiting while a session drains.
+- **QUIC servers.** A session whose connection closes with frames still
+  queued now gets its close callback in the step that sees the close.
+  Through v0.24.0 it waited for the end of quic-zig's draining period,
+  unless the server had closed the session itself. The server no longer
+  steps without waiting while a session drains.
 - **Projects that also link http3-zig.** Move to http3-zig v0.5.7 in the
   same change. It pins the same quic-zig, so the program has one quic
   module.
@@ -75,9 +79,10 @@ capnp-zig v0.24.0.
    smaller window.** capnp-zig now announces `initial_max_data`
    of at most half of the budget: a 4 MiB budget announces 2 MiB, a
    256 KiB budget 128 KiB. On quic-zig v0.38.0 a larger window would leave
-   the server nothing to write. Nothing changes at the defaults (32 MiB
-   budget, 16 MiB window). If you lowered the budget, check two more
-   things:
+   the server less than half of the budget to write, and a window as large
+   as the budget would leave it nothing. Nothing changes at the defaults
+   (32 MiB budget, 16 MiB window). If you lowered the budget, check two
+   more things:
    - Native mode: with the default stream windows, a server budget below
      2 MiB lowers the largest data-stream frame the server receives to
      about 1 MiB plus half of the budget. A larger frame stalls.
@@ -88,10 +93,14 @@ capnp-zig v0.24.0.
    To keep a larger window, raise the budget to at least twice the window
    you want.
 
-4. **You can drop the four-times budget rule.** v0.24.0's guide said only
-   a server budget of four times the larger of the window and 16 MiB rules
-   out EXCESSIVE_LOAD. On quic-zig v0.38.0, a budget of twice the window is
-   enough, and the defaults are enough.
+4. **You can drop the four-times budget rule.** The tagged v0.24.0 guide
+   said a budget of at least twice the announced window was enough. Its
+   corrected text (docs/upgrading-to-0.24.0.md, step 4) says only a server
+   budget of four times the larger of the window and 16 MiB (64 MiB with
+   the defaults) rules out EXCESSIVE_LOAD from an honest peer. On quic-zig
+   v0.38.0 a budget as large as the window keeps room for the peer's
+   stream data, and a budget of twice the window also leaves half of it
+   for writes. The defaults are enough.
 
 5. **An embedder that builds its own quic-zig config** keeps the connection
    window at most half of the budget itself ("Embedder rules" in
@@ -102,7 +111,11 @@ capnp-zig v0.24.0.
    timeout, and a `Peer` settles the call as disconnected. Use baseline
    mode for such frames, or raise the receiver's
    `transport_params.initial_max_stream_data_uni` and connection window
-   above the largest frame ("Current Limits" in docs/quic-transport.md).
+   above the largest frame (on a server, keep the budget at least twice
+   the connection window). quic-zig refuses a window above 16 MiB with
+   `error.InvalidValue`, so send a frame of 16 MiB or more in baseline
+   mode, though `max_message_bytes` allows 64 MiB ("Current Limits" in
+   docs/quic-transport.md).
 
 ## What is new
 

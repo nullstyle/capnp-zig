@@ -55,9 +55,10 @@ pub const Owner = struct {
     /// Latch the transport's typed close cause if one has been recorded.
     /// Idempotent and cheap once latched. Called on every step BEFORE the
     /// driver can reap the connection: a server-role compat session whose
-    /// connection is already terminally closed (a stateless reset skips
-    /// draining) is destroyed by that reap in the same step, and its
-    /// certificate would otherwise be gone by the terminal sequence.
+    /// connection is terminally closed is destroyed by that reap, and its
+    /// certificate would otherwise be gone by the terminal sequence. A
+    /// stateless reset does not skip draining: quic-zig v0.38.0 drains for
+    /// 3 PTO, and `Server.reap` takes only a `.closed` slot.
     capture_close_cause: *const fn (ptr: *anyopaque) void,
 };
 
@@ -182,7 +183,7 @@ fn isTransportClosed(driver: endpoint_mod.EndpointDriver) bool {
 /// A closed QUIC connection ends the transport at once. quic-zig latches
 /// `isClosed` when its own CONNECTION_CLOSE goes out (closing), when the
 /// peer's arrives or a timer ends the connection (draining: idle timeout,
-/// handshake timeout), and at a stateless reset (closed). From then on it
+/// handshake timeout), and at a stateless reset (draining). From then on it
 /// sends nothing but that CONNECTION_CLOSE (RFC 9000 section 10.2), so the
 /// frames still in the selected engine's outbound queue can never leave,
 /// before the handshake or after it. `run`'s terminal path then closes the

@@ -263,8 +263,8 @@ pub fn defaultTransportParams() quic_zig.tls.TransportParams {
 /// larger than half of the budget leaves the writer less than half, and a
 /// window as large as the budget leaves it nothing: every write returns zero
 /// and the connection stalls with no error. With at most half announced, the
-/// writer keeps at least half of the budget, and an honest peer never meets
-/// EXCESSIVE_LOAD.
+/// writer keeps at least half of the budget. The peer's stream data inside
+/// the window has room while the window is no larger than the budget.
 ///
 /// The stream windows (`initial_max_stream_data_*`) stay as given: quic-zig's
 /// share counts the connection window only, which bounds what all streams

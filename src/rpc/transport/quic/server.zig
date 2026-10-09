@@ -773,8 +773,9 @@ pub const Server = struct {
         // A closed QUIC connection sends nothing but its CONNECTION_CLOSE, so
         // frames still queued can never leave: close the session at once,
         // as the client loop does (`connection_loop.closedForGood`). Through
-        // v0.24.0 a session with frames queued waited for quic-zig's reap at
-        // the end of the draining period for its close callback.
+        // v0.24.0 a session whose connection closed with frames queued, and
+        // that we had not closed, waited for quic-zig's reap at the end of
+        // the draining period for its close callback.
         if (conn.isClosed()) {
             server_session.closeOnLoop();
         }
@@ -830,7 +831,9 @@ pub const Server = struct {
         // session (`stepSessionAt`), so a session reaches here unflushed only
         // if no step saw it closed. Then this is the only chance to read its
         // certificate — quic-zig destroys the slot right after. (Through
-        // v0.24.0 every session with frames still queued took this path.)
+        // v0.24.0 a session took this path when its connection closed with
+        // frames still queued and nothing on our side had closed it. A
+        // session we closed was flushed by the step, frames queued or not.)
         session.captureCloseCause();
         session.invokeCloseCallbackOnce();
         session.deinit(self.allocator);
