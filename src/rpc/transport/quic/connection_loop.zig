@@ -55,7 +55,8 @@ pub const Owner = struct {
     /// Latch the transport's typed close cause if one has been recorded.
     /// Idempotent and cheap once latched. Called on every step BEFORE the
     /// driver can reap the connection: a server-role compat session whose
-    /// outbound queue never drains is destroyed by that reap, and its
+    /// connection is already terminally closed (a stateless reset skips
+    /// draining) is destroyed by that reap in the same step, and its
     /// certificate would otherwise be gone by the terminal sequence.
     capture_close_cause: *const fn (ptr: *anyopaque) void,
 };
@@ -68,7 +69,7 @@ pub fn run(owner: Owner) void {
             break;
         };
         if (owner.driver(owner.ptr).quicConnection()) |conn| {
-            if (closedForGood(owner, conn)) owner.request_close(owner.ptr);
+            if (closedForGood(conn)) owner.request_close(owner.ptr);
         }
     }
 
@@ -144,7 +145,7 @@ pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
     if (driver.reapClosed()) {
         owner.request_close(owner.ptr);
     }
-    result.closed = isTransportDrainedClosed(owner, driver);
+    result.closed = isTransportClosed(driver);
     if (result.closed) {
         owner.request_close(owner.ptr);
     }
@@ -155,6 +156,11 @@ fn hasImmediateWork(owner: Owner, driver: endpoint_mod.EndpointDriver) bool {
     if (owner.wake.isRequested()) return true;
     if (driver.quicConnection()) |conn| {
         if (conn.canSend()) return true;
+        // A closed connection sends nothing but its CONNECTION_CLOSE, which
+        // `canSend` covers. Its queued frames can never leave, so they are
+        // no work: the step waits for the draining deadline (or the receive
+        // timeout) instead of spinning.
+        if (conn.isClosed()) return false;
         if (!owner.selected_outbound_empty(owner.ptr)) {
             return owner.selected_mode(owner.ptr).hasImmediateWork(owner.role, conn);
         }
@@ -168,21 +174,32 @@ fn nextTimerDeadlineUs(driver: endpoint_mod.EndpointDriver, now_us: u64) ?u64 {
     return deadline.at_us;
 }
 
-fn isTransportDrainedClosed(owner: Owner, driver: endpoint_mod.EndpointDriver) bool {
+fn isTransportClosed(driver: endpoint_mod.EndpointDriver) bool {
     const conn = driver.quicConnection() orelse return false;
-    return closedForGood(owner, conn);
+    return closedForGood(conn);
 }
 
-/// A closed QUIC connection ends the transport once the selected engine's
-/// queued frames are out. When the handshake never completed, it ends it at
-/// once: those frames wait for 1-RTT keys that a closed connection never
-/// gets. That case is the peer's close during the handshake (a server whose
-/// accept hook refuses the session), which quic-zig delivers since v0.26.0.
-/// A client that queued its Bootstrap before `run` would otherwise wait for
-/// its own handshake timeout after the refusal had arrived.
-fn closedForGood(owner: Owner, conn: anytype) bool {
-    if (!conn.isClosed()) return false;
-    return owner.selected_outbound_empty(owner.ptr) or !conn.handshakeDone();
+/// A closed QUIC connection ends the transport at once. quic-zig latches
+/// `isClosed` when its own CONNECTION_CLOSE goes out (closing), when the
+/// peer's arrives or a timer ends the connection (draining: idle timeout,
+/// handshake timeout), and at a stateless reset (closed). From then on it
+/// sends nothing but that CONNECTION_CLOSE (RFC 9000 section 10.2), so the
+/// frames still in the selected engine's outbound queue can never leave,
+/// before the handshake or after it. `run`'s terminal path then closes the
+/// engines and runs the close callback, where a `Peer` settles every
+/// pending question. Inbound frames that arrived with the close are already
+/// dispatched: this check runs after the step's service passes.
+///
+/// Through v0.24.0 a connection that had completed its handshake ended only
+/// once that queue was empty. A client whose connection closed with frames
+/// queued (the server's close while the client was sending, the native
+/// large-frame stall at the idle timeout, a back-pressured client whose
+/// server died) never left `run`: nothing reaps a client's connection, so
+/// its close callback never ran and its questions waited forever. v0.24.0
+/// already ended a connection that closed during the handshake (the peer's
+/// refusal, which quic-zig delivers since v0.26.0) at once.
+fn closedForGood(conn: anytype) bool {
+    return conn.isClosed();
 }
 
 fn advanceActive(driver: endpoint_mod.EndpointDriver) !void {

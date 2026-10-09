@@ -1464,18 +1464,21 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
 - Native mode does not deliver a data-stream frame larger than about the
   receiver's uni stream window plus the sender's 1 MiB send buffer (about 2 MiB
   with the default windows): the transfer stalls with no error. At the idle
-  timeout the receiving side ends, but a client that is sending the frame does
-  not: its `Connection.run` keeps running and its close callback never runs,
-  because the frame never leaves its outbound queue (seen with bench-quic on
-  v0.24.0 and v0.23.0). The sender writes a frame's control envelope only after
-  the whole data stream is in quic-zig's send buffer, and the receiver reads a
-  data stream only after its envelope arrives, so neither side moves once the
-  receiver's window and the sender's buffer are full (and the window cannot grow
-  while nothing reads it). Measured on quic-zig v0.37.1 and v0.32.0 alike: 1.9
-  MiB arrives, 2 MiB and 3 MiB do not, while `max_message_bytes` allows 64 MiB.
-  Until it is fixed, use baseline mode for frames that large, or raise the
-  receiver's `transport_params.initial_max_stream_data_uni` above the largest
-  frame (6 MiB arrived with 8 MiB).
+  timeout both sides end with `DisconnectCause.idle_timeout`, and a `Peer` on
+  the sending client settles the call as disconnected. Through v0.24.0 a
+  client that was sending the frame did not end: its `Connection.run` kept
+  running and its close callback never ran, because the frame never left its
+  outbound queue (seen with bench-quic on v0.24.0 and v0.23.0; fixed after
+  v0.24.0, see CHANGELOG.md). The sender writes a frame's control envelope
+  only after the whole data stream is in quic-zig's send buffer, and the
+  receiver reads a data stream only after its envelope arrives, so neither
+  side moves once the receiver's window and the sender's buffer are full (and
+  the window cannot grow while nothing reads it). Measured on quic-zig v0.37.1
+  and v0.32.0 alike: 1.9 MiB arrives, 2 MiB and 3 MiB do not, while
+  `max_message_bytes` allows 64 MiB. Until the stall is fixed, use baseline
+  mode for frames that large, or raise the receiver's
+  `transport_params.initial_max_stream_data_uni` above the largest frame
+  (6 MiB arrived with 8 MiB).
 - The transport's loops sweep every session per pass rather than use
   quic-zig's ready API. The tick of an idle connection answers from its
   cached deadline, but a server with thousands of idle sessions still visits

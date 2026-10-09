@@ -4726,6 +4726,560 @@ test "a dead peer is detected about one idle timeout after the unanswered send, 
 }
 
 // ---------------------------------------------------------------------------
+// A closed connection with frames still queued. Once quic-zig latches a
+// connection closed (the closing state after its CONNECTION_CLOSE, the
+// draining state after the peer's close or an idle timeout, then closed), it
+// sends nothing but its CONNECTION_CLOSE (RFC 9000 section 10.2), so frames
+// still in the engine's outbound queue can never leave. Through capnp-zig
+// v0.24.0 the connection loop ended a closed connection only once that queue
+// was empty (or when the handshake had not completed): a client whose
+// connection closed with frames queued never left `run`, its close callback
+// never ran, and its questions waited forever. A server session with frames
+// queued waited for quic-zig's reap at the end of the draining period
+// instead. Both loops took a non-empty queue for immediate work, so they
+// also stepped with no wait while the closed connection drained.
+//
+// Every test here has a watchdog: a connection that has not ended within
+// `queued_close_watchdog_ms` (`peer_close_bound_ms` after the server's
+// close) is closed by force (a requested close ends `run`), and the test
+// fails instead of hanging the suite.
+// ---------------------------------------------------------------------------
+
+/// Idle timeout both endpoints announce in these tests: short, so the tests
+/// are fast, and far above quic-zig's floor of three probe timeouts on a
+/// loopback path with RTT samples.
+const queued_close_idle_timeout_ms: u64 = 500;
+
+/// How long a test waits for the end before it forces the close and fails:
+/// twenty idle timeouts, room for a slow runner and far short of a hang.
+const queued_close_watchdog_ms: u64 = 10_000;
+
+/// More than a stream's send buffer holds before the peer acknowledges or
+/// grants credit (quic-zig's `max_buffered_send`, 1 MiB): with nothing
+/// acknowledged, the rest of the frame stays in the engine's outbound queue.
+const queued_close_payload_bytes: usize = 1536 * 1024;
+
+/// Endpoint state of the queued-close tests: counts, and the awake-clock
+/// time of the close callback. `closed_at_ms` is a plain field (32-bit
+/// targets have no 64-bit atomics): read it only after the loop thread that
+/// ran the close callback has been joined.
+const QueuedCloseState = struct {
+    messages: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    errors: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    closes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    closed_at_ms: u64 = 0,
+    last_error: ?anyerror = null,
+};
+
+fn countQueuedCloseMessage(conn: *quic.Connection, _: []const u8) !void {
+    const state: *QueuedCloseState = @ptrCast(@alignCast(conn.context().?));
+    _ = state.messages.fetchAdd(1, .acq_rel);
+}
+
+fn recordQueuedCloseError(conn: *quic.Connection, err: anyerror) void {
+    const state: *QueuedCloseState = @ptrCast(@alignCast(conn.context().?));
+    state.last_error = err;
+    _ = state.errors.fetchAdd(1, .acq_rel);
+    conn.requestClose();
+}
+
+fn recordQueuedCloseClose(conn: *quic.Connection) void {
+    const state: *QueuedCloseState = @ptrCast(@alignCast(conn.context().?));
+    state.closed_at_ms = awakeMs();
+    _ = state.closes.fetchAdd(1, .acq_rel);
+}
+
+/// Wait until `closes` counts a close, or until `limit_ms` have passed.
+/// Returns whether the close came.
+fn waitForQueuedClose(closes: *const std.atomic.Value(usize), limit_ms: u64) bool {
+    const started_ms = awakeMs();
+    while (closes.load(.acquire) == 0) {
+        if (awakeMs() - started_ms >= limit_ms) return false;
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+    return true;
+}
+
+/// Whether the selected engine's outbound queue is empty. Its frames stay
+/// in it after the close (the engine frees them at deinit), so this also
+/// tells after the end whether a frame never left.
+fn outboundQueueEmpty(conn: *quic.Connection) bool {
+    return switch (conn.mode) {
+        .baseline => conn.baseline.outboundEmpty(),
+        .native => conn.native.outboundEmpty(),
+    };
+}
+
+fn queuedCloseServerOptions(mode: quic.TransportMode, params: anytype) quic.ServerOptions {
+    return .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .transport_params = params,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = mode,
+    };
+}
+
+fn queuedCloseClientOptions(server_addr: std.Io.net.IpAddress, mode: quic.TransportMode, params: anytype) quic.ClientOptions {
+    return .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .transport_params = params,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = mode,
+    };
+}
+
+test "quic native: a client whose data-stream frame cannot leave ends at the idle timeout, with its receiver" {
+    const allocator = std.testing.allocator;
+    // The receiver announces a 64 KiB uni stream window, so the frame is
+    // larger than that window plus the sender's 1 MiB send buffer: the
+    // native large-frame stall of "Current Limits" in docs/quic-transport.md
+    // (about 2 MiB with the default windows), at a size a test can afford.
+    // The receiver reads a data stream only after its envelope, and the
+    // sender writes the envelope only after the whole data stream, so
+    // neither side moves until the idle timeout. On v0.24.0 the receiver
+    // ended there and the client's `run` kept going.
+    const frame = try buildCallFrameWithData(allocator, 0x57A11, queued_close_payload_bytes);
+    defer allocator.free(frame);
+
+    var server_params = quic.defaultTransportParams();
+    server_params.max_idle_timeout_ms = queued_close_idle_timeout_ms;
+    server_params.initial_max_stream_data_uni = 64 * 1024;
+    var client_params = quic.defaultTransportParams();
+    client_params.max_idle_timeout_ms = queued_close_idle_timeout_ms;
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, queuedCloseServerOptions(.native, server_params));
+    defer server.deinit();
+    var client = try quic.Connection.initClient(allocator, std.testing.io, queuedCloseClientOptions(server.getAddress(), .native, client_params));
+    defer client.deinit();
+
+    var server_state = QueuedCloseState{};
+    var client_state = QueuedCloseState{};
+    server.start(&server_state, countQueuedCloseMessage, recordQueuedCloseError, recordQueuedCloseClose);
+    client.start(&client_state, countQueuedCloseMessage, recordQueuedCloseError, recordQueuedCloseClose);
+    try client.sendFrame(frame);
+
+    var server_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&server});
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        server.requestClose();
+        client_thread.join();
+        server_thread.join();
+    };
+
+    const watch_started_ms = awakeMs();
+    const client_ended = waitForQueuedClose(&client_state.closes, queued_close_watchdog_ms);
+    // The receiver reaches its own idle timeout within a few ms of the
+    // client, before or after it. Wait for it as well, inside the same
+    // watchdog: a forced close that lands before the receiver's own timer
+    // fires would end it with `.local_close`.
+    const receiver_ended = client_ended and
+        waitForQueuedClose(&server_state.closes, queued_close_watchdog_ms -| (awakeMs() - watch_started_ms));
+    // The watchdog, and the end of a passing run alike: a requested close
+    // is the only way out of a `run` that does not end by itself.
+    client.requestClose();
+    server.requestClose();
+    client_thread.join();
+    server_thread.join();
+    joined = true;
+
+    if (!client_ended) {
+        const quic_closed = if (client.activeQuicConnection()) |conn| conn.isClosed() else false;
+        std.debug.print(
+            "the sending client did not end within {d} ms (idle timeout {d} ms); its QUIC connection closed: {}; receiver close callbacks: {d}\n",
+            .{ queued_close_watchdog_ms, queued_close_idle_timeout_ms, quic_closed, server_state.closes.load(.acquire) },
+        );
+        return error.QueuedClientNeverEnded;
+    }
+    if (!receiver_ended) {
+        std.debug.print(
+            "the client ended but the receiver did not end within {d} ms (idle timeout {d} ms)\n",
+            .{ queued_close_watchdog_ms, queued_close_idle_timeout_ms },
+        );
+        return error.QueuedReceiverNeverEnded;
+    }
+    // The stall happened: the frame never reached the receiver, and it was
+    // still queued on the client when the client ended.
+    try std.testing.expectEqual(@as(usize, 0), server_state.messages.load(.acquire));
+    try std.testing.expect(!outboundQueueEmpty(&client));
+    try std.testing.expectEqual(@as(usize, 1), client_state.closes.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    try std.testing.expectEqual(events.DisconnectCause.idle_timeout, client.closeCause());
+    // The receiver ended at its idle timeout, and the client with it, not
+    // on some later timer.
+    try std.testing.expectEqual(@as(usize, 1), server_state.closes.load(.acquire));
+    try std.testing.expectEqual(events.DisconnectCause.idle_timeout, server.closeCause());
+    // Both loop threads are joined: their close times are safe to read.
+    const client_closed_ms = client_state.closed_at_ms;
+    const server_closed_ms = server_state.closed_at_ms;
+    const apart_ms = if (client_closed_ms > server_closed_ms) client_closed_ms - server_closed_ms else server_closed_ms - client_closed_ms;
+    if (apart_ms > queued_close_idle_timeout_ms) {
+        std.debug.print("client and receiver ended {d} ms apart (idle timeout {d} ms)\n", .{ apart_ms, queued_close_idle_timeout_ms });
+        return error.QueuedClientEndedLate;
+    }
+}
+
+/// A back-pressured client whose server vanishes: one echo round trip, then
+/// the server is never stepped again (it sends no CONNECTION_CLOSE and no
+/// stateless reset, and its socket stays bound, so no ICMP error arrives
+/// either), and the client sends a frame larger than its stream send buffer.
+/// Nothing acknowledges it, so the rest of the frame is still queued when
+/// the idle timeout closes the connection. The client must end there, and
+/// must not step with no wait once its connection is closed.
+fn expectBackPressuredClientEndsWhenServerVanishes(mode: quic.TransportMode) !void {
+    const allocator = std.testing.allocator;
+    const ping = try buildBootstrapFrame(allocator, 0xDEAF);
+    defer allocator.free(ping);
+    const frame = try buildCallFrameWithData(allocator, 0xDEAF1, queued_close_payload_bytes);
+    defer allocator.free(frame);
+
+    var params = quic.defaultTransportParams();
+    params.max_idle_timeout_ms = queued_close_idle_timeout_ms;
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, queuedCloseServerOptions(mode, params));
+    defer server.deinit();
+    var client = try quic.Connection.initClient(allocator, std.testing.io, queuedCloseClientOptions(server.getAddress(), mode, params));
+    defer client.deinit();
+
+    var server_state = QuicEndpointState{};
+    var client_state = QueuedCloseState{};
+    server.start(&server_state, echoQuicMessage, recordQuicError, recordQuicClose);
+    client.start(&client_state, countQueuedCloseMessage, recordQueuedCloseError, recordQueuedCloseClose);
+
+    // One echo round trip with both endpoints stepped on this thread, then a
+    // short settle so every packet in flight is acknowledged.
+    try client.sendFrame(ping);
+    const exchange_started_ms = awakeMs();
+    while (client_state.messages.load(.acquire) == 0) {
+        if (awakeMs() - exchange_started_ms >= loopback.loopback_timeout_ms) return error.QuicLoopbackTimedOut;
+        _ = try server.stepOnce(.poll);
+        _ = try client.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    const settle_started_ms = awakeMs();
+    while (awakeMs() - settle_started_ms < 50) {
+        _ = try server.stepOnce(.poll);
+        _ = try client.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    try std.testing.expect(!client.isClosing());
+
+    // The server vanishes, and the client sends the large frame.
+    try client.sendFrame(frame);
+    const vanished_at_ms = awakeMs();
+    var queued_when_closed: ?bool = null;
+    while (!client.isClosing() and awakeMs() - vanished_at_ms < queued_close_watchdog_ms) {
+        _ = try client.stepOnce(.poll);
+        if (queued_when_closed == null) {
+            if (client.activeQuicConnection()) |conn| {
+                if (conn.isClosed()) queued_when_closed = !outboundQueueEmpty(&client);
+            }
+        }
+        loopback.sleepMs(1);
+    }
+    const lag_ms = awakeMs() - vanished_at_ms;
+    if (!client.isClosing()) {
+        // The watchdog: end the connection by force, then fail.
+        client.requestClose();
+        client.run();
+        std.debug.print(
+            "the {s} client did not end within {d} ms (idle timeout {d} ms); frame still queued when its QUIC connection closed: {?}\n",
+            .{ @tagName(mode), queued_close_watchdog_ms, queued_close_idle_timeout_ms, queued_when_closed },
+        );
+        return error.QueuedClientNeverEnded;
+    }
+    // The case under test: the frame was still queued when the connection
+    // closed.
+    try std.testing.expect(queued_when_closed orelse false);
+    // A closed connection's queued frames cannot leave, so they are not
+    // immediate work: a step waits (for its receive timeout, or the
+    // draining deadline) instead of spinning.
+    var waited = false;
+    var steps: usize = 0;
+    while (steps < 3) : (steps += 1) {
+        const result = try client.stepOnce(.wait);
+        if (result.waited_for.toMicroseconds() > 0) waited = true;
+    }
+    try std.testing.expect(waited);
+    // `run` on a closing connection fires the terminal close callback.
+    client.run();
+    try std.testing.expectEqual(@as(usize, 1), client_state.closes.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    try std.testing.expectEqual(events.DisconnectCause.idle_timeout, client.closeCause());
+    // About one idle timeout after the first unanswered send.
+    const bound_ms = 4 * queued_close_idle_timeout_ms;
+    if (lag_ms > bound_ms) {
+        std.debug.print("the {s} client ended {d} ms after the server vanished; bound {d} ms\n", .{ @tagName(mode), lag_ms, bound_ms });
+        return error.QueuedClientEndedLate;
+    }
+}
+
+test "quic baseline: a back-pressured client whose server vanishes ends at the idle timeout" {
+    try expectBackPressuredClientEndsWhenServerVanishes(.baseline);
+}
+
+test "quic native: a back-pressured client whose server vanishes ends at the idle timeout" {
+    try expectBackPressuredClientEndsWhenServerVanishes(.native);
+}
+
+/// Idle timeout of the peer-close tests: far above their bound, so no timer
+/// can end the client in time, only the server's CONNECTION_CLOSE.
+const peer_close_idle_timeout_ms: u64 = 30_000;
+
+/// How long a peer-close test steps the client after the server's close
+/// before it fails. The close crosses loopback in about a millisecond.
+const peer_close_bound_ms: u64 = 3_000;
+
+/// A back-pressured client whose server closes the connection: one echo
+/// round trip, then the client sends a frame larger than its stream send
+/// buffer and steps once, and the server closes (`requestClose`, then `run`,
+/// which sends its CONNECTION_CLOSE) while the rest of the frame is still
+/// queued on the client. The client drains on the peer's close and must end
+/// at once, with `.peer_close` and the frame still queued. This is a server
+/// that shuts down, or a server `Peer` that aborts, while a client is
+/// sending. Through v0.24.0 such a client never ended, not even at its idle
+/// timeout: the loop waited for the queue to empty, and nothing reaps a
+/// client's connection.
+fn expectBackPressuredClientEndsAtPeerClose(mode: quic.TransportMode) !void {
+    const allocator = std.testing.allocator;
+    const ping = try buildBootstrapFrame(allocator, 0xC105E);
+    defer allocator.free(ping);
+    const frame = try buildCallFrameWithData(allocator, 0xC105E1, queued_close_payload_bytes);
+    defer allocator.free(frame);
+
+    var params = quic.defaultTransportParams();
+    params.max_idle_timeout_ms = peer_close_idle_timeout_ms;
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, queuedCloseServerOptions(mode, params));
+    defer server.deinit();
+    var client = try quic.Connection.initClient(allocator, std.testing.io, queuedCloseClientOptions(server.getAddress(), mode, params));
+    defer client.deinit();
+
+    var server_state = QuicEndpointState{};
+    var client_state = QueuedCloseState{};
+    server.start(&server_state, echoQuicMessage, recordQuicError, recordQuicClose);
+    client.start(&client_state, countQueuedCloseMessage, recordQueuedCloseError, recordQueuedCloseClose);
+
+    // One echo round trip with both endpoints stepped on this thread, then a
+    // short settle so every packet in flight is acknowledged.
+    try client.sendFrame(ping);
+    const exchange_started_ms = awakeMs();
+    while (client_state.messages.load(.acquire) == 0) {
+        if (awakeMs() - exchange_started_ms >= loopback.loopback_timeout_ms) return error.QuicLoopbackTimedOut;
+        _ = try server.stepOnce(.poll);
+        _ = try client.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    const settle_started_ms = awakeMs();
+    while (awakeMs() - settle_started_ms < 50) {
+        _ = try server.stepOnce(.poll);
+        _ = try client.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    try std.testing.expect(!client.isClosing());
+
+    // The client sends the large frame and steps once: more than its stream
+    // send buffer holds, so the rest stays queued.
+    try client.sendFrame(frame);
+    _ = try client.stepOnce(.poll);
+    try std.testing.expect(!outboundQueueEmpty(&client));
+
+    // The server closes. `run` on a closing connection sends its
+    // CONNECTION_CLOSE and fires its close callback.
+    server.requestClose();
+    server.run();
+    try std.testing.expectEqual(@as(usize, 1), server_state.closes.load(.acquire));
+
+    const closed_at_ms = awakeMs();
+    var steps: usize = 0;
+    var queued_when_closed: ?bool = null;
+    while (!client.isClosing() and awakeMs() - closed_at_ms < peer_close_bound_ms) : (steps += 1) {
+        _ = try client.stepOnce(.poll);
+        if (queued_when_closed == null) {
+            if (client.activeQuicConnection()) |conn| {
+                if (conn.isClosed()) queued_when_closed = !outboundQueueEmpty(&client);
+            }
+        }
+        loopback.sleepMs(1);
+    }
+    const lag_ms = awakeMs() - closed_at_ms;
+    if (!client.isClosing()) {
+        // End the connection by force, then fail.
+        client.requestClose();
+        client.run();
+        std.debug.print(
+            "the {s} client did not end within {d} ms ({d} steps) of the server's close (idle timeout {d} ms); frame still queued when its QUIC connection closed: {?}\n",
+            .{ @tagName(mode), peer_close_bound_ms, steps, peer_close_idle_timeout_ms, queued_when_closed },
+        );
+        return error.QueuedClientNeverEnded;
+    }
+    // The case under test: the frame was still queued when the server's
+    // close arrived.
+    try std.testing.expect(queued_when_closed orelse false);
+    // `run` on a closing connection fires the terminal close callback.
+    client.run();
+    try std.testing.expectEqual(@as(usize, 1), client_state.closes.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    try std.testing.expectEqual(events.DisconnectCause.peer_close, client.closeCause());
+    try std.testing.expect(!outboundQueueEmpty(&client));
+    try std.testing.expect(lag_ms < peer_close_bound_ms);
+}
+
+test "quic baseline: a back-pressured client whose server closes ends at once with the peer's close" {
+    try expectBackPressuredClientEndsAtPeerClose(.baseline);
+}
+
+test "quic native: a back-pressured client whose server closes ends at once with the peer's close" {
+    try expectBackPressuredClientEndsAtPeerClose(.native);
+}
+
+/// Server side of the vanishing-client tests: answers the first frame with
+/// one large reply, and records the close.
+const QueuedReplyServerState = struct {
+    server: *quic.Server,
+    reply: []const u8,
+    session_id: ?u64 = null,
+    messages: usize = 0,
+    errors: usize = 0,
+    closes: usize = 0,
+    cause_at_close: ?events.DisconnectCause = null,
+    listed_at_close: ?bool = null,
+    last_error: ?anyerror = null,
+
+    fn onAccepted(ctx: ?*anyopaque, _: *quic.Server, session: *quic.ServerSession) anyerror!void {
+        const self: *QueuedReplyServerState = @ptrCast(@alignCast(ctx.?));
+        self.session_id = session.id;
+        session.start(self, onMessage, onError, onClose);
+    }
+
+    fn onMessage(session: *quic.ServerSession, _: []const u8) anyerror!void {
+        const self: *QueuedReplyServerState = @ptrCast(@alignCast(session.context().?));
+        self.messages += 1;
+        if (self.messages == 1) try session.sendFrame(self.reply);
+    }
+
+    fn onError(session: *quic.ServerSession, err: anyerror) void {
+        const self: *QueuedReplyServerState = @ptrCast(@alignCast(session.context().?));
+        self.last_error = err;
+        self.errors += 1;
+        session.requestClose();
+    }
+
+    fn onClose(session: *quic.ServerSession) void {
+        const self: *QueuedReplyServerState = @ptrCast(@alignCast(session.context().?));
+        self.closes += 1;
+        self.cause_at_close = session.closeCause();
+        // Whether the session was still in the server's list: a close at
+        // the step that saw the connection close, not at the later reap.
+        self.listed_at_close = self.server.sessionById(session.id) != null;
+    }
+};
+
+fn sessionOutboundEmpty(session: *quic.ServerSession) bool {
+    return switch (session.mode) {
+        .baseline => session.baseline.outboundEmpty(),
+        .native => session.native.outboundEmpty(),
+    };
+}
+
+/// A server session whose client vanishes while a large reply is queued:
+/// the client sends one frame and is never stepped again once the server
+/// has it. The server's reply is larger than its stream send buffer and
+/// nothing acknowledges it, so the rest is still queued when the idle
+/// timeout closes the connection. The session must get its close callback
+/// then, and be reaped, and the server must not step with no wait while the
+/// closed connection drains.
+fn expectServerSessionEndsWhenClientVanishes(mode: quic.TransportMode) !void {
+    const allocator = std.testing.allocator;
+    const request = try buildBootstrapFrame(allocator, 0xFADE);
+    defer allocator.free(request);
+    const reply = try buildCallFrameWithData(allocator, 0xFADE1, queued_close_payload_bytes);
+    defer allocator.free(reply);
+
+    var params = quic.defaultTransportParams();
+    params.max_idle_timeout_ms = queued_close_idle_timeout_ms;
+
+    var server = try quic.Server.init(allocator, std.testing.io, queuedCloseServerOptions(mode, params));
+    defer server.deinit();
+    var server_state = QueuedReplyServerState{ .server = &server, .reply = reply };
+    server.setOnSessionAccepted(&server_state, QueuedReplyServerState.onAccepted);
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, queuedCloseClientOptions(server.getAddress(), mode, params));
+    defer client.deinit();
+    var client_state = QueuedCloseState{};
+    client.start(&client_state, countQueuedCloseMessage, recordQueuedCloseError, recordQueuedCloseClose);
+    try client.sendFrame(request);
+
+    // Both endpoints step on this thread until the server has the request
+    // (and has queued the reply).
+    const exchange_started_ms = awakeMs();
+    while (server_state.messages == 0) {
+        if (awakeMs() - exchange_started_ms >= loopback.loopback_timeout_ms) return error.QuicLoopbackTimedOut;
+        _ = try client.stepOnce(.poll);
+        _ = try server.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+    const session_id = server_state.session_id orelse return error.SessionNeverAccepted;
+
+    // The client vanishes: it is never stepped again. Step the server alone
+    // until its QUIC connection closes at the idle timeout.
+    const vanished_at_ms = awakeMs();
+    var queued_when_closed: ?bool = null;
+    while (queued_when_closed == null and awakeMs() - vanished_at_ms < queued_close_watchdog_ms) {
+        _ = try server.stepOnce(.poll);
+        const session = server.sessionById(session_id) orelse break;
+        if (session.activeQuicConnection()) |conn| {
+            if (conn.isClosed()) queued_when_closed = !sessionOutboundEmpty(session);
+        }
+        loopback.sleepMs(1);
+    }
+    // Then until the session is closed and reaped, with waiting steps: a
+    // step that waits no time at all is a spin.
+    var waited_after_close = false;
+    while (server_state.closes == 0 or server.sessionCount() > 0) {
+        if (awakeMs() - vanished_at_ms >= queued_close_watchdog_ms) break;
+        const result = try server.stepOnce(.wait);
+        if (result.waited_for.toMicroseconds() > 0) waited_after_close = true;
+    }
+    const lag_ms = awakeMs() - vanished_at_ms;
+    if (server_state.closes == 0 or server.sessionCount() > 0) {
+        std.debug.print(
+            "the {s} server session did not end within {d} ms (idle timeout {d} ms): close callbacks {d}, sessions {d}, reply queued when the QUIC connection closed: {?}\n",
+            .{ @tagName(mode), queued_close_watchdog_ms, queued_close_idle_timeout_ms, server_state.closes, server.sessionCount(), queued_when_closed },
+        );
+        return error.QueuedServerSessionNeverEnded;
+    }
+    // The case under test: the reply was still queued when the connection
+    // closed.
+    try std.testing.expect(queued_when_closed orelse false);
+    try std.testing.expectEqual(@as(usize, 1), server_state.closes);
+    try std.testing.expectEqual(@as(usize, 0), server_state.errors);
+    try std.testing.expectEqual(events.DisconnectCause.idle_timeout, server_state.cause_at_close orelse return error.NoCloseCause);
+    // The close callback ran at the step that saw the connection close,
+    // not at the reap at the end of the draining period.
+    try std.testing.expect(server_state.listed_at_close orelse false);
+    try std.testing.expect(waited_after_close);
+    const bound_ms = 4 * queued_close_idle_timeout_ms;
+    if (lag_ms > bound_ms) {
+        std.debug.print("the {s} server session ended {d} ms after the client vanished; bound {d} ms\n", .{ @tagName(mode), lag_ms, bound_ms });
+        return error.QueuedServerSessionEndedLate;
+    }
+}
+
+test "quic baseline: a server session whose client vanishes with a reply queued gets its close at the idle timeout" {
+    try expectServerSessionEndsWhenClientVanishes(.baseline);
+}
+
+test "quic native: a server session whose client vanishes with a reply queued gets its close at the idle timeout" {
+    try expectServerSessionEndsWhenClientVanishes(.native);
+}
+
+// ---------------------------------------------------------------------------
 // Thread handoff of a QUIC server that has already run. In a Debug build,
 // quic-zig (v0.29.0 and later) fixes its `Server`'s loop thread at the first
 // `feed`, `tick` or ticket-key rotation and asserts it at every later one;

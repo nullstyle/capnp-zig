@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **QUIC: a client whose connection closed with frames still queued never
+  ended.** The connection loop ended a closed QUIC connection only once the
+  selected engine's outbound queue was empty (or when the handshake had not
+  completed). Once quic-zig latches a connection closed (closing after its
+  CONNECTION_CLOSE, draining after the peer's close or an idle timeout, or
+  closed after a stateless reset), it sends nothing but that
+  CONNECTION_CLOSE (RFC 9000 section 10.2), so those frames could never
+  leave. A client whose connection closed with frames queued stayed in
+  `Connection.run`, stepping with no wait (a non-empty queue counted as
+  immediate work); its close callback never ran, and a `Peer` on it never
+  settled its pending questions. Three ways in, baseline or native alike.
+  The likely most common: the server closes the connection (it shuts down,
+  or a server `Peer` aborts it) while the client still has frames queued.
+  The client drains on that CONNECTION_CLOSE and never ended, not even at
+  its idle timeout, because nothing reaps a client's connection. Then the
+  native large-frame stall (a frame over about 2 MiB with the default
+  windows: the receiver ended at the idle timeout and the sending client
+  did not; seen with bench-quic on v0.24.0 and v0.23.0). And a
+  back-pressured client whose server died without a CONNECTION_CLOSE while
+  frames were queued. The condition dates from the first QUIC transport
+  (v0.2.0). A closed QUIC connection now ends the transport at once: `run`
+  closes the engines, records the close cause
+  (`DisconnectCause.peer_close` at once after the server's close,
+  `DisconnectCause.idle_timeout` in the other two cases) and runs the close
+  callback, where a `Peer` settles every pending question as
+  disconnected. The owned `Server` had the same condition: a
+  session with frames queued got its close callback only at quic-zig's reap
+  at the end of the draining period. It now closes the session in the step
+  that sees its connection closed. Neither loop counts a closed
+  connection's frames as immediate work any more, so neither steps with no
+  wait while the connection drains (the server also did that for every
+  closing session, queued frames or not). `EmbeddedSession` was not
+  affected: its service pass ends the seat on a closed connection alone.
+  New tests, at a 500 ms idle timeout, each with a 10 s watchdog that
+  forces the close and fails: the native stall from the transport (the
+  client and the receiver both end at the idle timeout, the frame still
+  queued) and from a `Peer` (the stalled call settles as "disconnected"
+  with `.idle_timeout`); a back-pressured client in baseline and native
+  mode whose server vanishes; and a server session in baseline and native
+  mode whose client vanishes with a 1.5 MiB reply queued (the close callback
+  runs before the reap, and the server's steps wait while the connection
+  drains). On v0.24.0 the four client tests run into the watchdog, and the
+  two server tests fail on the close-callback timing and on steps that wait
+  no time. Two more cover the server's close: a back-pressured client in
+  baseline and native mode whose server closes while 1.5 MiB is still
+  queued ends at once with `.peer_close` (a 30 s idle timeout, so no timer
+  can end it, and a 3 s bound). On v0.24.0 both fail at the bound, and
+  with a 500 ms idle timeout they still had not ended after 5 s. Two more
+  pin down the seat: an `EmbeddedSession` whose client vanishes with the
+  same reply queued, in baseline and native mode, closes while its
+  connection drains, before the host's reap; they pass on v0.24.0 too.
+
 ### Documentation
 
 - **Corrections to the 0.24.0 notes, found by an audit after the tag.**
@@ -30,10 +84,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Soak RSS: the tagged figures (34 MB against 51 MB) came from one run
     before the final pin. Seven runs each after the tag replace them.
   - Native frames over about 2 MiB: the tagged text said the connection
-    ends at the idle timeout. A client that is sending such a frame does
-    not end: its `Connection.run` keeps running and its close callback never
-    runs. The tagged text also said no test or bench used native frames over
-    1 MiB; the tests send 1 MiB of data, and none is near 2 MiB.
+    ends at the idle timeout. In v0.24.0 a client that is sending such a
+    frame does not end: its `Connection.run` keeps running and its close
+    callback never runs (fixed after the tag, see Fixed above). The tagged
+    text also said no test or bench used native frames over 1 MiB; the tests
+    send 1 MiB of data, and none is near 2 MiB.
   - docs/quic-transport.md names the `transport_params` windows among the
     knobs capnp-zig exposes, and dates the packet-number change to quic-zig
     v0.33.0.

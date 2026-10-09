@@ -25,6 +25,8 @@ const HostApp = struct {
     state: *loopback.QuicEndpointState,
     /// The seats' message callback; the default echoes each frame.
     on_message: quic.EmbeddedSession.MessageCallback = echoEmbeddedMessage,
+    /// The seats' close callback; the default counts the close.
+    on_close: quic.EmbeddedSession.CloseCallback = recordEmbeddedClose,
     seats: std.ArrayListUnmanaged(*quic.EmbeddedSession) = .empty,
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
@@ -41,7 +43,7 @@ const HostApp = struct {
             app.state,
             app.on_message,
             recordEmbeddedError,
-            recordEmbeddedClose,
+            app.on_close,
         );
         try app.seats.append(app.allocator, seat);
     }
@@ -673,6 +675,162 @@ test "embedded quic seat leaves memory budget for client frames during a large r
 
 test "embedded quic seat leaves memory budget for client frames during a large reply (native)" {
     try runEmbeddedLargeReplyBesideClientFrames(std.testing.allocator, .{ .mode = .native });
+}
+
+// ---------------------------------------------------------------------------
+// A seat whose client vanishes with a reply queued. Through v0.24.0 the owned
+// loops ended a closed QUIC connection only once the engine's outbound queue
+// was empty (rpc_quic_transport_test.zig, "A closed connection with frames
+// still queued"). The seat never had that condition: its service pass runs
+// the close callback once quic-zig reports the connection closed, whatever
+// is still queued. This test pins that down.
+// ---------------------------------------------------------------------------
+
+/// Seat state of the vanishing-client test: `endpoint` is what `HostApp`
+/// hands the seat as its context, and the reply rides next to it. The close
+/// callback records, on the host thread, whether the reply was still queued
+/// and the cause; `endpoint.closes` publishes both.
+const VanishingClientSeatState = struct {
+    endpoint: loopback.QuicEndpointState = .{},
+    reply: []const u8,
+    queued_at_close: bool = false,
+    /// Whether quic-zig had already latched the terminal closed state, which
+    /// the host's reap waits for: the seat should close before, in the
+    /// service pass that sees the connection closed (draining).
+    terminal_at_close: bool = false,
+    cause_at_close: ?capnpc.rpc.events.DisconnectCause = null,
+};
+
+fn replyOnceToVanishingClient(seat: *quic.EmbeddedSession, _: []const u8) anyerror!void {
+    const endpoint: *loopback.QuicEndpointState = @ptrCast(@alignCast(seat.context().?));
+    const state: *VanishingClientSeatState = @fieldParentPtr("endpoint", endpoint);
+    if (endpoint.messages.fetchAdd(1, .acq_rel) == 0) try seat.sendFrame(state.reply);
+}
+
+fn recordVanishingClientSeatClose(seat: *quic.EmbeddedSession) void {
+    const endpoint: *loopback.QuicEndpointState = @ptrCast(@alignCast(seat.context().?));
+    const state: *VanishingClientSeatState = @fieldParentPtr("endpoint", endpoint);
+    state.queued_at_close = switch (seat.mode) {
+        .baseline => !seat.baseline.outboundEmpty(),
+        .native => !seat.native.outboundEmpty(),
+    };
+    state.terminal_at_close = seat.conn.closeState() == .closed;
+    state.cause_at_close = seat.closeCause();
+    _ = endpoint.closes.fetchAdd(1, .acq_rel);
+}
+
+fn ignoreEmbeddedClientFrame(_: *quic.Connection, _: []const u8) anyerror!void {}
+
+/// The client sends one frame and is never stepped again once the seat has
+/// it. The seat's reply is larger than its stream send buffer (quic-zig's
+/// 1 MiB) and nothing acknowledges it, so the rest is still queued when the
+/// idle timeout closes the connection. The seat's close callback must run
+/// then; a 10 s watchdog fails the test instead of hanging.
+fn runEmbeddedSeatClosesWhenClientVanishes(allocator: std.mem.Allocator, mode: quic.EmbeddedSessionOptions) !void {
+    const idle_timeout_ms: u64 = 500;
+    const watchdog_ms: u64 = 10_000;
+    const reply = try loopback.buildCallFrameWithData(allocator, 0xFADE2, 1536 * 1024);
+    defer allocator.free(reply);
+    const request = try loopback.buildBootstrapFrame(allocator, 0xFADE3);
+    defer allocator.free(request);
+
+    var params = quic.defaultTransportParams();
+    params.max_idle_timeout_ms = idle_timeout_ms;
+
+    var seat_state = VanishingClientSeatState{ .reply = reply };
+    var host = HostApp{
+        .allocator = allocator,
+        .mode = mode,
+        .state = &seat_state.endpoint,
+        .on_message = replyOnceToVanishingClient,
+        .on_close = recordVanishingClientSeatClose,
+    };
+    defer host.seats.deinit(allocator);
+
+    var driver = try D.init(.{
+        .allocator = allocator,
+        .app = &host,
+        .max_tracked_streams = 16,
+        .hooks = .{
+            .on_connect = HostApp.onConnect,
+            .on_handshake = HostApp.onHandshake,
+            .on_stream_open = HostApp.onStreamOpen,
+            .on_stream_data = HostApp.onStreamData,
+            .on_stream_end = HostApp.onStreamEnd,
+            .on_disconnect = HostApp.onDisconnect,
+        },
+    });
+    var listener = quic.Listener.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .alpn_protocols = &.{"capnp-rpc/1"},
+        .max_concurrent_connections = 4,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .transport_params = params,
+        .mode = mode.mode,
+    }) catch |err| {
+        driver.deinit();
+        return err;
+    };
+    driver.attach(&listener.server);
+    // Same load-bearing deinit order as runEmbeddedEchoExchange.
+    defer driver.deinit();
+    defer listener.deinit();
+
+    var host_thread = try std.Thread.spawn(.{}, runHost, .{ &host, &listener, &driver });
+    defer {
+        host.stop.store(true, .release);
+        host_thread.join();
+    }
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = listener.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .transport_params = params,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = mode.mode,
+    });
+    defer client.deinit();
+    var client_state = loopback.QuicEndpointState{};
+    client.start(&client_state, ignoreEmbeddedClientFrame, loopback.recordQuicError, loopback.recordQuicClose);
+    try client.sendFrame(request);
+
+    // The client steps on this thread until the seat has the request (and
+    // has queued the reply), then vanishes: it is never stepped again.
+    const seat_endpoint = &seat_state.endpoint;
+    var waited_ms: u64 = 0;
+    while (seat_endpoint.messages.load(.acquire) == 0) : (waited_ms += 1) {
+        if (waited_ms >= loopback.loopback_timeout_ms) return error.QuicLoopbackTimedOut;
+        _ = try client.stepOnce(.poll);
+        loopback.sleepMs(1);
+    }
+
+    waited_ms = 0;
+    while (seat_endpoint.closes.load(.acquire) == 0 and waited_ms < watchdog_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+    if (seat_endpoint.closes.load(.acquire) == 0) {
+        std.debug.print("the {s} seat did not close within {d} ms (idle timeout {d} ms)\n", .{ @tagName(mode.mode), watchdog_ms, idle_timeout_ms });
+        return error.EmbeddedSeatNeverClosed;
+    }
+    // The case under test: the reply was still queued when the seat closed.
+    try std.testing.expect(seat_state.queued_at_close);
+    try std.testing.expectEqual(@as(usize, 1), seat_endpoint.closes.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), seat_endpoint.errors.load(.acquire));
+    try std.testing.expectEqual(capnpc.rpc.events.DisconnectCause.idle_timeout, seat_state.cause_at_close orelse return error.NoCloseCause);
+    // The seat closed in the service pass that saw the connection closed,
+    // while it drained, not at the host's reap of the terminal connection.
+    try std.testing.expect(!seat_state.terminal_at_close);
+}
+
+test "embedded seat whose client vanishes with a reply queued gets its close at the idle timeout (baseline)" {
+    try runEmbeddedSeatClosesWhenClientVanishes(std.testing.allocator, .{ .mode = .baseline });
+}
+
+test "embedded seat whose client vanishes with a reply queued gets its close at the idle timeout (native)" {
+    try runEmbeddedSeatClosesWhenClientVanishes(std.testing.allocator, .{ .mode = .native });
 }
 
 // ---------------------------------------------------------------------------
