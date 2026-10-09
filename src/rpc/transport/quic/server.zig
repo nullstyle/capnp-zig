@@ -19,7 +19,6 @@ const native_engine = @import("native_engine.zig");
 const non_windows_receive = @import("non_windows_receive.zig");
 const quic_close = @import("close.zig");
 const quic_options = @import("options.zig");
-const quic_zig_adapter = @import("quic_zig_adapter.zig");
 const scheduler = @import("scheduler.zig");
 const session_mod = @import("session.zig");
 const test_knobs = @import("test_knobs.zig");
@@ -727,7 +726,7 @@ pub const Server = struct {
         const conn = server_session.activeQuicConnection() orelse return;
         if (server_session.isClosing()) {
             try self.flushClosingSession(server_session, now_us);
-            try quic_zig_adapter.tickConnection(conn, now_us);
+            try conn.tick(now_us);
             try self.listener.drainAcceptedSessionDatagrams(server_session.acceptedSession(), self.udp_tx_buf, now_us);
             return;
         }
@@ -757,11 +756,11 @@ pub const Server = struct {
         // alone, and the engine must see that end first. The knob is a
         // test-only way to put the wrong order back (comptime false outside
         // tests).
-        if (test_knobs.tickBeforeService()) try quic_zig_adapter.tickConnection(conn, now_us);
+        if (test_knobs.tickBeforeService()) try conn.tick(now_us);
         try server_session.serviceMode(conn, now_us);
         try self.listener.drainAcceptedSessionDatagrams(server_session.acceptedSession(), self.udp_tx_buf, now_us);
 
-        try quic_zig_adapter.tickConnection(conn, now_us);
+        try conn.tick(now_us);
         try server_session.serviceMode(conn, now_us);
         try self.listener.drainAcceptedSessionDatagrams(server_session.acceptedSession(), self.udp_tx_buf, now_us);
 

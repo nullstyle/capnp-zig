@@ -1,9 +1,11 @@
 # HANDOFF — quic-zig: a local streamWrite fills the whole memory budget
 
-> **Status: OPEN, not filed (2026-10-08).** Found by capnp-zig on its move
-> from quic-zig v0.32.0 to v0.37.1. capnp-zig works around it (below), so
-> nothing downstream is blocked. This document is the report for the
-> quic-zig agent; the owner decides when it goes upstream.
+> **Status: OPEN, accepted as a design item (2026-10-08).** Found by
+> capnp-zig on its move from quic-zig v0.32.0 to v0.37.1. The quic-zig
+> session put it on its next sprint's candidate list (a receive reserve
+> inside `max_connection_memory`, so an embedder need not cap its own
+> writes). quic-zig v0.37.2 does not change it. capnp-zig works around it
+> (below), so nothing downstream is blocked.
 
 For the agent working on nullstyle/quic-zig. Self-contained; the evidence
 comes from capnp-zig (same machine, /Users/nullstyle/prj/zig/capnp-zig).

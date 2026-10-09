@@ -83,12 +83,7 @@ pub const EmbeddedSessionOptions = struct {
 ///   4. Call `service(now_us)` once per loop pass, after `driver.service`
 ///      and before `Server.tick` ("Embedder rules" in
 ///      docs/quic-transport.md: a tick first can reclaim a stream before the
-///      Driver reads it). Touch every connection right before `Server.tick`
-///      (quic-zig v0.36.0 and later; `Listener.tick` does both), or the tick
-///      of a connection at rest can skip the GC of a stream that ended. A
-///      host on quic-zig's ready API (`tickDue` / `takeReady`, as in
-///      `runUdpServer`) never calls `Server.tick`: it touches and then ticks
-///      each connection that carries a seat after its service pass.
+///      Driver reads it).
 ///   5. Tear down with `destroy`, the last call on the seat: usually from
 ///      `on_disconnect`, after `notifyDisconnected`. A `destroy` from a seat
 ///      callback also works, and frees the seat before the seat call that

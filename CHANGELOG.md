@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking
 
 - **The QUIC error sets gain `AckFrequencyNotNegotiated` with quic-zig
-  v0.37.1 (Experimental).** quic-zig's connection error set has the new
+  v0.37.2 (Experimental).** quic-zig's connection error set has the new
   error of `requestAckFrequency` and `requestImmediateAck`, and the
   Experimental QUIC sets that carry it widen with it: `connect`,
   `ClientSession.connect`, `Connection.initClient`, `Server.step` and
@@ -23,25 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capnp-zig calls neither function.
   - **Migration:** add `error.AckFrequencyNotNegotiated` to any exhaustive
     switch over those error sets. A build that also depends on quic
-    directly must pin quic-zig v0.37.1 with the same options as capnp-zig
+    directly must pin quic-zig v0.37.2 with the same options as capnp-zig
     (`.target`, `.release = optimize != .debug`, `.@"sanitize-c" = "trap"`),
     or it builds two quic modules.
-- **An `EmbeddedSession` host that ticks its own `quic_zig.Server` touches
-  every connection first (Experimental behavior).** On quic-zig v0.36.0 and
-  later, a `Server.tick` right after a drain can skip the GC of a stream
-  that ended (see Changed): a Debug build asserts in quic-zig's
-  `Connection.tick`, and a release build holds the stream and the peer's
-  stream id until the next touch. capnp-zig's `Listener.tick` touches every
-  slot first; a host that calls `quic_zig.Server.tick` itself must too. A
-  host on quic-zig's ready API (`Server.tickDue` and `takeReady`, as in
-  quic-zig's `runUdpServer`) never calls `Server.tick`, and `tickDue` ticks
-  only the slots whose deadline has passed.
-  - **Migration:** before `server.tick(now_us)`, run
-    `for (server.iterator()) |slot| slot.conn.touch();`, or tick through
-    capnp-zig's `Listener.tick`. On the ready API, after the service pass,
-    touch and then tick each connection that carries a seat
-    (`slot.conn.touch(); try slot.conn.tick(now_us);`); the touch puts the
-    slot on the ready list, so the drain sends what the tick queued.
 
 ### Added (Experimental)
 
@@ -60,13 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **QUIC: quic-zig v0.32.0 -> v0.37.1 (tag `b89270b`,
-  `quic-0.37.1-DnSYvTlfPwChWkn-M8TGtX81DkFobQDQQat0GMff1YRe`), in one step
-  over v0.33.0, v0.34.0, v0.35.0, v0.36.0 and v0.37.0.** The same option map,
-  exported modules and boringssl-zig (`ff30fe99`, 0.6.7). No quic-zig
-  signature that capnp-zig uses changed; two behaviors did, and capnp-zig
-  adapts to both: the tick of a connection at rest (the next entry) and a
-  stream write at the memory budget (see Fixed). No Stable API line changes;
+- **QUIC: quic-zig v0.32.0 -> v0.37.2 (tag `51a34c0`,
+  `quic-0.37.2-DnSYvb2bPwDUgMMPDFV3tX0CgvsCbn2u2ed60n4tUtZ-`), in one step
+  over v0.33.0, v0.34.0, v0.35.0, v0.36.0, v0.37.0 and v0.37.1.** The same
+  option map, exported modules and boringssl-zig (`ff30fe99`, 0.6.7). No
+  quic-zig signature that capnp-zig uses changed; one behavior did, and
+  capnp-zig adapts to it: a stream write at the memory budget (see Fixed). No Stable API line changes;
   17 Experimental QUIC error sets widen by one error (see Breaking). What an
   application sees:
   - Throughput. One stream reaches the path's rate on the defaults: the
@@ -110,6 +93,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Frequency extension (the draft's provisional codepoints) lets a bulk
     sender ask a peer that supports it for fewer ACKs. A packet number is 2
     to 4 bytes on the wire, never 1.
+  - Idle connections. Since quic-zig v0.36.0 a connection with nothing to
+    do answers `tick` from a cached deadline. capnp-zig's move to v0.37.1
+    found two defects there, and quic-zig v0.37.2 fixes both: a connection
+    at rest skipped the GC of a stream that had just ended (on v0.37.1, 19
+    QUIC tests asserted in Debug, and in ReleaseSafe two native transfers
+    stalled at 10,185 and 10,177 of 10,240 frames with both sides at rest),
+    and a server connection never came to rest at all. capnp-zig's loops
+    call `tick` as on v0.32.0, with no workaround. The report is
+    `docs/upstream/handoff-quic-zig-at-rest-stream-gc.md`.
   - A probe timeout to a silent peer carries previously sent stream data on
     every probe. Since quic-zig v0.30.0 (capnp-zig v0.21.0 and later) the
     second and later probes carried control frames only, so a request whose
@@ -120,28 +112,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `max_connection_receive_window`, `send_buffer_follows_credit`,
     `max_buffered_send_cap`, `ack_quick_gap_us`, `ack_frequency_policy`),
     and its loops do not use quic-zig's new ready API.
-  - One quic module per process: http3-zig main pins v0.37.1 with the same
-    option map since `e5b3e28`, and links next to this tree with one quic
-    module (measured at `e5b3e28`: one `-Mquic=` and one `-Mboringssl=`,
-    Debug and ReleaseSafe). Its 0.5.6 release commit (`4194c6b`) changes
-    only the version, the changelog and a bench baseline, and is not tagged
-    yet; name http3-zig v0.5.6 here once it is. http3-zig v0.5.5 pins
-    v0.32.0 and pairs with capnp-zig v0.23.0 and v0.22.0.
-- **QUIC: the transport ticks every connection in full.** quic-zig v0.36.0
-  answers `tick` on a connection at rest from a cached deadline until
-  `Connection.touch`, and does not count a stream that the tick would free
-  as work. capnp-zig's loops send between the service pass and the tick,
-  so on v0.37.1 the tick skipped the GC of a stream that had just ended:
-  19 QUIC tests crashed in Debug on quic-zig's assert in `Connection.tick`,
-  and in ReleaseSafe two native connections stalled at 10,185 and 10,177 of
-  10,240 frames with both sides at rest (the peer's stream ids never came
-  back). Every tick now goes through `tickConnection` / `tickServer` in
-  `src/rpc/transport/quic/quic_zig_adapter.zig`, which touch first: the
-  tick of quic-zig v0.35.0 and earlier. `Listener.tick` touches every slot
-  before `Server.tick`. A host that ticks its own `quic_zig.Server` next to
-  an `EmbeddedSession` must touch each connection before `Server.tick`
-  ("Embedder rules" in docs/quic-transport.md). The report for quic-zig is
-  `docs/upstream/handoff-quic-zig-at-rest-stream-gc.md`.
+  - One quic module per process: to link next to this tree, http3-zig must
+    pin v0.37.2 with the same option map. Its main pins v0.37.1 (`e5b3e28`,
+    measured with one `-Mquic=` and one `-Mboringssl=` against capnp-zig on
+    v0.37.1), and its v0.5.6 is not tagged yet; name the pairing release
+    here once it is and the coexistence check passes against it. http3-zig
+    v0.5.5 pins v0.32.0 and pairs with capnp-zig v0.23.0 and v0.22.0.
 
 ### Fixed
 
@@ -173,8 +149,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window (`initial_max_data`, 16 MiB by default, which the 32 MiB default
   matches), or an honest peer that sends ahead of the reader can still end
   the connection ("Current Limits" in docs/quic-transport.md). quic-zig's
-  part is reported in `docs/upstream/handoff-quic-zig-write-budget-headroom.md`
-  (not filed).
+  part is reported in `docs/upstream/handoff-quic-zig-write-budget-headroom.md`;
+  quic-zig took it as a design item, and v0.37.2 does not change it.
 
 ### Documentation
 

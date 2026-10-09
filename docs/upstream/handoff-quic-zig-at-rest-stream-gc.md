@@ -1,9 +1,13 @@
 # HANDOFF — quic-zig: a connection "at rest" skips the stream GC
 
-> **Status: OPEN, not filed (2026-10-08).** Found by capnp-zig on its move
-> from quic-zig v0.32.0 to v0.37.1. capnp-zig works around it (below), so
-> nothing downstream is blocked. This document is the report for the
-> quic-zig agent; the owner decides when it goes upstream.
+> **Status: FIXED in quic-zig v0.37.2 (tag `51a34c0`, 2026-10-08).** Found
+> by capnp-zig on its move from quic-zig v0.32.0 to v0.37.1. quic-zig now
+> marks a connection when a stream can be reclaimed (a new `stream_gc`
+> timer, due at once, so the ready API ticks it too), and it also fixed a
+> second defect this test found: a server connection never came to rest.
+> capnp-zig moved to v0.37.2 and dropped the workaround below. Without it,
+> the tests that failed on v0.37.1 (19 in Debug, 3 in ReleaseSafe) pass.
+> The text below is the report as sent.
 
 For the agent working on nullstyle/quic-zig. Self-contained; the evidence
 comes from capnp-zig (same machine, /Users/nullstyle/prj/zig/capnp-zig).

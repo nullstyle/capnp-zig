@@ -44,12 +44,12 @@ Cap'n Proto RPC vat session. The payload above the QUIC transport is still the
 standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
 between peers, not the RPC protocol that `Peer` handles.
 
-The manifest pins the `quic` package at annotated tag `v0.37.1` (commit
-`b89270b`), one step from v0.32.0: v0.33.0 through v0.37.0 are included, not
+The manifest pins the `quic` package at annotated tag `v0.37.2` (commit
+`51a34c0`), one step from v0.32.0: v0.33.0 through v0.37.1 are included, not
 pinned. The option map, the exported modules and boringssl-zig are the same,
-and no quic-zig signature that capnp-zig uses changed. Two behaviors did, and
-capnp-zig adapts to both (below): a tick of a connection at rest, and a stream
-write at the memory budget. quic-zig's connection error
+and no quic-zig signature that capnp-zig uses changed. One behavior did, and
+capnp-zig adapts to it (below): a stream write at the memory budget. quic-zig's
+connection error
 set gained `AckFrequencyNotNegotiated`, so the Experimental QUIC error sets that
 carry it (`Connection.initClient`, `Server.step`, `Listener.tick` and 14 more)
 gain it too. Only `requestAckFrequency` and `requestImmediateAck` return it,
@@ -110,22 +110,17 @@ and capnp-zig calls neither. What an application sees:
   an embedded seat (without the half rule each closes with EXCESSIVE_LOAD
   within a few milliseconds). The half rule does not bound what the peer
   sends: see [Current Limits](#current-limits).
-- **Every tick is a full tick (v0.36.0).** quic-zig v0.36.0 answers `tick`
-  on a connection at rest from a cached deadline until `Connection.touch`,
-  and its test for "at rest" does not count a stream that the next tick's
-  GC frees. capnp-zig's loops send (the poll that primes the cache) between
-  the service pass and the tick, so that tick skipped the GC of a stream
-  that had just ended. A Debug build asserts in quic-zig
-  (`Connection.zig:5352`); a release build kept the stream until the next
-  touch, and with it the stream id that the peer gets back when the stream
-  is freed, so a native connection with a full unidirectional window
-  stalled with both sides at rest. capnp-zig touches each connection before
-  it ticks (`tickConnection` and `tickServer` in
-  `src/rpc/transport/quic/quic_zig_adapter.zig`), which is the tick quic-zig
-  ran through v0.35.0. A host that ticks its own `quic_zig.Server` must do
-  the same ([Embedder rules](#embedder-rules)).
-  `docs/upstream/handoff-quic-zig-at-rest-stream-gc.md` is the report for
-  quic-zig.
+- **Connections at rest (v0.36.0, fixed in v0.37.2).** Since v0.36.0 a
+  connection with nothing to do answers `tick` from a cached deadline.
+  capnp-zig's move to v0.37.1 found two defects there. A connection at rest
+  skipped the GC of a stream that had just ended: a Debug build asserted in
+  quic-zig (`Connection.zig:5352`, 19 QUIC tests), and in a release build a
+  native connection with a full unidirectional window stalled with both
+  sides at rest (10,185 of 10,240 frames). And a server connection never
+  came to rest at all. quic-zig v0.37.2 fixes both, so capnp-zig's loops
+  call `tick` as they did on v0.32.0, with no workaround, and an idle server
+  connection now uses the cache too.
+  `docs/upstream/handoff-quic-zig-at-rest-stream-gc.md` is the report.
 - **Fewer ACKs and less CPU (v0.34.0, v0.35.0, v0.37.0).** The engine moves
   a packet in about half the CPU. A receiver acknowledges every second
   packet of a burst, and at once a packet that arrives 1 ms or more after
@@ -217,11 +212,10 @@ into the same build must pin the same tag and pass the same dependency options
 (`.target`, `.release`, `.@"sanitize-c" = "trap"`), or the build makes two quic
 modules, each with its own BoringSSL. Only packages that link into one program
 must share a pin: capnp-zig and http3-zig move together, and a quic-zig
-security fix moves every package at once. This tree and http3-zig main both
-pin v0.37.1 (since `e5b3e28`; `4194c6b` is its 0.5.6 release commit, not
-tagged yet), and link into one program with one quic module (one `-Mquic=`
-and one `-Mboringssl=`, Debug and ReleaseSafe; measured at `e5b3e28`, and
-`4194c6b` changes only the version, the changelog and a bench baseline).
+security fix moves every package at once. This tree pins v0.37.2; http3-zig
+main still pins v0.37.1 (`e5b3e28`), so an http3-zig that pins v0.37.2 is
+needed to link into one program with this tree (the pairing release is named
+here once it is tagged and measured).
 capnp-zig v0.22.0 and v0.23.0 pair with http3-zig v0.5.5 on v0.32.0, and
 capnp-zig v0.21.0 with http3-zig v0.5.4 on v0.30.1.
 Connection and server session loops drive
@@ -609,32 +603,12 @@ already obey both.
 1. Give the received datagrams to quic-zig (`Server.feed`).
 2. Call `driver.service`, then call `service(now_us)` on each
    `EmbeddedSession`.
-3. Touch every connection (`slot.conn.touch()` for each slot of
-   `Server.iterator()`), then call `Server.tick`. capnp-zig's
-   `Listener.tick` does both.
+3. Call `Server.tick`.
 
-A host on quic-zig's ready API (`Server.tickDue` and `takeReady`, which
-quic-zig's own `runUdpServer` with an `on_iteration` hook uses) never calls
-`Server.tick`, and `tickDue` ticks only the slots whose deadline has passed.
-Such a host must still touch and then tick each connection that carries a
-seat after its service pass (`slot.conn.touch(); try
-slot.conn.tick(now_us);`, for example for each slot it serviced or that
-`Server.peekReady()` lists); the touch also puts the slot on the ready
-list, so the drain sends what the tick queued.
-
-The touch is new with quic-zig v0.36.0. A connection at rest answers `tick`
-from a cached deadline until something touches it, and quic-zig does not
-count a stream that the tick would free as a reason to leave rest. A loop that
-sends between the service pass and the tick (the poll primes the cache) then
-skips the GC of a stream that just ended: a Debug build of quic-zig asserts
-in `Connection.tick`, and a release build keeps the stream, and the stream id
-the peer would get back, until the next touch. The touch makes the tick the
-full one that quic-zig ran through v0.35.0.
-
-The reason for the order is quic-zig's stream GC. `tick` frees a stream when
-its receive half has ended. Sometimes every byte of a stream is read, and then
-its FIN or RESET arrives alone. If `tick` runs before the service pass, the
-stream is gone before the Driver reads it, and a read gets `StreamNotFound`. Through
+The reason is quic-zig's stream GC. `tick` frees a stream when its receive
+half has ended. Sometimes every byte of a stream is read, and then its FIN or
+RESET arrives alone. If `tick` runs before the service pass, the stream is
+gone before the Driver reads it, and a read gets `StreamNotFound`. Through
 quic-zig v0.27.0 the Driver then reported `.reaped`, so a clean end and a cut
 stream looked the same, and the RESET error code was lost.
 
@@ -1487,10 +1461,10 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   frames that large, or raise the receiver's
   `transport_params.initial_max_stream_data_uni` above the largest frame
   (6 MiB arrived with 8 MiB).
-- The transport ticks every connection in full (it touches each one first),
-  so it gets none of quic-zig v0.36.0's savings for connections at rest, and
-  its loops sweep every session per pass rather than use quic-zig's ready
-  API. A server with thousands of idle sessions pays for each one per pass.
+- The transport's loops sweep every session per pass rather than use
+  quic-zig's ready API. The tick of an idle connection answers from its
+  cached deadline, but a server with thousands of idle sessions still visits
+  each one per pass.
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.
 - Mode mismatch is treated as malformed transport input and closes cleanly.
@@ -1498,6 +1472,6 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   BoringSSL with `sanitize-c = "trap"`. There, BoringSSL's 32-bit P-256 code
   (`third_party/fiat/p256_32.h`, under ECDSA verify) can trap in some TLS
   handshakes (quic-zig records it in its v0.28.1 notes, for boringssl-zig to
-  fix; boringssl-zig is unchanged through quic-zig v0.37.1, so it is still
+  fix; boringssl-zig is unchanged through quic-zig v0.37.2, so it is still
   open). capnp-zig's CI compiles QUIC for 32-bit x86 but does not run it there.
   64-bit targets are not affected.

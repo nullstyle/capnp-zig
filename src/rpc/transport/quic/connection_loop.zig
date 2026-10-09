@@ -6,7 +6,6 @@ const datagram_io = @import("datagram_io.zig");
 const endpoint_mod = @import("endpoint.zig");
 const engine_owner = @import("engine_owner.zig");
 const mode_router = @import("mode_router.zig");
-const quic_zig_adapter = @import("quic_zig_adapter.zig");
 const scheduler = @import("scheduler.zig");
 const test_knobs = @import("test_knobs.zig");
 const udp_receive_bridge = @import("udp_receive_bridge.zig");
@@ -193,7 +192,7 @@ fn advanceActive(driver: endpoint_mod.EndpointDriver) !void {
 
 fn tickActive(driver: endpoint_mod.EndpointDriver, now_us: u64) !void {
     const conn = driver.quicConnection() orelse return;
-    try quic_zig_adapter.tickConnection(conn, now_us);
+    try conn.tick(now_us);
 }
 
 fn serviceModeStreams(owner: Owner, driver: endpoint_mod.EndpointDriver, now_us: u64) !void {
