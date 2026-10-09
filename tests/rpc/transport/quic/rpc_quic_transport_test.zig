@@ -4871,7 +4871,14 @@ test "quic native: a client whose data-stream frame cannot leave ends at the idl
         server_thread.join();
     };
 
+    const watch_started_ms = awakeMs();
     const client_ended = waitForQueuedClose(&client_state.closes, queued_close_watchdog_ms);
+    // The receiver reaches its own idle timeout within a few ms of the
+    // client, before or after it. Wait for it as well, inside the same
+    // watchdog: a forced close that lands before the receiver's own timer
+    // fires would end it with `.local_close`.
+    const receiver_ended = client_ended and
+        waitForQueuedClose(&server_state.closes, queued_close_watchdog_ms -| (awakeMs() - watch_started_ms));
     // The watchdog, and the end of a passing run alike: a requested close
     // is the only way out of a `run` that does not end by itself.
     client.requestClose();
@@ -4887,6 +4894,13 @@ test "quic native: a client whose data-stream frame cannot leave ends at the idl
             .{ queued_close_watchdog_ms, queued_close_idle_timeout_ms, quic_closed, server_state.closes.load(.acquire) },
         );
         return error.QueuedClientNeverEnded;
+    }
+    if (!receiver_ended) {
+        std.debug.print(
+            "the client ended but the receiver did not end within {d} ms (idle timeout {d} ms)\n",
+            .{ queued_close_watchdog_ms, queued_close_idle_timeout_ms },
+        );
+        return error.QueuedReceiverNeverEnded;
     }
     // The stall happened: the frame never reached the receiver, and it was
     // still queued on the client when the client ended.
