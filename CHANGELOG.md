@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-09
+
+This is a QUIC release, paired with http3-zig v0.5.7. It fixes a QUIC
+client that never ended when its connection closed with frames still
+queued: after the server's close, after an idle timeout, or in the native
+large-frame stall. The hang dates from the first QUIC transport. It moves
+quic-zig from v0.37.2 to v0.38.0, whose memory budget keeps a receive
+reserve: an honest peer no longer ends a connection with EXCESSIVE_LOAD
+while the connection window is at most half of the budget. So v0.24.0's
+four-times budget rule and capnp-zig's half-budget write cap are gone, and
+a server now announces at most half of its `max_connection_memory` as its
+connection window. Serialization, codegen and TCP RPC do not change. No
+Stable API line changes, and no Experimental snapshot line moves. There is
+no `### Breaking` entry. docs/upgrading-to-0.25.0.md walks through the
+upgrade.
+
 ### Changed
 
 - **QUIC: quic-zig v0.37.2 -> v0.38.0 (tag `77be067`,
@@ -33,10 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     write, zero when nothing fits, is still back-pressure.
   - A slow reader's unread bytes stay in the budget and leave the writer
     less until the application reads: a short write, not a fault.
-  http3-zig main pins the same tag (since `5197931`), and the two mains
-  link into one program with one quic module (one `-Mquic=` and one
+  http3-zig v0.5.7 (tag `e9867fc`,
+  `http3_zig-0.5.7-ayZ03AxnEwCS-38QeydGjOHQ1sAQEWT8xWjf82hAOPBw`) pins the
+  same tag with the same option map, and links next to this release with
+  one quic module (measured at the tag: one `-Mquic=` and one
   `-Mboringssl=` in an uncached `zig build --verbose`, Debug and
-  ReleaseSafe).
+  ReleaseSafe). http3-zig v0.5.6 pins v0.37.2 and pairs with capnp-zig
+  v0.24.0.
 - **A server announces at most half of `max_connection_memory` as its
   connection window.** On quic-zig v0.38.0 a window larger than half of the
   budget takes from what the connection may write, and a window as large as
@@ -165,6 +184,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     v0.33.0.
 - The package hash of v0.24.0 is recorded in docs/build-integration.md,
   docs/getting-started-serialization.md and docs/upgrading-to-0.24.0.md.
+- `docs/upgrading-to-0.25.0.md` (new): who should take the hang fix and
+  the quic-zig move, the coordinated set (quic-zig v0.38.0, http3-zig
+  v0.5.7), and a checklist (move both pins together, the window clamp and
+  what it changes below a 32 MiB server budget).
 
 ## [0.24.0] - 2026-10-08
 
@@ -6981,7 +7004,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/nullstyle/capnp-zig/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/nullstyle/capnp-zig/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/nullstyle/capnp-zig/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/nullstyle/capnp-zig/compare/v0.21.0...v0.22.0

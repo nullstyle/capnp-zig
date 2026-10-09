@@ -82,7 +82,7 @@ Pin a tagged release. `zig fetch --save` downloads the tag's tarball and
 records its `.url` and `.hash` in your `build.zig.zon`:
 
 ```bash
-zig fetch --save https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.24.0.tar.gz
+zig fetch --save https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.25.0.tar.gz
 ```
 
 That adds an entry like this (the command fills in the hash; do not
@@ -91,8 +91,8 @@ hand-write it):
 ```zon
 .dependencies = .{
     .capnpc_zig = .{
-        .url = "https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.24.0.tar.gz",
-        .hash = "capnpc_zig-0.24.0-nUduFRkzTgBixM8yEHI86em1ok5kwn55pxbhz20HoXoA",
+        .url = "https://github.com/nullstyle/capnp-zig/archive/refs/tags/v0.25.0.tar.gz",
+        .hash = "capnpc_zig-0.25.0-...",
     },
 },
 ```
