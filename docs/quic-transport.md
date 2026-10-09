@@ -862,7 +862,9 @@ Recommended hardening posture:
   `transport_params.initial_max_stream_data_uni` above the frame and keep its
   connection window (`initial_max_data`) above it too. A server announces at
   most half of `max_connection_memory` as that window, so its budget must be
-  more than twice the frame ([Current Limits](#current-limits)).
+  more than twice the frame ([Current Limits](#current-limits)). quic-zig
+  refuses either window above 16 MiB, so send a frame of 16 MiB or more in
+  baseline mode.
 
 ### Stateless-reset key
 
@@ -1040,9 +1042,10 @@ a `.pem` reload (`replaceTlsContext`). `Listener.init` (so also `Server.init`,
 `serve` and `Connection.initServer`) zeroes its copy of the config once
 quic-zig's server is built, and keeps no pointer to yours: you may zero your
 copy when `init` returns. A server that loads the same key on every start
-decrypts the tickets that its crashed predecessor issued, so the heal
-resumes, and with `.early_data = .restore_only` BoringSSL accepts its 0-RTT
-data and the restore runs before the restarted server's handshake completes.
+decrypts the tickets that its crashed predecessor issued, so the heal resumes,
+and with `.early_data = .restore_only` BoringSSL accepts its 0-RTT data (with
+the same ALPN, mode, `early_dispatch` and announced transport parameters; see
+below) and the restore runs before the restarted server's handshake completes.
 That holds behind a Retry too (quic-zig v0.27.0; "Retry and NEW_TOKEN"
 below). `WarmRedialClient.Outcome.zero_rtt_generations` counts the
 generations whose first flight, with its Restore, rode 0-RTT (the verdict was
@@ -1508,16 +1511,15 @@ is the streak at exit; `Outcome.total_redials` counts every redial.
   connection window must be at most half of the budget, to leave at least
   half of it for writes. A larger window takes from the writes, and a window
   as large as the budget leaves none: the connection stalls with no error. A
-  window larger than the budget can also let an honest peer overrun the
-  budget. A server announces at most half of its budget as its
-  connection window (`serverConfigFromOptions` clamps
-  `transport_params.initial_max_data`; a 256 KiB budget announces 128 KiB). A
-  client cannot announce more than 16 MiB, half of its 32 MiB budget. An
-  embedder that builds its own quic-zig config keeps the rule itself. A slow
-  reader's unread bytes stay in the budget and leave the writer less until
-  the application reads: a short write, not a fault. Keep the budget well
-  above the largest frame you expect in either direction plus the requests
-  in flight.
+  window larger than the budget can also let an honest peer overrun the budget.
+  A server announces at most half of its budget as its connection window
+  (`serverConfigFromOptions` clamps `transport_params.initial_max_data`;
+  a 256 KiB budget announces 128 KiB). A client cannot announce more than
+  16 MiB, half of its 32 MiB budget. An embedder that builds its own
+  quic-zig config keeps the rule itself. A slow reader's unread bytes stay
+  in the budget and leave the writer less until the application reads:
+  a short write, not a fault. Keep the budget well above the largest
+  frame you expect in either direction plus the requests in flight.
 - Native mode does not deliver a data-stream frame larger than about the
   receiver's uni stream window or its connection window, whichever is smaller,
   plus the sender's send buffer (1 MiB with the default windows, so about

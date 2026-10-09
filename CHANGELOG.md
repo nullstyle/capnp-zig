@@ -20,10 +20,9 @@ the window is no larger than the budget. So the four-times budget rule
 from the corrected 0.24.0 notes and capnp-zig's half-budget write cap are
 gone. A server now announces at most half of its `max_connection_memory`
 as its connection window, which leaves at least half of the budget for
-writes. Serialization, codegen and TCP RPC do not change. No
-Stable API line changes, and no Experimental snapshot line moves. There is
-no `### Breaking` entry. docs/upgrading-to-0.25.0.md walks through the
-upgrade.
+writes. Serialization, codegen and TCP RPC do not change. No Stable API line
+changes, and no Experimental snapshot line moves. There is no `### Breaking`
+entry. docs/upgrading-to-0.25.0.md walks through the upgrade.
 
 ### Changed
 
@@ -115,19 +114,22 @@ upgrade.
   connection closed with frames queued stayed in `Connection.run`, stepping
   with no wait (a non-empty queue counted as immediate work); its close
   callback never ran, and a `Peer` on it never settled its pending
-  questions. Three ways in. The first and the third happen in baseline or
-  native mode, the second only in native mode. One: the server closes the
-  connection (it shuts down, or a server `Peer` aborts it) while the client
-  still has frames queued. The client drained on that CONNECTION_CLOSE and
-  never ended, not even at its idle timeout, because nothing reaps a
-  client's connection. Two: the native large-frame stall (a frame over
-  about 2 MiB with the default windows: the receiver ended at the idle
-  timeout and the sending client did not; seen with bench-quic on v0.24.0
-  and v0.23.0). Three: a back-pressured client whose server died without a
-  CONNECTION_CLOSE while frames were queued. The condition dates from the
-  first QUIC transport (v0.2.0). A closed QUIC connection now ends the
-  transport at once: `run` closes the engines, records the close cause
-  (`DisconnectCause.peer_close` at once after the server's close,
+  questions. Three ways in are tested. The first and the third happen in
+  baseline or native mode, the second only in native mode. One: the server
+  closes the connection (it shuts down, or a server `Peer` aborts it) while
+  the client still has frames queued. The client drained on that
+  CONNECTION_CLOSE and never ended, not even at its idle timeout, because
+  nothing reaps a client's connection. Two: the native large-frame stall (a
+  frame over about 2 MiB with the default windows: the receiver ended at the
+  idle timeout and the sending client did not; seen with bench-quic on
+  v0.24.0 and v0.23.0). Three: a back-pressured client whose server died
+  without a CONNECTION_CLOSE while frames were queued. By the code, a
+  back-pressured client that got a stateless reset (from a server restarted
+  with the same `stateless_reset_key`) hung the same way; no test covers
+  that path. The condition dates from the first QUIC transport (v0.2.0). A
+  closed QUIC connection now ends the transport at once: `run` closes the
+  engines, records the close cause (`DisconnectCause.peer_close` at once
+  after the server's close, `DisconnectCause.stateless_reset` after a reset,
   `DisconnectCause.idle_timeout` in the other two cases) and runs the close
   callback, where a `Peer` settles every pending question as disconnected.
   The owned `Server` had the same condition: a session whose connection
@@ -167,22 +169,24 @@ upgrade.
   The tag's text is unchanged. These corrections are in this release: in
   the 0.24.0 section, docs/upgrading-to-0.24.0.md, docs/quic-transport.md
   and the `build.zig.zon` pin comment. The `streamWrite` doc comment was
-  corrected too, then removed with the half-budget write cap (see Changed).
+  corrected too, then removed with the half-budget write cap, and the
+  memory-budget corrections in docs/quic-transport.md gave way to the
+  v0.38.0 text (see Changed).
   - Attribution: capnp-zig found one idle-connection defect in quic-zig;
     quic-zig's test for the fix found the second (a server never came to
     rest). The tagged text said capnp-zig found both.
   - Memory budget: the tagged text said the peer's frames always have room
     in the half that capnp-zig leaves, and that "at least twice the
     announced connection window" (which the defaults match) keeps an honest
-    peer from ending the connection. Twice is only the floor. quic-zig
-    charges a receive buffer up to twice its unread bytes and grows the
-    connection window up to 16 MiB or half the budget, whichever is
+    peer from ending the connection. Twice was only the floor. quic-zig
+    v0.37.2 charged a receive buffer up to twice its unread bytes and grew
+    the connection window up to 16 MiB or half the budget, whichever is
     smaller, so only a server budget of at least four times the larger of
-    the announced window and 16 MiB (64 MiB with the defaults) rules it
-    out, and a client (fixed at 32 MiB) cannot. The
-    budget also does not lower the announced windows; it caps only their
-    growth. quic-zig v0.38.0, in this release (see Changed), removes the
-    four-times rule.
+    the announced window and 16 MiB (64 MiB with the defaults) ruled it out,
+    and a client (fixed at 32 MiB) could not. The budget also did not lower
+    the announced windows; it capped only their growth. This release changes
+    both (see Changed): quic-zig v0.38.0 removes the four-times rule, and a
+    server announces at most half of its budget as its connection window.
   - Soak RSS: the tagged figures (34 MB against 51 MB) came from one run
     before the final pin. Seven runs each after the tag replace them.
   - Native frames over about 2 MiB: the tagged text said the connection
@@ -191,10 +195,10 @@ upgrade.
     callback never runs (fixed after the tag, see Fixed above). The tagged
     text also said no test or bench used native frames over 1 MiB. In
     v0.24.0 the tests' largest frames carried 1 MiB of data, and none was
-    near 2 MiB. But `bench-quic`, run by hand, sent 2 MiB: that is how the
-    stall was found. This release adds native tests that send 1.5 MiB
-    frames. Two of them cause the stall on purpose, with a 64 KiB uni
-    stream window (see Fixed above).
+    near 2 MiB. But `bench-quic`, run by hand at 2 MiB, showed the client
+    hang on v0.24.0 and v0.23.0. This release adds native tests that send
+    1.5 MiB frames. Two of them cause the stall on purpose, with a 64 KiB
+    uni stream window (see Fixed above).
   - docs/quic-transport.md names the `transport_params` windows among the
     knobs capnp-zig exposes, and dates the packet-number change to quic-zig
     v0.33.0.

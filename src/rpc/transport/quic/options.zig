@@ -479,7 +479,10 @@ pub const ServerOptions = struct {
     /// server cannot decrypt the tickets its predecessor issued and the
     /// first redial after a crash-restart takes a full handshake. With the
     /// same key on every start, that redial resumes, and with `early_data`
-    /// enabled BoringSSL accepts its 0-RTT data.
+    /// enabled BoringSSL accepts its 0-RTT data when the restarted server
+    /// also keeps its ALPN, transport mode, `early_dispatch` and announced
+    /// transport parameters (below twice the configured window, the same
+    /// `max_connection_memory` too; see `max_connection_memory`).
     ///
     /// `serverConfigFromOptions` copies the key into quic-zig's
     /// `Server.Config.session_ticket_key`, and quic-zig installs it on every
