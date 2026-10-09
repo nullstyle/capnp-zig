@@ -4759,12 +4759,14 @@ const queued_close_watchdog_ms: u64 = 10_000;
 const queued_close_payload_bytes: usize = 1536 * 1024;
 
 /// Endpoint state of the queued-close tests: counts, and the awake-clock
-/// time of the close callback.
+/// time of the close callback. `closed_at_ms` is a plain field (32-bit
+/// targets have no 64-bit atomics): read it only after the loop thread that
+/// ran the close callback has been joined.
 const QueuedCloseState = struct {
     messages: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     errors: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     closes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    closed_at_ms: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    closed_at_ms: u64 = 0,
     last_error: ?anyerror = null,
 };
 
@@ -4782,7 +4784,7 @@ fn recordQueuedCloseError(conn: *quic.Connection, err: anyerror) void {
 
 fn recordQueuedCloseClose(conn: *quic.Connection) void {
     const state: *QueuedCloseState = @ptrCast(@alignCast(conn.context().?));
-    state.closed_at_ms.store(awakeMs(), .release);
+    state.closed_at_ms = awakeMs();
     _ = state.closes.fetchAdd(1, .acq_rel);
 }
 
@@ -4897,8 +4899,9 @@ test "quic native: a client whose data-stream frame cannot leave ends at the idl
     // on some later timer.
     try std.testing.expectEqual(@as(usize, 1), server_state.closes.load(.acquire));
     try std.testing.expectEqual(events.DisconnectCause.idle_timeout, server.closeCause());
-    const client_closed_ms = client_state.closed_at_ms.load(.acquire);
-    const server_closed_ms = server_state.closed_at_ms.load(.acquire);
+    // Both loop threads are joined: their close times are safe to read.
+    const client_closed_ms = client_state.closed_at_ms;
+    const server_closed_ms = server_state.closed_at_ms;
     const apart_ms = if (client_closed_ms > server_closed_ms) client_closed_ms - server_closed_ms else server_closed_ms - client_closed_ms;
     if (apart_ms > queued_close_idle_timeout_ms) {
         std.debug.print("client and receiver ended {d} ms apart (idle timeout {d} ms)\n", .{ apart_ms, queued_close_idle_timeout_ms });
