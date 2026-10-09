@@ -248,6 +248,36 @@ pub fn defaultTransportParams() quic_zig.tls.TransportParams {
     };
 }
 
+/// `params` as an endpoint with a memory budget of `max_connection_memory`
+/// announces them: the connection window (`initial_max_data`) at most half
+/// of the budget. `serverConfigFromOptions` applies it with
+/// `ServerOptions.max_connection_memory`. Nothing changes at the defaults: a
+/// 16 MiB window and a 32 MiB budget. A client needs no clamp: it keeps
+/// quic-zig's 32 MiB budget, and quic-zig refuses a window above 16 MiB
+/// (endpoint_factory.zig checks the two values at comptime).
+///
+/// One budget holds what a connection writes and what its peer sends. Since
+/// quic-zig v0.38.0 a stream write stops short of the receive side's share:
+/// the connection window as announced, or quic-zig's window cap (16 MiB or
+/// half of the budget, whichever is smaller) if that is larger. A window
+/// larger than half of the budget leaves the writer less than half, and a
+/// window as large as the budget leaves it nothing: every write returns zero
+/// and the connection stalls with no error. With at most half announced, the
+/// writer keeps at least half of the budget, and an honest peer never meets
+/// EXCESSIVE_LOAD.
+///
+/// The stream windows (`initial_max_stream_data_*`) stay as given: quic-zig's
+/// share counts the connection window only, which bounds what all streams
+/// together may send.
+pub fn transportParamsWithinBudget(
+    params: quic_zig.tls.TransportParams,
+    max_connection_memory: u64,
+) quic_zig.tls.TransportParams {
+    var out = params;
+    out.initial_max_data = @min(params.initial_max_data, max_connection_memory / 2);
+    return out;
+}
+
 pub const ClientOptions = struct {
     /// UDP local bind address. When null, an ephemeral unspecified address is
     /// chosen with the same address family as `remote_addr`. A NEW_TOKEN is
@@ -258,6 +288,10 @@ pub const ClientOptions = struct {
     remote_addr: Net.IpAddress,
     server_name: []const u8,
     alpn_protocols: []const []const u8 = &.{alpn},
+    /// quic-zig refuses a connection window (`initial_max_data`) above
+    /// 16 MiB with `error.InvalidValue`. That is half of a client's memory
+    /// budget (quic-zig's default, 32 MiB), so a client needs no clamp; see
+    /// `transportParamsWithinBudget`.
     transport_params: quic_zig.tls.TransportParams = defaultTransportParams(),
     receive_timeout: std.Io.Duration = std.Io.Duration.fromMilliseconds(5),
     /// Give up on a dial whose handshake has not completed within this
@@ -375,6 +409,10 @@ pub const ServerOptions = struct {
     /// `error.InvalidConfig` (a hand-set token alongside a real key stays
     /// accepted — the accept path overwrites it per connection, so it is
     /// merely inert). Pins at v0.16.0 and earlier caught nothing here.
+    ///
+    /// The server announces at most half of `max_connection_memory` as its
+    /// connection window (`initial_max_data`); see
+    /// `transportParamsWithinBudget`.
     transport_params: quic_zig.tls.TransportParams = defaultTransportParams(),
     max_concurrent_connections: u32 = 1,
     local_cid_len: u8 = default_quic_local_cid_len,
@@ -515,6 +553,12 @@ pub const ServerOptions = struct {
     /// default while clients used this transport's own field default.
     congestion_control: quic_zig.CongestionAlgorithm = .bbr,
     reveal_close_reason_on_wire: bool = false,
+    /// What one connection may hold (quic-zig's `max_connection_memory`):
+    /// send buffers, receive buffers, CRYPTO and DATAGRAM data together. A
+    /// write past it returns short (back-pressure). quic-zig keeps the
+    /// peer's share out of the writes, the connection window, so the server
+    /// announces at most half of the budget as its connection window
+    /// (`transport_params.initial_max_data`; `transportParamsWithinBudget`).
     max_connection_memory: u64 = default_quic_max_connection_memory,
     /// Listener-wide and per-source bandwidth ceilings. quic-zig's `.default`
     /// for these three is "off" — the right ceiling is deployment-specific —
@@ -666,7 +710,7 @@ pub fn serverConfigFromOptions(
         .tls_cert_pem = options.tls_cert_pem,
         .tls_key_pem = options.tls_key_pem,
         .alpn_protocols = options.alpn_protocols,
-        .transport_params = options.transport_params,
+        .transport_params = transportParamsWithinBudget(options.transport_params, options.max_connection_memory),
         .max_concurrent_connections = options.max_concurrent_connections,
         .local_cid_len = options.local_cid_len,
         .qlog_callback = options.qlog_callback,
