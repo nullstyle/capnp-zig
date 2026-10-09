@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-08
+
+This is a QUIC release, paired with http3-zig v0.5.6. It moves quic-zig
+from v0.32.0 to v0.37.2: one stream reaches the path's rate (baseline mode
+22.6 -> 60.2 MB/s at 20 ms round trip), an idle connection holds less
+heap, and every probe timeout carries previously sent data. It fixes a reply
+larger than a server's `max_connection_memory`, which ended the session,
+and keeps half of that budget for what the peer sends. On the way it
+found two quic-zig defects with idle connections, which quic-zig v0.37.2
+fixes. It also adds host answer cancellation to the WASM host ABI
+(feature bit `12`). Serialization, codegen and TCP RPC do not change. No
+Stable API line changes. One `### Breaking` entry: 17 Experimental QUIC
+error sets gain `AckFrequencyNotNegotiated`. docs/upgrading-to-0.24.0.md
+walks through the upgrade.
+
 ### Breaking
 
 - **The QUIC error sets gain `AckFrequencyNotNegotiated` with quic-zig
@@ -112,12 +127,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `max_connection_receive_window`, `send_buffer_follows_credit`,
     `max_buffered_send_cap`, `ack_quick_gap_us`, `ack_frequency_policy`),
     and its loops do not use quic-zig's new ready API.
-  - One quic module per process: to link next to this tree, http3-zig must
-    pin v0.37.2 with the same option map. Its main pins v0.37.1 (`e5b3e28`,
-    measured with one `-Mquic=` and one `-Mboringssl=` against capnp-zig on
-    v0.37.1), and its v0.5.6 is not tagged yet; name the pairing release
-    here once it is and the coexistence check passes against it. http3-zig
-    v0.5.5 pins v0.32.0 and pairs with capnp-zig v0.23.0 and v0.22.0.
+  - One quic module per process: http3-zig v0.5.6 (tag `6566fa2`,
+    `http3_zig-0.5.6-ayZ03MVFEwB0H8S3-2BwZg_r2C92DUPQAPlUWF4SkWuU`) pins
+    v0.37.2 with the same option map, and links next to this release with
+    one quic module (measured at the tag: one `-Mquic=` and one
+    `-Mboringssl=`, Debug and ReleaseSafe). http3-zig v0.5.5 pins v0.32.0
+    and pairs with capnp-zig v0.23.0 and v0.22.0.
 
 ### Fixed
 
@@ -166,6 +181,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   baseline mode for such frames or raise the receiver's
   `transport_params.initial_max_stream_data_uni` above the largest frame.
 - docs/quic-transport.md's production checklist adds the budget rule above.
+- `docs/upgrading-to-0.24.0.md` (new): who should take the QUIC changes,
+  the coordinated set (quic-zig v0.37.2, http3-zig v0.5.6), and a checklist
+  (move both pins together, the widened error sets, the memory budget, the
+  native frame limit).
 
 ## [0.23.0] - 2026-10-08
 
@@ -6790,7 +6809,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/nullstyle/capnp-zig/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/nullstyle/capnp-zig/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/nullstyle/capnp-zig/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/nullstyle/capnp-zig/compare/v0.20.0...v0.21.0

@@ -212,10 +212,10 @@ into the same build must pin the same tag and pass the same dependency options
 (`.target`, `.release`, `.@"sanitize-c" = "trap"`), or the build makes two quic
 modules, each with its own BoringSSL. Only packages that link into one program
 must share a pin: capnp-zig and http3-zig move together, and a quic-zig
-security fix moves every package at once. This tree pins v0.37.2; http3-zig
-main still pins v0.37.1 (`e5b3e28`), so an http3-zig that pins v0.37.2 is
-needed to link into one program with this tree (the pairing release is named
-here once it is tagged and measured).
+security fix moves every package at once. capnp-zig v0.24.0 and http3-zig
+v0.5.6 (tag `6566fa2`) both pin v0.37.2, and link into one program with one
+quic module (one `-Mquic=` and one `-Mboringssl=`, Debug and ReleaseSafe,
+measured at the v0.5.6 tag).
 capnp-zig v0.22.0 and v0.23.0 pair with http3-zig v0.5.5 on v0.32.0, and
 capnp-zig v0.21.0 with http3-zig v0.5.4 on v0.30.1.
 Connection and server session loops drive
