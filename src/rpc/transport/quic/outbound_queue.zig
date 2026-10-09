@@ -4,7 +4,6 @@ const quic_zig = @import("quic");
 const events = @import("../../events.zig");
 const length_framer = @import("length_framer.zig");
 const options = @import("options.zig");
-const quic_zig_adapter = @import("quic_zig_adapter.zig");
 
 const baseline_stream_id = options.baseline_stream_id;
 
@@ -114,7 +113,7 @@ pub const OutboundQueue = struct {
                     break;
                 }
 
-                const written = quic_zig_adapter.writeStream(conn, baseline_stream_id, remaining) catch |err| switch (err) {
+                const written = conn.streamWrite(baseline_stream_id, remaining) catch |err| switch (err) {
                     error.StreamNotFound => {
                         self.requeueFront(allocator, item);
                         return;

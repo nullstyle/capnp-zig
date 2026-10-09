@@ -1804,14 +1804,17 @@ test "quic native: a reply larger than the server's connection memory budget arr
     try expectReplyLargerThanMemoryBudget(.native);
 }
 
-/// What the peer sends needs room in the budget too. quic-zig's own write
-/// takes all of `max_connection_memory` that is free, and the next STREAM
-/// frame the peer sends then has no room: quic-zig closes the connection
-/// with EXCESSIVE_LOAD, which an honest client's Finish, Release or
-/// pipelined call can trigger in the middle of a large reply. capnp-zig's
-/// writes fill at most half of the budget (`quic_zig_adapter.streamWrite`),
-/// so here the client sends a small frame every millisecond while a 1 MiB
-/// reply goes through a 256 KiB budget, and the reply still arrives whole.
+/// What the peer sends needs room in the budget too. Through quic-zig
+/// v0.37.2 a write took all of `max_connection_memory` that was free, and
+/// the next STREAM frame the peer sent then had no room: quic-zig closed the
+/// connection with EXCESSIVE_LOAD, which an honest client's Finish, Release
+/// or pipelined call triggered in the middle of a large reply. capnp-zig
+/// v0.24.0 capped its own writes at half of the budget. Since v0.38.0
+/// quic-zig's write stops short of the receive side's share (the connection
+/// window, which the server announces at most half of the budget for), and
+/// capnp-zig writes straight to it. Here the client sends a small frame
+/// every millisecond while a 1 MiB reply goes through a 256 KiB budget, and
+/// the reply still arrives whole.
 fn expectReplyFillingMemoryBudgetBesideClientFrames(mode: quic.TransportMode) !void {
     const allocator = std.testing.allocator;
     const budget: u64 = 256 * 1024;
