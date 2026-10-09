@@ -770,7 +770,12 @@ pub const Server = struct {
         // deinit defers). Mirrors connection_loop.stepOnce.
         server_session.invokeTickFloored(now_us);
 
-        if (conn.isClosed() and server_session.outboundEmpty()) {
+        // A closed QUIC connection sends nothing but its CONNECTION_CLOSE, so
+        // frames still queued can never leave: close the session at once,
+        // as the client loop does (`connection_loop.closedForGood`). Through
+        // v0.24.0 a session with frames queued waited for quic-zig's reap at
+        // the end of the draining period for its close callback.
+        if (conn.isClosed()) {
             server_session.closeOnLoop();
         }
         if (server_session.isClosing()) {
@@ -821,9 +826,11 @@ pub const Server = struct {
         // flushed through flushClosingSession will not double-fire) and a
         // no-op when no close callback is registered.
         const session = self.sessions.swapRemove(index);
-        // Reap path: a session whose outbound queue never drained skips
-        // `flushClosingSession` entirely, so this is the only chance to read
-        // its certificate — quic-zig destroys the slot right after.
+        // Reap path: the step that sees a connection closed flushes its
+        // session (`stepSessionAt`), so a session reaches here unflushed only
+        // if no step saw it closed. Then this is the only chance to read its
+        // certificate — quic-zig destroys the slot right after. (Through
+        // v0.24.0 every session with frames still queued took this path.)
         session.captureCloseCause();
         session.invokeCloseCallbackOnce();
         session.deinit(self.allocator);
@@ -835,6 +842,12 @@ pub const Server = struct {
         for (self.sessions.items) |server_session| {
             const conn = server_session.activeQuicConnection() orelse continue;
             if (conn.canSend()) return true;
+            // A closed connection sends nothing but its CONNECTION_CLOSE,
+            // which `canSend` covers, and the step that saw it close also
+            // closed its session. What is left is the draining deadline
+            // (`nextTimerDeadlineUs`) and the reap, so the step waits for
+            // them instead of spinning on frames that can never leave.
+            if (conn.isClosed()) continue;
             if (server_session.hasImmediateWork(conn)) return true;
             if (server_session.isClosing()) return true;
         }

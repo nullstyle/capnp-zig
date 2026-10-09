@@ -310,6 +310,167 @@ test "Peer over QUIC abrupt remote shutdown notifies the surviving peer" {
     try std.testing.expectEqual(@as(usize, 1), client_state.closes.load(.acquire));
 }
 
+/// Client of the stalled-call test: once the bootstrap returns, it sends one
+/// call whose params are larger than the server's uni stream window plus
+/// the client's send buffer, and records how that call settles.
+const StalledCallClient = struct {
+    payload: []const u8,
+    bootstrap_returned: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    call_settled: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    disconnected_reason_seen: bool = false,
+    cause_at_cancel: ?rpc_events.DisconnectCause = null,
+    closes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    cause_at_close: ?rpc_events.DisconnectCause = null,
+    failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn onBootstrap(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        ret: protocol.Return,
+        caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *StalledCallClient = @ptrCast(@alignCast(ctx_ptr));
+        if (ret.tag != .results) return error.ExpectedBootstrapResults;
+        const results = ret.results orelse return error.MissingBootstrapResults;
+        const descriptor = try results.content.getCapability();
+        const resolved = try caps.resolveCapability(descriptor);
+        self.bootstrap_returned.store(true, .release);
+        _ = try peer.sendCallResolved(resolved, 0x5155_4943, 7, self, buildCall, onCallReturn);
+    }
+
+    fn buildCall(ctx_ptr: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+        const self: *StalledCallClient = @ptrCast(@alignCast(ctx_ptr));
+        var payload = try call.payloadTyped();
+        try payload.setContentData(self.payload);
+        _ = try call.initCapTableTyped(0);
+    }
+
+    fn onCallReturn(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        ret: protocol.Return,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *StalledCallClient = @ptrCast(@alignCast(ctx_ptr));
+        if (ret.tag == .exception) {
+            const reason = if (ret.exception) |ex| ex.reason else "";
+            self.disconnected_reason_seen = std.mem.eql(u8, reason, capnpc.rpc.peer.disconnected_reason);
+            self.cause_at_cancel = peer.lastDisconnectCause();
+        }
+        _ = self.call_settled.fetchAdd(1, .acq_rel);
+    }
+
+    fn peerError(ctx: ?*anyopaque, _: *Peer, _: anyerror) void {
+        const self: *StalledCallClient = @ptrCast(@alignCast(ctx.?));
+        self.failed.store(true, .release);
+    }
+
+    fn peerClose(ctx: ?*anyopaque, peer: *Peer) void {
+        const self: *StalledCallClient = @ptrCast(@alignCast(ctx.?));
+        self.cause_at_close = peer.lastDisconnectCause();
+        _ = self.closes.fetchAdd(1, .acq_rel);
+    }
+};
+
+test "Peer over native QUIC settles a call whose frame cannot leave as disconnected at the idle timeout" {
+    // The native large-frame stall ("Current Limits" in
+    // docs/quic-transport.md) with a 64 KiB server uni stream window, so a
+    // 1.5 MiB call stalls: the server reads a data stream only after its
+    // envelope, and the client writes the envelope only after the whole
+    // data stream. Both connections idle out. Through v0.24.0 the client's
+    // `run` kept going with the call's frame queued, so its close callback
+    // never ran and the call never settled.
+    const allocator = std.testing.allocator;
+    const idle_timeout_ms: u64 = 500;
+    const watchdog_ms: u64 = 10_000;
+    const payload = try allocator.alloc(u8, 1536 * 1024);
+    defer allocator.free(payload);
+    for (payload, 0..) |*byte, index| byte.* = @truncate(index);
+
+    var server_params = quic.defaultTransportParams();
+    server_params.max_idle_timeout_ms = idle_timeout_ms;
+    server_params.initial_max_stream_data_uni = 64 * 1024;
+    var client_params = quic.defaultTransportParams();
+    client_params.max_idle_timeout_ms = idle_timeout_ms;
+
+    var server_conn = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .transport_params = server_params,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+    });
+    defer server_conn.deinit();
+    var client_conn = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_conn.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .transport_params = client_params,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+    });
+    defer client_conn.deinit();
+
+    var server_state = ServerState{};
+    var server_peer = Peer.init(allocator, &server_conn);
+    defer server_peer.deinit();
+    server_peer.disableThreadAffinity();
+    _ = try server_peer.setBootstrap(.{ .ctx = &server_state, .on_call = ServerState.onCall });
+    server_peer.start(&server_state, ServerState.peerError, ServerState.peerClose);
+
+    var client_state = StalledCallClient{ .payload = payload };
+    var client_peer = Peer.init(allocator, &client_conn);
+    defer client_peer.deinit();
+    client_peer.disableThreadAffinity();
+    client_peer.start(&client_state, StalledCallClient.peerError, StalledCallClient.peerClose);
+    _ = try client_peer.sendBootstrap(&client_state, StalledCallClient.onBootstrap);
+
+    var server_thread = try std.Thread.spawn(.{}, runConnection, .{&server_conn});
+    var client_thread = try std.Thread.spawn(.{}, runConnection, .{&client_conn});
+    var joined = false;
+    defer if (!joined) {
+        client_conn.requestClose();
+        server_conn.requestClose();
+        client_thread.join();
+        server_thread.join();
+    };
+
+    // The watchdog: a client that has not ended by then is stuck in `run`;
+    // a requested close is the only way out, so force it and fail.
+    var waited_ms: u64 = 0;
+    while (client_state.closes.load(.acquire) == 0 and waited_ms < watchdog_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+    const client_ended = client_state.closes.load(.acquire) > 0;
+    const settled_before_watchdog = client_state.call_settled.load(.acquire);
+    client_conn.requestClose();
+    server_conn.requestClose();
+    client_thread.join();
+    server_thread.join();
+    joined = true;
+
+    if (!client_ended) {
+        std.debug.print(
+            "the client did not end within {d} ms (idle timeout {d} ms); the call had settled {d} times by then\n",
+            .{ watchdog_ms, idle_timeout_ms, settled_before_watchdog },
+        );
+        return error.StalledCallClientNeverEnded;
+    }
+    try std.testing.expect(client_state.bootstrap_returned.load(.acquire));
+    try std.testing.expect(!client_state.failed.load(.acquire));
+    // The call never reached the server, and settled exactly once with the
+    // disconnect: the unchanged reason text, and the idle timeout as the
+    // typed cause, already readable inside its callback.
+    try std.testing.expectEqual(@as(usize, 0), server_state.calls.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), client_state.call_settled.load(.acquire));
+    try std.testing.expect(client_state.disconnected_reason_seen);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.idle_timeout, client_state.cause_at_cancel orelse return error.NoCancelCause);
+    try std.testing.expectEqual(@as(usize, 1), client_state.closes.load(.acquire));
+    try std.testing.expectEqual(rpc_events.DisconnectCause.idle_timeout, client_state.cause_at_close orelse return error.NoCloseCause);
+    try std.testing.expectEqual(@as(u32, 0), client_peer.stats().outbound_questions);
+}
+
 const FanoutResult = struct {
     completed: [2]bool,
     closed: [2]usize,
