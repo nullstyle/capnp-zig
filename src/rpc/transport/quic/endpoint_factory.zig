@@ -34,7 +34,9 @@ comptime {
     // clamp: quic-zig refuses a window above
     // `max_initial_connection_receive_window` (16 MiB) with
     // `error.InvalidValue`, and that is half of the client's budget. If either
-    // value moves, clamp the client's window as the server does.
+    // value moves, clamp the client's window as the server does. The transport
+    // test "quic client's quic-zig connection gets the client budget and
+    // announces at most half of it" reads both back from the connection.
     std.debug.assert(quic_zig.conn.state.max_initial_connection_receive_window <= client_max_connection_memory / 2);
 }
 
@@ -56,7 +58,8 @@ pub fn initClient(
         .server_name = options.server_name,
         .alpn_protocols = options.alpn_protocols,
         // At most half of `client_max_connection_memory` by construction
-        // (see the comptime check below); a larger window is refused.
+        // (see the comptime check above `initClient`); a larger window is
+        // refused.
         .transport_params = options.transport_params,
         .max_connection_memory = client_max_connection_memory,
         .ca_pem = options.ca_pem,

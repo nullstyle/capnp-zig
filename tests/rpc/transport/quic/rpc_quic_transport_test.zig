@@ -2001,12 +2001,35 @@ test "quic native: a server whose memory budget is below the default window stil
     try expectReplyThroughBudgetBelowDefaultWindow(.native);
 }
 
-// A client keeps quic-zig's 32 MiB budget, and quic-zig refuses a
-// connection window above 16 MiB, half of that budget, so a client cannot
-// announce a window that takes its writes below half of the budget. A
+// What `Connection.initClient` gives the quic-zig connection it creates: a
+// budget of `default_quic_max_connection_memory` (32 MiB), and a connection
+// window of at most half of it, so that the client's writes keep at least
+// half of the budget (since quic-zig v0.38.0 a larger window takes from
+// them, and a window as large as the budget leaves none). The default window
+// is the largest quic-zig accepts (16 MiB, next test). Read from the
+// connection itself, so a budget wired wrongly in endpoint_factory.zig fails
+// here, not only as a stall in a loopback test.
+test "quic client's quic-zig connection gets the client budget and announces at most half of it" {
+    var client = try quic.Connection.initClient(std.testing.allocator, std.testing.io, .{
+        .remote_addr = .{ .ip4 = .loopback(9) },
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+    });
+    defer client.deinit();
+    const q = client.endpoint.activeQuicConnection() orelse return error.QuicConnectionGone;
+    try std.testing.expectEqual(quic.default_quic_max_connection_memory, q.max_connection_memory);
+    const announced = q.localTransportParams().initial_max_data;
+    try std.testing.expectEqual(quic.defaultTransportParams().initial_max_data, announced);
+    try std.testing.expect(announced <= q.max_connection_memory / 2);
+}
+
+// A pin on quic-zig, not on capnp-zig's wiring (the test above checks
+// that): quic-zig refuses a connection window above 16 MiB, half of the
+// client's 32 MiB budget, so `ClientOptions.transport_params` cannot
+// announce one that takes the client's writes below half of the budget. A
 // comptime check in endpoint_factory.zig holds the two values together;
-// this test is the refusal itself.
-test "quic client refuses a connection window above half of its memory budget" {
+// if quic-zig raised its limit, that check fails the build first.
+test "quic-zig refuses a client connection window above 16 MiB, half of the client budget" {
     var params = quic.defaultTransportParams();
     params.initial_max_data = quic.default_quic_max_connection_memory / 2 + 1;
     try std.testing.expectError(error.InvalidValue, quic.Connection.initClient(std.testing.allocator, std.testing.io, .{
