@@ -135,8 +135,8 @@
         // (0.6.7, BoringSSL aef0e2df), which links Windows ws2_32 with
         // pkg-config lookup disabled.
         .quic = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.37.2.tar.gz",
-            .hash = "quic-0.37.2-DnSYvb2bPwDUgMMPDFV3tX0CgvsCbn2u2ed60n4tUtZ-",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.38.0.tar.gz",
+            .hash = "quic-0.38.0-DnSYve_hPwBp5d2c8QUoZiNWi-rHT6QFR4pK2DueXEAC",
             .lazy = true,
         },
     },
