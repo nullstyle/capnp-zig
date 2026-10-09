@@ -51,7 +51,7 @@ implementation of Cap'n Proto serialization, code generation, and RPC.
 
 Default builds use only Zig std and the vendored test fixtures. QUIC builds are
 opt-in with `-Dquic=true`, which resolves `quic-zig` and its BoringSSL support
-through `build.zig.zon`. The manifest pins the `quic` package at tag `v0.37.2`;
+through `build.zig.zon`. The manifest pins the `quic` package at tag `v0.38.0`;
 that archive pins boringssl-zig commit `ff30fe99` (0.6.7).
 
 ## Key Types By Layer
