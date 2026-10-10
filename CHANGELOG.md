@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--transport quic` exits with `error.QuicNeedsBuildFlag`. No build step or
   CI job runs this mode yet.
 
+### Documentation
+
+- **docs/quic-transport.md: Wire constants (frozen).** A new section lists
+  the frozen baseline wire: the `capnp-rpc/1` ALPN, stream 0, the u32
+  little-endian length prefix, the two `frame_error` rules (a zero length,
+  and a length above `max_message_bytes`), and the application close codes.
+  It says that native mode is a different wire on the same ALPN and is not
+  negotiated. The Modes section now says that TCP finds each message's end
+  from the segment table, so the QUIC prefix is a design choice of this
+  ALPN.
+
 ## [0.25.0] - 2026-10-09
 
 This is a QUIC release, paired with http3-zig v0.5.7. It fixes a QUIC

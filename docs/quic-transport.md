@@ -271,26 +271,6 @@ QUIC module remains Experimental.
 `.baseline`. Both sides must choose the same mode explicitly when using
 `.native`; the mode is not negotiated with a separate ALPN.
 
-## Wire constants (frozen)
-
-The baseline wire is a frozen contract (independent implementations code
-against it — e.g. capnp-swift drives it from Network.framework and
-re-implements the framing in its own core):
-
-- ALPN: `capnp-rpc/1` (`rpc.transport.quic.alpn`, exported even with QUIC
-  compiled out).
-- Stream: the client's first bidirectional stream, id
-  (`baseline_stream_id`) 0, carries every RPC frame.
-- Framing: one 32-bit little-endian byte length prefix before each
-  standalone segment-table message.
-- Application close codes (`ApplicationCloseCode`): `normal = 0`,
-  `frame_error = 0x434e5001`, `protocol_error = 0x434e5002` (also the
-  refused-stream reset), `internal_error = 0x434e5003`,
-  `peer_callback_failure = 0x434e5004`.
-
-Any change to these needs a new ALPN string — a silent change breaks
-interop with independent baseline implementations.
-
 | Mode | Stream Layout | Use When |
 | --- | --- | --- |
 | `baseline` | Client-initiated bidirectional stream 0 carries 32-bit little-endian length-delimited RPC frames. | You want the most conservative QUIC port of the TCP transport. This is the default. |
@@ -299,11 +279,12 @@ interop with independent baseline implementations.
 Baseline mode is the compatibility baseline. It preserves the TCP transport's
 *message-level* compatibility above the QUIC handshake: each length-prefixed
 payload is exactly the standalone segment-table message the TCP transport
-would have delivered (TCP and Unix frames carry the segment table by itself —
-no length prefix; the prefix exists here because a QUIC stream is one ordered
-byte stream and the receiver must find each message's end). Use baseline for
-first deployments, interop bring-up, and any peer set where a mode mismatch
-would be difficult to roll back quickly.
+would have delivered. TCP and Unix frames carry the segment table by itself,
+with no length prefix; the TCP framer finds each message's end from the
+segment table. The prefix is a design choice of the `capnp-rpc/1` wire, not a
+need of the QUIC stream. Use baseline for first deployments, interop bring-up,
+and any peer set where a mode mismatch would be difficult to roll back
+quickly.
 
 Native mode is an explicit opt-in wire shape for QUIC-specific stream use. It
 keeps stream 0 as the ordered control stream and uses additional unidirectional
@@ -319,6 +300,34 @@ stays unread in the QUIC stream, held back by flow control.
 
 QUIC DATAGRAM is not used by either mode. Telemetry and sideband data should be
 designed as a transport-general facility, not as a QUIC-only extension.
+
+## Wire constants (frozen)
+
+The baseline wire is a frozen contract. capnp-zig holds two implementations
+of its framing: the QUIC transport's `LengthDelimitedFramer` and the `native`
+module's `.u32_le` codec (`CAPNP_FRAMING_U32_LE`). The `native` module is
+capnp-swift's core, and capnp-swift drives it from Network.framework (see
+[native-abi.md](native-abi.md)). A change to the framing must land in both.
+
+- ALPN: `capnp-rpc/1` (`rpc.transport.quic.alpn`, exported even with QUIC
+  compiled out).
+- Stream: the client's first bidirectional stream, id
+  (`baseline_stream_id`) 0, carries every RPC frame.
+- Framing: one 32-bit little-endian byte length prefix before each
+  standalone segment-table message.
+- A zero length is a framing error: the receiver closes with `frame_error`.
+- A length above the receiver's `max_message_bytes` (64 MiB by default) is
+  also a `frame_error` close.
+- Application close codes (`ApplicationCloseCode`): `normal = 0`,
+  `frame_error = 0x434e5001`, `protocol_error = 0x434e5002` (also the
+  refused-stream reset), `internal_error = 0x434e5003`,
+  `peer_callback_failure = 0x434e5004`.
+
+Any change to these needs a new ALPN string. A silent change breaks interop
+with independent baseline implementations. The ALPN alone does not name the
+wire, though: native mode is a different wire on the same `capnp-rpc/1`
+ALPN. The mode is not negotiated, so both peers must set the same mode, and a
+mismatch closes the connection.
 
 ## Recommended Mode Defaults
 
