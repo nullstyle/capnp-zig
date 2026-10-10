@@ -48,18 +48,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   but the caller got a failed read. `readTimeout` now posts the receive
   again, with the same deadline, when this happens. A cancellation of the
   caller still returns `error.Canceled`, and a deadline that passed
-  meanwhile returns `error.Timeout`. After 8 such re-posts in one read it
-  returns `error.Unexpected` as before. In Windows CI loops, 1,600 runs had
-  no failure with the re-post (19 failed without it), and each spurious
-  cancellation needed one re-post. Two new Windows tests recreate the state
-  on purpose: the read returns the peer's bytes and the stream continues in
-  order, or, past the deadline, the read times out and leaves the bytes for
-  the next read. Untimed reads (`Transport.read`, which `Connection`'s
-  Windows read loop uses) do not take this path, and the stray cancellation
-  can reach them too: in a CI experiment, an untimed read right after such
-  a timed read on the same socket crashed in 28 of 1,600 runs, because
-  std's (0.17.0) `netRead` on Windows treats a cancellation it did not ask
-  for as unreachable. That case is still open.
+  meanwhile returns `error.Timeout`. When Windows cancels the receive again
+  and again, the read waits between re-posts, and gives up with
+  `error.Unexpected` only after 10 s (see the next entry). In Windows CI
+  loops, 1,600 runs had no failure with the re-post (19 failed without it),
+  and each spurious cancellation needed one re-post. Two new Windows tests
+  recreate the state on purpose: the read returns the peer's bytes and the
+  stream continues in order, or, past the deadline, the read times out and
+  leaves the bytes for the next read. The stray cancellation reaches
+  untimed reads too; the next entry fixes them.
+- **Windows: an untimed read could abort the process when Windows cancelled
+  its receive.** This affects `Transport.read`, `Transport.readTimeout(.none)`
+  and `Connection`'s Windows read loop (TCP, and any stream handle given to
+  `Transport` or `Connection`). These reads went through std's (0.17.0)
+  `netRead`, which on Windows treats a STATUS_CANCELLED it did not ask for
+  as unreachable: a panic in Debug and ReleaseSafe, undefined behavior in
+  ReleaseFast. In a CI experiment, an untimed read right after a timed read
+  whose deadline raced arriving data, on the same socket, aborted in 28 of
+  1,600 runs. A `Connection` gets that sequence when code calls
+  `conn.transport.readTimeout` before `run` (a `WorkerPool` accept hook, for
+  example), and a reader that does a deadline read before its blocking
+  reads gets it too. On Windows every socket read of the transport is now
+  its own AFD receive, as the timed read already was, and it posts the
+  receive again when Windows cancels it without data: at once, then after
+  waits that start at 50 µs and double up to 5 ms. One untimed read in CI
+  met 9 such cancellations in a row, which a limit of 8 re-posts per read
+  (the timed read's limit until now) turned into `error.Unexpected`; a
+  read, timed or untimed, now fails that way only after Windows has gone
+  on cancelling its receives for 10 s, each soon after its post (a
+  receive that stayed pending for 1 s first starts the count afresh, so
+  rare cancellations over a long read never add up). The read ends instead
+  when its task is cancelled through Io (`error.Canceled`, also during a
+  wait), when its deadline passes (`error.Timeout`, timed reads only; a
+  wait never runs past it), or when the transport is closing (0). The last
+  case is new for timed reads too: they no longer post a receive again on
+  a transport that is closing. On Windows only an Io cancellation of the
+  reading task (or a timed read's deadline) ends a read that waits for
+  data. `Transport.shutdown` and `close` do not, as before, because a
+  socket shutdown does not complete a pending receive; they set the
+  closing flag, so a receive that Windows cancels after them ends the read
+  with 0 instead of being posted again. (`deinit` under a
+  pending read is still unsafe: it frees the read buffer.) A read whose
+  receive completes as its task is cancelled now returns the bytes and
+  leaves the cancellation pending for the task's next cancellation point;
+  std's read dropped those bytes, and the timed read dropped the
+  cancellation. Errors keep std's mapping (REMOTE_DISCONNECT is
+  `error.ConnectionResetByPeer` and IO_TIMEOUT is
+  `error.ConnectionTimedOut`, now on timed reads too). Signatures and
+  error sets do not change. A `CancelIoEx` from outside the transport
+  looks like the stray cancellation: the receive is posted again and the
+  read keeps waiting. Do not close the raw handle under a pending read
+  without `Transport.close` or `shutdown` first: if Windows cancels the
+  receive, the one posted again fails on the closed handle with
+  `error.Unexpected`, or reads from another object if Windows has reused
+  the handle value. New Windows tests recreate the stray cancellation on
+  `read`, `readTimeout(.none)`, the `Connection` loop, and that loop after
+  a timed read made on another thread, and cover the close and
+  Io-cancellation edges and 20 cancelled receives in a row (each posted
+  again, with growing waits). In-file tests check the give-up with a
+  50 ms span, and that cancellations of receives that were pending for a
+  while never add up to it.
 
 ### Documentation
 

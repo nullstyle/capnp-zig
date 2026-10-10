@@ -61,6 +61,32 @@ pub const SocketFd = struct {
 /// Uses `std.Io` for all socket operations, supporting both POSIX and
 /// Windows via the Io VTable abstraction.
 ///
+/// On Windows every socket read, timed or not, is the transport's own AFD
+/// receive (`IOCTL_AFD_RECEIVE` in an `Io.Batch`), not std's `net_read`.
+/// Windows can end a receive STATUS_CANCELLED although nothing cancelled
+/// it, with no bytes taken: seen on the receive posted right after a timed
+/// read whose deadline raced arriving data. std's (0.17.0)
+/// `netReadWindows` treats that as unreachable and aborts the process. The
+/// transport posts the receive again instead, unless the read was cancelled
+/// through Io, its deadline passed, or the transport is closing: at once,
+/// then after waits that grow from 50 us to 5 ms. When Windows has gone on
+/// cancelling the receives for 10 s, each soon after its post, the read
+/// fails with `error.Unexpected`.
+///
+/// To end a Windows read that is waiting, cancel its task through Io (as
+/// `Connection` does at teardown); a timed read also ends at its deadline.
+/// `shutdown` and `close` do not end it, since a socket shutdown does not
+/// complete a pending receive there (see `Connection.requestClose`), and
+/// `deinit` must not run under a read (it frees the read buffer). What
+/// `shutdown`, `close` and `deinit` do is set the closing flag first, so a
+/// receive that Windows cancels after that ends the read with 0 instead of
+/// being posted again. A `CancelIoEx` from outside the transport looks like
+/// the stray cancellation: the receive is posted again and the read keeps
+/// waiting. Do not close the raw handle without `close` or `shutdown`
+/// first: if Windows cancels the pending receive, the one posted again
+/// meets a closed handle (`error.Unexpected`), or, if Windows has reused
+/// the handle value, another object, and reads from it.
+///
 /// ## AF_UNIX sockets: drain mode
 ///
 /// On Linux and macOS, `initWithOptions` reads the socket family once (with
@@ -800,6 +826,20 @@ pub const Transport = struct {
     /// "Receiving fds" on the type). The same three conditions end the
     /// connection, and so does a protocol error (`error.ConnectionResetByPeer`
     /// after a `.protocol_error` event).
+    ///
+    /// On Windows the read is the transport's own AFD receive (see
+    /// "Cross-platform" on the type). When Windows ends it STATUS_CANCELLED
+    /// with no bytes and nothing asked for that, the read posts it again, at
+    /// once and then after waits that grow from 50 us to 5 ms; it returns 0
+    /// if the transport started closing meanwhile, and fails with
+    /// `error.Unexpected` once Windows has gone on cancelling its receives
+    /// that way for 10 s, each soon after its post (`SpuriousCancelRetry`).
+    /// An Io cancellation of the reading task returns `error.Canceled`; if
+    /// the receive took bytes as the cancellation landed, the read returns
+    /// those bytes and the cancellation stays pending for the task's next
+    /// cancellation point. Of the ways to stop a read that waits for data,
+    /// only that one works on Windows: `shutdown` and `close` do not end it
+    /// (see "Cross-platform").
     pub fn read(self: *Transport) ReadError!usize {
         if (self.close_requested.load(.acquire)) return 0;
         if (comptime refuses_unix_sockets) {
@@ -809,7 +849,7 @@ pub const Transport = struct {
             if (self.drain) |drain| return self.readDrain(drain);
         }
         var bufs: [1][]u8 = .{self.read_buf};
-        return ioReadVec(self.io, self.fd, &bufs);
+        return ioReadVec(self.io, self.fd, &bufs, &self.close_requested);
     }
 
     /// A read of a socket this build refuses (`unix_refused`): reads
@@ -1160,10 +1200,22 @@ pub const Transport = struct {
     /// `recv` returns EAGAIN, and `Io.Threaded`'s read path classifies
     /// EAGAIN as a programmer bug (`errnoBug`), so a sockopt deadline turns
     /// a normal timeout into a debug-build panic. The deadline belongs to
-    /// the Io operation, not to the socket. Windows uses an owned AFD receive
-    /// batch when concurrent network reads are unavailable; other backends
-    /// race a cancellable read task against the deadline. Every timed path joins
-    /// the read and preserves successful completions before returning.
+    /// the Io operation, not to the socket. Windows uses the transport's own
+    /// AFD receive batch (as `read` does) when concurrent network reads are
+    /// unavailable, which is always the case with std's (0.17.0) backend;
+    /// other backends race a cancellable read task against the deadline.
+    /// Every timed path joins the read and preserves successful completions
+    /// before returning. On Windows a receive that Windows cancelled without
+    /// data is posted again, as in `read`, unless the deadline has passed
+    /// (`error.Timeout`). `timeout = .none` is an untimed read: `read`.
+    ///
+    /// A read whose bytes arrive as its task is cancelled through Io returns
+    /// the bytes. On Windows the cancellation then stays pending for the
+    /// task's next cancellation point, as in `read`. On other targets the
+    /// timed read can drop it for now (its task path,
+    /// `ioReadVecTaskTimeout`, does): the task then sees no `error.Canceled`
+    /// from that cancellation, so code that cancels a timed read there must
+    /// not rely on a later cancellation point to notice it.
     ///
     /// In drain mode the deadline is a `poll` before the drain-mode `read`.
     pub fn readTimeout(self: *Transport, timeout: std.Io.Timeout) ReadTimeoutError!usize {
@@ -1178,7 +1230,7 @@ pub const Transport = struct {
             }
         }
         var bufs: [1][]u8 = .{self.read_buf};
-        return ioReadVecTimeout(self.io, self.fd, &bufs, timeout);
+        return ioReadVecTimeout(self.io, self.fd, &bufs, timeout, &self.close_requested);
     }
 
     /// Blocking write of all bytes. Retries partial writes until the
@@ -1443,6 +1495,10 @@ pub const Transport = struct {
     /// lane (see the type doc). A blocked reader wakes when that lane gets
     /// to it, at once unless it is stuck in a blocking close; then the
     /// reader notices on its next poll tick (250 ms).
+    ///
+    /// On Windows a pending read does not wake: a socket shutdown does not
+    /// complete its receive. Cancel the reading task through Io instead (see
+    /// "Cross-platform" on the type).
     ///
     /// Also closes the write queue so the writer thread will exit.
     /// The owning thread should subsequently call `deinit()`.
@@ -1837,7 +1893,7 @@ fn ignoreSigpipe() void {
 /// operation added) around 0.17.0-dev.1786. Selecting on the OPERATION's
 /// presence — not a version number — keeps one source tree building on
 /// both sides of that move, which is what a downstream pinned to a
-/// different dev snapshot actually needs. Same shape as `ioReadVec`'s
+/// different dev snapshot actually needs. Same shape as `stdNetReadVec`'s
 /// existing `net.Stream.read` preference. Both arms land in
 /// `WriteError` exactly: `Stream.Writer.Error = NetWrite.Error ||
 /// Cancelable`, and `operate` contributes the `Cancelable` half.
@@ -1857,11 +1913,37 @@ fn ioWrite(io: std.Io, fd: net.Socket.Handle, bytes: []const u8) Transport.Write
     return io.vtable.netWrite(io.userdata, fd, bytes, &data, 0);
 }
 
-/// Submits the `net_read` operation directly rather than calling
-/// `net.Stream.read`: at 0.17.0 that std wrapper destructures the
+/// The one untimed socket read of the transport (`read`, `readTimeout(.none)`,
+/// and so `Connection`'s read loops).
+///
+/// On Windows it is the transport's own AFD receive, `windowsReceive` with
+/// no deadline, instead of std's `net_read`: std's (0.17.0)
+/// `netReadWindows` aborts the process on a receive Windows cancelled
+/// without being asked, and this one posts the receive again (see
+/// `windowsReceive`). `closing` is the transport's `close_requested`: once
+/// it is set, such a receive ends the read with 0 instead. An Io that
+/// cannot run the receive batch concurrently gets std's read, as before.
+/// Elsewhere it is std's `net_read`.
+fn ioReadVec(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, closing: ?*const std.atomic.Value(bool)) Transport.ReadError!usize {
+    if (comptime builtin.os.tag == .windows) {
+        return windowsReceive(io, fd, bufs, .none, closing, .{}) catch |err| switch (err) {
+            // Only a deadline ends a receive with Timeout, and this read has
+            // none. Mapped, not unreachable: unreachable is undefined
+            // behavior in ReleaseFast.
+            error.Timeout => error.Unexpected,
+            // Nothing was posted and nothing completed.
+            error.ConcurrencyUnavailable => stdNetReadVec(io, fd, bufs),
+            else => |e| e,
+        };
+    }
+    return stdNetReadVec(io, fd, bufs);
+}
+
+/// std's untimed `net_read`. Submits the operation directly rather than
+/// calling `net.Stream.read`: at 0.17.0 that std wrapper destructures the
 /// operation's new `ReadResult` struct as a tuple, so it stops compiling
 /// the moment anything references it.
-fn ioReadVec(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8) Transport.ReadError!usize {
+fn stdNetReadVec(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8) Transport.ReadError!usize {
     if (comptime @hasField(std.Io.Operation, "net_read")) {
         const result = try io.operate(.{ .net_read = .{
             .socket_handle = fd,
@@ -1917,15 +1999,18 @@ fn createSocketPair() ![2]net.Socket.Handle {
 /// Vectored read with a deadline, via the Io operation's own timeout.
 ///
 /// Prefer the backend's batched operation support. The pinned Windows
-/// Threaded backend cannot submit concurrent net_read batches, so use an
-/// owned AFD receive batch there to preserve completions racing cancellation.
+/// Threaded backend cannot submit concurrent net_read batches, so use the
+/// transport's own AFD receive batch there (`windowsReceive`) to preserve
+/// completions racing cancellation. `timeout = .none` is the untimed read
+/// (`ioReadVec`), and `closing` goes to whichever Windows receive runs.
 fn ioReadVecTimeout(
     io: std.Io,
     fd: net.Socket.Handle,
     bufs: [][]u8,
     timeout: std.Io.Timeout,
+    closing: ?*const std.atomic.Value(bool),
 ) Transport.ReadTimeoutError!usize {
-    if (timeout == .none) return ioReadVec(io, fd, bufs);
+    if (timeout == .none) return ioReadVec(io, fd, bufs, closing);
     const deadline = timeout.toDeadline(io);
     var storage: [1]std.Io.Operation.Storage = undefined;
     var batch: std.Io.Batch = .init(&storage);
@@ -1950,7 +2035,7 @@ fn ioReadVecTimeout(
         if (batch.next()) |completion| return netReadLen(try completion.result.net_read);
         return switch (err) {
             error.ConcurrencyUnavailable => if (comptime builtin.os.tag == .windows)
-                ioReadVecWindowsTimeout(io, fd, bufs, deadline)
+                windowsReceive(io, fd, bufs, deadline, closing, .{})
             else
                 ioReadVecTaskTimeout(io, fd, bufs, deadline),
             else => err,
@@ -1960,7 +2045,49 @@ fn ioReadVecTimeout(
     return netReadLen(try completion.result.net_read);
 }
 
-fn ioReadVecWindowsTimeout(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, deadline: std.Io.Timeout) Transport.ReadTimeoutError!usize {
+/// The transport's own AFD receive on Windows (`IOCTL_AFD_RECEIVE` in an
+/// `Io.Batch`), for every socket read there: untimed (`deadline = .none`,
+/// from `ioReadVec`) and timed (a deadline from `ioReadVecTimeout`).
+/// `closing` is the transport's `close_requested`, or null for a bare
+/// handle. `retry` paces the re-posts of a receive Windows cancelled
+/// without data, and bounds them (`SpuriousCancelRetry`; the transport
+/// passes the defaults).
+///
+/// It returns:
+/// - n > 0: the bytes the receive took.
+/// - 0: the end of the stream (STATUS_SUCCESS with no bytes), empty `bufs`
+///   (nothing is posted), or a receive Windows cancelled once `closing`
+///   was set.
+/// - `error.Timeout`: the deadline passed (timed reads only).
+/// - `error.Canceled`: an Io cancellation of the calling task, with no
+///   receive completed. If the receive completed as the cancellation
+///   landed, its result is returned instead, and the cancellation is
+///   re-armed (`recancel`) for the task's next cancellation point.
+/// - `error.ConcurrencyUnavailable`: the Io cannot run the batch
+///   concurrently (std's Threaded backend always can); nothing completed.
+/// - `error.Unexpected`: a backend that reports success with the receive
+///   still pending, a run of receives that Windows cancelled without data
+///   that lasted `retry.give_up_after`, or an unknown NTSTATUS.
+/// - the rest as std's `netReadWindows` maps a completed receive
+///   (`windowsReceiveResult`).
+///
+/// The batch, its storage, `receive` and `vectors` live on this stack, and
+/// the deferred `cancelWindowsReceive` joins every receive posted, so the
+/// kernel never writes into `bufs` after this returns, on any path.
+///
+/// It uses `awaitConcurrent`, never `awaitAsync`: std's Windows
+/// `batchAwaitAsync` waits under one alertable syscall with no cancellation
+/// check, so a `Future.cancel` (how `Connection`'s Windows loop ends its
+/// read) would not end it. `batchAwaitConcurrent` starts that syscall again
+/// on every pass, so an alert there becomes `error.Canceled`.
+fn windowsReceive(
+    io: std.Io,
+    fd: net.Socket.Handle,
+    bufs: [][]u8,
+    deadline: std.Io.Timeout,
+    closing: ?*const std.atomic.Value(bool),
+    retry: SpuriousCancelRetry,
+) Transport.ReadTimeoutError!usize {
     const windows = std.os.windows;
     var vectors: [std.Io.Threaded.max_iovecs_len]windows.AFD.WSABUF(.@"var") = undefined;
     var vector_count: u32 = 0;
@@ -1981,10 +2108,21 @@ fn ioReadVecWindowsTimeout(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, dead
         .AfdFlags = .{ .NO_FAST_IO = true, .OVERLAPPED = true },
         .TdiFlags = .{ .NORMAL = true },
     };
+    const kind = if (deadline == .none) "untimed" else "timed";
     var storage: [1]std.Io.Operation.Storage = undefined;
     var batch: std.Io.Batch = .init(&storage);
     defer cancelWindowsReceive(io, &batch);
+    // A cancellation already pending, or re-armed by an earlier read of
+    // this task (see the catch arm), ends the read before it posts
+    // anything. Each re-post below checks again first.
+    try io.checkCancel();
     var reposts: u32 = 0;
+    // The run of receives Windows cancelled without data, each soon after
+    // it was posted (see `SpuriousCancelRetry`): when its first one ended,
+    // how many it posted again, and when it posted the last one.
+    var run_start: ?std.Io.Timestamp = null;
+    var run_reposts: u32 = 0;
+    var reposted_at: std.Io.Timestamp = undefined;
     while (true) {
         batch.addAt(0, .{ .device_io_control = .{
             .file = .{ .handle = fd, .flags = .{ .nonblocking = true } },
@@ -1992,20 +2130,31 @@ fn ioReadVecWindowsTimeout(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, dead
             .in = std.mem.asBytes(&receive),
         } });
         batch.awaitConcurrent(io, deadline) catch |err| {
-            // Ordinary Windows netRead can return Canceled after AFD consumed
-            // bytes. Batch cancellation instead retains the final successful
-            // IOSB, and keeps receive/vectors alive until the APC has completed.
+            // std's ordinary Windows read can return Canceled after AFD
+            // took bytes: its deviceIoControl drops the final IOSB. Batch
+            // cancellation instead keeps a final successful IOSB, and keeps
+            // receive/vectors alive until the APC has completed.
             cancelWindowsReceive(io, &batch);
-            if (batch.next()) |completion| return windowsReadResult(completion.result.device_io_control);
+            if (completedReceive(&batch)) |iosb| {
+                // The receive completed as the await ended: return what it
+                // took. A cancellation of the task stays pending for its
+                // next cancellation point, so it is neither lost nor
+                // reported along with bytes. This result is never
+                // error.Canceled (see windowsReceiveResult).
+                if (err == error.Canceled) io.recancel();
+                return windowsReceiveResult(iosb);
+            }
             return err;
         };
-        if (batch.next()) |completion| return windowsReadResult(completion.result.device_io_control);
+        if (completedReceive(&batch)) |iosb| return windowsReceiveResult(iosb);
 
         // The await succeeded with nothing completed. In the pinned std
         // (0.17.0) that happens only when the receive ended STATUS_CANCELLED
         // although this batch never cancelled it: `batchApc` files a
         // cancelled operation under `unused` instead of `completed`, and the
-        // await loop then ends because nothing is pending.
+        // await loop then ends because nothing is pending. (A backend that
+        // reports such a receive as completed gets here too, through
+        // `completedReceive`.)
         //
         // Windows does this. In Windows CI loops of "readTimeout preserves
         // stream bytes across repeated deadline races" (about 11,000 runs),
@@ -2014,41 +2163,159 @@ fn ioReadVecWindowsTimeout(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, dead
         // data completion. The receive ended within about 0.1 ms of being
         // posted. Nothing was in flight afterwards (`NtCancelIoFileEx(fd,
         // NULL)` returned STATUS_NOT_FOUND), and neither the thread alert
-        // nor the reuse of the IOSB address caused it.
+        // nor the reuse of the IOSB address caused it. An untimed read right
+        // after such a timed read on the same socket gets it too: in a CI
+        // experiment, 28 of 1,600 runs, each of which std's own read turned
+        // into a process abort (`netReadWindows` treats the status as
+        // unreachable).
         //
         // Posting the receive again is safe for the stream: a receive that
         // ends STATUS_CANCELLED has taken no bytes, and none is in flight
         // that could take bytes later. The CI reports read the rest of the
         // stream after every such receive and always found it complete and
-        // in order. With this re-post, 1,600 CI runs had no failure (19 in
-        // 1,600 without it); each of the 11 spurious cancellations there
-        // needed one re-post. `readTimeout posts again a receive Windows
-        // cancelled without data` in tests/rpc/transport/tcp/
-        // rpc_tick_idle_test.zig recreates the state on purpose.
+        // in order. With this re-post, 1,600 CI runs of the timed read had
+        // no failure (19 in 1,600 without it); each of the 11 spurious
+        // cancellations there needed one re-post. The tests "readTimeout
+        // posts again a receive Windows cancelled without data" and "read
+        // posts again a receive Windows cancelled without data" (and the
+        // ones after them) in tests/rpc/transport/tcp/rpc_tick_idle_test.zig
+        // recreate the state on purpose.
         //
-        // A cancellation of the caller, or a deadline that passed meanwhile,
-        // ends the read as usual. `max_spurious_cancel_reposts` bounds the
-        // re-posts: a receive that is cancelled again and again is no longer
-        // that rare event, and the read fails as before, with
-        // error.Unexpected. So does a backend that reports success while
-        // the receive is still pending: a second receive would race it for
-        // the stream's bytes (the deferred cancel joins it instead).
+        // Whatever asked for a read to end takes another route, in this
+        // order, and is never posted again:
+        // - A backend that reports success while the receive is still
+        //   pending: a second receive would race it for the stream's bytes
+        //   (the deferred cancel joins it instead). error.Unexpected.
+        // - An Io cancellation of the task: error.Canceled.
+        // - The transport closing (`shutdown`, `close`, `deinit`, which set
+        //   `closing` before they touch the socket): 0, as a read of a
+        //   closing transport returns. None of them ends a pending receive
+        //   (a socket shutdown does not complete it), but Windows may
+        //   cancel it afterwards, for example when another thread then
+        //   closes the handle (the test for that case assumes
+        //   STATUS_CANCELLED there). Posting it again then could land on a
+        //   handle already closed or reused. The flag is set before the
+        //   close, and the kernel orders that store before the APC.
+        // - The deadline, for a timed read: error.Timeout.
+        //
+        // The state can outlast one re-post: in CI one untimed read met 9
+        // such receives in a row, posted back to back. So the first re-post
+        // of a run goes at once and each later one waits first, longer each
+        // time, up to a ceiling. An Io cancellation ends the wait, and the
+        // closing and deadline checks run again after it. A receive posted
+        // again that stayed pending for `retry.run_ends_after` before
+        // Windows cancelled it ends the run, and the next one starts afresh.
+        // Once a run has lasted `retry.give_up_after`, it is no longer that
+        // rare event, and the read fails with error.Unexpected
+        // (`SpuriousCancelRetry` gives the numbers and why).
+        //
+        // Nothing else can be told from the stray cancellation. A
+        // `CancelIoEx` from outside the transport cancels only the receive
+        // in flight: the one posted again stays pending, and the read keeps
+        // waiting. If a close of the raw handle while `closing` is unset
+        // ends the receive STATUS_CANCELLED, the one posted again meets a
+        // closed handle (the post fails at once, STATUS_INVALID_HANDLE, so
+        // error.Unexpected) or, if Windows has reused the handle value,
+        // another object, which it then reads from. Only an Io cancellation
+        // of the task (or a timed read's deadline) ends a read that waits.
         if (batch.pending.head != .none) return error.Unexpected;
         try io.checkCancel();
+        if (isClosing(closing)) return 0;
         if (deadlinePassed(io, deadline)) return error.Timeout;
-        if (reposts == max_spurious_cancel_reposts) return error.Unexpected;
+        const now = std.Io.Clock.awake.now(io);
+        // A receive posted again that stayed pending for a while before
+        // Windows cancelled it starts a new run.
+        const start = run: {
+            if (run_start) |current| {
+                if (reposted_at.durationTo(now).nanoseconds < retry.run_ends_after.nanoseconds) break :run current;
+            }
+            run_reposts = 0;
+            break :run now;
+        };
+        run_start = start;
+        if (start.durationTo(now).nanoseconds >= retry.give_up_after.nanoseconds) return error.Unexpected;
         reposts += 1;
-        log.debug("timed read: Windows cancelled the receive without data; posting it again ({d} of {d})", .{ reposts, max_spurious_cancel_reposts });
+        run_reposts += 1;
+        const wait = retry.waitBefore(run_reposts);
+        reposted_at = now;
+        if (wait.nanoseconds > 0) {
+            // An Io cancellation ends the wait with error.Canceled.
+            try waitBeforeRepost(io, wait, deadline);
+            if (isClosing(closing)) return 0;
+            if (deadlinePassed(io, deadline)) return error.Timeout;
+            reposted_at = std.Io.Clock.awake.now(io);
+        }
+        log.debug("{s} read: Windows cancelled the receive without data; posting it again ({d} in this read, {d} in this run, after {d} us)", .{ kind, reposts, run_reposts, wait.toMicroseconds() });
         batch = .init(&storage);
     }
 }
 
-/// How often one `ioReadVecWindowsTimeout` call posts its receive again
-/// after Windows cancelled it without data. In CI each such cancellation
-/// needed one re-post.
-const max_spurious_cancel_reposts = 8;
+/// How `windowsReceive`, timed or untimed, posts again a receive that
+/// Windows cancelled without data. Such cancellations come in runs: a
+/// receive posted again that Windows cancels too continues the run, unless
+/// it stayed pending for `run_ends_after` first; then a new run starts. The
+/// first re-post of a run goes at once. Each later one waits first:
+/// `first_wait`, then twice as long each time, up to `max_wait` (with the
+/// defaults 0, 50 us, 100 us, ... 3.2 ms, then 5 ms each). Once a run has
+/// lasted `give_up_after` since its first cancellation, the read fails with
+/// `error.Unexpected`. A timed read's deadline ends it sooner, and a wait
+/// never runs past the deadline.
+///
+/// Why these numbers (Windows CI, std 0.17.0):
+/// - At once first: in loops of the timed read, each of 11 such
+///   cancellations needed one re-post, so the usual case waits for nothing.
+/// - Then growing waits: in run 38079015619 one untimed read met 9 in a
+///   row, posted back to back about 0.1 ms apart, so the state can last
+///   longer than 1 ms, and the earlier limit of 8 re-posts turned it into
+///   `error.Unexpected`. Doubling from 50 us waits about 6 ms in all over
+///   the first 8 re-posts, then posts every 5 ms, so a state that lasts
+///   until the peer's next bytes costs a few posts. Windows can round a
+///   short wait up to its timer tick (15.6 ms by default), which only
+///   spaces the posts further.
+/// - 5 ms at most: bytes that arrive during a wait get read at most that
+///   much later (plus that rounding), and a long run of such cancellations
+///   costs at most about 200 posts a second.
+/// - 10 s: far longer than any run seen in CI (the longest, cut short by
+///   the earlier limit, had lasted about 1 ms), yet a receive that
+///   something keeps cancelling still ends the read with an error instead
+///   of posting forever.
+/// - 1 s to end a run: in CI a receive of a run ended about 0.1 ms after
+///   its post, so one that stayed pending for 1 s had outlived the state.
+///   Cancellations that far apart, such as rare ones over a long untimed
+///   read on an idle connection, never add up to the 10 s.
+const SpuriousCancelRetry = struct {
+    first_wait: std.Io.Duration = .fromMicroseconds(50),
+    max_wait: std.Io.Duration = .fromMilliseconds(5),
+    give_up_after: std.Io.Duration = .fromSeconds(10),
+    run_ends_after: std.Io.Duration = .fromSeconds(1),
 
-/// Whether `deadline` (a `Timeout.toDeadline` result) has passed.
+    /// The wait before re-post number `repost` of a run (the first is 1).
+    fn waitBefore(retry: SpuriousCancelRetry, repost: u32) std.Io.Duration {
+        if (repost <= 1) return .zero;
+        var wait = retry.first_wait.nanoseconds;
+        var n: u32 = 2;
+        while (n < repost and wait < retry.max_wait.nanoseconds) : (n += 1) wait *= 2;
+        return .fromNanoseconds(@min(wait, retry.max_wait.nanoseconds));
+    }
+};
+
+/// Sleeps `wait` before a re-post, or until `deadline` if that comes first.
+/// An Io cancellation of the task ends it with `error.Canceled`.
+fn waitBeforeRepost(io: std.Io, wait: std.Io.Duration, deadline: std.Io.Timeout) std.Io.Cancelable!void {
+    if (deadline.toDurationFromNow(io)) |remaining| {
+        if (remaining.raw.nanoseconds <= wait.nanoseconds) return deadline.sleep(io);
+    }
+    return io.sleep(wait, .awake);
+}
+
+/// Whether the transport's closing flag is set. Never for a bare handle.
+fn isClosing(closing: ?*const std.atomic.Value(bool)) bool {
+    const flag = closing orelse return false;
+    return flag.load(.acquire);
+}
+
+/// Whether `deadline` (a `Timeout.toDeadline` result) has passed. Never for
+/// `.none`.
 fn deadlinePassed(io: std.Io, deadline: std.Io.Timeout) bool {
     const remaining = deadline.toDurationFromNow(io) orelse return false;
     return remaining.raw.nanoseconds <= 0;
@@ -2067,12 +2334,29 @@ fn cancelWindowsReceive(io: std.Io, batch: *std.Io.Batch) void {
     batch.cancel(io);
 }
 
-fn windowsReadResult(iosb: std.os.windows.IO_STATUS_BLOCK) Transport.ReadError!usize {
+/// The final IOSB of the receive that completed, if one did. A receive that
+/// ended STATUS_CANCELLED took no bytes and counts as none: std's backend
+/// files it under `unused`, never here, and `windowsReceive` posts it again
+/// or ends the read itself.
+fn completedReceive(batch: *std.Io.Batch) ?std.os.windows.IO_STATUS_BLOCK {
+    const completion = batch.next() orelse return null;
+    const iosb = completion.result.device_io_control;
+    if (iosb.u.Status == .CANCELLED) return null;
+    return iosb;
+}
+
+/// A completed receive, mapped as std's (0.17.0) `netReadWindows` maps it,
+/// so a read keeps the errors std's own read gave. Never `error.Canceled`,
+/// which means an Io cancellation the caller asked for: `windowsReceive`
+/// never passes a cancelled receive here (`completedReceive`), and one that
+/// arrives anyway is `error.Unexpected`.
+fn windowsReceiveResult(iosb: std.os.windows.IO_STATUS_BLOCK) Transport.ReadError!usize {
     return switch (iosb.u.Status) {
         .SUCCESS => iosb.Information,
-        .CANCELLED => error.Canceled,
         .INSUFFICIENT_RESOURCES => error.SystemResources,
-        .CONNECTION_RESET => error.ConnectionResetByPeer,
+        .CONNECTION_RESET, .REMOTE_DISCONNECT => error.ConnectionResetByPeer,
+        .IO_TIMEOUT => error.ConnectionTimedOut,
+        .CANCELLED => error.Unexpected,
         else => |status| std.os.windows.unexpectedStatus(status),
     };
 }
@@ -2088,7 +2372,7 @@ fn ioReadVecTaskTimeout(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, deadlin
     // Start the timer first: failure to assign either task must not leave a
     // read consuming bytes without a deadline or a caller to receive them.
     try tasks.concurrent(.deadline, std.Io.Timeout.sleep, .{ deadline, io });
-    try tasks.concurrent(.read, ioReadVec, .{ io, fd, bufs });
+    try tasks.concurrent(.read, stdNetReadVec, .{ io, fd, bufs });
     const selected = tasks.await() catch |err| {
         // Caller cancellation can race a successful read too. Join while the
         // result queue remains open so consumed bytes still reach the caller.
@@ -2116,10 +2400,12 @@ fn ioReadVecTaskTimeout(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, deadlin
     }
 }
 
-/// Read from a socket handle via Io into a buffer.
+/// Read from a socket handle via Io into a buffer (tests). The untimed read
+/// of a bare handle: on Windows the transport's own AFD receive, with no
+/// transport to close.
 fn ioRead(io: std.Io, fd: net.Socket.Handle, buf: []u8) Transport.ReadError!usize {
     var bufs: [1][]u8 = .{buf};
-    return ioReadVec(io, fd, &bufs);
+    return ioReadVec(io, fd, &bufs, null);
 }
 
 test "without fd passing, Linux and every Darwin target refuse AF_UNIX sockets, and other targets read them" {
@@ -2182,17 +2468,139 @@ test "a completed Windows receive maps as std's netReadWindows maps it" {
     };
     // std 0.17.0 Threaded.zig netReadWindows, status by status, so an
     // untimed read keeps the errors std's own read gave.
-    try std.testing.expectEqual(@as(usize, 7), try windowsReadResult(Iosb.of(.SUCCESS, 7)));
-    try std.testing.expectEqual(@as(usize, 0), try windowsReadResult(Iosb.of(.SUCCESS, 0)));
-    try std.testing.expectError(error.SystemResources, windowsReadResult(Iosb.of(.INSUFFICIENT_RESOURCES, 0)));
-    try std.testing.expectError(error.ConnectionResetByPeer, windowsReadResult(Iosb.of(.CONNECTION_RESET, 0)));
-    try std.testing.expectError(error.ConnectionResetByPeer, windowsReadResult(Iosb.of(.REMOTE_DISCONNECT, 0)));
-    try std.testing.expectError(error.ConnectionTimedOut, windowsReadResult(Iosb.of(.IO_TIMEOUT, 0)));
+    try std.testing.expectEqual(@as(usize, 7), try windowsReceiveResult(Iosb.of(.SUCCESS, 7)));
+    try std.testing.expectEqual(@as(usize, 0), try windowsReceiveResult(Iosb.of(.SUCCESS, 0)));
+    try std.testing.expectError(error.SystemResources, windowsReceiveResult(Iosb.of(.INSUFFICIENT_RESOURCES, 0)));
+    try std.testing.expectError(error.ConnectionResetByPeer, windowsReceiveResult(Iosb.of(.CONNECTION_RESET, 0)));
+    try std.testing.expectError(error.ConnectionResetByPeer, windowsReceiveResult(Iosb.of(.REMOTE_DISCONNECT, 0)));
+    try std.testing.expectError(error.ConnectionTimedOut, windowsReceiveResult(Iosb.of(.IO_TIMEOUT, 0)));
     // std treats a cancelled receive as unreachable. The transport posts
     // such a receive again and never maps it; should one reach the
     // mapping, it is not error.Canceled, which means an Io cancellation the
     // caller asked for.
-    try std.testing.expectError(error.Unexpected, windowsReadResult(Iosb.of(.CANCELLED, 0)));
+    try std.testing.expectError(error.Unexpected, windowsReceiveResult(Iosb.of(.CANCELLED, 0)));
+}
+
+test "SpuriousCancelRetry: a run's first re-post at once, then 50 us doubling to 5 ms, for 10 s" {
+    const retry: SpuriousCancelRetry = .{};
+    const expected_us = [_]i64{ 0, 50, 100, 200, 400, 800, 1600, 3200, 5000, 5000 };
+    for (expected_us, 1..) |us, repost| {
+        try std.testing.expectEqual(us, retry.waitBefore(@intCast(repost)).toMicroseconds());
+    }
+    try std.testing.expectEqual(@as(i64, 5000), retry.waitBefore(std.math.maxInt(u32)).toMicroseconds());
+    try std.testing.expectEqual(@as(i64, 10), retry.give_up_after.toSeconds());
+    try std.testing.expectEqual(@as(i64, 1), retry.run_ends_after.toSeconds());
+}
+
+/// An Io whose AFD receives end as Windows's stray cancellation leaves
+/// them: the await posts the receive with a deadline already passed (the
+/// peer is silent, so it stays pending), leaves it pending for
+/// `pending_for`, cancels it, and reports success with nothing completed
+/// (`SpuriouslyCancelledReceive` in
+/// tests/rpc/transport/tcp/rpc_tick_idle_test.zig builds the same state).
+/// Post number `data_on_post` (from 1; 0 for none) gets the peer's `data`
+/// and goes through. From 5 s after `arm` it shuts the peer down and lets
+/// every receive through, so a read that never ends otherwise reads 0
+/// instead of hanging.
+const CancelledReceives = struct {
+    const data = "after-the-run";
+
+    var posts: usize = 0;
+    var peer: net.Socket.Handle = undefined;
+    var armed_at: std.Io.Timestamp = undefined;
+    var pending_for: std.Io.Duration = .zero;
+    var data_on_post: usize = 0;
+
+    fn arm(armed_peer: net.Socket.Handle, armed_pending_for: std.Io.Duration, armed_data_on_post: usize) void {
+        posts = 0;
+        peer = armed_peer;
+        pending_for = armed_pending_for;
+        data_on_post = armed_data_on_post;
+        armed_at = std.Io.Clock.awake.now(std.testing.io);
+    }
+
+    fn sinceArmed() std.Io.Duration {
+        return armed_at.durationTo(std.Io.Clock.awake.now(std.testing.io));
+    }
+
+    fn awaitConcurrent(userdata: ?*anyopaque, batch: *std.Io.Batch, timeout: std.Io.Timeout) std.Io.Batch.AwaitConcurrentError!void {
+        const io = std.testing.io;
+        posts += 1;
+        if (posts == data_on_post) {
+            _ = ioWrite(io, peer, data) catch {};
+            return io.vtable.batchAwaitConcurrent(userdata, batch, timeout);
+        }
+        if (sinceArmed().toSeconds() >= 5) {
+            ioShutdown(io, peer);
+            return io.vtable.batchAwaitConcurrent(userdata, batch, timeout);
+        }
+        const passed: std.Io.Timeout = .{ .duration = .{ .raw = .zero, .clock = .awake } };
+        io.vtable.batchAwaitConcurrent(userdata, batch, passed) catch |err| switch (err) {
+            error.Timeout => {},
+            else => return err,
+        };
+        if (pending_for.nanoseconds > 0) io.sleep(pending_for, .awake) catch |err| {
+            cancelWindowsReceive(io, batch);
+            return err;
+        };
+        cancelWindowsReceive(io, batch);
+    }
+
+    /// `std.testing.io` with this await; `vtable` must outlive it.
+    fn wrap(vtable: *std.Io.VTable) std.Io {
+        vtable.* = std.testing.io.vtable.*;
+        vtable.batchAwaitConcurrent = awaitConcurrent;
+        return .{ .userdata = std.testing.io.userdata, .vtable = vtable };
+    }
+};
+
+test "a Windows read gives up with error.Unexpected once a run of receives cancelled without data lasts the give-up span" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var vtable: std.Io.VTable = undefined;
+    const wrapped = CancelledReceives.wrap(&vtable);
+    const pair = try createSocketPair();
+    defer for (pair) |fd| ioClose(std.testing.io, fd);
+    CancelledReceives.arm(pair[1], .zero, 0);
+
+    // The transport's span is 10 s; a short one keeps the test fast.
+    const retry: SpuriousCancelRetry = .{ .give_up_after = .fromMilliseconds(50) };
+    var buf: [16]u8 = undefined;
+    var bufs: [1][]u8 = .{&buf};
+    try std.testing.expectError(error.Unexpected, windowsReceive(wrapped, pair[0], &bufs, .none, null, retry));
+    try std.testing.expect(CancelledReceives.sinceArmed().nanoseconds >= retry.give_up_after.nanoseconds);
+    // It posted again, with waits between: at most 18 posts fit in 50 ms
+    // (about 6 ms of waits over the first 8 re-posts, then 5 ms each),
+    // where back to back would be hundreds.
+    try std.testing.expect(CancelledReceives.posts >= 2);
+    try std.testing.expect(CancelledReceives.posts <= 30);
+
+    // No receive is left in flight: the next read gets the peer's bytes.
+    _ = try ioWrite(std.testing.io, pair[1], "still-usable");
+    const n = try windowsReceive(std.testing.io, pair[0], &bufs, .none, null, .{});
+    try std.testing.expectEqualStrings("still-usable", buf[0..n]);
+}
+
+test "a Windows read never gives up on receives cancelled without data after each was pending for a while" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var vtable: std.Io.VTable = undefined;
+    const wrapped = CancelledReceives.wrap(&vtable);
+    const pair = try createSocketPair();
+    defer for (pair) |fd| ioClose(std.testing.io, fd);
+    // Each receive stays pending for 20 ms before Windows cancels it, longer
+    // than `run_ends_after` here, so each cancellation starts a new run.
+    // The bytes come with the sixth post, after at least 100 ms of
+    // cancellations: twice the give-up span.
+    CancelledReceives.arm(pair[1], .fromMilliseconds(20), 6);
+    const retry: SpuriousCancelRetry = .{
+        .give_up_after = .fromMilliseconds(50),
+        .run_ends_after = .fromMilliseconds(10),
+    };
+    var buf: [16]u8 = undefined;
+    var bufs: [1][]u8 = .{&buf};
+    const n = try windowsReceive(wrapped, pair[0], &bufs, .none, null, retry);
+    try std.testing.expectEqualStrings(CancelledReceives.data, buf[0..n]);
+    try std.testing.expectEqual(@as(usize, 6), CancelledReceives.posts);
+    try std.testing.expect(CancelledReceives.sinceArmed().toMilliseconds() >= 100);
 }
 
 test "transport init and deinit" {

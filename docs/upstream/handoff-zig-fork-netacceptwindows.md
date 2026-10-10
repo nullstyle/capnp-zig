@@ -136,10 +136,11 @@ that also works; the requirement is a named error rather than
 4. For the `LOCAL_DISCONNECT` arm: capnp-zig's Windows chaos soak
    (`zig build soak -- --transport tcp --seconds 20`, chaos on by default)
    should stop printing `error.Unexpected NTSTATUS=0xc000013b`. Note that
-   capnp-zig's own timed-read path (`windowsReadResult` in
-   `src/rpc/transport/tcp/stream_transport.zig`) maps statuses itself and
-   needs the same arm on the capnp-zig side; the std fix covers only the
-   untimed `net_read` / `net_write` operations.
+   capnp-zig's Windows socket reads, timed and untimed, now use its own
+   AFD receive, which maps statuses itself (`windowsReceiveResult` in
+   `src/rpc/transport/tcp/stream_transport.zig`, kept identical to
+   `netReadWindows`) and needs the same arm on the capnp-zig side; the std
+   fix covers std's `net_read` and the `net_write` operation.
 
 ## Bookkeeping
 

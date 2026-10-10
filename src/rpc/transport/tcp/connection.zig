@@ -560,7 +560,7 @@ pub const Connection = struct {
                                 var bufs: [1][]u8 = .{&drain_buf};
                                 // The raw operation, not `net.Stream.read`,
                                 // which does not compile at 0.17.0 (see
-                                // stream_transport's ioReadVec). Only the
+                                // stream_transport's stdNetReadVec). Only the
                                 // drain matters; the byte count does not.
                                 _ = self.io.operate(.{ .net_read = .{
                                     .socket_handle = wake_fds[0],
@@ -617,7 +617,11 @@ pub const Connection = struct {
     /// keeps ticks, idle reaping, and wake working. Crucially the read is
     /// on an io worker (not a raw `std.Thread`), so teardown can `cancel`
     /// it: `NtCancelIoFileEx` then unblocks the pending AFD receive,
-    /// instead of waiting out the kernel's multi-minute read timeout.
+    /// instead of waiting out the kernel's multi-minute read timeout. The
+    /// read is the transport's own AFD receive (`Transport.read`), which
+    /// posts a receive again when Windows cancels it without data and
+    /// without being asked; the cancel at teardown is asked for, so the
+    /// read then ends.
     /// `concurrent` (not `async`) is used so the read never silently runs
     /// inline on this thread — that would reintroduce the un-cancellable
     /// blocking read this design exists to avoid; its `concurrent_limit`
@@ -738,8 +742,10 @@ pub const Connection = struct {
     /// One cancellable blocking read, run as an `io.concurrent` task on an
     /// io worker thread (see `runLoopWindows`). Publishes the outcome under
     /// the bridge mutex and signals the run loop. On cancel the read
-    /// returns `error.Canceled`, which is published like any other failure
-    /// but ignored by the tearing-down run loop.
+    /// returns `error.Canceled`, or the bytes of a receive that completed
+    /// as the cancel landed (the cancellation then stays pending until the
+    /// task ends). Either is published like any other outcome and ignored
+    /// by the tearing-down run loop.
     fn winReadTask(self: *Connection) void {
         const io = self.io;
         const outcome: WinReadBridge.ReadOutcome = blk: {

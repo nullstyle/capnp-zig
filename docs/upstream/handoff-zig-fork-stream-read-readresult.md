@@ -46,7 +46,7 @@ rebases onto 0.17.0.
 ## Evidence
 
 capnp-zig works around it: `src/rpc/transport/tcp/stream_transport.zig`
-`ioReadVec` submits the `net_read` operation itself instead of calling
+`stdNetReadVec` submits the `net_read` operation itself instead of calling
 `Stream.read`, and `netReadLen` reads `.data_len`. The TCP wake-channel drain
 in `src/rpc/transport/tcp/connection.zig` does the same.
 
