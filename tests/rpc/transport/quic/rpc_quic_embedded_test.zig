@@ -514,16 +514,22 @@ test "embedded native seat frees each data stream's buffer once the engine has r
 }
 
 /// The seat in the memory-budget test: `endpoint` is what `HostApp` hands
-/// each seat as its context, and the reply rides next to it.
+/// each seat as its context, and the reply rides next to it. A frame after
+/// the first that the seat reads while its writes hold the host's memory
+/// budget (`loopback.writesHoldMemoryBudget`) counts in
+/// `frames_beside_reply`.
 const LargeReplySeatState = struct {
     endpoint: loopback.QuicEndpointState = .{},
     reply: []const u8,
+    frames_beside_reply: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 };
 
 fn replyOnceWithLargeFrame(seat: *quic.EmbeddedSession, _: []const u8) anyerror!void {
     const endpoint: *loopback.QuicEndpointState = @ptrCast(@alignCast(seat.context().?));
     const state: *LargeReplySeatState = @fieldParentPtr("endpoint", endpoint);
-    if (endpoint.messages.fetchAdd(1, .acq_rel) == 0) try seat.sendFrame(state.reply);
+    if (endpoint.messages.fetchAdd(1, .acq_rel) == 0) return seat.sendFrame(state.reply);
+    const q = seat.activeQuicConnection() orelse return;
+    if (loopback.writesHoldMemoryBudget(q)) _ = state.frames_beside_reply.fetchAdd(1, .acq_rel);
 }
 
 /// The client in the memory-budget test: compares the reply with the frame
@@ -562,6 +568,15 @@ fn countEmbeddedLargeReplyClientClose(conn: *quic.Connection) void {
 /// writes at half of the budget. Since v0.38.0 quic-zig's write stops short
 /// of the receive side's share (the connection window, which the host's
 /// `Listener` announces at most half of the budget for).
+///
+/// The test needs a client frame to reach the seat while the reply holds the
+/// budget, and the scheduler decides whether one does: on loopback the reply
+/// takes a few milliseconds, and a test thread that does not get the CPU
+/// back from its first 1 ms sleep sends nothing more until the reply is in.
+/// So the seat counts the frames it reads while its writes hold the budget
+/// (`loopback.writesHoldMemoryBudget`), and a run in which it read none is
+/// run again, at most `loopback.budget_overlap_runs` times in all. Every run
+/// must end clean, whether a frame overlapped the reply or not.
 fn runEmbeddedLargeReplyBesideClientFrames(allocator: std.mem.Allocator, mode: quic.EmbeddedSessionOptions) !void {
     const budget: u64 = 256 * 1024;
     const reply = try loopback.buildCallFrameWithData(allocator, 0xB0D6E9, 1024 * 1024);
@@ -572,6 +587,24 @@ fn runEmbeddedLargeReplyBesideClientFrames(allocator: std.mem.Allocator, mode: q
     const small = try loopback.buildBootstrapFrame(allocator, 0x5A12);
     defer allocator.free(small);
 
+    var runs: [loopback.budget_overlap_runs]loopback.BesideReplyRun = undefined;
+    for (&runs) |*run| {
+        run.* = try runEmbeddedLargeReplyBesideClientFramesOnce(allocator, mode, budget, reply, request, small);
+        if (run.frames_beside_reply > 0) return;
+    }
+    return loopback.failNoFrameBesideReply(&runs);
+}
+
+/// One run: fails if a side failed or the reply did not arrive whole;
+/// otherwise returns what the run sent and what the seat read.
+fn runEmbeddedLargeReplyBesideClientFramesOnce(
+    allocator: std.mem.Allocator,
+    mode: quic.EmbeddedSessionOptions,
+    budget: u64,
+    reply: []const u8,
+    request: []const u8,
+    small: []const u8,
+) !loopback.BesideReplyRun {
     var seat_state = LargeReplySeatState{ .reply = reply };
     var host = HostApp{
         .allocator = allocator,
@@ -646,7 +679,12 @@ fn runEmbeddedLargeReplyBesideClientFrames(allocator: std.mem.Allocator, mode: q
         if (client_state.errors.load(.acquire) > 0 or seat_endpoint.errors.load(.acquire) > 0) break;
         if (client_state.closes.load(.acquire) > 0 or seat_endpoint.closes.load(.acquire) > 0) break;
         if (small_frames < max_small_frames) {
-            try client.sendFrame(small);
+            // The client closes only on its own error or the seat's close;
+            // the checks after the loop report either.
+            client.sendFrame(small) catch |err| switch (err) {
+                error.BrokenPipe => break,
+                else => return err,
+            };
             small_frames += 1;
         }
         loopback.sleepMs(1);
@@ -656,19 +694,22 @@ fn runEmbeddedLargeReplyBesideClientFrames(allocator: std.mem.Allocator, mode: q
     joined = true;
 
     const reply_matched = client_state.matched.load(.acquire);
+    const run = loopback.BesideReplyRun{
+        .small_frames = small_frames,
+        .server_frames = seat_endpoint.messages.load(.acquire),
+        .frames_beside_reply = seat_state.frames_beside_reply.load(.acquire),
+    };
     if (reply_matched != 1) {
         std.debug.print(
-            "reply not delivered: waited {d} ms, {d} small frames sent, seat saw {d} frames, client close cause {s}\n",
-            .{ waited_ms, small_frames, seat_endpoint.messages.load(.acquire), @tagName(client.closeCause()) },
+            "reply not delivered: waited {d} ms, {d} small frames sent, seat read {d} frames ({d} while its writes held the budget), client close cause {s}\n",
+            .{ waited_ms, run.small_frames, run.server_frames, run.frames_beside_reply, @tagName(client.closeCause()) },
         );
         if (client.quicCloseEvent()) |ev| std.debug.print("client QUIC close: code 0x{x}, source {s}\n", .{ ev.error_code, @tagName(ev.source) });
     }
     try std.testing.expectEqual(@as(usize, 0), seat_endpoint.errors.load(.acquire));
     try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
     try std.testing.expectEqual(@as(usize, 1), reply_matched);
-    // The first small frame goes out with the request; at least one more
-    // went out while the reply was on its way.
-    try std.testing.expect(small_frames >= 2);
+    return run;
 }
 
 test "embedded quic seat leaves memory budget for client frames during a large reply (baseline)" {

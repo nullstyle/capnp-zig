@@ -3,6 +3,7 @@ const capnpc = @import("capnpc-zig");
 
 const protocol = capnpc.rpc.wire.protocol;
 const quic = capnpc.rpc.transport.quic;
+const quic_zig = @import("quic");
 
 pub const loopback_cert_pem = @embedFile("loopback_cert.pem");
 pub const loopback_key_pem = @embedFile("loopback_key.pem");
@@ -101,6 +102,42 @@ pub fn buildCallFrameWithData(allocator: std.mem.Allocator, question_id: u32, pa
     try params.setContentData(payload);
     _ = try call.initCapTableTyped(0);
     return builder.finish();
+}
+
+/// The overlap the client-frames-beside-a-large-reply tests need: a client
+/// frame read while the server's own writes held at least a quarter of its
+/// `max_connection_memory`. Through quic-zig v0.37.2 a write took all of the
+/// budget it found free, so a client STREAM frame that arrived then had no
+/// room and the connection closed with EXCESSIVE_LOAD. Since v0.38.0 the
+/// writes stop at the budget less the connection window, which the server
+/// announces at half of the budget; while a reply larger than that is on its
+/// way, the writes hold close to half. Call it on the server's loop thread
+/// (from its message callback), where `conn` is read safely.
+pub fn writesHoldMemoryBudget(conn: *const quic_zig.Connection) bool {
+    return conn.bytes_resident >= conn.max_connection_memory / 4;
+}
+
+/// Runs of a client-frames-beside-a-large-reply test before it fails for
+/// want of a run in which the server read a client frame while its writes
+/// held the memory budget.
+pub const budget_overlap_runs: usize = 5;
+
+/// What one clean run of a client-frames-beside-a-large-reply test sent and
+/// what its server read.
+pub const BesideReplyRun = struct {
+    small_frames: usize,
+    server_frames: usize,
+    /// Client frames the server read while `writesHoldMemoryBudget` held.
+    frames_beside_reply: usize,
+};
+
+/// Prints each run and fails: no run put a client frame beside the reply.
+pub fn failNoFrameBesideReply(runs: []const BesideReplyRun) error{ClientFramesNeverOverlappedReply} {
+    std.debug.print("in {d} runs the server read no client frame while its writes held the memory budget\n", .{runs.len});
+    for (runs, 1..) |run, n| {
+        std.debug.print("  run {d}: {d} small frames sent, server read {d} frames\n", .{ n, run.small_frames, run.server_frames });
+    }
+    return error.ClientFramesNeverOverlappedReply;
 }
 
 pub fn sleepMs(ms: u64) void {

@@ -1662,10 +1662,13 @@ test "quic native localhost streams large RPC data payload" {
 }
 
 /// Server side of the memory-budget tests: counts each frame and answers the
-/// first one with one large pre-built frame.
+/// first one with one large pre-built frame. A later frame read while the
+/// server's writes held its memory budget (`loopback.writesHoldMemoryBudget`)
+/// counts in `frames_beside_reply` too.
 const LargeReplyServerState = struct {
     reply: []const u8,
     messages: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    frames_beside_reply: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     errors: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     closes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     last_error: ?anyerror = null,
@@ -1673,7 +1676,9 @@ const LargeReplyServerState = struct {
 
 fn replyWithLargeFrame(conn: *quic.Connection, _: []const u8) !void {
     const state: *LargeReplyServerState = @ptrCast(@alignCast(conn.context().?));
-    if (state.messages.fetchAdd(1, .acq_rel) == 0) try conn.sendFrame(state.reply);
+    if (state.messages.fetchAdd(1, .acq_rel) == 0) return conn.sendFrame(state.reply);
+    const q = conn.activeQuicConnection() orelse return;
+    if (loopback.writesHoldMemoryBudget(q)) _ = state.frames_beside_reply.fetchAdd(1, .acq_rel);
 }
 
 fn countLargeReplyServerClose(conn: *quic.Connection) void {
@@ -1815,6 +1820,16 @@ test "quic native: a reply larger than the server's connection memory budget arr
 /// capnp-zig writes straight to it. Here the client sends a small frame
 /// every millisecond while a 1 MiB reply goes through a 256 KiB budget, and
 /// the reply still arrives whole.
+///
+/// The test needs a client frame to reach the server while the reply holds
+/// the server's budget, and the scheduler decides whether one does: on
+/// loopback the reply takes a few milliseconds, and a test thread that does
+/// not get the CPU back from its first 1 ms sleep sends nothing more until
+/// the reply is in. So the server counts the frames it reads while its writes
+/// hold the budget (`loopback.writesHoldMemoryBudget`), and a run in which
+/// it read none is run again, at most `loopback.budget_overlap_runs` times
+/// in all. Every run must end clean, whether a frame overlapped the reply or
+/// not.
 fn expectReplyFillingMemoryBudgetBesideClientFrames(mode: quic.TransportMode) !void {
     const allocator = std.testing.allocator;
     const budget: u64 = 256 * 1024;
@@ -1826,6 +1841,25 @@ fn expectReplyFillingMemoryBudgetBesideClientFrames(mode: quic.TransportMode) !v
     const small = try buildBootstrapFrame(allocator, 0x5A11);
     defer allocator.free(small);
 
+    var runs: [loopback.budget_overlap_runs]loopback.BesideReplyRun = undefined;
+    for (&runs) |*run| {
+        run.* = try replyFillingMemoryBudgetBesideClientFramesOnce(mode, budget, reply, request, small);
+        if (run.frames_beside_reply > 0) return;
+    }
+    return loopback.failNoFrameBesideReply(&runs);
+}
+
+/// One run: fails if a side failed, the reply did not arrive whole, or the
+/// server's connection closed with a transport error; otherwise returns what
+/// the run sent and what the server read.
+fn replyFillingMemoryBudgetBesideClientFramesOnce(
+    mode: quic.TransportMode,
+    budget: u64,
+    reply: []const u8,
+    request: []const u8,
+    small: []const u8,
+) !loopback.BesideReplyRun {
+    const allocator = std.testing.allocator;
     var server = try quic.Connection.initServer(allocator, std.testing.io, .{
         .listen_addr = testListenAddr(),
         .tls_cert_pem = loopback_cert_pem,
@@ -1863,7 +1897,10 @@ fn expectReplyFillingMemoryBudgetBesideClientFrames(mode: quic.TransportMode) !v
     };
 
     // One small frame per millisecond until the reply is in (or a side
-    // fails or closes), at most 2,000.
+    // fails or closes), at most 2,000. The client closes as soon as the
+    // reply is in (`checkLargeReply`), which can fall between the checks and
+    // the send: the send then fails with BrokenPipe, and the checks after
+    // the loop decide the run.
     const max_small_frames: usize = 2_000;
     var small_frames: usize = 0;
     var waited_ms: u64 = 0;
@@ -1872,7 +1909,10 @@ fn expectReplyFillingMemoryBudgetBesideClientFrames(mode: quic.TransportMode) !v
         if (client_state.errors.load(.acquire) > 0 or server_state.errors.load(.acquire) > 0) break;
         if (client_state.closes.load(.acquire) > 0 or server_state.closes.load(.acquire) > 0) break;
         if (small_frames < max_small_frames) {
-            try client.sendFrame(small);
+            client.sendFrame(small) catch |err| switch (err) {
+                error.BrokenPipe => break,
+                else => return err,
+            };
             small_frames += 1;
         }
         loopback.sleepMs(1);
@@ -1884,10 +1924,16 @@ fn expectReplyFillingMemoryBudgetBesideClientFrames(mode: quic.TransportMode) !v
     joined = true;
 
     const reply_matched = client_state.matched.load(.acquire);
-    if (reply_matched != 1) {
+    const server_cause = server.closeCause();
+    const run = loopback.BesideReplyRun{
+        .small_frames = small_frames,
+        .server_frames = server_state.messages.load(.acquire),
+        .frames_beside_reply = server_state.frames_beside_reply.load(.acquire),
+    };
+    if (reply_matched != 1 or server_cause == .transport_error) {
         std.debug.print(
-            "reply not delivered: waited {d} ms, {d} small frames sent, server saw {d} frames, server close cause {s}, client close cause {s}\n",
-            .{ waited_ms, small_frames, server_state.messages.load(.acquire), @tagName(server.closeCause()), @tagName(client.closeCause()) },
+            "reply matched {d} times: waited {d} ms, {d} small frames sent, server read {d} frames ({d} while its writes held the budget), server close cause {s}, client close cause {s}\n",
+            .{ reply_matched, waited_ms, run.small_frames, run.server_frames, run.frames_beside_reply, @tagName(server_cause), @tagName(client.closeCause()) },
         );
         if (server.quicCloseEvent()) |ev| std.debug.print("server QUIC close: code 0x{x}, reason \"{s}\"\n", .{ ev.error_code, ev.reason });
     }
@@ -1895,10 +1941,8 @@ fn expectReplyFillingMemoryBudgetBesideClientFrames(mode: quic.TransportMode) !v
     try std.testing.expectEqual(@as(usize, 0), server_state.errors.load(.acquire));
     try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
     try std.testing.expectEqual(@as(usize, 1), reply_matched);
-    // The first small frame goes out with the request; at least one more
-    // went out while the reply was on its way.
-    try std.testing.expect(small_frames >= 2);
-    try std.testing.expect(server.closeCause() != .transport_error);
+    try std.testing.expect(server_cause != .transport_error);
+    return run;
 }
 
 test "quic baseline: client frames during a reply that fills the server's memory budget leave room (the reply arrives whole)" {
