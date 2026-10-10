@@ -2172,6 +2172,29 @@ test "socketFamily: AF_UNIX, IP, another family (Linux AF_NETLINK) and one getso
     try std.testing.expectEqual(if (os == .linux) SocketFamily.other else SocketFamily.unknown, socketFamily(fd));
 }
 
+test "a completed Windows receive maps as std's netReadWindows maps it" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const windows = std.os.windows;
+    const Iosb = struct {
+        fn of(status: windows.NTSTATUS, information: usize) windows.IO_STATUS_BLOCK {
+            return .{ .u = .{ .Status = status }, .Information = information };
+        }
+    };
+    // std 0.17.0 Threaded.zig netReadWindows, status by status, so an
+    // untimed read keeps the errors std's own read gave.
+    try std.testing.expectEqual(@as(usize, 7), try windowsReadResult(Iosb.of(.SUCCESS, 7)));
+    try std.testing.expectEqual(@as(usize, 0), try windowsReadResult(Iosb.of(.SUCCESS, 0)));
+    try std.testing.expectError(error.SystemResources, windowsReadResult(Iosb.of(.INSUFFICIENT_RESOURCES, 0)));
+    try std.testing.expectError(error.ConnectionResetByPeer, windowsReadResult(Iosb.of(.CONNECTION_RESET, 0)));
+    try std.testing.expectError(error.ConnectionResetByPeer, windowsReadResult(Iosb.of(.REMOTE_DISCONNECT, 0)));
+    try std.testing.expectError(error.ConnectionTimedOut, windowsReadResult(Iosb.of(.IO_TIMEOUT, 0)));
+    // std treats a cancelled receive as unreachable. The transport posts
+    // such a receive again and never maps it; should one reach the
+    // mapping, it is not error.Canceled, which means an Io cancellation the
+    // caller asked for.
+    try std.testing.expectError(error.Unexpected, windowsReadResult(Iosb.of(.CANCELLED, 0)));
+}
+
 test "transport init and deinit" {
     const pair = try createSocketPair();
     defer ioClose(std.testing.io, pair[1]);
