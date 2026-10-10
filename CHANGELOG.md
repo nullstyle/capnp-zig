@@ -34,6 +34,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capnpc-wasm supplies the schema compiler only; from its full SDK 0.1.0-rc.6
   on it ships no Wasm build of the generator.
 
+### Fixed
+
+- **Windows: a timed read could fail with `error.Unexpected` after Windows
+  cancelled its receive.** This affects `Transport.readTimeout` (TCP) on
+  Windows. A timed read right after one on the same thread whose deadline
+  raced arriving data could fail with `error.Unexpected`. In CI, a burst of
+  about 250 timed reads with 1 ms deadlines, against a peer that sent one
+  byte at a time, hit it in about 1% of runs. Windows ended the new receive
+  with STATUS_CANCELLED within about 0.1 ms, although nothing had cancelled
+  it, and std's batch await (0.17.0) then reports success with nothing
+  completed. The cancelled receive took no bytes, so the stream was intact,
+  but the caller got a failed read. `readTimeout` now posts the receive
+  again, with the same deadline, when this happens. A cancellation of the
+  caller still returns `error.Canceled`, and a deadline that passed
+  meanwhile returns `error.Timeout`. After 8 such re-posts in one read it
+  returns `error.Unexpected` as before. In Windows CI loops, 1,600 runs had
+  no failure with the re-post (19 failed without it), and each spurious
+  cancellation needed one re-post. Two new Windows tests recreate the state
+  on purpose: the read returns the peer's bytes and the stream continues in
+  order, or, past the deadline, the read times out and leaves the bytes for
+  the next read. Untimed reads (`Transport.read`, which `Connection`'s
+  Windows read loop uses) do not take this path, and the stray cancellation
+  can reach them too: in a CI experiment, an untimed read right after such
+  a timed read on the same socket crashed in 28 of 1,600 runs, because
+  std's (0.17.0) `netRead` on Windows treats a cancellation it did not ask
+  for as unreachable. That case is still open.
+
 ### Documentation
 
 - **docs/quic-transport.md: Wire constants (frozen).** A new section lists

@@ -1984,21 +1984,74 @@ fn ioReadVecWindowsTimeout(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, dead
     var storage: [1]std.Io.Operation.Storage = undefined;
     var batch: std.Io.Batch = .init(&storage);
     defer cancelWindowsReceive(io, &batch);
-    batch.addAt(0, .{ .device_io_control = .{
-        .file = .{ .handle = fd, .flags = .{ .nonblocking = true } },
-        .code = windows.IOCTL.AFD.RECEIVE,
-        .in = std.mem.asBytes(&receive),
-    } });
-    batch.awaitConcurrent(io, deadline) catch |err| {
-        // Ordinary Windows netRead can return Canceled after AFD consumed
-        // bytes. Batch cancellation instead retains the final successful
-        // IOSB, and keeps receive/vectors alive until the APC has completed.
-        cancelWindowsReceive(io, &batch);
+    var reposts: u32 = 0;
+    while (true) {
+        batch.addAt(0, .{ .device_io_control = .{
+            .file = .{ .handle = fd, .flags = .{ .nonblocking = true } },
+            .code = windows.IOCTL.AFD.RECEIVE,
+            .in = std.mem.asBytes(&receive),
+        } });
+        batch.awaitConcurrent(io, deadline) catch |err| {
+            // Ordinary Windows netRead can return Canceled after AFD consumed
+            // bytes. Batch cancellation instead retains the final successful
+            // IOSB, and keeps receive/vectors alive until the APC has completed.
+            cancelWindowsReceive(io, &batch);
+            if (batch.next()) |completion| return windowsReadResult(completion.result.device_io_control);
+            return err;
+        };
         if (batch.next()) |completion| return windowsReadResult(completion.result.device_io_control);
-        return err;
-    };
-    const completion = batch.next() orelse return error.Unexpected;
-    return windowsReadResult(completion.result.device_io_control);
+
+        // The await succeeded with nothing completed. In the pinned std
+        // (0.17.0) that happens only when the receive ended STATUS_CANCELLED
+        // although this batch never cancelled it: `batchApc` files a
+        // cancelled operation under `unused` instead of `completed`, and the
+        // await loop then ends because nothing is pending.
+        //
+        // Windows does this. In Windows CI loops of "readTimeout preserves
+        // stream bytes across repeated deadline races" (about 11,000 runs),
+        // about 1% of runs hit it, always on the timed read right after one
+        // on the same thread whose timeout cancellation raced the receive's
+        // data completion. The receive ended within about 0.1 ms of being
+        // posted. Nothing was in flight afterwards (`NtCancelIoFileEx(fd,
+        // NULL)` returned STATUS_NOT_FOUND), and neither the thread alert
+        // nor the reuse of the IOSB address caused it.
+        //
+        // Posting the receive again is safe for the stream: a receive that
+        // ends STATUS_CANCELLED has taken no bytes, and none is in flight
+        // that could take bytes later. The CI reports read the rest of the
+        // stream after every such receive and always found it complete and
+        // in order. With this re-post, 1,600 CI runs had no failure (19 in
+        // 1,600 without it); each of the 11 spurious cancellations there
+        // needed one re-post. `readTimeout posts again a receive Windows
+        // cancelled without data` in tests/rpc/transport/tcp/
+        // rpc_tick_idle_test.zig recreates the state on purpose.
+        //
+        // A cancellation of the caller, or a deadline that passed meanwhile,
+        // ends the read as usual. `max_spurious_cancel_reposts` bounds the
+        // re-posts: a receive that is cancelled again and again is no longer
+        // that rare event, and the read fails as before, with
+        // error.Unexpected. So does a backend that reports success while
+        // the receive is still pending: a second receive would race it for
+        // the stream's bytes (the deferred cancel joins it instead).
+        if (batch.pending.head != .none) return error.Unexpected;
+        try io.checkCancel();
+        if (deadlinePassed(io, deadline)) return error.Timeout;
+        if (reposts == max_spurious_cancel_reposts) return error.Unexpected;
+        reposts += 1;
+        log.debug("timed read: Windows cancelled the receive without data; posting it again ({d} of {d})", .{ reposts, max_spurious_cancel_reposts });
+        batch = .init(&storage);
+    }
+}
+
+/// How often one `ioReadVecWindowsTimeout` call posts its receive again
+/// after Windows cancelled it without data. In CI each such cancellation
+/// needed one re-post.
+const max_spurious_cancel_reposts = 8;
+
+/// Whether `deadline` (a `Timeout.toDeadline` result) has passed.
+fn deadlinePassed(io: std.Io, deadline: std.Io.Timeout) bool {
+    const remaining = deadline.toDurationFromNow(io) orelse return false;
+    return remaining.raw.nanoseconds <= 0;
 }
 
 fn cancelWindowsReceive(io: std.Io, batch: *std.Io.Batch) void {
