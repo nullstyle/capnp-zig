@@ -1696,7 +1696,9 @@ test "requestClose ends a Connection whose read is pending, without posting the 
     SpuriouslyCancelledReceive.arm(.{ .peer = pair[1], .mode = .posted_receive });
 
     const Closer = struct {
-        requested_ns: std.atomic.Value(i64) = .init(0),
+        // A plain field: it is read only after thread.join(), and
+        // x86-linux-gnu has no 64-bit atomics.
+        requested_ns: i64 = 0,
 
         fn run(self: *@This(), closing: *Connection) void {
             // Close while the read is pending. On Windows the wrapper reports
@@ -1707,7 +1709,7 @@ test "requestClose ends a Connection whose read is pending, without posting the 
             } else {
                 std.Io.sleep(std.testing.io, .fromMilliseconds(50), .awake) catch {};
             }
-            self.requested_ns.store(awakeNowNs(std.testing.io), .release);
+            self.requested_ns = awakeNowNs(std.testing.io);
             closing.requestClose();
         }
     };
@@ -1717,7 +1719,7 @@ test "requestClose ends a Connection whose read is pending, without posting the 
     const returned_ns = awakeNowNs(io);
     thread.join();
 
-    try std.testing.expect(returned_ns - closer.requested_ns.load(.acquire) < 2 * std.time.ns_per_s);
+    try std.testing.expect(returned_ns - closer.requested_ns < 2 * std.time.ns_per_s);
     try std.testing.expect(conn.last_error == null);
     try std.testing.expectEqual(@as(usize, 0), counter.frames);
     // A cancellation that was asked for is never posted again.
