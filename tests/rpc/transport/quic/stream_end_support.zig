@@ -39,13 +39,24 @@ pub const Order = enum {
 const payload_len: usize = 64;
 const payload: [payload_len]u8 = @splat(0xab);
 const reset_code: u64 = 77;
-/// A passing run never comes near it on loopback. A failing run (the trap
-/// order without the fix) shows its `DataStreamTimeout` after this long.
-const completion_deadline_us: u64 = 300_000;
+/// A failing run (the trap order without the fix) shows its
+/// `DataStreamTimeout` after this long.
+///
+/// The deadline runs from the last byte the receiver read, also while the
+/// runners below step both peers on to the stream end. On Windows those
+/// steps are slow: each 1 ms wait (a 1 ms receive timeout, the pause in
+/// `Patience.wait`) lasts a timer tick of 15.6 ms, and a polled loop gets
+/// at most one datagram every second step from the UDP receive bridge. The
+/// acknowledgement flush then takes no datagram, and the end waits behind
+/// the queued ones. With that timing emulated on macOS, a passing client run
+/// used 150 to 250 ms between its last read and the end. The old 300 ms
+/// deadline failed one windows-latest run with `DataStreamTimeout` (CI run
+/// 38027925212), and every emulated run with a 150 ms stall added failed.
+const completion_deadline_us: u64 = 2_000_000;
 
-/// Wall-clock patience for one wait loop: `loopback_timeout_ms` (3 s), ten
-/// times the completion deadline, so a stalled frame shows its
-/// `DataStreamTimeout` long before the loop gives up.
+/// Wall-clock patience for one wait loop: `loopback_timeout_ms` (3 s). It is
+/// longer than the completion deadline, so a stalled frame shows its
+/// `DataStreamTimeout` before the loop gives up.
 const Patience = struct {
     start: std.Io.Timestamp,
 
@@ -61,6 +72,12 @@ const Patience = struct {
         loopback.sleepMs(1);
     }
 };
+
+comptime {
+    // The deadline starts before a wait loop's patience does, so a stalled
+    // frame times out before that loop gives up.
+    std.debug.assert(completion_deadline_us < loopback.loopback_timeout_ms * 1000);
+}
 
 const native_options: quic.NativeOptions = .{
     .inline_frame_threshold = 16,
