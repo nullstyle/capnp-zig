@@ -1501,6 +1501,119 @@ test "an Io cancellation ends a pending read and leaves the stream intact" {
     try expectUntimedStream(&fx.transport, .read, "after-cancel", try fx.transport.read());
 }
 
+/// A task function that waits (at most 5 s) for an Io cancellation of its
+/// task, re-arms it (`recancel`), then reads. The read starts with the
+/// cancellation pending, as after an earlier read of the task that returned
+/// bytes and re-armed one.
+const ReadAfterCancel = struct {
+    var waiting: std.atomic.Value(bool) = .init(false);
+    var reading: std.atomic.Value(bool) = .init(false);
+
+    fn reset() void {
+        waiting.store(false, .release);
+        reading.store(false, .release);
+    }
+
+    fn run(transport: *tcp.Transport) tcp.Transport.ReadError!usize {
+        waiting.store(true, .release);
+        std.Io.sleep(std.testing.io, .fromSeconds(5), .awake) catch |err| switch (err) {
+            error.Canceled => {
+                std.testing.io.recancel();
+                reading.store(true, .release);
+                return transport.read();
+            },
+        };
+        // No cancellation within 5 s: a result the test rejects.
+        return error.Unexpected;
+    }
+};
+
+test "a read that starts with an Io cancellation pending ends with error.Canceled and posts no receive" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var fx: WrappedTransport = undefined;
+    try fx.init();
+    defer fx.deinit();
+    // Count every receive posted; intercept none.
+    SpuriouslyCancelledReceive.arm(.{ .peer = fx.peer(), .inject_count = 0 });
+    ReadAfterCancel.reset();
+    // The peer's bytes are queued first: a receive posted now would take
+    // them at once, and the read would return them.
+    const queued = "queued-before-the-read";
+    try fx.send(queued);
+
+    var read = try std.Io.concurrent(std.testing.io, ReadAfterCancel.run, .{&fx.transport});
+    defer _ = read.cancel(std.testing.io) catch 0;
+    try std.testing.expect(waitUntil(&ReadAfterCancel.waiting, ReadWatchdog.limit_ms));
+    try std.testing.expectError(error.Canceled, read.cancel(std.testing.io));
+    try std.testing.expect(ReadAfterCancel.reading.load(.acquire));
+    // The read checked the cancellation before it posted anything.
+    try std.testing.expectEqual(@as(usize, 0), SpuriouslyCancelledReceive.posts.load(.acquire));
+
+    // The bytes are still in the socket: the next read gets all of them.
+    try fx.guard();
+    try expectUntimedStream(&fx.transport, .read, queued, try fx.transport.read());
+    try std.testing.expect(SpuriouslyCancelledReceive.posts.load(.acquire) >= 1);
+    try std.testing.expect(!fx.watchdog.fired.load(.acquire));
+}
+
+/// An Io that cannot run the transport's AFD receive batch concurrently:
+/// `batchAwaitConcurrent` gives `error.ConcurrencyUnavailable` for it, with
+/// nothing posted. It counts those refusals and std's `net_read`
+/// operations.
+const NoReceiveConcurrency = struct {
+    var refused: std.atomic.Value(usize) = .init(0);
+    var net_reads: std.atomic.Value(usize) = .init(0);
+
+    fn reset() void {
+        refused.store(0, .release);
+        net_reads.store(0, .release);
+    }
+
+    fn awaitConcurrent(userdata: ?*anyopaque, batch: *std.Io.Batch, timeout: std.Io.Timeout) std.Io.Batch.AwaitConcurrentError!void {
+        const head = batch.submitted.head;
+        if (head != .none and batch.storage[head.toIndex()].submission.operation == .device_io_control) {
+            _ = refused.fetchAdd(1, .acq_rel);
+            return error.ConcurrencyUnavailable;
+        }
+        return std.testing.io.vtable.batchAwaitConcurrent(userdata, batch, timeout);
+    }
+
+    fn operate(userdata: ?*anyopaque, operation: std.Io.Operation) std.Io.Cancelable!std.Io.Operation.Result {
+        if (operation == .net_read) _ = net_reads.fetchAdd(1, .acq_rel);
+        return std.testing.io.vtable.operate(userdata, operation);
+    }
+};
+
+test "read takes std's read when the Io cannot run the transport's receive batch concurrently" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    NoReceiveConcurrency.reset();
+    var vtable = std.testing.io.vtable.*;
+    vtable.batchAwaitConcurrent = NoReceiveConcurrency.awaitConcurrent;
+    vtable.operate = NoReceiveConcurrency.operate;
+    const io: std.Io = .{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    const pair = try tcp.createLoopbackSocketPair(io);
+    var peer_closed = false;
+    defer if (!peer_closed) tcp.closeFd(io, pair[1]);
+    var transport = try tcp.Transport.init(std.testing.allocator, io, pair[0], 64);
+    defer transport.deinit();
+
+    // Each read: the transport's own receive is refused before anything is
+    // posted, and std's read takes the bytes.
+    const payload = "through-std-read";
+    try io_write_compat.writeAll(io, pair[1].handle, payload);
+    try expectUntimedStream(&transport, .read, payload, try transport.read());
+    const reads = NoReceiveConcurrency.net_reads.load(.acquire);
+    try std.testing.expect(reads >= 1);
+    try std.testing.expectEqual(reads, NoReceiveConcurrency.refused.load(.acquire));
+
+    // The end of the stream reads as 0 the same way.
+    tcp.closeFd(io, pair[1]);
+    peer_closed = true;
+    try std.testing.expectEqual(@as(usize, 0), try transport.read());
+    try std.testing.expectEqual(reads + 1, NoReceiveConcurrency.net_reads.load(.acquire));
+    try std.testing.expectEqual(reads + 1, NoReceiveConcurrency.refused.load(.acquire));
+}
+
 test "a read cancelled as its receive completes keeps the bytes and re-arms the cancellation" {
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     CompletionAtCancel.reset();

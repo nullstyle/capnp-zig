@@ -104,10 +104,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the handle value. New Windows tests recreate the stray cancellation on
   `read`, `readTimeout(.none)`, the `Connection` loop, and that loop after
   a timed read made on another thread, and cover the close and
-  Io-cancellation edges and 20 cancelled receives in a row (each posted
-  again, with growing waits). In-file tests check the give-up with a
-  50 ms span, and that cancellations of receives that were pending for a
-  while never add up to it.
+  Io-cancellation edges, 20 cancelled receives in a row (each posted
+  again, with growing waits), a read that starts with an Io cancellation
+  pending (it posts nothing and leaves the bytes queued), and an Io that
+  cannot run the receive batch concurrently (std's read, as before).
+  In-file tests check the give-up with a 50 ms span, and that
+  cancellations of receives that were pending for a while never add up to
+  it.
 
 ### Documentation
 
