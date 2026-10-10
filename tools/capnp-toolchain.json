@@ -1,9 +1,9 @@
 {
   "format": 1,
-  "url": "https://github.com/nullstyle/capnpc-wasm/releases/download/capnp-wasm-tools-v0.1.0-rc.2/capnp-wasm-tools-0.1.0-rc.2.tgz",
-  "sha256": "84f6dd426dd0e94dd5d7fd3dd0e9390e84905ac4b5e6957af57788967e5065f4",
-  "manifest_sha256": "282c217a8a8c525758dadd3e14b0d2a4a247b455a48e2413003eca7eafbe8d18",
-  "source_commit": "0c45c08aa7a836a09e2d715f790823288769b04c",
-  "compiler_sha256": "5429b7277b18b6e3f65430068ac41ac327ef8dd359603955f16ec576e0c3a14a",
+  "url": "https://github.com/nullstyle/capnpc-wasm/releases/download/capnp-wasm-tools-v0.1.0-rc.3/capnp-wasm-tools-0.1.0-rc.3.tgz",
+  "sha256": "FILL-IN: run tools/update_capnp_toolchain.py tools capnp-wasm-tools-v0.1.0-rc.3 after the release is published",
+  "manifest_sha256": "FILL-IN: run tools/update_capnp_toolchain.py tools capnp-wasm-tools-v0.1.0-rc.3 after the release is published",
+  "source_commit": "FILL-IN: run tools/update_capnp_toolchain.py tools capnp-wasm-tools-v0.1.0-rc.3 after the release is published",
+  "compiler_sha256": "FILL-IN: run tools/update_capnp_toolchain.py tools capnp-wasm-tools-v0.1.0-rc.3 after the release is published",
   "include_sha256": "97c87a6cabc07b477f763c816e2a402678e628bffee885bda9d1616b33b44aec"
 }

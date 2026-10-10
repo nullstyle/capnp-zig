@@ -113,7 +113,8 @@ compiler**, pinned by archive, module and manifest hashes in
 [`tools/capnp-toolchain.json`](tools/capnp-toolchain.json). Run
 `mise run bootstrap:capnp` once, then use `mise exec -- just gen` to regenerate
 or `mise exec -- just check-generated` to check committed artifacts. The
-bootstrap downloads the compiler-only package; the Python driver invokes the
+bootstrap downloads the compiler-only package; `tools/capnp_tool.py` verifies
+it and hands each run to the package's portable launcher, which invokes the
 pinned Wasmtime directly on Linux, macOS and Windows. `mise run check:capnp`
 verifies the installed package and runtime. No native schema compiler is
 selected through PATH for these commands.

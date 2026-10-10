@@ -1,6 +1,13 @@
-"""Portable compiler acceptance tests; the real pinned module is required."""
+"""Portable compiler acceptance tests; the real pinned module is required.
+
+tools/capnp_tool.py installs and verifies the pinned capnpc-wasm tools archive
+and delegates compiling and generating to its portable launcher
+(package/bin/capnp-wasm.py). These tests run that path end to end; the path
+translation tests call the installed launcher's own translation.
+"""
 
 from pathlib import Path
+import importlib.util
 import io
 import json
 import os
@@ -15,6 +22,20 @@ import capnp_tool as tool
 
 ROOT = Path(__file__).resolve().parent.parent
 DRIVER = ROOT / "tools/capnp_tool.py"
+sys.dont_write_bytecode = True
+
+
+def installed_launcher():
+    """The installed package's launcher module (its path translation)."""
+    path = tool.installed_package(ROOT) / tool.LAUNCHER
+    spec = importlib.util.spec_from_file_location("capnp_wasm_launcher", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def wasmtime():
+    return os.environ.get("CAPNP_WASM_WASMTIME", shutil.which("wasmtime") or "wasmtime")
 
 
 class IntegrityTests(unittest.TestCase):
@@ -27,6 +48,7 @@ class IntegrityTests(unittest.TestCase):
         package = self.root / "package"
         contents = {"wasm/capnp.wasm": b"\x00asm\x01\x00\x00\x00",
                     "include/capnp/schema.capnp": b"@0xabc;\n",
+                    "bin/capnp-wasm.py": b"# launcher\n",
                     "runtime/wasmtime-version": b"48.0.1\n"}
         for name, data in contents.items():
             path = package / name
@@ -148,7 +170,7 @@ class CompilerTests(unittest.TestCase):
         package = tool.installed_package(ROOT)
         shutil.copytree(package / "include", self.cwd / "fixture includes")
         expected = subprocess.run(
-            [tool.runtime(package), "run", "-W", "exceptions=y", "--dir", str(self.cwd) + "::/",
+            [wasmtime(), "run", "-W", "exceptions=y", "--dir", str(self.cwd) + "::/",
              str(package / "wasm/capnp.wasm"), "compile", "--no-standard-import",
              "-Ifixture includes", "-o-", "schema.capnp"], capture_output=True, timeout=30)
         self.assertEqual(expected.returncode, 0, expected.stderr)
@@ -292,8 +314,13 @@ class CompilerTests(unittest.TestCase):
 
 
 class WindowsPathTests(unittest.TestCase):
+    """The installed launcher's translation of Windows paths (capnp mode)."""
+
+    def setUp(self):
+        self.launcher = installed_launcher()
+
     def test_drive_paths_and_separators_share_one_translation(self):
-        root, cwd, args = tool.compiler_paths(
+        root, cwd, args = self.launcher.translate_paths(
             ["compile", "-o-", "-IC:\\shared includes", "--src-prefix", "C:\\work tree\\schemas",
              "schemas\\nested\\file.capnp"], "C:\\work tree", windows=True)
         self.assertEqual(root, "C:\\")
@@ -304,8 +331,8 @@ class WindowsPathTests(unittest.TestCase):
 
     def test_explicit_cross_volume_and_drive_relative_inputs_are_rejected(self):
         for filename in ("D:\\other\\file.capnp", "C:ambiguous.capnp"):
-            with self.subTest(filename=filename), self.assertRaises(ValueError):
-                tool.compiler_paths(["compile", "-o-", filename], "C:\\work", windows=True)
+            with self.subTest(filename=filename), self.assertRaises(self.launcher.Failure):
+                self.launcher.translate_paths(["compile", "-o-", filename], "C:\\work", windows=True)
 
 
 if __name__ == "__main__":
