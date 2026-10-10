@@ -1,9 +1,9 @@
 {
   "format": 1,
   "url": "https://github.com/nullstyle/capnpc-wasm/releases/download/capnp-wasm-tools-v0.1.0-rc.3/capnp-wasm-tools-0.1.0-rc.3.tgz",
-  "sha256": "FILL-IN: run tools/update_capnp_toolchain.ts tools capnp-wasm-tools-v0.1.0-rc.3 after the release is published",
-  "manifest_sha256": "FILL-IN: run tools/update_capnp_toolchain.ts tools capnp-wasm-tools-v0.1.0-rc.3 after the release is published",
-  "source_commit": "FILL-IN: run tools/update_capnp_toolchain.ts tools capnp-wasm-tools-v0.1.0-rc.3 after the release is published",
-  "compiler_sha256": "FILL-IN: run tools/update_capnp_toolchain.ts tools capnp-wasm-tools-v0.1.0-rc.3 after the release is published",
+  "sha256": "66d996add5170a859617eb460f2f6a3251fd82211b11333aab349c075e62fd8b",
+  "manifest_sha256": "5fb0a16e4226e83c36abdc59341bce54c463e2b6f0339294a83a6f59bb0dbb46",
+  "source_commit": "db54a68f8bff5b89e4a5b7a689bea65f672d32bd",
+  "compiler_sha256": "22aee10286233907d8982ade15978567d3e8868e1808e7e9dad2cf0a10d22c10",
   "include_sha256": "97c87a6cabc07b477f763c816e2a402678e628bffee885bda9d1616b33b44aec"
 }
