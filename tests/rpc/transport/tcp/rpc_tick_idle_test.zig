@@ -534,6 +534,93 @@ test "readTimeout works without batch concurrency and leaves the socket reusable
     try std.testing.expectEqual(@as(usize, 0), try transport.readTimeout(.{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(2_000), .clock = .awake } }));
 }
 
+/// The writer side of the stream-race test, with the progress a failure
+/// report needs: how many bytes were sent and whether the socket was closed.
+const StreamFeed = struct {
+    write_failed: std.atomic.Value(bool) = .init(false),
+    written: std.atomic.Value(usize) = .init(0),
+    closed: std.atomic.Value(bool) = .init(false),
+
+    fn run(feed: *StreamFeed, write_io: std.Io, fd: tcp.SocketFd, bytes: []const u8) void {
+        defer {
+            tcp.closeFd(write_io, fd);
+            feed.closed.store(true, .release);
+        }
+        std.Io.sleep(write_io, .fromMilliseconds(10), .awake) catch {
+            feed.write_failed.store(true, .release);
+            return;
+        };
+        for (bytes) |byte| {
+            io_write_compat.writeAll(write_io, fd.handle, &.{byte}) catch {
+                feed.write_failed.store(true, .release);
+                return;
+            };
+            _ = feed.written.fetchAdd(1, .release);
+            std.Io.sleep(write_io, .fromMilliseconds(1), .awake) catch {
+                feed.write_failed.store(true, .release);
+                return;
+            };
+        }
+    }
+};
+
+/// Prints what separates the causes of an unexpected timed-read error, then
+/// reads the rest of the stream and says whether it continued in order.
+///
+/// Windows CI failed this way once (run 38015605467, `error.Unexpected`).
+/// The trace shows the pinned std's Windows batch await returned success with
+/// no completion. In that backend this happens only when the receive's APC
+/// reports STATUS_CANCELLED: `batchApc` moves the operation to the unused
+/// list and the await loop then ends. Who cancelled it is not known.
+/// The report tells these cases apart:
+/// - the peer had closed (`written` = 128 and `closed`);
+/// - the receive was cancelled without consuming bytes (the rest arrives in order);
+/// - the batch lost a receive that was still in flight (later bytes are
+///   missing or out of order);
+/// - the socket handle was closed under the reader (the next read fails).
+fn reportTimedReadFailure(
+    transport: *tcp.Transport,
+    io: std.Io,
+    err: anyerror,
+    payload: []const u8,
+    received: usize,
+    feed: *const StreamFeed,
+    stats: struct { reads: usize, timeouts: usize, started: i96, end: i96 },
+) void {
+    const now = std.Io.Clock.awake.now(io).nanoseconds;
+    std.debug.print(
+        "timed read failed: {s} after {d} reads and {d} timeouts, {d} ms into the test; " ++
+            "received {d} of {d} bytes; peer wrote {d}, peer closed: {}, peer write failed: {}\n",
+        .{
+            @errorName(err),                  stats.reads,
+            stats.timeouts,                   @divFloor(now - stats.started, std.time.ns_per_ms),
+            received,                         payload.len,
+            feed.written.load(.acquire),      feed.closed.load(.acquire),
+            feed.write_failed.load(.acquire),
+        },
+    );
+    var offset = received;
+    while (std.Io.Clock.awake.now(io).nanoseconds < stats.end) {
+        const n = transport.readTimeout(.{ .duration = .{ .raw = .fromMilliseconds(1), .clock = .awake } }) catch |next_err| switch (next_err) {
+            error.Timeout => continue,
+            else => {
+                std.debug.print("continuation: {s} at byte {d}\n", .{ @errorName(next_err), offset });
+                return;
+            },
+        };
+        if (n == 0) {
+            std.debug.print("continuation: end of stream at byte {d} of {d}\n", .{ offset, payload.len });
+            return;
+        }
+        if (n > payload.len - offset or !std.mem.eql(u8, payload[offset..][0..n], transport.read_buf[0..n])) {
+            std.debug.print("continuation: {d} bytes read at byte {d} do not continue the stream (first is {d})\n", .{ n, offset, transport.read_buf[0] });
+            return;
+        }
+        offset += n;
+    }
+    std.debug.print("continuation: test deadline at byte {d} of {d}\n", .{ offset, payload.len });
+}
+
 test "readTimeout preserves stream bytes across repeated deadline races" {
     var vtable = std.testing.io.vtable.*;
     vtable.batchAwaitConcurrent = withoutNetReadBatchConcurrency;
@@ -544,47 +631,43 @@ test "readTimeout preserves stream bytes across repeated deadline races" {
 
     var payload: [128]u8 = undefined;
     for (&payload, 0..) |*byte, index| byte.* = @intCast(index);
-    var write_failed: std.atomic.Value(bool) = .init(false);
-    const Feeder = struct {
-        fn run(write_io: std.Io, fd: tcp.SocketFd, bytes: []const u8, failed: *std.atomic.Value(bool)) void {
-            defer tcp.closeFd(write_io, fd);
-            std.Io.sleep(write_io, .fromMilliseconds(10), .awake) catch {
-                failed.store(true, .release);
-                return;
-            };
-            for (bytes) |byte| {
-                io_write_compat.writeAll(write_io, fd.handle, &.{byte}) catch {
-                    failed.store(true, .release);
-                    return;
-                };
-                std.Io.sleep(write_io, .fromMilliseconds(1), .awake) catch {
-                    failed.store(true, .release);
-                    return;
-                };
-            }
-        }
-    };
-    const feeder = std.Thread.spawn(.{}, Feeder.run, .{ io, pair[1], &payload, &write_failed }) catch |err| {
+    var feed: StreamFeed = .{};
+    const feeder = std.Thread.spawn(.{}, StreamFeed.run, .{ &feed, io, pair[1], &payload }) catch |err| {
         tcp.closeFd(io, pair[1]);
         return err;
     };
     defer feeder.join();
 
-    const end = std.Io.Clock.awake.now(io).nanoseconds + 10 * std.time.ns_per_s;
+    const started = std.Io.Clock.awake.now(io).nanoseconds;
+    const end = started + 10 * std.time.ns_per_s;
     var received: usize = 0;
+    var reads: usize = 0;
+    var timeouts: usize = 0;
     while (true) {
         try std.testing.expect(std.Io.Clock.awake.now(io).nanoseconds < end);
         const n = transport.readTimeout(.{ .duration = .{ .raw = .fromMilliseconds(1), .clock = .awake } }) catch |err| switch (err) {
-            error.Timeout => continue,
-            else => return err,
+            error.Timeout => {
+                timeouts += 1;
+                continue;
+            },
+            else => {
+                reportTimedReadFailure(&transport, io, err, &payload, received, &feed, .{
+                    .reads = reads,
+                    .timeouts = timeouts,
+                    .started = started,
+                    .end = end,
+                });
+                return err;
+            },
         };
+        reads += 1;
         if (n == 0) break;
         try std.testing.expect(n <= payload.len - received);
         try std.testing.expectEqualSlices(u8, payload[received..][0..n], transport.read_buf[0..n]);
         received += n;
     }
     try std.testing.expectEqual(payload.len, received);
-    try std.testing.expect(!write_failed.load(.acquire));
+    try std.testing.expect(!feed.write_failed.load(.acquire));
 }
 
 test "readTimeout retains a completed read when the batch reports a concurrency error" {
