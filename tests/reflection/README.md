@@ -74,7 +74,7 @@ Change files under `schemas/`, bootstrap the repository's pinned WASM compiler,
 then produce a temporary replacement request:
 
 ```sh
-uv run --no-project --python 3.13 ../../tools/capnp_tool.py compiler -- \
+deno run --allow-all --no-config ../../tools/capnp_tool.ts compiler -- \
   compile --no-standard-import -Ischemas/include --src-prefix=schemas -o- \
   schemas/values.capnp schemas/nested/brands.capnp schemas/shared/common.capnp \
   schemas/reflection.capnp schemas/helper-names.capnp > request.new

@@ -4,6 +4,8 @@ act = "latest"
 go = "1.26.0"
 just = "latest"
 uv = "latest"
+# Runs tools/capnp_tool.ts and capnpc-wasm's packaged launcher (Deno 2.4.5 or newer).
+deno = "2.9.6"
 wasmtime = "48.0.1"
 
 # THE single Zig version specifier for this repo: CI and local development both
@@ -23,11 +25,11 @@ zig = "0.17.0"
 
 [tasks."bootstrap:capnp"]
 description = "Install the checksum-pinned Cap'n Proto WASM schema compiler"
-run = "uv run --no-project --python 3.13 tools/capnp_tool.py bootstrap"
+run = "deno run --allow-all --no-config tools/capnp_tool.ts bootstrap"
 
 [tasks."check:capnp"]
 description = "Verify the pinned schema compiler artifact and Wasmtime runtime"
-run = "uv run --no-project --python 3.13 tools/capnp_tool.py verify"
+run = "deno run --allow-all --no-config tools/capnp_tool.ts verify"
 
 [env]
 ZIG_GLOBAL_CACHE_DIR = "{{config_root}}/.zig-global-cache"

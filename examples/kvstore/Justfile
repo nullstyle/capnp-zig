@@ -1,9 +1,9 @@
 set windows-shell := ["sh", "-cu"]
-capnp_tool := justfile_directory() + "/../../tools/capnp_tool.py"
+capnp_tool := justfile_directory() + "/../../tools/capnp_tool.ts"
 
 # Regenerate gen/kvstore.zig from kvstore.capnp using the repository plugin.
 gen:
-    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- kvstore.capnp
+    deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- kvstore.capnp
 
 # Build kvstore server + stressor.
 build: gen

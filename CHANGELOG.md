@@ -26,12 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Tooling: the schema compiler is capnpc-wasm's `capnp-wasm-tools`
-  0.1.0-rc.3, run through its portable launcher.** `tools/capnp_tool.py` keeps
-  its commands and the pin, download, extraction and package checks, and hands
-  compiling and generating to the archive's `bin/capnp-wasm.py`, which now owns
-  the path translation, the Wasmtime invocation (48.0.1 or a newer 48.0.x) and
-  the transactional output. Committed requests and bindings do not change.
-  `tools/update_capnp_toolchain.py` fills the pin from a published release.
+  0.1.0-rc.3, run through its Deno launcher; generating no longer needs Python.**
+  `tools/capnp_tool.ts` replaces `tools/capnp_tool.py` and
+  `tools/bootstrap_capnp.py` with the same commands, pin, download, extraction
+  and package checks, and hands compiling and generating to the archive's
+  `bin/capnp-wasm.ts`, which now owns the path translation, the Wasmtime
+  invocation (48.0.1 or a newer 48.0.x) and the transactional output.
+  `mise.toml` pins Deno 2.9.6 (the launcher needs 2.4.5 or newer). Committed
+  requests and bindings do not change. `tools/update_capnp_toolchain.ts` fills
+  the pin from a published release.
 
 ### Documentation
 

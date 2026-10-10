@@ -471,12 +471,11 @@ fn verifyPackagedPlugin(ctx: *const Context, plugin_abs: []const u8) !void {
     try std.Io.Dir.cwd().createDirPath(ctx.io, output_abs);
 
     const request = try run(ctx, &.{
-        "uv",
+        "deno",
         "run",
-        "--no-project",
-        "--python",
-        "3.13",
-        "tools/capnp_tool.py",
+        "--allow-all",
+        "--no-config",
+        "tools/capnp_tool.ts",
         "compiler",
         "--",
         "compile",
@@ -664,7 +663,7 @@ pub fn main(init: std.process.Init) !void {
     // Compiler identity includes the pinned package and runtime integrity,
     // not only the version string embedded in schema metadata.
     try runDiscard(&ctx, &.{
-        "uv", "run", "--no-project", "--python", "3.13", "tools/capnp_tool.py", "verify",
+        "deno", "run", "--allow-all", "--no-config", "tools/capnp_tool.ts", "verify",
     }, .inherit, null);
 
     const before = try status(&ctx);

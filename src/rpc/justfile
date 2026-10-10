@@ -1,10 +1,10 @@
 set windows-shell := ["sh", "-cu"]
-capnp_tool := justfile_directory() + "/../../tools/capnp_tool.py"
+capnp_tool := justfile_directory() + "/../../tools/capnp_tool.ts"
 
 gen-rpc:
-    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- ./capnp/rpc.capnp
-    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- ./capnp/persistent.capnp
-    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- ./capnp/stream.capnp
+    deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- ./capnp/rpc.capnp
+    deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- ./capnp/persistent.capnp
+    deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin ../../zig-out/bin/capnpc-zig --output gen -- ./capnp/stream.capnp
 
 gen: gen-rpc
 

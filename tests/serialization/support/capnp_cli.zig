@@ -3,8 +3,9 @@ const std = @import("std");
 /// Tests use the same vendored standard schemas on every host.
 pub const standard_include_arg = "-Ivendor/ext/capnproto/c++/src";
 const driver_prefix = [_][]const u8{
-    "uv", "run", "--no-project", "--python", "3.13", "tools/capnp_tool.py", "compiler", "--",
+    "deno", "run", "--allow-all", "--no-config", "tools/capnp_tool.ts", "compiler", "--",
 };
+const driver_script_index = 4;
 
 pub const StandardIncludes = enum {
     vendored,
@@ -45,8 +46,8 @@ pub const Command = struct {
     fn resolveRepositoryPaths(prepared: *Command, io: std.Io) !void {
         const root = try std.process.currentPathAlloc(io, prepared.allocator);
         defer prepared.allocator.free(root);
-        prepared.driver_path = try std.fs.path.join(prepared.allocator, &.{ root, "tools", "capnp_tool.py" });
-        prepared.argv[5] = prepared.driver_path.?;
+        prepared.driver_path = try std.fs.path.join(prepared.allocator, &.{ root, "tools", "capnp_tool.ts" });
+        prepared.argv[driver_script_index] = prepared.driver_path.?;
         for (prepared.argv) |*arg| {
             if (!std.mem.eql(u8, arg.*, standard_include_arg)) continue;
             const path = try std.fs.path.join(prepared.allocator, &.{ root, "vendor", "ext", "capnproto", "c++", "src" });

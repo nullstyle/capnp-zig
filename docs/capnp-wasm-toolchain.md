@@ -9,15 +9,18 @@ accepts a newer patch release of the same series (48.0.x).
 
 The work is split at the archive boundary:
 
-- `tools/capnp_tool.py` is the consumer side. It owns the pin, downloads the
+- `tools/capnp_tool.ts` is the consumer side. It owns the pin, downloads the
   archive, checks its digest, extracts it with path checks, and verifies the
   installed package against the pinned manifest digest on every invocation.
-- The archive's portable launcher, `package/bin/capnp-wasm.py` (capnpc-wasm's
-  launcher contract), does the rest. It runs Wasmtime directly on Linux,
-  macOS and Windows, translates caller paths, and publishes generator output
-  only after success. `capnp_tool.py` runs it with
+- The archive's launcher, `package/bin/capnp-wasm.ts` (capnpc-wasm's launcher
+  contract), does the rest. It runs Wasmtime directly on Linux, macOS and
+  Windows, translates caller paths, and publishes generator output only after
+  success. `capnp_tool.ts` runs it with the same Deno and with
   `CAPNP_WASM_EXPECT_MANIFEST_SHA256` set to the pinned manifest digest, so the
   launcher refuses a package that changed after the check.
+
+Both are Deno programs with no imports; `mise.toml` pins Deno 2.9.6 (the
+launcher needs 2.4.5 or newer). Generating needs no Python.
 
 ## Commands
 
@@ -35,7 +38,7 @@ mise exec -- just package-preflight
 For a compiler command, arguments after `--` follow the reference CLI:
 
 ```sh
-mise exec -- uv run --no-project --python 3.13 tools/capnp_tool.py compiler -- \
+mise exec -- deno run --allow-all --no-config tools/capnp_tool.ts compiler -- \
   compile -o- tests/test_schemas/example.capnp > request.bin
 ```
 
@@ -107,10 +110,10 @@ assets, then compare the printed archive and manifest digests with the
 release's row in capnpc-wasm's `docs/releases.md` (published releases):
 
 ```sh
-mise exec -- uv run --no-project --python 3.13 tools/update_capnp_toolchain.py tools capnp-wasm-tools-v0.1.0-rc.3
-mise exec -- uv run --no-project --python 3.13 tools/update_capnp_toolchain.py generator capnpc-wasm-v0.1.0-rc.6
+mise exec -- deno run --allow-all --no-config tools/update_capnp_toolchain.ts tools capnp-wasm-tools-v0.1.0-rc.3
+mise exec -- deno run --allow-all --no-config tools/update_capnp_toolchain.ts generator capnpc-wasm-v0.1.0-rc.6
 mise run bootstrap:capnp
-mise exec -- uv run --no-project --python 3.13 -m unittest discover -s tools -p test_capnp_tool.py
+mise exec -- deno test --allow-all --no-config tools/capnp_tool_test.ts
 mise exec -- just check-generated
 mise exec -- just check-wasm-generator
 ```
@@ -135,8 +138,8 @@ also retain their language generators and runtimes. Those libraries provide
 independent decoding and live RPC behavior that a synchronous WASM command
 does not implement.
 
-CI exercises the portable driver and required compiler-dependent tests on
-Linux, macOS and Windows. Generation drift, Stable API checks, native/WASI
+CI exercises the driver and required compiler-dependent tests on Linux, macOS
+and Windows. Generation drift, Stable API checks, native/WASI
 reflection, package preflight and native C++ interoperability cover the
 boundaries above.
 
@@ -154,7 +157,7 @@ hardening, documentation and API checks also passed. Windows runtime acceptance
 is provided by the hosted three-OS matrix.
 
 Moving from `capnp-wasm-tools` 0.1.0-rc.2 to rc.3, the first archive with the
-portable launcher, changes no committed request, binding, golden or API
+Deno launcher, changes no committed request, binding, golden or API
 snapshot: with a candidate built from the rc.3 source, `just check-generated`
 passed unchanged, and the bundled standard schemas have the same digest as in
 rc.2. Run it again after filling the pin from the published release.

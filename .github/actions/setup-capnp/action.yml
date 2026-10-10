@@ -1,8 +1,9 @@
 name: Install the pinned Cap'n Proto WASM compiler
 description: >
   Verify and install the checksum-pinned compiler artifact from
-  tools/capnp-toolchain.json on Linux, macOS, and Windows. The portable Python
-  driver runs it with the pinned Wasmtime; no native compiler is added to PATH.
+  tools/capnp-toolchain.json on Linux, macOS, and Windows. tools/capnp_tool.ts
+  hands it to the packaged Deno launcher, which runs it with the pinned
+  Wasmtime; no native compiler is added to PATH.
   Keep submodules recursive for the separately pinned standard schemas,
   fidelity corpus, and independent native C++ conformance reference in vendor/ext.
 runs:

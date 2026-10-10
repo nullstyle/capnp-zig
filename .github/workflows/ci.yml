@@ -124,7 +124,7 @@ jobs:
         # including Windows binary streams and workspace/output paths with spaces.
         # The package preflight below exercises the package-built Zig generator.
         # Missing artifacts or Wasmtime fail these tests rather than skip them.
-        run: uv run --no-project --python 3.13 -m unittest discover -s tools -p test_capnp_tool.py
+        run: deno test --allow-all --no-config tools/capnp_tool_test.ts
 
       - name: Verify test command execution and failure propagation
         shell: bash

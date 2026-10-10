@@ -42,7 +42,7 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     zig = str(Path(shutil.which("zig")).resolve())
-    capnp = [sys.executable, str(current / "tools/capnp_tool.py"), "compiler", "--"]
+    capnp = ["deno", "run", "--allow-all", "--no-config", str(current / "tools/capnp_tool.ts"), "compiler", "--"]
     commands = []
 
     def run(command, cwd=current, data=None):

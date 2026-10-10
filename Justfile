@@ -11,7 +11,7 @@ test_jobs := if os() == "windows" { "-j1" } else { "" }
 # (Uring) backend there. It is a compile-only object, so no Linux libc or
 # runner is needed, and the canary keeps its teeth on every host.
 evented_canary_target := if os() == "windows" { "-Dtarget=x86_64-linux" } else { "" }
-capnp_tool := justfile_directory() + "/tools/capnp_tool.py"
+capnp_tool := justfile_directory() + "/tools/capnp_tool.ts"
 
 # Build the plugin
 build:
@@ -303,34 +303,34 @@ ci:
 # Regenerate committed bindings with the pinned WASM compiler and this checkout's
 # native plugin. Compiler inputs and generator outputs use separate processes.
 gen:
-    uv run --no-project --python 3.13 "{{ capnp_tool }}" verify
+    deno run --allow-all --no-config "{{ capnp_tool }}" verify
     zig build
     cd src/rpc && just gen-rpc
-    cd tests/e2e/schemas && uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/tests/e2e/zig/generated" -- game_types.capnp bootstrap.capnp game_world.capnp inventory.capnp chat.capnp matchmaking.capnp resolve_disembargo.capnp l3_l4_interop.capnp
+    cd tests/e2e/schemas && deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/tests/e2e/zig/generated" -- game_types.capnp bootstrap.capnp game_world.capnp inventory.capnp chat.capnp matchmaking.capnp resolve_disembargo.capnp l3_l4_interop.capnp
     # Its own request: every binding embeds its whole request, so adding a
     # file to the request above would rewrite all eight of those bindings.
-    cd tests/e2e/schemas && uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/tests/e2e/zig/generated" -- cap_passing.capnp
-    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}" -- examples/addressbook.capnp examples/pingpong.capnp
-    cd examples/kvstore && uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/examples/kvstore/gen" -- kvstore.capnp
+    cd tests/e2e/schemas && deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/tests/e2e/zig/generated" -- cap_passing.capnp
+    deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}" -- examples/addressbook.capnp examples/pingpong.capnp
+    cd examples/kvstore && deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/examples/kvstore/gen" -- kvstore.capnp
     mkdir -p zig-out/check-generated/tests/test_schemas
     # The package-preflight codegen consumer reads this request on stdin, so its
     # clean-room build needs no schema compiler (docs/build-integration.md).
-    uv run --no-project --python 3.13 "{{ capnp_tool }}" compiler -- compile -o- --src-prefix=tests/package_consumer/codegen/schema tests/package_consumer/codegen/schema/addressbook.capnp > zig-out/check-generated/addressbook.request.bin
+    deno run --allow-all --no-config "{{ capnp_tool }}" compiler -- compile -o- --src-prefix=tests/package_consumer/codegen/schema tests/package_consumer/codegen/schema/addressbook.capnp > zig-out/check-generated/addressbook.request.bin
     cp zig-out/check-generated/addressbook.request.bin tests/package_consumer/codegen/schema/addressbook.request.bin
     # The serialization guide's second schema. `zig build test-docs-snippets`
     # runs the plugin on this request, so the snippet gate needs no compiler.
-    uv run --no-project --python 3.13 "{{ capnp_tool }}" compiler -- compile -o- --src-prefix=tests/docs/schema tests/docs/schema/guide.capnp > zig-out/check-generated/guide.request.bin
+    deno run --allow-all --no-config "{{ capnp_tool }}" compiler -- compile -o- --src-prefix=tests/docs/schema tests/docs/schema/guide.capnp > zig-out/check-generated/guide.request.bin
     cp zig-out/check-generated/guide.request.bin tests/docs/schema/guide.request.bin
-    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/example.capnp
+    deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/example.capnp
     cp zig-out/check-generated/tests/test_schemas/example.zig src/wasm/generated/example.zig
     mkdir -p tests/serialization/generated
     # These revisions share a file ID, so capnp must compile them in separate
     # requests even though their generated modules are checked together.
-    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/enum_evolution_v1.capnp
+    deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/enum_evolution_v1.capnp
     cp zig-out/check-generated/tests/test_schemas/enum_evolution_v1.zig tests/serialization/generated/schema_evolution_v1.zig
-    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/enum_evolution_v2.capnp
+    deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/enum_evolution_v2.capnp
     cp zig-out/check-generated/tests/test_schemas/enum_evolution_v2.zig tests/serialization/generated/schema_evolution_v2.zig
-    uv run --no-project --python 3.13 "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/nested_lists_runtime.capnp
+    deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/zig-out/check-generated" -- tests/test_schemas/nested_lists_runtime.capnp
     cp zig-out/check-generated/tests/test_schemas/nested_lists_runtime.zig tests/serialization/generated/nested_lists_runtime.zig
     just gen-shape-requests
     CAPNPC_ZIG_UPDATE_GOLDENS=1 zig build {{ test_jobs }} test-codegen
@@ -343,7 +343,7 @@ gen:
 # yet; consumers of the Wasm generator see it after that release.
 check-wasm-generator:
     zig build
-    uv run --no-project --python 3.13 "{{ justfile_directory() }}/tools/wasm_generator_drift.py" --plugin "{{ justfile_directory() }}/zig-out/bin/capnpc-zig"
+    deno run --allow-all --no-config "{{ justfile_directory() }}/tools/wasm_generator_drift.ts" --plugin "{{ justfile_directory() }}/zig-out/bin/capnpc-zig"
 
 # Write the generated-shape corpus: one CodeGeneratorRequest per row of
 # `requests` in build/generated_shape.zig (keep the two lists in step; the
@@ -359,7 +359,7 @@ gen-shape-requests:
     req() {
       local name="$1" prefix="$2"
       shift 2
-      uv run --no-project --python 3.13 "{{ capnp_tool }}" compiler -- compile -o- "--src-prefix=$prefix" "$@" > "$out/$name.request.bin"
+      deno run --allow-all --no-config "{{ capnp_tool }}" compiler -- compile -o- "--src-prefix=$prefix" "$@" > "$out/$name.request.bin"
     }
     t=tests/test_schemas
     req addressbook examples examples/addressbook.capnp
