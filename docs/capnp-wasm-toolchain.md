@@ -28,6 +28,7 @@ mise run bootstrap:capnp
 mise run check:capnp
 mise exec -- just gen
 mise exec -- just check-generated
+mise exec -- just check-wasm-generator
 mise exec -- just package-preflight
 ```
 
@@ -86,17 +87,32 @@ their explicit vendored include tree. The packaged-streaming test deliberately
 uses only `-Isrc/rpc` with standard imports disabled: it must fail if the package
 omits a required RPC annotation schema.
 
-## Updating the pin
+## The released Wasm generator
 
-After capnpc-wasm publishes a tools release, fill the pin from the release's own
+capnpc-wasm's full SDK archive ships `capnpc-zig.wasm`, built from the
+capnp-zig release it pins. Projects that generate with that module get that
+release's output. `tools/capnpc-wasm-generator.json` pins one such archive
+(with the capnp-zig revision it carries), and `just check-wasm-generator` runs
+its `capnpc-zig.wasm` on every committed `CodeGeneratorRequest` (the
+package-consumer and guide requests and `tests/generated_shape/requests`) and
+compares the files byte for byte with this checkout's plugin. CI runs it as the
+non-gating job "Released Wasm generator drift". A difference is a signal that
+this checkout changed code generation since that release, and that capnpc-wasm
+needs a release that carries the change; it is not a defect here.
+
+## Updating the pins
+
+After capnpc-wasm publishes a release, fill the pin from the release's own
 assets, then compare the printed archive and manifest digests with the
 release's row in capnpc-wasm's `docs/releases.md` (published releases):
 
 ```sh
 mise exec -- uv run --no-project --python 3.13 tools/update_capnp_toolchain.py tools capnp-wasm-tools-v0.1.0-rc.3
+mise exec -- uv run --no-project --python 3.13 tools/update_capnp_toolchain.py generator capnpc-wasm-v0.1.0-rc.6
 mise run bootstrap:capnp
 mise exec -- uv run --no-project --python 3.13 -m unittest discover -s tools -p test_capnp_tool.py
 mise exec -- just check-generated
+mise exec -- just check-wasm-generator
 ```
 
 The script checks the manifest asset and the archive against the release's

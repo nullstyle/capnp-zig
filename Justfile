@@ -336,6 +336,15 @@ gen:
     CAPNPC_ZIG_UPDATE_GOLDENS=1 zig build {{ test_jobs }} test-codegen
     zig build api-snapshot
 
+# Drift signal, not a gate: run the capnpc-zig.wasm that the pinned capnpc-wasm
+# full SDK release ships (tools/capnpc-wasm-generator.json) on every committed
+# CodeGeneratorRequest and compare its files with this checkout's plugin. A
+# difference means a generator change here that no capnpc-wasm release carries
+# yet; consumers of the Wasm generator see it after that release.
+check-wasm-generator:
+    zig build
+    uv run --no-project --python 3.13 "{{ justfile_directory() }}/tools/wasm_generator_drift.py" --plugin "{{ justfile_directory() }}/zig-out/bin/capnpc-zig"
+
 # Write the generated-shape corpus: one CodeGeneratorRequest per row of
 # `requests` in build/generated_shape.zig (keep the two lists in step; the
 # gate fails on a request it does not know). `zig build generated-shape`

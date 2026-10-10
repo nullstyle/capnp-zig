@@ -1,0 +1,9 @@
+{
+  "format": 1,
+  "url": "https://github.com/nullstyle/capnpc-wasm/releases/download/capnpc-wasm-v0.1.0-rc.6/capnpc-wasm-0.1.0-rc.6.tgz",
+  "sha256": "FILL-IN: run tools/update_capnp_toolchain.py generator capnpc-wasm-v0.1.0-rc.6 after the release is published",
+  "manifest_sha256": "FILL-IN: run tools/update_capnp_toolchain.py generator capnpc-wasm-v0.1.0-rc.6 after the release is published",
+  "source_commit": "FILL-IN: run tools/update_capnp_toolchain.py generator capnpc-wasm-v0.1.0-rc.6 after the release is published",
+  "generator_sha256": "FILL-IN: run tools/update_capnp_toolchain.py generator capnpc-wasm-v0.1.0-rc.6 after the release is published",
+  "capnp_zig": "a37ff29726173babbb9341ed5563d1da8a62ec82"
+}
