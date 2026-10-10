@@ -1,17 +1,14 @@
 #!/usr/bin/env -S deno run --allow-all --no-config
-// Fill a capnpc-wasm pin from a published release's own assets.
+// Fill tools/capnp-toolchain.json, the pin of the capnpc-wasm tools archive
+// that tools/capnp_tool.ts installs, from a published release's own assets.
 //
 //   deno run --allow-all --no-config tools/update_capnp_toolchain.ts tools capnp-wasm-tools-v0.1.0-rc.3
-//   deno run --allow-all --no-config tools/update_capnp_toolchain.ts generator capnpc-wasm-v0.1.0-rc.6
 //
-// `tools` rewrites tools/capnp-toolchain.json (the compiler archive that
-// tools/capnp_tool.ts installs); `generator` rewrites
-// tools/capnpc-wasm-generator.json (the full SDK archive whose capnpc-zig.wasm
-// the drift check runs). The script downloads SHA256SUMS, the manifest asset,
-// and the archive of the release, checks the manifest and the archive against
-// SHA256SUMS, and derives every other field from the manifest. With
-// --assets DIR it reads those three files from DIR instead (for a draft
-// release, download them with `gh release download <tag> --dir DIR`).
+// The script downloads SHA256SUMS, the manifest asset, and the archive of the
+// release, checks the manifest and the archive against SHA256SUMS, and derives
+// every other field from the manifest. With --assets DIR it reads those three
+// files from DIR instead (for a draft release, download them with
+// `gh release download <tag> --dir DIR`).
 //
 // Compare the archive and manifest digests it prints with the release's row in
 // capnpc-wasm's docs/releases.md (published releases) before committing: that
@@ -20,20 +17,10 @@
 import { digest, ROOT } from "./capnp_tool.ts";
 
 const REPOSITORY = "https://github.com/nullstyle/capnpc-wasm";
-const FLAVORS: Record<string, [string, string, string]> = {
-  tools: [
-    "capnp-wasm-tools-v",
-    "capnp-wasm-tools-",
-    `${ROOT}/tools/capnp-toolchain.json`,
-  ],
-  generator: [
-    "capnpc-wasm-v",
-    "capnpc-wasm-",
-    `${ROOT}/tools/capnpc-wasm-generator.json`,
-  ],
-};
-const USAGE =
-  "usage: update_capnp_toolchain.ts (tools|generator) TAG [--assets DIR]";
+const TAG_PREFIX = "capnp-wasm-tools-v";
+const STEM_PREFIX = "capnp-wasm-tools-";
+const PIN_PATH = `${ROOT}/tools/capnp-toolchain.json`;
+const USAGE = "usage: update_capnp_toolchain.ts tools TAG [--assets DIR]";
 
 export function parseSums(text: string): Map<string, string> {
   const sums = new Map<string, string>();
@@ -61,21 +48,19 @@ async function readAsset(
 
 export async function main(argv: string[]): Promise<number> {
   const [kind, tag, ...rest] = argv;
-  const flavor = FLAVORS[kind];
   const assets = rest[0] === "--assets" && rest.length === 2
     ? rest[1]
     : undefined;
-  if (!flavor || !tag || (rest.length > 0 && assets === undefined)) {
+  if (kind !== "tools" || !tag || (rest.length > 0 && assets === undefined)) {
     console.error(USAGE);
     return 2;
   }
-  const [tagPrefix, stemPrefix, pinPath] = flavor;
-  if (!tag.startsWith(tagPrefix)) {
-    console.error(`a ${kind} pin needs a ${tagPrefix}<version> tag`);
+  if (!tag.startsWith(TAG_PREFIX)) {
+    console.error(`the tools pin needs a ${TAG_PREFIX}<version> tag`);
     return 2;
   }
-  const version = tag.slice(tagPrefix.length);
-  const stem = stemPrefix + version;
+  const version = tag.slice(TAG_PREFIX.length);
+  const stem = STEM_PREFIX + version;
   const baseUrl = `${REPOSITORY}/releases/download/${tag}/`;
 
   const sums = parseSums(
@@ -116,20 +101,15 @@ export async function main(argv: string[]): Promise<number> {
     manifest_sha256: sums.get(`${stem}.manifest.json`),
     source_commit: manifest.source.commit,
   };
-  if (kind === "tools") {
-    pin.compiler_sha256 = files.get("wasm/capnp.wasm");
-    pin.include_sha256 = await digest(
-      new TextEncoder().encode(
-        [...files.keys()].filter((name) => name.startsWith("include/")).sort()
-          .map((name) => `${files.get(name)}  ${name}\n`).join(""),
-      ),
-    );
-  } else {
-    pin.generator_sha256 = files.get("wasm/capnpc-zig.wasm");
-    pin.capnp_zig = manifest.references["ref/capnp-zig"];
-  }
-  await Deno.writeTextFile(pinPath, JSON.stringify(pin, null, 2) + "\n");
-  console.log(`wrote ${pinPath.slice(ROOT.length + 1)} for ${tag}`);
+  pin.compiler_sha256 = files.get("wasm/capnp.wasm");
+  pin.include_sha256 = await digest(
+    new TextEncoder().encode(
+      [...files.keys()].filter((name) => name.startsWith("include/")).sort()
+        .map((name) => `${files.get(name)}  ${name}\n`).join(""),
+    ),
+  );
+  await Deno.writeTextFile(PIN_PATH, JSON.stringify(pin, null, 2) + "\n");
+  console.log(`wrote ${PIN_PATH.slice(ROOT.length + 1)} for ${tag}`);
   console.log(`  archive ${pin.sha256}  ${stem}.tgz`);
   console.log(`  manifest ${pin.manifest_sha256}  ${stem}.manifest.json`);
   console.log(`  producer commit ${pin.source_commit}`);

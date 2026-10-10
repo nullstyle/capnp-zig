@@ -17,11 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   neither, or both, it exits with a usage error. Without `-Dquic=true`,
   `--transport quic` exits with `error.QuicNeedsBuildFlag`. No build step or
   CI job runs this mode yet.
-- **Tooling: `just check-wasm-generator`**, a non-gating CI job, runs the
-  `capnpc-zig.wasm` that a pinned capnpc-wasm full SDK release ships
-  (`tools/capnpc-wasm-generator.json`) on every committed request and compares
-  its files with this checkout's plugin, so a generator change that no
-  capnpc-wasm release carries yet shows up.
 
 ### Changed
 
@@ -35,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mise.toml` pins Deno 2.9.6 (the launcher needs 2.4.5 or newer). Committed
   requests and bindings do not change. `tools/update_capnp_toolchain.ts` fills
   the pin from a published release.
+- **Distribution: this repository is the only source of `capnpc-zig`.**
+  capnpc-wasm supplies the schema compiler only; from its full SDK 0.1.0-rc.6
+  on it ships no Wasm build of the generator.
 
 ### Documentation
 
