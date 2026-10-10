@@ -36,6 +36,7 @@ const CliArgs = struct {
     schema: Schema = .game_world,
     transport: Transport = .tcp,
     /// QUIC server identity (PEM file paths). Required with --transport quic.
+    /// Owned (duped by parseArgs); main frees them.
     cert_pem: ?[]const u8 = null,
     key_pem: ?[]const u8 = null,
 };
@@ -928,6 +929,8 @@ fn parseSchema(text: []const u8) !Schema {
 
 fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
     var out = CliArgs{};
+    errdefer if (out.cert_pem) |path| allocator.free(path);
+    errdefer if (out.key_pem) |path| allocator.free(path);
     var host_text: []const u8 = out.host;
 
     // initAllocator is the cross-platform form; plain init is a compile
@@ -964,12 +967,16 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
         }
         if (std.mem.eql(u8, arg, "--cert-pem")) {
             const v = args_iter.next() orelse return error.MissingArgValue;
-            out.cert_pem = try allocator.dupe(u8, v);
+            const path = try allocator.dupe(u8, v);
+            if (out.cert_pem) |old| allocator.free(old);
+            out.cert_pem = path;
             continue;
         }
         if (std.mem.eql(u8, arg, "--key-pem")) {
             const v = args_iter.next() orelse return error.MissingArgValue;
-            out.key_pem = try allocator.dupe(u8, v);
+            const path = try allocator.dupe(u8, v);
+            if (out.key_pem) |old| allocator.free(old);
+            out.key_pem = path;
             continue;
         }
     }
@@ -2335,6 +2342,8 @@ pub fn main(init: std.process.Init) !void {
         else => return err,
     };
     defer allocator.free(args.host);
+    defer if (args.cert_pem) |path| allocator.free(path);
+    defer if (args.key_pem) |path| allocator.free(path);
 
     var app = try App.init(allocator, args.schema);
     defer app.deinit();
@@ -2367,7 +2376,7 @@ pub fn main(init: std.process.Init) !void {
     try pool.run();
 }
 
-/// `--transport quic`: the same five schemas over the QUIC baseline wire
+/// `--transport quic`: the same seven schemas over the QUIC baseline wire
 /// (ALPN "capnp-rpc/1", stream 0, u32-LE length-prefixed frames) through
 /// `rpc.transport.quic.PeerServer`. Only compiled with `-Dquic=true`; the
 /// comptime gate keeps this body unanalyzed for the non-QUIC package root.

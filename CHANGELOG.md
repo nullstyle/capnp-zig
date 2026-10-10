@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **e2e over QUIC, Zig to Zig.** With `-Dquic=true`, the e2e server and
+  client take `--transport quic` and run all seven schemas over the QUIC
+  baseline wire. The server needs `--cert-pem F --key-pem F`. The client
+  needs exactly one of `--ca-pem F` (verify the server against the CA in F)
+  and `--insecure` (skip verification, for self-signed test servers); with
+  neither, or both, it exits with a usage error. Without `-Dquic=true`,
+  `--transport quic` exits with `error.QuicNeedsBuildFlag`. No build step or
+  CI job runs this mode yet.
+
 ## [0.25.0] - 2026-10-09
 
 This is a QUIC release, paired with http3-zig v0.5.7. It fixes a QUIC

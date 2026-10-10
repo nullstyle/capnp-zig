@@ -33,8 +33,10 @@ const CliArgs = struct {
     schema: Schema = .game_world,
     transport: Transport = .tcp,
     /// QUIC server verification: pin the CA/certificate in this PEM file.
+    /// Owned (duped by parseArgs); main frees it.
     ca_pem: ?[]const u8 = null,
-    /// QUIC test-only: skip server certificate verification.
+    /// QUIC test-only: skip server certificate verification. QUIC needs
+    /// exactly one of this and `ca_pem`.
     insecure: bool = false,
 };
 
@@ -197,6 +199,7 @@ fn parseSchema(text: []const u8) !Schema {
 
 fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
     var out = CliArgs{};
+    errdefer if (out.ca_pem) |path| allocator.free(path);
     var host_text: []const u8 = out.host;
 
     // initAllocator is the cross-platform form; plain init is a compile
@@ -233,13 +236,24 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
         }
         if (std.mem.eql(u8, arg, "--ca-pem")) {
             const v = args_iter.next() orelse return error.MissingArgValue;
-            out.ca_pem = try allocator.dupe(u8, v);
+            const path = try allocator.dupe(u8, v);
+            if (out.ca_pem) |old| allocator.free(old);
+            out.ca_pem = path;
             continue;
         }
         if (std.mem.eql(u8, arg, "--insecure")) {
             out.insecure = true;
             continue;
         }
+    }
+
+    // QUIC verifies the server against --ca-pem, or skips verification
+    // only when asked to with --insecure. Exactly one of the two.
+    if (out.transport == .quic) {
+        if (out.ca_pem != null and out.insecure) return error.ConflictingTlsArgs;
+        if (out.ca_pem == null and !out.insecure) return error.MissingTlsArg;
+    } else if (out.ca_pem != null or out.insecure) {
+        return error.TlsArgsNeedQuic;
     }
 
     out.host = try allocator.dupe(u8, host_text);
@@ -1551,7 +1565,9 @@ fn usage() void {
     std.debug.print(
         \\Usage: e2e-zig-client [--host 127.0.0.1|unix:/path] [--port 4000] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo|pass_back|pipelined_params]
         \\  --host unix:/path dials the AF_UNIX socket at /path (Linux and macOS; --port is ignored)
-        \\  --transport quic dials the QUIC baseline wire (needs -Dquic=true; --insecure or --ca-pem F)
+        \\  --transport quic dials the QUIC baseline wire (needs -Dquic=true) and exactly one of:
+        \\    --ca-pem F  verify the server against the CA certificate in PEM file F
+        \\    --insecure  skip server certificate verification (self-signed test servers only)
         \\
     , .{});
 }
@@ -1590,9 +1606,25 @@ pub fn main(init: std.process.Init) !void {
             usage();
             return err;
         },
+        error.MissingTlsArg => {
+            std.debug.print("e2e-zig-client: --transport quic needs --ca-pem F or --insecure\n", .{});
+            usage();
+            return err;
+        },
+        error.ConflictingTlsArgs => {
+            std.debug.print("e2e-zig-client: pass --ca-pem F or --insecure, not both\n", .{});
+            usage();
+            return err;
+        },
+        error.TlsArgsNeedQuic => {
+            std.debug.print("e2e-zig-client: --ca-pem and --insecure need --transport quic\n", .{});
+            usage();
+            return err;
+        },
         else => return err,
     };
     defer allocator.free(args.host);
+    defer if (args.ca_pem) |path| allocator.free(path);
 
     var app = ClientApp{
         .allocator = allocator,
@@ -1655,14 +1687,19 @@ fn runQuic(allocator: Allocator, io: std.Io, args: CliArgs, app: *ClientApp) !vo
     const quic = rpc.transport.quic;
     if (comptime !quic.enabled) return error.QuicNeedsBuildFlag;
 
+    // parseArgs guarantees exactly one of --ca-pem and --insecure.
+    const ca_pem: ?[]u8 = if (args.ca_pem) |path| try readFileAlloc(allocator, io, path) else null;
+    // Declared before the session, so it is freed after session.deinit().
+    defer if (ca_pem) |bytes| allocator.free(bytes);
+
     var conn_options = quic.ClientOptions{
         .remote_addr = try std.Io.net.IpAddress.parse(args.host, args.port),
         .server_name = "localhost",
-        // Mirror the loopback tests: self-signed harness certificates with
-        // no chain to verify; pass --ca-pem to verify instead.
-        .insecure_skip_verify = args.ca_pem == null,
+        .ca_pem = ca_pem,
+        // --insecure: self-signed harness certificates with no chain to
+        // verify, as in the loopback tests.
+        .insecure_skip_verify = args.insecure,
     };
-    if (args.ca_pem) |path| conn_options.ca_pem = try readFileAlloc(allocator, io, path);
     conn_options.transport_params = quic.defaultTransportParams();
     conn_options.transport_params.max_idle_timeout_ms = 120_000;
 
