@@ -271,16 +271,39 @@ QUIC module remains Experimental.
 `.baseline`. Both sides must choose the same mode explicitly when using
 `.native`; the mode is not negotiated with a separate ALPN.
 
+## Wire constants (frozen)
+
+The baseline wire is a frozen contract (independent implementations code
+against it — e.g. capnp-swift drives it from Network.framework and
+re-implements the framing in its own core):
+
+- ALPN: `capnp-rpc/1` (`rpc.transport.quic.alpn`, exported even with QUIC
+  compiled out).
+- Stream: the client's first bidirectional stream, id
+  (`baseline_stream_id`) 0, carries every RPC frame.
+- Framing: one 32-bit little-endian byte length prefix before each
+  standalone segment-table message.
+- Application close codes (`ApplicationCloseCode`): `normal = 0`,
+  `frame_error = 0x434e5001`, `protocol_error = 0x434e5002` (also the
+  refused-stream reset), `internal_error = 0x434e5003`,
+  `peer_callback_failure = 0x434e5004`.
+
+Any change to these needs a new ALPN string — a silent change breaks
+interop with independent baseline implementations.
+
 | Mode | Stream Layout | Use When |
 | --- | --- | --- |
 | `baseline` | Client-initiated bidirectional stream 0 carries 32-bit little-endian length-delimited RPC frames. | You want the most conservative QUIC port of the TCP transport. This is the default. |
 | `native` | Bidirectional stream 0 carries a native preface, versioned hello, and ordered control envelopes. Small RPC frames are inline; large RPC frames move over one-shot unidirectional data streams referenced by ordered control frames. | You want QUIC-native stream routing and are comfortable opting both peers into the newer wire shape. |
 
 Baseline mode is the compatibility baseline. It preserves the TCP transport's
-single ordered byte stream above the QUIC handshake, so every RPC frame is still
-delimited by the same 32-bit little-endian length prefix before being handed to
-`Peer`. Use it for first deployments, interop bring-up, and any peer set where a
-mode mismatch would be difficult to roll back quickly.
+*message-level* compatibility above the QUIC handshake: each length-prefixed
+payload is exactly the standalone segment-table message the TCP transport
+would have delivered (TCP and Unix frames carry the segment table by itself —
+no length prefix; the prefix exists here because a QUIC stream is one ordered
+byte stream and the receiver must find each message's end). Use baseline for
+first deployments, interop bring-up, and any peer set where a mode mismatch
+would be difficult to roll back quickly.
 
 Native mode is an explicit opt-in wire shape for QUIC-specific stream use. It
 keeps stream 0 as the ordered control stream and uses additional unidirectional

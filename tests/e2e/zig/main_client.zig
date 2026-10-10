@@ -25,10 +25,17 @@ const Schema = enum {
     pipelined_params,
 };
 
+const Transport = enum { tcp, quic };
+
 const CliArgs = struct {
     host: []const u8 = "127.0.0.1",
     port: u16 = 4000,
     schema: Schema = .game_world,
+    transport: Transport = .tcp,
+    /// QUIC server verification: pin the CA/certificate in this PEM file.
+    ca_pem: ?[]const u8 = null,
+    /// QUIC test-only: skip server certificate verification.
+    insecure: bool = false,
 };
 
 const Tap = struct {
@@ -213,6 +220,24 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
         if (std.mem.eql(u8, arg, "--schema")) {
             const schema_str = args_iter.next() orelse return error.MissingArgValue;
             out.schema = try parseSchema(schema_str);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--transport")) {
+            const v = args_iter.next() orelse return error.MissingArgValue;
+            if (std.mem.eql(u8, v, "tcp")) {
+                out.transport = .tcp;
+            } else if (std.mem.eql(u8, v, "quic")) {
+                out.transport = .quic;
+            } else return error.UnknownArgument;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ca-pem")) {
+            const v = args_iter.next() orelse return error.MissingArgValue;
+            out.ca_pem = try allocator.dupe(u8, v);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--insecure")) {
+            out.insecure = true;
             continue;
         }
     }
@@ -1526,6 +1551,7 @@ fn usage() void {
     std.debug.print(
         \\Usage: e2e-zig-client [--host 127.0.0.1|unix:/path] [--port 4000] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo|pass_back|pipelined_params]
         \\  --host unix:/path dials the AF_UNIX socket at /path (Linux and macOS; --port is ignored)
+        \\  --transport quic dials the QUIC baseline wire (needs -Dquic=true; --insecure or --ca-pem F)
         \\
     , .{});
 }
@@ -1573,6 +1599,8 @@ pub fn main(init: std.process.Init) !void {
         .args = args,
     };
 
+    if (args.transport == .quic) return runQuic(allocator, io, args, &app);
+
     const session_options: rpc.transport.tcp.ConnectOptions = .{
         .ctx = &app,
         .on_error = onSessionError,
@@ -1585,16 +1613,23 @@ pub fn main(init: std.process.Init) !void {
     else
         try rpc.transport.tcp.connect(allocator, io, try std.Io.net.IpAddress.parse(args.host, args.port), session_options);
     defer session.deinit();
+    return runScenarios(session, &app);
+}
+
+/// Every scenario runs against `session.peer`; `session.run()` drives the
+/// event loop until the scenario's `finish()` closes the session. Shared
+/// by the TCP/Unix `tcp.ClientSession` and the QUIC `ClientSession`.
+fn runScenarios(session: anytype, app: *ClientApp) !void {
     const peer = &session.peer;
 
     const start_result = switch (app.args.schema) {
-        .game_world => bootstrapGameWorld(&app, peer),
-        .chat => bootstrapChat(&app, peer),
-        .inventory => bootstrapInventory(&app, peer),
-        .matchmaking => bootstrapMatchmaking(&app, peer),
-        .resolve_disembargo => bootstrapResolveDisembargo(&app, peer),
-        .pass_back => bootstrapPassBack(&app, peer),
-        .pipelined_params => bootstrapPipelinedParams(&app, peer),
+        .game_world => bootstrapGameWorld(app, peer),
+        .chat => bootstrapChat(app, peer),
+        .inventory => bootstrapInventory(app, peer),
+        .matchmaking => bootstrapMatchmaking(app, peer),
+        .resolve_disembargo => bootstrapResolveDisembargo(app, peer),
+        .pass_back => bootstrapPassBack(app, peer),
+        .pipelined_params => bootstrapPipelinedParams(app, peer),
     };
 
     start_result catch |err| {
@@ -1611,4 +1646,41 @@ pub fn main(init: std.process.Init) !void {
     if (app.tap.failures > 0) {
         return error.TestFailed;
     }
+}
+
+/// `--transport quic`: dial the QUIC baseline wire and run the same
+/// scenarios. Only compiled with `-Dquic=true`; the comptime gate keeps
+/// this body unanalyzed for the non-QUIC package root.
+fn runQuic(allocator: Allocator, io: std.Io, args: CliArgs, app: *ClientApp) !void {
+    const quic = rpc.transport.quic;
+    if (comptime !quic.enabled) return error.QuicNeedsBuildFlag;
+
+    var conn_options = quic.ClientOptions{
+        .remote_addr = try std.Io.net.IpAddress.parse(args.host, args.port),
+        .server_name = "localhost",
+        // Mirror the loopback tests: self-signed harness certificates with
+        // no chain to verify; pass --ca-pem to verify instead.
+        .insecure_skip_verify = args.ca_pem == null,
+    };
+    if (args.ca_pem) |path| conn_options.ca_pem = try readFileAlloc(allocator, io, path);
+    conn_options.transport_params = quic.defaultTransportParams();
+    conn_options.transport_params.max_idle_timeout_ms = 120_000;
+
+    const session = try quic.ClientSession.connect(allocator, io, .{ .conn = conn_options });
+    defer session.deinit();
+    return runScenarios(session, app);
+}
+
+var quic_read_buf: [8192]u8 = undefined;
+
+fn readFileAlloc(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    var reader = file.reader(io, &quic_read_buf);
+    const data = try reader.interface.allocRemaining(allocator, .unlimited);
+    if (data.len > 1 << 20) {
+        allocator.free(@constCast(data));
+        return error.TooLarge;
+    }
+    return @constCast(data);
 }

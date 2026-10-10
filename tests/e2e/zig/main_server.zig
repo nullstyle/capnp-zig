@@ -28,10 +28,16 @@ const Schema = enum {
     pipelined_params,
 };
 
+const Transport = enum { tcp, quic };
+
 const CliArgs = struct {
     host: []const u8 = "0.0.0.0",
     port: u16 = 4700,
     schema: Schema = .game_world,
+    transport: Transport = .tcp,
+    /// QUIC server identity (PEM file paths). Required with --transport quic.
+    cert_pem: ?[]const u8 = null,
+    key_pem: ?[]const u8 = null,
 };
 
 const App = struct {
@@ -945,6 +951,25 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
         if (std.mem.eql(u8, arg, "--schema")) {
             const schema_str = args_iter.next() orelse return error.MissingArgValue;
             out.schema = try parseSchema(schema_str);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--transport")) {
+            const v = args_iter.next() orelse return error.MissingArgValue;
+            if (std.mem.eql(u8, v, "tcp")) {
+                out.transport = .tcp;
+            } else if (std.mem.eql(u8, v, "quic")) {
+                out.transport = .quic;
+            } else return error.UnknownArgument;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--cert-pem")) {
+            const v = args_iter.next() orelse return error.MissingArgValue;
+            out.cert_pem = try allocator.dupe(u8, v);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--key-pem")) {
+            const v = args_iter.next() orelse return error.MissingArgValue;
+            out.key_pem = try allocator.dupe(u8, v);
             continue;
         }
     }
@@ -2198,6 +2223,7 @@ fn usage() void {
     std.debug.print(
         \\Usage: e2e-zig-server [--host 0.0.0.0|unix:/path] [--port 4700] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo|pass_back|pipelined_params]
         \\  --host unix:/path serves on an AF_UNIX socket at /path (Linux and macOS; --port is ignored)
+        \\  --transport quic serves over the QUIC baseline wire (needs -Dquic=true; also --cert-pem F --key-pem F)
         \\
     , .{});
 }
@@ -2316,6 +2342,14 @@ pub fn main(init: std.process.Init) !void {
 
     if (unixPathFromHost(args.host)) |path| return serveUnix(allocator, io, path, &app);
 
+    if (args.transport == .quic) {
+        if (comptime !rpc.transport.quic.enabled) {
+            std.debug.print("e2e-zig-server: --transport quic needs -Dquic=true\n", .{});
+            return error.QuicNeedsBuildFlag;
+        }
+        return serveQuic(allocator, io, args, &app);
+    }
+
     const address = try std.Io.net.IpAddress.parse(args.host, args.port);
 
     var pool = try rpc.integration.worker_pool.WorkerPool.init(
@@ -2331,4 +2365,74 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("READY\n", .{});
 
     try pool.run();
+}
+
+/// `--transport quic`: the same five schemas over the QUIC baseline wire
+/// (ALPN "capnp-rpc/1", stream 0, u32-LE length-prefixed frames) through
+/// `rpc.transport.quic.PeerServer`. Only compiled with `-Dquic=true`; the
+/// comptime gate keeps this body unanalyzed for the non-QUIC package root.
+fn serveQuic(allocator: Allocator, io: std.Io, args: CliArgs, app: *App) !void {
+    const quic = rpc.transport.quic;
+    comptime if (!quic.enabled) return error.QuicNeedsBuildFlag;
+
+    const cert_path = args.cert_pem orelse return error.MissingCertPem;
+    const key_path = args.key_pem orelse return error.MissingKeyPem;
+    const cert_pem = try readFileAlloc(allocator, io, cert_path);
+    defer allocator.free(cert_pem);
+    const key_pem = try readFileAlloc(allocator, io, key_path);
+    defer allocator.free(key_pem);
+
+    const address = try std.Io.net.IpAddress.parse(args.host, args.port);
+    var server_options = quic.ServerOptions{
+        .listen_addr = address,
+        .tls_cert_pem = cert_pem,
+        .tls_key_pem = key_pem,
+        .max_concurrent_connections = 8,
+    };
+    // Long enough for slow interop scenarios between the harness's client
+    // startup and its first frame.
+    server_options.transport_params = quic.defaultTransportParams();
+    server_options.transport_params.max_idle_timeout_ms = 120_000;
+
+    const server = try quic.PeerServer.init(allocator, io, server_options, .{
+        .ctx = app,
+        .on_accept = onQuicAccept,
+        .on_close = onQuicSessionClose,
+    });
+    defer server.deinit();
+
+    std.debug.print("READY\n", .{});
+    std.debug.print("e2e-zig-server: {s} over quic on {s}:{d}\n", .{ @tagName(args.schema), args.host, server.getAddress().getPort() });
+
+    server.run();
+}
+
+fn onQuicAccept(ctx: ?*anyopaque, session: *rpc.transport.quic.PeerServer.Session) anyerror!void {
+    const app: *App = @ptrCast(@alignCast(ctx.?));
+    _ = try switch (app.schema) {
+        .game_world => game_world.GameWorld.setBootstrap(&session.peer, &app.game_world_service.server),
+        .chat => chat.ChatService.setBootstrap(&session.peer, &app.chat_service.server),
+        .inventory => inventory.InventoryService.setBootstrap(&session.peer, &app.inventory_service.server),
+        .matchmaking => matchmaking.MatchmakingService.setBootstrap(&session.peer, &app.matchmaking_service.server),
+        .resolve_disembargo => resolve_disembargo.Reflector.setBootstrap(&session.peer, &app.reflect_service.server),
+        .pass_back, .pipelined_params => cap_passing.TokenHost.setBootstrap(&session.peer, &app.token_host_service.server),
+    };
+}
+
+fn onQuicSessionClose(_: ?*anyopaque, session: *rpc.transport.quic.PeerServer.Session) void {
+    std.debug.print("e2e-zig-server: quic session closed close_cause={s}\n", .{@tagName(session.closeCause())});
+}
+
+var quic_read_buf: [8192]u8 = undefined;
+
+fn readFileAlloc(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    var reader = file.reader(io, &quic_read_buf);
+    const data = try reader.interface.allocRemaining(allocator, .unlimited);
+    if (data.len > 1 << 20) {
+        allocator.free(@constCast(data));
+        return error.TooLarge;
+    }
+    return @constCast(data);
 }
