@@ -245,9 +245,11 @@ must share a pin: capnp-zig and http3-zig move together, and a quic-zig
 security fix moves every package at once. capnp-zig v0.24.0 and http3-zig
 v0.5.6 (tag `6566fa2`) both pin v0.37.2, and link into one program with one
 quic module (one `-Mquic=` and one `-Mboringssl=`, Debug and ReleaseSafe,
-measured at the v0.5.6 tag). capnp-zig v0.25.0 and v0.26.0 and http3-zig
-v0.5.7 (tag `e9867fc`) pin v0.38.0, and link into one program with one quic
-module (measured the same way, at the v0.5.7 tag).
+measured at the v0.5.6 tag). capnp-zig v0.25.0 and http3-zig v0.5.7 (tag
+`e9867fc`) both pin v0.38.0, and link into one program with one quic module
+(measured the same way, at the v0.5.7 tag). capnp-zig v0.26.0 pins the same
+quic tag with the same dependency options as v0.25.0, so it pairs with
+http3-zig v0.5.7 too (not measured separately for v0.26.0).
 capnp-zig v0.22.0 and v0.23.0 pair with http3-zig v0.5.5 on v0.32.0, and
 capnp-zig v0.21.0 with http3-zig v0.5.4 on v0.30.1.
 Connection and server session loops drive

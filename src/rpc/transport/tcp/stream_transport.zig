@@ -61,12 +61,17 @@ pub const SocketFd = struct {
 /// Uses `std.Io` for all socket operations, supporting both POSIX and
 /// Windows via the Io VTable abstraction.
 ///
-/// On Windows every socket read, timed or not, is the transport's own AFD
-/// receive (`IOCTL_AFD_RECEIVE` in an `Io.Batch`), not std's `net_read`.
-/// Windows can end a receive STATUS_CANCELLED although nothing cancelled
-/// it, with no bytes taken: seen on the receive posted right after a timed
-/// read whose deadline raced arriving data. std's (0.17.0)
-/// `netReadWindows` treats that as unreachable and aborts the process. The
+/// On Windows, with std's Threaded Io, every socket read, timed or not, is
+/// the transport's own AFD receive (`IOCTL_AFD_RECEIVE` in an `Io.Batch`),
+/// not std's `net_read`. Another Io can differ: a timed read first tries a
+/// `net_read` batch and uses it if the Io runs that batch concurrently
+/// (Threaded does not on Windows), and an untimed read whose Io cannot run
+/// the receive batch concurrently uses the Io's own `net_read`, without the
+/// re-post below. Windows can end a receive STATUS_CANCELLED although
+/// nothing cancelled it, with no bytes taken: seen on the receive posted
+/// right after a timed read whose deadline raced arriving data. std's
+/// (0.17.0) `netReadWindows` treats that as unreachable: a panic in Debug
+/// and ReleaseSafe, undefined behavior in ReleaseFast and ReleaseSmall. The
 /// transport posts the receive again instead, unless the read was cancelled
 /// through Io, its deadline passed, or the transport is closing: at once,
 /// then after waits that grow from 50 us to 5 ms. When Windows has gone on
@@ -1488,8 +1493,9 @@ pub const Transport = struct {
     }
 
     /// Shut down the socket for both reading and writing without closing
-    /// the file descriptor. This unblocks any thread currently blocked in
-    /// `read()` or `write()` on this socket. Safe to call from any thread.
+    /// the file descriptor. On POSIX this unblocks any thread currently
+    /// blocked in `read()` or `write()` on this socket (for Windows, see
+    /// below). Safe to call from any thread.
     ///
     /// In drain mode on macOS the read half runs on the closer's `.socket`
     /// lane (see the type doc). A blocked reader wakes when that lane gets
@@ -1918,12 +1924,13 @@ fn ioWrite(io: std.Io, fd: net.Socket.Handle, bytes: []const u8) Transport.Write
 ///
 /// On Windows it is the transport's own AFD receive, `windowsReceive` with
 /// no deadline, instead of std's `net_read`: std's (0.17.0)
-/// `netReadWindows` aborts the process on a receive Windows cancelled
-/// without being asked, and this one posts the receive again (see
+/// `netReadWindows` treats a receive Windows cancelled without being asked
+/// as unreachable (a panic in Debug and ReleaseSafe, undefined behavior in
+/// ReleaseFast and ReleaseSmall), and this one posts the receive again (see
 /// `windowsReceive`). `closing` is the transport's `close_requested`: once
 /// it is set, such a receive ends the read with 0 instead. An Io that
-/// cannot run the receive batch concurrently gets std's read, as before.
-/// Elsewhere it is std's `net_read`.
+/// cannot run the receive batch concurrently gets its own `net_read`, as
+/// before. Elsewhere it is std's `net_read`.
 fn ioReadVec(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8, closing: ?*const std.atomic.Value(bool)) Transport.ReadError!usize {
     if (comptime builtin.os.tag == .windows) {
         return windowsReceive(io, fd, bufs, .none, closing, .{}) catch |err| switch (err) {
@@ -2165,15 +2172,16 @@ fn windowsReceive(
         // NULL)` returned STATUS_NOT_FOUND), and neither the thread alert
         // nor the reuse of the IOSB address caused it. An untimed read right
         // after such a timed read on the same socket gets it too: in a CI
-        // experiment, 28 of 1,600 runs, each of which std's own read turned
-        // into a process abort (`netReadWindows` treats the status as
-        // unreachable).
+        // experiment (run 38039927959), 28 of 1,600 runs, each of which
+        // std's own read turned into a process abort (`netReadWindows`
+        // treats the status as unreachable).
         //
         // Posting the receive again is safe for the stream: a receive that
         // ends STATUS_CANCELLED has taken no bytes, and none is in flight
         // that could take bytes later. The CI reports read the rest of the
         // stream after every such receive and always found it complete and
-        // in order. With this re-post, 1,600 CI runs of the timed read had
+        // in order. In Windows CI loop run 38038111471, a debug build of an
+        // earlier form of this re-post ran the timed read 1,600 times with
         // no failure (19 in 1,600 without it); each of the 11 spurious
         // cancellations there needed one re-post. The tests "readTimeout
         // posts again a receive Windows cancelled without data" and "read
@@ -2189,13 +2197,16 @@ fn windowsReceive(
         // - An Io cancellation of the task: error.Canceled.
         // - The transport closing (`shutdown`, `close`, `deinit`, which set
         //   `closing` before they touch the socket): 0, as a read of a
-        //   closing transport returns. None of them ends a pending receive
-        //   (a socket shutdown does not complete it), but Windows may
-        //   cancel it afterwards, for example when another thread then
-        //   closes the handle (the test for that case assumes
-        //   STATUS_CANCELLED there). Posting it again then could land on a
-        //   handle already closed or reused. The flag is set before the
-        //   close, and the kernel orders that store before the APC.
+        //   closing transport returns. `shutdown` and `close` do not end a
+        //   pending receive (a socket shutdown does not complete it), but
+        //   Windows may cancel it afterwards, for example when another
+        //   thread then closes the handle (the test for that case assumes
+        //   STATUS_CANCELLED there). `deinit` closes the handle itself, so
+        //   Windows can cancel the receive then too, but `deinit` must not
+        //   run under a read: it frees the read buffer. Posting the receive
+        //   again after such a cancellation could land on a handle already
+        //   closed or reused. The flag is set before the close, and the
+        //   kernel orders that store before the APC.
         // - The deadline, for a timed read: error.Timeout.
         //
         // The state can outlast one re-post: in CI one untimed read met 9
@@ -2262,23 +2273,29 @@ fn windowsReceive(
 /// never runs past the deadline.
 ///
 /// Why these numbers (Windows CI, std 0.17.0):
-/// - At once first: in loops of the timed read, each of 11 such
-///   cancellations needed one re-post, so the usual case waits for nothing.
-/// - Then growing waits: in run 38079015619 one untimed read met 9 in a
-///   row, posted back to back about 0.1 ms apart, so the state can last
-///   longer than 1 ms, and the earlier limit of 8 re-posts turned it into
-///   `error.Unexpected`. Doubling from 50 us waits about 6 ms in all over
-///   the first 8 re-posts, then posts every 5 ms, so a state that lasts
-///   until the peer's next bytes costs a few posts. Windows can round a
-///   short wait up to its timer tick (15.6 ms by default), which only
-///   spaces the posts further.
+/// - At once first: in loops of the timed read (run 38038111471), each of
+///   11 such cancellations needed one re-post, so the usual case waits for
+///   nothing.
+/// - Then growing waits: in run 38079015619, which tested an unreleased
+///   candidate that gave untimed reads the timed read's limit of 8
+///   re-posts, one untimed read met 9 in a row, posted back to back, and
+///   the limit turned it into `error.Unexpected`. So the state can outlast
+///   8 re-posts (about 1 ms, if each receive ends about 0.1 ms after its
+///   post as in the timed-read loops; that run did not record the times).
+///   Doubling from 50 us waits about 6 ms in all over the first 8
+///   re-posts, then posts every 5 ms, so a state that lasts until the
+///   peer's next bytes costs a few posts. Windows can round a short wait up
+///   to its timer tick (15.6 ms by default), which only spaces the posts
+///   further.
 /// - 5 ms at most: bytes that arrive during a wait get read at most that
 ///   much later (plus that rounding), and a long run of such cancellations
 ///   costs at most about 200 posts a second.
-/// - 10 s: far longer than any run seen in CI (the longest, cut short by
-///   the earlier limit, had lasted about 1 ms), yet a receive that
-///   something keeps cancelling still ends the read with an error instead
-///   of posting forever.
+/// - 10 s: far longer than any run seen in CI (the longest was the 9
+///   cancellations above; in run 38083790370, on this code with debug
+///   logging added, each read that met the state ended within about 16 ms
+///   of its first cancellation), yet a receive that something keeps
+///   cancelling still ends the read with an error instead of posting
+///   forever.
 /// - 1 s to end a run: in CI a receive of a run ended about 0.1 ms after
 ///   its post, so one that stayed pending for 1 s had outlived the state.
 ///   Cancellations that far apart, such as rare ones over a long untimed

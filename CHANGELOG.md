@@ -11,16 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This is a Windows reliability release. On Windows, a socket read could fail
 or abort the process when Windows cancelled its receive although nothing
-had asked it to; this happens after a timed read whose deadline raced
-arriving data. Timed reads failed with `error.Unexpected`, and untimed reads
-(`Transport.read` and the `Connection` read loop) hit an `unreachable` in
-std 0.17.0's `netRead`. Every Windows socket read of the transport now posts
-its receive again in that case. The e2e server and client can run over
-QUIC, the schema tooling runs on Deno instead of Python, and the QUIC guide
-lists the frozen baseline wire constants. quic-zig (v0.38.0) and the
-http3-zig pair (v0.5.7) do not change. No Stable API line changes, and no
-Experimental snapshot line moves. There is no `### Breaking` entry.
-docs/upgrading-to-0.26.0.md walks through the upgrade.
+had asked it to; in CI this was seen only after a timed read whose
+deadline raced arriving data. Timed reads failed with `error.Unexpected`,
+and untimed reads (`Transport.read` and the `Connection` read loop) hit an
+`unreachable` in std 0.17.0's `netRead`. With std's Threaded Io, every
+Windows socket read of the transport now posts its receive again in that
+case. The e2e server and client can run over QUIC, the schema tooling runs
+on Deno instead of Python, and the QUIC guide lists the frozen baseline
+wire constants. quic-zig (v0.38.0) and the http3-zig pair (v0.5.7) do not
+change. No Stable API line changes, and no Experimental snapshot line
+moves. There is no `### Breaking` entry. docs/upgrading-to-0.26.0.md walks
+through the upgrade.
 
 ### Added
 
@@ -54,78 +55,83 @@ docs/upgrading-to-0.26.0.md walks through the upgrade.
 - **Windows: a timed read could fail with `error.Unexpected` after Windows
   cancelled its receive.** This affects `Transport.readTimeout` (TCP) on
   Windows. A timed read right after one on the same thread whose deadline
-  raced arriving data could fail with `error.Unexpected`. In CI, a burst of
-  about 250 timed reads with 1 ms deadlines, against a peer that sent one
-  byte at a time, hit it in about 1% of runs. Windows ended the new receive
+  raced arriving data could fail with `error.Unexpected`. In Windows CI loops
+  of a test that reads with 1 ms deadlines while a peer sends 128 bytes one at
+  a time, it hit about 1% of about 11,000 runs. Windows ended the new receive
   with STATUS_CANCELLED within about 0.1 ms, although nothing had cancelled
   it, and std's batch await (0.17.0) then reports success with nothing
   completed. The cancelled receive took no bytes, so the stream was intact,
-  but the caller got a failed read. `readTimeout` now posts the receive
-  again, with the same deadline, when this happens. A cancellation of the
-  caller still returns `error.Canceled`, and a deadline that passed
-  meanwhile returns `error.Timeout`. When Windows cancels the receive again
-  and again, the read waits between re-posts, and gives up with
-  `error.Unexpected` only after 10 s (see the next entry). In Windows CI
-  loops, 1,600 runs had no failure with the re-post (19 failed without it),
-  and each spurious cancellation needed one re-post. Two new Windows tests
-  recreate the state on purpose: the read returns the peer's bytes and the
-  stream continues in order, or, past the deadline, the read times out and
-  leaves the bytes for the next read. The stray cancellation reaches
-  untimed reads too; the next entry fixes them.
+  but the caller got a failed read. `readTimeout` now posts the receive again,
+  with the same deadline, when this happens. A cancellation of the caller
+  still returns `error.Canceled`, and a deadline that passed meanwhile returns
+  `error.Timeout`. When Windows cancels the receive again and again, the read
+  waits between re-posts, and gives up with `error.Unexpected` only after 10 s
+  (see the next entry). In Windows CI loop run 38038111471, a debug build of
+  an earlier form of the re-post had no failure in 1,600 runs (19 of 1,600
+  failed there without it), and each of its 11 spurious cancellations needed
+  one re-post. Two new Windows tests recreate the state on purpose: the read
+  returns the peer's bytes and the stream continues in order, or, past the
+  deadline, the read times out and leaves the bytes for the next read. The
+  stray cancellation reaches untimed reads too; the next entry fixes them.
 - **Windows: an untimed read could abort the process when Windows cancelled
   its receive.** This affects `Transport.read`, `Transport.readTimeout(.none)`
   and `Connection`'s Windows read loop (TCP, and any stream handle given to
   `Transport` or `Connection`). These reads went through std's (0.17.0)
-  `netRead`, which on Windows treats a STATUS_CANCELLED it did not ask for
-  as unreachable: a panic in Debug and ReleaseSafe, undefined behavior in
-  ReleaseFast. In a CI experiment, an untimed read right after a timed read
-  whose deadline raced arriving data, on the same socket, aborted in 28 of
-  1,600 runs. A `Connection` gets that sequence when code calls
-  `conn.transport.readTimeout` before `run` (a `WorkerPool` accept hook, for
-  example), and a reader that does a deadline read before its blocking
-  reads gets it too. On Windows every socket read of the transport is now
-  its own AFD receive, as the timed read already was, and it posts the
-  receive again when Windows cancels it without data: at once, then after
-  waits that start at 50 µs and double up to 5 ms. One untimed read in CI
-  met 9 such cancellations in a row, which a limit of 8 re-posts per read
-  (the timed read's limit until now) turned into `error.Unexpected`; a
-  read, timed or untimed, now fails that way only after Windows has gone
-  on cancelling its receives for 10 s, each soon after its post (a
-  receive that stayed pending for 1 s first starts the count afresh, so
-  rare cancellations over a long read never add up). The read ends instead
-  when its task is cancelled through Io (`error.Canceled`, also during a
-  wait), when its deadline passes (`error.Timeout`, timed reads only; a
-  wait never runs past it), or when the transport is closing (0). The last
-  case is new for timed reads too: they no longer post a receive again on
-  a transport that is closing. On Windows only an Io cancellation of the
-  reading task (or a timed read's deadline) ends a read that waits for
-  data. `Transport.shutdown` and `close` do not, as before, because a
-  socket shutdown does not complete a pending receive; they set the
-  closing flag, so a receive that Windows cancels after them ends the read
-  with 0 instead of being posted again. (`deinit` under a
-  pending read is still unsafe: it frees the read buffer.) A read whose
-  receive completes as its task is cancelled now returns the bytes and
-  leaves the cancellation pending for the task's next cancellation point;
-  std's read dropped those bytes, and the timed read dropped the
-  cancellation. Errors keep std's mapping (REMOTE_DISCONNECT is
-  `error.ConnectionResetByPeer` and IO_TIMEOUT is
-  `error.ConnectionTimedOut`, now on timed reads too). Signatures and
-  error sets do not change. A `CancelIoEx` from outside the transport
-  looks like the stray cancellation: the receive is posted again and the
-  read keeps waiting. Do not close the raw handle under a pending read
-  without `Transport.close` or `shutdown` first: if Windows cancels the
-  receive, the one posted again fails on the closed handle with
-  `error.Unexpected`, or reads from another object if Windows has reused
-  the handle value. New Windows tests recreate the stray cancellation on
-  `read`, `readTimeout(.none)`, the `Connection` loop, and that loop after
-  a timed read made on another thread, and cover the close and
-  Io-cancellation edges, 20 cancelled receives in a row (each posted
-  again, with growing waits), a read that starts with an Io cancellation
-  pending (it posts nothing and leaves the bytes queued), and an Io that
-  cannot run the receive batch concurrently (std's read, as before).
-  In-file tests check the give-up with a 50 ms span, and that
-  cancellations of receives that were pending for a while never add up to
-  it.
+  `netRead`, which on Windows treats a STATUS_CANCELLED it did not ask for as
+  unreachable: a panic in Debug and ReleaseSafe, undefined behavior in
+  ReleaseFast. In a Windows CI experiment (run 38039927959), an untimed read
+  right after a timed read whose deadline raced arriving data, on the same
+  socket and thread, aborted in 28 of 1,600 runs. A reader that does a
+  deadline read before its blocking reads makes that sequence. A `Connection`
+  makes it across two threads when code calls `conn.transport.readTimeout`
+  before `run` (a `WorkerPool` accept hook, for example); the new tests
+  recreate that case, but no CI run has shown it. On Windows, with std's
+  Threaded Io, every socket read of the transport is now its own AFD receive,
+  as the timed read already was, and it posts the receive again when Windows
+  cancels it without data: at once, then after waits that start at 50 µs and
+  double up to 5 ms. In CI run 38079015619, a candidate build of this fix that
+  posted a receive again at most 8 times per read failed one untimed read with
+  `error.Unexpected` after 9 such cancellations in a row; a read, timed or
+  untimed, now fails that way only after Windows has gone on cancelling its
+  receives for 10 s, each soon after its post (a receive that stayed pending
+  for 1 s first starts the count afresh, so rare cancellations over a long
+  read never add up). In Windows CI loop run 38083790370, on this release's
+  code with debug logging added, 1,600 runs of the experiment's sequence had
+  no abort and no `error.Unexpected`, and none of the 53 reads in that run
+  that met a stray cancellation needed more than two re-posts. The read ends
+  instead when its task is cancelled through Io (`error.Canceled`, also during
+  a wait), when its deadline passes (`error.Timeout`, timed reads only; a wait
+  never runs past it), or when the transport is closing (0). The last case is
+  new for timed reads too: when Windows cancels the receive of a timed read on
+  a closing transport, the read now returns 0, where 0.25.0 failed it with
+  `error.Unexpected`. On Windows only an Io cancellation of the reading task
+  (or a timed read's deadline) ends a read that waits for data.
+  `Transport.shutdown` and `close` do not, as before, because a socket
+  shutdown does not complete a pending receive; they set the closing flag, so
+  a receive that Windows cancels after them ends the read with 0 instead of
+  being posted again. (`deinit` under a pending read is still unsafe: it frees
+  the read buffer.) A read whose receive completes as its task is cancelled
+  now returns the bytes and leaves the cancellation pending for the task's
+  next cancellation point; std's read dropped those bytes, and the timed read
+  dropped the cancellation. Errors keep std's mapping (REMOTE_DISCONNECT is
+  `error.ConnectionResetByPeer` and IO_TIMEOUT is `error.ConnectionTimedOut`,
+  now on timed reads too). Signatures and error sets do not change. A
+  `CancelIoEx` from outside the transport looks like the stray cancellation:
+  the receive is posted again and the read keeps waiting. In 0.25.0 it failed
+  a timed read with `error.Unexpected`, and an untimed read hit std's
+  `unreachable`. Do not close the raw handle under a pending read without
+  `Transport.close` or `shutdown` first: if Windows cancels the receive, the
+  one posted again fails on the closed handle with `error.Unexpected`, or
+  reads from another object if Windows has reused the handle value. New
+  Windows tests recreate the stray cancellation on `read`,
+  `readTimeout(.none)`, the `Connection` loop, and that loop after a timed
+  read made on another thread, and cover the close and Io-cancellation edges,
+  20 cancelled receives in a row (each posted again, with growing waits), a
+  read that starts with an Io cancellation pending (it posts nothing and
+  leaves the bytes queued), and an Io that cannot run the receive batch
+  concurrently (std's read, as before). In-file tests check the give-up with a
+  50 ms span, and that cancellations of receives that were pending for a while
+  never add up to it.
 
 ### Documentation
 

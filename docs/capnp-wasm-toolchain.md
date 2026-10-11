@@ -2,10 +2,12 @@
 
 Repository development tooling uses the Cap'n Proto 2.0-dev compiler from the
 compiler-only archive published by [capnpc-wasm](https://github.com/nullstyle/capnpc-wasm/releases)
-(`capnp-wasm-tools` 0.1.0-rc.3 or newer). `tools/capnp-toolchain.json`
-identifies the archive, source commit, manifest, compiler module and standard
-schemas by hash. Wasmtime is pinned in `mise.toml`; the archive's launcher also
-accepts a newer patch release of the same series (48.0.x).
+(`capnp-wasm-tools` 0.1.0-rc.3, the pinned release).
+`tools/capnp-toolchain.json` identifies the archive, source commit, manifest,
+compiler module and standard schemas by hash. Wasmtime is pinned in
+`mise.toml`; the archive's launcher also accepts a newer patch release of the
+same series (48.0.x), but CI runs only the pinned archive with the pinned
+Wasmtime.
 
 The work is split at the archive boundary:
 
@@ -43,10 +45,14 @@ mise exec -- deno run --allow-all --no-config tools/capnp_tool.ts compiler -- \
 
 The driver preserves binary stdin/stdout and command failure status. Installed
 package corruption, a missing Wasmtime runtime, or a compiler failure is an
-error; there is no fallback to a native `capnp` found on PATH. Launcher
-failures use the launcher's exit statuses (64 usage, 66 missing input, 69 or 78
-Wasmtime, 73 output conflict, 74 package verification, 134 trap); a failure of
-the pin, download or package check exits 1.
+error; there is no fallback to a native `capnp` found on PATH. A usage error in
+`capnp_tool.ts` exits 2, and its other failures, such as a failure of the pin,
+download or package check, exit 1. Launcher failures use the launcher's exit
+statuses, for example 64 usage, 66 missing or unreadable input, 69 or 78
+Wasmtime, Deno or environment setup, 73 output conflict, 74 package
+verification and 134 trap; the launcher's `--help` gives the full list. Exit 1
+alone does not identify the cause: a schema compile error, a module that
+Wasmtime cannot load, and other launcher failures also exit 1.
 
 ## Compiler and generator boundaries
 
@@ -148,6 +154,7 @@ is provided by the hosted three-OS matrix.
 
 Moving from `capnp-wasm-tools` 0.1.0-rc.2 to rc.3, the first archive with the
 Deno launcher, changes no committed request, binding, golden or API
-snapshot: with a candidate built from the rc.3 source, `just check-generated`
-passed unchanged, and the bundled standard schemas have the same digest as in
-rc.2. Run it again after filling the pin from the published release.
+snapshot: `just check-generated` passed unchanged with a candidate built from
+the rc.3 source, and again after the pin was filled from the published
+release's assets (a1a2f49). The bundled standard schemas have the same digest
+(`include_sha256`) as in rc.2.

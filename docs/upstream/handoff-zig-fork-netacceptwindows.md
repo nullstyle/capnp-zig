@@ -135,12 +135,18 @@ that also works; the requirement is a named error rather than
    the listener closes underneath it, gated to Windows.
 4. For the `LOCAL_DISCONNECT` arm: capnp-zig's Windows chaos soak
    (`zig build soak -- --transport tcp --seconds 20`, chaos on by default)
-   should stop printing `error.Unexpected NTSTATUS=0xc000013b`. Note that
-   capnp-zig's Windows socket reads, timed and untimed, now use its own
-   AFD receive, which maps statuses itself (`windowsReceiveResult` in
-   `src/rpc/transport/tcp/stream_transport.zig`, kept identical to
-   `netReadWindows`) and needs the same arm on the capnp-zig side; the std
-   fix covers std's `net_read` and the `net_write` operation.
+   should stop printing `error.Unexpected NTSTATUS=0xc000013b`, but only
+   after capnp-zig also adds the arm on its side. The std fix alone does
+   not pass this check. capnp-zig's Windows socket reads, timed and
+   untimed, now use its own AFD receive, not std's `net_read`. That
+   receive maps statuses itself (`windowsReceiveResult` in
+   `src/rpc/transport/tcp/stream_transport.zig`). It uses the same mapping
+   as `netReadWindows`, except that `CANCELLED` gives `error.Unexpected`
+   where std has `unreachable`. So the soak's reader task keeps printing
+   until `windowsReceiveResult` gets the `LOCAL_DISCONNECT` arm too. The
+   std fix covers std's `net_read` (capnp-zig uses it only when the Io
+   cannot run the receive batch concurrently) and the `net_write`
+   operation.
 
 ## Bookkeeping
 

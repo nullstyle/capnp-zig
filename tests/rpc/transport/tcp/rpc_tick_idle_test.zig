@@ -1094,17 +1094,17 @@ test "readTimeout preserves a successful read while joining caller cancellation"
 // ---------------------------------------------------------------------------
 //
 // The stray STATUS_CANCELLED above reaches untimed reads too. In a CI
-// experiment, `Transport.read` right after a timed read on the same socket
-// and thread got it in 28 of 1,600 runs. std's (0.17.0) `netReadWindows`
-// treats a cancellation it did not ask for as unreachable, so each of those
-// runs aborted. A `Connection` reads through `Transport.read` too, on an io
-// worker (`winReadTask`). The tests below recreate the state on purpose
-// with `SpuriouslyCancelledReceive`, on each untimed read: `read`,
-// `readTimeout(.none)`, and the `Connection` loop, the last one also right
-// after a timed read made on another thread. They also pin down how a read
-// ends when something asked for that: an Io cancellation, a transport that
-// is closing when Windows cancels the receive, or the transport and then
-// its handle closed under the read.
+// experiment (run 38039927959), `Transport.read` right after a timed read on
+// the same socket and thread got it in 28 of 1,600 runs. std's (0.17.0)
+// `netReadWindows` treats a cancellation it did not ask for as unreachable,
+// so each of those runs aborted. A `Connection` reads through
+// `Transport.read` too, on an io worker (`winReadTask`). The tests below
+// recreate the state on purpose with `SpuriouslyCancelledReceive`, on each
+// untimed read: `read`, `readTimeout(.none)`, and the `Connection` loop, the
+// last one also right after a timed read made on another thread. They also
+// pin down how a read ends when something asked for that: an Io
+// cancellation, a transport that is closing when Windows cancels the
+// receive, or the transport and then its handle closed under the read.
 //
 // Each test that blocks in a read the fix must complete has a watchdog. If
 // the wrapper never ran (the read did not take the transport's own receive),
@@ -1282,7 +1282,7 @@ const WrappedTransport = struct {
 
 /// An untimed read whose first receive Windows cancels without data: it
 /// posts the receive again and returns the peer's bytes, and the stream
-/// goes on. Before, std's `netReadWindows` aborted the process.
+/// goes on. Before, it hit the `unreachable` in std's `netReadWindows`.
 fn expectUntimedRepost(how: UntimedRead) !void {
     var fx: WrappedTransport = undefined;
     try fx.init();
@@ -1453,9 +1453,10 @@ test "read posts again 20 receives in a row that Windows cancelled without data,
     var fx: WrappedTransport = undefined;
     try fx.init();
     defer fx.deinit();
-    // In CI one untimed read met 9 in a row, which a limit of 8 re-posts
-    // per read turned into error.Unexpected. Only the last one is followed
-    // by the peer's bytes.
+    // In CI run 38079015619, on a candidate build with a limit of 8
+    // re-posts per read, one untimed read met 9 in a row, and the limit
+    // turned it into error.Unexpected. Only the last of the 20 cancelled
+    // receives here is followed by the peer's bytes.
     const in_a_row = 20;
     SpuriouslyCancelledReceive.arm(.{ .peer = fx.peer(), .inject_count = in_a_row });
     try fx.guard();
