@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-10
+
+This is a Windows reliability release. On Windows, a socket read could fail
+or abort the process when Windows cancelled its receive although nothing
+had asked it to; this happens after a timed read whose deadline raced
+arriving data. Timed reads failed with `error.Unexpected`, and untimed reads
+(`Transport.read` and the `Connection` read loop) hit an `unreachable` in
+std 0.17.0's `netRead`. Every Windows socket read of the transport now posts
+its receive again in that case. The e2e server and client can run over
+QUIC, the schema tooling runs on Deno instead of Python, and the QUIC guide
+lists the frozen baseline wire constants. quic-zig (v0.38.0) and the
+http3-zig pair (v0.5.7) do not change. No Stable API line changes, and no
+Experimental snapshot line moves. There is no `### Breaking` entry.
+docs/upgrading-to-0.26.0.md walks through the upgrade.
+
 ### Added
 
 - **e2e over QUIC, Zig to Zig.** With `-Dquic=true`, the e2e server and
@@ -114,6 +129,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- `docs/upgrading-to-0.26.0.md` (new): who should take the Windows read
+  fixes, the unchanged coordinated set (quic-zig v0.38.0, http3-zig v0.5.7),
+  and a checklist (the Windows read contract, the Deno tooling for
+  contributors).
 - **docs/quic-transport.md: Wire constants (frozen).** A new section lists
   the frozen baseline wire: the `capnp-rpc/1` ALPN, stream 0, the u32
   little-endian length prefix, the two `frame_error` rules (a zero length,
@@ -7142,7 +7161,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/nullstyle/capnp-zig/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/nullstyle/capnp-zig/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/nullstyle/capnp-zig/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/nullstyle/capnp-zig/compare/v0.22.0...v0.23.0
