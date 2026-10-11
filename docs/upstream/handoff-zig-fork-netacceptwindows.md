@@ -137,8 +137,9 @@ that also works; the requirement is a named error rather than
    (`zig build soak -- --transport tcp --seconds 20`, chaos on by default)
    should stop printing `error.Unexpected NTSTATUS=0xc000013b`, but only
    after capnp-zig also adds the arm on its side. The std fix alone does
-   not pass this check. capnp-zig's Windows socket reads, timed and
-   untimed, now use its own AFD receive, not std's `net_read`. That
+   not pass this check. With std's Threaded Io, capnp-zig's Windows socket
+   reads, timed and untimed, now use its own AFD receive, not std's
+   `net_read`. That
    receive maps statuses itself (`windowsReceiveResult` in
    `src/rpc/transport/tcp/stream_transport.zig`). It uses the same mapping
    as `netReadWindows`, except that `CANCELLED` gives `error.Unexpected`

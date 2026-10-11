@@ -57,7 +57,9 @@ through the upgrade.
   Windows. A timed read right after one on the same thread whose deadline
   raced arriving data could fail with `error.Unexpected`. In Windows CI loops
   of a test that reads with 1 ms deadlines while a peer sends 128 bytes one at
-  a time, it hit about 1% of about 11,000 runs. Windows ended the new receive
+  a time, it hit about 1% of about 11,000 runs (Windows CI loop runs
+  38034073837, 38036136499, 38036656338, and the unfixed leg of
+  38038111471). Windows ended the new receive
   with STATUS_CANCELLED within about 0.1 ms, although nothing had cancelled
   it, and std's batch await (0.17.0) then reports success with nothing
   completed. The cancelled receive took no bytes, so the stream was intact,
@@ -79,13 +81,15 @@ through the upgrade.
   `Transport` or `Connection`). These reads went through std's (0.17.0)
   `netRead`, which on Windows treats a STATUS_CANCELLED it did not ask for as
   unreachable: a panic in Debug and ReleaseSafe, undefined behavior in
-  ReleaseFast. In a Windows CI experiment (run 38039927959), an untimed read
+  ReleaseFast and ReleaseSmall. In a Windows CI experiment (run 38039927959), an untimed read
   right after a timed read whose deadline raced arriving data, on the same
   socket and thread, aborted in 28 of 1,600 runs. A reader that does a
   deadline read before its blocking reads makes that sequence. A `Connection`
   makes it across two threads when code calls `conn.transport.readTimeout`
   before `run` (a `WorkerPool` accept hook, for example); the new tests
-  recreate that case, but no CI run has shown it. On Windows, with std's
+  recreate that case, and CI loops (runs 38079015619 and 38083790370) saw
+  the stray cancellation on the same cross-thread sequence made without a
+  `Connection`. On Windows, with std's
   Threaded Io, every socket read of the transport is now its own AFD receive,
   as the timed read already was, and it posts the receive again when Windows
   cancels it without data: at once, then after waits that start at 50 µs and

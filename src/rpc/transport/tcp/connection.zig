@@ -617,11 +617,12 @@ pub const Connection = struct {
     /// keeps ticks, idle reaping, and wake working. Crucially the read is
     /// on an io worker (not a raw `std.Thread`), so teardown can `cancel`
     /// it: `NtCancelIoFileEx` then unblocks the pending AFD receive,
-    /// instead of waiting out the kernel's multi-minute read timeout. The
-    /// read is the transport's own AFD receive (`Transport.read`), which
-    /// posts a receive again when Windows cancels it without data and
-    /// without being asked; the cancel at teardown is asked for, so the
-    /// read then ends.
+    /// instead of waiting out the kernel's multi-minute read timeout. With
+    /// std's Threaded Io the read is the transport's own AFD receive
+    /// (`Transport.read`), which posts a receive again when Windows cancels
+    /// it without data and without being asked; the cancel at teardown is
+    /// asked for, so the read then ends. An Io that cannot run that receive
+    /// batch concurrently gets its own `net_read`, without the re-post.
     /// `concurrent` (not `async`) is used so the read never silently runs
     /// inline on this thread — that would reintroduce the un-cancellable
     /// blocking read this design exists to avoid; its `concurrent_limit`

@@ -31,11 +31,13 @@ snapshot line moves, and there is no Breaking entry. The `0.26.0` section of
   `Transport.readTimeout`, `Transport.read`, and `Connection`. The cause of
   the stray cancellation is inside Windows and is not known. In CI it was
   seen only after a timed read whose deadline raced arriving data, on the
-  same socket and thread. A reader that does a deadline read before its
-  blocking reads makes that sequence. A `Connection` makes it across two
-  threads when code calls `conn.transport.readTimeout` before `run` (a
-  `WorkerPool` accept hook, for example). Tests recreate that case, but CI
-  has not shown it. In v0.25.0, an untimed read hit std's `unreachable` on
+  same socket: on the same thread, and on an untimed read made on an io
+  worker right after a timed read on another thread (runs 38079015619 and
+  38083790370). A reader that does a deadline read before its blocking
+  reads makes the first sequence. A `Connection` makes the second when code
+  calls `conn.transport.readTimeout` before `run` (a `WorkerPool` accept
+  hook, for example). Tests recreate that case; no CI run used a
+  `Connection` itself. In v0.25.0, an untimed read hit std's `unreachable` on
   any cancellation of its receive that std did not ask for, including a
   `CancelIoEx` from outside the transport (see item 4 below).
 - Linux and macOS users get no behavior change, other than the e2e and
