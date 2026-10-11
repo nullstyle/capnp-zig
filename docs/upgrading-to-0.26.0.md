@@ -50,7 +50,7 @@ This release has no security advisory.
 | Component | Version | Pin |
 |---|---|---|
 | Zig | `0.17.0` (tagged; no change since v0.19.0) | `mise.toml`: `zig = "0.17.0"`; `build.zig.zon`: `.minimum_zig_version = "0.17.0"` |
-| capnp-zig | `v0.26.0` | `capnpc_zig-0.26.0-...` |
+| capnp-zig | `v0.26.0` (tag at `75a4eac`) | `capnpc_zig-0.26.0-nUduFe-4TgALJCtlaZ_ELiNyuGpukzsdz5T4Uz3a9KMa` |
 | quic-zig | `v0.38.0` (tag at `77be067`; no change since v0.25.0) | `quic-0.38.0-DnSYve_hPwBp5d2c8QUoZiNWi-rHT6QFR4pK2DueXEAC` |
 | http3-zig (optional) | `v0.5.7` (tag at `e9867fc`; no change since v0.25.0) | `http3_zig-0.5.7-ayZ03AxnEwCS-38QeydGjOHQ1sAQEWT8xWjf82hAOPBw` |
 

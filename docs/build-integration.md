@@ -30,7 +30,7 @@ the command above — do not hand-write it):
 .dependencies = .{
     .capnpc_zig = .{
         .url = "git+https://github.com/nullstyle/capnp-zig.git#v0.26.0",
-        .hash = "capnpc_zig-0.26.0-...",
+        .hash = "capnpc_zig-0.26.0-nUduFe-4TgALJCtlaZ_ELiNyuGpukzsdz5T4Uz3a9KMa",
     },
 },
 ```
