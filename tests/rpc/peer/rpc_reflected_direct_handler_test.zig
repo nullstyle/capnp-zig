@@ -55,6 +55,10 @@ const Wire = struct {
     client_peer: ?*Peer = null,
     server_peer: ?*Peer = null,
     forwarding: bool = true,
+    /// When the client sends a Return for this answer id, deliver the
+    /// remote's Finish of it to the client inside that send, as a
+    /// synchronous transport can.
+    reenter_finish_for: ?u32 = null,
 
     fn deinit(self: *Wire) void {
         self.events.deinit(self.allocator);
@@ -73,6 +77,7 @@ const Wire = struct {
             },
             .resolve => event.id = (try decoded.asResolve()).promise_id,
             .disembargo => event.disembargo_context = (try decoded.asDisembargo()).context_tag,
+            .finish => event.id = (try decoded.asFinish()).question_id,
             else => {},
         }
         try self.events.append(self.allocator, event);
@@ -81,6 +86,18 @@ const Wire = struct {
     fn clientSend(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
         const self: *Wire = castCtx(*Wire, ctx_ptr);
         try self.record(.client_to_server, frame);
+        if (self.reenter_finish_for) |answer_id| {
+            const last = self.events.items[self.events.items.len - 1];
+            if (last.tag == .@"return" and last.id == answer_id) {
+                self.reenter_finish_for = null;
+                var mb = protocol.MessageBuilder.init(self.allocator);
+                defer mb.deinit();
+                try mb.buildFinish(answer_id, false, false);
+                const finish_frame = try mb.finish();
+                defer self.allocator.free(finish_frame);
+                if (self.client_peer) |peer| try peer.handleFrame(finish_frame);
+            }
+        }
         if (self.forwarding) {
             if (self.server_peer) |peer| try peer.handleFrame(frame);
         }
@@ -103,6 +120,15 @@ const Wire = struct {
                 if (event.return_tag != want) continue;
             }
             n += 1;
+        }
+        return n;
+    }
+
+    /// Finish frames sent in `dir` for `question_id`.
+    fn countFinishes(self: *const Wire, dir: EventDir, question_id: u32) usize {
+        var n: usize = 0;
+        for (self.events.items) |event| {
+            if (event.dir == dir and event.tag == .finish and event.id == question_id) n += 1;
         }
         return n;
     }
@@ -659,6 +685,9 @@ test "a tail call that arrives before its call is answered gets that call's resu
     try std.testing.expect(!h.client_peer.questions.contains(h.question_id));
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+    // rpc.capnp: the question still sends its Finish, after which the remote
+    // finishes the tail call. The C++ reference waits for this Finish.
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, h.question_id));
 }
 
 test "a tail call held on a call that fails gets that call's exception; the remote gets resultsSentElsewhere" {
@@ -1094,4 +1123,52 @@ test "a Finish during a held tail call's results build ends the question; the re
     // The call still gets its one Return.
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+}
+
+// -- Ordering edges of a held tail call ----------------------------------------
+
+test "a remote Finish inside the resultsSentElsewhere send does not take the held question's results" {
+    // A synchronous transport can deliver the remote's Finish of the call
+    // inside our resultsSentElsewhere send. The hold is taken before that
+    // send, so the Finish finds none, and the question gets the results.
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushTailCall(allocator);
+    h.wire.reenter_finish_for = tail_answer_id;
+    var result = ResultN{ .n = 5 };
+    try h.client_peer.sendReturnResults(tail_answer_id, &result, ResultN.build);
+    try std.testing.expectEqual(@as(?u32, null), h.wire.reenter_finish_for);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.results, h.caller.tag.?);
+    try std.testing.expectEqual(@as(u32, 5), h.caller.result_n.?);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+}
+
+test "a remote Finish inside the send of a held tail call's exception does not replace the exception" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushTailCall(allocator);
+    h.wire.reenter_finish_for = tail_answer_id;
+    try h.client_peer.sendReturnException(tail_answer_id, "target failed");
+    try std.testing.expectEqual(@as(?u32, null), h.wire.reenter_finish_for);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings("target failed", h.caller.reason());
+}
+
+test "Peer.deinit with a held tail call gives the question one Return and leaks nothing" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    try h.pushTailCall(allocator);
+    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
+    h.deinit();
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
 }
