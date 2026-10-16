@@ -1618,3 +1618,51 @@ test "a tail call pipelined on a forwarded yourself call that the remote redirec
     try std.testing.expectEqualStrings(peer_impl.tail_call_pipelining_reason, w0.reason());
     try std.testing.expectEqual(@as(usize, 0), h.client_peer.pending_promises.count());
 }
+
+// -- A parked call whose handler fails when it replays ---------------------------
+//
+// A call parked on a promise export runs when the promise resolves. Its
+// handler's error is answered like a fresh call's (the resolved-export
+// dispatch sends it as an exception), so a tail call held on it gets the
+// error. Only an allocation failure in the replay drain itself can drop a
+// Return there (docs/native-abi.md).
+
+test "a held tail call whose parked call's handler fails on replay gets the error" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    h.target.fail_inline = true;
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
+
+    try h.client_peer.resolvePromiseExportToExport(promise_id, h.target_export_id);
+    try std.testing.expectEqual(@as(?u32, tail_answer_id), h.target.answer_id);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings("TailHandlerFailed", h.caller.reason());
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+    try std.testing.expect(!h.client_peer.active_inbound_questions.contains(tail_answer_id));
+}
+
+test "a plain parked call whose handler fails on replay gets one exception Return" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    h.target.fail_inline = true;
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushPlainCall(allocator, pipelined_answer_id, promise_id, 77);
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, pipelined_answer_id, null));
+
+    try h.client_peer.resolvePromiseExportToExport(promise_id, h.target_export_id);
+    try std.testing.expectEqual(@as(?u32, pipelined_answer_id), h.target.answer_id);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, .exception));
+    try std.testing.expect(!h.client_peer.active_inbound_questions.contains(pipelined_answer_id));
+}

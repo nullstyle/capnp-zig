@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   If the named call waits on a promise export of ours and the remote
   releases that export before it resolves, the question gets the call's
   exception, `rpc.peer.promise_export_released_reason` (see "Fixed").
+  If the Peer runs out of memory as it gives a held question its answer,
+  or as it replays or fails a call that waited on a promise and that the
+  question names, the question keeps waiting until a cancel, its deadline
+  or the transport close ends it.
   Limit: `sendPrebuiltReturnFrame` puts its frame on the wire as built,
   also for a `sendResultsTo = yourself` call, and the C++ reference
   rejects a `results` or `exception` Return for its tail call. `HostPeer`
