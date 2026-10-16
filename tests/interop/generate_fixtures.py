@@ -1,7 +1,9 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.10,<3.15"
 # dependencies = ["pycapnp"]
 # ///
+# The cap: pycapnp 2.2.4 ships no CPython 3.15 wheel, and its sdist build
+# fails on CI runners (2026-10-16). Raise it when pycapnp ships one.
 
 from __future__ import annotations
 
