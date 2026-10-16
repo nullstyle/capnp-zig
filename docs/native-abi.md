@@ -37,6 +37,45 @@ Params and results cross the ABI as standalone messages whose capability
 pointers index a `caps[]` table of imports, exports, promised answers and
 null caps. One caller at a time per connection, from any thread.
 
+## Returns and tail calls
+
+Every question ends with exactly one RETURN effect. This table gives the
+RETURN for each Return variant that the remote can send:
+
+| Return from the remote | RETURN |
+|---|---|
+| `results` | `RESULTS` |
+| `exception` | `EXCEPTION`, or `DISCONNECTED` for a local disconnect |
+| `canceled` | `CANCELED` |
+| `takeFromOtherQuestion` (a tail call), named call has cap-free results | `RESULTS`: the named call's results |
+| `takeFromOtherQuestion`, named call fails | `EXCEPTION`: the named call's exception |
+| `takeFromOtherQuestion`, named call's results carry capabilities | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
+| `takeFromOtherQuestion`, the remote finishes the named call before the host answers it | `EXCEPTION` (`failed`), reason `rpc.peer.tail_call_finished_reason` |
+| `takeFromOtherQuestion` that names no call with `sendResultsTo = yourself` | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
+| `resultsSentElsewhere` | `EXCEPTION` (`unimplemented`), reason `unsupported_return_reason` |
+
+A tail call works like this. The remote sends an INBOUND_CALL whose results
+go back to the remote (`sendResultsTo = yourself`). Then it answers one of
+your questions with a Return that names that call (`takeFromOtherQuestion`).
+The C++ reference sends the two together. When the host answers the call
+(`capnp_return_results` or `capnp_return_exception`), the core does two
+things:
+
+- It sends the remote `resultsSentElsewhere`, also for an exception, as
+  rpc.capnp requires.
+- It gives your question the call's results or exception as its RETURN.
+
+The question has no RETURN until then. `capnp_cancel` still ends it with one
+RETURN CANCELED. The order does not matter: an answer that comes before the
+redirect is kept until the redirect arrives.
+
+Limit: the core cannot give a question tail-call results that carry
+capabilities. Such a question ends with one RETURN EXCEPTION (`unimplemented`)
+and the reason `capnp-swift core: cannot follow this tail call (...)`. The
+results' capabilities take no references, so nothing leaks. Every call the
+core sends has `sendResultsTo = caller`, so `resultsSentElsewhere` is a
+remote error.
+
 ## Using it from a C or Swift host
 
 Build a static library whose root module references `native.abi`. The
@@ -126,7 +165,7 @@ lists. Zig code can skip the C ABI and use `native.conn.Conn` directly.
 - `zig build test` runs the shim's own tests in the `capnpc-zig-core` test
   root: `src/native/conn_test.zig` (two connections back to back, the
   capability round trip, disconnect and OOM paths, malformed input, both
-  framings), the tests in `abi.zig` (a counting allocator must reach 0 live
+  framings, tail calls), the tests in `abi.zig` (a counting allocator must reach 0 live
   bytes after every export ran), and the header gate,
   `src/native/abi_header_test.zig`: every `pub export fn capnp_*` has a
   prototype in the header with the same calling convention, arity, scalar

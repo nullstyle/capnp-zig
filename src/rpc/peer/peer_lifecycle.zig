@@ -284,6 +284,7 @@ pub fn Lifecycle(
                 while (stash_it.next()) |frame| self.allocator.free(frame.*);
             }
             self.loopback_result_stash.deinit();
+            self.held_tail_calls.deinit(self.allocator);
             peer_cleanup.deinitOptionalOwnedBytesMap(
                 @TypeOf(self.send_results_to_third_party),
                 self.allocator,

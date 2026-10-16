@@ -123,6 +123,12 @@ pub const deadline_reason = "deadline exceeded";
 /// drain bound expires (see `checkDeadlines`).
 pub const shutdown_reason = "peer shutting down";
 
+/// Exception reason for a question whose `takeFromOtherQuestion` Return was
+/// held on a call to this peer (see `held_tail_calls`) when the remote
+/// finished that call before it was answered: the question can no longer
+/// get its results.
+pub const tail_call_finished_reason = "tail-called answer was finished before it returned";
+
 /// An exported capability: a context pointer and its call handler.
 pub const Export = struct {
     ctx: *anyopaque,
@@ -348,6 +354,8 @@ fn msToNs(ms: u64) i64 {
 /// | `pending_embargoes` | embargo ID | promise ID | In-flight disembargo operations, keyed by the embargo ID we allocated. |
 /// | `loopback_questions` | question ID | void | Questions whose Return should be delivered locally (loopback / exported-cap calls). |
 /// | `send_results_to_yourself` | answer ID | void | Inbound calls with `sendResultsTo = yourself`, meaning we send `resultsSentElsewhere`. |
+/// | `loopback_result_stash` | answer ID | frame (bytes) | The Return (cap-free results, or an exception) of an answered `sendResultsTo = yourself` call, until the `takeFromOtherQuestion` that names it arrives. |
+/// | `held_tail_calls` | answer ID / question ID | question ID / answer ID | `takeFromOtherQuestion` Returns that named a `sendResultsTo = yourself` call not answered yet. The question waits for that call's terminal. |
 /// | `send_results_to_third_party` | answer ID | optional payload | Inbound calls with `sendResultsTo = thirdParty`. Payload is the serialized recipient. |
 /// | `persistent_exports` | export ID | `*PersistenceState` | Save/restore hooks for persistent exports. Removed when the hooks are cleared or the export is released. |
 ///
@@ -738,8 +746,21 @@ pub const Peer = struct {
     /// that redirect never comes. NOT freed on the answered call's Finish — the
     /// forwarder's `Finish` for the forwarded question can arrive BEFORE the
     /// `takeFromOtherQuestion`, so freeing there would drop the results early.
-    /// Only cap-free results are stashed.
+    /// Only cap-free results are stashed, and exceptions: rpc.capnp answers
+    /// such a call with `resultsSentElsewhere` also when it fails, so its
+    /// exception reaches the caller only through this stash.
     loopback_result_stash: std.AutoHashMap(u32, []u8),
+    /// `takeFromOtherQuestion` Returns that arrived before the
+    /// `sendResultsTo=yourself` call they name was answered (the C++
+    /// reference sends the redirect right after that call). The question
+    /// waits, still open, for the call's terminal: cap-free results or an
+    /// exception are delivered to it as its Return, and results that carry
+    /// capabilities give it the bare redirect, as before. A remote Finish of
+    /// the call before its answer ends the question with
+    /// `tail_call_finished_reason`. Bounded by
+    /// `limits.max_send_results_to_yourself`; past it, the question gets the
+    /// bare redirect at once.
+    held_tail_calls: state.HeldTailCalls = .{},
 
     // -- Persistence (sturdy refs) -------------------------------------------
 
@@ -1598,6 +1619,7 @@ pub const Peer = struct {
     pub const disconnected_reason_text = disconnected_reason;
     pub const deadline_reason_text = deadline_reason;
     pub const shutdown_reason_text = shutdown_reason;
+    pub const tail_call_finished_reason_text = tail_call_finished_reason;
 
     /// Tear down the peer. Body (one unit, order load-bearing) in
     /// `peer_lifecycle.zig`; see the BUG #55 liveness note there.
@@ -3770,11 +3792,23 @@ pub const Peer = struct {
         return ReturnSendImpl.sendReturnResults(self, answer_id, ctx, build);
     }
 
-    /// Deliver a stashed self-loopback results frame to the local question
-    /// named by a `takeFromOtherQuestion` redirect; body in
+    /// Deliver a self-loopback Return frame (results, or an exception) to the
+    /// local question named by a `takeFromOtherQuestion` redirect; body in
     /// `return/peer_return_send.zig`.
     fn deliverStashedLoopbackResults(self: *Peer, target_question_id: u32, frame: []const u8) !void {
         return ReturnSendImpl.deliverStashedLoopbackResults(self, target_question_id, frame);
+    }
+
+    /// Hold a `takeFromOtherQuestion` Return whose named call is not answered
+    /// yet (`held_tail_calls`); body in `return/peer_return_send.zig`.
+    fn holdTailCall(self: *Peer, source_answer_id: u32, question_id: u32) bool {
+        return ReturnSendImpl.holdTailCall(self, source_answer_id, question_id);
+    }
+
+    /// The remote finished a call a tail call is held on; body in
+    /// `return/peer_return_send.zig`.
+    fn settleTailCallOnFinish(self: *Peer, source_answer_id: u32) void {
+        ReturnSendImpl.settleTailCallOnFinish(self, source_answer_id);
     }
 
     /// Send a pre-built return frame, tracking outbound cap refs and recording
@@ -4795,6 +4829,8 @@ pub const Peer = struct {
             finish_msg.release_result_caps,
             ops,
         );
+        // A tail call held on this call can no longer get its results.
+        self.settleTailCallOnFinish(qid);
         if (cleared_partial_join) self.refreshNextJoinDeadline();
         // No Return will follow for a synthetic answer canceled before result
         // delivery, so its ordinary finished-early tombstone must not reserve
@@ -5965,23 +6001,30 @@ pub const Peer = struct {
         // cancelled-question absorb below — settles the refs exactly once.
         try self.consumeQuestionParamExports(ret.answer_id, ret.release_param_caps);
 
-        // `takeFromOtherQuestion` names a call WE answered with
+        // A held tail call is already this question's Return: a second one is
+        // refused, as for a question that has returned.
+        if (self.held_tail_calls.holdsQuestion(ret.answer_id)) return error.UnknownQuestion;
+
+        // `takeFromOtherQuestion` names a call WE answer with
         // `sendResultsTo=yourself` whose results should become this question's
-        // results (reflected-loopback / Level-1 tail-call). If we stashed those
-        // results (cap-free; see completeSelfLoopbackReturn), deliver them inline
-        // to this question instead of surfacing the bare relay tag, so the caller
-        // receives the real value without a wire round-trip through the
-        // forwarder. Falls through to the normal path when nothing was stashed
-        // (results carried caps, the answer is still pending, or the stash
-        // overflowed) — the caller then sees `takeFromOtherQuestion` as before.
+        // results (reflected-loopback / Level-1 tail-call). If we stashed that
+        // call's Return (cap-free results or an exception; see
+        // completeSelfLoopbackReturn), deliver it inline to this question
+        // instead of surfacing the bare relay tag, so the caller receives the
+        // real value without a wire round-trip through the forwarder. If the
+        // call is not answered yet, hold this Return until it is
+        // (`held_tail_calls`). Falls through to the normal path otherwise
+        // (results carried caps, the redirect names no such call, or a bound
+        // overflowed): the caller then sees `takeFromOtherQuestion` as before.
         if (ret.tag == .takeFromOtherQuestion) {
             if (ret.take_from_other_question) |source_answer_id| {
-                if (self.questions.contains(ret.answer_id)) {
+                if (self.questions.get(ret.answer_id)) |question| {
                     if (self.loopback_result_stash.fetchRemove(source_answer_id)) |entry| {
                         defer self.allocator.free(entry.value);
                         try self.deliverStashedLoopbackResults(ret.answer_id, entry.value);
                         return;
                     }
+                    if (!question.cancelled and self.holdTailCall(source_answer_id, ret.answer_id)) return;
                 }
             }
         }

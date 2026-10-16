@@ -151,6 +151,50 @@ pub const FailedAnswer = struct {
     ex_type: protocol.ExceptionType,
 };
 
+/// Tail calls held until the call they name is answered
+/// (`Peer.held_tail_calls`). A `takeFromOtherQuestion` Return can name an
+/// inbound call with `sendResultsTo = yourself` that this peer has not
+/// answered yet. The Return is then held: the question it answers waits for
+/// that call's terminal. Both directions are indexed: the call's terminal
+/// finds its question, and a second Return for the question finds the hold.
+pub const HeldTailCalls = struct {
+    /// Answer id of the named call -> the question waiting on it.
+    by_source: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// The question -> answer id of the call it waits on.
+    by_question: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+
+    pub fn deinit(self: *HeldTailCalls, allocator: std.mem.Allocator) void {
+        self.by_source.deinit(allocator);
+        self.by_question.deinit(allocator);
+    }
+
+    pub fn count(self: *const HeldTailCalls) usize {
+        return self.by_source.count();
+    }
+
+    /// Hold `question_id` on the call `source_answer_id`. False, with
+    /// nothing held, when either id is already part of a hold.
+    pub fn put(self: *HeldTailCalls, allocator: std.mem.Allocator, source_answer_id: u32, question_id: u32) !bool {
+        if (self.by_source.contains(source_answer_id) or self.by_question.contains(question_id)) return false;
+        try self.by_source.ensureUnusedCapacity(allocator, 1);
+        try self.by_question.ensureUnusedCapacity(allocator, 1);
+        self.by_source.putAssumeCapacityNoClobber(source_answer_id, question_id);
+        self.by_question.putAssumeCapacityNoClobber(question_id, source_answer_id);
+        return true;
+    }
+
+    pub fn holdsQuestion(self: *const HeldTailCalls, question_id: u32) bool {
+        return self.by_question.contains(question_id);
+    }
+
+    /// End the hold on the call `source_answer_id`; returns its question.
+    pub fn takeBySource(self: *HeldTailCalls, source_answer_id: u32) ?u32 {
+        const entry = self.by_source.fetchRemove(source_answer_id) orelse return null;
+        _ = self.by_question.remove(entry.value);
+        return entry.value;
+    }
+};
+
 pub const PendingCall = struct {
     frame: []u8,
     caps: cap_table.InboundCapTable,

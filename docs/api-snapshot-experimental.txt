@@ -368,6 +368,8 @@ capnpc-zig.native.conn.eventName: fn (u8) [:0]const u8
 capnpc-zig.native.conn.oom_results_reason: const *const [47:0]u8
 capnpc-zig.native.conn.oversized_results_reason: const *const [62:0]u8
 capnpc-zig.native.conn.promised_results_reason: const *const [65:0]u8
+capnpc-zig.native.conn.unfollowed_tail_call_reason: const *const [114:0]u8
+capnpc-zig.native.conn.unsupported_return_reason: const *const [44:0]u8
 capnpc-zig.native.conn: struct
 capnpc-zig.native.effects.Cap.id: field u32 = 0
 capnpc-zig.native.effects.Cap.kind: field native.effects.CapKind
@@ -2367,6 +2369,7 @@ capnpc-zig.rpc.peer.Peer.handleReturn: fn (*rpc.peer.mod.Peer, []const u8, rpc.w
 capnpc-zig.rpc.peer.Peer.handoff_pickup_ctx: field ?*anyopaque = null
 capnpc-zig.rpc.peer.Peer.handoff_pickup_links: field array_list.Aligned(*rpc.peer.mod.Peer.HandoffPickupContext,null)
 capnpc-zig.rpc.peer.Peer.hasAttachedTransport: fn (*const rpc.peer.mod.Peer) bool
+capnpc-zig.rpc.peer.Peer.held_tail_calls: field rpc.peer.state.HeldTailCalls = <default>
 capnpc-zig.rpc.peer.Peer.hosted_joins: field hash_map.HashMap(*rpc.peer.peer_context_types.HostedJoinOf(rpc.peer.mod.Peer),void,hash_map.AutoContext(*rpc.peer.peer_context_types.HostedJoinOf(rpc.peer.mod.Peer)),80)
 capnpc-zig.rpc.peer.Peer.importFd: fn (*const rpc.peer.mod.Peer, u32) ?rpc.transport.fd_passing.FdHandle
 capnpc-zig.rpc.peer.Peer.in_deinit: field bool = false
@@ -2591,6 +2594,7 @@ capnpc-zig.rpc.peer.Peer.streaming_operation_depth: field usize = 0
 capnpc-zig.rpc.peer.Peer.sweepExpiredJoins: fn (*rpc.peer.mod.Peer) usize
 capnpc-zig.rpc.peer.Peer.sweepExpiredParkedAcceptsForProvisionIndex: fn (*rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer)) usize
 capnpc-zig.rpc.peer.Peer.sweepThirdPartyAwaits: fn (*rpc.peer.mod.Peer, bool) usize
+capnpc-zig.rpc.peer.Peer.tail_call_finished_reason_text: const *const [50:0]u8
 capnpc-zig.rpc.peer.Peer.takeAttachedConnection: fn (*rpc.peer.mod.Peer, comptime type) anytype
 capnpc-zig.rpc.peer.Peer.takePendingJoinAccept: fn (*rpc.peer.mod.Peer, []const u8) ?rpc.peer.peer_state_types.ProvideTarget
 capnpc-zig.rpc.peer.Peer.test_hooks: struct
@@ -2993,6 +2997,14 @@ capnpc-zig.rpc.peer.state.ExportEntry: fn (comptime type) type
 capnpc-zig.rpc.peer.state.FailedAnswer.ex_type: field rpc.wire.protocol.ExceptionType
 capnpc-zig.rpc.peer.state.FailedAnswer.reason: field []u8
 capnpc-zig.rpc.peer.state.FailedAnswer: struct
+capnpc-zig.rpc.peer.state.HeldTailCalls.by_question: field hash_map.Custom(u32,u32,hash_map.AutoContext(u32),80) = <default>
+capnpc-zig.rpc.peer.state.HeldTailCalls.by_source: field hash_map.Custom(u32,u32,hash_map.AutoContext(u32),80) = <default>
+capnpc-zig.rpc.peer.state.HeldTailCalls.count: fn (*const rpc.peer.state.HeldTailCalls) usize
+capnpc-zig.rpc.peer.state.HeldTailCalls.deinit: fn (*rpc.peer.state.HeldTailCalls, mem.Allocator) void
+capnpc-zig.rpc.peer.state.HeldTailCalls.holdsQuestion: fn (*const rpc.peer.state.HeldTailCalls, u32) bool
+capnpc-zig.rpc.peer.state.HeldTailCalls.put: fn (*rpc.peer.state.HeldTailCalls, mem.Allocator, u32, u32) error{OutOfMemory}!bool
+capnpc-zig.rpc.peer.state.HeldTailCalls.takeBySource: fn (*rpc.peer.state.HeldTailCalls, u32) ?u32
+capnpc-zig.rpc.peer.state.HeldTailCalls: struct
 capnpc-zig.rpc.peer.state.JoinKeyPart.join_id: field u32
 capnpc-zig.rpc.peer.state.JoinKeyPart.part_count: field u16
 capnpc-zig.rpc.peer.state.JoinKeyPart.part_num: field u16
@@ -3081,6 +3093,7 @@ capnpc-zig.rpc.peer.state.assertThreadAffinity: fn (?rpc.peer.state.OwnerThreadI
 capnpc-zig.rpc.peer.state.initialOwnerThreadId: fn () ?rpc.peer.state.OwnerThreadId
 capnpc-zig.rpc.peer.state.threadAffinityViolation: fn (?rpc.peer.state.OwnerThreadId, rpc.peer.state.OwnerThreadId, bool, lang.Optimize) bool
 capnpc-zig.rpc.peer.state: struct
+capnpc-zig.rpc.peer.tail_call_finished_reason: const *const [50:0]u8
 capnpc-zig.rpc.peer.third_party.ForwardedCallDestination.caller: variant void
 capnpc-zig.rpc.peer.third_party.ForwardedCallDestination.sendResultsToTag: fn (rpc.peer.third_party.ForwardedCallDestination) rpc.gen.capnp.rpc.Call.SendResultsTo.WhichTag
 capnpc-zig.rpc.peer.third_party.ForwardedCallDestination.thirdPartyPayload: fn (rpc.peer.third_party.ForwardedCallDestination) ?[]u8

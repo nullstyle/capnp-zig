@@ -160,6 +160,16 @@ pub const bad_results_reason = "capnp-swift core: results payload could not be c
 pub const promised_results_reason = "capnp-swift core: results carry an unresolved promised capability";
 /// Reason the Peer synthesizes for a question the host cancelled.
 pub const cancel_reason = "canceled by the host";
+/// Reason text of the RETURN (EXCEPTION, unimplemented) for a tail call the
+/// core cannot follow: a `takeFromOtherQuestion` Return whose named call's
+/// results carry capabilities, or that names no call of this connection with
+/// `sendResultsTo = yourself`. A tail call to a call with cap-free results,
+/// or one that fails, ends with that call's results or exception instead.
+pub const unfollowed_tail_call_reason = "capnp-swift core: cannot follow this tail call (its results carry capabilities, or it names no tail-called answer)";
+/// Reason text of the RETURN (EXCEPTION, unimplemented) for a Return variant
+/// the core never asks for (`resultsSentElsewhere`: every call the core sends
+/// has `sendResultsTo = caller`).
+pub const unsupported_return_reason = "capnp-swift core: unsupported Return variant";
 
 /// The name of a Peer observer event tag (`effects.Event.tag`), or "unknown".
 pub fn eventName(tag: u8) [:0]const u8 {
@@ -767,11 +777,19 @@ pub const Conn = struct {
                 } };
             },
             .canceled => node.effect = .{ .@"return" = .{ .qid = qid, .kind = .canceled } },
+            // The Peer delivers a tail call it can follow as the named call's
+            // results or exception; what reaches here it cannot follow.
+            .takeFromOtherQuestion => node.effect = .{ .@"return" = .{
+                .qid = qid,
+                .kind = .exception,
+                .exception_type = @backingInt(protocol.ExceptionType.unimplemented),
+                .reason = unfollowed_tail_call_reason,
+            } },
             else => node.effect = .{ .@"return" = .{
                 .qid = qid,
                 .kind = .exception,
                 .exception_type = @backingInt(protocol.ExceptionType.unimplemented),
-                .reason = "capnp-swift core: unsupported Return variant",
+                .reason = unsupported_return_reason,
             } },
         }
     }
@@ -842,6 +860,7 @@ fn staticReason(text: []const u8) ?[]const u8 {
         rpc.peer.deadline_reason,
         rpc.peer.disconnected_reason,
         rpc.peer.shutdown_reason,
+        rpc.peer.tail_call_finished_reason,
     };
     for (known) |reason| {
         if (std.mem.eql(u8, text, reason)) return reason;

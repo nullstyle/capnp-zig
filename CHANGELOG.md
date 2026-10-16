@@ -34,6 +34,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RPC: a tail call that arrives before the call it names is answered now
+  gets that call's results.** A tail call is a Return with
+  `takeFromOtherQuestion`. It names a call that the remote sent to this peer
+  with `sendResultsTo = yourself`. The C++ reference sends that Return right
+  after the call, so a handler that answers later (a deferred handler, or a
+  native C ABI host) answered after the Return came. Before, the question
+  then got the bare `takeFromOtherQuestion` tag (`error.UnexpectedReturn`
+  from `unwrap()`). Now the Peer holds that Return. When the named call is
+  answered, the question gets the call's results, or its exception, as its
+  one Return. This change is visible to every Peer user. Results that carry
+  capabilities still give the bare tag. If the remote finishes the named
+  call before it is answered, the question ends with an exception whose
+  reason is `rpc.peer.tail_call_finished_reason`. A second Return for a held
+  question is refused with `error.UnknownQuestion`, as a duplicate Return
+  is today. New Peer tests in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` cover a held tail
+  call that gets results, one that gets an exception, and the duplicate
+  Return.
+- **RPC: a `sendResultsTo = yourself` call that fails is now answered with
+  `resultsSentElsewhere`.** rpc.capnp answers such a call with
+  `resultsSentElsewhere`, and the C++ reference rejects an exception Return
+  for its tail call as a protocol error. capnp-zig's own tail-call forwarder
+  also refuses one (`error.UnexpectedForwardedTailReturn`). The Peer sent
+  the exception on the wire. Now it sends `resultsSentElsewhere`, and the
+  exception goes to the question whose `takeFromOtherQuestion` names the
+  call: at once when that Return is held, or when it arrives.
+- **Native C ABI (Experimental): a tail-call Return no longer ends the
+  question with "unsupported Return variant".** With the Peer changes above,
+  the question gets one RETURN with the named call's results (when they
+  carry no capabilities) or its exception. The order of the call's answer
+  and the redirect does not matter. Results that carry capabilities stay a
+  limit: the question gets one RETURN EXCEPTION (`unimplemented`) with the
+  reason `native.conn.unfollowed_tail_call_reason`, and nothing leaks.
+  docs/native-abi.md lists every Return variant and its RETURN. This closes
+  capnp-swift's handoff `tail-call-returns-for-native.md` in the native
+  tests (`src/native/conn_test.zig`, "tail call: ..."). It is not yet run
+  against the C++ `e2e_server`.
 - **QUIC (Experimental): a `WarmRedialClient.requestStop` during generation
   setup reported no generation and cause `.unknown`.** A generation makes its
   connection reachable by `requestStop` and then enqueues its Bootstrap and

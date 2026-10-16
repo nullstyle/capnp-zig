@@ -8,6 +8,7 @@ const return_send = @import("../../promises/return_send.zig");
 const finish = @import("../finish.zig");
 const peer_call_targets = @import("../call/peer_call_targets.zig");
 const peer_return_dispatch = @import("./peer_return_dispatch.zig");
+const peer_return_frames = @import("./peer_return_frames.zig");
 const state = @import("../state.zig");
 const peer_fds = @import("../peer_fds.zig");
 const peer_export_release = @import("../peer_export_release.zig");
@@ -174,13 +175,14 @@ pub fn ReturnSend(comptime Peer: type) type {
         ///      execute on this path (a real Level-1 self-loopback correctness gap).
         ///   2. The forwarder is told `resultsSentElsewhere`.
         ///
-        /// The computed results are stashed keyed by this answer id so the matching
-        /// inbound `takeFromOtherQuestion` (see `handleReturn`) can deliver them
-        /// inline to the caller's own question — completing the value round-trip
-        /// locally without a wire round-trip through the forwarder. Results carrying
-        /// capabilities cannot be re-delivered locally (their descriptors are
-        /// wire-encoded for the forwarder), so those are not stashed; the caller
-        /// falls back to receiving the `takeFromOtherQuestion` relay tag.
+        /// The computed results go to the caller's own question that the
+        /// matching inbound `takeFromOtherQuestion` names — completing the value
+        /// round-trip locally without a wire round-trip through the forwarder:
+        /// at once when that redirect is already held (`held_tail_calls`), else
+        /// through the stash when it arrives (see `settleSelfLoopbackAnswer`).
+        /// Results carrying capabilities cannot be re-delivered locally (their
+        /// descriptors are wire-encoded for the forwarder), so the caller falls
+        /// back to receiving the `takeFromOtherQuestion` relay tag.
         fn completeSelfLoopbackReturn(self: *Peer, answer_id: u32, ctx: *anyopaque, build: ReturnBuildFn) !void {
             // Build the results (runs the user handler) into a standalone frame.
             // Encode caps with rollback: these results never traverse the wire to
@@ -199,30 +201,139 @@ pub fn ReturnSend(comptime Peer: type) type {
             effects.rollback();
 
             const frame = try builder.finish();
-            var owns_frame = true;
-            defer if (owns_frame) self.allocator.free(frame);
-
-            const has_result_caps = try selfLoopbackResultsHaveCaps(self.allocator, frame);
-
-            // Stash BEFORE telling the forwarder: in a synchronous in-process
-            // transport, the `resultsSentElsewhere` we send can re-enter us with the
-            // matching `takeFromOtherQuestion` before this call returns, and that
-            // handler consumes the stash.
-            if (!has_result_caps and
-                self.loopback_result_stash.count() < self.limits.max_loopback_result_stash)
-            {
-                // toBytes returned an owned copy; hand ownership to the stash.
-                // fetchPut, not put: a duplicate/hostile answer_id can complete a
-                // self-loopback return twice before a takeFromOtherQuestion
-                // consumes the first, and a plain put would overwrite — and leak —
-                // the previously stashed frame.
-                if (try self.loopback_result_stash.fetchPut(answer_id, @constCast(frame))) |old| {
-                    self.allocator.free(old.value);
-                }
-                owns_frame = false;
+            const has_result_caps = selfLoopbackResultsHaveCaps(self.allocator, frame) catch |err| {
+                self.allocator.free(frame);
+                return err;
+            };
+            if (has_result_caps) {
+                self.allocator.free(frame);
+                return settleSelfLoopbackAnswer(self, answer_id, null);
             }
+            return settleSelfLoopbackAnswer(self, answer_id, @constCast(frame));
+        }
+
+        /// Answer a `sendResultsTo = yourself` call with an exception. rpc.capnp
+        /// answers such a call with `resultsSentElsewhere`, also when it fails,
+        /// and the C++ reference rejects an exception Return for its tail call
+        /// as a protocol error. So the remote gets `resultsSentElsewhere`, and
+        /// the exception goes where results would: to the question whose
+        /// `takeFromOtherQuestion` names this call.
+        fn completeSelfLoopbackException(
+            self: *Peer,
+            answer_id: u32,
+            reason: []const u8,
+            ex_type: protocol.ExceptionType,
+        ) !void {
+            const frame = try peer_return_frames.buildReturnExceptionFrame(
+                self.allocator,
+                answer_id,
+                reason,
+                ex_type,
+                self.returnReleasesParamCaps(answer_id),
+            );
+            _ = self.send_results_to_yourself.remove(answer_id);
+            return settleSelfLoopbackAnswer(self, answer_id, @constCast(frame));
+        }
+
+        /// Settle an answered `sendResultsTo = yourself` call. `frame` is the
+        /// call's Return (cap-free results or an exception), owned and freed
+        /// here; null for results that carry capabilities, which cannot be
+        /// delivered locally. The remote is told `resultsSentElsewhere`. The
+        /// Return goes to the question whose `takeFromOtherQuestion` names this
+        /// call: now when that redirect is held (`held_tail_calls`), else through
+        /// the stash when it arrives.
+        fn settleSelfLoopbackAnswer(self: *Peer, answer_id: u32, frame: ?[]u8) !void {
+            var owned = frame;
+            defer if (owned) |bytes| self.allocator.free(bytes);
+
+            // Take the hold before the send: a synchronous transport can
+            // deliver the remote's Finish for this call inside it, and that
+            // Finish must not settle the question first.
+            const held_question = self.held_tail_calls.takeBySource(answer_id);
+            if (held_question == null) {
+                // Stash BEFORE telling the forwarder: in a synchronous in-process
+                // transport, the `resultsSentElsewhere` we send can re-enter us
+                // with the matching `takeFromOtherQuestion` before this call
+                // returns, and that handler consumes the stash.
+                if (owned) |bytes| {
+                    if (self.loopback_result_stash.count() < self.limits.max_loopback_result_stash) {
+                        // fetchPut, not put: a duplicate/hostile answer_id can
+                        // complete a self-loopback return twice before a
+                        // takeFromOtherQuestion consumes the first, and a plain
+                        // put would overwrite — and leak — the stashed frame.
+                        // Out of memory degrades as a full stash does: the call
+                        // still gets its Return, the redirect its bare tag.
+                        if (self.loopback_result_stash.fetchPut(answer_id, bytes)) |previous| {
+                            if (previous) |old| self.allocator.free(old.value);
+                            owned = null;
+                        } else |err| {
+                            log.debug("self-loopback Return {} not stashed: {}", .{ answer_id, err });
+                        }
+                    }
+                }
+            }
+            // The held question gets this call's terminal even if the send
+            // below fails: the value is decided here, not by the wire. Runs
+            // before `owned` is freed.
+            defer if (held_question) |question_id| deliverHeldTailCall(self, question_id, answer_id, owned);
 
             try sendReturnTag(self, answer_id, .resultsSentElsewhere);
+        }
+
+        /// Hold a `takeFromOtherQuestion` Return for `question_id` when the call
+        /// it names, `source_answer_id`, is an unanswered `sendResultsTo =
+        /// yourself` call (the C++ reference sends the redirect right after that
+        /// call). False, with nothing held, otherwise or when the hold table is
+        /// full or out of memory: the question then gets the bare redirect, as
+        /// before holds existed.
+        pub fn holdTailCall(self: *Peer, source_answer_id: u32, question_id: u32) bool {
+            if (!self.send_results_to_yourself.contains(source_answer_id)) return false;
+            if (self.held_tail_calls.count() >= self.limits.max_send_results_to_yourself) return false;
+            return self.held_tail_calls.put(self.allocator, source_answer_id, question_id) catch |err| {
+                log.debug("tail call for question {} not held: {}", .{ question_id, err });
+                return false;
+            };
+        }
+
+        /// The remote finished `source_answer_id` before it was answered: a tail
+        /// call held on it can no longer get its results. A question cancelled
+        /// meanwhile is retired, as its late Return would retire it; any other
+        /// ends with `tail_call_finished_reason`.
+        pub fn settleTailCallOnFinish(self: *Peer, source_answer_id: u32) void {
+            const question_id = self.held_tail_calls.takeBySource(source_answer_id) orelse return;
+            if (!self.questions.contains(question_id)) return;
+            const frame = peer_return_frames.buildReturnExceptionFrame(
+                self.allocator,
+                question_id,
+                Peer.tail_call_finished_reason_text,
+                .failed,
+                false,
+            ) catch |err| return reportNonfatalError(self, err);
+            defer self.allocator.free(frame);
+            deliverStashedLoopbackResults(self, question_id, frame) catch |err| reportNonfatalError(self, err);
+        }
+
+        /// Deliver the terminal of a held tail call to its question: `frame`,
+        /// the named call's Return re-keyed, or with no frame the bare
+        /// `takeFromOtherQuestion`, as when nothing was held. The named call's
+        /// terminal is already decided, so a delivery error is reported, not
+        /// returned.
+        fn deliverHeldTailCall(self: *Peer, question_id: u32, source_answer_id: u32, frame: ?[]const u8) void {
+            // Settled meanwhile (transport close, the shutdown drain bound):
+            // nothing is owed.
+            if (!self.questions.contains(question_id)) return;
+            if (frame) |bytes| {
+                deliverStashedLoopbackResults(self, question_id, bytes) catch |err| reportNonfatalError(self, err);
+                return;
+            }
+            const bare = peer_return_frames.buildReturnTakeFromOtherQuestionFrame(
+                self.allocator,
+                question_id,
+                source_answer_id,
+                false,
+            ) catch |err| return reportNonfatalError(self, err);
+            defer self.allocator.free(bare);
+            deliverStashedLoopbackResults(self, question_id, bare) catch |err| reportNonfatalError(self, err);
         }
 
         /// True when a built Return-results frame carries any capability
@@ -236,10 +347,10 @@ pub fn ReturnSend(comptime Peer: type) type {
             return table.len() > 0;
         }
 
-        /// Deliver a stashed self-loopback results frame to the local question named
-        /// by a `takeFromOtherQuestion` redirect. Re-enters `handleReturn` with the
-        /// stashed results re-keyed to the target question so the normal dispatch,
-        /// cap-release, and auto-finish paths run unchanged.
+        /// Deliver a self-loopback Return frame (results, or an exception) to the
+        /// local question named by a `takeFromOtherQuestion` redirect. Re-enters
+        /// `handleReturn` with the frame re-keyed to the target question so the
+        /// normal dispatch, cap-release, and auto-finish paths run unchanged.
         pub fn deliverStashedLoopbackResults(self: *Peer, target_question_id: u32, frame: []const u8) !void {
             var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
             defer decoded.deinit();
@@ -343,6 +454,11 @@ pub fn ReturnSend(comptime Peer: type) type {
             reason: []const u8,
             ex_type: protocol.ExceptionType,
         ) !void {
+            // A `sendResultsTo = yourself` call is answered with
+            // resultsSentElsewhere, also when it fails.
+            if (self.send_results_to_yourself.contains(answer_id)) {
+                return completeSelfLoopbackException(self, answer_id, reason, ex_type);
+            }
             // Capture before delivery consumes the loopback marker (see
             // sendReturnResults).
             const is_loopback = self.loopback_questions.contains(answer_id);
