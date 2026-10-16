@@ -49,9 +49,11 @@
 //!         print the NTSTATUS. It counts as port exhaustion only with that
 //!         shape (`ambiguousIsPortExhaustion`): it began after at least 100
 //!         successful dials, and from then on at least half of all dial
-//!         attempts failed this way. Otherwise it gates with `other`. A host
-//!         that was already port-exhausted when the run began therefore
-//!         fails the run too: it exercised almost nothing.
+//!         attempts failed this way. A single failure after a range's worth
+//!         of successful dials (16k) is also exhaustion: the range's edge.
+//!         Otherwise it gates with `other`. A host that was already
+//!         port-exhausted when the run began therefore fails the run too:
+//!         it exercised almost nothing.
 //!     The TCP server's WorkerPool.run must also last until shutdown is
 //!     requested; returning earlier fails the run.
 //!   * MID-SESSION transport errors (anything that fails after the
@@ -93,6 +95,14 @@
 //! run); `--rss-gate enforce` makes it gate. The harness's own telemetry
 //! is bounded (fixed-size latency histograms, preallocated sample series),
 //! so neither instrument grows with the call count.
+//!
+//! Both trend checks judge only the exercised run (`MemWindow`): from the
+//! end of warmup to the workers' stop, or to the onset of host port
+//! exhaustion if that comes first. After the onset the workers mostly wait
+//! on failed dials, so the curve shows an idle host. If the onset comes
+//! before half of the run, or too few samples remain, the verdict is
+//! `not_exercised`: a ::warning::, not a failure. The leak check at exit
+//! (gpa.deinit) gates in every case.
 //!
 //! Usage: zig build soak -- [--seconds N] [--workers N] [--calls N]
 //!                          [--inflight K] [--mem-sample-ms N]
@@ -337,6 +347,12 @@ const AmbiguousShape = struct {
 /// dial; ephemeral ports run out only after many of them were used.
 const exhaustion_min_dials_before: usize = 100;
 
+/// A range's worth of successful dials. Windows' default dynamic port range
+/// is 16,384 ports, and other sockets hold a few of them (the listener sits
+/// in the range), so one dial target runs out after about 16k dials: the
+/// 10-13 60 s 8-worker lane hit the edge after 16,262.
+const exhaustion_edge_min_dials: usize = 16_000;
+
 /// Port exhaustion has one shape: the dial path demonstrably works, then
 /// the host runs out of ports and stays out. Windows holds a closed port in
 /// TIME_WAIT for 120 s, so from the onset nearly every dial fails, with a
@@ -344,8 +360,13 @@ const exhaustion_min_dials_before: usize = 100;
 /// half of all dial attempts from the onset on failed this way. A path
 /// broken from the start fails the first test; an intermittent defect, which
 /// fails a fraction of dials throughout, fails the second.
+///
+/// One exception: a single failure after a range's worth of successful
+/// dials is the range's edge. The host ran out of ports once, then TIME_WAIT
+/// ports expired and dials went through again.
 fn ambiguousIsPortExhaustion(shape: AmbiguousShape) bool {
     if (shape.failures == 0) return false;
+    if (shape.failures == 1 and shape.dials_ok_before >= exhaustion_edge_min_dials) return true;
     if (shape.dials_ok_before < exhaustion_min_dials_before) return false;
     return shape.failures >= shape.dials_ok_after;
 }
@@ -440,6 +461,18 @@ test "ambiguousIsPortExhaustion: intermittent failures are not exhaustion" {
     // One past even is already not sustained.
     try std.testing.expect(!ambiguousIsPortExhaustion(.{ .failures = 999, .dials_ok_before = 200, .dials_ok_after = 1000 }));
     try std.testing.expect(!ambiguousIsPortExhaustion(.{ .failures = 0, .dials_ok_before = 200, .dials_ok_after = 0 }));
+}
+
+test "ambiguousIsPortExhaustion: one failure after a range's worth of dials is the exhaustion edge" {
+    // Nightly 38377271133 (10-13), the 60 s 8-worker Windows lane: one
+    // Unexpected at +57.9 s after 16,262 successful dials, then 591 more as
+    // TIME_WAIT ports expired. It was reported as unexplained.
+    try std.testing.expect(ambiguousIsPortExhaustion(.{ .failures = 1, .dials_ok_before = 16_262, .dials_ok_after = 591 }));
+    try std.testing.expect(ambiguousIsPortExhaustion(.{ .failures = 1, .dials_ok_before = exhaustion_edge_min_dials, .dials_ok_after = 16_000 }));
+    // One failure before a range's worth of dials is still unexplained.
+    try std.testing.expect(!ambiguousIsPortExhaustion(.{ .failures = 1, .dials_ok_before = exhaustion_edge_min_dials - 1, .dials_ok_after = 591 }));
+    // The edge is one failure. More than one needs the sustained shape.
+    try std.testing.expect(!ambiguousIsPortExhaustion(.{ .failures = 2, .dials_ok_before = 16_262, .dials_ok_after = 591 }));
 }
 
 fn setupCounts(pairs: []const struct { SetupClass, usize }) [setup_class_count]usize {
@@ -1945,6 +1978,24 @@ const QuicServerHarness = struct {
 
 // -- Memory sampler ----------------------------------------------------------
 
+/// A position in both sample series: the RSS series can be shorter, because
+/// the sampler skips a tick when it cannot read RSS.
+const SampleMark = struct { heap: usize, rss: usize };
+
+/// Where the judged memory window ends (see MemWindow), as the first sample
+/// the sampler took after each event. Written by the sampler thread, read
+/// after it joins.
+const MemMarks = struct {
+    /// The workers' stop (the end of the run window).
+    workers_stop: ?SampleMark = null,
+    /// The first port-exhaustion setup failure.
+    port_exhaustion: ?SampleMark = null,
+    /// The first ambiguous (Windows connect-stage Unexpected) failure. It
+    /// ends the window only if the run's ambiguous failures have the
+    /// exhaustion shape, which is known only after the run.
+    ambiguous: ?SampleMark = null,
+};
+
 const MemSampler = struct {
     counter: *const CountingAllocator,
     io: std.Io,
@@ -1958,9 +2009,19 @@ const MemSampler = struct {
     rss_samples: *std.ArrayList(u64),
     samples_allocator: std.mem.Allocator,
     rss_injector: ?*RssInjector,
+    workers_stop_ns: i64,
+    totals: *const Totals,
+    marks: *MemMarks,
 
     fn main(self: MemSampler) void {
-        while (!self.stop_flag.load(.acquire) and nowNs(self.io) < self.stop_at_ns) {
+        const none = std.math.maxInt(usize);
+        while (!self.stop_flag.load(.acquire)) {
+            const now = nowNs(self.io);
+            if (now >= self.stop_at_ns) break;
+            const here: SampleMark = .{ .heap = self.samples.items.len, .rss = self.rss_samples.items.len };
+            if (self.marks.workers_stop == null and now >= self.workers_stop_ns) self.marks.workers_stop = here;
+            if (self.marks.port_exhaustion == null and self.totals.first_port_exhaustion_ms.load(.monotonic) != none) self.marks.port_exhaustion = here;
+            if (self.marks.ambiguous == null and self.totals.ambiguous_onset_ms.load(.monotonic) != none) self.marks.ambiguous = here;
             if (self.rss_injector) |injector| injector.advance(self.io);
             const live = self.counter.liveBytes();
             self.samples.append(self.samples_allocator, live) catch {};
@@ -2093,16 +2154,51 @@ const RssInjector = struct {
 /// after an initial warmup ramp) into a head and tail quarter and compare
 /// their means. Growth beyond the configured percentage (with an absolute
 /// floor so small series do not trip on noise) fails the run. This is a
-/// slope check over the whole run, not a final leak snapshot. Shared by the
-/// heap gate and the RSS gate; only the thresholds differ.
+/// slope check over the exercised run (see MemWindow), not a final leak
+/// snapshot. Shared by the heap gate and the RSS gate; only the thresholds
+/// differ.
 const MemVerdict = struct {
-    ok: bool,
+    outcome: MemOutcome,
+    /// Set only when `outcome` is `.not_exercised`.
+    not_exercised: ?NotExercised = null,
     head_mean: f64,
     tail_mean: f64,
     growth_pct: f64,
     peak: u64,
+    /// The judged samples are `[warmup_samples, judged_end)`.
     warmup_samples: usize,
+    judged_end: usize,
 };
+
+const MemOutcome = enum {
+    pass,
+    fail,
+    /// Too little of the run window carried traffic to judge a trend.
+    /// Reported with a warning, not a failure.
+    not_exercised,
+};
+
+const NotExercised = enum {
+    /// Host port exhaustion began before half of the run window.
+    early_onset,
+    /// Fewer than `min_judged_samples` samples remain to judge.
+    too_few_samples,
+};
+
+/// Which samples the memory gates judge, as sample indices. The run window
+/// ends when the workers stop: later samples show teardown. Host port
+/// exhaustion ends it earlier: from the onset on, the workers mostly wait
+/// on failed dials, so those samples show an idle host, not the code under
+/// test.
+const MemWindow = struct {
+    /// The first sample taken at or after the workers' stop.
+    stop: usize,
+    /// The first sample taken after host port exhaustion began, or null.
+    onset: ?usize = null,
+};
+
+/// A head and a tail quarter need at least this many samples.
+const min_judged_samples: usize = 4;
 
 fn meanOf(slice: []const u64) f64 {
     if (slice.len == 0) return 0;
@@ -2116,23 +2212,29 @@ fn meanOf(slice: []const u64) f64 {
 /// over a bounded soak.
 const heap_abs_floor_bytes: f64 = 256 * 1024;
 
-fn assessMemory(samples: []const u64, growth_pct: f64, abs_floor_bytes: f64) MemVerdict {
+fn assessMemory(samples: []const u64, window: MemWindow, growth_pct: f64, abs_floor_bytes: f64) MemVerdict {
     var peak: u64 = 0;
     for (samples) |v| peak = @max(peak, v);
 
-    // Drop the first ~20% as warmup ramp (connection pools, arenas priming).
-    const warmup = samples.len / 5;
-    const steady = samples[@min(warmup, samples.len)..];
-    if (steady.len < 4) {
-        // Not enough steady-state signal to judge a slope; treat as pass but
-        // report what we have. (Short runs still get the final leak check.)
+    // Judge [warmup, min(onset, stop)). The first ~20% of the run window is
+    // warmup ramp (connection pools, arenas priming).
+    const run_end = @min(window.stop, samples.len);
+    const warmup = run_end / 5;
+    const end = if (window.onset) |onset| @min(onset, run_end) else run_end;
+    const steady = samples[@min(warmup, end)..end];
+    const early_onset = if (window.onset) |onset| onset *| 2 < run_end else false;
+    if (early_onset or steady.len < min_judged_samples) {
+        // Not enough exercised run to judge a slope. Reported, not gated;
+        // the leak check at exit still runs.
         return .{
-            .ok = true,
+            .outcome = .not_exercised,
+            .not_exercised = if (early_onset) .early_onset else .too_few_samples,
             .head_mean = meanOf(steady),
             .tail_mean = meanOf(steady),
             .growth_pct = 0,
             .peak = peak,
             .warmup_samples = warmup,
+            .judged_end = end,
         };
     }
 
@@ -2150,12 +2252,13 @@ fn assessMemory(samples: []const u64, growth_pct: f64, abs_floor_bytes: f64) Mem
     const ok = (growth <= abs_floor_bytes) or (rel_pct <= growth_pct);
 
     return .{
-        .ok = ok,
+        .outcome = if (ok) .pass else .fail,
         .head_mean = head_mean,
         .tail_mean = tail_mean,
         .growth_pct = rel_pct,
         .peak = peak,
         .warmup_samples = warmup,
+        .judged_end = end,
     };
 }
 
@@ -2163,8 +2266,8 @@ test "assessMemory: a flat steady-state series passes" {
     // ~1 MiB heap wobbling within a few percent — allocator noise, not a leak.
     var series: [40]u64 = undefined;
     for (&series, 0..) |*v, i| v.* = 1_000_000 + (i % 5) * 8_000;
-    const verdict = assessMemory(&series, 25.0, heap_abs_floor_bytes);
-    try std.testing.expect(verdict.ok);
+    const verdict = assessMemory(&series, .{ .stop = series.len }, 25.0, heap_abs_floor_bytes);
+    try std.testing.expectEqual(MemOutcome.pass, verdict.outcome);
 }
 
 test "assessMemory: a monotonically growing series above the floor fails" {
@@ -2172,8 +2275,8 @@ test "assessMemory: a monotonically growing series above the floor fails" {
     // well past the 256 KiB absolute floor and the 25% relative threshold.
     var series: [40]u64 = undefined;
     for (&series, 0..) |*v, i| v.* = 1_000_000 + i * 100_000;
-    const verdict = assessMemory(&series, 25.0, heap_abs_floor_bytes);
-    try std.testing.expect(!verdict.ok);
+    const verdict = assessMemory(&series, .{ .stop = series.len }, 25.0, heap_abs_floor_bytes);
+    try std.testing.expectEqual(MemOutcome.fail, verdict.outcome);
     try std.testing.expect(verdict.growth_pct > 25.0);
 }
 
@@ -2182,8 +2285,8 @@ test "assessMemory: sub-floor growth on a tiny heap is tolerated" {
     // floor, so churn on a tiny heap must not trip the gate.
     var series: [40]u64 = undefined;
     for (&series, 0..) |*v, i| v.* = 4_096 + i * 128;
-    const verdict = assessMemory(&series, 25.0, heap_abs_floor_bytes);
-    try std.testing.expect(verdict.ok);
+    const verdict = assessMemory(&series, .{ .stop = series.len }, 25.0, heap_abs_floor_bytes);
+    try std.testing.expectEqual(MemOutcome.pass, verdict.outcome);
 }
 
 test "assessMemory: RSS thresholds see a steady C-side climb the heap never shows" {
@@ -2192,13 +2295,117 @@ test "assessMemory: RSS thresholds see a steady C-side climb the heap never show
     // leaking under handshake churn. Far past the 16 MiB floor and 25%.
     var leaking: [100]u64 = undefined;
     for (&leaking, 0..) |*v, i| v.* = 60 * 1024 * 1024 + i * 1024 * 1024;
-    try std.testing.expect(!assessMemory(&leaking, 25.0, floor).ok);
+    try std.testing.expectEqual(MemOutcome.fail, assessMemory(&leaking, .{ .stop = leaking.len }, 25.0, floor).outcome);
     // The same baseline wobbling by a few MiB (allocator caches settling)
     // stays under the RSS floor even though it would trip the heap floor.
     var settling: [100]u64 = undefined;
     for (&settling, 0..) |*v, i| v.* = 60 * 1024 * 1024 + (i % 7) * 512 * 1024 + i * 32 * 1024;
-    try std.testing.expect(assessMemory(&settling, 25.0, floor).ok);
-    try std.testing.expect(!assessMemory(&settling, 0.0, heap_abs_floor_bytes).ok);
+    try std.testing.expectEqual(MemOutcome.pass, assessMemory(&settling, .{ .stop = settling.len }, 25.0, floor).outcome);
+    try std.testing.expectEqual(MemOutcome.fail, assessMemory(&settling, .{ .stop = settling.len }, 0.0, heap_abs_floor_bytes).outcome);
+}
+
+// Synthetic series for the judged window. The soak log keeps only a 60-cell
+// sparkline and the head and tail means, so these copy the shapes, not the
+// samples. Levels: a 64-worker run with every worker in a session holds
+// about 6.8 MB of live heap (the Linux 64-worker lane's steady state on
+// 10-11 was 6.73 MB); a port-exhausted run idles near 120 KB, with short
+// bursts when a batch of dials gets through.
+const full_traffic_bytes: u64 = 6_800_000;
+const dial_burst_bytes: u64 = 4_300_000;
+const exhausted_idle_bytes: u64 = 120_000;
+
+/// Nightly 38377271133 (10-13), the Windows 64-worker lane: 180 samples
+/// (about 112 ms each) over a 20 s run. Port exhaustion from +0.6 s
+/// (sample 6). Dial bursts every 9 samples up to sample 81, idle after, and
+/// full traffic in the last 6 samples. The workers joined 80 ms after their
+/// stop, inside one sample period, so the run window ends with the series.
+fn series1013() [180]u64 {
+    var s: [180]u64 = undefined;
+    for (&s, 0..) |*v, i| v.* = if (i == 0)
+        1280
+    else if (i < 6 or i >= 174)
+        full_traffic_bytes
+    else if (i % 9 == 0 and i <= 81)
+        dial_burst_bytes
+    else
+        exhausted_idle_bytes;
+    return s;
+}
+
+test "assessMemory window: (a) the 10-13 Windows shape is not_exercised, not a heap FAIL" {
+    const series = series1013();
+    const v = assessMemory(&series, .{ .stop = series.len, .onset = 6 }, 25.0, heap_abs_floor_bytes);
+    try std.testing.expectEqual(MemOutcome.not_exercised, v.outcome);
+    try std.testing.expectEqual(@as(?NotExercised, .early_onset), v.not_exercised);
+    // Judged without the onset, as bbf91e7 judged it, the same series fails
+    // (111% growth here; the run reported 108.31%).
+    const unwindowed = assessMemory(&series, .{ .stop = series.len }, 25.0, heap_abs_floor_bytes);
+    try std.testing.expectEqual(MemOutcome.fail, unwindowed.outcome);
+    try std.testing.expect(unwindowed.growth_pct > 100.0);
+}
+
+test "assessMemory window: (b) a spike after the workers' stop is not judged" {
+    // No port exhaustion. The run window ends at sample 171; the sampler
+    // runs on until the workers join, and those 9 samples spike.
+    var series: [180]u64 = undefined;
+    for (&series, 0..) |*v, i| v.* = if (i == 0)
+        1280
+    else if (i < 171)
+        2_500_000 + (i % 5) * 10_000
+    else
+        full_traffic_bytes;
+    const v = assessMemory(&series, .{ .stop = 171 }, 25.0, heap_abs_floor_bytes);
+    try std.testing.expectEqual(MemOutcome.pass, v.outcome);
+    try std.testing.expectEqual(@as(usize, 171), v.judged_end);
+    // Judged through the stop, the spike alone fails the gate.
+    try std.testing.expectEqual(MemOutcome.fail, assessMemory(&series, .{ .stop = series.len }, 25.0, heap_abs_floor_bytes).outcome);
+}
+
+test "assessMemory window: (c) a leak before the port-exhaustion onset still fails" {
+    // The heap climbs 40 KB per sample until exhaustion at sample 120 (70%
+    // of the run window), then idles. Judged through the idle tail, the
+    // leak hides: the tail mean is below the head mean.
+    var series: [180]u64 = undefined;
+    for (&series, 0..) |*v, i| v.* = if (i < 120) 1_000_000 + i * 40_000 else exhausted_idle_bytes;
+    const v = assessMemory(&series, .{ .stop = 171, .onset = 120 }, 25.0, heap_abs_floor_bytes);
+    try std.testing.expectEqual(MemOutcome.fail, v.outcome);
+    try std.testing.expectEqual(@as(usize, 120), v.judged_end);
+    try std.testing.expect(v.growth_pct > 25.0);
+}
+
+test "assessMemory window: (d) an onset before half of the run is not_exercised" {
+    // Nightly 38128471120 (10-11): exhaustion from +2.9 s of 20 s (sample
+    // 26 of 180). Full traffic before it; idle with dial bursts after. The
+    // run passed only because the growth stayed under the 256 KiB floor.
+    var series: [180]u64 = undefined;
+    for (&series, 0..) |*v, i| v.* = if (i == 0)
+        1280
+    else if (i < 26)
+        full_traffic_bytes
+    else if (i % 9 == 0)
+        dial_burst_bytes
+    else
+        exhausted_idle_bytes;
+    const v = assessMemory(&series, .{ .stop = series.len, .onset = 26 }, 25.0, heap_abs_floor_bytes);
+    try std.testing.expectEqual(MemOutcome.not_exercised, v.outcome);
+    try std.testing.expectEqual(@as(?NotExercised, .early_onset), v.not_exercised);
+}
+
+test "assessMemory window: the onset at half of the run is judged; too few samples are not" {
+    var flat: [100]u64 = undefined;
+    for (&flat, 0..) |*v, i| v.* = 1_000_000 + (i % 5) * 8_000;
+    const at_half = assessMemory(&flat, .{ .stop = 100, .onset = 50 }, 25.0, heap_abs_floor_bytes);
+    try std.testing.expectEqual(MemOutcome.pass, at_half.outcome);
+    try std.testing.expectEqual(@as(usize, 20), at_half.warmup_samples);
+    try std.testing.expectEqual(@as(usize, 50), at_half.judged_end);
+    const just_before = assessMemory(&flat, .{ .stop = 100, .onset = 49 }, 25.0, heap_abs_floor_bytes);
+    try std.testing.expectEqual(MemOutcome.not_exercised, just_before.outcome);
+    // An onset after the stop leaves the whole run window.
+    try std.testing.expectEqual(@as(usize, 90), assessMemory(&flat, .{ .stop = 90, .onset = 95 }, 25.0, heap_abs_floor_bytes).judged_end);
+    // A run window too short to split into quarters.
+    const short = assessMemory(&flat, .{ .stop = min_judged_samples - 1 }, 25.0, heap_abs_floor_bytes);
+    try std.testing.expectEqual(MemOutcome.not_exercised, short.outcome);
+    try std.testing.expectEqual(@as(?NotExercised, .too_few_samples), short.not_exercised);
 }
 
 // -- Helpers -----------------------------------------------------------------
@@ -2209,6 +2416,22 @@ test "assessMemory: RSS thresholds see a steady C-side climb the heap never show
 fn warn(annotate: bool, comptime fmt: []const u8, args: anytype) void {
     std.debug.print("soak: WARN — " ++ fmt ++ "\n", args);
     if (annotate) std.debug.print("::warning title=soak::" ++ fmt ++ "\n", args);
+}
+
+/// Report a memory gate that judged nothing (MemOutcome.not_exercised).
+fn warnNotExercised(annotate: bool, gate: []const u8, verdict: MemVerdict, onset_ms: usize, seconds: u64) void {
+    switch (verdict.not_exercised orelse .too_few_samples) {
+        .early_onset => warn(
+            annotate,
+            "the {s} trend gate judged nothing (not_exercised): host port exhaustion began at +{d:.1}s, before half of the {}s run; the leak check at exit still gates",
+            .{ gate, @as(f64, @floatFromInt(onset_ms)) / 1000.0, seconds },
+        ),
+        .too_few_samples => warn(
+            annotate,
+            "the {s} trend gate judged nothing (not_exercised): {} samples in its window, fewer than {}; the leak check at exit still gates",
+            .{ gate, verdict.judged_end -| verdict.warmup_samples, min_judged_samples },
+        ),
+    }
 }
 
 fn sleepMs(io: std.Io, ms: u64) void {
@@ -2453,6 +2676,7 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
         null;
     defer if (rss_injector) |*injector| injector.deinit();
     var mem_stop = std.atomic.Value(bool).init(false);
+    var mem_marks: MemMarks = .{};
     const mem_thread = try std.Thread.spawn(.{}, MemSampler.main, .{MemSampler{
         .counter = &counter,
         .io = io,
@@ -2463,6 +2687,9 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
         .rss_samples = &rss_samples,
         .samples_allocator = telemetry_allocator,
         .rss_injector = if (rss_injector) |*injector| injector else null,
+        .workers_stop_ns = stop_at_ns,
+        .totals = &totals,
+        .marks = &mem_marks,
     }});
 
     // Healing clients (QUIC only; parseArgs enforced the pairing): stable
@@ -2684,17 +2911,46 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
     );
 
     // -- Memory-growth curves + flat assessments ---------------------------
-    const verdict = assessMemory(mem_samples.items, cfg.mem_growth_pct, heap_abs_floor_bytes);
+    // The judged window ends at the workers' stop, or earlier where host
+    // port exhaustion began (see MemWindow). An ambiguous onset counts only
+    // with the exhaustion shape. Without it, those failures gate as
+    // unexplained, and they must not also switch the memory gates off.
+    const dials_ok = totals.dials_ok.load(.acquire);
+    const dials_ok_at_onset = totals.dials_ok_at_ambiguous_onset.load(.acquire);
+    const ambiguous_shape: AmbiguousShape = .{
+        .failures = setup_counts[@backingInt(SetupClass.ambiguous)],
+        .dials_ok_before = dials_ok_at_onset,
+        .dials_ok_after = dials_ok -| dials_ok_at_onset,
+    };
+    const ambiguous_onset_ms = totals.ambiguous_onset_ms.load(.acquire);
+    var exhaustion_onset_ms = totals.first_port_exhaustion_ms.load(.acquire);
+    var onset_mark = mem_marks.port_exhaustion;
+    if (ambiguousIsPortExhaustion(ambiguous_shape)) {
+        exhaustion_onset_ms = @min(exhaustion_onset_ms, ambiguous_onset_ms);
+        if (mem_marks.ambiguous) |amb| {
+            onset_mark = if (onset_mark) |o| .{ .heap = @min(o.heap, amb.heap), .rss = @min(o.rss, amb.rss) } else amb;
+        }
+    }
+    const heap_window: MemWindow = .{
+        .stop = if (mem_marks.workers_stop) |m| m.heap else mem_samples.items.len,
+        .onset = if (onset_mark) |m| m.heap else null,
+    };
+    const rss_window: MemWindow = .{
+        .stop = if (mem_marks.workers_stop) |m| m.rss else rss_samples.items.len,
+        .onset = if (onset_mark) |m| m.rss else null,
+    };
+    const verdict = assessMemory(mem_samples.items, heap_window, cfg.mem_growth_pct, heap_abs_floor_bytes);
     std.debug.print("soak: memory curve (live bytes, {} samples @ {}ms):\n", .{ mem_samples.items.len, cfg.mem_sample_ms });
     printMemCurve(mem_samples.items);
     std.debug.print(
         "soak: memory steady-state head_mean={d:.0}B tail_mean={d:.0}B growth={d:.2}% peak={}B threshold={d:.1}%\n",
         .{ verdict.head_mean, verdict.tail_mean, verdict.growth_pct, verdict.peak, cfg.mem_growth_pct },
     );
+    printMemWindow("memory", verdict, mem_samples.items.len, heap_window);
 
     const rss_floor_bytes: f64 = @floatFromInt(cfg.rss_floor_mib * 1024 * 1024);
     const rss_available = rss_samples.items.len > 0;
-    const rss_verdict = assessMemory(rss_samples.items, cfg.rss_growth_pct, rss_floor_bytes);
+    const rss_verdict = assessMemory(rss_samples.items, rss_window, cfg.rss_growth_pct, rss_floor_bytes);
     const rss_mode = @tagName(cfg.rss_gate);
     if (rss_available) {
         std.debug.print("soak: rss curve (resident bytes, {} samples @ {}ms):\n", .{ rss_samples.items.len, cfg.mem_sample_ms });
@@ -2703,8 +2959,9 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
             "soak: rss steady-state head_mean={d:.0}B tail_mean={d:.0}B growth={d:.2}% delta={d:.0}B peak={}B threshold={d:.1}% floor={}MiB\n",
             .{ rss_verdict.head_mean, rss_verdict.tail_mean, rss_verdict.growth_pct, rss_verdict.tail_mean - rss_verdict.head_mean, rss_verdict.peak, cfg.rss_growth_pct, cfg.rss_floor_mib },
         );
+        printMemWindow("rss", rss_verdict, rss_samples.items.len, rss_window);
         std.debug.print("soak: rss verdict: {s} ({s}{s})\n", .{
-            if (rss_verdict.ok) "PASS" else "FAIL",
+            memOutcomeLabel(rss_verdict.outcome),
             rss_mode,
             if (cfg.alloc_traces) "; --alloc-traces on: RSS includes the tracer's own growth" else "",
         });
@@ -2868,25 +3125,19 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
         failed = true;
     }
     // Setup failures: classified, then resolved into gated and reported
-    // totals (see assessSetup and the file header).
-    const dials_ok = totals.dials_ok.load(.acquire);
-    const dials_ok_at_onset = totals.dials_ok_at_ambiguous_onset.load(.acquire);
-    const ambiguous_shape: AmbiguousShape = .{
-        .failures = setup_counts[@backingInt(SetupClass.ambiguous)],
-        .dials_ok_before = dials_ok_at_onset,
-        .dials_ok_after = dials_ok -| dials_ok_at_onset,
-    };
+    // totals (see assessSetup and the file header). `ambiguous_shape` was
+    // built for the memory window above.
     const server_down_by_design = cfg.abrupt_death_every_ms != null;
     const setup_verdict = assessSetup(setup_counts, ambiguous_shape, server_down_by_design, tolerance);
-    const ambiguous_onset_ms = totals.ambiguous_onset_ms.load(.acquire);
     if (ambiguous_shape.failures > 0) {
         std.debug.print(
-            "soak: windows connect-stage error.Unexpected: {} dials failed from +{d:.1}s, after {} successful dials (port exhaustion needs >= {}); {} dials succeeded since -> {s}\n",
+            "soak: windows connect-stage error.Unexpected: {} dials failed from +{d:.1}s, after {} successful dials (port exhaustion needs >= {}, or >= {} for a single failure); {} dials succeeded since -> {s}\n",
             .{
                 ambiguous_shape.failures,
                 @as(f64, @floatFromInt(ambiguous_onset_ms)) / 1000.0,
                 ambiguous_shape.dials_ok_before,
                 exhaustion_min_dials_before,
+                exhaustion_edge_min_dials,
                 ambiguous_shape.dials_ok_after,
                 if (setup_verdict.ambiguous_is_exhaustion) "port-exhaustion shape" else "NOT the port-exhaustion shape: unexplained",
             },
@@ -2910,14 +3161,12 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
         warn(annotate, "{} unexplained setup failures, within the tolerance of {}; see the setup failures line", .{ setup_verdict.gated, tolerance });
     }
     if (setup_verdict.port_exhaustion > 0) {
-        var first_ms = totals.first_port_exhaustion_ms.load(.acquire);
-        if (setup_verdict.ambiguous_is_exhaustion) first_ms = @min(first_ms, ambiguous_onset_ms);
         // Host-side, not a defect in the code under test: reported loudly,
         // with where in the run it began, but not gated.
         warn(
             annotate,
             "host ephemeral-port exhaustion: {} dials failed from +{d:.1}s of a {}s run; traffic after that point was not exercised",
-            .{ setup_verdict.port_exhaustion, @as(f64, @floatFromInt(first_ms)) / 1000.0, cfg.seconds },
+            .{ setup_verdict.port_exhaustion, @as(f64, @floatFromInt(exhaustion_onset_ms)) / 1000.0, cfg.seconds },
         );
     }
     if (setup_verdict.reported > 0) {
@@ -2927,12 +3176,17 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
             .{ setup_verdict.reported, if (server_down_by_design) ", and dials refused or timed out while the server was down by design" else "" },
         );
     }
-    if (!verdict.ok) {
+    if (verdict.outcome == .fail) {
         std.debug.print(
             "soak: FAIL — steady-state live heap grew {d:.2}% (> {d:.1}% threshold)\n",
             .{ verdict.growth_pct, cfg.mem_growth_pct },
         );
         failed = true;
+    }
+    // A run that exercised too little is reported, not failed (yet): the
+    // heap trend was not judged, and the leak check below still gates.
+    if (verdict.outcome == .not_exercised) {
+        warnNotExercised(annotate, "live-heap", verdict, exhaustion_onset_ms, cfg.seconds);
     }
     switch (cfg.rss_gate) {
         .enforce => {
@@ -2940,16 +3194,18 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
                 // An enforcing gate cannot pass on a reading it never took.
                 std.debug.print("soak: FAIL — --rss-gate enforce, but RSS is unavailable on this platform\n", .{});
                 failed = true;
-            } else if (!rss_verdict.ok) {
+            } else if (rss_verdict.outcome == .fail) {
                 std.debug.print(
                     "soak: FAIL — steady-state RSS grew {d:.2}% (> {d:.1}% threshold, delta {d:.0}B > {}MiB floor)\n",
                     .{ rss_verdict.growth_pct, cfg.rss_growth_pct, rss_verdict.tail_mean - rss_verdict.head_mean, cfg.rss_floor_mib },
                 );
                 failed = true;
+            } else if (rss_verdict.outcome == .not_exercised) {
+                warnNotExercised(annotate, "RSS", rss_verdict, exhaustion_onset_ms, cfg.seconds);
             }
         },
         .report => {
-            if (rss_available and !rss_verdict.ok) {
+            if (rss_available and rss_verdict.outcome == .fail) {
                 warn(
                     annotate,
                     "report-only RSS gate would FAIL: steady-state RSS grew {d:.2}% (> {d:.1}%, delta {d:.0}B > {}MiB floor); pass --rss-gate enforce to gate",
@@ -3008,4 +3264,28 @@ fn printMemCurve(samples: []const u64) void {
         w += bar.len;
     }
     std.debug.print("  [{s}]  lo={}B hi={}B\n", .{ buf[0..w], lo, hi });
+}
+
+/// One line on what a memory gate judged: the sample range, where the run
+/// window ended (and where port exhaustion began), and the outcome.
+fn printMemWindow(label: []const u8, verdict: MemVerdict, len: usize, window: MemWindow) void {
+    std.debug.print("soak: {s} judged samples [{}, {}) of {}; the run window ends at sample {}", .{
+        label,
+        @min(verdict.warmup_samples, verdict.judged_end),
+        verdict.judged_end,
+        len,
+        @min(window.stop, len),
+    });
+    if (window.onset) |onset| std.debug.print("; port exhaustion from sample {}", .{onset});
+    std.debug.print(" -> {s}", .{memOutcomeLabel(verdict.outcome)});
+    if (verdict.not_exercised) |why| std.debug.print(" ({s})", .{@tagName(why)});
+    std.debug.print("\n", .{});
+}
+
+fn memOutcomeLabel(outcome: MemOutcome) []const u8 {
+    return switch (outcome) {
+        .pass => "PASS",
+        .fail => "FAIL",
+        .not_exercised => "NOT_EXERCISED",
+    };
 }

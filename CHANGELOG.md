@@ -23,6 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own". The new QUIC peer test "WarmRedialClient.requestStop during
   generation setup reports 1 generation and .local_close" pauses the
   generation in the gap with a test-only knob and stops it there.
+- **Soak: the memory gates judge only the exercised run.** The soak
+  harness (`tools/soak_rpc.zig`) now judges the live-heap and RSS trends
+  from the end of warmup to the workers' stop. If host port exhaustion
+  starts earlier, the judged window ends at its onset. If the onset comes
+  before half of the run, or too few samples remain, the verdict is
+  `not_exercised`. That verdict is a `::warning::`, not a failure. The
+  leak check at exit still gates. Nightly 38377271133 (10-13) failed the
+  Windows 64-worker lane with 108% heap growth, but that lane was
+  port-exhausted from +0.6 s. The gate compared an idle host with bursts of
+  traffic.
+- **Soak: one Windows dial failure after a range's worth of dials is port
+  exhaustion.** A single connect-stage `error.Unexpected` after at least
+  16,000 successful dials now counts as the edge of the port range, not as
+  an unexplained failure. The 10-13 60 s 8-worker lane hit that edge after
+  16,262 dials.
 
 ## [0.26.0] - 2026-10-10
 
