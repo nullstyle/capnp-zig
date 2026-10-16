@@ -99,8 +99,9 @@
 //! Both trend checks judge only the exercised run (`MemWindow`): from the
 //! end of warmup to the workers' stop, or to the onset of host port
 //! exhaustion if that comes first. After the onset the workers mostly wait
-//! on failed dials, so the curve shows an idle host. If the onset comes
-//! before half of the run, or too few samples remain, the verdict is
+//! on failed dials, so the curve shows an idle host. A single range-edge
+//! failure does not end the window: traffic goes on after it. If the onset
+//! comes before half of the run, or too few samples remain, the verdict is
 //! `not_exercised`: a ::warning::, not a failure. The leak check at exit
 //! (gpa.deinit) gates in every case.
 //!
@@ -350,7 +351,10 @@ const exhaustion_min_dials_before: usize = 100;
 /// A range's worth of successful dials. Windows' default dynamic port range
 /// is 16,384 ports, and other sockets hold a few of them (the listener sits
 /// in the range), so one dial target runs out after about 16k dials: the
-/// 10-13 60 s 8-worker lane hit the edge after 16,262.
+/// 10-13 60 s 8-worker lane hit the edge after 16,262. On a widened range
+/// (the Nightly soak-windows-64w job sets 55,535 ports), one failure after
+/// 16k dials is not the edge, but it is still labeled so: reported, not
+/// gated.
 const exhaustion_edge_min_dials: usize = 16_000;
 
 /// Port exhaustion has one shape: the dial path demonstrably works, then
@@ -362,13 +366,26 @@ const exhaustion_edge_min_dials: usize = 16_000;
 /// fails a fraction of dials throughout, fails the second.
 ///
 /// One exception: a single failure after a range's worth of successful
-/// dials is the range's edge. The host ran out of ports once, then TIME_WAIT
-/// ports expired and dials went through again.
+/// dials is the range's edge (ambiguousIsRangeEdge). The host ran out of
+/// ports once, then TIME_WAIT ports expired and dials went through again.
 fn ambiguousIsPortExhaustion(shape: AmbiguousShape) bool {
+    return ambiguousIsSustainedExhaustion(shape) or ambiguousIsRangeEdge(shape);
+}
+
+/// The sustained shape: the dial path worked, then from the onset on at
+/// least half of all dial attempts failed. Only this shape ends the judged
+/// memory window (memWindows): after its onset the workers mostly wait.
+fn ambiguousIsSustainedExhaustion(shape: AmbiguousShape) bool {
     if (shape.failures == 0) return false;
-    if (shape.failures == 1 and shape.dials_ok_before >= exhaustion_edge_min_dials) return true;
     if (shape.dials_ok_before < exhaustion_min_dials_before) return false;
     return shape.failures >= shape.dials_ok_after;
+}
+
+/// A single failure after a range's worth of successful dials, with more
+/// successful dials than failures after it: traffic went on.
+fn ambiguousIsRangeEdge(shape: AmbiguousShape) bool {
+    if (shape.failures != 1 or shape.dials_ok_before < exhaustion_edge_min_dials) return false;
+    return !ambiguousIsSustainedExhaustion(shape);
 }
 
 const SetupVerdict = struct {
@@ -473,6 +490,23 @@ test "ambiguousIsPortExhaustion: one failure after a range's worth of dials is t
     try std.testing.expect(!ambiguousIsPortExhaustion(.{ .failures = 1, .dials_ok_before = exhaustion_edge_min_dials - 1, .dials_ok_after = 591 }));
     // The edge is one failure. More than one needs the sustained shape.
     try std.testing.expect(!ambiguousIsPortExhaustion(.{ .failures = 2, .dials_ok_before = 16_262, .dials_ok_after = 591 }));
+}
+
+test "ambiguousIsRangeEdge: the edge is apart from sustained exhaustion" {
+    // The 10-13 edge: traffic went on after it, so it is not sustained.
+    const edge: AmbiguousShape = .{ .failures = 1, .dials_ok_before = 16_262, .dials_ok_after = 591 };
+    try std.testing.expect(ambiguousIsRangeEdge(edge));
+    try std.testing.expect(!ambiguousIsSustainedExhaustion(edge));
+    // One failure and at most one successful dial after it is the sustained
+    // shape (failures >= dials after), not the edge.
+    const at_end: AmbiguousShape = .{ .failures = 1, .dials_ok_before = 16_262, .dials_ok_after = 1 };
+    try std.testing.expect(ambiguousIsSustainedExhaustion(at_end));
+    try std.testing.expect(!ambiguousIsRangeEdge(at_end));
+    // Like the 10-13 64-worker lane: 36,927 failures from +0.6 s, after 483
+    // successful dials.
+    const sustained: AmbiguousShape = .{ .failures = 36_927, .dials_ok_before = 483, .dials_ok_after = 0 };
+    try std.testing.expect(ambiguousIsSustainedExhaustion(sustained));
+    try std.testing.expect(!ambiguousIsRangeEdge(sustained));
 }
 
 fn setupCounts(pairs: []const struct { SetupClass, usize }) [setup_class_count]usize {
@@ -2200,6 +2234,34 @@ const MemWindow = struct {
 /// A head and a tail quarter need at least this many samples.
 const min_judged_samples: usize = 4;
 
+/// The judged windows of the two sample series.
+const MemWindows = struct { heap: MemWindow, rss: MemWindow };
+
+/// Build the judged windows from the sampler's marks. Each window stops at
+/// the workers' stop (or at its series' end, if the sampler ended first).
+/// Port exhaustion ends it earlier. The first ambiguous failure counts as
+/// that onset only with the sustained shape: unexplained failures gate on
+/// their own and must not also switch the memory gates off, and traffic
+/// goes on after a single range-edge failure, so the gates judge it.
+fn memWindows(marks: MemMarks, ambiguous: AmbiguousShape, heap_len: usize, rss_len: usize) MemWindows {
+    var onset = marks.port_exhaustion;
+    if (ambiguousIsSustainedExhaustion(ambiguous)) {
+        if (marks.ambiguous) |amb| {
+            onset = if (onset) |o| .{ .heap = @min(o.heap, amb.heap), .rss = @min(o.rss, amb.rss) } else amb;
+        }
+    }
+    return .{
+        .heap = .{
+            .stop = if (marks.workers_stop) |m| m.heap else heap_len,
+            .onset = if (onset) |m| m.heap else null,
+        },
+        .rss = .{
+            .stop = if (marks.workers_stop) |m| m.rss else rss_len,
+            .onset = if (onset) |m| m.rss else null,
+        },
+    };
+}
+
 fn meanOf(slice: []const u64) f64 {
     if (slice.len == 0) return 0;
     var sum: u128 = 0;
@@ -2406,6 +2468,52 @@ test "assessMemory window: the onset at half of the run is judged; too few sampl
     const short = assessMemory(&flat, .{ .stop = min_judged_samples - 1 }, 25.0, heap_abs_floor_bytes);
     try std.testing.expectEqual(MemOutcome.not_exercised, short.outcome);
     try std.testing.expectEqual(@as(?NotExercised, .too_few_samples), short.not_exercised);
+}
+
+test "memWindows: the window stops at the workers' stop, or earlier at port exhaustion" {
+    const stop: SampleMark = .{ .heap = 171, .rss = 170 };
+    // No exhaustion: each series runs to its own stop mark.
+    const plain = memWindows(.{ .workers_stop = stop }, .{}, 180, 179);
+    try std.testing.expectEqual(@as(usize, 171), plain.heap.stop);
+    try std.testing.expectEqual(@as(usize, 170), plain.rss.stop);
+    try std.testing.expectEqual(@as(?usize, null), plain.heap.onset);
+    try std.testing.expectEqual(@as(?usize, null), plain.rss.onset);
+    // No stop mark (the sampler ended first): each series runs to its end.
+    const unmarked = memWindows(.{}, .{}, 180, 179);
+    try std.testing.expectEqual(@as(usize, 180), unmarked.heap.stop);
+    try std.testing.expectEqual(@as(usize, 179), unmarked.rss.stop);
+    // Explicit port exhaustion (AddressUnavailable, AddressInUse).
+    const explicit_mark: SampleMark = .{ .heap = 120, .rss = 119 };
+    const explicit = memWindows(.{ .workers_stop = stop, .port_exhaustion = explicit_mark }, .{}, 180, 179);
+    try std.testing.expectEqual(@as(?usize, 120), explicit.heap.onset);
+    try std.testing.expectEqual(@as(?usize, 119), explicit.rss.onset);
+    // Sustained ambiguous exhaustion, like the 10-13 64-worker lane. The
+    // earlier onset wins in each series.
+    const sustained = memWindows(.{
+        .workers_stop = stop,
+        .port_exhaustion = explicit_mark,
+        .ambiguous = .{ .heap = 6, .rss = 5 },
+    }, .{ .failures = 36_927, .dials_ok_before = 483, .dials_ok_after = 0 }, 180, 179);
+    try std.testing.expectEqual(@as(?usize, 6), sustained.heap.onset);
+    try std.testing.expectEqual(@as(?usize, 5), sustained.rss.onset);
+}
+
+test "memWindows: a range-edge or unexplained ambiguous failure does not end the window" {
+    // Like the 10-13 60 s 8-worker Windows lane: one Unexpected at +57.9 s
+    // after 16,262 dials, then 591 more dials succeeded. The sample indices
+    // are synthetic (about 112 ms per sample).
+    const marks: MemMarks = .{
+        .workers_stop = .{ .heap = 535, .rss = 535 },
+        .ambiguous = .{ .heap = 517, .rss = 517 },
+    };
+    const edge = memWindows(marks, .{ .failures = 1, .dials_ok_before = 16_262, .dials_ok_after = 591 }, 540, 540);
+    try std.testing.expectEqual(@as(?usize, null), edge.heap.onset);
+    try std.testing.expectEqual(@as(?usize, null), edge.rss.onset);
+    try std.testing.expectEqual(@as(usize, 535), edge.heap.stop);
+    // Unexplained ambiguous failures (a tenth of the dials, throughout).
+    const unexplained = memWindows(marks, .{ .failures = 1500, .dials_ok_before = 200, .dials_ok_after = 13_500 }, 540, 540);
+    try std.testing.expectEqual(@as(?usize, null), unexplained.heap.onset);
+    try std.testing.expectEqual(@as(?usize, null), unexplained.rss.onset);
 }
 
 // -- Helpers -----------------------------------------------------------------
@@ -2912,9 +3020,7 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
 
     // -- Memory-growth curves + flat assessments ---------------------------
     // The judged window ends at the workers' stop, or earlier where host
-    // port exhaustion began (see MemWindow). An ambiguous onset counts only
-    // with the exhaustion shape. Without it, those failures gate as
-    // unexplained, and they must not also switch the memory gates off.
+    // port exhaustion began (see MemWindow and memWindows).
     const dials_ok = totals.dials_ok.load(.acquire);
     const dials_ok_at_onset = totals.dials_ok_at_ambiguous_onset.load(.acquire);
     const ambiguous_shape: AmbiguousShape = .{
@@ -2923,22 +3029,14 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
         .dials_ok_after = dials_ok -| dials_ok_at_onset,
     };
     const ambiguous_onset_ms = totals.ambiguous_onset_ms.load(.acquire);
+    // The onset that ends the window, in ms, for the warnings below.
     var exhaustion_onset_ms = totals.first_port_exhaustion_ms.load(.acquire);
-    var onset_mark = mem_marks.port_exhaustion;
-    if (ambiguousIsPortExhaustion(ambiguous_shape)) {
+    if (ambiguousIsSustainedExhaustion(ambiguous_shape)) {
         exhaustion_onset_ms = @min(exhaustion_onset_ms, ambiguous_onset_ms);
-        if (mem_marks.ambiguous) |amb| {
-            onset_mark = if (onset_mark) |o| .{ .heap = @min(o.heap, amb.heap), .rss = @min(o.rss, amb.rss) } else amb;
-        }
     }
-    const heap_window: MemWindow = .{
-        .stop = if (mem_marks.workers_stop) |m| m.heap else mem_samples.items.len,
-        .onset = if (onset_mark) |m| m.heap else null,
-    };
-    const rss_window: MemWindow = .{
-        .stop = if (mem_marks.workers_stop) |m| m.rss else rss_samples.items.len,
-        .onset = if (onset_mark) |m| m.rss else null,
-    };
+    const windows = memWindows(mem_marks, ambiguous_shape, mem_samples.items.len, rss_samples.items.len);
+    const heap_window = windows.heap;
+    const rss_window = windows.rss;
     const verdict = assessMemory(mem_samples.items, heap_window, cfg.mem_growth_pct, heap_abs_floor_bytes);
     std.debug.print("soak: memory curve (live bytes, {} samples @ {}ms):\n", .{ mem_samples.items.len, cfg.mem_sample_ms });
     printMemCurve(mem_samples.items);
@@ -3139,7 +3237,12 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
                 exhaustion_min_dials_before,
                 exhaustion_edge_min_dials,
                 ambiguous_shape.dials_ok_after,
-                if (setup_verdict.ambiguous_is_exhaustion) "port-exhaustion shape" else "NOT the port-exhaustion shape: unexplained",
+                if (ambiguousIsRangeEdge(ambiguous_shape))
+                    "the port range's edge"
+                else if (setup_verdict.ambiguous_is_exhaustion)
+                    "port-exhaustion shape"
+                else
+                    "NOT the port-exhaustion shape: unexplained",
             },
         );
     }
@@ -3160,13 +3263,23 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
     } else if (setup_verdict.gated > 0) {
         warn(annotate, "{} unexplained setup failures, within the tolerance of {}; see the setup failures line", .{ setup_verdict.gated, tolerance });
     }
-    if (setup_verdict.port_exhaustion > 0) {
-        // Host-side, not a defect in the code under test: reported loudly,
-        // with where in the run it began, but not gated.
+    // Host-side, not a defect in the code under test: reported loudly, with
+    // where in the run it began, but not gated. A range-edge failure has its
+    // own line: traffic went on after it.
+    const range_edge = ambiguousIsRangeEdge(ambiguous_shape);
+    if (range_edge) {
+        warn(
+            annotate,
+            "host ephemeral-port range edge: 1 dial failed at +{d:.1}s of a {}s run, after {} successful dials; {} dials succeeded after it, so traffic went on",
+            .{ @as(f64, @floatFromInt(ambiguous_onset_ms)) / 1000.0, cfg.seconds, ambiguous_shape.dials_ok_before, ambiguous_shape.dials_ok_after },
+        );
+    }
+    const sustained_exhaustion = setup_verdict.port_exhaustion -| (if (range_edge) ambiguous_shape.failures else 0);
+    if (sustained_exhaustion > 0) {
         warn(
             annotate,
             "host ephemeral-port exhaustion: {} dials failed from +{d:.1}s of a {}s run; traffic after that point was not exercised",
-            .{ setup_verdict.port_exhaustion, @as(f64, @floatFromInt(exhaustion_onset_ms)) / 1000.0, cfg.seconds },
+            .{ sustained_exhaustion, @as(f64, @floatFromInt(exhaustion_onset_ms)) / 1000.0, cfg.seconds },
         );
     }
     if (setup_verdict.reported > 0) {
