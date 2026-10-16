@@ -44,33 +44,12 @@ jobs:
       # cannot see this class. ReleaseSafe: locally the abort surfaced
       # only under optimized timing (0/2 in Debug at the same load).
       #
-      # Windows runs 20s, not 60s. This lane's FIRST run (33029339794)
-      # caught the parked-accept teardown panic, fixed in WorkerPool
-      # (stopAccepting orders nudge-unpark before close). The residual:
-      # a 60s run at 64 workers burns ~20k client ports while Windows
-      # holds each in TIME_WAIT for 120s against a ~16k dynamic range
-      # (measured: 16,224 TIME_WAIT after one 60s run) — once the host
-      # is port-exhausted, no self-connect nudge can land, the close
-      # valve fires under parked accepts, and std's netAcceptWindows
-      # treats the resulting STATUS_CANCELLED as unreachable (a std
-      # defect worth an upstream report). 20s keeps teardown well under
-      # the ceiling; the lane's purpose — the >=32-worker regime — is
-      # unchanged. Repro evidence: branch lane ci/win-accept-teardown,
-      # runs 33031327060 (red, pre-fix) / 33032117486 (20s green x2 +
-      # 60s diagnostic red with the port census).
-      #
-      # Dial failures are classified apart from mid-session transport
-      # errors (which are bounded). The 2026-10-03 nightly's Windows run of
-      # this lane was port-exhausted from ~+8s (21020 dials failed while
-      # the earlier lanes' ports sat in TIME_WAIT) and still passed, since
-      # those failures were folded into an unbounded transport_errors. The
-      # soak now reports port exhaustion with a ::warning:: annotation. It
-      # gates unexplained dial failures, refused or timed-out dials, and a
-      # Windows connect-stage error.Unexpected that does not have the
-      # exhaustion shape (see tools/soak_rpc.zig).
+      # Linux only here. Windows runs this lane in its own job
+      # (soak-windows-64w below), on a fresh runner with a wider port range.
       - name: Run soak harness under ReleaseSafe (64 workers)
+        if: runner.os == 'Linux'
         shell: bash
-        run: zig build -Doptimize=ReleaseSafe soak -- --seconds ${{ runner.os == 'Windows' && '20' || '60' }} --workers 64 --rss-gate report
+        run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 64 --rss-gate report
 
       # Linux-only: the TSan lane is validated on Linux only (libtsan used to
       # segfault at startup on darwin), and Windows has no zig TSan runtime;
@@ -81,6 +60,84 @@ jobs:
       - name: Run soak harness under ThreadSanitizer (30 seconds)
         if: runner.os == 'Linux'
         run: zig build soak-tsan -- --seconds 30 --workers 8
+
+  # The Windows 64-worker soak lane (see the 64-worker step above for why 64
+  # workers and ReleaseSafe). It has its own job so that it starts on a fresh
+  # runner with its own port budget.
+  #
+  # Port budget. Windows holds a closed TCP port in TIME_WAIT for 120 s, and
+  # its default dynamic port range has 16,384 ports. When this lane ran after
+  # the two 8-worker lanes in the soak job, it started with about 16k of
+  # their ports in TIME_WAIT. 8 of 17 Windows Nightlies from 10-04 to 10-15
+  # reported port exhaustion on it. Nightly 38377271133 (10-13) was exhausted
+  # from +0.6 s (36,927 dials failed, 483 succeeded first). So this job widens
+  # the dynamic range to 55,535 ports (10000-65534). Then it prints the range
+  # and the TIME_WAIT count just before the lane starts.
+  #
+  # Windows runs 20 s, not 60 s. The first run of this lane (33029339794)
+  # caught a teardown abort: closing the listener under a parked accept
+  # completes that accept with STATUS_CANCELLED, which std's
+  # netAcceptWindows treats as unreachable. WorkerPool.stopAccepting now
+  # wakes every parked accept with self-connect nudges before it closes the
+  # listener, and it retries the nudges with no bound. On a port-exhausted
+  # host no nudge can connect, so teardown waits until TIME_WAIT ports
+  # expire. 20 s at the Linux lane's rate (about 800 sessions/s) uses about
+  # 16k ports, well inside the widened range. Compare sessions per second
+  # with the Linux lane, not session counts.
+  #
+  # Dial failures are classified apart from mid-session transport errors
+  # (which are bounded). The soak reports port exhaustion with a ::warning::
+  # annotation. It gates unexplained dial failures, refused or timed-out
+  # dials, and a Windows connect-stage error.Unexpected that does not have
+  # the exhaustion shape (see tools/soak_rpc.zig). The memory gates judge
+  # only the run before the exhaustion onset. If the onset comes before half
+  # of the run, the verdict is not_exercised: a ::warning::, not a failure.
+  soak-windows-64w:
+    name: RPC soak (64 workers, windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.17
+
+      - uses: ./.github/actions/setup-zig
+
+      # Hosted Windows runners run as an administrator, which netsh needs.
+      # If netsh fails anyway, warn and run the lane on the default range.
+      - name: Widen the dynamic TCP port range
+        shell: pwsh
+        run: |
+          netsh int ipv4 set dynamicport tcp start=10000 num=55535
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::warning title=soak port budget::netsh could not widen the dynamic TCP port range (exit code $LASTEXITCODE). The 64-worker lane runs on the default range."
+          }
+          exit 0
+
+      - name: Show the port budget (dynamic range and TIME_WAIT count)
+        shell: pwsh
+        run: |
+          $range = netsh int ipv4 show dynamicport tcp | Out-String
+          Write-Output $range.Trim()
+          $timeWait = (netstat -an -p tcp | Select-String -SimpleMatch 'TIME_WAIT' | Measure-Object).Count
+          Write-Output "TCP connections in TIME_WAIT: $timeWait"
+          if ($range -match 'Number of Ports\s*:\s*(\d+)') {
+            $ports = [int]$Matches[1]
+            if ($ports -lt 55535) {
+              Write-Output "::warning title=soak port budget::The dynamic TCP port range has $ports ports, not 55535."
+            }
+          } else {
+            Write-Output "::warning title=soak port budget::Could not read the dynamic TCP port range from netsh."
+          }
+          exit 0
+
+      - name: Run soak harness under ReleaseSafe (64 workers, 20 seconds)
+        shell: bash
+        run: zig build -Doptimize=ReleaseSafe soak -- --seconds 20 --workers 64 --rss-gate report
 
   fuzz:
     name: Coverage-guided fuzzing with per-target evidence
