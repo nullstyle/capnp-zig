@@ -7,6 +7,7 @@ const unix_socket_mod = @import("../unix/socket.zig");
 const fd_io = @import("../unix/fd_io.zig");
 const fd_passing_mod = @import("../fd_passing.zig");
 const client_wiring = @import("./client_wiring.zig");
+const windows_accept = @import("./windows_accept.zig");
 const net = std.Io.net;
 
 /// Re-export of the platform-stable socket wrapper used by all public
@@ -41,8 +42,14 @@ pub const Runtime = struct {
 ///
 /// ## Cleanup
 ///
-/// Call `close()` to stop accepting. This closes the listening socket
-/// which also unblocks any thread blocked in `accept()`.
+/// Call `close()` to stop accepting. It closes the listening socket, and a
+/// thread blocked in `accept()` returns an error (see `close`).
+///
+/// ## Windows
+///
+/// On Windows, `accept` and `acceptFd` use the transport's own AFD accept
+/// instead of std's: std's (0.17.0) treats the cancelled wait that `close`
+/// causes as `unreachable`, which aborted the process. See `close`.
 ///
 /// ## AF_UNIX
 ///
@@ -77,6 +84,11 @@ pub const Listener = struct {
     /// gate (`awaitSocketLane`), as does a `WorkerPool` serving it. Internal
     /// state. Experimental.
     non_ip_socket: bool = false,
+    /// Windows only: how many threads are inside this listener's AFD
+    /// accept, from the `close_requested` check to the accept's return.
+    /// `close` closes the handle only once this is 0. Internal state.
+    /// Experimental.
+    accepts_in_flight: std.atomic.Value(u32) = .init(0),
 
     /// Bind and listen on the given address.
     pub fn init(
@@ -136,12 +148,16 @@ pub const Listener = struct {
     /// An AF_UNIX listener (from `rpc.transport.unix.listen`, or `initFd` on
     /// an AF_UNIX socket) also waits while the fd closer's `.socket` lane is
     /// full (see `awaitSocketLane`).
+    ///
+    /// A thread blocked here when another thread calls `close` returns an
+    /// error: `error.ListenerClosed` on Windows, and the OS's error for an
+    /// accept on a socket that is shut down or closed elsewhere (Linux:
+    /// `error.SocketNotListening`; macOS: `error.ConnectionAborted`).
     pub fn accept(self: *Listener) !*Connection {
         if (self.close_requested.load(.acquire)) return error.ListenerClosed;
         try self.awaitSocketCloses();
 
-        const stream = try self.server.accept(self.io);
-        const client_fd = stream.socket.handle;
+        const client_fd = try self.acceptSocket();
         const conn = blk: {
             errdefer closeFd(self.io, .{ .handle = client_fd });
             setTcpNoDelay(.{ .handle = client_fd });
@@ -161,14 +177,33 @@ pub const Listener = struct {
     /// disabled when it is an IP socket — the caller owns wiring it into a
     /// `Connection`. Used by `ServerSession`, which embeds the `Connection`
     /// by value rather than taking the heap `*Connection` `accept()`
-    /// produces.
+    /// produces. `close` wakes it as it wakes `accept`.
     pub fn acceptFd(self: *Listener) !SocketFd {
         if (self.close_requested.load(.acquire)) return error.ListenerClosed;
         try self.awaitSocketCloses();
-        const stream = try self.server.accept(self.io);
-        const client_fd = stream.socket.handle;
+        const client_fd = try self.acceptSocket();
         setTcpNoDelay(.{ .handle = client_fd });
         return .{ .handle = client_fd };
+    }
+
+    /// The accept of `accept` and `acceptFd`. The error set is spelled out
+    /// so that both keep the same error set on every target.
+    ///
+    /// On Windows it is the transport's own AFD accept
+    /// (`windows_accept.accept`), counted in `accepts_in_flight`. The count
+    /// goes up before the `close_requested` check, so either the check sees
+    /// `close` (and nothing is posted), or `close` sees the count and waits
+    /// for this accept to return before it closes the handle. Elsewhere it
+    /// is std's accept.
+    fn acceptSocket(self: *Listener) (net.Server.AcceptError || error{ListenerClosed})!net.Socket.Handle {
+        if (comptime builtin.target.os.tag == .windows) {
+            _ = self.accepts_in_flight.fetchAdd(1, .seq_cst);
+            defer _ = self.accepts_in_flight.fetchSub(1, .release);
+            if (self.close_requested.load(.seq_cst)) return error.ListenerClosed;
+            return windows_accept.accept(self.io, self.server.socket.handle, self.server.options, &self.close_requested);
+        }
+        const stream = try self.server.accept(self.io);
+        return stream.socket.handle;
     }
 
     /// An AF_UNIX listener (`non_ip_socket`: one from
@@ -187,8 +222,27 @@ pub const Listener = struct {
         return self.io;
     }
 
-    /// Close the listening socket. Idempotent.
-    /// This also unblocks any thread blocked in `accept()`.
+    /// Close the listening socket. Idempotent: a second call returns at
+    /// once, even while the first one still runs.
+    ///
+    /// A thread blocked in `accept` or `acceptFd` (and so in
+    /// `ServerSession.accept`) returns an error:
+    /// - Windows: `error.ListenerClosed`. `close` cancels every pending
+    ///   accept wait on the handle and waits until each thread in the
+    ///   listener's accept has returned; only then does it close the handle
+    ///   (`windows_accept.stopWaits`). That wait needs no network. Through
+    ///   0.26.0, `close` closed the handle under the wait, and std's
+    ///   (0.17.0) accept treated the cancelled wait as `unreachable`, which
+    ///   aborted the process.
+    /// - Linux: `close` shuts the socket down first, so the accept fails
+    ///   with `error.SocketNotListening`.
+    /// - macOS: the shutdown fails on a listening TCP socket (ENOTCONN), and
+    ///   the close of the fd wakes the accept with `error.ConnectionAborted`.
+    ///
+    /// On Linux and macOS one race remains: a thread that read
+    /// `close_requested` just before `close` set it can call accept(2) after
+    /// the fd is closed, or after the fd number is reused. Windows has no
+    /// such race.
     ///
     /// A listener from `rpc.transport.unix.listen` first removes its socket
     /// file (only while the path still names that file) and releases its
@@ -204,21 +258,24 @@ pub const Listener = struct {
     /// closed before `close` returns, so a thread parked in `accept` wakes at
     /// once, and the lock is released without waiting for that final close.
     pub fn close(self: *Listener) void {
-        if (self.close_requested.swap(true, .acq_rel)) return;
+        // seq_cst: `acceptSocket` counts itself, then reads this flag; this
+        // sets the flag, then reads the count. One of the two sees the other.
+        if (self.close_requested.swap(true, .seq_cst)) return;
         if (self.unix_socket) |*file| file.unlinkIfOurs();
         defer if (self.unix_socket) |*file| file.releaseLock();
-        // POSIX: a bare close does not reliably wake a thread parked in
-        // accept() on this fd (the documented contract of this method), while
-        // shutdown does.
-        //
-        // WINDOWS: shutdown() on a LISTENING socket is invalid and fails with
-        // INVALID_PARAMETER. std routes that through `unexpectedStatus`, whose
-        // debug-mode diagnostic makes the test binary exit non-zero even
-        // though the `catch {}` below swallows the error value — a real CI
-        // failure with zero failing tests. `closesocket` already unblocks a
-        // pending accept there, so the shutdown is not merely harmful, it is
-        // unnecessary.
-        if (comptime builtin.target.os.tag != .windows) {
+        if (comptime builtin.target.os.tag == .windows) {
+            // WINDOWS: no shutdown. On a LISTENING socket it is invalid and
+            // fails with INVALID_PARAMETER, and std routes that through
+            // `unexpectedStatus`, whose debug-mode diagnostic makes the test
+            // binary exit non-zero even though the error is swallowed. And
+            // no close under a pending accept wait: cancel the waits, and
+            // let every accept return `error.ListenerClosed` first.
+            windows_accept.stopWaits(self.io, self.server.socket.handle, &self.accepts_in_flight);
+        } else {
+            // POSIX: a bare close does not reliably wake a thread parked in
+            // accept() on this fd, while shutdown does on Linux. macOS fails
+            // the shutdown of a listening TCP socket (ENOTCONN); the close
+            // below wakes the accept there.
             shutdownFd(self.io, .{ .handle = self.server.socket.handle });
         }
         closeListenSocket(self.io, .{ .handle = self.server.socket.handle }, if (self.unix_socket) |*file| file else null);
@@ -507,6 +564,13 @@ pub fn ipAddressToSockaddr(addr: net.IpAddress) struct { addr: SockAddrStorage, 
             };
         },
     }
+}
+
+test {
+    // Collect windows_accept.zig's tests on every host: its pure status
+    // mapping runs everywhere, and nothing else analyzes the file off
+    // Windows.
+    _ = windows_accept;
 }
 
 test "runtime init and deinit" {

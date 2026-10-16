@@ -47,6 +47,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stable `Listener.close` on Windows aborted the process when a thread
+  waited in accept.** `close` closed the listening handle under the wait,
+  and std 0.17.0's accept treats that cancelled wait as `unreachable`: a
+  panic in Debug and ReleaseSafe, undefined behavior in the other modes.
+  Windows CI run 38918354154 showed it for `Listener.accept`,
+  `Listener.acceptFd` and `ServerSession.accept`. On Windows the TCP
+  listener now accepts through its own AFD accept, as the transport already
+  reads through its own AFD receive. `close` cancels each pending accept
+  wait, waits until every thread in the listener's accept has returned
+  `error.ListenerClosed`, and only then closes the handle. So on Windows
+  `close` now waits for those accepts to return. It needs no network to do
+  so. A wait that Windows cancels while the listener is open is posted
+  again. Linux and macOS keep their behavior. The new Experimental field
+  `Listener.accepts_in_flight` is internal state. New Windows-only tests in
+  `tests/rpc/transport/tcp/rpc_listener_close_test.zig` cancel a wait while
+  the listener is open, close under a parked wait, and close while an
+  accept is between its `close_requested` check and its wait.
+- **`WorkerPool` shutdown on Windows no longer dials its own listener.** Its
+  workers use the same accept, and shutdown cancels their waits. Before,
+  shutdown woke each parked worker with a loopback dial and retried a failed
+  dial without a bound, so a host with no free ephemeral port held shutdown
+  up. A new test makes every dial fail during shutdown and expects it to end
+  within 5 s on Windows and Linux. On macOS, `shutdown(2)` fails on a
+  listening TCP socket, so a dial is still the only way to wake a parked
+  accept, and that wait still has no bound while dials fail.
 - **QUIC (Experimental): a `WarmRedialClient.requestStop` during generation
   setup reported no generation and cause `.unknown`.** A generation makes its
   connection reachable by `requestStop` and then enqueues its Bootstrap and

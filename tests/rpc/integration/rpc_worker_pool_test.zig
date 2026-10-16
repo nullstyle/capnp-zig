@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
 
 const WorkerPool = capnpc.rpc.integration.worker_pool.WorkerPool;
@@ -402,6 +403,11 @@ test "WorkerPool: maximum drain duration is valid when no connections are active
 }
 
 test "WorkerPool: failed wake attempts never close a listener under a pending accept" {
+    // Windows pools never call `netAccept` and never dial to wake an
+    // accept: their workers use the transport's own AFD accept, whose wait
+    // shutdown cancels. This models a dial-woken accept, which only Linux
+    // and Darwin `init` pools have.
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const DelayedIo = struct {
         const State = struct {
             pending: std.atomic.Value(bool) = .init(false),
@@ -462,6 +468,11 @@ test "WorkerPool: failed wake attempts never close a listener under a pending ac
 }
 
 test "WorkerPool: retains a wake connection until its pending accept returns" {
+    // Windows pools never call `netAccept` and never dial to wake an
+    // accept: their workers use the transport's own AFD accept, whose wait
+    // shutdown cancels. This models a dial-woken accept, which only Linux
+    // and Darwin `init` pools have.
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const DelayedIo = struct {
         const State = struct {
             pending: std.atomic.Value(bool) = .init(false),
@@ -517,53 +528,202 @@ test "WorkerPool: retains a wake connection until its pending accept returns" {
     try std.testing.expect(!state.closed_wake_early.load(.acquire));
 }
 
-test "WorkerPool: graceful shutdown joins 32 pending real TCP accepts before listener close" {
-    const ObservedIo = struct {
-        const State = struct {
-            entered: std.atomic.Value(u32) = .init(0),
-            returned: std.atomic.Value(u32) = .init(0),
-            closed_while_pending: std.atomic.Value(bool) = .init(false),
-            listen_handle: ?net.Socket.Handle = null,
-        };
-        var state: *State = undefined;
+/// An Io that observes a pool's real accepts and its wake dials. It counts
+/// the accepts entered and returned: std's `netAccept` on Linux and macOS,
+/// and on Windows the listen waits of the transport's own accept
+/// (`IOCTL_AFD_WAIT_FOR_LISTEN` through `Io.operate`). It records whether
+/// the listen socket was closed while one was pending. It counts wake dials
+/// (`netConnectIp`), and fails them with `error.ConnectionRefused` until a
+/// deadline (the forced-failure knob for the pool's nudges). Everything
+/// else is `std.testing.io`'s.
+const PoolAccepts = struct {
+    const State = struct {
+        entered: std.atomic.Value(u32) = .init(0),
+        returned: std.atomic.Value(u32) = .init(0),
+        closed_while_pending: std.atomic.Value(bool) = .init(false),
+        listen_handle: ?net.Socket.Handle = null,
+        dials: std.atomic.Value(u32) = .init(0),
+        /// Awake-clock ns at `wrap`: the base of `fail_dials_until_ms`.
+        /// Written before any pool thread starts, and only read after.
+        base_ns: i64 = 0,
+        /// Dials fail until this many ms after `base_ns`. 0: none fail. A
+        /// u32 and not an i64 deadline: 32-bit targets (x86-linux-gnu in
+        /// CI) have no 64-bit atomics.
+        fail_dials_until_ms: std.atomic.Value(u32) = .init(0),
 
-        fn accept(userdata: ?*anyopaque, listener: net.Socket.Handle, options: net.Server.AcceptOptions) net.Server.AcceptError!net.Socket {
-            _ = state.entered.fetchAdd(1, .acq_rel);
-            defer _ = state.returned.fetchAdd(1, .release);
-            return std.testing.io.vtable.netAccept(userdata, listener, options);
+        fn pending(self: *const State) bool {
+            return self.returned.load(.acquire) != self.entered.load(.acquire);
         }
-        fn close(userdata: ?*anyopaque, sockets: []const net.Socket) void {
-            for (sockets) |socket| {
-                if (state.listen_handle) |listener| {
-                    if (socket.handle == listener and state.returned.load(.acquire) != state.entered.load(.acquire)) {
-                        state.closed_while_pending.store(true, .release);
-                    }
-                }
-            }
-            std.testing.io.vtable.netClose(userdata, sockets);
+
+        fn msSinceBase(self: *const State) u32 {
+            const ms = @divTrunc(nowNs(std.testing.io) - self.base_ns, std.time.ns_per_ms);
+            return @intCast(std.math.clamp(ms, 0, std.math.maxInt(u32)));
+        }
+
+        /// Make every dial fail for the next `ms` ms.
+        fn failDialsFor(self: *State, ms: u32) void {
+            self.fail_dials_until_ms.store(self.msSinceBase() +| ms, .release);
+        }
+
+        fn stopFailingDials(self: *State) void {
+            self.fail_dials_until_ms.store(0, .release);
         }
     };
-    var state = ObservedIo.State{};
-    ObservedIo.state = &state;
-    var vtable = std.testing.io.vtable.*;
-    vtable.netAccept = ObservedIo.accept;
-    vtable.netClose = ObservedIo.close;
-    const io = std.Io{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    var state: *State = undefined;
+    var vtable: std.Io.VTable = undefined;
+
+    fn wrap(observed: *State) std.Io {
+        observed.base_ns = nowNs(std.testing.io);
+        state = observed;
+        vtable = std.testing.io.vtable.*;
+        vtable.netAccept = accept;
+        vtable.operate = operate;
+        vtable.netClose = close;
+        vtable.netConnectIp = connect;
+        return .{ .userdata = std.testing.io.userdata, .vtable = &vtable };
+    }
+
+    fn accept(userdata: ?*anyopaque, listener: net.Socket.Handle, options: net.Server.AcceptOptions) net.Server.AcceptError!net.Socket {
+        _ = state.entered.fetchAdd(1, .acq_rel);
+        defer _ = state.returned.fetchAdd(1, .release);
+        return std.testing.io.vtable.netAccept(userdata, listener, options);
+    }
+
+    fn operate(userdata: ?*anyopaque, operation: std.Io.Operation) std.Io.Cancelable!std.Io.Operation.Result {
+        const real = std.testing.io.vtable.operate;
+        if (comptime builtin.os.tag != .windows) return real(userdata, operation);
+        const wait_code: u32 = @bitCast(std.os.windows.IOCTL.AFD.WAIT_FOR_LISTEN);
+        const is_listen_wait = switch (operation) {
+            .device_io_control => |o| @as(u32, @bitCast(o.code)) == wait_code,
+            else => false,
+        };
+        if (!is_listen_wait) return real(userdata, operation);
+        _ = state.entered.fetchAdd(1, .acq_rel);
+        defer _ = state.returned.fetchAdd(1, .release);
+        return real(userdata, operation);
+    }
+
+    fn close(userdata: ?*anyopaque, sockets: []const net.Socket) void {
+        for (sockets) |socket| {
+            if (state.listen_handle) |listener| {
+                if (socket.handle == listener and state.pending()) state.closed_while_pending.store(true, .release);
+            }
+        }
+        std.testing.io.vtable.netClose(userdata, sockets);
+    }
+
+    fn connect(userdata: ?*anyopaque, address: *const net.IpAddress, options: net.IpAddress.ConnectOptions) net.IpAddress.ConnectError!net.Socket {
+        _ = state.dials.fetchAdd(1, .acq_rel);
+        if (state.msSinceBase() < state.fail_dials_until_ms.load(.acquire)) return error.ConnectionRefused;
+        return std.testing.io.vtable.netConnectIp(userdata, address, options);
+    }
+};
+
+/// Wait up to 5 s for `count` accepts to be pending in the pool.
+fn waitPendingAccepts(state: *const PoolAccepts.State, count: u32) bool {
+    const deadline = nowNs(std.testing.io) + 5 * std.time.ns_per_s;
+    while (state.entered.load(.acquire) < count) {
+        if (nowNs(std.testing.io) >= deadline) return false;
+        sleepMs(std.testing.io, 1);
+    }
+    return true;
+}
+
+test "WorkerPool: graceful shutdown joins 32 pending real TCP accepts before listener close" {
+    var state = PoolAccepts.State{};
+    const io = PoolAccepts.wrap(&state);
     var counter = AcceptCounter{};
     var pool = try WorkerPool.init(std.testing.allocator, io, .{ .ip4 = .loopback(0) }, &counter, AcceptCounter.onAccept, .{ .concurrency = 32 });
     defer pool.deinit();
     state.listen_handle = pool.server.socket.handle;
     const pool_thread = try spawnPoolThread(&pool);
-    errdefer {
+    var pool_joined = false;
+    errdefer if (!pool_joined) {
         pool.shutdown();
         pool_thread.join();
-    }
-    const deadline = nowNs(std.testing.io) + 5 * std.time.ns_per_s;
-    while (state.entered.load(.acquire) != 32 and nowNs(std.testing.io) < deadline) sleepMs(std.testing.io, 1);
-    try std.testing.expectEqual(@as(u32, 32), state.entered.load(.acquire));
+    };
+    try std.testing.expect(waitPendingAccepts(&state, 32));
     pool.shutdownGraceful(100);
     pool_thread.join();
-    try std.testing.expectEqual(@as(u32, 32), state.returned.load(.acquire));
+    pool_joined = true;
+    // Every accept returned before the close: one per worker (on Windows a
+    // wait that Windows cancels on its own is posted again, and counts again).
+    try std.testing.expect(state.entered.load(.acquire) >= 32);
+    try std.testing.expectEqual(state.entered.load(.acquire), state.returned.load(.acquire));
+    try std.testing.expect(!state.closed_while_pending.load(.acquire));
+    try std.testing.expectEqual(@as(u32, 0), counter.count.load(.acquire));
+}
+
+test "WorkerPool: wake dials that fail for 500 ms never close the listener under a pending accept" {
+    var state = PoolAccepts.State{};
+    const io = PoolAccepts.wrap(&state);
+    var counter = AcceptCounter{};
+    var pool = try WorkerPool.init(std.testing.allocator, io, .{ .ip4 = .loopback(0) }, &counter, AcceptCounter.onAccept, .{ .concurrency = 4 });
+    defer pool.deinit();
+    state.listen_handle = pool.server.socket.handle;
+    const pool_thread = try spawnPoolThread(&pool);
+    var pool_joined = false;
+    errdefer if (!pool_joined) {
+        state.stopFailingDials();
+        pool.shutdown();
+        pool_thread.join();
+    };
+    try std.testing.expect(waitPendingAccepts(&state, 4));
+
+    const start = nowNs(std.testing.io);
+    state.failDialsFor(500);
+    pool.shutdown();
+    pool_thread.join();
+    pool_joined = true;
+    const elapsed = nowNs(std.testing.io) - start;
+
+    try std.testing.expectEqual(state.entered.load(.acquire), state.returned.load(.acquire));
+    try std.testing.expect(!state.closed_while_pending.load(.acquire));
+    try std.testing.expectEqual(@as(u32, 0), counter.count.load(.acquire));
+    switch (comptime builtin.os.tag) {
+        // No dial: shutdown cancels the waits.
+        .windows => try std.testing.expectEqual(@as(u32, 0), state.dials.load(.acquire)),
+        // shutdown(2) fails on a listening TCP socket, so only a dial wakes
+        // a parked accept: shutdown waited out the failures, retrying.
+        .macos => {
+            try std.testing.expect(elapsed >= 450 * std.time.ns_per_ms);
+            try std.testing.expect(state.dials.load(.acquire) > 4);
+        },
+        else => {},
+    }
+}
+
+test "WorkerPool: shutdown ends within 5 s while every wake dial fails" {
+    // Linux: shutdown(2) wakes the parked accepts. Windows: shutdown cancels
+    // their waits. macOS has neither, and a parked accept waits for a dial
+    // there (see `WorkerPool.stopAccepting`).
+    if (comptime builtin.os.tag != .linux and builtin.os.tag != .windows) return error.SkipZigTest;
+    var state = PoolAccepts.State{};
+    const io = PoolAccepts.wrap(&state);
+    var counter = AcceptCounter{};
+    var pool = try WorkerPool.init(std.testing.allocator, io, .{ .ip4 = .loopback(0) }, &counter, AcceptCounter.onAccept, .{ .concurrency = 4 });
+    defer pool.deinit();
+    state.listen_handle = pool.server.socket.handle;
+    const pool_thread = try spawnPoolThread(&pool);
+    var pool_joined = false;
+    errdefer if (!pool_joined) {
+        state.stopFailingDials();
+        pool.shutdown();
+        pool_thread.join();
+    };
+    try std.testing.expect(waitPendingAccepts(&state, 4));
+
+    const start = nowNs(std.testing.io);
+    // Dials fail for 10 s: past the 5 s bound, so a shutdown that needs a
+    // dial fails this test on time instead of hanging the suite.
+    state.failDialsFor(10_000);
+    pool.shutdown();
+    pool_thread.join();
+    pool_joined = true;
+    const elapsed = nowNs(std.testing.io) - start;
+
+    try std.testing.expect(elapsed < 5 * std.time.ns_per_s);
+    try std.testing.expectEqual(state.entered.load(.acquire), state.returned.load(.acquire));
     try std.testing.expect(!state.closed_while_pending.load(.acquire));
     try std.testing.expectEqual(@as(u32, 0), counter.count.load(.acquire));
 }

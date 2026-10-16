@@ -4323,6 +4323,7 @@ capnpc-zig.rpc.transport.tcp.Connection.transport: field rpc.transport.tcp.strea
 capnpc-zig.rpc.transport.tcp.Connection.wake_fds: field ?[2]i32 = null
 capnpc-zig.rpc.transport.tcp.Connection.wake_mu: field rpc.transport.wake_lock.Lock = <default>
 capnpc-zig.rpc.transport.tcp.Connection.win_read: field void = {}
+capnpc-zig.rpc.transport.tcp.Listener.accepts_in_flight: field atomic.Value(u32) = <default>
 capnpc-zig.rpc.transport.tcp.Listener.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.Listener.close_requested: field atomic.Value(bool) = <default>
 capnpc-zig.rpc.transport.tcp.Listener.conn_options: field rpc.transport.tcp.connection.Connection.Options
@@ -4431,6 +4432,7 @@ capnpc-zig.rpc.transport.tcp.createLoopbackSocketPair: fn (Io) error{AccessDenie
 capnpc-zig.rpc.transport.tcp.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_*
 capnpc-zig.rpc.transport.tcp.runtime.Listener.accept: fn (*rpc.transport.tcp.runtime.Listener) error{BlockedByFirewall,Canceled,ConnectionAborted,ListenerClosed,NetworkDown,OutOfMemory,ProcessFdQuotaExceeded,ProtocolFailure,SocketNotListening,SystemFdQuotaExceeded,SystemResources,Unexpected,WouldBlock}!*rpc.transport.tcp.connection.Connection
 capnpc-zig.rpc.transport.tcp.runtime.Listener.acceptFd: fn (*rpc.transport.tcp.runtime.Listener) error{BlockedByFirewall,Canceled,ConnectionAborted,ListenerClosed,NetworkDown,ProcessFdQuotaExceeded,ProtocolFailure,SocketNotListening,SystemFdQuotaExceeded,SystemResources,Unexpected,WouldBlock}!rpc.transport.tcp.stream_transport.SocketFd
+capnpc-zig.rpc.transport.tcp.runtime.Listener.accepts_in_flight: field atomic.Value(u32) = <default>
 capnpc-zig.rpc.transport.tcp.runtime.Listener.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.runtime.Listener.close_requested: field atomic.Value(bool) = <default>
 capnpc-zig.rpc.transport.tcp.runtime.Listener.conn_options: field rpc.transport.tcp.connection.Connection.Options

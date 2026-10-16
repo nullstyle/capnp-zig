@@ -5,6 +5,8 @@ const Connection = @import("../transport/tcp/connection.zig").Connection;
 const Listener = @import("../transport/tcp/runtime.zig").Listener;
 const runtime_helpers = @import("../transport/tcp/runtime.zig");
 const Runtime = @import("../transport/tcp/runtime.zig").Runtime;
+const windows_accept = @import("../transport/tcp/windows_accept.zig");
+const fd_passing_mod = @import("../transport/fd_passing.zig");
 const events = @import("../events.zig");
 const wake_lock = @import("../transport/wake_lock.zig");
 const client_wiring = @import("../transport/tcp/client_wiring.zig");
@@ -45,11 +47,12 @@ pub const WorkerPool = struct {
     run_active: std.atomic.Value(bool),
     should_stop: std.atomic.Value(bool),
     fd_closed: std.atomic.Value(bool),
-    /// Number of workers currently parked inside `listener.accept()` (for
-    /// `initListener`: waiting in `poll` on the listener and the wake door,
-    /// or in the non-blocking `accept` that follows). The teardown path
-    /// must drive this to zero before closing the listen socket — see
-    /// `stopAccepting` for why that order is load-bearing on Windows.
+    /// Number of workers currently parked inside their accept:
+    /// `listener.accept()` for `init` (on Windows, the transport's own AFD
+    /// accept); for `initListener`, waiting in `poll` on the listener and
+    /// the wake door, or in the non-blocking `accept` that follows. The
+    /// teardown path must drive this to zero before closing the listen
+    /// socket; see `stopAccepting`.
     acceptors_parked: std.atomic.Value(u32),
     /// The listener `initListener` took; null for `init`. The pool owns it
     /// and closes it with `Listener.close` once no worker waits on it, which
@@ -368,25 +371,33 @@ pub const WorkerPool = struct {
     /// Stop accepting: signal, pop every parked accept, and close the
     /// listen socket only once no worker is parked on it.
     ///
-    /// THE ORDER IS LOAD-BEARING ON WINDOWS. Closing the handle while a
-    /// worker is parked in the AFD listen wait completes that wait with
-    /// STATUS_CANCELLED, which std's netAcceptWindows treats as
-    /// `unreachable` — a process abort (first seen as the Nightly
-    /// 64-worker soak teardown panic, run 33029339794; the old
-    /// nudge-once-then-close order also gave up all remaining nudges on
-    /// the first failed dial). So: wake parked accepts first (POSIX:
-    /// shutdown() on the fd; everywhere: self-connect nudges, retried),
-    /// wait for the parked count to hit zero, then close. A timeout cannot
-    /// make closing under a pending accept safe. Persistent loopback failures
-    /// can delay shutdown; transient failures are retried without canceling
-    /// the kernel operation by closing its handle.
+    /// The order is the same on every target: wake the parked accepts, wait
+    /// for the parked count to reach zero, then close. How the accepts wake
+    /// differs:
     ///
-    /// `initListener` pools neither shut the socket down nor dial it. Their
-    /// workers wait in `poll` on the wake door too, so one byte written to
-    /// the door wakes them all. Neither of the others would do: `shutdown`
-    /// does not wake an AF_UNIX accept on macOS, and a dial to a socket file
-    /// that was removed or rebound never reaches this listener, so the wait
-    /// below would never end.
+    /// - Windows: the workers accept through the transport's own AFD accept
+    ///   (`windows_accept.accept`), with `should_stop` as its closing flag.
+    ///   This cancels every pending wait on the handle until the parked
+    ///   count is zero (`windows_accept.stopWaits`), and each cancelled wait
+    ///   returns `error.ListenerClosed`. It needs no dial, so a host out of
+    ///   ephemeral ports cannot hold shutdown up. std's (0.17.0) own accept
+    ///   treats a wait that the close of the handle cancels as
+    ///   `unreachable`, a process abort (the Nightly 64-worker soak teardown
+    ///   panic, run 33029339794), so the handle is never closed under a
+    ///   wait.
+    /// - Linux and Darwin, `init` pools: shutdown() on the fd, and
+    ///   self-connect nudges, retried until the parked count is zero. On
+    ///   Linux the shutdown alone wakes them. macOS fails shutdown() on a
+    ///   listening TCP socket, so there only a nudge wakes a parked accept:
+    ///   while every dial fails (for example, no free ephemeral port), this
+    ///   wait has no bound. A timeout cannot make closing under a pending
+    ///   accept safe.
+    /// - `initListener` pools neither shut the socket down nor dial it. Their
+    ///   workers wait in `poll` on the wake door too, so one byte written to
+    ///   the door wakes them all. Neither of the others would do: `shutdown`
+    ///   does not wake an AF_UNIX accept on macOS, and a dial to a socket
+    ///   file that was removed or rebound never reaches this listener, so
+    ///   the wait below would never end.
     fn stopAccepting(self: *WorkerPool) void {
         // Registering an accept and checking should_stop use this same lock.
         // After this transition the parked count can only decrease.
@@ -401,12 +412,14 @@ pub const WorkerPool = struct {
             park.signalDoor(door);
         } else if (comptime builtin.target.os.tag != .windows) {
             // POSIX: shutting the listener down pops threads parked in
-            // accept(). Windows AFD rejects shutdown on a listening socket
-            // (noisy INVALID_PARAMETER), so it relies on the nudges alone.
+            // accept() on Linux. Windows AFD rejects shutdown on a listening
+            // socket (noisy INVALID_PARAMETER); it cancels the waits below.
             self.io.vtable.netShutdown(self.io.userdata, self.server.socket.handle, .both) catch {};
         }
         self.active_mu.unlock(self.io);
-        while (self.acceptors_parked.load(.acquire) != 0) {
+        if (comptime builtin.target.os.tag == .windows) {
+            windows_accept.stopWaits(self.io, self.server.socket.handle, &self.acceptors_parked);
+        } else while (self.acceptors_parked.load(.acquire) != 0) {
             if (self.park_door == null) self.nudgeAcceptors();
             if (self.acceptors_parked.load(.acquire) != 0) sleepMs(self.io, drain_poll_interval_ms);
         }
@@ -582,13 +595,21 @@ pub const WorkerPool = struct {
     }
 
     /// One accepted connection: from `Listener.accept` for `init`, from the
-    /// wake-door wait for `initListener`.
+    /// wake-door wait for `initListener`. On Windows, from the transport's
+    /// own AFD accept with `should_stop` as its closing flag, so that
+    /// `stopAccepting` ends it by cancelling its wait (`error.ListenerClosed`).
+    /// `listener.accept()` would read the worker's own listener's
+    /// `close_requested`, which nothing sets, and post a cancelled wait again.
     fn acceptNext(pool: *WorkerPool, listener: *Listener) !*Connection {
         if (comptime park_door_supported) {
             // `initListener` sets both, together.
             if (pool.park_door) |door| {
                 if (pool.listener) |*owned| return pool.acceptParked(door, owned);
             }
+        }
+        if (comptime builtin.target.os.tag == .windows) {
+            const fd = try windows_accept.accept(pool.io, listener.server.socket.handle, listener.server.options, &pool.should_stop);
+            return pool.wrapAccepted(fd, listener.fd_passing);
         }
         return listener.accept();
     }
@@ -619,6 +640,12 @@ pub const WorkerPool = struct {
                 },
             }
         };
+        return pool.wrapAccepted(fd, owned.fd_passing);
+    }
+
+    /// Wrap an accepted socket exactly as `Listener.accept` does. Takes the
+    /// socket: on error it is closed.
+    fn wrapAccepted(pool: *WorkerPool, fd: net.Socket.Handle, fd_passing: fd_passing_mod.FdPassing) !*Connection {
         const conn_ptr = blk: {
             errdefer runtime_helpers.closeFd(pool.io, .{ .handle = fd });
             runtime_helpers.setTcpNoDelay(.{ .handle = fd });
@@ -631,7 +658,7 @@ pub const WorkerPool = struct {
         // Before anything reads, as `Listener.accept` and
         // `ServerSession.accept` do: fd passing starts at the stream's first
         // byte. The connection owns the socket now.
-        client_wiring.enableFdPassing(conn_ptr, owned.fd_passing) catch |err| {
+        client_wiring.enableFdPassing(conn_ptr, fd_passing) catch |err| {
             destroyConnection(pool.allocator, conn_ptr);
             return err;
         };
@@ -677,9 +704,10 @@ pub const WorkerPool = struct {
     }
 
     /// Wake one pending accept with a loopback connection, retaining the
-    /// connection until a worker has returned from accept.
-    /// Portable: unlike the POSIX shutdown(2)-on-listener trick, this
-    /// works on Windows AFD sockets too. Failed dials are retried by the caller.
+    /// connection until a worker has returned from accept. Failed dials are
+    /// retried by the caller. Linux and Darwin `init` pools only: on macOS
+    /// it is the only way to wake a parked TCP accept. Windows pools cancel
+    /// their accept waits instead (see `stopAccepting`).
     fn nudgeAcceptors(self: *WorkerPool) void {
         var addr = self.server.socket.address;
         switch (addr) {
