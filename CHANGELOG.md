@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   10-04 to 10-15 reported port exhaustion on it. The new job
   (`soak-windows-64w`) starts on a fresh runner and widens the dynamic TCP
   port range to 55,535 ports with `netsh`. Before the lane, it prints the
-  range and the TIME_WAIT count. If `netsh` fails, the job warns and runs
-  on the default range.
+  range, the excluded port ranges and the TIME_WAIT count. If `netsh`
+  fails, the job warns and runs on the default range.
 
 ### Fixed
 

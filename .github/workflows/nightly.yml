@@ -81,9 +81,10 @@ jobs:
   # wakes every parked accept with self-connect nudges before it closes the
   # listener, and it retries the nudges with no bound. On a port-exhausted
   # host no nudge can connect, so teardown waits until TIME_WAIT ports
-  # expire. 20 s at the Linux lane's rate (about 800 sessions/s) uses about
-  # 16k ports, well inside the widened range. Compare sessions per second
-  # with the Linux lane, not session counts.
+  # expire. The Linux 64-worker lane did 458 sessions/s on 10-13 and 818 on
+  # 10-11. 20 s at the higher rate uses about 16k ports, well inside the
+  # widened range. Compare sessions per second with the Linux lane of the
+  # same night, not session counts: its rate varies about 2x between nights.
   #
   # Dial failures are classified apart from mid-session transport errors
   # (which are bounded). The soak reports port exhaustion with a ::warning::
@@ -109,8 +110,11 @@ jobs:
 
       # Hosted Windows runners run as an administrator, which netsh needs.
       # If netsh fails anyway, warn and run the lane on the default range.
+      # continue-on-error is a backstop in case pwsh stops on the native
+      # command's exit code before the warning prints.
       - name: Widen the dynamic TCP port range
         shell: pwsh
+        continue-on-error: true
         run: |
           netsh int ipv4 set dynamicport tcp start=10000 num=55535
           if ($LASTEXITCODE -ne 0) {
@@ -118,11 +122,15 @@ jobs:
           }
           exit 0
 
-      - name: Show the port budget (dynamic range and TIME_WAIT count)
+      # Excluded port ranges (WinNAT and Hyper-V reservations) inside the
+      # dynamic range make fewer ports usable than the range size says.
+      - name: Show the port budget (dynamic range, exclusions, TIME_WAIT count)
         shell: pwsh
+        continue-on-error: true
         run: |
           $range = netsh int ipv4 show dynamicport tcp | Out-String
           Write-Output $range.Trim()
+          Write-Output (netsh int ipv4 show excludedportrange protocol=tcp | Out-String).Trim()
           $timeWait = (netstat -an -p tcp | Select-String -SimpleMatch 'TIME_WAIT' | Measure-Object).Count
           Write-Output "TCP connections in TIME_WAIT: $timeWait"
           if ($range -match 'Number of Ports\s*:\s*(\d+)') {
