@@ -1770,6 +1770,43 @@ test "Peer over QUIC cancels a call when its deadline expires" {
     try std.testing.expect(client_state.cancelled.load(.acquire));
 }
 
+// ---------------------------------------------------------------------------
+// The end of stream 0 ends the session ("Wire constants (frozen)" in
+// docs/quic-transport.md). A raw server ends its half of stream 0 while a
+// client question with a 5 s deadline waits. The question must fail with
+// Disconnected within 1 s, as it does at a TCP EOF. Through v0.26.0 the
+// owned client loop ignored the end, and the question ended CallTimedOut at
+// its deadline. Ablation: with the engines back on the old silent return
+// when a read of stream 0 finds nothing, every case fails with the waiting
+// question ended `timed_out` after about 5 s.
+// ---------------------------------------------------------------------------
+
+const stream_end = @import("stream_end_support.zig");
+
+test "QUIC baseline client: a RESET of stream 0 fails a waiting question with Disconnected at once" {
+    try stream_end.runClientControlEnd(.baseline, .reset);
+}
+
+test "QUIC native client: a RESET of stream 0 fails a waiting question with Disconnected at once" {
+    try stream_end.runClientControlEnd(.native, .reset);
+}
+
+test "QUIC baseline client: a FIN on stream 0 ends the session after the Return that came before it" {
+    try stream_end.runClientControlEnd(.baseline, .fin);
+}
+
+test "QUIC native client: a FIN on stream 0 ends the session after the Return that came before it" {
+    try stream_end.runClientControlEnd(.native, .fin);
+}
+
+test "QUIC baseline client: a partial frame at the FIN of stream 0 is a frame_error close" {
+    try stream_end.runClientControlEnd(.baseline, .fin_mid_frame);
+}
+
+test "QUIC native client: a partial frame at the FIN of stream 0 is a frame_error close" {
+    try stream_end.runClientControlEnd(.native, .fin_mid_frame);
+}
+
 // ============================================================================
 // Durable-caps rendezvous surfaces (QuicVatNetwork, docs/quic-durable-caps-plan.md)
 // ============================================================================

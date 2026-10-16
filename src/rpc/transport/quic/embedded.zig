@@ -96,7 +96,10 @@ pub const EmbeddedSessionOptions = struct {
 /// plus FIFO seat buffers), preserving the E-order contract of
 /// `rpc.capnp`. A RESET observed on the ordered control stream (stream 0),
 /// or a stop of stream 0 by the host, ends the whole session — sub-session
-/// failure semantics do not exist in the Cap'n Proto RPC protocol.
+/// failure semantics do not exist in the Cap'n Proto RPC protocol. A clean
+/// FIN on stream 0 ends the session too, once every whole frame before the
+/// FIN has reached the `Peer` ("Wire constants (frozen)" in
+/// docs/quic-transport.md).
 pub const EmbeddedSession = struct {
     const CallbackLifecycle = callback_lifecycle_mod.State(EmbeddedSession);
     const Adapters = connection_adapters.State(EmbeddedSession);
@@ -405,13 +408,18 @@ pub const EmbeddedSession = struct {
     /// same before and after the `tick` that reclaims the stream (quic-zig
     /// v0.28.0). See `EndKind` for the five kinds of end.
     ///
-    /// The ordered control stream (stream 0): a clean end keeps its entry.
-    /// A reset, a stop, or an end that quic-zig cannot classify is session
-    /// loss by the E-order contract: it drops the entry and closes the
-    /// session. The seat never stops stream 0, but a host can, and after the
-    /// stop quic-zig threw away the bytes that still arrived. The peer
-    /// answers a stop with RESET_STREAM, so the Driver often reports such
-    /// an end as `.reset`. The teardown pass drops the entry only.
+    /// The ordered control stream (stream 0): a clean end keeps its entry
+    /// and marks it as ended. The engine then reads the bytes in hand,
+    /// dispatches every whole frame, and ends the session with close code
+    /// `normal` and cause `peer_close`; a partial frame at the end is a
+    /// `frame_error` close. A reset, a stop, or an end that quic-zig cannot
+    /// classify is session loss by the E-order contract: it drops the entry
+    /// and closes the session at once, with close code `normal` and cause
+    /// `transport_error`. The seat never stops stream 0, but a host can,
+    /// and after the stop quic-zig threw away the bytes that still arrived.
+    /// The peer answers a stop with RESET_STREAM, so the Driver often
+    /// reports such an end as `.reset`. The teardown pass drops the entry
+    /// only.
     ///
     /// A native data stream keeps the bytes the Driver delivered and is
     /// marked as ended for a clean end, a reset and an unknown end. The end
@@ -429,6 +437,8 @@ pub const EmbeddedSession = struct {
         const kind = self.classifyEnd(stream_id, end);
         if (stream_id == quic_options.baseline_stream_id) {
             switch (kind) {
+                // The next `service` pass ends the session after the bytes
+                // in hand (`control_stream_end.zig`).
                 .fin => if (self.streams.getPtr(stream_id)) |buf| {
                     buf.ended = true;
                 },
@@ -546,11 +556,10 @@ pub const EmbeddedSession = struct {
     /// Close the session because stream 0 lost bytes. A connection that is
     /// already closing keeps the cause of that close: the end of stream 0
     /// can reach the seat after the close began, in the same service pass
-    /// as the peer's CONNECTION_CLOSE or in the Driver's teardown pass.
+    /// as the peer's CONNECTION_CLOSE or in the Driver's teardown pass. The
+    /// owned loops close the same way (`Termination.endSession`).
     fn requestControlStreamLoss(self: *EmbeddedSession) void {
-        self.captureCloseCause();
-        if (self.close_cause == .unknown) self.close_cause = .transport_error;
-        self.close();
+        Termination.endSession(self, .transport_error);
     }
 
     /// Forward from the embedder's `on_disconnect` (the Driver's will-close
@@ -699,21 +708,30 @@ pub const EmbeddedSession = struct {
         /// values quic-zig gives. After a RESET, `final_size` is the final
         /// size of the RESET and `reset` holds its error code. After a clean
         /// end, or an end that quic-zig cannot classify, `final_size` is the
-        /// bytes in hand.
+        /// bytes in hand. `read_offset` counts the bytes the engine has read
+        /// from the seat. The seat drops a stream that this side stopped, so
+        /// a view is never stopped.
         const StreamView = struct {
             recv: struct {
                 final_size: ?u64,
+                read_offset: u64,
                 reset: ?struct { error_code: u64 } = null,
             },
+            recv_stopped: bool = false,
         };
 
         pub fn stream(self: BufferedConn, stream_id: u64) ?StreamView {
             const buf = self.session.streams.getPtr(stream_id) orelse return null;
+            const read_offset = buf.total - unreadBytes(buf);
             if (buf.reset) |reset| return .{ .recv = .{
                 .final_size = reset.final_size,
+                .read_offset = read_offset,
                 .reset = .{ .error_code = reset.error_code },
             } };
-            return .{ .recv = .{ .final_size = if (buf.ended) buf.total else null } };
+            return .{ .recv = .{
+                .final_size = if (buf.ended) buf.total else null,
+                .read_offset = read_offset,
+            } };
         }
 
         /// For a stream that has no buffer in the seat (`stream` gives

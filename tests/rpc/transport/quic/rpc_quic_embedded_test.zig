@@ -392,6 +392,32 @@ test "embedded native seat keeps the peer's close cause when a stopped stream 0 
     try stream_end.runEmbeddedControlStoppedThenPeerClose(.tick_then_service);
 }
 
+test "embedded seat closes the session on a FIN of stream 0, after the frame before it" {
+    // A FIN on stream 0 ends the session ("Wire constants (frozen)" in
+    // docs/quic-transport.md): the seat dispatches the frame that came in
+    // the same STREAM frame, then closes with `normal` and `peer_close`.
+    // Through v0.26.0 the seat only marked stream 0 as ended, and every case
+    // timed out. Ablation: with the engines back on the old silent return
+    // when a read of stream 0 finds nothing, every case (run alone first)
+    // times out again.
+    try stream_end.runEmbeddedControlEnd(.baseline, .fin, .service_then_tick);
+    try stream_end.runEmbeddedControlEnd(.native, .fin, .service_then_tick);
+    try stream_end.runEmbeddedControlEnd(.baseline, .fin, .tick_then_service);
+    try stream_end.runEmbeddedControlEnd(.native, .fin, .tick_then_service);
+}
+
+test "embedded seat closes with frame_error on a FIN of stream 0 in the middle of a frame" {
+    try stream_end.runEmbeddedControlEnd(.baseline, .fin_mid_frame, .service_then_tick);
+    try stream_end.runEmbeddedControlEnd(.native, .fin_mid_frame, .service_then_tick);
+}
+
+test "embedded seat closes the session on a RESET of stream 0 in both modes, after the frame before it" {
+    // The seat already did this in native mode; this guards the baseline
+    // seat and the shared close path.
+    try stream_end.runEmbeddedControlEnd(.baseline, .reset, .service_then_tick);
+    try stream_end.runEmbeddedControlEnd(.native, .reset, .service_then_tick);
+}
+
 fn countEmbeddedClientMessage(conn: *quic.Connection, frame: []const u8) anyerror!void {
     const state: *loopback.QuicEndpointState = @ptrCast(@alignCast(conn.context().?));
     try state.recordMessage(frame);

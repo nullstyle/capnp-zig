@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **QUIC (Experimental): a clean FIN on stream 0 now ends the RPC session,
+  in both modes.** The receiver first dispatches every whole frame that came
+  before the FIN. Then it closes with close code `normal`, and the close
+  cause is `peer_close`. A partial frame at the FIN is a `frame_error`
+  close. In native mode, a `data_rpc` frame announced before the FIN still
+  completes from its data stream first. This applies to the owned loops
+  (`Connection` and `Server`, which `connect` and `serve` use) and to
+  `EmbeddedSession`. Before, a FIN on stream 0 had no meaning: a question
+  that waited on the session ran to its deadline and ended `CallTimedOut`.
+  Now it ends `Disconnected` at once, as at a TCP EOF. **A peer that
+  half-closes stream 0 (sends its FIN) and still waits for replies now loses
+  the session, and its replies never come.** capnp-zig never sends a FIN on
+  stream 0. The ALPN stays `capnp-rpc/1`. "Wire constants (frozen)" in
+  docs/quic-transport.md gives the rule and the reasons.
+
+### Fixed
+
+- **QUIC (Experimental): the owned loops ignored a RESET of stream 0.**
+  `Connection` and `Server` kept the session up after the peer reset stream
+  0, so a question that waited ran to its deadline and ended
+  `CallTimedOut`. They now close the session at once, as `EmbeddedSession`
+  already did: close code `normal`, close cause `transport_error`, and a
+  waiting question ends `Disconnected`. New tests reset stream 0 while a
+  client question with a 5 s deadline waits. Before the fix the question
+  ended `CallTimedOut` after about 5 s. Now it ends `Disconnected` in under
+  1 s, in both modes.
+
 ## [0.26.0] - 2026-10-10
 
 This is a Windows reliability release. On Windows, a socket read could fail

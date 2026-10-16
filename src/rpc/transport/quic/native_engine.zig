@@ -2,6 +2,7 @@ const std = @import("std");
 const quic_zig = @import("quic");
 
 const events = @import("../../events.zig");
+const control_stream_end = @import("control_stream_end.zig");
 const endpoint_mod = @import("endpoint.zig");
 const native_framer = @import("native_framer.zig");
 const native_outbound_queue = @import("native_outbound_queue.zig");
@@ -25,6 +26,7 @@ pub const Owner = struct {
     is_closing: *const fn (ptr: *anyopaque) bool,
     dispatch_rpc_frame: *const fn (ptr: *anyopaque, frame: []const u8) anyerror!void,
     terminate_frame_error: *const fn (ptr: *anyopaque, err: anyerror) void,
+    end_session: *const fn (ptr: *anyopaque, cause: events.DisconnectCause) void,
     deinit_requested: *const fn (ptr: *anyopaque) bool,
 };
 
@@ -191,7 +193,38 @@ pub const NativeEngine = struct {
                 return err;
             };
             if (owner.is_closing(owner.ptr) or owner.deinit_requested(owner.ptr)) return;
-            if (read == 0 and self.next_in_sequence == dispatched_before) return;
+            if (read == 0 and self.next_in_sequence == dispatched_before) {
+                self.settleControlEnd(owner, conn);
+                return;
+            }
+        }
+    }
+
+    /// The control stream gave no bytes and no frame was dispatched: act
+    /// on its end, if it ended. A cut stream (a RESET, a stop, an end
+    /// quic-zig cannot classify) ends the session at once. A clean FIN ends
+    /// it once every whole frame before the FIN has been dispatched,
+    /// including a `data_rpc` frame whose data stream is still to complete.
+    /// A partial preface or control frame at the FIN is a frame error.
+    fn settleControlEnd(
+        self: *NativeEngine,
+        owner: Owner,
+        conn: anytype,
+    ) void {
+        if (owner.is_closing(owner.ptr) or owner.deinit_requested(owner.ptr)) return;
+        switch (control_stream_end.classify(conn)) {
+            .open => {},
+            .cut => owner.end_session(owner.ptr, .transport_error),
+            .clean => {
+                if (self.pending_data != null) return;
+                const partial_preface = self.received_preface_len != 0 and
+                    self.received_preface_len < native_framer.preface.len;
+                if (partial_preface or self.inbound.buffer.items.len > self.inbound.consumed) {
+                    owner.terminate_frame_error(owner.ptr, error.InvalidFrame);
+                    return;
+                }
+                owner.end_session(owner.ptr, .peer_close);
+            },
         }
     }
 

@@ -2,6 +2,7 @@ const std = @import("std");
 const quic_zig = @import("quic");
 
 const events = @import("../../events.zig");
+const control_stream_end = @import("control_stream_end.zig");
 const endpoint_mod = @import("endpoint.zig");
 const early_dispatch_mod = @import("early_dispatch.zig");
 const length_framer = @import("length_framer.zig");
@@ -25,6 +26,7 @@ pub const Owner = struct {
     callbacks_ready: *const fn (ptr: *anyopaque) bool,
     dispatch_rpc_frame: *const fn (ptr: *anyopaque, frame: []const u8) anyerror!void,
     terminate_frame_error: *const fn (ptr: *anyopaque, err: anyerror) void,
+    end_session: *const fn (ptr: *anyopaque, cause: events.DisconnectCause) void,
     deinit_requested: *const fn (ptr: *anyopaque) bool,
 };
 
@@ -167,12 +169,40 @@ pub const BaselineEngine = struct {
     ) !void {
         while (!owner.is_closing(owner.ptr)) {
             const n = conn.streamRead(quic_options.baseline_stream_id, owner.stream_read_buf) catch |err| switch (err) {
-                error.StreamNotFound => return,
+                error.StreamNotFound => return self.settleControlEnd(owner, conn),
                 else => return err,
             };
-            if (n == 0) return;
+            if (n == 0) return self.settleControlEnd(owner, conn);
             try self.inbound.push(owner.stream_read_buf[0..n]);
             try self.dispatchAvailableFrames(owner);
+        }
+    }
+
+    /// Stream 0 gave no bytes: act on its end, if it ended. A cut stream
+    /// (a RESET, a stop, an end quic-zig cannot classify) ends the session
+    /// at once. A clean FIN ends it once every whole frame before the FIN
+    /// has been dispatched; bytes left in the framer then are a partial
+    /// frame, a frame error.
+    fn settleControlEnd(
+        self: *BaselineEngine,
+        owner: Owner,
+        conn: anytype,
+    ) void {
+        if (owner.is_closing(owner.ptr) or owner.deinit_requested(owner.ptr)) return;
+        switch (control_stream_end.classify(conn)) {
+            .open => {},
+            .cut => owner.end_session(owner.ptr, .transport_error),
+            .clean => {
+                // Whole frames still wait (no callbacks yet, or the replay
+                // hold): a later pass dispatches them, then ends.
+                if (self.hold_dispatch or self.held_frame != null) return;
+                if (!owner.callbacks_ready(owner.ptr)) return;
+                if (self.inbound.buffer.items.len > self.inbound.consumed) {
+                    owner.terminate_frame_error(owner.ptr, error.InvalidFrame);
+                    return;
+                }
+                owner.end_session(owner.ptr, .peer_close);
+            },
         }
     }
 
