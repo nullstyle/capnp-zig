@@ -760,6 +760,18 @@ pub const Peer = struct {
     /// `tail_call_finished_reason`. Bounded by
     /// `limits.max_send_results_to_yourself`; past it, the question gets the
     /// bare redirect at once.
+    ///
+    /// Only `sendReturnResults` and the `sendReturnException` family settle
+    /// a hold. Other Return paths for the call (`sendPrebuiltReturnFrame`,
+    /// which `HostPeer` uses for every answer; `sendReturnTag` from a
+    /// forwarded tail call; `sendReturnTakeFromOtherQuestion`) only clear
+    /// its `sendResultsTo` routing: the held question then waits for the
+    /// remote's Finish of the call, or for transport close.
+    ///
+    /// A question removed some other way (transport close, the shutdown
+    /// drain) can leave its `by_question` entry behind. That is harmless:
+    /// the entry goes at the call's answer or Finish, every settle checks
+    /// `questions` first, and question ids are not reused before a u32 wrap.
     held_tail_calls: state.HeldTailCalls = .{},
 
     // -- Persistence (sturdy refs) -------------------------------------------

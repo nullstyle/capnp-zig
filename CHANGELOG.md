@@ -31,6 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the session, and its replies never come.** capnp-zig never sends a FIN on
   stream 0. The ALPN stays `capnp-rpc/1`. "Wire constants (frozen)" in
   docs/quic-transport.md gives the rule and the reasons.
+- **RPC: a question whose tail call names an unanswered call now waits for
+  that call.** The question's Return callback runs when the named
+  `sendResultsTo = yourself` call is answered. Before, it ran at once with
+  the bare `takeFromOtherQuestion` tag. "Fixed" below has the details. The
+  hold is bounded by `max_send_results_to_yourself`. Past that bound, the
+  question gets the bare tag at once, as before. Only `sendReturnResults`
+  and the `sendReturnException` family settle a held question. If the named
+  call is answered another way, for example with `sendPrebuiltReturnFrame`
+  (`HostPeer` answers every call that way), the held question waits for the
+  remote's Finish of that call. It then ends with
+  `rpc.peer.tail_call_finished_reason`, or with a disconnect if the
+  transport closes first.
 
 ### Fixed
 
@@ -59,7 +71,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also refuses one (`error.UnexpectedForwardedTailReturn`). The Peer sent
   the exception on the wire. Now it sends `resultsSentElsewhere`, and the
   exception goes to the question whose `takeFromOtherQuestion` names the
-  call: at once when that Return is held, or when it arrives.
+  call: at once when that Return is held, or when it arrives. This applies
+  to `sendReturnException` and `sendReturnExceptionTyped`, and so to a
+  native host's `capnp_return_exception`. It also applies when the results
+  fail to build. The usual case is a generated DIRECT handler that returns
+  an error: its body runs inside the `sendReturnResults` build, and the
+  dispatch then answers with the error name. Before, `sendReturnResults`
+  dropped the `yourself` mark before the build, so the exception after a
+  failed build still went on the wire. A native host whose
+  `capnp_return_results` fails and that then calls `capnp_return_exception`
+  takes the same path. Tests in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
+  `src/native/conn_test.zig` cover a failed build in both orders.
 - **Native C ABI (Experimental): a tail-call Return no longer ends the
   question with "unsupported Return variant".** With the Peer changes above,
   the question gets one RETURN with the named call's results (when they

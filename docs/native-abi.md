@@ -52,7 +52,9 @@ RETURN for each Return variant that the remote can send:
 | `takeFromOtherQuestion`, named call's results carry capabilities | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
 | `takeFromOtherQuestion`, the remote finishes the named call before the host answers it | `EXCEPTION` (`failed`), reason `rpc.peer.tail_call_finished_reason` |
 | `takeFromOtherQuestion` that names no call with `sendResultsTo = yourself` | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
+| `takeFromOtherQuestion` past a bound (see below) | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
 | `resultsSentElsewhere` | `EXCEPTION` (`unimplemented`), reason `unsupported_return_reason` |
+| `awaitFromThirdParty` that reaches the shim | `EXCEPTION` (`unimplemented`), reason `unsupported_return_reason` |
 
 A tail call works like this. The remote sends an INBOUND_CALL whose results
 go back to the remote (`sendResultsTo = yourself`). Then it answers one of
@@ -67,7 +69,16 @@ things:
 
 The question has no RETURN until then. `capnp_cancel` still ends it with one
 RETURN CANCELED. The order does not matter: an answer that comes before the
-redirect is kept until the redirect arrives.
+redirect is kept until the redirect arrives. If `capnp_return_results`
+fails (its results do not build), the call is still unanswered; answer it
+with `capnp_return_exception`, and the question gets that exception.
+
+Two bounds apply. The core keeps at most
+`PeerLimits.max_loopback_result_stash` (4096) answers that wait for their
+redirect, and holds at most `PeerLimits.max_send_results_to_yourself` (4096)
+redirects that wait for their call. Past either bound, or when the core
+runs out of memory as it keeps one, the question ends with one RETURN
+EXCEPTION (`unimplemented`) and the reason `unfollowed_tail_call_reason`.
 
 Limit: the core cannot give a question tail-call results that carry
 capabilities. Such a question ends with one RETURN EXCEPTION (`unimplemented`)

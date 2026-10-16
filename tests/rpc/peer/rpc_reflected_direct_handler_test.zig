@@ -456,12 +456,37 @@ const SilentServer = struct {
 /// A client export whose handler answers later.
 const DeferredTarget = struct {
     answer_id: ?u32 = null,
+    /// Answer inside the call instead, as a generated DIRECT handler does,
+    /// with a handler that fails while it builds its results. The error
+    /// leaves `onCall`, and the Peer's dispatch turns it into
+    /// `sendReturnException(question_id, @errorName(err))`.
+    fail_inline: bool = false,
 
-    fn onCall(ctx_ptr: *anyopaque, _: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+    fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
         const self: *DeferredTarget = castCtx(*DeferredTarget, ctx_ptr);
         self.answer_id = call.question_id;
+        if (self.fail_inline) try peer.sendReturnResults(call.question_id, self, FailingBuild.build);
     }
 };
+
+/// A results build that fails: the body of a generated DIRECT handler runs
+/// inside `sendReturnResults`'s build, so a handler error surfaces here.
+const FailingBuild = struct {
+    fn build(_: *anyopaque, _: *protocol.ReturnBuilder) anyerror!void {
+        return error.TailHandlerFailed;
+    }
+};
+
+/// Answer `answer_id` as generated dispatch, or a native host whose
+/// `capnp_return_results` failed, does: results whose build fails, then the
+/// build error as an exception.
+fn answerWithFailingBuild(peer: *Peer, answer_id: u32) !void {
+    var unused: u8 = 0;
+    peer.sendReturnResults(answer_id, &unused, FailingBuild.build) catch |err| {
+        return peer.sendReturnException(answer_id, @errorName(err));
+    };
+    return error.TestExpectedBuildFailure;
+}
 
 const ResultN = struct {
     n: u32,
@@ -630,6 +655,84 @@ test "a tail call held on a call that fails gets that call's exception; the remo
     // exception Return for its tail call).
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+}
+
+test "a tail call held on a call whose results build fails gets the build error; the remote gets resultsSentElsewhere" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushTailCall(allocator);
+    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
+
+    try answerWithFailingBuild(&h.client_peer, tail_answer_id);
+
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings("TailHandlerFailed", h.caller.reason());
+    try std.testing.expect(!h.client_peer.questions.contains(h.question_id));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+}
+
+test "a DIRECT handler that fails a yourself call before its tail call arrives: the tail call gets the error" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // The handler fails inside the call, so the call is answered before the
+    // redirect arrives.
+    h.target.fail_inline = true;
+    try h.pushTailCall(allocator);
+
+    try std.testing.expectEqual(@as(?u32, tail_answer_id), h.target.answer_id);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings("TailHandlerFailed", h.caller.reason());
+    try std.testing.expect(!h.client_peer.questions.contains(h.question_id));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+}
+
+test "a held tail call whose call is answered by a prebuilt frame waits for the remote's Finish" {
+    // Only sendReturnResults and the sendReturnException family settle a
+    // hold. HostPeer answers every call with sendPrebuiltReturnFrame, which
+    // only clears the call's routing (a documented limit).
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushTailCall(allocator);
+    {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var ret = try mb.beginReturn(tail_answer_id, .results);
+        var payload = try ret.payloadTyped();
+        _ = try (try payload.initContent()).initStruct(1, 0);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        var decoded = try protocol.DecodedMessage.init(allocator, frame);
+        defer decoded.deinit();
+        try h.client_peer.sendPrebuiltReturnFrame(try decoded.asReturn(), frame);
+    }
+    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
+    try std.testing.expect(h.client_peer.questions.contains(h.question_id));
+
+    {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        try mb.buildFinish(tail_answer_id, false, false);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try h.client_peer.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings(peer_impl.tail_call_finished_reason, h.caller.reason());
+    try std.testing.expect(!h.client_peer.questions.contains(h.question_id));
 }
 
 test "a second Return for a question whose tail call is held is refused" {

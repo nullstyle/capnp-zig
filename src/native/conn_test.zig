@@ -1994,3 +1994,74 @@ test "tail call: transportClosed while the redirect is held ends the question on
     try drainAll(a, &ra);
     try testing.expectEqual(@as(usize, 1), ra.countReturns(t.q));
 }
+
+test "tail call: a capnp_return_results that fails, then capnp_return_exception, gives the question that exception" {
+    // A host whose capnp_return_results fails (its results do not build)
+    // answers with capnp_return_exception, in either order with the
+    // redirect. The remote still gets resultsSentElsewhere, and only once.
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    // Not a Cap'n Proto message: the results build fails.
+    const bad_results = [_]u8{ 1, 2, 3 };
+
+    // Held: the redirect arrives first.
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    try pushPendingTailCall(alloc, a, &ra, t, t.q, tail_answer);
+    try expectNoReturnYet(&ra, t.q);
+    if (a.returnResults(tail_answer, &bad_results, &.{})) |_| return error.TestResultsBuilt else |_| {}
+    try a.returnException(tail_answer, 0, "results did not build");
+    try drainAll(a, &ra);
+    const r = try expectOneReturn(&ra, t.q, .exception);
+    try testing.expectEqual(@as(u16, 0), r.exception_type);
+    try testing.expectEqualStrings("results did not build", r.reason);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, null));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, .resultsSentElsewhere));
+    try a.finish(t.q, false);
+
+    // Answered before the redirect arrives.
+    const q2 = try nextQuestion(alloc, a, &ra, t);
+    try pushFrame(alloc, a, yourselfCallFrame(alloc, tail_answer + 1, t.ea));
+    try drainAll(a, &ra);
+    if (a.returnResults(tail_answer + 1, &bad_results, &.{})) |_| return error.TestResultsBuilt else |_| {}
+    try a.returnException(tail_answer + 1, 0, "results did not build");
+    try drainAll(a, &ra);
+    try pushFrame(alloc, a, tailCallReturnFrame(alloc, q2, tail_answer + 1));
+    try drainAll(a, &ra);
+    const r2 = try expectOneReturn(&ra, q2, .exception);
+    try testing.expectEqualStrings("results did not build", r2.reason);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer + 1, null));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer + 1, .resultsSentElsewhere));
+    try a.finish(q2, false);
+}
+
+test "tail call: a redirect that names no yourself call gives one unfollowed exception RETURN" {
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    // No Call with this id was sent to A.
+    try pushFrame(alloc, a, tailCallReturnFrame(alloc, t.q, tail_answer));
+    try drainAll(a, &ra);
+    const r = try expectOneReturn(&ra, t.q, .exception);
+    try testing.expectEqual(@backingInt(protocol.ExceptionType.unimplemented), r.exception_type);
+    try testing.expectEqualStrings(conn_mod.unfollowed_tail_call_reason, r.reason);
+    try testing.expectEqual(@as(usize, 0), try countReturnFrames(&ra, tail_answer, null));
+    try a.finish(t.q, false);
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(t.q));
+}

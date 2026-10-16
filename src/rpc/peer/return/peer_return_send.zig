@@ -51,7 +51,11 @@ pub fn ReturnSend(comptime Peer: type) type {
                 return error.ThirdPartyResultsNotRedirected;
             }
 
-            if (self.send_results_to_yourself.remove(answer_id)) {
+            // The marker stays until the results are built: when `build` (a
+            // DIRECT handler's body) fails, the caller answers with
+            // sendReturnException, which must still see this call as a
+            // `yourself` call (see completeSelfLoopbackReturn).
+            if (self.send_results_to_yourself.contains(answer_id)) {
                 try completeSelfLoopbackReturn(self, answer_id, ctx, build);
                 return;
             }
@@ -205,6 +209,13 @@ pub fn ReturnSend(comptime Peer: type) type {
                 self.allocator.free(frame);
                 return err;
             };
+            // The results are built: the call is answered from here on. Until
+            // now a failure left the marker, so the caller's follow-up
+            // sendReturnException (generated dispatch turns a handler error
+            // into one; a native host calls capnp_return_exception) still
+            // answers `resultsSentElsewhere` and settles the tail call with
+            // the error. A Finish during `build` already removed the marker.
+            _ = self.send_results_to_yourself.remove(answer_id);
             if (has_result_caps) {
                 self.allocator.free(frame);
                 return settleSelfLoopbackAnswer(self, answer_id, null);
@@ -218,6 +229,11 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// as a protocol error. So the remote gets `resultsSentElsewhere`, and
         /// the exception goes where results would: to the question whose
         /// `takeFromOtherQuestion` names this call.
+        ///
+        /// Like a successful `yourself` answer, the exception is not recorded
+        /// in `failed_answers`: a call pipelined on this answer after its
+        /// Return does not find it. Calls already queued on it are still
+        /// failed (`sendReturnExceptionTyped` drains them).
         fn completeSelfLoopbackException(
             self: *Peer,
             answer_id: u32,
@@ -318,6 +334,11 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// `takeFromOtherQuestion`, as when nothing was held. The named call's
         /// terminal is already decided, so a delivery error is reported, not
         /// returned.
+        ///
+        /// The held redirect's own flags are not kept: the delivered frame
+        /// says `noFinishNeeded = false`, so the question still sends its
+        /// Finish. The C++ reference never sets that flag on a tail-call
+        /// Return.
         fn deliverHeldTailCall(self: *Peer, question_id: u32, source_answer_id: u32, frame: ?[]const u8) void {
             // Settled meanwhile (transport close, the shutdown drain bound):
             // nothing is owed.
