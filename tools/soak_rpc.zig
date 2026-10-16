@@ -3040,10 +3040,19 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
     const verdict = assessMemory(mem_samples.items, heap_window, cfg.mem_growth_pct, heap_abs_floor_bytes);
     std.debug.print("soak: memory curve (live bytes, {} samples @ {}ms):\n", .{ mem_samples.items.len, cfg.mem_sample_ms });
     printMemCurve(mem_samples.items);
-    std.debug.print(
-        "soak: memory steady-state head_mean={d:.0}B tail_mean={d:.0}B growth={d:.2}% peak={}B threshold={d:.1}%\n",
-        .{ verdict.head_mean, verdict.tail_mean, verdict.growth_pct, verdict.peak, cfg.mem_growth_pct },
-    );
+    // A gate that judged nothing has no means to show; print n/a, so the
+    // line does not read as a flat measurement.
+    if (verdict.outcome == .not_exercised) {
+        std.debug.print(
+            "soak: memory steady-state head_mean=n/a tail_mean=n/a growth=n/a peak={}B threshold={d:.1}%\n",
+            .{ verdict.peak, cfg.mem_growth_pct },
+        );
+    } else {
+        std.debug.print(
+            "soak: memory steady-state head_mean={d:.0}B tail_mean={d:.0}B growth={d:.2}% peak={}B threshold={d:.1}%\n",
+            .{ verdict.head_mean, verdict.tail_mean, verdict.growth_pct, verdict.peak, cfg.mem_growth_pct },
+        );
+    }
     printMemWindow("memory", verdict, mem_samples.items.len, heap_window);
 
     const rss_floor_bytes: f64 = @floatFromInt(cfg.rss_floor_mib * 1024 * 1024);
@@ -3053,10 +3062,17 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
     if (rss_available) {
         std.debug.print("soak: rss curve (resident bytes, {} samples @ {}ms):\n", .{ rss_samples.items.len, cfg.mem_sample_ms });
         printMemCurve(rss_samples.items);
-        std.debug.print(
-            "soak: rss steady-state head_mean={d:.0}B tail_mean={d:.0}B growth={d:.2}% delta={d:.0}B peak={}B threshold={d:.1}% floor={}MiB\n",
-            .{ rss_verdict.head_mean, rss_verdict.tail_mean, rss_verdict.growth_pct, rss_verdict.tail_mean - rss_verdict.head_mean, rss_verdict.peak, cfg.rss_growth_pct, cfg.rss_floor_mib },
-        );
+        if (rss_verdict.outcome == .not_exercised) {
+            std.debug.print(
+                "soak: rss steady-state head_mean=n/a tail_mean=n/a growth=n/a delta=n/a peak={}B threshold={d:.1}% floor={}MiB\n",
+                .{ rss_verdict.peak, cfg.rss_growth_pct, cfg.rss_floor_mib },
+            );
+        } else {
+            std.debug.print(
+                "soak: rss steady-state head_mean={d:.0}B tail_mean={d:.0}B growth={d:.2}% delta={d:.0}B peak={}B threshold={d:.1}% floor={}MiB\n",
+                .{ rss_verdict.head_mean, rss_verdict.tail_mean, rss_verdict.growth_pct, rss_verdict.tail_mean - rss_verdict.head_mean, rss_verdict.peak, cfg.rss_growth_pct, cfg.rss_floor_mib },
+            );
+        }
         printMemWindow("rss", rss_verdict, rss_samples.items.len, rss_window);
         std.debug.print("soak: rss verdict: {s} ({s}{s})\n", .{
             memOutcomeLabel(rss_verdict.outcome),
