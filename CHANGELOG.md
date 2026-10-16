@@ -115,9 +115,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was about to run. So a call parked on one of our promise exports now
   holds a `takeFromOtherQuestion` that names it, and the question gets the
   call's results after the promise resolves, or its exception when the
-  promise is rejected or the remote releases it first. Before, the question got the bare tag at once, and
-  the call's later answer stayed in the stash. It also applies when the
-  results fail to build. The usual case is a generated DIRECT handler that
+  promise is rejected or the remote releases it first. Before, the
+  question got the bare tag at once, and the call's later answer stayed in
+  the stash. It also applies when the results fail to build. The usual case is a generated DIRECT handler that
   returns an error: its body runs inside the `sendReturnResults` build, and
   the dispatch then answers with the error name. Before, `sendReturnResults`
   dropped the `yourself` mark before the build, so the exception after a
