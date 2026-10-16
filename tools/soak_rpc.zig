@@ -49,9 +49,11 @@
 //!         print the NTSTATUS. It counts as port exhaustion only with that
 //!         shape (`ambiguousIsPortExhaustion`): it began after at least 100
 //!         successful dials, and from then on at least half of all dial
-//!         attempts failed this way. Otherwise it gates with `other`. A host
-//!         that was already port-exhausted when the run began therefore
-//!         fails the run too: it exercised almost nothing.
+//!         attempts failed this way. A single failure after a range's worth
+//!         of successful dials (16k) is also exhaustion: the range's edge.
+//!         Otherwise it gates with `other`. A host that was already
+//!         port-exhausted when the run began therefore fails the run too:
+//!         it exercised almost nothing.
 //!     The TCP server's WorkerPool.run must also last until shutdown is
 //!     requested; returning earlier fails the run.
 //!   * MID-SESSION transport errors (anything that fails after the
@@ -93,6 +95,14 @@
 //! run); `--rss-gate enforce` makes it gate. The harness's own telemetry
 //! is bounded (fixed-size latency histograms, preallocated sample series),
 //! so neither instrument grows with the call count.
+//!
+//! Both trend checks judge only the exercised run (`MemWindow`): from the
+//! end of warmup to the workers' stop, or to the onset of host port
+//! exhaustion if that comes first. After the onset the workers mostly wait
+//! on failed dials, so the curve shows an idle host. If the onset comes
+//! before half of the run, or too few samples remain, the verdict is
+//! `not_exercised`: a ::warning::, not a failure. The leak check at exit
+//! (gpa.deinit) gates in every case.
 //!
 //! Usage: zig build soak -- [--seconds N] [--workers N] [--calls N]
 //!                          [--inflight K] [--mem-sample-ms N]
@@ -350,8 +360,13 @@ const exhaustion_edge_min_dials: usize = 16_000;
 /// half of all dial attempts from the onset on failed this way. A path
 /// broken from the start fails the first test; an intermittent defect, which
 /// fails a fraction of dials throughout, fails the second.
+///
+/// One exception: a single failure after a range's worth of successful
+/// dials is the range's edge. The host ran out of ports once, then TIME_WAIT
+/// ports expired and dials went through again.
 fn ambiguousIsPortExhaustion(shape: AmbiguousShape) bool {
     if (shape.failures == 0) return false;
+    if (shape.failures == 1 and shape.dials_ok_before >= exhaustion_edge_min_dials) return true;
     if (shape.dials_ok_before < exhaustion_min_dials_before) return false;
     return shape.failures >= shape.dials_ok_after;
 }
@@ -1963,6 +1978,24 @@ const QuicServerHarness = struct {
 
 // -- Memory sampler ----------------------------------------------------------
 
+/// A position in both sample series: the RSS series can be shorter, because
+/// the sampler skips a tick when it cannot read RSS.
+const SampleMark = struct { heap: usize, rss: usize };
+
+/// Where the judged memory window ends (see MemWindow), as the first sample
+/// the sampler took after each event. Written by the sampler thread, read
+/// after it joins.
+const MemMarks = struct {
+    /// The workers' stop (the end of the run window).
+    workers_stop: ?SampleMark = null,
+    /// The first port-exhaustion setup failure.
+    port_exhaustion: ?SampleMark = null,
+    /// The first ambiguous (Windows connect-stage Unexpected) failure. It
+    /// ends the window only if the run's ambiguous failures have the
+    /// exhaustion shape, which is known only after the run.
+    ambiguous: ?SampleMark = null,
+};
+
 const MemSampler = struct {
     counter: *const CountingAllocator,
     io: std.Io,
@@ -1976,9 +2009,19 @@ const MemSampler = struct {
     rss_samples: *std.ArrayList(u64),
     samples_allocator: std.mem.Allocator,
     rss_injector: ?*RssInjector,
+    workers_stop_ns: i64,
+    totals: *const Totals,
+    marks: *MemMarks,
 
     fn main(self: MemSampler) void {
-        while (!self.stop_flag.load(.acquire) and nowNs(self.io) < self.stop_at_ns) {
+        const none = std.math.maxInt(usize);
+        while (!self.stop_flag.load(.acquire)) {
+            const now = nowNs(self.io);
+            if (now >= self.stop_at_ns) break;
+            const here: SampleMark = .{ .heap = self.samples.items.len, .rss = self.rss_samples.items.len };
+            if (self.marks.workers_stop == null and now >= self.workers_stop_ns) self.marks.workers_stop = here;
+            if (self.marks.port_exhaustion == null and self.totals.first_port_exhaustion_ms.load(.monotonic) != none) self.marks.port_exhaustion = here;
+            if (self.marks.ambiguous == null and self.totals.ambiguous_onset_ms.load(.monotonic) != none) self.marks.ambiguous = here;
             if (self.rss_injector) |injector| injector.advance(self.io);
             const live = self.counter.liveBytes();
             self.samples.append(self.samples_allocator, live) catch {};
@@ -2111,8 +2154,9 @@ const RssInjector = struct {
 /// after an initial warmup ramp) into a head and tail quarter and compare
 /// their means. Growth beyond the configured percentage (with an absolute
 /// floor so small series do not trip on noise) fails the run. This is a
-/// slope check over the whole run, not a final leak snapshot. Shared by the
-/// heap gate and the RSS gate; only the thresholds differ.
+/// slope check over the exercised run (see MemWindow), not a final leak
+/// snapshot. Shared by the heap gate and the RSS gate; only the thresholds
+/// differ.
 const MemVerdict = struct {
     outcome: MemOutcome,
     /// Set only when `outcome` is `.not_exercised`.
@@ -2169,24 +2213,28 @@ fn meanOf(slice: []const u64) f64 {
 const heap_abs_floor_bytes: f64 = 256 * 1024;
 
 fn assessMemory(samples: []const u64, window: MemWindow, growth_pct: f64, abs_floor_bytes: f64) MemVerdict {
-    _ = window;
     var peak: u64 = 0;
     for (samples) |v| peak = @max(peak, v);
 
-    // Drop the first ~20% as warmup ramp (connection pools, arenas priming).
-    const warmup = samples.len / 5;
-    const steady = samples[@min(warmup, samples.len)..];
-    if (steady.len < min_judged_samples) {
-        // Not enough steady-state signal to judge a slope; treat as pass but
-        // report what we have. (Short runs still get the final leak check.)
+    // Judge [warmup, min(onset, stop)). The first ~20% of the run window is
+    // warmup ramp (connection pools, arenas priming).
+    const run_end = @min(window.stop, samples.len);
+    const warmup = run_end / 5;
+    const end = if (window.onset) |onset| @min(onset, run_end) else run_end;
+    const steady = samples[@min(warmup, end)..end];
+    const early_onset = if (window.onset) |onset| onset *| 2 < run_end else false;
+    if (early_onset or steady.len < min_judged_samples) {
+        // Not enough exercised run to judge a slope. Reported, not gated;
+        // the leak check at exit still runs.
         return .{
-            .outcome = .pass,
+            .outcome = .not_exercised,
+            .not_exercised = if (early_onset) .early_onset else .too_few_samples,
             .head_mean = meanOf(steady),
             .tail_mean = meanOf(steady),
             .growth_pct = 0,
             .peak = peak,
             .warmup_samples = warmup,
-            .judged_end = samples.len,
+            .judged_end = end,
         };
     }
 
@@ -2210,7 +2258,7 @@ fn assessMemory(samples: []const u64, window: MemWindow, growth_pct: f64, abs_fl
         .growth_pct = rel_pct,
         .peak = peak,
         .warmup_samples = warmup,
-        .judged_end = samples.len,
+        .judged_end = end,
     };
 }
 
@@ -2368,6 +2416,22 @@ test "assessMemory window: the onset at half of the run is judged; too few sampl
 fn warn(annotate: bool, comptime fmt: []const u8, args: anytype) void {
     std.debug.print("soak: WARN — " ++ fmt ++ "\n", args);
     if (annotate) std.debug.print("::warning title=soak::" ++ fmt ++ "\n", args);
+}
+
+/// Report a memory gate that judged nothing (MemOutcome.not_exercised).
+fn warnNotExercised(annotate: bool, gate: []const u8, verdict: MemVerdict, onset_ms: usize, seconds: u64) void {
+    switch (verdict.not_exercised orelse .too_few_samples) {
+        .early_onset => warn(
+            annotate,
+            "the {s} trend gate judged nothing (not_exercised): host port exhaustion began at +{d:.1}s, before half of the {}s run; the leak check at exit still gates",
+            .{ gate, @as(f64, @floatFromInt(onset_ms)) / 1000.0, seconds },
+        ),
+        .too_few_samples => warn(
+            annotate,
+            "the {s} trend gate judged nothing (not_exercised): {} samples in its window, fewer than {}; the leak check at exit still gates",
+            .{ gate, verdict.judged_end -| verdict.warmup_samples, min_judged_samples },
+        ),
+    }
 }
 
 fn sleepMs(io: std.Io, ms: u64) void {
@@ -2612,6 +2676,7 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
         null;
     defer if (rss_injector) |*injector| injector.deinit();
     var mem_stop = std.atomic.Value(bool).init(false);
+    var mem_marks: MemMarks = .{};
     const mem_thread = try std.Thread.spawn(.{}, MemSampler.main, .{MemSampler{
         .counter = &counter,
         .io = io,
@@ -2622,6 +2687,9 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
         .rss_samples = &rss_samples,
         .samples_allocator = telemetry_allocator,
         .rss_injector = if (rss_injector) |*injector| injector else null,
+        .workers_stop_ns = stop_at_ns,
+        .totals = &totals,
+        .marks = &mem_marks,
     }});
 
     // Healing clients (QUIC only; parseArgs enforced the pairing): stable
@@ -2843,17 +2911,46 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
     );
 
     // -- Memory-growth curves + flat assessments ---------------------------
-    const verdict = assessMemory(mem_samples.items, .{ .stop = mem_samples.items.len }, cfg.mem_growth_pct, heap_abs_floor_bytes);
+    // The judged window ends at the workers' stop, or earlier where host
+    // port exhaustion began (see MemWindow). An ambiguous onset counts only
+    // with the exhaustion shape. Without it, those failures gate as
+    // unexplained, and they must not also switch the memory gates off.
+    const dials_ok = totals.dials_ok.load(.acquire);
+    const dials_ok_at_onset = totals.dials_ok_at_ambiguous_onset.load(.acquire);
+    const ambiguous_shape: AmbiguousShape = .{
+        .failures = setup_counts[@backingInt(SetupClass.ambiguous)],
+        .dials_ok_before = dials_ok_at_onset,
+        .dials_ok_after = dials_ok -| dials_ok_at_onset,
+    };
+    const ambiguous_onset_ms = totals.ambiguous_onset_ms.load(.acquire);
+    var exhaustion_onset_ms = totals.first_port_exhaustion_ms.load(.acquire);
+    var onset_mark = mem_marks.port_exhaustion;
+    if (ambiguousIsPortExhaustion(ambiguous_shape)) {
+        exhaustion_onset_ms = @min(exhaustion_onset_ms, ambiguous_onset_ms);
+        if (mem_marks.ambiguous) |amb| {
+            onset_mark = if (onset_mark) |o| .{ .heap = @min(o.heap, amb.heap), .rss = @min(o.rss, amb.rss) } else amb;
+        }
+    }
+    const heap_window: MemWindow = .{
+        .stop = if (mem_marks.workers_stop) |m| m.heap else mem_samples.items.len,
+        .onset = if (onset_mark) |m| m.heap else null,
+    };
+    const rss_window: MemWindow = .{
+        .stop = if (mem_marks.workers_stop) |m| m.rss else rss_samples.items.len,
+        .onset = if (onset_mark) |m| m.rss else null,
+    };
+    const verdict = assessMemory(mem_samples.items, heap_window, cfg.mem_growth_pct, heap_abs_floor_bytes);
     std.debug.print("soak: memory curve (live bytes, {} samples @ {}ms):\n", .{ mem_samples.items.len, cfg.mem_sample_ms });
     printMemCurve(mem_samples.items);
     std.debug.print(
         "soak: memory steady-state head_mean={d:.0}B tail_mean={d:.0}B growth={d:.2}% peak={}B threshold={d:.1}%\n",
         .{ verdict.head_mean, verdict.tail_mean, verdict.growth_pct, verdict.peak, cfg.mem_growth_pct },
     );
+    printMemWindow("memory", verdict, mem_samples.items.len, heap_window);
 
     const rss_floor_bytes: f64 = @floatFromInt(cfg.rss_floor_mib * 1024 * 1024);
     const rss_available = rss_samples.items.len > 0;
-    const rss_verdict = assessMemory(rss_samples.items, .{ .stop = rss_samples.items.len }, cfg.rss_growth_pct, rss_floor_bytes);
+    const rss_verdict = assessMemory(rss_samples.items, rss_window, cfg.rss_growth_pct, rss_floor_bytes);
     const rss_mode = @tagName(cfg.rss_gate);
     if (rss_available) {
         std.debug.print("soak: rss curve (resident bytes, {} samples @ {}ms):\n", .{ rss_samples.items.len, cfg.mem_sample_ms });
@@ -2862,8 +2959,9 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
             "soak: rss steady-state head_mean={d:.0}B tail_mean={d:.0}B growth={d:.2}% delta={d:.0}B peak={}B threshold={d:.1}% floor={}MiB\n",
             .{ rss_verdict.head_mean, rss_verdict.tail_mean, rss_verdict.growth_pct, rss_verdict.tail_mean - rss_verdict.head_mean, rss_verdict.peak, cfg.rss_growth_pct, cfg.rss_floor_mib },
         );
+        printMemWindow("rss", rss_verdict, rss_samples.items.len, rss_window);
         std.debug.print("soak: rss verdict: {s} ({s}{s})\n", .{
-            if (rss_verdict.outcome == .pass) "PASS" else "FAIL",
+            memOutcomeLabel(rss_verdict.outcome),
             rss_mode,
             if (cfg.alloc_traces) "; --alloc-traces on: RSS includes the tracer's own growth" else "",
         });
@@ -3027,25 +3125,19 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
         failed = true;
     }
     // Setup failures: classified, then resolved into gated and reported
-    // totals (see assessSetup and the file header).
-    const dials_ok = totals.dials_ok.load(.acquire);
-    const dials_ok_at_onset = totals.dials_ok_at_ambiguous_onset.load(.acquire);
-    const ambiguous_shape: AmbiguousShape = .{
-        .failures = setup_counts[@backingInt(SetupClass.ambiguous)],
-        .dials_ok_before = dials_ok_at_onset,
-        .dials_ok_after = dials_ok -| dials_ok_at_onset,
-    };
+    // totals (see assessSetup and the file header). `ambiguous_shape` was
+    // built for the memory window above.
     const server_down_by_design = cfg.abrupt_death_every_ms != null;
     const setup_verdict = assessSetup(setup_counts, ambiguous_shape, server_down_by_design, tolerance);
-    const ambiguous_onset_ms = totals.ambiguous_onset_ms.load(.acquire);
     if (ambiguous_shape.failures > 0) {
         std.debug.print(
-            "soak: windows connect-stage error.Unexpected: {} dials failed from +{d:.1}s, after {} successful dials (port exhaustion needs >= {}); {} dials succeeded since -> {s}\n",
+            "soak: windows connect-stage error.Unexpected: {} dials failed from +{d:.1}s, after {} successful dials (port exhaustion needs >= {}, or >= {} for a single failure); {} dials succeeded since -> {s}\n",
             .{
                 ambiguous_shape.failures,
                 @as(f64, @floatFromInt(ambiguous_onset_ms)) / 1000.0,
                 ambiguous_shape.dials_ok_before,
                 exhaustion_min_dials_before,
+                exhaustion_edge_min_dials,
                 ambiguous_shape.dials_ok_after,
                 if (setup_verdict.ambiguous_is_exhaustion) "port-exhaustion shape" else "NOT the port-exhaustion shape: unexplained",
             },
@@ -3069,14 +3161,12 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
         warn(annotate, "{} unexplained setup failures, within the tolerance of {}; see the setup failures line", .{ setup_verdict.gated, tolerance });
     }
     if (setup_verdict.port_exhaustion > 0) {
-        var first_ms = totals.first_port_exhaustion_ms.load(.acquire);
-        if (setup_verdict.ambiguous_is_exhaustion) first_ms = @min(first_ms, ambiguous_onset_ms);
         // Host-side, not a defect in the code under test: reported loudly,
         // with where in the run it began, but not gated.
         warn(
             annotate,
             "host ephemeral-port exhaustion: {} dials failed from +{d:.1}s of a {}s run; traffic after that point was not exercised",
-            .{ setup_verdict.port_exhaustion, @as(f64, @floatFromInt(first_ms)) / 1000.0, cfg.seconds },
+            .{ setup_verdict.port_exhaustion, @as(f64, @floatFromInt(exhaustion_onset_ms)) / 1000.0, cfg.seconds },
         );
     }
     if (setup_verdict.reported > 0) {
@@ -3093,6 +3183,11 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
         );
         failed = true;
     }
+    // A run that exercised too little is reported, not failed (yet): the
+    // heap trend was not judged, and the leak check below still gates.
+    if (verdict.outcome == .not_exercised) {
+        warnNotExercised(annotate, "live-heap", verdict, exhaustion_onset_ms, cfg.seconds);
+    }
     switch (cfg.rss_gate) {
         .enforce => {
             if (!rss_available) {
@@ -3105,6 +3200,8 @@ fn run(comptime Gpa: type, init: std.process.Init) !void {
                     .{ rss_verdict.growth_pct, cfg.rss_growth_pct, rss_verdict.tail_mean - rss_verdict.head_mean, cfg.rss_floor_mib },
                 );
                 failed = true;
+            } else if (rss_verdict.outcome == .not_exercised) {
+                warnNotExercised(annotate, "RSS", rss_verdict, exhaustion_onset_ms, cfg.seconds);
             }
         },
         .report => {
@@ -3167,4 +3264,28 @@ fn printMemCurve(samples: []const u64) void {
         w += bar.len;
     }
     std.debug.print("  [{s}]  lo={}B hi={}B\n", .{ buf[0..w], lo, hi });
+}
+
+/// One line on what a memory gate judged: the sample range, where the run
+/// window ended (and where port exhaustion began), and the outcome.
+fn printMemWindow(label: []const u8, verdict: MemVerdict, len: usize, window: MemWindow) void {
+    std.debug.print("soak: {s} judged samples [{}, {}) of {}; the run window ends at sample {}", .{
+        label,
+        @min(verdict.warmup_samples, verdict.judged_end),
+        verdict.judged_end,
+        len,
+        @min(window.stop, len),
+    });
+    if (window.onset) |onset| std.debug.print("; port exhaustion from sample {}", .{onset});
+    std.debug.print(" -> {s}", .{memOutcomeLabel(verdict.outcome)});
+    if (verdict.not_exercised) |why| std.debug.print(" ({s})", .{@tagName(why)});
+    std.debug.print("\n", .{});
+}
+
+fn memOutcomeLabel(outcome: MemOutcome) []const u8 {
+    return switch (outcome) {
+        .pass => "PASS",
+        .fail => "FAIL",
+        .not_exercised => "NOT_EXERCISED",
+    };
 }
