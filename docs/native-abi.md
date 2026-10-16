@@ -51,6 +51,7 @@ RETURN for each Return variant that the remote can send:
 | `takeFromOtherQuestion`, named call fails | `EXCEPTION`: the named call's exception |
 | `takeFromOtherQuestion`, named call's results carry capabilities | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
 | `takeFromOtherQuestion`, the remote finishes the named call before the host answers it | `EXCEPTION` (`failed`), reason `rpc.peer.tail_call_finished_reason` |
+| `takeFromOtherQuestion`, the named call was forwarded back to the remote (see below) | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason`, when the forwarded call returns |
 | `takeFromOtherQuestion` that names no call with `sendResultsTo = yourself` | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
 | `takeFromOtherQuestion` past a bound (see below) | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
 | `resultsSentElsewhere` | `EXCEPTION` (`unimplemented`), reason `unsupported_return_reason` |
@@ -73,18 +74,23 @@ goes to no question. The order does not matter: an answer that comes before
 the redirect is kept until the redirect arrives. If the remote never sends
 that redirect (rpc.capnp allows this), the answer is dropped when the remote
 sends a new call with the same question id, so it never reaches a later
-question. If `capnp_return_results`
-fails (its results do not build), the call is still unanswered; answer it
-with `capnp_return_exception`, and the question gets that exception.
+question. If `capnp_return_results` fails (its results do not build), the
+call is still unanswered; answer it with `capnp_return_exception`, and the
+question gets that exception.
 
 The same holds when the call targets a promise export (`capnp_promise_export`)
 that is not resolved yet. The question waits while the call is parked. After
 `capnp_resolve_promise` to one of your exports, the call reaches the host as
 an INBOUND_CALL, and its answer goes to the question. After
 `capnp_reject_promise`, the question gets one RETURN EXCEPTION with the
-reason `promise broken`. A call that the core refuses before the host sees
-it (an unknown capability, a broken promise) also gives the question its
-exception, and the remote `resultsSentElsewhere`.
+reason `promise broken`. After `capnp_resolve_promise` to an import, the
+core forwards the call back to the remote, and its results never come to
+this side. When the forwarded call returns, the question gets one RETURN
+EXCEPTION (`unimplemented`) with the reason `unfollowed_tail_call_reason`,
+or the forwarded call's exception if it failed. A call that the core
+refuses before the host sees it (an unknown capability, a broken promise)
+also gives the question its exception, and the remote
+`resultsSentElsewhere`.
 
 Two bounds apply. The core keeps at most
 `PeerLimits.max_loopback_result_stash` (4096) answers that wait for their

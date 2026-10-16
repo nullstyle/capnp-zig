@@ -162,11 +162,12 @@ pub const promised_results_reason = "capnp-swift core: results carry an unresolv
 pub const cancel_reason = "canceled by the host";
 /// Reason text of the RETURN (EXCEPTION, unimplemented) for a tail call the
 /// core cannot follow: a `takeFromOtherQuestion` Return whose named call's
-/// results carry capabilities, or that names no call of this connection with
-/// `sendResultsTo = yourself`. The same RETURN ends a tail call that the
-/// Peer could not keep: its answer stash or hold table was full
-/// (`PeerLimits.max_loopback_result_stash`, `max_send_results_to_yourself`)
-/// or out of memory. A tail call to a call with cap-free results, or one
+/// results carry capabilities, whose named call the core forwarded back to
+/// the remote (a promise export resolved to an import), or that names no
+/// call of this connection with `sendResultsTo = yourself`. The same RETURN
+/// ends a tail call that the Peer could not keep: its answer stash or hold
+/// table was full (`PeerLimits.max_loopback_result_stash`,
+/// `max_send_results_to_yourself`) or out of memory. A tail call to a call with cap-free results, or one
 /// that fails, ends with that call's results or exception instead.
 pub const unfollowed_tail_call_reason = "capnp-swift core: cannot follow this tail call (its results carry capabilities, or it names no tail-called answer)";
 /// Reason text of the RETURN (EXCEPTION, unimplemented) for a Return variant

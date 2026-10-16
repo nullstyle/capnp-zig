@@ -357,6 +357,21 @@ pub fn ReturnSend(comptime Peer: type) type {
             deliverStashedLoopbackResults(self, question_id, bare) catch |err| reportNonfatalError(self, err);
         }
 
+        /// A Return for `answer_id` went out that does not carry the call's
+        /// results to this peer: `sendPrebuiltReturnFrame` (its frame goes on
+        /// the wire as built), the `resultsSentElsewhere` of a call this peer
+        /// forwarded back to the remote, `sendReturnTakeFromOtherQuestion`,
+        /// `sendReturnAcceptFromThirdParty`. A tail call held on the call can
+        /// no longer get them, and the remote's Finish of the call comes only
+        /// after this question's Finish (rpc.capnp `Call.sendResultsTo`), so
+        /// waiting for it would never end: give the question the bare
+        /// redirect now, as before holds existed. Runs after the send, so no
+        /// question callback runs inside it.
+        fn releaseHeldTailCall(self: *Peer, answer_id: u32) void {
+            const question_id = self.held_tail_calls.takeBySource(answer_id) orelse return;
+            deliverHeldTailCall(self, question_id, answer_id, null);
+        }
+
         /// True when a built Return-results frame carries any capability
         /// descriptors in its payload cap table.
         fn selfLoopbackResultsHaveCaps(allocator: std.mem.Allocator, frame: []const u8) !bool {
@@ -430,6 +445,7 @@ pub fn ReturnSend(comptime Peer: type) type {
             }
 
             commitOrRollbackResolvedAnswerAfterSend(self, ret.answer_id, frame, &reservation);
+            releaseHeldTailCall(self, ret.answer_id);
         }
 
         /// Send a return with an exception for a previously received call.
@@ -755,6 +771,10 @@ pub fn ReturnSend(comptime Peer: type) type {
                 sendReturnFrameWithLoopback,
             );
             _ = self.finished_early_answers.remove(answer_id);
+            // `canceled` answers a call the remote already finished: that
+            // Finish settles a hold (`settleTailCallOnFinish`). A
+            // `yourself` answer took its hold before this send.
+            if (tag != .canceled) releaseHeldTailCall(self, answer_id);
         }
 
         pub fn sendReturnTakeFromOtherQuestion(self: *Peer, answer_id: u32, other_question_id: u32) !void {
@@ -768,6 +788,7 @@ pub fn ReturnSend(comptime Peer: type) type {
                 sendReturnFrameWithLoopback,
             );
             _ = self.finished_early_answers.remove(answer_id);
+            releaseHeldTailCall(self, answer_id);
         }
 
         pub fn sendReturnAcceptFromThirdParty(self: *Peer, answer_id: u32, await_payload: ?[]const u8) !void {
@@ -781,6 +802,7 @@ pub fn ReturnSend(comptime Peer: type) type {
                 sendReturnFrameWithLoopback,
             );
             _ = self.finished_early_answers.remove(answer_id);
+            releaseHeldTailCall(self, answer_id);
         }
 
         fn clearSendResultsRouting(self: *Peer, answer_id: u32) void {

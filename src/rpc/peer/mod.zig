@@ -768,12 +768,15 @@ pub const Peer = struct {
     /// then retires it, as a late Return retires a cancelled question, and
     /// the answer is not stashed for a redirect that has already come.
     ///
-    /// Only `sendReturnResults` and the `sendReturnException` family settle
-    /// a hold. Other Return paths for the call (`sendPrebuiltReturnFrame`,
-    /// which `HostPeer` uses for every answer; `sendReturnTag` from a
-    /// forwarded tail call; `sendReturnTakeFromOtherQuestion`) only clear
-    /// its `sendResultsTo` routing: the held question then waits for the
-    /// remote's Finish of the call, or for transport close.
+    /// `sendReturnResults` and the `sendReturnException` family give a held
+    /// question the call's results or exception. Other Return paths for the
+    /// call (`sendPrebuiltReturnFrame`; the `resultsSentElsewhere` of a call
+    /// forwarded back to the remote; `sendReturnTakeFromOtherQuestion`;
+    /// `sendReturnAcceptFromThirdParty`) carry no results back here: after
+    /// their send, the held question gets the bare redirect. It does not
+    /// wait for the remote's Finish of the call, which a compliant remote
+    /// sends only after this question's Finish. A `canceled` Return answers
+    /// a call the remote already finished, and that Finish settles the hold.
     ///
     /// A question removed some other way (transport close, the shutdown
     /// drain) can leave its `by_question` entry behind. That is harmless:
@@ -4841,6 +4844,9 @@ pub const Peer = struct {
             .free_frame = finish.freeOwnedFrameForPeerFn(Peer),
         };
         const cleared_partial_join = self.pending_join_questions.contains(qid);
+        // handleFinishWithOps drops the call's `yourself` mark first; a
+        // later failure must not leave a tail call held on it.
+        errdefer self.settleTailCallOnFinish(qid);
         try finish.handleFinishWithOps(
             Peer,
             self,

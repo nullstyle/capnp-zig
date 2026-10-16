@@ -721,16 +721,19 @@ test "a DIRECT handler that fails a yourself call before its tail call arrives: 
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
 }
 
-test "a held tail call whose call is answered by a prebuilt frame waits for the remote's Finish" {
-    // Only sendReturnResults and the sendReturnException family settle a
-    // hold. HostPeer answers every call with sendPrebuiltReturnFrame, which
-    // only clears the call's routing (a documented limit).
+test "a held tail call whose call is answered by a prebuilt frame gets the bare redirect at once" {
+    // sendPrebuiltReturnFrame puts its frame on the wire as built, so the
+    // results never come back to this peer. The remote finishes the call
+    // only after this question's Finish (rpc.capnp `Call.sendResultsTo`), so
+    // the question must not wait for that Finish: it gets the bare
+    // redirect, as before holds existed.
     const allocator = std.testing.allocator;
     var h: TailHarness = undefined;
     try h.start(allocator);
     defer h.deinit();
 
     try h.pushTailCall(allocator);
+    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
     {
         var mb = protocol.MessageBuilder.init(allocator);
         defer mb.deinit();
@@ -743,21 +746,15 @@ test "a held tail call whose call is answered by a prebuilt frame waits for the 
         defer decoded.deinit();
         try h.client_peer.sendPrebuiltReturnFrame(try decoded.asReturn(), frame);
     }
-    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
-    try std.testing.expect(h.client_peer.questions.contains(h.question_id));
-
-    {
-        var mb = protocol.MessageBuilder.init(allocator);
-        defer mb.deinit();
-        try mb.buildFinish(tail_answer_id, false, false);
-        const frame = try mb.finish();
-        defer allocator.free(frame);
-        try h.client_peer.handleFrame(frame);
-    }
     try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
-    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
-    try std.testing.expectEqualStrings(peer_impl.tail_call_finished_reason, h.caller.reason());
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, h.caller.tag.?);
     try std.testing.expect(!h.client_peer.questions.contains(h.question_id));
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.held_tail_calls.count());
+
+    // Spec order: the remote finishes the call after our Finish of the
+    // question. It changes nothing for the question.
+    try h.pushFinish(allocator, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
 }
 
 test "a second Return for a question whose tail call is held is refused" {
@@ -965,4 +962,101 @@ test "a tail call that names a call parked on a promise export waits; the call's
     try std.testing.expectEqual(@as(u32, 7), h.caller.result_n.?);
     try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+}
+
+// -- A held tail call whose call this peer forwards back to the remote ---------
+//
+// A `yourself` call parked on one of our promise exports is forwarded back
+// to the remote when that promise resolves to a capability the remote
+// hosts. The call is then answered with the remote's own
+// `resultsSentElsewhere`, and its results never come back here.
+
+/// The question id of the last Call the client sent.
+fn lastClientCallId(wire: *const Wire) !u32 {
+    var i = wire.events.items.len;
+    while (i > 0) {
+        i -= 1;
+        const event = wire.events.items[i];
+        if (event.dir == .client_to_server and event.tag == .call) return event.id;
+    }
+    return error.NoCall;
+}
+
+/// Park a `yourself` call on a client promise export, hold the redirect that
+/// names it, then resolve the promise to the server's bootstrap: the client
+/// forwards the call to the server. Returns the forwarded question id.
+fn forwardParkedTailCall(h: *TailHarness, allocator: std.mem.Allocator) !u32 {
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
+    const calls_before = h.wire.events.items.len;
+    try h.client_peer.resolvePromiseExportToImport(promise_id, h.server_import_id);
+    const forwarded = try lastClientCallId(&h.wire);
+    try std.testing.expect(h.wire.events.items.len > calls_before);
+    try std.testing.expect(forwarded != h.question_id);
+    return forwarded;
+}
+
+fn pushServerReturn(h: *TailHarness, allocator: std.mem.Allocator, question_id: u32, tag: protocol.ReturnTag, reason: []const u8) !void {
+    var mb = protocol.MessageBuilder.init(allocator);
+    defer mb.deinit();
+    var ret = try mb.beginReturn(question_id, tag);
+    ret.setReleaseParamCaps(false);
+    if (tag == .exception) try ret.setException(reason);
+    const frame = try mb.finish();
+    defer allocator.free(frame);
+    try h.client_peer.handleFrame(frame);
+}
+
+test "a held tail call whose call is forwarded back to the remote gets the bare redirect when the forward returns" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const forwarded = try forwardParkedTailCall(&h, allocator);
+    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
+
+    try pushServerReturn(&h, allocator, forwarded, .resultsSentElsewhere, "");
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, h.caller.tag.?);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.held_tail_calls.count());
+}
+
+test "a held tail call whose forwarded call fails gets the exception; the remote gets resultsSentElsewhere" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const forwarded = try forwardParkedTailCall(&h, allocator);
+    try pushServerReturn(&h, allocator, forwarded, .exception, "forwarded call failed");
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings("forwarded call failed", h.caller.reason());
+}
+
+test "a held tail call whose parked call the remote finishes ends with tail_call_finished_reason" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
+
+    // The Finish cancels the parked call (Return `canceled`); the held
+    // question then ends as for any call finished before its answer.
+    try h.pushFinish(allocator, tail_answer_id);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .canceled));
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings(peer_impl.tail_call_finished_reason, h.caller.reason());
 }

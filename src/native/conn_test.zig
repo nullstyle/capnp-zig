@@ -2242,3 +2242,63 @@ test "tail call: a redirect that names a call parked on a promise export waits; 
     try a.finish(t.q, false);
     try drainAll(a, &ra);
 }
+
+test "tail call: a redirect that names a call forwarded back to the remote ends once the forward returns" {
+    // A parked `yourself` call whose promise export resolves to an import
+    // goes back to the remote, and its results never come to A: the
+    // question gets the unfollowed RETURN when the forwarded call returns,
+    // not at the remote's Finish (which comes only after ours).
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    const p = try a.promiseExport();
+    try pushFrame(alloc, a, yourselfCallFrame(alloc, tail_answer, p));
+    try pushFrame(alloc, a, tailCallReturnFrame(alloc, t.q, tail_answer));
+    try drainAll(a, &ra);
+    try expectNoReturnYet(&ra, t.q);
+
+    try a.resolvePromise(p, t.boot);
+    try drainAll(a, &ra);
+    const forwarded = try lastCallFrameId(&ra);
+    try testing.expect(forwarded != t.q);
+    try expectNoReturnYet(&ra, t.q);
+
+    try pushFrame(alloc, a, tagReturnFrame(alloc, forwarded, .resultsSentElsewhere));
+    try drainAll(a, &ra);
+    const r = try expectOneReturn(&ra, t.q, .exception);
+    try testing.expectEqualStrings(conn_mod.unfollowed_tail_call_reason, r.reason);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, null));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, .resultsSentElsewhere));
+    try a.finish(t.q, false);
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(t.q));
+}
+
+/// The question id of the last Call frame A sent.
+fn lastCallFrameId(rec: *Rec) !u32 {
+    var i = rec.frames.items.len;
+    while (i > 0) {
+        i -= 1;
+        var d = try protocol.DecodedMessage.init(testing.allocator, rec.frames.items[i]);
+        defer d.deinit();
+        if (d.tag == .call) return (try d.asCall()).question_id;
+    }
+    return error.TestNoCall;
+}
+
+/// A Return of A's question `qid` with a tag and no payload.
+fn tagReturnFrame(alloc: std.mem.Allocator, qid: u32, tag: protocol.ReturnTag) ![]const u8 {
+    var mb = protocol.MessageBuilder.init(alloc);
+    defer mb.deinit();
+    var ret = try mb.beginReturn(qid, tag);
+    ret.setReleaseParamCaps(false);
+    return mb.finish();
+}
