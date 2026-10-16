@@ -1006,9 +1006,10 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_rpc_client_session_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_client_session_test.zig", target, optimize, lib_module);
     const run_rpc_server_session_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_server_session_test.zig", target, optimize, lib_module);
     // Listener.close under a parked accept (sprint item P1-1). Its own root:
-    // std 0.17.0's Windows accept treats a cancelled wait as `unreachable`,
-    // so this binary may abort there, and that abort must not hide the other
-    // transport suites' results.
+    // before the transport owned its Windows accept, std 0.17.0's accept
+    // aborted this binary there (a cancelled wait is `unreachable`; Windows
+    // CI run 38918354154). A regression that aborts it again must not hide
+    // the other transport suites' results.
     const run_rpc_listener_close_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_listener_close_test.zig", target, optimize, lib_module);
     // AF_UNIX regressions, plus the IP side of the non-IP TCP_NODELAY skip
     // (every TCP path must still set it). POSIX-only: the suite compiles

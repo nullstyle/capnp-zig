@@ -14,9 +14,13 @@
 //!
 //! `accept` takes the same AFD steps as std: wait, open an AFD socket, and
 //! accept the connection into it, or give the connection back with
-//! `IOCTL_AFD_DEFER_ACCEPT` when a later step fails. It differs only in a
-//! cancelled wait: once the caller's `closing` flag is set, the accept
-//! returns `error.ListenerClosed`; until then, it posts the wait again.
+//! `IOCTL_AFD_DEFER_ACCEPT` when a later step fails. It differs from std in
+//! three ways. A cancelled wait: once the caller's `closing` flag is set,
+//! the accept returns `error.ListenerClosed`; until then, it posts the wait
+//! again. A cancelled accept step: `error.ListenerClosed` once `closing` is
+//! set; until then, it gives the connection back and waits again. A failed
+//! give-back: it is only logged (debug), where std passes the status to
+//! `unexpectedStatus` and treats a cancelled give-back as `unreachable`.
 //!
 //! `stopWaits` is the closing side. The caller sets `closing` first and
 //! counts the threads inside `accept` (`in_flight`). `stopWaits` cancels

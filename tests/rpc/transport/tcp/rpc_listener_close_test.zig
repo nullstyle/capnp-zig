@@ -380,7 +380,8 @@ test "Windows: an accept posts again a listen wait that Windows cancelled while 
     thread.join();
     try testing.expect(third);
     try testing.expect(state.accepted);
-    try testing.expectEqual(@as(u32, 3), ListenWaits.posts.load(.acquire));
+    // At least 3: a cancel that Windows makes on its own adds a post.
+    try testing.expect(ListenWaits.posts.load(.acquire) >= 3);
 }
 
 test "Windows: Listener.close ends a parked accept with ListenerClosed and closes only after the wait returned" {

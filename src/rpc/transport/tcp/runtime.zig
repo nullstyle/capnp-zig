@@ -51,6 +51,12 @@ pub const Runtime = struct {
 /// instead of std's: std's (0.17.0) treats the cancelled wait that `close`
 /// causes as `unreachable`, which aborted the process. See `close`.
 ///
+/// Do not copy a `Listener` that is in use. `close` and the accepts share
+/// the listener's `close_requested` flag and `accepts_in_flight` count, and
+/// a copy has its own. An accept through one copy while another copy closes
+/// can post its wait again on a closed handle, or on a handle value that
+/// Windows has given to another object since.
+///
 /// ## AF_UNIX
 ///
 /// `rpc.transport.unix.listen` returns a `Listener` too (Experimental,
@@ -150,8 +156,9 @@ pub const Listener = struct {
     /// full (see `awaitSocketLane`).
     ///
     /// A thread blocked here when another thread calls `close` returns an
-    /// error: `error.ListenerClosed` on Windows, and the OS's error for an
-    /// accept on a socket that is shut down or closed elsewhere (Linux:
+    /// error: `error.ListenerClosed` on Windows (or a connection that
+    /// arrived before the close), and the OS's error for an accept on a
+    /// socket that is shut down or closed elsewhere (Linux:
     /// `error.SocketNotListening`; macOS: `error.ConnectionAborted`).
     pub fn accept(self: *Listener) !*Connection {
         if (self.close_requested.load(.acquire)) return error.ListenerClosed;
@@ -226,11 +233,14 @@ pub const Listener = struct {
     /// once, even while the first one still runs.
     ///
     /// A thread blocked in `accept` or `acceptFd` (and so in
-    /// `ServerSession.accept`) returns an error:
-    /// - Windows: `error.ListenerClosed`. `close` cancels every pending
-    ///   accept wait on the handle and waits until each thread in the
-    ///   listener's accept has returned; only then does it close the handle
-    ///   (`windows_accept.stopWaits`). That wait needs no network. Through
+    /// `ServerSession.accept`) returns as follows:
+    /// - Windows: `error.ListenerClosed`, unless a connection arrived before
+    ///   the cancel: then the thread returns that connection. `close` cancels
+    ///   every pending accept wait on the handle and waits until each thread
+    ///   in the listener's accept has returned; only then does it close the
+    ///   handle (`windows_accept.stopWaits`). That wait needs no network. A
+    ///   second `close` does not wait for that: do not free the listener
+    ///   until the first `close` has returned. Through
     ///   0.26.0, `close` closed the handle under the wait, and std's
     ///   (0.17.0) accept treated the cancelled wait as `unreachable`, which
     ///   aborted the process.

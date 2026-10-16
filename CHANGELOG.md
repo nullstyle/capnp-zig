@@ -55,12 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Listener.acceptFd` and `ServerSession.accept`. On Windows the TCP
   listener now accepts through its own AFD accept, as the transport already
   reads through its own AFD receive. `close` cancels each pending accept
-  wait, waits until every thread in the listener's accept has returned
-  `error.ListenerClosed`, and only then closes the handle. So on Windows
-  `close` now waits for those accepts to return. It needs no network to do
-  so. A wait that Windows cancels while the listener is open is posted
-  again. Linux and macOS keep their behavior. The new Experimental field
-  `Listener.accepts_in_flight` is internal state. New Windows-only tests in
+  wait, waits until every thread in the listener's accept has returned, and
+  only then closes the handle. Each of those threads returns
+  `error.ListenerClosed`, or a connection that arrived before the cancel.
+  So on Windows `close` now waits for those accepts to return. It needs no
+  network to do so. A wait that Windows cancels while the listener is open
+  is posted again. Linux and macOS keep their behavior. The new
+  Experimental field `Listener.accepts_in_flight` is internal state. New
+  Windows-only tests in
   `tests/rpc/transport/tcp/rpc_listener_close_test.zig` cancel a wait while
   the listener is open, close under a parked wait, and close while an
   accept is between its `close_requested` check and its wait.
