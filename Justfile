@@ -213,6 +213,10 @@ e2e-self:
 e2e-self-unix:
     zig build e2e-self-unix --summary all
 
+# The same self-interop e2e over QUIC, all 7 schemas (CI runs it on Linux)
+e2e-quic:
+    zig build -Dquic=true e2e-quic --summary all
+
 # Run the Zig <-> C++ e2e over Unix-domain sockets (docker; both peers in the cpp-rpc container)
 e2e-unix:
     just --justfile tests/e2e/Justfile test-unix
@@ -293,6 +297,7 @@ ci:
     just test
     just e2e-self
     @if [ "{{ os() }}" != windows ]; then just e2e-self-unix; fi
+    @if [ "{{ os() }}" != windows ]; then just e2e-quic; fi
     just e2e-zig
     just e2e-unix
     just e2e-l3-vatc

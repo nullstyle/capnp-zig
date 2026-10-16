@@ -35,6 +35,13 @@ Protocol scenarios:
 both, and the client picks the flow. Both also run Zig to Zig in
 `zig build e2e-self` and `e2e-self-unix`.
 
+`zig build -Dquic=true e2e-quic` runs all seven schemas of the Zig e2e server
+Zig to Zig over the QUIC baseline wire (`--transport quic` on both binaries),
+`resolve_disembargo` too. It uses the
+committed loopback certificate (`tests/rpc/transport/quic/loopback_cert.pem`),
+and the client verifies the server against it. The CI job `e2e-quic` runs it
+on Linux.
+
 ## Reference Backends
 
 Current required backends:

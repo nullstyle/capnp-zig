@@ -721,6 +721,60 @@ jobs:
       - name: Cross-impl L3 hosting gate (C++ drives A+B vs a Zig VatC host)
         run: just e2e-l3-vatc
 
+  e2e-quic:
+    name: Zig e2e over QUIC
+    runs-on: ubuntu-latest
+    # The Zig e2e server and client over the QUIC baseline wire, all seven
+    # schemas: the mode capnp-swift tests against. No healthy run has been
+    # measured in CI yet. The cap bounds a hang: the build is the QUIC
+    # dependency tree plus two binaries, and the lane itself takes seconds
+    # (each schema's client has a 60 s deadline).
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.17
+
+      - uses: ./.github/actions/setup-zig
+
+      # The e2e bindings are checked in, so no schema compiler is needed
+      # (the e2e-zig job builds the same binaries without setup-capnp).
+      # Package store cached the same way as the quic-transport job.
+      - name: Restore Zig package cache
+        uses: actions/cache@v5
+        with:
+          path: .zig-global-cache/p
+          key: zig-packages-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
+
+      - name: Prefetch dependency tree
+        # Retries transient upstream failures so the lane fails only on
+        # real regressions.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if zig build --fetch=all; then
+              exit 0
+            fi
+            echo "::warning::dependency fetch attempt ${attempt} failed"
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 20))
+            fi
+          done
+          echo "dependency fetch failed after 3 attempts"
+          exit 1
+
+      # Prints one result line per schema. It fails if any schema fails, if
+      # the server reports no port, or if a client passes no test. The
+      # client verifies the server against the committed loopback
+      # certificate (no --insecure). Every server is stopped before the
+      # step ends, on failure too.
+      - name: Zig e2e over QUIC (zig client vs zig server, all 7 schemas)
+        run: zig build -Dquic=true e2e-quic --summary all
+
   bench-check:
     name: Benchmark regression check
     runs-on: ubuntu-latest

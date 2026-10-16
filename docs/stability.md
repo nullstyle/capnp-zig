@@ -22,6 +22,7 @@ updated as phases land.
 | Soak harness | full | full | full (nightly lane; success requires positive traffic/chaos counters) |
 | Self-interop e2e (zig↔zig loopback, `zig build e2e-self`) | full | full | full |
 | Self-interop e2e over a Unix socket file (`zig build e2e-self-unix`) | full | full | not available (no AF_UNIX transport on Windows) |
+| Self-interop e2e over QUIC, 7 schemas (`zig build -Dquic=true e2e-quic`) | experimental (CI job `e2e-quic`) | experimental (local only; not in CI) | not run |
 | Cross-implementation e2e (docker reference impls) | full (hosted CI, `Zig e2e interop`: every push to `main` and every PR) | full (local Docker Desktop) | local only (Docker Desktop/WSL2); hosted runners cannot run Linux containers |
 | Deterministic fuzz smoke | full | full | full |
 | Structural fuzz: L3/L4 peer frames, QUIC framers, persistence restore | full | full | full |

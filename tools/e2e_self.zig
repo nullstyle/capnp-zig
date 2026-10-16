@@ -8,7 +8,7 @@
 //! platform's real socket stack (listener, accept, framing, writer
 //! thread, peer dispatch).
 //!
-//! Two transports:
+//! Three transports:
 //! - TCP over loopback (the default; `zig build e2e-self`, every OS).
 //! - `--transport=unix`: an AF_UNIX socket file in a private (0700)
 //!   directory under /tmp, through `--host unix:/path` on both binaries
@@ -16,18 +16,38 @@
 //!   Linux and macOS only, like `rpc.transport.unix`. On any other target
 //!   it fails with `error.UnixSocketsUnsupported` rather than passing
 //!   having run nothing.
+//! - `--transport=quic`: the QUIC baseline wire, through `--transport quic`
+//!   on both binaries (`zig build -Dquic=true e2e-quic`). It runs all seven
+//!   schemas, `resolve_disembargo` too. The server listens on UDP port 0
+//!   and prints the port it got; this tool reads that port from the
+//!   server's stderr. The server takes `--cert-pem` and `--key-pem`. The
+//!   client verifies the server against `--ca-pem`; it never runs with
+//!   `--insecure`. CI runs this lane on Linux only (job `e2e-quic`).
 //!
-//! Usage: e2e-self <server-binary> <client-binary> [--transport=tcp|unix]
-//! (The build system passes both artifact paths; see `zig build e2e-self`.)
+//! Usage: e2e-self <server-binary> <client-binary> [--transport=tcp|unix|quic]
+//!        [--cert-pem=F --key-pem=F --ca-pem=F]  (QUIC only; all three)
+//! (The build system passes both artifact paths and, for QUIC, the
+//! committed loopback test certificate; see the `e2e-self` and `e2e-quic`
+//! steps in build/build_impl.zig.)
 
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// The TCP and Unix lanes. They do not run `resolve_disembargo` yet.
 const schemas = [_][]const u8{ "game_world", "chat", "inventory", "matchmaking", "pass_back", "pipelined_params" };
+/// The QUIC lane: every schema the e2e server serves (its `Schema` enum).
+const quic_schemas = [_][]const u8{ "game_world", "chat", "inventory", "matchmaking", "resolve_disembargo", "pass_back", "pipelined_params" };
 const server_ready_timeout_ms: i64 = 30_000;
 const client_timeout_ms: i64 = 60_000;
 
-const Transport = enum { tcp, unix };
+const Transport = enum { tcp, unix, quic };
+
+/// The PEM files of the QUIC lane (paths).
+const QuicTls = struct {
+    cert_pem: []const u8,
+    key_pem: []const u8,
+    ca_pem: []const u8,
+};
 
 /// Where `rpc.transport.unix` works (`unix.supported`): this tool imports
 /// only std, so it restates that predicate.
@@ -138,18 +158,22 @@ const Endpoint = struct {
 
 const unix_host_prefix = "unix:";
 
-fn runSchema(
-    allocator: std.mem.Allocator,
-    io: std.Io,
+/// What every schema run needs: the two binaries and the transport.
+const Lane = struct {
     server_bin: []const u8,
     client_bin: []const u8,
-    schema: []const u8,
-    transport: Transport,
-    unix_dir: []const u8,
-) !TapCount {
+    transport: union(Transport) {
+        tcp,
+        /// The private directory that holds the socket files.
+        unix: []const u8,
+        quic: QuicTls,
+    },
+};
+
+fn runSchema(allocator: std.mem.Allocator, io: std.Io, lane: *const Lane, schema: []const u8) !TapCount {
     var port_buf: [8]u8 = undefined;
     var host_buf: [128]u8 = undefined;
-    const endpoint: Endpoint = switch (transport) {
+    const endpoint: Endpoint = switch (lane.transport) {
         .tcp => blk: {
             const port = try findFreePort(io);
             break :blk .{
@@ -159,16 +183,17 @@ fn runSchema(
             };
         },
         // One socket file per schema in the private directory.
-        .unix => .{
-            .host = try std.fmt.bufPrint(&host_buf, unix_host_prefix ++ "{s}/{s}.sock", .{ unix_dir, schema }),
+        .unix => |dir| .{
+            .host = try std.fmt.bufPrint(&host_buf, unix_host_prefix ++ "{s}/{s}.sock", .{ dir, schema }),
             .port = null,
             .port_text = "",
         },
+        .quic => |tls| return runQuicSchema(allocator, io, lane, tls, schema),
     };
 
     var server_argv_buf: [7][]const u8 = undefined;
     var server = try std.process.spawn(io, .{
-        .argv = endpoint.argv(&server_argv_buf, server_bin, schema),
+        .argv = endpoint.argv(&server_argv_buf, lane.server_bin, schema),
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
@@ -180,6 +205,146 @@ fn runSchema(
         return .{ .fail = 1 };
     }
 
+    var client_argv_buf: [7][]const u8 = undefined;
+    return runClient(allocator, io, endpoint.argv(&client_argv_buf, lane.client_bin, schema), schema);
+}
+
+/// The QUIC server's stderr. A concurrent task drains the pipe for the
+/// server's whole life, so the server never blocks on a full pipe. The
+/// harness reads the bound port from it, and prints it when a schema fails.
+const ServerLog = struct {
+    allocator: std.mem.Allocator,
+    mutex: std.Io.Mutex = .init,
+    bytes: std.ArrayList(u8) = .empty,
+    /// The pipe reached end of stream: the server exited.
+    ended: bool = false,
+
+    /// Past this many bytes the drain keeps reading but drops the rest.
+    const max_bytes = 1024 * 1024;
+    /// The server's line after it binds: "... over quic on HOST:PORT".
+    const port_marker = " over quic on ";
+
+    fn deinit(self: *ServerLog) void {
+        self.bytes.deinit(self.allocator);
+    }
+
+    fn drain(self: *ServerLog, io: std.Io, pipe: std.Io.File) void {
+        var buf: [4096]u8 = undefined;
+        var vecs = [_][]u8{&buf};
+        while (true) {
+            const n = pipe.readStreaming(io, &vecs) catch break;
+            if (n == 0) break;
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
+            const keep = @min(n, max_bytes -| self.bytes.items.len);
+            self.bytes.appendSlice(self.allocator, buf[0..keep]) catch {};
+        }
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        self.ended = true;
+    }
+
+    /// `.none`: no port will come (the server exited, or its port line
+    /// does not parse).
+    const PortState = union(enum) { pending, none, port: u16 };
+
+    /// The bound port, once the server's whole port line is in.
+    fn port(self: *ServerLog, io: std.Io) PortState {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        const text = self.bytes.items;
+        if (std.mem.indexOf(u8, text, port_marker)) |at| {
+            const rest = text[at + port_marker.len ..];
+            if (std.mem.indexOfScalar(u8, rest, '\n')) |eol| {
+                const address = std.mem.trimEnd(u8, rest[0..eol], "\r");
+                const colon = std.mem.lastIndexOfScalar(u8, address, ':') orelse return .none;
+                const parsed = std.fmt.parseInt(u16, address[colon + 1 ..], 10) catch return .none;
+                if (parsed == 0) return .none;
+                return .{ .port = parsed };
+            }
+        }
+        return if (self.ended) .none else .pending;
+    }
+
+    fn print(self: *ServerLog, io: std.Io, schema: []const u8) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        std.debug.print("# {s}: server stderr:\n{s}\n", .{ schema, self.bytes.items });
+    }
+};
+
+/// Wait for the QUIC server to print its bound port. A server that exits
+/// first, or prints no port within the deadline, gives null.
+fn waitForQuicPort(io: std.Io, log: *ServerLog) ?u16 {
+    const deadline = nowMs(io) + server_ready_timeout_ms;
+    while (nowMs(io) < deadline) {
+        switch (log.port(io)) {
+            .port => |p| return p,
+            .none => return null,
+            .pending => sleepMs(io, 50),
+        }
+    }
+    return null;
+}
+
+fn runQuicSchema(allocator: std.mem.Allocator, io: std.Io, lane: *const Lane, tls: QuicTls, schema: []const u8) !TapCount {
+    // Port 0: the server binds a free UDP port and prints it, so there is no
+    // window in which another process can take a port chosen here.
+    const server_argv = [_][]const u8{
+        lane.server_bin, "--host",    "127.0.0.1",   "--port", "0",
+        "--schema",      schema,      "--transport", "quic",   "--cert-pem",
+        tls.cert_pem,    "--key-pem", tls.key_pem,
+    };
+    var server = try std.process.spawn(io, .{
+        .argv = &server_argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .pipe,
+    });
+    // The drain owns the read end of the pipe: `kill` must not close it
+    // under a read in progress.
+    const pipe = server.stderr orelse unreachable; // .stderr = .pipe
+    server.stderr = null;
+
+    var log: ServerLog = .{ .allocator = allocator };
+    defer log.deinit();
+    var drain = io.concurrent(ServerLog.drain, .{ &log, io, pipe }) catch |err| {
+        server.kill(io);
+        pipe.close(io);
+        return err;
+    };
+    // Every return path stops the server (SIGTERM, which it does not
+    // handle, then a reap; `TerminateProcess` on Windows). The server's
+    // end of the pipe closes with it, so the drain then reads end of
+    // stream and returns.
+    defer {
+        server.kill(io);
+        drain.await(io);
+        pipe.close(io);
+    }
+
+    const port = waitForQuicPort(io, &log) orelse {
+        std.debug.print("not ok - {s}: the QUIC server reported no bound port (it exited, or printed none within {d}ms)\n", .{ schema, server_ready_timeout_ms });
+        log.print(io, schema);
+        return .{ .fail = 1 };
+    };
+    var port_buf: [8]u8 = undefined;
+    const port_text = try std.fmt.bufPrint(&port_buf, "{d}", .{port});
+
+    const client_argv = [_][]const u8{
+        lane.client_bin, "--host", "127.0.0.1",   "--port", port_text,
+        "--schema",      schema,   "--transport", "quic",   "--ca-pem",
+        tls.ca_pem,
+    };
+    const counts = try runClient(allocator, io, &client_argv, schema);
+    if (counts.fail != 0) log.print(io, schema);
+    return counts;
+}
+
+/// Run the client once against a ready server and count its TAP lines. A
+/// client that fails, times out or reports no passing test counts as one
+/// more failure, and its output is printed.
+fn runClient(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, schema: []const u8) !TapCount {
     // Bound the client run with an absolute deadline so a hung client fails
     // this one schema fast instead of burning the entire CI job timeout. A
     // `.deadline` (rather than `.duration`) timeout is a single wall-clock
@@ -191,9 +356,8 @@ fn runSchema(
         .raw = std.Io.Duration.fromMilliseconds(client_timeout_ms),
         .clock = .awake,
     }) };
-    var client_argv_buf: [7][]const u8 = undefined;
     const result = std.process.run(allocator, io, .{
-        .argv = endpoint.argv(&client_argv_buf, client_bin, schema),
+        .argv = argv,
         .stdout_limit = .limited(1024 * 1024),
         .stderr_limit = .limited(1024 * 1024),
         .timeout = client_deadline,
@@ -224,23 +388,18 @@ fn runSchema(
     return counts;
 }
 
-fn runAll(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    server_bin: []const u8,
-    client_bin: []const u8,
-    transport: Transport,
-    unix_dir: []const u8,
-) !void {
+fn runAll(allocator: std.mem.Allocator, io: std.Io, lane: *const Lane) !void {
+    const transport: Transport = lane.transport;
+    const lane_schemas: []const []const u8 = if (transport == .quic) &quic_schemas else &schemas;
     var total = TapCount{};
-    for (schemas) |schema| {
-        const counts = try runSchema(allocator, io, server_bin, client_bin, schema, transport, unix_dir);
+    for (lane_schemas) |schema| {
+        const counts = try runSchema(allocator, io, lane, schema);
         total.pass += counts.pass;
         total.fail += counts.fail;
         std.debug.print("self-interop ({t}) {s}: {d} pass, {d} fail\n", .{ transport, schema, counts.pass, counts.fail });
     }
 
-    std.debug.print("self-interop ({t}) total: {d} pass, {d} fail across {d} schemas\n", .{ transport, total.pass, total.fail, schemas.len });
+    std.debug.print("self-interop ({t}) total: {d} pass, {d} fail across {d} schemas\n", .{ transport, total.pass, total.fail, lane_schemas.len });
     if (total.fail != 0 or total.pass == 0) return error.SelfInteropFailed;
 }
 
@@ -259,7 +418,8 @@ fn runAllUnix(allocator: std.mem.Allocator, io: std.Io, server_bin: []const u8, 
     cwd.deleteTree(io, dir) catch {};
     try cwd.createDir(io, dir, .fromMode(0o700));
     defer cwd.deleteTree(io, dir) catch {};
-    return runAll(allocator, io, server_bin, client_bin, .unix, dir);
+    const lane: Lane = .{ .server_bin = server_bin, .client_bin = client_bin, .transport = .{ .unix = dir } };
+    return runAll(allocator, io, &lane);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -274,17 +434,54 @@ pub fn main(init: std.process.Init) !void {
     const server_bin = iter.next() orelse return error.MissingServerBinaryArg;
     const client_bin = iter.next() orelse return error.MissingClientBinaryArg;
     var transport: Transport = .tcp;
+    var cert_pem: ?[]const u8 = null;
+    var key_pem: ?[]const u8 = null;
+    var ca_pem: ?[]const u8 = null;
     while (iter.next()) |arg| {
         if (std.mem.startsWith(u8, arg, "--transport=")) {
             transport = std.meta.stringToEnum(Transport, arg["--transport=".len..]) orelse return error.InvalidTransport;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--cert-pem=")) {
+            cert_pem = arg["--cert-pem=".len..];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--key-pem=")) {
+            key_pem = arg["--key-pem=".len..];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ca-pem=")) {
+            ca_pem = arg["--ca-pem=".len..];
             continue;
         }
         std.debug.print("unknown option: {s}\n", .{arg});
         return error.InvalidOption;
     }
 
-    switch (transport) {
-        .tcp => try runAll(allocator, io, server_bin, client_bin, .tcp, ""),
-        .unix => try runAllUnix(allocator, io, server_bin, client_bin),
+    const any_pem = cert_pem != null or key_pem != null or ca_pem != null;
+    if (transport != .quic and any_pem) {
+        std.debug.print("e2e-self: --cert-pem, --key-pem and --ca-pem need --transport=quic\n", .{});
+        return error.InvalidOption;
     }
+
+    switch (transport) {
+        .tcp => {
+            const lane: Lane = .{ .server_bin = server_bin, .client_bin = client_bin, .transport = .tcp };
+            try runAll(allocator, io, &lane);
+        },
+        .unix => try runAllUnix(allocator, io, server_bin, client_bin),
+        .quic => {
+            const lane: Lane = .{ .server_bin = server_bin, .client_bin = client_bin, .transport = .{ .quic = .{
+                .cert_pem = cert_pem orelse return missingPem("--cert-pem"),
+                .key_pem = key_pem orelse return missingPem("--key-pem"),
+                .ca_pem = ca_pem orelse return missingPem("--ca-pem"),
+            } } };
+            try runAll(allocator, io, &lane);
+        },
+    }
+}
+
+fn missingPem(flag: []const u8) error{MissingPemArg} {
+    std.debug.print("e2e-self --transport=quic needs {s}=F (and --cert-pem, --key-pem, --ca-pem together)\n", .{flag});
+    return error.MissingPemArg;
 }

@@ -803,6 +803,27 @@ pub fn buildImpl(b: *std.Build) !void {
     const e2e_self_unix_step = b.step("e2e-self-unix", "Run self-interop e2e (zig client vs zig server over a Unix-domain socket; Linux and macOS)");
     e2e_self_unix_step.dependOn(&run_e2e_self_unix.step);
 
+    // The same lane over the QUIC baseline wire (`--transport quic` on both
+    // binaries), all seven schemas. The server and client take the committed
+    // self-signed loopback certificate (CN and SAN `localhost`, CA:TRUE),
+    // which the QUIC suites also use; the client verifies the server against
+    // it as its CA, so the lane exercises real certificate verification. The
+    // e2e binaries carry QUIC only when the library root does (-Dquic=true).
+    const e2e_quic_step = b.step("e2e-quic", "Run self-interop e2e over QUIC (zig client vs zig server, all 7 schemas; requires -Dquic=true)");
+    if (enable_quic) {
+        const loopback_cert = b.path("tests/rpc/transport/quic/loopback_cert.pem");
+        const run_e2e_quic = b.addRunArtifact(e2e_self);
+        run_e2e_quic.addArtifactArg(e2e_zig_server);
+        run_e2e_quic.addArtifactArg(e2e_zig_client);
+        run_e2e_quic.addArg("--transport=quic");
+        run_e2e_quic.addPrefixedFileArg("--cert-pem=", loopback_cert);
+        run_e2e_quic.addPrefixedFileArg("--key-pem=", b.path("tests/rpc/transport/quic/loopback_key.pem"));
+        run_e2e_quic.addPrefixedFileArg("--ca-pem=", loopback_cert);
+        e2e_quic_step.dependOn(&run_e2e_quic.step);
+    } else {
+        e2e_quic_step.dependOn(&b.addFail("e2e-quic requires -Dquic=true").step);
+    }
+
     // Unit tests for main
     const main_tests = b.addTest(.{
         .root_module = b.createModule(.{

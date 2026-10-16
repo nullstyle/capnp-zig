@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CI: the Zig e2e server and client run over QUIC.** The new step
+  `zig build -Dquic=true e2e-quic` (also `just e2e-quic`) runs all seven
+  schemas Zig to Zig with `--transport quic`, and the new Linux CI job
+  `e2e-quic` runs it. The 0.26.0 entry said that no build step or CI job
+  ran this mode. The server listens on port 0 and the harness reads the
+  bound port from its output. Both sides use the committed loopback test
+  certificate, and the client verifies the server against it (no
+  `--insecure`). The step prints one result line per schema and fails if
+  any schema fails. It stops every server it starts, also on a failure.
+  Without `-Dquic=true` the step fails and says that it needs that flag.
+
 ### Changed
 
 - **Nightly: the Windows 64-worker soak lane runs in its own job.** It used

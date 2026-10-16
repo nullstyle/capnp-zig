@@ -2411,6 +2411,8 @@ fn serveQuic(allocator: Allocator, io: std.Io, args: CliArgs, app: *App) !void {
     defer server.deinit();
 
     std.debug.print("READY\n", .{});
+    // tools/e2e_self.zig (`zig build -Dquic=true e2e-quic`) passes `--port 0`
+    // and reads the bound port from this line: keep " over quic on HOST:PORT".
     std.debug.print("e2e-zig-server: {s} over quic on {s}:{d}\n", .{ @tagName(args.schema), args.host, server.getAddress().getPort() });
 
     server.run();
