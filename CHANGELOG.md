@@ -90,7 +90,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exception goes to the question whose `takeFromOtherQuestion` names the
   call: at once when that Return is held, or when it arrives. This applies
   to `sendReturnException` and `sendReturnExceptionTyped`, and so to a
-  native host's `capnp_return_exception`. It also applies when the results
+  native host's `capnp_return_exception`. It also applies to the calls that
+  the Peer refuses before a handler runs: an unknown capability, a broken
+  or rejected promise export, a promised answer that failed, and a refused
+  queue. The Peer now marks a `yourself` call when it arrives, before it
+  routes or parks the call. Before, it marked the call only when a handler
+  was about to run. So a call parked on one of our promise exports now
+  holds a `takeFromOtherQuestion` that names it, and the question gets the
+  call's results after the promise resolves, or its exception when the
+  promise is rejected. Before, the question got the bare tag at once, and
+  the call's later answer stayed in the stash. It also applies when the results
   fail to build. The usual case is a generated DIRECT handler that returns
   an error: its body runs inside the `sendReturnResults` build, and the
   dispatch then answers with the error name. Before, `sendReturnResults`
@@ -99,7 +108,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `capnp_return_results` fails and that then calls `capnp_return_exception`
   takes the same path. Tests in
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
-  `src/native/conn_test.zig` cover a failed build in both orders.
+  `src/native/conn_test.zig` cover a failed build in both orders, an
+  unknown capability, a rejected promise export, and a call parked on a
+  promise export that is later resolved or rejected.
 - **Native C ABI (Experimental): a tail-call Return no longer ends the
   question with "unsupported Return variant".** With the Peer changes above,
   the question gets one RETURN with the named call's results (when they

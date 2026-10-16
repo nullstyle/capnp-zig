@@ -875,3 +875,94 @@ test "a stashed exception whose redirect never came is dropped when the remote r
     try std.testing.expectEqual(protocol.ReturnTag.results, h.caller.tag.?);
     try std.testing.expectEqual(@as(u32, 8), h.caller.result_n.?);
 }
+
+// -- A yourself call that fails or waits before its handler runs ---------------
+//
+// rpc.capnp answers a `sendResultsTo = yourself` call with
+// `resultsSentElsewhere` in every case, and the C++ reference drops the
+// connection on an exception Return for its tail call. So a call that never
+// reaches its handler (an unknown or broken target), or waits on one of our
+// promise exports first, is answered the same way: the remote gets
+// `resultsSentElsewhere`, and its tail call gets the exception or results.
+
+test "a yourself call to a rejected promise export: the remote gets resultsSentElsewhere, the tail call the rejection" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.client_peer.resolvePromiseExportToException(promise_id, "broken by host");
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings("promise broken", h.caller.reason());
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+}
+
+test "a yourself call to an unknown capability: the remote gets resultsSentElsewhere, the tail call the exception" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushYourselfCall(allocator, tail_answer_id, 0x7fff_0000);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings("unknown capability", h.caller.reason());
+}
+
+test "a tail call that names a call parked on a promise export waits; the host's rejection reaches it" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    // The call waits on the promise, and the redirect waits on the call.
+    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+
+    try h.client_peer.resolvePromiseExportToException(promise_id, "rejected by host");
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings("promise broken", h.caller.reason());
+    try std.testing.expect(!h.client_peer.questions.contains(h.question_id));
+}
+
+test "a tail call that names a call parked on a promise export waits; the call's answer after the resolve reaches it" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
+
+    // The promise resolves to the client's export: the parked call runs.
+    try h.client_peer.resolvePromiseExportToExport(promise_id, h.target_export_id);
+    try std.testing.expectEqual(@as(?u32, tail_answer_id), h.target.answer_id);
+    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
+
+    var result = ResultN{ .n = 7 };
+    try h.client_peer.sendReturnResults(tail_answer_id, &result, ResultN.build);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.results, h.caller.tag.?);
+    try std.testing.expectEqual(@as(u32, 7), h.caller.result_n.?);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+}

@@ -138,7 +138,42 @@ pub fn CallInbound(comptime Peer: type) type {
                 self.limits.max_active_inbound_questions,
             );
 
-            peer_call_orchestration.handleCallForPeer(
+            // `routeCall` marks a `yourself` call. If this call still fails
+            // out of handleCall, drop the mark with the answer record above.
+            // (A failed mark leaves none, and the catch below answers with
+            // an exception, as for any call it refuses.)
+            errdefer if (call.send_results_to.tag == .yourself) {
+                _ = self.send_results_to_yourself.remove(call.question_id);
+            };
+            routeCall(self, frame, call) catch |err| {
+                log.debug("call routing error for question {}: {}", .{ call.question_id, err });
+                // The redirected result is already committed on the target
+                // connection and the resultsSentElsewhere write may itself have
+                // reached the source caller. Never risk a second terminal Return
+                // on that answer id; let the transport-level error close the peer.
+                if (err == error.AutomaticThirdPartySourceSettlementFailed) return err;
+                try self.sendReturnException(call.question_id, @errorName(err));
+            };
+            if (self.automatic_third_party_routes.get(call.question_id)) |route| {
+                if (route.source_marker_failed) {
+                    self.finalizeAutomaticThirdPartyRoute(route, null);
+                    return error.AutomaticThirdPartySourceSettlementFailed;
+                }
+            }
+        }
+
+        /// Route an inbound Call to its target. A `sendResultsTo = yourself`
+        /// call is marked first, before it can be parked, refused or fail:
+        /// rpc.capnp answers such a call with `resultsSentElsewhere` in every
+        /// case, and the C++ reference rejects an exception Return for its
+        /// tail call as a protocol error. With the mark, every exception
+        /// Return for the call (an unknown or broken target, a refused queue,
+        /// a parked call whose promise is rejected) goes to the question whose
+        /// `takeFromOtherQuestion` names it, and a redirect that names a
+        /// parked call is held until the call is answered.
+        fn routeCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
+            if (call.send_results_to.tag == .yourself) try self.noteSendResultsToYourself(call.question_id);
+            try peer_call_orchestration.handleCallForPeer(
                 Peer,
                 self,
                 frame,
@@ -174,21 +209,7 @@ pub fn CallInbound(comptime Peer: type) type {
                     peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
                     prepareParamCapsForDispatch,
                 ),
-            ) catch |err| {
-                log.debug("call routing error for question {}: {}", .{ call.question_id, err });
-                // The redirected result is already committed on the target
-                // connection and the resultsSentElsewhere write may itself have
-                // reached the source caller. Never risk a second terminal Return
-                // on that answer id; let the transport-level error close the peer.
-                if (err == error.AutomaticThirdPartySourceSettlementFailed) return err;
-                try self.sendReturnException(call.question_id, @errorName(err));
-            };
-            if (self.automatic_third_party_routes.get(call.question_id)) |route| {
-                if (route.source_marker_failed) {
-                    self.finalizeAutomaticThirdPartyRoute(route, null);
-                    return error.AutomaticThirdPartySourceSettlementFailed;
-                }
-            }
+            );
         }
 
         /// Resolve the `receiverAnswer` capabilities in a Call's params

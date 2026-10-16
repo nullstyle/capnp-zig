@@ -77,6 +77,15 @@ question. If `capnp_return_results`
 fails (its results do not build), the call is still unanswered; answer it
 with `capnp_return_exception`, and the question gets that exception.
 
+The same holds when the call targets a promise export (`capnp_promise_export`)
+that is not resolved yet. The question waits while the call is parked. After
+`capnp_resolve_promise` to one of your exports, the call reaches the host as
+an INBOUND_CALL, and its answer goes to the question. After
+`capnp_reject_promise`, the question gets one RETURN EXCEPTION with the
+reason `promise broken`. A call that the core refuses before the host sees
+it (an unknown capability, a broken promise) also gives the question its
+exception, and the remote `resultsSentElsewhere`.
+
 Two bounds apply. The core keeps at most
 `PeerLimits.max_loopback_result_stash` (4096) answers that wait for their
 redirect, and holds at most `PeerLimits.max_send_results_to_yourself` (4096)

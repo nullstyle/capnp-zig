@@ -2170,3 +2170,75 @@ test "tail call: an answer whose redirect never came is not given to a later tai
     try reuseTailCallId(alloc, a, &ra, t);
     try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
 }
+
+test "tail call: a redirect that names a call parked on a promise export waits; a rejection reaches the question" {
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    const p = try a.promiseExport();
+    try pushFrame(alloc, a, yourselfCallFrame(alloc, tail_answer, p));
+    try pushFrame(alloc, a, tailCallReturnFrame(alloc, t.q, tail_answer));
+    try drainAll(a, &ra);
+    // The call waits on the promise, and the question waits on the call.
+    try expectNoReturnYet(&ra, t.q);
+    try testing.expectEqual(@as(usize, 0), try countReturnFrames(&ra, tail_answer, null));
+
+    try a.rejectPromise(p, "rejected by host");
+    try drainAll(a, &ra);
+    // The Peer fails a call on a broken promise with this reason, as it
+    // does for a call whose results go to the caller.
+    const r = try expectOneReturn(&ra, t.q, .exception);
+    try testing.expectEqualStrings("promise broken", r.reason);
+    // The remote's call gets resultsSentElsewhere, never an exception.
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, null));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, .resultsSentElsewhere));
+    try a.finish(t.q, false);
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(t.q));
+}
+
+test "tail call: a redirect that names a call parked on a promise export waits; the call's answer after the resolve reaches the question" {
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    const p = try a.promiseExport();
+    try pushFrame(alloc, a, yourselfCallFrame(alloc, tail_answer, p));
+    try pushFrame(alloc, a, tailCallReturnFrame(alloc, t.q, tail_answer));
+    try drainAll(a, &ra);
+    try expectNoReturnYet(&ra, t.q);
+
+    // The promise resolves to A's export: the parked call reaches the host.
+    try a.resolvePromise(p, .{ .kind = .@"export", .id = t.ea });
+    try drainAll(a, &ra);
+    const c = ra.lastCall();
+    try testing.expectEqual(tail_answer, c.answer_id);
+    try testing.expectEqual(@as(u64, 200), c.host_tag);
+    try expectNoReturnYet(&ra, t.q);
+
+    const res = try msgU64(alloc, 42);
+    defer alloc.free(res);
+    try a.returnResults(tail_answer, res, &.{});
+    try drainAll(a, &ra);
+    const r = try expectOneReturn(&ra, t.q, .results);
+    try testing.expectEqual(@as(u64, 42), try readU64(alloc, r.msg));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, .resultsSentElsewhere));
+    try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
+    try a.finish(t.q, false);
+    try drainAll(a, &ra);
+}
