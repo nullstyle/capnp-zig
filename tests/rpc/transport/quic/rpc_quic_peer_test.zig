@@ -3938,6 +3938,98 @@ test "WarmRedialClient.requestStop never writes into a generation that ended on 
 }
 
 // ---------------------------------------------------------------------------
+// WarmRedialClient.requestStop during generation setup. `runGeneration`
+// publishes the generation's connection (`current_conn`) and then enqueues the
+// Bootstrap and Restore frames. A stop in that gap closes the connection, so
+// the enqueue fails with BrokenPipe. `run` took that for a failed setup: the
+// Outcome said 0 generations and cause `.unknown`, but the stop had ended a
+// live generation. The stop-race test above failed that way when its stop
+// landed in the gap (Nightly 38713314813). Here a test knob pauses the run
+// thread in the gap, so the stop always lands there.
+// ---------------------------------------------------------------------------
+
+const SetupStop = struct {
+    client: *quic.WarmRedialClient,
+    run_result: ?anyerror!quic.WarmRedialClient.Outcome = null,
+
+    fn run(self: *SetupStop) void {
+        self.run_result = self.client.run();
+    }
+};
+
+test "WarmRedialClient.requestStop during generation setup reports 1 generation and .local_close" {
+    const allocator = std.testing.allocator;
+    const knobs = quic.testing.knobs;
+    // Never stepped: the stop ends the generation before its first frame
+    // goes out, so nothing needs an answer.
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+    });
+    defer server.deinit();
+
+    var client = try quic.WarmRedialClient.init(
+        allocator,
+        std.testing.io,
+        .{
+            .remote_addr = server.getAddress(),
+            .server_name = "localhost",
+            .insecure_skip_verify = true,
+            .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+            .handshake_timeout_ms = 1_000,
+        },
+        RedialEcho.sturdy_ref,
+        .{ .max_redials = 0, .backoff_ms = 1 },
+        null,
+        StopRace.onRebind,
+        null,
+    );
+    defer client.deinit();
+
+    knobs.setPauseAfterPublish(true);
+    defer knobs.setPauseAfterPublish(false);
+
+    var setup_stop = SetupStop{ .client = &client };
+    const run_thread = try std.Thread.spawn(.{}, SetupStop.run, .{&setup_stop});
+    var joined = false;
+    // A failed check lets the run thread finish before `client` goes out of
+    // scope.
+    defer if (!joined) {
+        client.requestStop();
+        knobs.setPauseAfterPublish(false);
+        run_thread.join();
+    };
+
+    var waited_ms: u64 = 0;
+    while (!knobs.pausedAfterPublish() and waited_ms < loopback.loopback_timeout_ms) : (waited_ms += 1) {
+        loopback.sleepMs(1);
+    }
+    try std.testing.expect(knobs.pausedAfterPublish());
+    // The run thread waits in the gap with its connection published.
+    client.mu.lockUncancelable(client.io);
+    const published = client.current_conn != null;
+    client.mu.unlock(client.io);
+    try std.testing.expect(published);
+
+    client.requestStop();
+    knobs.setPauseAfterPublish(false);
+    run_thread.join();
+    joined = true;
+
+    const outcome = try (setup_stop.run_result orelse return error.NoOutcome);
+    if (outcome.generations != 1 or outcome.last_cause != .local_close) {
+        std.debug.print("setup stop outcome: generations={d} last_cause={any}\n", .{ outcome.generations, outcome.last_cause });
+    }
+    // The stop ended the generation that had published its connection.
+    try std.testing.expectEqual(@as(u32, 1), outcome.generations);
+    try std.testing.expectEqual(rpc_events.DisconnectCause.local_close, outcome.last_cause);
+    // A stop is not a failure: it spends no redial.
+    try std.testing.expectEqual(@as(u32, 0), outcome.total_redials);
+    try std.testing.expectEqual(@as(u32, 0), outcome.rebinds);
+}
+
+// ---------------------------------------------------------------------------
 // Unauthenticated datagrams. UDP lets anyone who can reach an endpoint send
 // it a datagram, and a QUIC packet is authenticated only by its AEAD tag:
 // every header field in front of the tag (connection-ID lengths, the token

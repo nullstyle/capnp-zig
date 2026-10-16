@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **QUIC (Experimental): a `WarmRedialClient.requestStop` during generation
+  setup reported no generation and cause `.unknown`.** A generation makes its
+  connection reachable by `requestStop` and then enqueues its Bootstrap and
+  Restore frames. A stop in that gap closes the connection, so the enqueue
+  fails with `BrokenPipe`. `run` took that for a failed setup, and its
+  `Outcome` said `generations = 0` and `last_cause = .unknown`. Now that
+  generation counts, and `last_cause` is `.local_close`, as for a stop while
+  the generation runs. A setup failure without a stop is still an error, and
+  it still spends a redial. `Outcome.generations` now documents what it
+  counts. Nightly 38713314813 failed this way in the QUIC peer test
+  "WarmRedialClient.requestStop never writes into a generation that ended on
+  its own". The new QUIC peer test "WarmRedialClient.requestStop during
+  generation setup reports 1 generation and .local_close" pauses the
+  generation in the gap with a test-only knob and stops it there.
+
 ## [0.26.0] - 2026-10-10
 
 This is a Windows reliability release. On Windows, a socket read could fail
