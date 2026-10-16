@@ -742,10 +742,14 @@ pub const Peer = struct {
     /// (the reflected-loopback / Level-1 tail-call optimization). Keyed by the
     /// answered call's answer id (the forwarder's forwarded-question id); the
     /// value is an owned Return-results frame. Consumed inline when the matching
-    /// `takeFromOtherQuestion` arrives (see `handleReturn`); freed at deinit if
-    /// that redirect never comes. NOT freed on the answered call's Finish — the
-    /// forwarder's `Finish` for the forwarded question can arrive BEFORE the
-    /// `takeFromOtherQuestion`, so freeing there would drop the results early.
+    /// `takeFromOtherQuestion` arrives (see `handleReturn`). If that redirect
+    /// never comes (rpc.capnp lets the remote skip it), the entry is freed
+    /// when the remote reuses the id for a new Call (`handleCall`: the
+    /// remote reuses an id only after its Finish, and a redirect that names
+    /// the old call comes before that Finish), or at deinit. NOT freed on the
+    /// answered call's Finish — the forwarder's `Finish` for the forwarded
+    /// question can arrive BEFORE the `takeFromOtherQuestion`, so freeing
+    /// there would drop the results early.
     /// Only cap-free results are stashed, and exceptions: rpc.capnp answers
     /// such a call with `resultsSentElsewhere` also when it fails, so its
     /// exception reaches the caller only through this stash.
@@ -759,7 +763,10 @@ pub const Peer = struct {
     /// the call before its answer ends the question with
     /// `tail_call_finished_reason`. Bounded by
     /// `limits.max_send_results_to_yourself`; past it, the question gets the
-    /// bare redirect at once.
+    /// bare redirect at once. A question cancelled before its redirect came
+    /// (by the host or a deadline) is held too: the call's answer or Finish
+    /// then retires it, as a late Return retires a cancelled question, and
+    /// the answer is not stashed for a redirect that has already come.
     ///
     /// Only `sendReturnResults` and the `sendReturnException` family settle
     /// a hold. Other Return paths for the call (`sendPrebuiltReturnFrame`,
@@ -6030,13 +6037,17 @@ pub const Peer = struct {
         // overflowed): the caller then sees `takeFromOtherQuestion` as before.
         if (ret.tag == .takeFromOtherQuestion) {
             if (ret.take_from_other_question) |source_answer_id| {
-                if (self.questions.get(ret.answer_id)) |question| {
+                if (self.questions.contains(ret.answer_id)) {
                     if (self.loopback_result_stash.fetchRemove(source_answer_id)) |entry| {
                         defer self.allocator.free(entry.value);
                         try self.deliverStashedLoopbackResults(ret.answer_id, entry.value);
                         return;
                     }
-                    if (!question.cancelled and self.holdTailCall(source_answer_id, ret.answer_id)) return;
+                    // A cancelled question is held too: the call's answer
+                    // (or its Finish) then retires it, as a late Return
+                    // retires a cancelled question, and nothing is stashed
+                    // for a redirect that has already come.
+                    if (self.holdTailCall(source_answer_id, ret.answer_id)) return;
                 }
             }
         }

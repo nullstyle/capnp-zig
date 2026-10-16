@@ -64,6 +64,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` cover a held tail
   call that gets results, one that gets an exception, and the duplicate
   Return.
+- **RPC: a kept tail-call answer no longer goes to a later, unrelated
+  question.** The Peer keeps the answer of a `sendResultsTo = yourself`
+  call until the `takeFromOtherQuestion` that names it arrives. If that
+  redirect had already come, or never came, the answer stayed. The remote
+  can reuse the call's question id after its Finish, and the C++ reference
+  reuses the lowest free id. Its next tail call with that id then got the
+  old answer at once, before the new call was answered, and the new answer
+  stayed in turn. Two cases left such an answer: a question cancelled (by
+  the host, or a deadline) before its redirect arrived, and a remote that
+  never sends the redirect, which rpc.capnp allows. Now a cancelled
+  question waits for the call like any other question, and the call's
+  answer or Finish retires it. A new Call with the same id drops any answer
+  that is still kept. Cap-free results had this bug before this release.
+  Exceptions are kept too since the change below, so they had it as well.
+  Tests in `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
+  `src/native/conn_test.zig` cover both cases, with results and with an
+  exception.
 - **RPC: a `sendResultsTo = yourself` call that fails is now answered with
   `resultsSentElsewhere`.** rpc.capnp answers such a call with
   `resultsSentElsewhere`, and the C++ reference rejects an exception Return

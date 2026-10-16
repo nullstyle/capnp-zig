@@ -68,8 +68,12 @@ things:
 - It gives your question the call's results or exception as its RETURN.
 
 The question has no RETURN until then. `capnp_cancel` still ends it with one
-RETURN CANCELED. The order does not matter: an answer that comes before the
-redirect is kept until the redirect arrives. If `capnp_return_results`
+RETURN CANCELED, also before the redirect arrives; the call's answer then
+goes to no question. The order does not matter: an answer that comes before
+the redirect is kept until the redirect arrives. If the remote never sends
+that redirect (rpc.capnp allows this), the answer is dropped when the remote
+sends a new call with the same question id, so it never reaches a later
+question. If `capnp_return_results`
 fails (its results do not build), the call is still unanswered; answer it
 with `capnp_return_exception`, and the question gets that exception.
 

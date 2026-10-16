@@ -2065,3 +2065,108 @@ test "tail call: a redirect that names no yourself call gives one unfollowed exc
     try drainAll(a, &ra);
     try testing.expectEqual(@as(usize, 1), ra.countReturns(t.q));
 }
+
+/// Round 1 of the id-reuse tests: the host cancels question `t.q`, then the
+/// remote's tail call for it arrives, and the host answers that call (with
+/// results, or with an exception). The remote then finishes the call, after
+/// our Finish of the question, as rpc.capnp orders it.
+fn cancelBeforeRedirect(alloc: std.mem.Allocator, a: *Conn, ra: *Rec, t: TailSetup, answer_with_exception: bool) !void {
+    try a.cancel(t.q);
+    try drainAll(a, ra);
+    _ = try expectOneReturn(ra, t.q, .canceled);
+    try pushPendingTailCall(alloc, a, ra, t, t.q, tail_answer);
+    if (answer_with_exception) {
+        try a.returnException(tail_answer, 0, "old call failed");
+    } else {
+        const res = try msgU64(alloc, 42);
+        defer alloc.free(res);
+        try a.returnResults(tail_answer, res, &.{});
+    }
+    try drainAll(a, ra);
+    // The cancelled question took the answer: nothing is kept for a
+    // redirect that has already come.
+    try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
+    try testing.expect(!a.peer.questions.contains(t.q));
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(t.q));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(ra, tail_answer, .resultsSentElsewhere));
+    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
+    try drainAll(a, ra);
+}
+
+/// Round 2: the remote reuses the call's id for its next tail call (the C++
+/// reference reuses the lowest free id). The new question gets the new
+/// call's answer, never the old one.
+fn reuseTailCallId(alloc: std.mem.Allocator, a: *Conn, ra: *Rec, t: TailSetup) !void {
+    const q2 = try nextQuestion(alloc, a, ra, t);
+    try pushPendingTailCall(alloc, a, ra, t, q2, tail_answer);
+    try expectNoReturnYet(ra, q2);
+    const res = try msgU64(alloc, 99);
+    defer alloc.free(res);
+    try a.returnResults(tail_answer, res, &.{});
+    try drainAll(a, ra);
+    const r = try expectOneReturn(ra, q2, .results);
+    try testing.expectEqual(@as(u64, 99), try readU64(alloc, r.msg));
+    try a.finish(q2, false);
+    try drainAll(a, ra);
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(q2));
+}
+
+test "tail call: a cancel before the redirect, then the remote reuses the call's id: the new question waits for its own answer" {
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    try cancelBeforeRedirect(alloc, a, &ra, t, false);
+    try reuseTailCallId(alloc, a, &ra, t);
+}
+
+test "tail call: a cancel before the redirect, a failed call, then id reuse: the old exception reaches no question" {
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    try cancelBeforeRedirect(alloc, a, &ra, t, true);
+    try reuseTailCallId(alloc, a, &ra, t);
+}
+
+test "tail call: an answer whose redirect never came is not given to a later tail call with its id" {
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    // rpc.capnp lets the remote send a `yourself` call and never name it:
+    // the answer is kept, then the remote finishes the call.
+    try pushFrame(alloc, a, yourselfCallFrame(alloc, tail_answer, t.ea));
+    try drainAll(a, &ra);
+    const res = try msgU64(alloc, 42);
+    defer alloc.free(res);
+    try a.returnResults(tail_answer, res, &.{});
+    try drainAll(a, &ra);
+    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), a.peer.loopback_result_stash.count());
+
+    try reuseTailCallId(alloc, a, &ra, t);
+    try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
+}
