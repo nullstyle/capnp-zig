@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Nightly: the Windows 64-worker soak lane runs in its own job.** It used
+  to run after the two 8-worker lanes on the same runner, so it often began
+  with about 16k ports in TIME_WAIT. 8 of the 17 Windows Nightlies from
+  10-04 to 10-15 reported port exhaustion on it. The new job
+  (`soak-windows-64w`) starts on a fresh runner and widens the dynamic TCP
+  port range to 55,535 ports with `netsh`. Before the lane, it prints the
+  range and the TIME_WAIT count. If `netsh` fails, the job warns and runs
+  on the default range.
+
 ### Fixed
 
 - **QUIC (Experimental): a `WarmRedialClient.requestStop` during generation
