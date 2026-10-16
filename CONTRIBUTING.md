@@ -28,6 +28,7 @@ fits together.
 | Format | `just fmt` (generated bindings included: the plugin emits `zig fmt` layout, so this never changes them) |
 | Docs/snippets gate | `zig build docs-smoke` |
 | Self-interop e2e (no docker, all OSes) | `zig build e2e-self` (or `just e2e-self`) |
+| Self-interop e2e over QUIC (no docker; Linux and macOS) | `zig build -Dquic=true e2e-quic` (or `just e2e-quic`) |
 | Cross-language e2e | `just e2e` (needs Docker; reference toolchains run in containers) |
 | Soak harness | `zig build soak -- --seconds 5 --workers 4` |
 | Fuzz targets | `zig build test-fuzz` (deterministic) / `--fuzz` (coverage-guided) |

@@ -16,6 +16,8 @@ const cap_passing = @import("generated/cap_passing.zig");
 
 const Allocator = std.mem.Allocator;
 
+// tools/e2e_self.zig lists these names by hand (`quic_schemas` runs all of
+// them over QUIC): add a new schema there too, or `e2e-quic` skips it.
 const Schema = enum {
     game_world,
     chat,
