@@ -34,7 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exhaustion.** A single connect-stage `error.Unexpected` after at least
   16,000 successful dials now counts as the edge of the port range, not as
   an unexplained failure. The 10-13 60 s 8-worker lane hit that edge after
-  16,262 dials.
+  16,262 dials. The soak reports the edge on its own warning line. The edge
+  does not end the judged memory window, because dials go through again
+  after it.
 
 ## [0.26.0] - 2026-10-10
 
