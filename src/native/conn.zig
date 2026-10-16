@@ -866,6 +866,7 @@ fn staticReason(text: []const u8) ?[]const u8 {
         rpc.peer.disconnected_reason,
         rpc.peer.shutdown_reason,
         rpc.peer.tail_call_finished_reason,
+        rpc.peer.promise_export_released_reason,
     };
     for (known) |reason| {
         if (std.mem.eql(u8, text, reason)) return reason;

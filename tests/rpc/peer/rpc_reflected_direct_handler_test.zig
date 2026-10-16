@@ -135,6 +135,15 @@ const Wire = struct {
         return n;
     }
 
+    /// Frames with `tag` sent in `dir`.
+    fn countTag(self: *const Wire, dir: EventDir, tag: protocol.MessageTag) usize {
+        var n: usize = 0;
+        for (self.events.items) |event| {
+            if (event.dir == dir and event.tag == tag) n += 1;
+        }
+        return n;
+    }
+
     /// Finish frames sent in `dir` for `question_id`.
     fn countFinishes(self: *const Wire, dir: EventDir, question_id: u32) usize {
         var n: usize = 0;
@@ -542,12 +551,17 @@ const TailCaller = struct {
     returns: u32 = 0,
     tag: ?protocol.ReturnTag = null,
     result_n: ?u32 = null,
-    reason_buf: [64]u8 = undefined,
+    reason_buf: [128]u8 = undefined,
     reason_len: usize = 0,
+    /// Send this export of the client as the call's params (the content is
+    /// that capability), instead of an empty struct.
+    param_cap: ?u32 = null,
 
-    fn build(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+    fn build(ctx_ptr: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+        const self: *const TailCaller = castCtx(*const TailCaller, ctx_ptr);
         var payload = try call.payloadTyped();
         var any = try payload.initContent();
+        if (self.param_cap) |export_id| return any.setCapability(.{ .id = export_id });
         _ = try any.initStruct(0, 0);
     }
 
@@ -633,6 +647,51 @@ const TailHarness = struct {
         call.setSendResultsToYourself();
         var payload = try call.payloadTyped();
         _ = try (try payload.initContent()).initStruct(0, 0);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try self.client_peer.handleFrame(frame);
+    }
+
+    /// The remote calls promised answer `promised` (one of the client's
+    /// answers) with question `answer_id`: a call pipelined on that answer.
+    /// With `yourself`, the results go back to the remote, as the C++
+    /// reference sends a call it bounces back to a tail call's pipeline.
+    fn pushPipelinedCall(self: *TailHarness, allocator: std.mem.Allocator, answer_id: u32, promised: u32, yourself: bool) !void {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var call = try mb.beginCall(answer_id, CALL_INTERFACE_ID, CALL_METHOD_ID);
+        try call.setTargetPromisedAnswer(promised);
+        if (yourself) call.setSendResultsToYourself();
+        var payload = try call.payloadTyped();
+        _ = try (try payload.initContent()).initStruct(0, 0);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try self.client_peer.handleFrame(frame);
+    }
+
+    /// The remote calls the client's export `target_export` with question
+    /// `answer_id`; the results go to the remote (`sendResultsTo = caller`).
+    /// The params carry the remote's export `param_export` as a
+    /// `senderHosted` capability: an import reference the client takes.
+    fn pushPlainCall(self: *TailHarness, allocator: std.mem.Allocator, answer_id: u32, target_export: u32, param_export: u32) !void {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var call = try mb.beginCall(answer_id, CALL_INTERFACE_ID, CALL_METHOD_ID);
+        try call.setTargetImportedCap(target_export);
+        var payload = try call.payloadTyped();
+        try (try payload.initContent()).setCapability(.{ .id = 0 });
+        var cap_list = try call.initCapTableTyped(1);
+        protocol.CapDescriptor.writeSenderHosted(try cap_list.get(0), param_export);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try self.client_peer.handleFrame(frame);
+    }
+
+    /// The remote releases `count` references to the client's export `id`.
+    fn pushRelease(self: *TailHarness, allocator: std.mem.Allocator, id: u32, count: u32) !void {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        try mb.buildRelease(id, count);
         const frame = try mb.finish();
         defer allocator.free(frame);
         try self.client_peer.handleFrame(frame);
@@ -1233,4 +1292,110 @@ test "a failed resultsSentElsewhere send before the redirect: the follow-up exce
     try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
     try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
     try std.testing.expectEqualStrings("results were not sent", h.caller.reason());
+}
+
+// -- A call parked on a promise export that the remote releases -----------------
+//
+// A call parked on one of our promise exports waits for that promise. When
+// the remote releases its last reference to the export before it resolves,
+// the export is destroyed and the host can no longer resolve it. The C++
+// reference does this for a natural tail call: `return
+// context.tailCall(p.fooRequest())` on a promise export the host passed it
+// as a param sends the `yourself` call on the promise, the redirect, and
+// then a Release of the promise as the call context drops its params. The
+// parked call then gets an exception Return, as every call must get one
+// Return. For a `yourself` call that is `resultsSentElsewhere` on the wire,
+// and the exception goes to the question whose redirect names the call.
+
+/// The client sends question X with its promise export `promise_id` as the
+/// params, so the remote holds one reference to it. Returns X.
+fn sendPromiseInParams(h: *TailHarness, caller: *TailCaller, promise_id: u32) !u32 {
+    caller.param_cap = promise_id;
+    const qx = try h.nextQuestion(caller);
+    try std.testing.expectEqual(@as(u32, 1), h.client_peer.exports.getPtr(promise_id).?.ref_count);
+    return qx;
+}
+
+test "a held tail call whose parked call loses its promise export to a Release gets an exception" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const promise_id = try h.client_peer.addPromiseExport();
+    var caller = TailCaller{};
+    const qx = try sendPromiseInParams(&h, &caller, promise_id);
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try h.pushRedirect(allocator, qx, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 0), caller.returns);
+    try std.testing.expectEqual(@as(usize, 1), h.client_peer.held_tail_calls.count());
+
+    try h.pushRelease(allocator, promise_id, 1);
+    try std.testing.expect(!h.client_peer.exports.contains(promise_id));
+    try std.testing.expectEqual(@as(u32, 1), caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, caller.tag.?);
+    try std.testing.expectEqualStrings(peer_impl.promise_export_released_reason, caller.reason());
+    // The call gets its one Return, resultsSentElsewhere, and nothing of it
+    // stays behind.
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+    try std.testing.expect(!h.client_peer.send_results_to_yourself.contains(tail_answer_id));
+    try std.testing.expect(!h.client_peer.active_inbound_questions.contains(tail_answer_id));
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.held_tail_calls.count());
+    // The question sends its Finish; a compliant remote finishes the tail
+    // call only after it.
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, qx));
+}
+
+test "a yourself call parked on a promise export the remote releases is answered at once; its later redirect gets the exception" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const promise_id = try h.client_peer.addPromiseExport();
+    var caller = TailCaller{};
+    const qx = try sendPromiseInParams(&h, &caller, promise_id);
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try h.pushRelease(allocator, promise_id, 1);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+
+    try h.pushRedirect(allocator, qx, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, caller.tag.?);
+    try std.testing.expectEqualStrings(peer_impl.promise_export_released_reason, caller.reason());
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+}
+
+test "a plain call parked on a promise export the remote releases gets one exception Return" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const promise_id = try h.client_peer.addPromiseExport();
+    var caller = TailCaller{};
+    _ = try sendPromiseInParams(&h, &caller, promise_id);
+    // A call whose results go to the remote, parked on the promise, and a
+    // call pipelined on that call's answer.
+    const remote_export_id: u32 = 77;
+    try h.pushPlainCall(allocator, 901, promise_id, remote_export_id);
+    try h.pushPipelinedCall(allocator, 902, 901, false);
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, 901, null));
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, 902, null));
+    try std.testing.expect(h.client_peer.caps.hasImport(remote_export_id));
+    const releases_before = h.wire.countTag(.client_to_server, .release);
+
+    try h.pushRelease(allocator, promise_id, 1);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 901, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 901, .exception));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 902, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 902, .exception));
+    try std.testing.expect(!h.client_peer.active_inbound_questions.contains(901));
+    try std.testing.expect(!h.client_peer.active_inbound_questions.contains(902));
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.pending_promises.count());
+    // The call's param capability is released, not dropped.
+    try std.testing.expectEqual(releases_before + 1, h.wire.countTag(.client_to_server, .release));
+    try std.testing.expect(!h.client_peer.caps.hasImport(remote_export_id));
 }

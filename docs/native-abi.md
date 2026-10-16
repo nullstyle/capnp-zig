@@ -51,6 +51,7 @@ RETURN for each Return variant that the remote can send:
 | `takeFromOtherQuestion`, named call fails | `EXCEPTION`: the named call's exception |
 | `takeFromOtherQuestion`, named call's results carry capabilities | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
 | `takeFromOtherQuestion`, the remote finishes the named call before the host answers it | `EXCEPTION` (`failed`), reason `rpc.peer.tail_call_finished_reason` |
+| `takeFromOtherQuestion`, the named call waits on a promise export that the remote releases before it resolves (see below) | `EXCEPTION` (`failed`), reason `rpc.peer.promise_export_released_reason` |
 | `takeFromOtherQuestion`, the named call was forwarded back to the remote (see below) | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason`, when the forwarded call returns |
 | `takeFromOtherQuestion` that names no call with `sendResultsTo = yourself` | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
 | `takeFromOtherQuestion` past a bound (see below) | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
@@ -86,7 +87,14 @@ an import, the core forwards the call back to the remote, and its results
 never come to this side. When the forwarded call returns, the question gets
 one RETURN EXCEPTION (`unimplemented`) with the reason
 `unfollowed_tail_call_reason`, or the forwarded call's exception if it
-failed. A call that the core refuses before the host sees it (an unknown
+failed. If the remote releases the promise export before it resolves (it
+drops its last reference, as the C++ reference does after a tail call on a
+promise the host passed it), the export is gone and the call can never
+run: the remote gets `resultsSentElsewhere`, and the question gets one
+RETURN EXCEPTION (`failed`) with the reason
+`rpc.peer.promise_export_released_reason`. Every call the remote parked on
+a promise export gets an exception Return with that reason when the remote
+releases the export first. A call that the core refuses before the host sees it (an unknown
 capability, a broken promise) also gives the question its exception, and
 the remote `resultsSentElsewhere`.
 

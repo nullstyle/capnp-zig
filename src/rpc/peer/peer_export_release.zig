@@ -11,6 +11,7 @@ const peer_cap_lifecycle = @import("./peer_cap_lifecycle.zig");
 const peer_inbound_release = @import("./peer_inbound_release.zig");
 const peer_fds = @import("./peer_fds.zig");
 const peer_outbound_control = @import("./peer_outbound_control.zig");
+const peer_return_dispatch = @import("./return/peer_return_dispatch.zig");
 const resolve = @import("./resolve.zig");
 const state = @import("./state.zig");
 const third_party = @import("./third_party.zig");
@@ -270,7 +271,7 @@ pub fn ExportRelease(comptime Peer: type) type {
                 self.bootstrap_export_id,
                 id,
                 peer_cap_lifecycle.clearExportForPeerFn(Peer),
-                pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
+                answerDroppedParkedCall,
             );
             finalizeExportRelease(self, id, promise_target, import_target);
         }
@@ -437,7 +438,7 @@ pub fn ExportRelease(comptime Peer: type) type {
                 self.bootstrap_export_id,
                 id,
                 peer_cap_lifecycle.clearExportForPeerFn(Peer),
-                pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
+                answerDroppedParkedCall,
             );
             finalizeExportRelease(self, id, promise_target, import_target);
         }
@@ -459,9 +460,37 @@ pub fn ExportRelease(comptime Peer: type) type {
                 self.bootstrap_export_id,
                 id,
                 peer_cap_lifecycle.clearExportForPeerFn(Peer),
-                pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
+                answerDroppedParkedCall,
             );
             finalizeExportRelease(self, id, promise_target, import_target);
+        }
+
+        /// The `deinit_pending_call` hook of an export's destruction, for a
+        /// call parked on it (`pending_export_promises`): a promise export
+        /// destroyed before it resolved, because the remote released its
+        /// last reference. Nobody can resolve that promise now, so the call
+        /// is answered with `promise_export_released_reason`, its params'
+        /// capabilities are released, and calls pipelined on it fail too
+        /// (`sendReturnException` drains them). Every call gets its one
+        /// Return: a `sendResultsTo = yourself` call answers
+        /// `resultsSentElsewhere`, and the question whose redirect names it
+        /// gets the exception. The C++ reference keeps such a call queued on
+        /// the promise instead (its call holds its own reference), but here
+        /// the host can no longer resolve a destroyed export.
+        ///
+        /// During `deinit` nothing is sent: the questions are settled
+        /// already and the transport may be gone.
+        fn answerDroppedParkedCall(self: *Peer, pending_call: *PendingCall, allocator: std.mem.Allocator) void {
+            defer pending_calls.deinitPendingCallOwnedFrame(PendingCall, pending_call, allocator);
+            if (self.in_deinit) return;
+            // Null: the frame was not a decodable Call, so nothing is owed.
+            const question_id = pending_call.question_id orelse return;
+            self.sendReturnException(question_id, Peer.promise_export_released_reason_text) catch |err| {
+                peer_return_dispatch.reportNonfatalErrorForPeer(Peer, self, err);
+            };
+            releaseInboundCaps(self, &pending_call.caps) catch |err| {
+                peer_return_dispatch.reportNonfatalErrorForPeer(Peer, self, err);
+            };
         }
 
         pub fn releaseExport(self: *Peer, id: u32, count: u32) !void {
@@ -479,7 +508,7 @@ pub fn ExportRelease(comptime Peer: type) type {
                 id,
                 count,
                 peer_cap_lifecycle.clearExportForPeerFn(Peer),
-                pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
+                answerDroppedParkedCall,
             );
             finalizeExportRelease(self, id, promise_target, import_target);
         }

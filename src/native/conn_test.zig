@@ -2390,3 +2390,50 @@ test "tail call: one allocation failure anywhere in capnp_return_results, then c
         if (!oneshot.induced) break;
     }
 }
+
+fn releaseFrame(alloc: std.mem.Allocator, id: u32, count: u32) ![]const u8 {
+    var mb = protocol.MessageBuilder.init(alloc);
+    defer mb.deinit();
+    try mb.buildRelease(id, count);
+    return mb.finish();
+}
+
+test "tail call: the remote tail-calls a promise export the host passed it, then releases it: one exception RETURN" {
+    // C++ `return context.tailCall(p.fooRequest())` on a promise export
+    // the host passed as a param: the yourself call on p, the redirect,
+    // then Release(p) as the call context drops its params. The call was
+    // parked on p, and nobody can resolve p now.
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    const p = try a.promiseExport();
+    const params = try msgCap(alloc, 3, 0);
+    defer alloc.free(params);
+    const q = try a.call(t.boot, iface, 0, params, &.{.{ .kind = .@"export", .id = p }}, 0);
+    try drainAll(a, &ra);
+
+    try pushFrame(alloc, a, yourselfCallFrame(alloc, tail_answer, p));
+    try pushFrame(alloc, a, tailCallReturnFrame(alloc, q, tail_answer));
+    try drainAll(a, &ra);
+    try expectNoReturnYet(&ra, q);
+    try pushFrame(alloc, a, releaseFrame(alloc, p, 1));
+    try drainAll(a, &ra);
+
+    const r = try expectOneReturn(&ra, q, .exception);
+    try testing.expectEqualStrings(capnp.rpc.peer.promise_export_released_reason, r.reason);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, null));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, .resultsSentElsewhere));
+    // The promise is gone: the host's late rejection reaches nothing.
+    try testing.expectError(error.UnknownExport, a.rejectPromise(p, "late"));
+    try a.finish(q, false);
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(q));
+}

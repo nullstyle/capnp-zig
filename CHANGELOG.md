@@ -47,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remote that follows rpc.capnp sends that Finish only after this
   question's Finish. If the remote finishes the named call before it is
   answered, the question ends with `rpc.peer.tail_call_finished_reason`.
+  If the named call waits on a promise export of ours and the remote
+  releases that export before it resolves, the question gets the call's
+  exception, `rpc.peer.promise_export_released_reason` (see "Fixed").
   Limit: `sendPrebuiltReturnFrame` puts its frame on the wire as built,
   also for a `sendResultsTo = yourself` call, and the C++ reference
   rejects a `results` or `exception` Return for its tail call. `HostPeer`
@@ -108,7 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was about to run. So a call parked on one of our promise exports now
   holds a `takeFromOtherQuestion` that names it, and the question gets the
   call's results after the promise resolves, or its exception when the
-  promise is rejected. Before, the question got the bare tag at once, and
+  promise is rejected or the remote releases it first. Before, the question got the bare tag at once, and
   the call's later answer stayed in the stash. It also applies when the
   results fail to build. The usual case is a generated DIRECT handler that
   returns an error: its body runs inside the `sendReturnResults` build, and
@@ -128,6 +131,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   promise export that is later resolved or rejected, a call forwarded
   back to the remote that fails, and a failed `resultsSentElsewhere` send
   (including a one-allocation-failure sweep of `capnp_return_results`).
+- **RPC: a call parked on a promise export that the remote releases now
+  gets its Return.** A call to one of our promise exports waits until the
+  host resolves the promise. If the remote released its last reference to
+  the export first, the Peer destroyed the export and freed the waiting
+  calls with no Return, so their callers waited forever, and the import
+  references in their params were never released. Now each such call gets
+  an exception Return with the reason
+  `rpc.peer.promise_export_released_reason`, its params' capabilities are
+  released, and calls pipelined on it fail too. A `sendResultsTo =
+  yourself` call answers `resultsSentElsewhere`, and the question whose
+  `takeFromOtherQuestion` names it gets the exception. The C++ reference
+  reaches this with `return context.tailCall(p.fooRequest())` on a promise
+  export the host passed it as a param: it sends the tail call, then a
+  Release of the promise as the call context drops its params. (The C++
+  reference itself keeps such a call queued on the promise, because the
+  call holds its own reference; here the host cannot resolve a destroyed
+  export.) Tests in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` (a held tail
+  call, the Release before the redirect, and a plain call with a param
+  capability and a call pipelined on it) and `src/native/conn_test.zig`.
 - **Native C ABI (Experimental): a tail-call Return no longer ends the
   question with "unsupported Return variant".** With the Peer changes above,
   the question gets one RETURN with the named call's results (when they

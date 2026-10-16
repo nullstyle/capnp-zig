@@ -242,6 +242,10 @@ pub fn releaseHandoffHeldExport(
     }
 }
 
+/// Remove export `id` and its handler. Calls still parked on it (an
+/// unresolved promise export) are detached first and handed to
+/// `deinit_pending_call` one by one; the Peer's hook answers each with an
+/// exception Return, since nobody can resolve the export now.
 fn destroyExportEntry(
     comptime PeerType: type,
     comptime ExportEntryType: type,

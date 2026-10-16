@@ -2462,6 +2462,7 @@ capnpc-zig.rpc.peer.Peer.pending_third_party_answers: field hash_map.HashMap([]c
 capnpc-zig.rpc.peer.Peer.pending_third_party_awaits: field hash_map.HashMap([]const u8,rpc.peer.state.PendingThirdPartyAwait(rpc.peer.state.Question(*const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void)),hash_map.StringContext,80)
 capnpc-zig.rpc.peer.Peer.pending_third_party_returns: field hash_map.HashMap(u32,[]u8,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.persistent_exports: field hash_map.HashMap(u32,*rpc.peer.peer_context_types.PersistenceStateOf(rpc.peer.mod.Peer),hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.promise_export_released_reason_text: const *const [42:0]u8
 capnpc-zig.rpc.peer.Peer.provideTargetsEqual: fn (*const rpc.peer.peer_state_types.ProvideTarget, *const rpc.peer.peer_state_types.ProvideTarget) bool
 capnpc-zig.rpc.peer.Peer.provides_by_key: field hash_map.HashMap([]const u8,u32,hash_map.StringContext,80)
 capnpc-zig.rpc.peer.Peer.provides_by_question: field hash_map.HashMap(u32,rpc.peer.peer_state_types.ProvideEntry,hash_map.AutoContext(u32),80)
@@ -2885,6 +2886,7 @@ capnpc-zig.rpc.peer.persistence.save_method_id: const u16
 capnpc-zig.rpc.peer.persistence.writeEmptySaveParams: fn (*rpc.wire.protocol.CallBuilder) error{ElementCountTooLarge,FarPointerOffsetTooLarge,IndexOutOfBounds,InvalidPointer,InvalidSegmentId,ListTooLarge,OffsetOutOfRange,OutOfBounds,OutOfMemory,PointerIndexOutOfBounds,TextTooLong,TooManySegments}!void
 capnpc-zig.rpc.peer.persistence.writeRestoreParams: fn (*rpc.wire.protocol.CallBuilder, []const u8) error{ElementCountTooLarge,FarPointerOffsetTooLarge,IndexOutOfBounds,InvalidPointer,InvalidSegmentId,ListTooLarge,OffsetOutOfRange,OutOfBounds,OutOfMemory,PointerIndexOutOfBounds,TextTooLong,TooManySegments}!void
 capnpc-zig.rpc.peer.persistence: struct
+capnpc-zig.rpc.peer.promise_export_released_reason: const *const [42:0]u8
 capnpc-zig.rpc.peer.provide_accept_join.InsertOutcome.duplicate_part: enumerant = 3
 capnpc-zig.rpc.peer.provide_accept_join.InsertOutcome.inserted: enumerant = 0
 capnpc-zig.rpc.peer.provide_accept_join.InsertOutcome.inserted_ready: enumerant = 1
