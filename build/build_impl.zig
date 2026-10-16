@@ -984,6 +984,11 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_rpc_cross_thread_stress_tests = addLibTest(b, "tests/rpc/transport/rpc_cross_thread_stress_test.zig", target, optimize, lib_module);
     const run_rpc_client_session_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_client_session_test.zig", target, optimize, lib_module);
     const run_rpc_server_session_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_server_session_test.zig", target, optimize, lib_module);
+    // Listener.close under a parked accept (sprint item P1-1). Its own root:
+    // std 0.17.0's Windows accept treats a cancelled wait as `unreachable`,
+    // so this binary may abort there, and that abort must not hide the other
+    // transport suites' results.
+    const run_rpc_listener_close_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_listener_close_test.zig", target, optimize, lib_module);
     // AF_UNIX regressions, plus the IP side of the non-IP TCP_NODELAY skip
     // (every TCP path must still set it). POSIX-only: the suite compiles
     // everywhere and skips on Windows.
@@ -1584,6 +1589,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_rpc_transport_step.dependOn(run_rpc_cross_thread_stress_tests);
     test_rpc_transport_step.dependOn(run_rpc_client_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_server_session_tests);
+    test_rpc_transport_step.dependOn(run_rpc_listener_close_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_regression_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_fd_drain_tests);
     test_rpc_transport_step.dependOn(run_rpc_unix_linger_tests);
