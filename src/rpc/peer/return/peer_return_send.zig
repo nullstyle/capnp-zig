@@ -303,7 +303,24 @@ pub fn ReturnSend(comptime Peer: type) type {
             // before `owned` is freed.
             defer if (held_question) |question_id| deliverHeldTailCall(self, question_id, answer_id, owned);
 
-            try sendReturnTag(self, answer_id, .resultsSentElsewhere);
+            sendReturnTag(self, answer_id, .resultsSentElsewhere) catch |err| {
+                // The remote got no Return, and the caller answers again
+                // with an exception (generated dispatch does; a native host
+                // answers a failed capnp_return_results with
+                // capnp_return_exception). Mark the call again, so that
+                // answer still sends `resultsSentElsewhere`, never an
+                // exception Return for a tail call. Not when the remote
+                // finished the call during the send, or the Return went
+                // out after all: then nothing is owed.
+                if (self.active_inbound_questions.contains(answer_id) and
+                    !self.finished_early_answers.contains(answer_id))
+                {
+                    self.send_results_to_yourself.put(answer_id, {}) catch |mark_err| {
+                        log.debug("yourself mark for {} not restored: {}", .{ answer_id, mark_err });
+                    };
+                }
+                return err;
+            };
         }
 
         /// Hold a `takeFromOtherQuestion` Return for `question_id` when the call

@@ -116,15 +116,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dropped the `yourself` mark before the build, so the exception after a
   failed build still went on the wire. A native host whose
   `capnp_return_results` fails and that then calls `capnp_return_exception`
-  takes the same path. It does not apply to `sendPrebuiltReturnFrame`, which
-  sends its frame as built (a limit, see "Changed" above), so
+  takes the same path. If the `resultsSentElsewhere` send itself fails (out
+  of memory), the call stays marked, so that follow-up exception still sends
+  `resultsSentElsewhere`. It does not apply to `sendPrebuiltReturnFrame`,
+  which sends its frame as built (a limit, see "Changed" above), so
   `HostPeer.respondHostCallException` still puts an exception on the wire
   for such a call. Tests in
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
   `src/native/conn_test.zig` cover a failed build in both orders, an
   unknown capability, a rejected promise export, a call parked on a
-  promise export that is later resolved or rejected, and a call forwarded
-  back to the remote that fails.
+  promise export that is later resolved or rejected, a call forwarded
+  back to the remote that fails, and a failed `resultsSentElsewhere` send
+  (including a one-allocation-failure sweep of `capnp_return_results`).
 - **Native C ABI (Experimental): a tail-call Return no longer ends the
   question with "unsupported Return variant".** With the Peer changes above,
   the question gets one RETURN with the named call's results (when they

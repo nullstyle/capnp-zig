@@ -2302,3 +2302,91 @@ fn tagReturnFrame(alloc: std.mem.Allocator, qid: u32, tag: protocol.ReturnTag) !
     ret.setReleaseParamCaps(false);
     return mb.finish();
 }
+
+/// An allocator that fails exactly one allocation (`fail_at`, counted from
+/// creation) and then works again, as a short memory shortage does.
+const OneShotFailAlloc = struct {
+    backing: std.mem.Allocator,
+    index: usize = 0,
+    fail_at: usize = std.math.maxInt(usize),
+    induced: bool = false,
+
+    fn allocator(self: *OneShotFailAlloc) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    fn shouldFail(self: *OneShotFailAlloc) bool {
+        const i = self.index;
+        self.index += 1;
+        if (i != self.fail_at) return false;
+        self.induced = true;
+        return true;
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *OneShotFailAlloc = @ptrCast(@alignCast(ctx));
+        if (self.shouldFail()) return null;
+        return self.backing.rawAlloc(len, alignment, ra);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+        const self: *OneShotFailAlloc = @ptrCast(@alignCast(ctx));
+        if (new_len > memory.len and self.shouldFail()) return false;
+        return self.backing.rawResize(memory, alignment, new_len, ra);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+        const self: *OneShotFailAlloc = @ptrCast(@alignCast(ctx));
+        if (new_len > memory.len and self.shouldFail()) return null;
+        return self.backing.rawRemap(memory, alignment, new_len, ra);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        const self: *OneShotFailAlloc = @ptrCast(@alignCast(ctx));
+        self.backing.rawFree(memory, alignment, ra);
+    }
+};
+
+test "tail call: one allocation failure anywhere in capnp_return_results, then capnp_return_exception: the remote gets only resultsSentElsewhere" {
+    // The host answers a failed capnp_return_results with
+    // capnp_return_exception, as docs/native-abi.md says. Wherever the one
+    // failure lands, the remote's tail call gets exactly one Return,
+    // resultsSentElsewhere (the C++ reference rejects any other), and the
+    // question exactly one RETURN by the time the transport closes.
+    const alloc = testing.allocator;
+    var k: usize = 0;
+    while (true) : (k += 1) {
+        var oneshot = OneShotFailAlloc{ .backing = alloc };
+        const a = try Conn.init(oneshot.allocator(), .{ .now_ns = 0 });
+        defer a.deinit();
+        const b = try Conn.init(alloc, .{ .now_ns = 0 });
+        defer b.deinit();
+        var ra = Rec.init(alloc);
+        defer ra.deinit();
+        var rb = Rec.init(alloc);
+        defer rb.deinit();
+
+        const t = try startTailCall(alloc, a, &ra, b, &rb);
+        try pushPendingTailCall(alloc, a, &ra, t, t.q, tail_answer);
+        const res = try msgU64(alloc, 42);
+        defer alloc.free(res);
+
+        oneshot.fail_at = oneshot.index + k;
+        const answered = if (a.returnResults(tail_answer, res, &.{})) |_| true else |_| false;
+        oneshot.fail_at = std.math.maxInt(usize);
+        if (!answered) try a.returnException(tail_answer, 0, "results did not build");
+        try drainAll(a, &ra);
+        a.transportClosed();
+        try drainAll(a, &ra);
+
+        const total = try countReturnFrames(&ra, tail_answer, null);
+        const rse = try countReturnFrames(&ra, tail_answer, .resultsSentElsewhere);
+        if (total != 1 or rse != 1 or ra.countReturns(t.q) != 1) {
+            std.debug.print("allocation failure at +{d}: {d} Return(s) for the tail call, {d} resultsSentElsewhere; question RETURNs {d}\n", .{
+                k, total, rse, ra.countReturns(t.q),
+            });
+            return error.TestWrongTailReturn;
+        }
+        if (!oneshot.induced) break;
+    }
+}

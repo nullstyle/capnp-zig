@@ -74,9 +74,15 @@ goes to no question. The order does not matter: an answer that comes before
 the redirect is kept until the redirect arrives. If the remote never sends
 that redirect (rpc.capnp allows this), the answer is dropped when the remote
 sends a new call with the same question id, so it never reaches a later
-question. If `capnp_return_results` fails (its results do not build), the
-call is still unanswered; answer it with `capnp_return_exception`, and the
-question gets that exception.
+question.
+
+If `capnp_return_results` fails, answer the call with
+`capnp_return_exception`. Usually the results did not build, and the
+question gets that exception. If the core built the results but could not
+send `resultsSentElsewhere` (out of memory), a question that was waiting
+already has the results and gets no second RETURN; otherwise the exception
+replaces the kept results. Either way the remote gets one
+`resultsSentElsewhere`.
 
 The same holds when the call targets a promise export (`capnp_promise_export`)
 that is not resolved yet. The question waits while the call is parked. After

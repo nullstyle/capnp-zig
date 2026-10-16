@@ -59,6 +59,9 @@ const Wire = struct {
     /// remote's Finish of it to the client inside that send, as a
     /// synchronous transport can.
     reenter_finish_for: ?u32 = null,
+    /// Fail the client's next send of a Return for this answer id, before
+    /// it reaches the wire (a transport write or out-of-memory failure).
+    fail_return_for: ?u32 = null,
 
     fn deinit(self: *Wire) void {
         self.events.deinit(self.allocator);
@@ -85,6 +88,14 @@ const Wire = struct {
 
     fn clientSend(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
         const self: *Wire = castCtx(*Wire, ctx_ptr);
+        if (self.fail_return_for) |answer_id| {
+            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+            defer decoded.deinit();
+            if (decoded.tag == .@"return" and (try decoded.asReturn()).answer_id == answer_id) {
+                self.fail_return_for = null;
+                return error.TestSendFailed;
+            }
+        }
         try self.record(.client_to_server, frame);
         if (self.reenter_finish_for) |answer_id| {
             const last = self.events.items[self.events.items.len - 1];
@@ -1171,4 +1182,55 @@ test "Peer.deinit with a held tail call gives the question one Return and leaks 
     h.deinit();
     try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
     try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+}
+
+// -- A resultsSentElsewhere send that fails --------------------------------------
+//
+// The call's answer is decided before the send: a held question already got
+// it, or it is kept for the redirect. When the send then fails, the caller
+// answers again with an exception (the generated dispatch does; a native
+// host answers a failed capnp_return_results with capnp_return_exception).
+// That second answer must still put `resultsSentElsewhere` on the wire,
+// never the exception Return the C++ reference rejects for its tail call.
+
+test "a failed resultsSentElsewhere send for a held tail call: the follow-up exception still sends resultsSentElsewhere" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushTailCall(allocator);
+    h.wire.fail_return_for = tail_answer_id;
+    var result = ResultN{ .n = 7 };
+    try std.testing.expectError(error.TestSendFailed, h.client_peer.sendReturnResults(tail_answer_id, &result, ResultN.build));
+    // The question got the results; the remote got nothing yet.
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(@as(u32, 7), h.caller.result_n.?);
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+
+    try h.client_peer.sendReturnException(tail_answer_id, "results were not sent");
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+}
+
+test "a failed resultsSentElsewhere send before the redirect: the follow-up exception reaches the redirect" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushYourselfCall(allocator, tail_answer_id, h.target_export_id);
+    h.wire.fail_return_for = tail_answer_id;
+    var result = ResultN{ .n = 7 };
+    try std.testing.expectError(error.TestSendFailed, h.client_peer.sendReturnResults(tail_answer_id, &result, ResultN.build));
+    try h.client_peer.sendReturnException(tail_answer_id, "results were not sent");
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+
+    // The caller's last answer for the call is the exception.
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings("results were not sent", h.caller.reason());
 }
