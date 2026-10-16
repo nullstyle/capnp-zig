@@ -118,6 +118,15 @@ pub const WarmRedialClient = struct {
     pub const GiveUpFn = *const fn (ctx: ?*anyopaque, cause: rpc_events.DisconnectCause) void;
 
     pub const Outcome = struct {
+        /// Generations that `run` counted. `run` counts a generation after
+        /// it has dialed, published its connection to `requestStop`, and
+        /// enqueued its Bootstrap and Restore frames, just before the
+        /// connection runs. A `requestStop` during that enqueue makes the
+        /// enqueue fail and ends the generation before it runs. That
+        /// generation counts too, and `last_cause` is `.local_close`. A
+        /// failed dial, a failed enqueue without a stop, and a stop before
+        /// the publish do not count. A read of the client's `generations`
+        /// field from `on_rebind` includes the generation that rebinds.
         generations: u32,
         /// Consecutive redials since the last healthy generation, at exit
         /// (the budget counter compared against `Policy.max_redials`).
@@ -455,16 +464,22 @@ pub const WarmRedialClient = struct {
 
         // Test builds only: lets a test stop the generation in this gap.
         test_knobs.pauseAfterPublish(self.io);
-        // Both frames enqueue before the loop: on a resumed dial the engine
-        // opens the RPC stream pre-handshake and they ride 0-RTT.
-        const bootstrap_qid = try peer.sendBootstrap(self, onBootstrapReturn);
-        _ = try peer.sendRestorePipelined(bootstrap_qid, self.sturdy_ref, self, onRestoreResponse);
+        // A `requestStop` after the publish above closes `conn`, and the
+        // enqueue then fails (BrokenPipe). That stop ended this generation,
+        // as a stop during `conn.run()` does: count it, report
+        // `.local_close`, and tear down below. A failure without a stop
+        // stays a setup error.
+        var stopped_in_setup = false;
+        self.enqueueFirstFlight(&peer) catch |err| {
+            if (!self.stopRequested()) return err;
+            stopped_in_setup = true;
+        };
 
         self.generations += 1;
         self.rebound_at_ns = null;
-        conn.run();
+        if (!stopped_in_setup) conn.run();
 
-        last_cause.* = peer.lastDisconnectCause();
+        last_cause.* = if (stopped_in_setup) .local_close else peer.lastDisconnectCause();
         self.settleGenerationHealth(&conn);
         // The quic connection outlives `run()` until `conn.deinit()`, and
         // its verdict is final once the handshake completed.
@@ -492,6 +507,14 @@ pub const WarmRedialClient = struct {
         conn_alive = false;
 
         return self.stopRequested();
+    }
+
+    /// Enqueue the generation's first flight before its loop runs: on a
+    /// resumed dial the engine opens the RPC stream pre-handshake, and both
+    /// frames ride 0-RTT. Restore rides the promised bootstrap answer.
+    fn enqueueFirstFlight(self: *WarmRedialClient, peer: *Peer) !void {
+        const bootstrap_qid = try peer.sendBootstrap(self, onBootstrapReturn);
+        _ = try peer.sendRestorePipelined(bootstrap_qid, self.sturdy_ref, self, onRestoreResponse);
     }
 
     /// Withdraw the generation's connection from `requestStop`. It waits for
