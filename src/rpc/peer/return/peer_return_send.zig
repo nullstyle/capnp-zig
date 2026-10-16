@@ -200,7 +200,14 @@ pub fn ReturnSend(comptime Peer: type) type {
 
             var ret = try builder.beginReturn(answer_id, .results);
             ret.setReleaseParamCaps(self.returnReleasesParamCaps(answer_id));
+            // `build` can receive the remote's Finish of this call (a
+            // handler body that waits on the connection, or a synchronous
+            // transport). That Finish settles a held tail call with
+            // `tail_call_finished_reason`, and its redirect is then used up.
+            const held_before_build = self.held_tail_calls.by_source.contains(answer_id);
             try build(ctx, &ret);
+            const hold_settled_during_build = held_before_build and
+                !self.held_tail_calls.by_source.contains(answer_id);
             _ = try cap_table.encodeReturnPayloadCapsWithEffects(&self.caps, &ret, Peer.onOutboundCap, &effects);
             effects.rollback();
 
@@ -216,7 +223,10 @@ pub fn ReturnSend(comptime Peer: type) type {
             // answers `resultsSentElsewhere` and settles the tail call with
             // the error. A Finish during `build` already removed the marker.
             _ = self.send_results_to_yourself.remove(answer_id);
-            if (has_result_caps) {
+            // No redirect is left to take results with capabilities, or
+            // results whose held redirect a Finish during `build` already
+            // ended: keeping them would only leave a stale stash entry.
+            if (has_result_caps or hold_settled_during_build) {
                 self.allocator.free(frame);
                 return settleSelfLoopbackAnswer(self, answer_id, null);
             }

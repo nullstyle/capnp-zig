@@ -1060,3 +1060,38 @@ test "a held tail call whose parked call the remote finishes ends with tail_call
     try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
     try std.testing.expectEqualStrings(peer_impl.tail_call_finished_reason, h.caller.reason());
 }
+
+/// A results build that first receives the remote's Finish of its own call,
+/// as a DIRECT handler body that waits on the connection can.
+const FinishInsideBuild = struct {
+    h: *TailHarness,
+    allocator: std.mem.Allocator,
+
+    fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+        const self: *FinishInsideBuild = castCtx(*FinishInsideBuild, ctx_ptr);
+        try self.h.pushFinish(self.allocator, tail_answer_id);
+        var result = ResultN{ .n = 7 };
+        try ResultN.build(&result, ret);
+    }
+};
+
+test "a Finish during a held tail call's results build ends the question; the results are not kept" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushTailCall(allocator);
+    var build_ctx = FinishInsideBuild{ .h = &h, .allocator = allocator };
+    try h.client_peer.sendReturnResults(tail_answer_id, &build_ctx, FinishInsideBuild.build);
+
+    // The Finish ended the held question; the redirect is used up, so the
+    // results go nowhere and are not kept for a redirect that has come.
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings(peer_impl.tail_call_finished_reason, h.caller.reason());
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+    // The call still gets its one Return.
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+}
