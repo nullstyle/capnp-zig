@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Run the full matrix on a branch by hand, without a PR:
+  #     gh workflow run CI --ref <branch>
+  workflow_dispatch:
 
 # Rapid pushes to a branch (or PR) supersede in-flight runs: cancel the older
 # run so the multi-platform matrix does not pile up and starve runners.
