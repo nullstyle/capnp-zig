@@ -77,6 +77,21 @@ pub fn State(comptime Connection: type) type {
             apply(conn, termination.policy(.internal_error, err), err);
         }
 
+        /// End the session because stream 0 ended (`control_stream_end.zig`):
+        /// close with `normal` and record `cause`. A connection that was
+        /// already closing keeps the cause of that close: the end of stream
+        /// 0 can come in the same pass as the peer's CONNECTION_CLOSE.
+        pub fn endSession(conn: *Connection, cause: events.DisconnectCause) void {
+            if (conn.close_cause == .unknown) {
+                if (conn.activeQuicConnection()) |active| {
+                    if (active.closeEvent()) |ev| conn.close_cause = quic_close.disconnectCauseFor(ev);
+                }
+            }
+            if (conn.close_cause == .unknown) conn.close_cause = cause;
+            emitClosingOnce(conn);
+            close(conn);
+        }
+
         pub fn enterClosing(conn: *Connection) void {
             conn.close_controller.enterClosing(&conn.baseline, &conn.native);
         }

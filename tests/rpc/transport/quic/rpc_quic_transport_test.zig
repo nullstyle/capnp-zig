@@ -2580,6 +2580,51 @@ test "quic native server fails a data stream at once when a tick freed it after 
     try stream_end.runServerReset(.cut, .tick_then_service);
 }
 
+// The end of stream 0 ends the session ("Wire constants (frozen)" in
+// docs/quic-transport.md). A RESET closes it at once with close code
+// `normal` and cause `transport_error`, as the embedded seat does. A FIN
+// closes it with `normal` and `peer_close` after the frame that came in the
+// same STREAM frame. A FIN in the middle of a frame is a `frame_error` close.
+// Through v0.26.0 the owned server ignored each end, and every case timed
+// out. Ablation: with the engines back on the old silent return when a read
+// of stream 0 finds nothing, every case times out again.
+
+test "quic baseline server closes the session on a RESET of stream 0" {
+    try stream_end.runServerControlEnd(.baseline, .reset);
+}
+
+test "quic native server closes the session on a RESET of stream 0" {
+    try stream_end.runServerControlEnd(.native, .reset);
+}
+
+test "quic baseline server closes the session on a FIN of stream 0, after the frame before it" {
+    try stream_end.runServerControlEnd(.baseline, .fin);
+}
+
+test "quic native server closes the session on a FIN of stream 0, after the frame before it" {
+    try stream_end.runServerControlEnd(.native, .fin);
+}
+
+test "quic baseline server closes with frame_error on a FIN of stream 0 in the middle of a frame" {
+    try stream_end.runServerControlEnd(.baseline, .fin_mid_frame);
+}
+
+test "quic native server closes with frame_error on a FIN of stream 0 in the middle of a frame" {
+    try stream_end.runServerControlEnd(.native, .fin_mid_frame);
+}
+
+test "quic native server completes a data_rpc frame announced before the FIN of stream 0, then closes" {
+    // Ablation: when the end does not wait for the pending data frame, the
+    // session closes at the FIN, and the frame never reaches the callback.
+    try stream_end.runNativeServerFinBeforeDataStream();
+}
+
+test "quic native server closes with frame_error on a FIN of stream 0 in the middle of the preface" {
+    // Ablation: without the partial-preface check, the server closes with
+    // `normal` (a clean end with no frame).
+    try stream_end.runNativeServerFinMidPreface();
+}
+
 test "quic server refuses peer streams it never uses, so they do not fill its stream window" {
     // Since quic v0.24.0 a stream holds its place in the peer's window
     // until it is fully closed. A stream the server never reads, finishes

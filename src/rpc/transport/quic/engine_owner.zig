@@ -20,6 +20,9 @@ pub const Owner = struct {
     callbacks_ready: *const fn (ptr: *anyopaque) bool,
     dispatch_rpc_frame: *const fn (ptr: *anyopaque, frame: []const u8) anyerror!void,
     terminate_frame_error: *const fn (ptr: *anyopaque, err: anyerror) void,
+    /// Stream 0 ended: close the session with close code `normal` and
+    /// this cause (see `control_stream_end.zig`).
+    end_session: *const fn (ptr: *anyopaque, cause: events.DisconnectCause) void,
     deinit_requested: *const fn (ptr: *anyopaque) bool,
 
     pub fn baseline(self: Owner) baseline_engine.Owner {
@@ -33,6 +36,7 @@ pub const Owner = struct {
             .callbacks_ready = self.callbacks_ready,
             .dispatch_rpc_frame = self.dispatch_rpc_frame,
             .terminate_frame_error = self.terminate_frame_error,
+            .end_session = self.end_session,
             .deinit_requested = self.deinit_requested,
         };
     }
@@ -48,6 +52,7 @@ pub const Owner = struct {
             .is_closing = self.is_closing,
             .dispatch_rpc_frame = self.dispatch_rpc_frame,
             .terminate_frame_error = self.terminate_frame_error,
+            .end_session = self.end_session,
             .deinit_requested = self.deinit_requested,
         };
     }

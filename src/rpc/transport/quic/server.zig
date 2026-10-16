@@ -1181,6 +1181,7 @@ pub const ServerSession = struct {
             .callbacks_ready = engineCallbacksReady,
             .dispatch_rpc_frame = engineDispatchRpcFrame,
             .terminate_frame_error = engineTerminateFrameError,
+            .end_session = engineEndSession,
             .deinit_requested = engineDeinitRequested,
         };
     }
@@ -1203,6 +1204,10 @@ pub const ServerSession = struct {
 
     fn engineTerminateFrameError(ptr: *anyopaque, err: anyerror) void {
         Termination.frameError(cast(ptr), err);
+    }
+
+    fn engineEndSession(ptr: *anyopaque, cause: events.DisconnectCause) void {
+        Termination.endSession(cast(ptr), cause);
     }
 
     fn engineDeinitRequested(ptr: *anyopaque) bool {

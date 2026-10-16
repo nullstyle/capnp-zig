@@ -324,12 +324,38 @@ capnp-swift's core, and capnp-swift drives it from Network.framework (see
   `frame_error = 0x434e5001`, `protocol_error = 0x434e5002` (also the
   refused-stream reset), `internal_error = 0x434e5003`,
   `peer_callback_failure = 0x434e5004`.
+- The end of stream 0 ends the session, in both modes (since 0.27.0):
+  - A clean FIN: the receiver first dispatches every whole frame that came
+    before the FIN. Then it closes with close code `normal`, and the
+    session's close cause is `peer_close`. This is the QUIC form of a TCP
+    EOF.
+  - A partial frame at the FIN (or, in native mode, a partial preface) is a
+    `frame_error` close.
+  - A RESET_STREAM, a stop of stream 0 by the receiver, or an end that
+    quic-zig cannot classify: the receiver closes at once with close code
+    `normal`, and the close cause is `transport_error`. Bytes of stream 0
+    can be lost, so the session cannot keep E-order.
+  - In native mode, a `data_rpc` frame that came before the FIN still
+    completes from its data stream before the session ends.
 
 Any change to these needs a new ALPN string. A silent change breaks interop
 with independent baseline implementations. The ALPN alone does not name the
 wire, though: native mode is a different wire on the same `capnp-rpc/1`
 ALPN. The mode is not negotiated, so both peers must set the same mode, and a
 mismatch closes the connection.
+
+The end-of-stream-0 rule came in 0.27.0 on the same `capnp-rpc/1` ALPN. It
+changes none of the other constants: the ALPN, the stream id, the framing,
+the zero-length and oversize rules, and the close codes stay the same. It
+gives a meaning to an event that had none. Before 0.27.0 a FIN on stream 0
+had no meaning, and only the embedded seat acted on a RESET. The rule breaks
+one kind of peer: a peer that half-closes stream 0 (sends its FIN) and still
+waits for replies. That peer now loses the session, and its replies never
+come. capnp-zig never sends a FIN on stream 0, and no such peer is known to
+us. If you treat this rule as a wire change, it needs a new ALPN
+(`capnp-rpc/2`); capnp-zig does not add one. The rule exists for peers
+that can end stream 0 only with a FIN. capnp-swift reports that its peer on
+Apple's Network framework is one of them.
 
 ## Recommended Mode Defaults
 

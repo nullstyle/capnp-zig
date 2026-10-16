@@ -926,6 +926,7 @@ const DispatchRecorder = struct {
         try self.frames.append(self.allocator, try self.allocator.dupe(u8, frame));
     }
     fn terminate(_: *anyopaque, _: anyerror) void {}
+    fn endSession(_: *anyopaque, _: capnp.rpc.events.DisconnectCause) void {}
     fn deinitRequested(_: *anyopaque) bool {
         return false;
     }
@@ -941,6 +942,7 @@ const DispatchRecorder = struct {
             .callbacks_ready = callbacksReady,
             .dispatch_rpc_frame = dispatch,
             .terminate_frame_error = terminate,
+            .end_session = endSession,
             .deinit_requested = deinitRequested,
         };
     }

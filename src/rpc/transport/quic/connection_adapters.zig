@@ -30,6 +30,7 @@ pub fn State(comptime Connection: type) type {
                 .callbacks_ready = engineCallbacksReady,
                 .dispatch_rpc_frame = engineDispatchRpcFrame,
                 .terminate_frame_error = engineTerminateFrameError,
+                .end_session = engineEndSession,
                 .deinit_requested = engineDeinitRequested,
             };
         }
@@ -120,6 +121,11 @@ pub fn State(comptime Connection: type) type {
         fn engineTerminateFrameError(ptr: *anyopaque, err: anyerror) void {
             const conn = castConnection(ptr);
             Connection.AdapterAccess.terminateFrameError(conn, err);
+        }
+
+        fn engineEndSession(ptr: *anyopaque, cause: events.DisconnectCause) void {
+            const conn = castConnection(ptr);
+            connection_termination.State(Connection).endSession(conn, cause);
         }
 
         fn engineDeinitRequested(ptr: *anyopaque) bool {

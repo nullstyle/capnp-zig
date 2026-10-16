@@ -17,6 +17,10 @@
 //! trap order from the test-only knob
 //! `quic.testing.knobs.setTickBeforeService`; the embedded host loop here
 //! takes the order as an argument.
+//!
+//! The last section has the runners for the end of stream 0 itself (see
+//! "Wire constants (frozen)" in docs/quic-transport.md): the owned client
+//! under a `Peer`, the owned fanout server and the embedded seat.
 
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
@@ -24,7 +28,11 @@ const quic_zig = @import("quic");
 const loopback = @import("loopback_test_support.zig");
 const raw_faults = @import("raw_fault_client.zig");
 
+const cap_table = capnpc.rpc.caps.table;
+const protocol = capnpc.rpc.wire.protocol;
 const quic = capnpc.rpc.transport.quic;
+const DisconnectCause = capnpc.rpc.events.DisconnectCause;
+const Peer = capnpc.rpc.peer.Peer;
 const RawFaultClient = raw_faults.RawFaultClient;
 
 pub const End = enum { fin, reset };
@@ -450,6 +458,7 @@ pub fn runClientDirection(end: End, order: Order) !void {
 const SeatHost = struct {
     allocator: std.mem.Allocator,
     recorder: *Recorder,
+    mode: quic.TransportMode = .native,
     seat: ?*quic.EmbeddedSession = null,
     /// The seat's close cause, kept when `onDisconnect` destroys the seat.
     last_close_cause: ?capnpc.rpc.events.DisconnectCause = null,
@@ -459,7 +468,7 @@ const SeatHost = struct {
 
     fn onConnect(host: *SeatHost, session: *HostDriver.Session) anyerror!void {
         const seat = try quic.EmbeddedSession.create(host.allocator, session.conn, .{
-            .mode = .native,
+            .mode = host.mode,
             .native = native_options,
         });
         seat.start(host.recorder, onMessage, onError, onClose);
@@ -548,10 +557,14 @@ const SeatRig = struct {
     raw: RawFaultClient,
 
     fn create(allocator: std.mem.Allocator, order: Order) !*SeatRig {
+        return createWithMode(allocator, order, .native);
+    }
+
+    fn createWithMode(allocator: std.mem.Allocator, order: Order, mode: quic.TransportMode) !*SeatRig {
         const rig = try allocator.create(SeatRig);
         errdefer allocator.destroy(rig);
         rig.recorder = .{};
-        rig.host = .{ .allocator = allocator, .recorder = &rig.recorder };
+        rig.host = .{ .allocator = allocator, .recorder = &rig.recorder, .mode = mode };
         rig.driver = try HostDriver.init(.{
             .allocator = allocator,
             .app = &rig.host,
@@ -570,7 +583,7 @@ const SeatRig = struct {
             .tls_cert_pem = loopback.loopback_cert_pem,
             .tls_key_pem = loopback.loopback_key_pem,
             .receive_timeout = std.Io.Duration.fromMilliseconds(1),
-            .mode = .native,
+            .mode = mode,
             .native = native_options,
         });
         // The Driver must outlive the server: `listener.deinit` fires the
@@ -1187,4 +1200,497 @@ pub fn runEmbeddedControlStopped(end: End, order: Order) !void {
     if (order == .tick_then_service) try std.testing.expect(seat.conn.streamRecvWasReaped(control));
     try std.testing.expectEqual(capnpc.rpc.events.DisconnectCause.transport_error, seat.closeCause());
     try std.testing.expect(seat.streams.get(control) == null);
+}
+
+// ---------------------------------------------------------------------------
+// The end of stream 0. A clean FIN ends the session once every whole frame
+// before it has been dispatched: close code `normal`, cause `peer_close`. A
+// partial frame at the FIN is a `frame_error` close. A RESET ends the session
+// at once: close code `normal`, cause `transport_error`, as the seat already
+// did. Through v0.26.0 the owned loops ignored both ends and the seat ignored
+// a FIN, so a question that waited on the session ran to its deadline.
+// ---------------------------------------------------------------------------
+
+/// How the peer ends its half of stream 0.
+pub const ControlEnd = enum {
+    /// RESET_STREAM.
+    reset,
+    /// A whole frame, and then a FIN, in one STREAM frame.
+    fin,
+    /// A frame without its last byte, and then a FIN, in one STREAM frame.
+    fin_mid_frame,
+};
+
+/// The deadline of the client question that waits on the session. A session
+/// that stays up after stream 0 ends settles the question only at this
+/// deadline, with `CallTimedOut`.
+const question_deadline_ms: u64 = 5_000;
+/// The session must end within this time after the end of stream 0.
+const prompt_end_ms: i64 = 1_000;
+/// How long the client runner waits for the question: past its deadline, so
+/// that a session that stays up shows `CallTimedOut`, not a wait timeout.
+const question_patience_ms: i64 = question_deadline_ms + 3_000;
+/// The reason of the Return that the raw server puts before its FIN.
+const answered_reason = "answered before the end";
+
+fn elapsedMs(since: std.Io.Timestamp) i64 {
+    const now = std.Io.Timestamp.now(std.testing.io, .awake);
+    return since.durationTo(now).toMilliseconds();
+}
+
+/// `frame` as one RPC frame on stream 0 in the wire of `mode`: a 32-bit
+/// length prefix (baseline) or an inline control frame (native). Caller frees.
+fn encodeControlFrame(
+    allocator: std.mem.Allocator,
+    mode: quic.TransportMode,
+    sequence: u64,
+    frame: []const u8,
+    max_control_frame_bytes: usize,
+) ![]u8 {
+    switch (mode) {
+        .baseline => {
+            const out = try allocator.alloc(u8, quic.length_prefix_bytes + frame.len);
+            std.mem.writeInt(u32, out[0..quic.length_prefix_bytes], @intCast(frame.len), .little);
+            @memcpy(out[quic.length_prefix_bytes..], frame);
+            return out;
+        },
+        .native => return quic.native.encodeInlineRpc(allocator, sequence, frame, max_control_frame_bytes),
+    }
+}
+
+/// End this side's half of stream 0 on `conn`. For the FIN cases, `framed`
+/// (whole, or without its last byte) goes into the same STREAM frame as the
+/// FIN. The caller sends the datagram.
+fn endControlStream(conn: *quic_zig.Connection, end: ControlEnd, framed: []const u8) !void {
+    const control = quic.baseline_stream_id;
+    switch (end) {
+        .reset => try conn.streamReset(control, reset_code),
+        .fin, .fin_mid_frame => {
+            const bytes = if (end == .fin) framed else framed[0 .. framed.len - 1];
+            try std.testing.expectEqual(bytes.len, try conn.streamWrite(control, bytes));
+            try conn.streamFinish(control);
+        },
+    }
+}
+
+/// The close that `end` must give. `recorder` saw one whole frame before the
+/// end. Pass a null `cause` to skip that check.
+fn expectControlEndClose(
+    end: ControlEnd,
+    status: ?quic.CloseStatus,
+    cause: ?DisconnectCause,
+    recorder: *const Recorder,
+) !void {
+    const close_status = status orelse return error.QuicLoopbackMissingCloseStatus;
+    switch (end) {
+        .reset => {
+            try std.testing.expectEqual(quic.ApplicationCloseCode.normal, close_status.code);
+            try std.testing.expectEqual(@as(?anyerror, null), close_status.err);
+            if (cause) |c| try std.testing.expectEqual(DisconnectCause.transport_error, c);
+            try std.testing.expectEqual(@as(usize, 1), recorder.messages);
+            try std.testing.expectEqual(@as(usize, 0), recorder.errors);
+        },
+        .fin => {
+            try std.testing.expectEqual(quic.ApplicationCloseCode.normal, close_status.code);
+            try std.testing.expectEqual(@as(?anyerror, null), close_status.err);
+            if (cause) |c| try std.testing.expectEqual(DisconnectCause.peer_close, c);
+            // The frame in the same STREAM frame as the FIN arrived too.
+            try std.testing.expectEqual(@as(usize, 2), recorder.messages);
+            try std.testing.expectEqual(@as(usize, 0), recorder.errors);
+            try std.testing.expectEqualSlices(u8, &payload, recorder.received[0..recorder.received_len]);
+        },
+        .fin_mid_frame => {
+            try std.testing.expectEqual(quic.ApplicationCloseCode.frame_error, close_status.code);
+            try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), close_status.err);
+            if (cause) |c| try std.testing.expectEqual(DisconnectCause.transport_error, c);
+            try std.testing.expectEqual(@as(usize, 1), recorder.messages);
+            try std.testing.expectEqual(@as(usize, 1), recorder.errors);
+            try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), recorder.last_error);
+        },
+    }
+}
+
+/// A server session's callbacks, and how it closed. The close callback
+/// copies the cause and the status: the server may free the session after
+/// it.
+const SessionProbe = struct {
+    recorder: Recorder = .{},
+    closed: bool = false,
+    close_cause: DisconnectCause = .unknown,
+    close_status: ?quic.CloseStatus = null,
+
+    fn onAccepted(ctx: ?*anyopaque, _: *quic.Server, session: *quic.ServerSession) anyerror!void {
+        session.start(ctx.?, onMessage, onError, onClose);
+    }
+
+    fn onMessage(session: *quic.ServerSession, frame: []const u8) anyerror!void {
+        probeOf(session).recorder.recordMessage(frame);
+    }
+
+    fn onError(session: *quic.ServerSession, err: anyerror) void {
+        probeOf(session).recorder.recordError(err);
+    }
+
+    fn onClose(session: *quic.ServerSession) void {
+        const probe = probeOf(session);
+        probe.closed = true;
+        probe.close_cause = session.closeCause();
+        probe.close_status = session.closeStatus();
+    }
+
+    fn probeOf(session: *quic.ServerSession) *SessionProbe {
+        return @ptrCast(@alignCast(session.context().?));
+    }
+};
+
+/// The owned fanout `Server`. A raw quic client sends one whole frame on
+/// stream 0 and waits until the server has dispatched it. Then it ends
+/// stream 0 as `end` says, and the server must close the session at once.
+pub fn runServerControlEnd(mode: quic.TransportMode, end: ControlEnd) !void {
+    const allocator = std.testing.allocator;
+
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = mode,
+        .native = native_options,
+    });
+    defer server.deinit();
+    var probe = SessionProbe{};
+    server.setOnSessionAccepted(&probe, SessionProbe.onAccepted);
+
+    var raw = try RawFaultClient.init(allocator, std.testing.io, server.getAddress());
+    defer raw.deinit();
+    _ = try handshakeServer(&raw, &server);
+
+    // 1. One whole frame. Step until the server has dispatched it.
+    try raw.ensureControlStream();
+    if (mode == .native) try writePreamble(&raw);
+    const first = try encodeControlFrame(allocator, mode, 0, &payload, native_options.max_control_frame_bytes);
+    defer allocator.free(first);
+    try raw.writeAll(quic.baseline_stream_id, first);
+    var patience = Patience.begin();
+    while (!probe.recorder.done()) {
+        _ = try server.stepOnce(.poll);
+        try raw.step(std.Io.Duration.zero);
+        try patience.wait();
+    }
+    try probe.recorder.expectWholeFrame();
+    for (0..4) |_| try raw.step(std.Io.Duration.zero);
+
+    // 2. The end, with a second frame before a FIN.
+    const second = try encodeControlFrame(allocator, mode, 1, &payload, native_options.max_control_frame_bytes);
+    defer allocator.free(second);
+    try endControlStream(raw.client.conn, end, second);
+    try raw.drainOutgoing(raw.nowUs());
+
+    // 3. Step until the server closes the session.
+    patience = Patience.begin();
+    while (!probe.closed) {
+        _ = try server.stepOnce(.poll);
+        try raw.step(std.Io.Duration.zero);
+        try patience.wait();
+    }
+    try std.testing.expect(elapsedMs(patience.start) < prompt_end_ms);
+    try expectControlEndClose(end, probe.close_status, probe.close_cause, &probe.recorder);
+}
+
+/// Native mode, the owned fanout `Server`. A `data_rpc` announcement and the
+/// FIN of stream 0 come in one STREAM frame, before the data stream opens.
+/// The session must stay up until the frame completes from its data stream,
+/// then dispatch it and close with `normal` and `peer_close`.
+pub fn runNativeServerFinBeforeDataStream() !void {
+    const allocator = std.testing.allocator;
+
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    });
+    defer server.deinit();
+    var probe = SessionProbe{};
+    server.setOnSessionAccepted(&probe, SessionProbe.onAccepted);
+
+    var raw = try RawFaultClient.init(allocator, std.testing.io, server.getAddress());
+    defer raw.deinit();
+    const session = try handshakeServer(&raw, &server);
+    const data_stream: u64 = 2;
+
+    // 1. The preamble, then the announcement and the FIN of stream 0.
+    try raw.ensureControlStream();
+    try writePreamble(&raw);
+    const announce = try quic.native.encodeDataRpc(allocator, 0, data_stream, payload_len, native_options.max_control_frame_bytes);
+    defer allocator.free(announce);
+    try std.testing.expectEqual(announce.len, try raw.client.conn.streamWrite(quic.baseline_stream_id, announce));
+    try raw.client.conn.streamFinish(quic.baseline_stream_id);
+    try raw.drainOutgoing(raw.nowUs());
+
+    // 2. Step until the server waits on the data stream. The session stays
+    //    up: the announced frame came before the FIN.
+    var patience = Patience.begin();
+    while (session.native.pending_data == null) {
+        _ = try server.stepOnce(.poll);
+        try raw.step(std.Io.Duration.zero);
+        try patience.wait();
+    }
+    for (0..4) |_| {
+        _ = try server.stepOnce(.poll);
+        try raw.step(std.Io.Duration.zero);
+    }
+    try std.testing.expect(!probe.closed);
+    try std.testing.expect(!session.isClosing());
+
+    // 3. The data stream. The frame completes, then the session ends.
+    try raw.ensureUniStream(data_stream);
+    try raw.writeAll(data_stream, &payload);
+    try raw.client.conn.streamFinish(data_stream);
+    try raw.drainOutgoing(raw.nowUs());
+    patience = Patience.begin();
+    while (!probe.closed) {
+        _ = try server.stepOnce(.poll);
+        try raw.step(std.Io.Duration.zero);
+        try patience.wait();
+    }
+    try probe.recorder.expectWholeFrame();
+    const status = probe.close_status orelse return error.QuicLoopbackMissingCloseStatus;
+    try std.testing.expectEqual(quic.ApplicationCloseCode.normal, status.code);
+    try std.testing.expectEqual(DisconnectCause.peer_close, probe.close_cause);
+}
+
+/// Native mode, the owned fanout `Server`. The peer sends half of the
+/// native preface and then the FIN of stream 0: a partial frame at the FIN,
+/// so the server closes with `frame_error`.
+pub fn runNativeServerFinMidPreface() !void {
+    const allocator = std.testing.allocator;
+
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    });
+    defer server.deinit();
+    var probe = SessionProbe{};
+    server.setOnSessionAccepted(&probe, SessionProbe.onAccepted);
+
+    var raw = try RawFaultClient.init(allocator, std.testing.io, server.getAddress());
+    defer raw.deinit();
+    _ = try handshakeServer(&raw, &server);
+
+    try raw.ensureControlStream();
+    const half = quic.native.preface[0 .. quic.native.preface.len / 2];
+    try std.testing.expectEqual(half.len, try raw.client.conn.streamWrite(quic.baseline_stream_id, half));
+    try raw.client.conn.streamFinish(quic.baseline_stream_id);
+    try raw.drainOutgoing(raw.nowUs());
+
+    const patience = Patience.begin();
+    while (!probe.closed) {
+        _ = try server.stepOnce(.poll);
+        try raw.step(std.Io.Duration.zero);
+        try patience.wait();
+    }
+    try std.testing.expect(elapsedMs(patience.start) < prompt_end_ms);
+    const status = probe.close_status orelse return error.QuicLoopbackMissingCloseStatus;
+    try std.testing.expectEqual(quic.ApplicationCloseCode.frame_error, status.code);
+    try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), status.err);
+    try std.testing.expectEqual(@as(usize, 0), probe.recorder.messages);
+}
+
+/// The embedded seat, as in `runServerControlEnd`. For a frame error the
+/// seat records its cause only when quic-zig reports the connection closed,
+/// a pass after the close begins, so that case checks the status only.
+pub fn runEmbeddedControlEnd(mode: quic.TransportMode, end: ControlEnd, order: Order) !void {
+    const allocator = std.testing.allocator;
+    const rig = try SeatRig.createWithMode(allocator, order, mode);
+    defer rig.destroy();
+    const seat = try rig.handshake();
+
+    // 1. One whole frame. Step until the seat has dispatched it.
+    try rig.raw.ensureControlStream();
+    if (mode == .native) try writePreamble(&rig.raw);
+    const first = try encodeControlFrame(allocator, mode, 0, &payload, native_options.max_control_frame_bytes);
+    defer allocator.free(first);
+    try rig.raw.writeAll(quic.baseline_stream_id, first);
+    try rig.waitForRecorder();
+    try rig.recorder.expectWholeFrame();
+    for (0..4) |_| {
+        try rig.raw.step(std.Io.Duration.zero);
+        try rig.loop.step();
+    }
+
+    // 2. The end, with a second frame before a FIN.
+    const second = try encodeControlFrame(allocator, mode, 1, &payload, native_options.max_control_frame_bytes);
+    defer allocator.free(second);
+    try endControlStream(rig.raw.client.conn, end, second);
+    try rig.raw.drainOutgoing(rig.raw.nowUs());
+
+    // 3. Step the server until the seat closes the session.
+    const since = Patience.begin();
+    try waitForSeatClosing(rig, seat);
+    try std.testing.expect(elapsedMs(since.start) < prompt_end_ms);
+    const cause: ?DisconnectCause = if (end == .fin_mid_frame) null else seat.closeCause();
+    try expectControlEndClose(end, seat.closeStatus(), cause, &rig.recorder);
+}
+
+const QuestionOutcome = enum { pending, answered, disconnected, timed_out, other };
+
+/// The outcome of one client question, from its Return.
+const QuestionProbe = struct {
+    outcome: QuestionOutcome = .pending,
+
+    fn onReturn(
+        ctx_ptr: *anyopaque,
+        _: *Peer,
+        ret: protocol.Return,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *QuestionProbe = @ptrCast(@alignCast(ctx_ptr));
+        self.outcome = outcomeOf(ret);
+    }
+
+    fn outcomeOf(ret: protocol.Return) QuestionOutcome {
+        if (ret.tag != .exception) return .other;
+        const ex = ret.exception orelse return .other;
+        if (std.mem.eql(u8, ex.reason, answered_reason)) return .answered;
+        return switch (ex.kind()) {
+            .disconnected => .disconnected,
+            .overloaded => if (std.mem.eql(u8, ex.reason, Peer.deadline_reason_text)) .timed_out else .other,
+            else => .other,
+        };
+    }
+};
+
+/// The Return that answers the client's question `answer_id` with an
+/// exception that names it. Caller frees.
+fn buildAnsweredReturn(allocator: std.mem.Allocator, answer_id: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var ret = try builder.beginReturn(answer_id, .exception);
+    try ret.setException(answered_reason);
+    return builder.finish();
+}
+
+/// The owned client `Connection`, under a `Peer`, against a raw quic
+/// server. The client asks two questions, each with a 5 s deadline. The
+/// server ends its half of stream 0 as `end` says; for the FIN cases a
+/// Return that answers the first question comes in the same STREAM frame as
+/// the FIN. The second question must then fail with `Disconnected` within
+/// 1 s, not with `CallTimedOut` at its deadline.
+pub fn runClientControlEnd(mode: quic.TransportMode, end: ControlEnd) !void {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var server = RawServerPeer{ .listener = try quic.Listener.init(allocator, io, .{
+        .listen_addr = loopback.testListenAddr(),
+        .tls_cert_pem = loopback.loopback_cert_pem,
+        .tls_key_pem = loopback.loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = mode,
+    }) };
+    defer server.listener.deinit();
+
+    var client = try quic.Connection.initClient(allocator, io, .{
+        .remote_addr = server.listener.getAddress(),
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = mode,
+    });
+    defer client.deinit();
+
+    var client_peer = Peer.init(allocator, &client);
+    defer client_peer.deinit();
+    client_peer.disableThreadAffinity();
+    client_peer.setClockIo(io);
+    client_peer.setTimeouts(.{ .default_call_timeout_ms = question_deadline_ms });
+    client_peer.start(null, null, null);
+    // The loop's terminal pass runs the close callback, where the `Peer`
+    // fails every question that still waits. It runs once.
+    var finished = false;
+    defer if (!finished) {
+        client.requestClose();
+        client.run();
+    };
+
+    var answered = QuestionProbe{};
+    var waiting = QuestionProbe{};
+    const answered_id = try client_peer.sendBootstrap(&answered, QuestionProbe.onReturn);
+    _ = try client_peer.sendBootstrap(&waiting, QuestionProbe.onReturn);
+
+    // 1. The handshake. The client opens stream 0 and sends its questions.
+    var patience = Patience.begin();
+    while (true) {
+        _ = try client.stepOnce(.poll);
+        try server.step();
+        if (server.conn()) |server_conn| {
+            if (server_conn.handshakeDone() and server_conn.stream(quic.baseline_stream_id) != null) break;
+        }
+        try patience.wait();
+    }
+    const server_conn = server.conn().?;
+    if (mode == .native) try writePreamble(&server);
+    for (0..4) |_| {
+        _ = try client.stepOnce(.poll);
+        try server.step();
+    }
+    try std.testing.expect(!client.isClosing());
+
+    // 2. The server ends its half of stream 0.
+    const answer = try buildAnsweredReturn(allocator, answered_id);
+    defer allocator.free(answer);
+    const framed = try encodeControlFrame(allocator, mode, 0, answer, quic.default_native_max_control_frame_bytes);
+    defer allocator.free(framed);
+    try endControlStream(server_conn, end, framed);
+    try server.flush();
+    const since = std.Io.Timestamp.now(io, .awake);
+
+    // 3. Step until the waiting question settles: at once when the client
+    //    ends the session, at its deadline when the session stays up.
+    while (waiting.outcome == .pending) {
+        if (client.isClosing()) {
+            client.run();
+            finished = true;
+            break;
+        }
+        if (elapsedMs(since) >= question_patience_ms) return error.QuicLoopbackTimedOut;
+        _ = try client.stepOnce(.poll);
+        try server.step();
+        loopback.sleepMs(1);
+    }
+    const elapsed_ms = elapsedMs(since);
+    if (waiting.outcome != .disconnected or elapsed_ms >= prompt_end_ms) {
+        std.debug.print("{s} {s}: the waiting question ended {s} after {d} ms\n", .{
+            @tagName(mode), @tagName(end), @tagName(waiting.outcome), elapsed_ms,
+        });
+    }
+    try std.testing.expectEqual(QuestionOutcome.disconnected, waiting.outcome);
+    try std.testing.expect(elapsed_ms < prompt_end_ms);
+
+    const status = client.closeStatus() orelse return error.QuicLoopbackMissingCloseStatus;
+    switch (end) {
+        .reset => {
+            try std.testing.expectEqual(QuestionOutcome.disconnected, answered.outcome);
+            try std.testing.expectEqual(quic.ApplicationCloseCode.normal, status.code);
+            try std.testing.expectEqual(DisconnectCause.transport_error, client.closeCause());
+        },
+        .fin => {
+            // The Return in the same STREAM frame as the FIN reached the Peer.
+            try std.testing.expectEqual(QuestionOutcome.answered, answered.outcome);
+            try std.testing.expectEqual(quic.ApplicationCloseCode.normal, status.code);
+            try std.testing.expectEqual(DisconnectCause.peer_close, client.closeCause());
+        },
+        .fin_mid_frame => {
+            try std.testing.expectEqual(QuestionOutcome.disconnected, answered.outcome);
+            try std.testing.expectEqual(quic.ApplicationCloseCode.frame_error, status.code);
+            try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), status.err);
+            try std.testing.expectEqual(DisconnectCause.transport_error, client.closeCause());
+        },
+    }
 }
