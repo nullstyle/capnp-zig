@@ -53,6 +53,7 @@ const std = @import("std");
 const connection_mod = @import("./connection.zig");
 const options_mod = @import("./options.zig");
 const quic_zig_adapter = @import("./quic_zig_adapter.zig");
+const test_knobs = @import("./test_knobs.zig");
 const warm_state = @import("./warm_state.zig");
 const peer_mod = @import("../../peer/mod.zig");
 const rpc_events = @import("../../events.zig");
@@ -452,6 +453,8 @@ pub const WarmRedialClient = struct {
         peer.setClockIo(self.io);
         peer.start(self, null, null);
 
+        // Test builds only: lets a test stop the generation in this gap.
+        test_knobs.pauseAfterPublish(self.io);
         // Both frames enqueue before the loop: on a resumed dial the engine
         // opens the RPC stream pre-handshake and they ride 0-RTT.
         const bootstrap_qid = try peer.sendBootstrap(self, onBootstrapReturn);
