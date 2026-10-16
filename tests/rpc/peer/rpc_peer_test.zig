@@ -267,6 +267,11 @@ test "peer self-loopback return stash does not leak on duplicate answer id" {
     // the same answer-id key. A plain HashMap.put on the second stash would
     // overwrite and leak the first frame; completeSelfLoopbackReturn must free
     // the displaced frame. The testing allocator fails this test if it does not.
+    //
+    // The answered call now keeps its id in use until the remote's Finish, as
+    // any answer does, so a second call with the id before that Finish is
+    // refused. After the Finish the id is free again, and the new call drops
+    // the old call's stashed frame.
     const allocator = std.testing.allocator;
 
     var conn: Connection = undefined;
@@ -293,7 +298,15 @@ test "peer self-loopback return stash does not leak on duplicate answer id" {
     peer.setSendFrameOverride(&capture, Capture.onFrame);
 
     var round: usize = 0;
-    while (round < 2) : (round += 1) {
+    while (round < 3) : (round += 1) {
+        if (round == 2) {
+            var finish_builder = protocol.MessageBuilder.init(allocator);
+            defer finish_builder.deinit();
+            try finish_builder.buildFinish(7, false, false);
+            const finish_frame = try finish_builder.finish();
+            defer allocator.free(finish_frame);
+            try peer.handleFrame(finish_frame);
+        }
         var call_builder = protocol.MessageBuilder.init(allocator);
         defer call_builder.deinit();
         var call = try call_builder.beginCall(7, 0, 0);
@@ -302,7 +315,12 @@ test "peer self-loopback return stash does not leak on duplicate answer id" {
         _ = try call.payloadTyped();
         const call_frame = try call_builder.finish();
         defer allocator.free(call_frame);
-        try peer.handleFrame(call_frame);
+        if (round == 1) {
+            try std.testing.expectError(error.DuplicateQuestionId, peer.handleFrame(call_frame));
+        } else {
+            try peer.handleFrame(call_frame);
+        }
+        try std.testing.expectEqual(@as(usize, 1), peer.loopback_result_stash.count());
     }
 }
 

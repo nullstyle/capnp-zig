@@ -2596,6 +2596,7 @@ capnpc-zig.rpc.peer.Peer.sweepExpiredJoins: fn (*rpc.peer.mod.Peer) usize
 capnpc-zig.rpc.peer.Peer.sweepExpiredParkedAcceptsForProvisionIndex: fn (*rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer)) usize
 capnpc-zig.rpc.peer.Peer.sweepThirdPartyAwaits: fn (*rpc.peer.mod.Peer, bool) usize
 capnpc-zig.rpc.peer.Peer.tail_call_finished_reason_text: const *const [50:0]u8
+capnpc-zig.rpc.peer.Peer.tail_call_pipelining_reason_text: const *const [51:0]u8
 capnpc-zig.rpc.peer.Peer.takeAttachedConnection: fn (*rpc.peer.mod.Peer, comptime type) anytype
 capnpc-zig.rpc.peer.Peer.takePendingJoinAccept: fn (*rpc.peer.mod.Peer, []const u8) ?rpc.peer.peer_state_types.ProvideTarget
 capnpc-zig.rpc.peer.Peer.test_hooks: struct
@@ -3096,6 +3097,7 @@ capnpc-zig.rpc.peer.state.initialOwnerThreadId: fn () ?rpc.peer.state.OwnerThrea
 capnpc-zig.rpc.peer.state.threadAffinityViolation: fn (?rpc.peer.state.OwnerThreadId, rpc.peer.state.OwnerThreadId, bool, lang.Optimize) bool
 capnpc-zig.rpc.peer.state: struct
 capnpc-zig.rpc.peer.tail_call_finished_reason: const *const [50:0]u8
+capnpc-zig.rpc.peer.tail_call_pipelining_reason: const *const [51:0]u8
 capnpc-zig.rpc.peer.third_party.ForwardedCallDestination.caller: variant void
 capnpc-zig.rpc.peer.third_party.ForwardedCallDestination.sendResultsToTag: fn (rpc.peer.third_party.ForwardedCallDestination) rpc.gen.capnp.rpc.Call.SendResultsTo.WhichTag
 capnpc-zig.rpc.peer.third_party.ForwardedCallDestination.thirdPartyPayload: fn (rpc.peer.third_party.ForwardedCallDestination) ?[]u8

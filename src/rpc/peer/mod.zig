@@ -135,6 +135,11 @@ pub const tail_call_finished_reason = "tail-called answer was finished before it
 /// never run.
 pub const promise_export_released_reason = "promise export released before it resolved";
 
+/// Exception reason for a call pipelined on an answered `sendResultsTo =
+/// yourself` call (a tail call's answer). That call's results went to the
+/// remote's question, not to a pipeline here.
+pub const tail_call_pipelining_reason = "pipelining is not supported on a tail-called answer";
+
 /// An exported capability: a context pointer and its call handler.
 pub const Export = struct {
     ctx: *anyopaque,
@@ -341,7 +346,7 @@ fn msToNs(ms: u64) i64 {
 /// | `questions` | question ID | `Question` | Outstanding outbound calls awaiting a Return. Removed when the Return arrives. |
 /// | `question_param_export_refs` | question ID | export IDs (list) | Wire refs the question's Call params took on local exports (one per emitted senderHosted/senderPromise descriptor). Spent when the Return arrives with `releaseParamCaps = true` (the rpc.capnp default), dropped when it is false (the remote sends explicit Releases), freed unspent when the question dies without a wire Return. |
 /// | `resolved_answers` | question ID | `ResolvedAnswer` | Cached Return frames for answered questions (used to resolve PromisedAnswer references). Holds one answer-held reference per results export so pipeline targets survive an early Release. Removed on Finish, releasing those references. |
-/// | `failed_answers` | question ID | `FailedAnswer` | The exception already returned for a failed answer (results-only `resolved_answers` never records it). Lets a call pipelined on that answer arriving after the Return be failed with a copy of the same exception instead of queueing forever. Removed on Finish. |
+/// | `failed_answers` | question ID | `FailedAnswer` | The exception already returned for a failed answer (results-only `resolved_answers` never records it). Lets a call pipelined on that answer arriving after the Return be failed with a copy of the same exception instead of queueing forever. An answered `sendResultsTo = yourself` call is kept here too, with its exception or `tail_call_pipelining_reason`. Removed on Finish. |
 /// | `pending_promises` | question ID | `ArrayList(PendingCall)` | Calls targeting a PromisedAnswer whose Return has not yet arrived. Replayed once the answer resolves. |
 /// | `pending_export_promises` | export ID | `ArrayList(PendingCall)` | Calls targeting a promise export not yet resolved. Replayed on `resolvePromiseExportToExport`. Answered with `promise_export_released_reason` when the remote releases the export first. |
 /// | `forwarded_questions` | original answer ID | forwarded question ID | Maps an inbound call's answer ID to the question ID of the forwarded outbound call. |
@@ -605,6 +610,13 @@ pub const Peer = struct {
     /// same exception instead. Bounded by max_active_inbound_questions,
     /// best-effort under pressure (a skipped record degrades to the old
     /// queue-forever behavior for that answer, never a crash).
+    ///
+    /// An answered `sendResultsTo = yourself` call (a tail call's answer) is
+    /// kept here too, with its exception, or `tail_call_pipelining_reason`
+    /// when it returned results: those results went to the remote's
+    /// question, never to a pipeline here. Recorded before its Return is
+    /// sent, only while the call is active, so a remote Finish inside the
+    /// send removes it like any record.
     failed_answers: std.AutoHashMap(u32, FailedAnswer),
 
     // -- Promise queueing ---------------------------------------------------
@@ -1649,6 +1661,7 @@ pub const Peer = struct {
     pub const shutdown_reason_text = shutdown_reason;
     pub const tail_call_finished_reason_text = tail_call_finished_reason;
     pub const promise_export_released_reason_text = promise_export_released_reason;
+    pub const tail_call_pipelining_reason_text = tail_call_pipelining_reason;
 
     /// Tear down the peer. Body (one unit, order load-bearing) in
     /// `peer_lifecycle.zig`; see the BUG #55 liveness note there.

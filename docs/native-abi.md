@@ -52,6 +52,7 @@ RETURN for each Return variant that the remote can send:
 | `takeFromOtherQuestion`, named call's results carry capabilities | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
 | `takeFromOtherQuestion`, the remote finishes the named call before the host answers it | `EXCEPTION` (`failed`), reason `rpc.peer.tail_call_finished_reason` |
 | `takeFromOtherQuestion`, the named call waits on a promise export that the remote releases before it resolves (see below) | `EXCEPTION` (`failed`), reason `rpc.peer.promise_export_released_reason` |
+| `takeFromOtherQuestion`, the named call is pipelined on a tail-called answer (see below) | `EXCEPTION` (`failed`), reason `rpc.peer.tail_call_pipelining_reason`, or the tail call's exception |
 | `takeFromOtherQuestion`, the named call was forwarded back to the remote (see below) | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason`, when the forwarded call returns |
 | `takeFromOtherQuestion` that names no call with `sendResultsTo = yourself` | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
 | `takeFromOtherQuestion` past a bound (see below) | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
@@ -94,9 +95,21 @@ run: the remote gets `resultsSentElsewhere`, and the question gets one
 RETURN EXCEPTION (`failed`) with the reason
 `rpc.peer.promise_export_released_reason`. Every call the remote parked on
 a promise export gets an exception Return with that reason when the remote
-releases the export first. A call that the core refuses before the host sees it (an unknown
-capability, a broken promise) also gives the question its exception, and
-the remote `resultsSentElsewhere`.
+releases the export first. A call that the core refuses before the host
+sees it (an unknown capability, a broken promise) also gives the question
+its exception, and the remote `resultsSentElsewhere`.
+
+Pipelining on a tail-called answer is not supported: that answer's results
+went to the remote's question, not to a pipeline on this side. The C++
+reference bounces a call that you pipelined on a question it answered with
+a tail call back to this side, as another tail call on the tail call's
+answer. That call fails, so your pipelined question gets one RETURN
+EXCEPTION (`failed`) with the reason `rpc.peer.tail_call_pipelining_reason`,
+or the tail call's exception when the tail call failed. This happens when
+the tail call is answered (by the host, or by the remote for a tail call
+the core forwarded back to it), or at once when the bounced call comes
+after that answer. The core keeps the answered tail call's id in use until
+the remote finishes it.
 
 If `capnp_return_results` fails, answer the call with
 `capnp_return_exception`. Usually the results did not build, and the

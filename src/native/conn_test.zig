@@ -2437,3 +2437,70 @@ test "tail call: the remote tail-calls a promise export the host passed it, then
     try drainAll(a, &ra);
     try testing.expectEqual(@as(usize, 1), ra.countReturns(q));
 }
+
+/// The remote bounces question `q2`, which the host pipelined on `t.q`, to
+/// the pipeline of the tail call `tail_answer` that answered `t.q`: a
+/// yourself call on promisedAnswer(tail_answer), and the redirect for `q2`.
+fn pushBouncedPipelinedCall(alloc: std.mem.Allocator, a: *Conn, ra: *Rec, q2: u32, answer_id: u32) !void {
+    var mb = protocol.MessageBuilder.init(alloc);
+    defer mb.deinit();
+    var call = try mb.beginCall(answer_id, iface, 4);
+    try call.setTargetPromisedAnswer(tail_answer);
+    call.setSendResultsToYourself();
+    var payload = try call.payloadTyped();
+    _ = try (try payload.initContent()).initStruct(0, 0);
+    const bytes = try mb.finish();
+    defer alloc.free(bytes);
+    try a.pushBytes(bytes);
+    try pushFrame(alloc, a, tailCallReturnFrame(alloc, q2, answer_id));
+    try drainAll(a, ra);
+}
+
+test "tail call: a call pipelined on a tail-called answer and bounced back as a tail call gets one exception RETURN" {
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    // Bounced while the host has not answered the tail call yet.
+    try pushPendingTailCall(alloc, a, &ra, t, t.q, tail_answer);
+    const q2 = try nextQuestion(alloc, a, &ra, t);
+    try pushBouncedPipelinedCall(alloc, a, &ra, q2, tail_answer + 1);
+    try expectNoReturnYet(&ra, q2);
+
+    const res = try msgU64(alloc, 42);
+    defer alloc.free(res);
+    try a.returnResults(tail_answer, res, &.{});
+    try drainAll(a, &ra);
+    const r = try expectOneReturn(&ra, t.q, .results);
+    try testing.expectEqual(@as(u64, 42), try readU64(alloc, r.msg));
+    const r2 = try expectOneReturn(&ra, q2, .exception);
+    try testing.expectEqualStrings(capnp.rpc.peer.tail_call_pipelining_reason, r2.reason);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer + 1, null));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer + 1, .resultsSentElsewhere));
+    try a.finish(t.q, false);
+    try a.finish(q2, false);
+
+    // Bounced after the host answered the next tail call: it fails at once.
+    const q3 = try nextQuestion(alloc, a, &ra, t);
+    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
+    try pushFrame(alloc, a, finishFrame(alloc, tail_answer + 1));
+    try pushPendingTailCall(alloc, a, &ra, t, q3, tail_answer);
+    try a.returnException(tail_answer, 0, "tail target failed");
+    try drainAll(a, &ra);
+    _ = try expectOneReturn(&ra, q3, .exception);
+    const q4 = try nextQuestion(alloc, a, &ra, t);
+    try pushBouncedPipelinedCall(alloc, a, &ra, q4, tail_answer + 1);
+    const r4 = try expectOneReturn(&ra, q4, .exception);
+    try testing.expectEqualStrings("tail target failed", r4.reason);
+    try testing.expectEqual(@as(usize, 2), try countReturnFrames(&ra, tail_answer + 1, .resultsSentElsewhere));
+    try a.finish(q3, false);
+    try a.finish(q4, false);
+    try drainAll(a, &ra);
+}

@@ -151,6 +151,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` (a held tail
   call, the Release before the redirect, and a plain call with a param
   capability and a call pipelined on it) and `src/native/conn_test.zig`.
+- **RPC: a call pipelined on a tail call's answer now gets its Return.**
+  An answered `sendResultsTo = yourself` call is not kept as a resolved
+  answer, because its results went to the remote's question. So a call
+  pipelined on it waited in the Peer's queue forever. Now such a call gets
+  an exception Return with the reason `rpc.peer.tail_call_pipelining_reason`,
+  or the tail call's own exception when that call failed: when the tail
+  call is answered for a call queued before, and at once for a call that
+  comes after. This also covers a tail call that this peer forwarded back
+  to the remote (a promise export resolved to an import). The Peer keeps
+  the answered call in `failed_answers` until the remote's Finish, as for
+  any failed answer. So its id stays in use until that Finish: a new call
+  with that id before the Finish is refused with
+  `error.DuplicateQuestionId`, as for any other answer. A call that passes
+  such an answer as a `receiverAnswer` capability fails too, as for a
+  failed answer. The C++ reference sends these calls. It bounces every call
+  pipelined on a question it answered with a tail call back to this peer,
+  as another tail call on the tail call's answer: `Call(W, sendResultsTo =
+  yourself, target = promisedAnswer(Y))` and `Return(W0,
+  takeFromOtherQuestion = W)`. W0 now gets that exception. Before, W0 got
+  the bare `takeFromOtherQuestion` at once, and W stayed queued with no
+  Return. Limit: pipelining on a tail call's answer is not supported, also
+  when its results carry capabilities (the C++ reference keeps those
+  results for its pipeline). Under memory pressure the record and the
+  drain are best effort, as for a failed answer. Tests in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` (queued before
+  and after the answer, a failed tail call, a forwarded tail call, a
+  `receiverAnswer` param, a Finish inside the send),
+  `tests/rpc/peer/rpc_peer_test.zig` and `src/native/conn_test.zig`.
 - **Native C ABI (Experimental): a tail-call Return no longer ends the
   question with "unsupported Return variant".** With the Peer changes above,
   the question gets one RETURN with the named call's results (when they

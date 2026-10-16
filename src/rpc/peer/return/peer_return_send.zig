@@ -226,11 +226,30 @@ pub fn ReturnSend(comptime Peer: type) type {
             // No redirect is left to take results with capabilities, or
             // results whose held redirect a Finish during `build` already
             // ended: keeping them would only leave a stale stash entry.
-            if (has_result_caps or hold_settled_during_build) {
+            const kept: ?[]u8 = if (has_result_caps or hold_settled_during_build) blk: {
                 self.allocator.free(frame);
-                return settleSelfLoopbackAnswer(self, answer_id, null);
-            }
-            return settleSelfLoopbackAnswer(self, answer_id, @constCast(frame));
+                break :blk null;
+            } else @constCast(frame);
+            try settleSelfLoopbackAnswer(self, answer_id, kept, tail_call_pipelining_failure);
+            // (An exception answer drains in `sendReturnExceptionTyped`.)
+            failTailCalledPipeline(self, answer_id);
+        }
+
+        const tail_call_pipelining_failure: peer_call_targets.FailedAnswerView = .{
+            .reason = Peer.tail_call_pipelining_reason_text,
+            .ex_type = .failed,
+        };
+
+        /// A `sendResultsTo = yourself` call was answered without an
+        /// exception: its results went to the remote's question, not to a
+        /// pipeline here, so a call queued on this answer can never get them.
+        /// The C++ reference bounces every call pipelined on a question it
+        /// answered by a tail call back here as such a call. Fail each one
+        /// with `tail_call_pipelining_reason`. The drain's worklist
+        /// allocates, so it runs only when a call waits.
+        fn failTailCalledPipeline(self: *Peer, answer_id: u32) void {
+            if (!self.pending_promises.contains(answer_id)) return;
+            failQueuedPromisedCalls(self, answer_id, Peer.tail_call_pipelining_reason_text, .failed);
         }
 
         /// Answer a `sendResultsTo = yourself` call with an exception. rpc.capnp
@@ -240,10 +259,11 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// the exception goes where results would: to the question whose
         /// `takeFromOtherQuestion` names this call.
         ///
-        /// Like a successful `yourself` answer, the exception is not recorded
-        /// in `failed_answers`: a call pipelined on this answer after its
-        /// Return does not find it. Calls already queued on it are still
-        /// failed (`sendReturnExceptionTyped` drains them).
+        /// Like a successful `yourself` answer, the exception is recorded in
+        /// `failed_answers` until the call's Finish (`recordTailCalledAnswer`),
+        /// so a call pipelined on this answer after its Return fails with it.
+        /// Calls already queued on it are failed by `sendReturnExceptionTyped`
+        /// (or by the drain that is answering this call).
         fn completeSelfLoopbackException(
             self: *Peer,
             answer_id: u32,
@@ -258,7 +278,10 @@ pub fn ReturnSend(comptime Peer: type) type {
                 self.returnReleasesParamCaps(answer_id),
             );
             _ = self.send_results_to_yourself.remove(answer_id);
-            return settleSelfLoopbackAnswer(self, answer_id, @constCast(frame));
+            return settleSelfLoopbackAnswer(self, answer_id, @constCast(frame), .{
+                .reason = reason,
+                .ex_type = ex_type,
+            });
         }
 
         /// Settle an answered `sendResultsTo = yourself` call. `frame` is the
@@ -267,8 +290,14 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// delivered locally. The remote is told `resultsSentElsewhere`. The
         /// Return goes to the question whose `takeFromOtherQuestion` names this
         /// call: now when that redirect is held (`held_tail_calls`), else through
-        /// the stash when it arrives.
-        fn settleSelfLoopbackAnswer(self: *Peer, answer_id: u32, frame: ?[]u8) !void {
+        /// the stash when it arrives. `pipeline_failure` is what a call
+        /// pipelined on this answer later gets (`recordTailCalledAnswer`).
+        fn settleSelfLoopbackAnswer(
+            self: *Peer,
+            answer_id: u32,
+            frame: ?[]u8,
+            pipeline_failure: peer_call_targets.FailedAnswerView,
+        ) !void {
             var owned = frame;
             defer if (owned) |bytes| self.allocator.free(bytes);
 
@@ -303,7 +332,13 @@ pub fn ReturnSend(comptime Peer: type) type {
             // before `owned` is freed.
             defer if (held_question) |question_id| deliverHeldTailCall(self, question_id, answer_id, owned);
 
+            // Before the send: a remote Finish inside it removes the record,
+            // as it removes any failed-answer record.
+            const recorded = recordTailCalledAnswer(self, answer_id, pipeline_failure);
             sendReturnTag(self, answer_id, .resultsSentElsewhere) catch |err| {
+                // Not answered after all: the caller's next answer records
+                // its own.
+                if (recorded) dropFailedAnswerRecord(self, answer_id);
                 // The remote got no Return, and the caller answers again
                 // with an exception (generated dispatch does; a native host
                 // answers a failed capnp_return_results with
@@ -321,6 +356,31 @@ pub fn ReturnSend(comptime Peer: type) type {
                 }
                 return err;
             };
+        }
+
+        /// Keep an answered `sendResultsTo = yourself` call in `failed_answers`
+        /// until its Finish, with `failure`: the call's exception, or
+        /// `tail_call_pipelining_reason` for results. Those results went to
+        /// the remote's question, never to a pipeline here, so a call
+        /// pipelined on this answer later fails at once (`fail_broken_answer`)
+        /// instead of waiting in `pending_promises` for results that never
+        /// come. Only while the call is still active: a loopback answer, or
+        /// one the remote already finished, gets no Finish that would remove
+        /// the record. Best-effort and bounded like any failed-answer record.
+        /// True when it recorded one.
+        fn recordTailCalledAnswer(self: *Peer, answer_id: u32, failure: peer_call_targets.FailedAnswerView) bool {
+            if (self.loopback_questions.contains(answer_id)) return false;
+            if (!self.active_inbound_questions.contains(answer_id)) return false;
+            if (self.failed_answers.contains(answer_id)) return false;
+            recordFailedAnswer(self, answer_id, failure.reason, failure.ex_type);
+            return self.failed_answers.contains(answer_id);
+        }
+
+        /// Undo `recordTailCalledAnswer` after a failed send. A remote Finish
+        /// inside that send may have removed the record already.
+        fn dropFailedAnswerRecord(self: *Peer, answer_id: u32) void {
+            const removed = self.failed_answers.fetchRemove(answer_id) orelse return;
+            self.allocator.free(removed.value.reason);
         }
 
         /// Hold a `takeFromOtherQuestion` Return for `question_id` when the call
@@ -788,7 +848,12 @@ pub fn ReturnSend(comptime Peer: type) type {
         }
 
         pub fn sendReturnTag(self: *Peer, answer_id: u32, tag: protocol.ReturnTag) !void {
-            try peer_return_dispatch.sendReturnTagForPeer(
+            // A `yourself` call still marked here is one this peer forwarded
+            // back to the remote: its results never come back here either
+            // (`settleSelfLoopbackAnswer` drops the mark before it sends).
+            const tail_called = tag == .resultsSentElsewhere and self.send_results_to_yourself.contains(answer_id);
+            const recorded = tail_called and recordTailCalledAnswer(self, answer_id, tail_call_pipelining_failure);
+            peer_return_dispatch.sendReturnTagForPeer(
                 Peer,
                 self,
                 answer_id,
@@ -796,16 +861,24 @@ pub fn ReturnSend(comptime Peer: type) type {
                 self.returnReleasesParamCaps(answer_id),
                 clearSendResultsRouting,
                 sendReturnFrameWithLoopback,
-            );
+            ) catch |err| {
+                if (recorded) dropFailedAnswerRecord(self, answer_id);
+                return err;
+            };
             _ = self.finished_early_answers.remove(answer_id);
             // `canceled` answers a call the remote already finished: that
             // Finish settles a hold (`settleTailCallOnFinish`). A
             // `yourself` answer took its hold before this send.
             if (tag != .canceled) releaseHeldTailCall(self, answer_id);
+            if (tail_called) failTailCalledPipeline(self, answer_id);
         }
 
         pub fn sendReturnTakeFromOtherQuestion(self: *Peer, answer_id: u32, other_question_id: u32) !void {
-            try peer_return_dispatch.sendReturnTakeFromOtherQuestionForPeer(
+            // As in `sendReturnTag`: a forwarded `yourself` call's results
+            // never come back here.
+            const tail_called = self.send_results_to_yourself.contains(answer_id);
+            const recorded = tail_called and recordTailCalledAnswer(self, answer_id, tail_call_pipelining_failure);
+            peer_return_dispatch.sendReturnTakeFromOtherQuestionForPeer(
                 Peer,
                 self,
                 answer_id,
@@ -813,9 +886,13 @@ pub fn ReturnSend(comptime Peer: type) type {
                 self.returnReleasesParamCaps(answer_id),
                 clearSendResultsRouting,
                 sendReturnFrameWithLoopback,
-            );
+            ) catch |err| {
+                if (recorded) dropFailedAnswerRecord(self, answer_id);
+                return err;
+            };
             _ = self.finished_early_answers.remove(answer_id);
             releaseHeldTailCall(self, answer_id);
+            if (tail_called) failTailCalledPipeline(self, answer_id);
         }
 
         pub fn sendReturnAcceptFromThirdParty(self: *Peer, answer_id: u32, await_payload: ?[]const u8) !void {
