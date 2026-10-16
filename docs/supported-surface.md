@@ -272,7 +272,9 @@ params).
 **Performance + soak evidence.** The two-party core carries committed regression
 evidence: `bench-rpc` measures round-trip latency (p50/p99) + calls/sec against
 a committed baseline (`bench-check`), and the RPC soak harness reports latency
-percentiles plus a memory-growth curve asserted flat at ≥100 concurrent peers.
+percentiles plus a memory-growth curve at ≥100 concurrent peers. A trend check
+asserts that the curve stays flat over the exercised part of the run (see
+below).
 On Windows the soak cannot report success without positive session, call,
 chaos-close, and applicable deadline-cancellation counters; the old successful
 no-op is gone. Mid-session transport errors are bounded (chaos closes plus a
@@ -282,9 +284,16 @@ do refused or timed-out dials, because the server under test is in-process.
 On Windows, std 0.17 returns `error.Unexpected` for several different connect
 failures, so it counts as port exhaustion only when it has that shape: it
 starts after at least 100 successful dials, and from then on at least half of
-the dials fail. Otherwise it gates. The soak also fails if the TCP server
-under test stops serving before shutdown. The process
-resident set runs through the same steady-state trend check as the Zig heap.
+the dials fail. A single failure after a range's worth of successful dials
+(16,000) also counts: it is the edge of the port range. Otherwise it gates.
+The soak also fails if the TCP server under test stops serving before
+shutdown. The process resident set runs through the same steady-state trend
+check as the Zig heap. The heap and RSS trend checks judge only the run before
+the workers stop, or before host port exhaustion begins. A single range-edge
+failure does not end that window, because dials go through again after it. If
+exhaustion begins before half of the run, or too few samples remain, the
+verdict is `not_exercised`, which is a warning; the leak check at exit still
+gates.
 The RSS check — the one that sees C-side memory such as BoringSSL's under
 QUIC — gates the nightly QUIC self-healing soak (`--rss-gate enforce`) since
 the quic v0.24.0 pin, which no longer leaks a BoringSSL AEAD context per
