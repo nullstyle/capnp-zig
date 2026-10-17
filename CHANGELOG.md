@@ -47,6 +47,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tag gate reads these annotations. The soak job checks this wiring on each
   run, also when the run is green. The soak steps on Windows now run in
   bash.
+- **Docs: one ledger for downstream asks, and one for upstream handoffs.**
+  `docs/downstreams.md` gives the capnp-zig pin of capnp-swift, capnp-deno
+  and slcp-zig, and one row for each of their asks: what it asks for, the
+  handoff path in that repository, and its status. It also holds the
+  relay text for capnp-swift for v0.27.0. It replaces the capnp-deno
+  upgrade note, which named quic_zig 0.7.0; that file is deleted.
+  `docs/upstream/README.md` gives one row for each handoff in
+  `docs/upstream`: its status, where it is fixed, and the capnp-zig
+  workaround to delete when the fix ships. `docs/upstream` now has a copy
+  of capnp-swift's `handoff-zig-fork-debug-allocator-slabs.md`, so the
+  citation in `tests/native/fuzz_abi.zig` resolves in this repository.
+  The RELEASING.md checklist names both ledgers, before the tag and after
+  it.
 
 ### Changed
 

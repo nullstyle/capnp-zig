@@ -98,6 +98,12 @@ git status --short          # must be empty
       Add a row for each flake that recent Nightlies showed and that is not
       fixed (see "The known-flakes rule" in step 5). The tag gate reads the
       rows from the release commit, so they must be in it.
+- [ ] The two ledgers are current: `docs/downstreams.md` (downstream
+      asks) and `docs/upstream/README.md` (upstream handoffs). Each ask or
+      handoff that this release delivers, changes or adds has its row,
+      with today's date in "Checked". A downstream ask that the release
+      ships says "on main for vX.Y.Z". Each handoff file has a row, and
+      each workaround row names code that still exists.
 - [ ] `just package-preflight` passes. This is the manifest-filtered package
       gate, not a working-tree/path-dependency build: it archives and re-fetches
       the `.paths` result, runs the documented pinned-plugin codegen consumer
@@ -350,6 +356,12 @@ because the tag already exists. It turns red, so a tag made without
 
 - [ ] Announce the supersession if this release corrects a bad tag: say plainly
       in the CHANGELOG prose which version it replaces and why.
+
+- [ ] Update both ledgers for the tag. In `docs/downstreams.md`, change
+      each "on main for vX.Y.Z" to "delivered in vX.Y.Z", and give the
+      owner the relay text for each downstream. In `docs/upstream/README.md`,
+      record each handoff that this release adds or changes, and give the
+      owner each new or changed handoff file to send.
 
 ## Cadence
 

@@ -15,7 +15,8 @@
 //! allocator from `capnp_core_allocator` below, a live-byte counter over the
 //! page allocator. Not `std.heap.DebugAllocator`: at Zig 0.17.0 it keeps the
 //! slabs of emptied small-allocation buckets mapped, so a 30-minute run grew
-//! past 20 GB with 0 live bytes (handoff-zig-fork-debug-allocator-slabs.md);
+//! past 20 GB with 0 live bytes
+//! (docs/upstream/handoff-zig-fork-debug-allocator-slabs.md);
 //! the counter is the leak check here (`CountingAllocator.live` must return
 //! to its pre-session value), and the core's own tests keep
 //! `std.testing.allocator`'s double-free checks.
