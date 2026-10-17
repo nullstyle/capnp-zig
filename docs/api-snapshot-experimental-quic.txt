@@ -272,6 +272,7 @@ capnpc-zig.native.cap_remap.Inbound.msg: field []const u8
 capnpc-zig.native.cap_remap.Inbound: struct
 capnpc-zig.native.cap_remap.RemapError: type = error{BadCapId,CapIndexOutOfRange,UnsupportedCapKind}
 capnpc-zig.native.cap_remap.cloneMemoryLimit: fn (usize) usize
+capnpc-zig.native.cap_remap.copyCapFreeHostContent: fn (mem.Allocator, *rpc.caps.lifecycle.CapTable, []const u8, []const native.effects.Cap) error{BadCapId,CapIndexOutOfRange,CapTableFull,ContentCarriesCaps,ElementCountTooLarge,EmptyMessage,FarPointerOffsetTooLarge,IndexOutOfBounds,InvalidFarPointer,InvalidInlineCompositePointer,InvalidMessageSize,InvalidPointer,InvalidRootPointer,InvalidSegmentCount,InvalidSegmentId,ListTooLarge,MessageTooLarge,NestingLimitExceeded,OffsetOutOfRange,OutOfBounds,OutOfMemory,PointerDepthLimit,PointerIndexOutOfBounds,RecursionLimitExceeded,SegmentCountLimitExceeded,StructSizeMismatch,TextTooLong,TooManySegments,TraversalLimitExceeded,TruncatedMessage}![]const u8
 capnpc-zig.native.cap_remap.copyInbound: fn (mem.Allocator, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader, *const rpc.caps.inbound.InboundCapTable) anyerror!native.cap_remap.Inbound
 capnpc-zig.native.cap_remap.importRefCount: fn (*const rpc.caps.lifecycle.CapTable, u32) u32
 capnpc-zig.native.cap_remap.promisedOps: fn (mem.Allocator, native.effects.Cap) error{OutOfMemory}![]rpc.wire.protocol.PromisedAnswerOp
@@ -294,6 +295,7 @@ capnpc-zig.native.conn.Conn.bootstrap: fn (*native.conn.Conn) anyerror!u32
 capnpc-zig.native.conn.Conn.bootstrap_ctx: field ?*native.conn.ExportCtx = null
 capnpc-zig.native.conn.Conn.call: fn (*native.conn.Conn, native.effects.Cap, u64, u16, []const u8, []const native.effects.Cap, u32) anyerror!u32
 capnpc-zig.native.conn.Conn.cancel: fn (*native.conn.Conn, u32) error{BadId,CannotUpgradeBitList,CapTableFull,ElementCountTooLarge,EmptyMessage,FarPointerOffsetTooLarge,IndexOutOfBounds,InvalidDiscriminant,InvalidEnumValue,InvalidFarPointer,InvalidInlineCompositePointer,InvalidMessageSize,InvalidMessageTag,InvalidPointer,InvalidReturnTag,InvalidRootPointer,InvalidSegmentCount,InvalidSegmentId,InvalidTextPointer,ListTooLarge,MessageTooLarge,MissingCapDescriptorId,MissingPromisedAnswer,MissingThirdPartyCapDescriptor,NestingLimitExceeded,OffsetOutOfRange,OutOfBounds,OutOfMemory,PointerDepthLimit,PointerIndexOutOfBounds,RefCountOverflow,SegmentCountLimitExceeded,TextTooLong,TooManySegments,TransformTooLong,TraversalLimitExceeded,TruncatedMessage,UnexpectedMessage,UnknownExport,UnknownQuestion,WrongUnionMember}!void
+capnpc-zig.native.conn.Conn.close_deferred: field bool = false
 capnpc-zig.native.conn.Conn.close_node: field ?*native.effects.Node = null
 capnpc-zig.native.conn.Conn.close_requested: field bool = false
 capnpc-zig.native.conn.Conn.commitEffect: fn (*native.conn.Conn) void
@@ -304,6 +306,7 @@ capnpc-zig.native.conn.Conn.failed: field bool = false
 capnpc-zig.native.conn.Conn.finish: fn (*native.conn.Conn, u32, bool) anyerror!void
 capnpc-zig.native.conn.Conn.framer: field rpc.wire.framing.Framer
 capnpc-zig.native.conn.Conn.framing: field native.conn.Framing
+capnpc-zig.native.conn.Conn.held_tail_calls: field hash_map.HashMap(u32,*native.conn.QuestionCtx,hash_map.AutoContext(u32),80)
 capnpc-zig.native.conn.Conn.init: fn (mem.Allocator, native.conn.Options) error{OutOfMemory}!*native.conn.Conn
 capnpc-zig.native.conn.Conn.last_error: field ?anyerror = null
 capnpc-zig.native.conn.Conn.length_codec: field native.conn.LengthCodec
@@ -312,7 +315,7 @@ capnpc-zig.native.conn.Conn.local_disconnect: field bool = false
 capnpc-zig.native.conn.Conn.nextEffect: fn (*native.conn.Conn) error{Busy}!?*const native.effects.Effect
 capnpc-zig.native.conn.Conn.now_ns: field i64 = 0
 capnpc-zig.native.conn.Conn.peer: field rpc.peer.mod.Peer
-capnpc-zig.native.conn.Conn.pending_answers: field hash_map.HashMap(u32,void,hash_map.AutoContext(u32),80)
+capnpc-zig.native.conn.Conn.pending_answers: field hash_map.HashMap(u32,bool,hash_map.AutoContext(u32),80)
 capnpc-zig.native.conn.Conn.promiseExport: fn (*native.conn.Conn) error{CapTableFull,Closed,OutOfMemory}!u32
 capnpc-zig.native.conn.Conn.pushBytes: fn (*native.conn.Conn, []const u8) error{Closed,Protocol}!void
 capnpc-zig.native.conn.Conn.questions: field hash_map.HashMap(u32,*native.conn.QuestionCtx,hash_map.AutoContext(u32),80)
@@ -328,6 +331,7 @@ capnpc-zig.native.conn.Conn.sending_qctx: field ?*native.conn.QuestionCtx = null
 capnpc-zig.native.conn.Conn.setBootstrap: fn (*native.conn.Conn, u64) error{CapTableFull,Invalid,OutOfMemory}!u32
 capnpc-zig.native.conn.Conn.setDeadline: fn (*native.conn.Conn, u32, u64) error{BadId,Closed,NoClockConfigured,QuestionCancelled,UnknownQuestion}!void
 capnpc-zig.native.conn.Conn.shutdown: fn (*native.conn.Conn) void
+capnpc-zig.native.conn.Conn.shutdown_deadline_ns: field ?i64 = null
 capnpc-zig.native.conn.Conn.shutting_down: field bool = false
 capnpc-zig.native.conn.Conn.stats: field native.conn.Stats = <default>
 capnpc-zig.native.conn.Conn.tick: fn (*native.conn.Conn, i64) usize
@@ -368,6 +372,8 @@ capnpc-zig.native.conn.eventName: fn (u8) [:0]const u8
 capnpc-zig.native.conn.oom_results_reason: const *const [47:0]u8
 capnpc-zig.native.conn.oversized_results_reason: const *const [62:0]u8
 capnpc-zig.native.conn.promised_results_reason: const *const [65:0]u8
+capnpc-zig.native.conn.tail_call_caps_reason: const *const [54:0]u8
+capnpc-zig.native.conn.tail_call_reused_reason: const *const [72:0]u8
 capnpc-zig.native.conn: struct
 capnpc-zig.native.effects.Cap.id: field u32 = 0
 capnpc-zig.native.effects.Cap.kind: field native.effects.CapKind

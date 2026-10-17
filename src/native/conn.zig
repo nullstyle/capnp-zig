@@ -160,6 +160,15 @@ pub const bad_results_reason = "capnp-swift core: results payload could not be c
 pub const promised_results_reason = "capnp-swift core: results carry an unresolved promised capability";
 /// Reason the Peer synthesizes for a question the host cancelled.
 pub const cancel_reason = "canceled by the host";
+/// Reason text of the RETURN (EXCEPTION, unimplemented) of a question held
+/// on a tail call whose named call's results carry capabilities: they are
+/// not delivered to the question (docs/notes/tail-call-hold-design.md).
+pub const tail_call_caps_reason = "capnp-swift core: tail call results carry capabilities";
+/// Reason text of the RETURN (EXCEPTION, failed) of a question held on a
+/// tail call when the remote reuses the named call's id for a new call
+/// before the host answered the old one: the host's next answer for the id
+/// could belong to either call.
+pub const tail_call_reused_reason = "capnp-swift core: the tail-called call's id was reused before its answer";
 
 /// The name of a Peer observer event tag (`effects.Event.tag`), or "unknown".
 pub fn eventName(tag: u8) [:0]const u8 {
@@ -181,7 +190,26 @@ pub const Conn = struct {
     /// until `deinit`, and never produces EXPORT_DROPPED).
     bootstrap_ctx: ?*ExportCtx = null,
     /// Answer ids handed to the host as INBOUND_CALL and not yet answered.
-    pending_answers: std.AutoHashMap(u32, void),
+    /// The value is true for a call with `sendResultsTo = yourself`: a
+    /// tail-call redirect may name it (`held_tail_calls`).
+    pending_answers: std.AutoHashMap(u32, bool),
+    /// Questions held on a tail call, by the answer id of the call they
+    /// wait for (docs/notes/tail-call-hold-design.md). The remote answered
+    /// each with `takeFromOtherQuestion` naming a `yourself` call that is in
+    /// `pending_answers`, so the host owes that call's answer; it becomes
+    /// the question's one RETURN. A held question stays in `live_questions`
+    /// and `questions`, with its RETURN node not queued yet. Every end of a
+    /// hold takes its entry out first (`takeHold`). At most one entry per
+    /// question, so the host's own questions bound the table.
+    held_tail_calls: std.AutoHashMap(u32, *QuestionCtx),
+    /// `shutdown` ran and the Peer asked to close while a question was held
+    /// (`bindingClose`): CLOSE_REQUESTED waits until no question is held, or
+    /// until `shutdown_deadline_ns` passes on a tick.
+    close_deferred: bool = false,
+    /// The graceful-shutdown drain bound for held questions, from
+    /// `PeerTimeouts.shutdown_drain_timeout_ms` (the Peer keeps its own for
+    /// the questions it still has). Null without one.
+    shutdown_deadline_ns: ?i64 = null,
     /// CLOSE_REQUESTED node reserved at init so a close request never needs
     /// memory. Null once queued.
     close_node: ?*effects.Node = null,
@@ -234,7 +262,8 @@ pub const Conn = struct {
             .framer = Framer.initWithOptions(allocator, .{ .max_buffered_bytes = opts.max_frame_bytes }),
             .framing = opts.framing,
             .length_codec = .{ .max_bytes = opts.max_frame_bytes },
-            .pending_answers = std.AutoHashMap(u32, void).init(allocator),
+            .pending_answers = std.AutoHashMap(u32, bool).init(allocator),
+            .held_tail_calls = std.AutoHashMap(u32, *QuestionCtx).init(allocator),
             .questions = std.AutoHashMap(u32, *QuestionCtx).init(allocator),
             .close_node = close_node,
             .now_ns = opts.now_ns,
@@ -264,6 +293,14 @@ pub const Conn = struct {
         self.discarding = true;
         self.local_disconnect = true;
         self.peer.deinit();
+        // The Peer delivered a held question's Return already, so it never
+        // calls back for it: free its node and context here.
+        var held = self.held_tail_calls.valueIterator();
+        while (held.next()) |qc| {
+            qc.*.node.destroy(a);
+            a.destroy(qc.*);
+        }
+        self.held_tail_calls.deinit();
         if (self.bootstrap_ctx) |ec| {
             ec.dropped.destroy(a);
             a.destroy(ec);
@@ -330,7 +367,36 @@ pub const Conn = struct {
     /// retries). Returns the number of questions cancelled.
     pub fn tick(self: *Conn, now_ns: i64) usize {
         self.now_ns = now_ns;
-        return self.peer.checkDeadlines();
+        const cancelled = self.peer.checkDeadlines();
+        if (self.held_tail_calls.count() == 0) return cancelled;
+        return cancelled + self.tickHeld(now_ns);
+    }
+
+    /// The deadlines and the shutdown drain bound of held questions: the
+    /// Peer delivered their Returns, so its own checks no longer see them.
+    /// Walks only the host's own questions. Each ends as the Peer ends one
+    /// of its own: Finish (`finishHeld`), then the terminal.
+    fn tickHeld(self: *Conn, now_ns: i64) usize {
+        const drain_over = if (self.shutdown_deadline_ns) |deadline| now_ns >= deadline else false;
+        var ended: usize = 0;
+        var next = self.live_questions;
+        while (next) |qc| {
+            next = qc.next;
+            const answer_id = qc.held_on orelse continue;
+            if (drain_over) {
+                self.finishHeld(qc);
+                self.endHeld(answer_id, rpc.peer.shutdown_reason, .disconnected, false);
+                ended += 1;
+                continue;
+            }
+            const deadline = qc.deadline_ns orelse continue;
+            if (now_ns < deadline) continue;
+            events.emitTimeout(self.peer.observer, .peer, .unknown, .call_deadline, qc.qid);
+            self.finishHeld(qc);
+            self.endHeld(answer_id, rpc.peer.deadline_reason, .overloaded, false);
+            ended += 1;
+        }
+        return ended;
     }
 
     /// The host's transport is gone. Every open question ends with one
@@ -404,6 +470,7 @@ pub const Conn = struct {
         const qc = try self.newQuestionCtx();
         qc.msg = msg;
         qc.caps = caps;
+        qc.retained = true;
         self.sending_qctx = qc;
         const qid = switch (target.kind) {
             .import => self.peer.sendCallWithOptions(
@@ -443,9 +510,15 @@ pub const Conn = struct {
     /// at once with a locally synthesized exception, which the host sees as
     /// one RETURN{CANCELED}; a late Return from the remote is absorbed.
     /// `error.BadId` for a question that already ended. A no-op once closed.
+    /// A question held on a tail call ends the same way (`finishHeld`).
     pub fn cancel(self: *Conn, qid: u32) !void {
         if (self.isClosed()) return;
         const qc = self.questions.get(qid) orelse return error.BadId;
+        if (qc.held_on) |answer_id| {
+            self.finishHeld(qc);
+            self.endHeld(answer_id, cancel_reason, .failed, true);
+            return;
+        }
         qc.cancel_requested = true;
         self.peer.cancelQuestionTyped(qid, cancel_reason, .failed) catch |err| {
             qc.cancel_requested = false;
@@ -457,26 +530,37 @@ pub const Conn = struct {
     /// clock's now; it fires on a later `tick` as RETURN{EXCEPTION overloaded}.
     pub fn setDeadline(self: *Conn, qid: u32, timeout_ms: u64) !void {
         if (self.isClosed()) return error.Closed;
-        if (!self.questions.contains(qid)) return error.BadId;
-        try self.peer.setQuestionDeadline(qid, timeout_ms);
+        const qc = self.questions.get(qid) orelse return error.BadId;
+        // A held question is no longer in the Peer's table: `tickHeld`
+        // enforces the copy kept here.
+        if (qc.held_on == null) try self.peer.setQuestionDeadline(qid, timeout_ms);
+        qc.deadline_ns = deadlineAfter(self.now_ns, timeout_ms);
     }
 
     /// Begin a graceful shutdown: no new questions; input and ticks still
     /// flow so open questions can return. When none is left (or the drain
     /// timeout passes on a `tick`, ending the rest with RETURN{DISCONNECTED}),
-    /// the Peer asks the host to close (CLOSE_REQUESTED). Idempotent.
+    /// the Peer asks the host to close (CLOSE_REQUESTED). Idempotent. A
+    /// question held on a tail call counts as open (`bindingClose`).
     pub fn shutdown(self: *Conn) void {
         if (self.isClosed() or self.shutting_down) return;
         self.shutting_down = true;
         self.local_disconnect = true;
+        if (self.peer.timeouts.shutdown_drain_timeout_ms) |ms| {
+            self.shutdown_deadline_ns = deadlineAfter(self.now_ns, ms);
+        }
         self.peer.shutdown(null);
     }
 
     /// Finish a retained question (the host dropped its last handle on it).
+    /// `error.Busy` for a question held on a tail call: it has no RETURN yet.
     pub fn finish(self: *Conn, qid: u32, release_result_caps: bool) !void {
         // Once closed nothing more may be sent; the Peer frees its retained
         // records at deinit.
         if (self.isClosed()) return;
+        if (self.questions.get(qid)) |qc| {
+            if (qc.held_on != null) return error.Busy;
+        }
         try self.peer.finishRetainedQuestion(qid, release_result_caps);
     }
 
@@ -555,6 +639,8 @@ pub const Conn = struct {
         var bc: ReturnBuildCtx = .{ .conn = self, .msg = msg, .caps = caps };
         try self.peer.sendReturnResults(answer_id, &bc, buildReturn);
         _ = self.pending_answers.remove(answer_id);
+        // A question held on this call gets these results as its RETURN.
+        if (self.takeHold(answer_id)) |qc| self.endHeldWithResults(qc, msg, caps);
     }
 
     /// Answer an INBOUND_CALL with an exception.
@@ -562,6 +648,125 @@ pub const Conn = struct {
         if (!self.pending_answers.contains(answer_id)) return error.BadId;
         try self.peer.sendReturnExceptionTyped(answer_id, reason, @fromBackingInt(exception_type));
         _ = self.pending_answers.remove(answer_id);
+        // A question held on this call gets this exception as its RETURN.
+        self.endHeld(answer_id, reason, @fromBackingInt(exception_type), false);
+    }
+
+    // ------------------------------------------------------------------
+    // Tail calls (docs/notes/tail-call-hold-design.md)
+    // ------------------------------------------------------------------
+
+    /// Hold `qc` instead of ending it with the bare redirect `ret`, when the
+    /// redirect names a `sendResultsTo = yourself` call the host still owes
+    /// and no other question is held on it. Only `capnp_call` questions are
+    /// held. False leaves `qc` to `onQuestionReturn`, as before holds
+    /// existed: one RETURN EXCEPTION now.
+    fn holdTailCall(self: *Conn, qc: *QuestionCtx, ret: protocol.Return) bool {
+        if (self.discarding or !qc.retained or !qc.linked) return false;
+        // A loopback question's redirect names an id in this side's own
+        // question space, not one of the remote's calls.
+        if (self.peer.retained_questions.get(qc.qid)) |entry| {
+            if (entry.is_loopback) return false;
+        }
+        const answer_id = ret.take_from_other_question orelse return false;
+        const yourself = self.pending_answers.get(answer_id) orelse return false;
+        if (!yourself) return false;
+        const slot = self.held_tail_calls.getOrPut(answer_id) catch return false;
+        if (slot.found_existing) return false;
+        slot.value_ptr.* = qc;
+        qc.held_on = answer_id;
+        return true;
+    }
+
+    /// Take the hold on `answer_id` out of the table and out of the open
+    /// questions. The caller ends it with its one RETURN. Null when no
+    /// question is held on it, so an end that comes second does nothing.
+    fn takeHold(self: *Conn, answer_id: u32) ?*QuestionCtx {
+        const entry = self.held_tail_calls.fetchRemove(answer_id) orelse return null;
+        const qc = entry.value;
+        qc.held_on = null;
+        self.unlinkQuestion(qc);
+        return qc;
+    }
+
+    /// End the question held on `answer_id`, if any, with an exception
+    /// RETURN, mapped as `fillReturn` maps one from the Peer (`canceled`:
+    /// the host cancelled it). The reason copy has the same static
+    /// fallback as `onQuestionReturn`.
+    fn endHeld(
+        self: *Conn,
+        answer_id: u32,
+        reason: []const u8,
+        ex_type: protocol.ExceptionType,
+        canceled: bool,
+    ) void {
+        const qc = self.takeHold(answer_id) orelse return;
+        const ret: protocol.Return = .{
+            .answer_id = qc.qid,
+            .release_param_caps = false,
+            .no_finish_needed = false,
+            .tag = .exception,
+            .results = null,
+            .exception = .{ .reason = reason, .trace = "", .type_value = @backingInt(ex_type) },
+            .take_from_other_question = null,
+        };
+        const node = qc.node;
+        self.fillException(node, ret, canceled) catch |err| {
+            node.freePayload(self.allocator);
+            node.effect = .{ .@"return" = self.fallbackReturn(ret, canceled, err) };
+        };
+        self.queueHeldReturn(qc);
+    }
+
+    /// End held question `qc` (already taken) with the host's answer to the
+    /// call it waits for: a copy of the results, with null capabilities as
+    /// the Peer encodes them. Results that point at a capability are not
+    /// delivered (the Peer keeps none either).
+    fn endHeldWithResults(self: *Conn, qc: *QuestionCtx, msg: []const u8, caps: []const Cap) void {
+        const node = qc.node;
+        if (cap_remap.copyCapFreeHostContent(self.allocator, &self.peer.caps, msg, caps)) |bytes| {
+            node.owned_bytes = bytes;
+            node.effect = .{ .@"return" = .{ .qid = qc.qid, .kind = .results, .msg = bytes } };
+        } else |err| switch (err) {
+            error.ContentCarriesCaps => node.effect = .{ .@"return" = .{
+                .qid = qc.qid,
+                .kind = .exception,
+                .exception_type = @backingInt(protocol.ExceptionType.unimplemented),
+                .reason = tail_call_caps_reason,
+            } },
+            else => node.effect = .{ .@"return" = .{
+                .qid = qc.qid,
+                .kind = .exception,
+                .exception_type = @backingInt(protocol.ExceptionType.failed),
+                .reason = copyFailureReason(err),
+            } },
+        }
+        self.queueHeldReturn(qc);
+    }
+
+    /// Queue taken question `qc`'s filled RETURN node and free `qc`. The
+    /// last hold to end lets a deferred close request through.
+    fn queueHeldReturn(self: *Conn, qc: *QuestionCtx) void {
+        const node = qc.node;
+        self.allocator.destroy(qc);
+        self.stats.terminal_via_on_return +|= 1;
+        self.pushNode(node);
+        if (self.close_deferred and self.held_tail_calls.count() == 0) {
+            self.close_deferred = false;
+            self.requestClose();
+        }
+    }
+
+    /// Send Finish for a held question that the core ends itself (cancel, a
+    /// deadline, the shutdown drain bound). The Peer delivered its Return,
+    /// so it keeps it as a returned retained question until this Finish. As
+    /// the Peer's own cancel does, the question ends even when the Finish
+    /// cannot be sent: its record goes (so `finish` refuses the id), and
+    /// transport teardown reconciles the remote's state.
+    fn finishHeld(self: *Conn, qc: *QuestionCtx) void {
+        self.peer.finishRetainedQuestion(qc.qid, true) catch {
+            _ = self.peer.retained_questions.retire(qc.qid);
+        };
     }
 
     // ------------------------------------------------------------------
@@ -601,7 +806,12 @@ pub const Conn = struct {
     /// End every question still in `live_questions` with RETURN{DISCONNECTED},
     /// from the node each reserved at send time (no allocation).
     fn sweepOpenQuestions(self: *Conn) void {
+        // The transport is gone: no close request is owed any more.
+        self.close_deferred = false;
         while (self.live_questions) |qc| {
+            // A held question's Return came already, so the Peer never
+            // calls back for it: free its context here.
+            const held = if (qc.held_on) |answer_id| self.takeHold(answer_id) != null else false;
             self.unlinkQuestion(qc);
             qc.swept = true;
             self.stats.terminal_via_close_sweep +|= 1;
@@ -613,6 +823,7 @@ pub const Conn = struct {
                 .exception_type = @backingInt(protocol.ExceptionType.disconnected),
                 .reason = self.disconnectReason(),
             } };
+            if (held) self.allocator.destroy(qc);
             self.pushNode(node);
         }
     }
@@ -718,6 +929,9 @@ pub const Conn = struct {
         // (claims.json #5). Also turns off restore_on_return_error.
         self.peer.setQuestionDeinitCtx(qid, onQuestionDeinit);
         self.linkQuestion(qc);
+        // A copy of the Peer's deadline (`PeerTimeouts.default_call_timeout_ms`)
+        // for when the question is held on a tail call (`tickHeld`).
+        if (self.peer.questions.get(qid)) |question| qc.deadline_ns = question.deadline_ns;
         return qid;
     }
 
@@ -755,17 +969,7 @@ pub const Conn = struct {
                 node.owned_caps = in.caps;
                 node.effect = .{ .@"return" = .{ .qid = qid, .kind = .results, .msg = in.msg, .caps = in.caps } };
             },
-            .exception => {
-                const t = self.exceptionTerminal(ret, canceled);
-                const reason = try self.allocator.dupe(u8, t.text);
-                node.owned_reason = reason;
-                node.effect = .{ .@"return" = .{
-                    .qid = qid,
-                    .kind = t.kind,
-                    .exception_type = t.exception_type,
-                    .reason = reason,
-                } };
-            },
+            .exception => try self.fillException(node, ret, canceled),
             .canceled => node.effect = .{ .@"return" = .{ .qid = qid, .kind = .canceled } },
             else => node.effect = .{ .@"return" = .{
                 .qid = qid,
@@ -774,6 +978,20 @@ pub const Conn = struct {
                 .reason = "capnp-swift core: unsupported Return variant",
             } },
         }
+    }
+
+    /// `fillReturn` for an exception Return (also a held question's end,
+    /// `endHeld`).
+    fn fillException(self: *Conn, node: *effects.Node, ret: protocol.Return, canceled: bool) !void {
+        const t = self.exceptionTerminal(ret, canceled);
+        const reason = try self.allocator.dupe(u8, t.text);
+        node.owned_reason = reason;
+        node.effect = .{ .@"return" = .{
+            .qid = ret.answer_id,
+            .kind = t.kind,
+            .exception_type = t.exception_type,
+            .reason = reason,
+        } };
     }
 
     /// The terminal `fillReturn` could not build (its copy failed), built
@@ -801,12 +1019,7 @@ pub const Conn = struct {
             .qid = ret.answer_id,
             .kind = .exception,
             .exception_type = @backingInt(protocol.ExceptionType.failed),
-            .reason = switch (err) {
-                error.OutOfMemory => oom_results_reason,
-                error.PayloadCopyExceedsFrame => oversized_results_reason,
-                error.PromisedCapUnsupported => promised_results_reason,
-                else => bad_results_reason,
-            },
+            .reason = copyFailureReason(err),
         };
     }
 
@@ -832,6 +1045,23 @@ pub const Conn = struct {
         return .{ .kind = kind, .exception_type = ex_type, .text = text };
     }
 };
+
+/// The reason of the RETURN whose results could not be copied (`err`).
+fn copyFailureReason(err: anyerror) []const u8 {
+    return switch (err) {
+        error.OutOfMemory => oom_results_reason,
+        error.PayloadCopyExceedsFrame => oversized_results_reason,
+        error.PromisedCapUnsupported => promised_results_reason,
+        else => bad_results_reason,
+    };
+}
+
+/// `now_ns` plus `ms`, as the Peer stamps a deadline, saturating.
+fn deadlineAfter(now_ns: i64, ms: u64) i64 {
+    const max_ms: u64 = @intCast(@divTrunc(std.math.maxInt(i64), std.time.ns_per_ms));
+    const ns: i64 = @as(i64, @intCast(@min(ms, max_ms))) * std.time.ns_per_ms;
+    return now_ns +| ns;
+}
 
 /// `text` as static storage when it is a reason the Peer synthesizes itself
 /// (or the shim's `cancel_reason`), so a terminal can carry it without a
@@ -863,6 +1093,16 @@ const QuestionCtx = struct {
     swept: bool = false,
     /// Set by `cancel` before the Peer synthesizes the terminal exception.
     cancel_requested: bool = false,
+    /// A `capnp_call` question (retained: the host finishes it). Only these
+    /// are held on a tail call (`Conn.holdTailCall`).
+    retained: bool = false,
+    /// Set while the question is held on the call with this answer id
+    /// (`Conn.held_tail_calls`): the Peer delivered its Return, the shim
+    /// owns the context, and `node` is not queued yet.
+    held_on: ?u32 = null,
+    /// A copy of the question's deadline: once held, the question is no
+    /// longer in the Peer's table, so `Conn.tickHeld` enforces it.
+    deadline_ns: ?i64 = null,
     /// `Conn.live_questions` links: adopted, terminal not fired yet.
     linked: bool = false,
     prev: ?*QuestionCtx = null,
@@ -913,7 +1153,16 @@ fn bindingSend(ctx: *anyopaque, frame: []const u8) anyerror!void {
 }
 
 fn bindingClose(ctx: *anyopaque) void {
-    castPtr(Conn, ctx).requestClose();
+    const self = castPtr(Conn, ctx);
+    // The Peer ends a graceful shutdown when its own questions are done; a
+    // question held on a tail call is still open for the host. Its end, or
+    // the drain bound (`tickHeld`), sends the close request. A protocol
+    // failure or a remote Abort calls `requestClose` itself.
+    if (self.shutting_down and self.held_tail_calls.count() != 0) {
+        self.close_deferred = true;
+        return;
+    }
+    self.requestClose();
 }
 
 fn bindingIsClosing(ctx: *anyopaque) bool {
@@ -978,6 +1227,9 @@ fn onQuestionReturn(
         self.allocator.destroy(qc);
         return;
     }
+    // A tail call to a call the host owes: the question waits for that
+    // call's answer (docs/notes/tail-call-hold-design.md).
+    if (ret.tag == .takeFromOtherQuestion and self.holdTailCall(qc, ret)) return;
     const node = qc.node;
     const canceled = qc.cancel_requested;
     self.releaseQuestionCtx(qc);
@@ -1049,7 +1301,11 @@ fn onExportCall(
         .msg = in.msg,
         .caps = in.caps,
     } };
-    self.pending_answers.putAssumeCapacity(call_msg.question_id, {});
+    // The remote reused the id of a call a question is held on before the
+    // host answered it: the host's next answer for the id could belong to
+    // either call, so that question ends now.
+    self.endHeld(call_msg.question_id, tail_call_reused_reason, .failed, false);
+    self.pending_answers.putAssumeCapacity(call_msg.question_id, call_msg.send_results_to.tag == .yourself);
     self.pushNode(node);
     // No reply here: the host answers later with returnResults/returnException.
 }
