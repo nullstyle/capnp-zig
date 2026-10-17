@@ -208,7 +208,13 @@ pub fn ReturnSend(comptime Peer: type) type {
             // transport, the `resultsSentElsewhere` we send can re-enter us with the
             // matching `takeFromOtherQuestion` before this call returns, and that
             // handler consumes the stash.
+            //
+            // Not once the remote's Finish of this call has come, which a
+            // synchronous transport can deliver during `build`: that Finish
+            // removed the call from `active_inbound_questions`, and every
+            // redirect that names the call came before it.
             if (!has_result_caps and
+                self.active_inbound_questions.contains(answer_id) and
                 self.loopback_result_stash.count() < self.limits.max_loopback_result_stash)
             {
                 // toBytes returned an owned copy; hand ownership to the stash.

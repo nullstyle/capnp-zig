@@ -84,6 +84,14 @@ pub fn CallInbound(comptime Peer: type) type {
             // forward record whose relay ended without a Return.
             _ = self.finished_early_param_grants.remove(call.question_id);
             _ = self.cross_peer_proxy_answers.remove(call.question_id);
+            // A kept answer of an earlier `sendResultsTo = yourself` call
+            // with this id is stale: a redirect from now on names this call.
+            // The remote's Finish of the old call drops it first (see
+            // `loopback_result_stash`); this covers a remote that reused the
+            // id without that Finish.
+            if (self.loopback_result_stash.fetchRemove(call.question_id)) |stale| {
+                self.allocator.free(stale.value);
+            }
 
             // `sendResultsTo = thirdParty` asks this vat to connect to a third vat
             // and deliver the results there. Unless the host opted in, we cannot —

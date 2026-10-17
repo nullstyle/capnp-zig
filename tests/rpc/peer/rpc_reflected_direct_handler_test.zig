@@ -46,6 +46,7 @@ const WireEvent = struct {
     tag: protocol.MessageTag,
     id: u32 = 0,
     disembargo_context: ?protocol.DisembargoContextTag = null,
+    return_tag: ?protocol.ReturnTag = null,
 };
 
 const Wire = struct {
@@ -65,9 +66,14 @@ const Wire = struct {
         var event = WireEvent{ .dir = dir, .tag = decoded.tag };
         switch (decoded.tag) {
             .call => event.id = (try decoded.asCall()).question_id,
-            .@"return" => event.id = (try decoded.asReturn()).answer_id,
+            .@"return" => {
+                const ret = try decoded.asReturn();
+                event.id = ret.answer_id;
+                event.return_tag = ret.tag;
+            },
             .resolve => event.id = (try decoded.asResolve()).promise_id,
             .disembargo => event.disembargo_context = (try decoded.asDisembargo()).context_tag,
+            .finish => event.id = (try decoded.asFinish()).question_id,
             else => {},
         }
         try self.events.append(self.allocator, event);
@@ -95,6 +101,28 @@ const Wire = struct {
             if (event.disembargo_context == context) return true;
         }
         return false;
+    }
+
+    /// Returns sent in `dir` for `answer_id`: all of them, or only `tag`.
+    fn countReturns(self: *const Wire, dir: EventDir, answer_id: u32, tag: ?protocol.ReturnTag) usize {
+        var n: usize = 0;
+        for (self.events.items) |event| {
+            if (event.dir != dir or event.tag != .@"return" or event.id != answer_id) continue;
+            if (tag) |want| {
+                if (event.return_tag != want) continue;
+            }
+            n += 1;
+        }
+        return n;
+    }
+
+    /// Finish frames sent in `dir` for `question_id`.
+    fn countFinishes(self: *const Wire, dir: EventDir, question_id: u32) usize {
+        var n: usize = 0;
+        for (self.events.items) |event| {
+            if (event.dir == dir and event.tag == .finish and event.id == question_id) n += 1;
+        }
+        return n;
     }
 };
 
@@ -419,4 +447,345 @@ test "reflected loopback runs a DIRECT handler and delivers its result value inl
     try server_peer.releaseImport(target_import_id, 1);
     try std.testing.expect(!server_peer.caps.hasImport(target_import_id));
     try std.testing.expect(!client_peer.exports.contains(target_export_id));
+}
+
+// -- Tail calls whose named call the host answers ------------------------------
+//
+// A tail call is a Return with `takeFromOtherQuestion` that names a call the
+// remote sent us with `sendResultsTo = yourself`. The C++ reference sends that
+// Return right after the call. When the named call is still unanswered then
+// (a deferred handler, or a host such as the native C ABI), the question gets
+// the bare `takeFromOtherQuestion` tag at once. Once the call is answered, the
+// remote gets `resultsSentElsewhere`, and the Peer keeps a cap-free answer in
+// `loopback_result_stash` for a redirect that comes later.
+//
+// The tests play the remote by hand: they push its frames into the client
+// peer, and the client's frames stay on the recorded wire.
+
+/// A server bootstrap that keeps every call unanswered.
+const SilentServer = struct {
+    fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+};
+
+/// A client export whose handler answers later.
+const DeferredTarget = struct {
+    answer_id: ?u32 = null,
+
+    fn onCall(ctx_ptr: *anyopaque, _: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *DeferredTarget = castCtx(*DeferredTarget, ctx_ptr);
+        self.answer_id = call.question_id;
+    }
+};
+
+const ResultN = struct {
+    n: u32,
+
+    fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+        const self: *const ResultN = castCtx(*const ResultN, ctx_ptr);
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        const results = try any.initStruct(1, 0);
+        results.writeU32(0, self.n);
+    }
+};
+
+/// The caller's question: every Return it gets, by tag.
+const TailCaller = struct {
+    returns: u32 = 0,
+    tag: ?protocol.ReturnTag = null,
+    result_n: ?u32 = null,
+    reason_buf: [128]u8 = undefined,
+    reason_len: usize = 0,
+
+    fn build(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+        var payload = try call.payloadTyped();
+        var any = try payload.initContent();
+        _ = try any.initStruct(0, 0);
+    }
+
+    fn onReturn(ctx_ptr: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *TailCaller = castCtx(*TailCaller, ctx_ptr);
+        self.returns += 1;
+        self.tag = ret.tag;
+        switch (ret.tag) {
+            .results => self.result_n = try readResultN(ret.results orelse return error.MissingPayload),
+            .exception => {
+                const text = (ret.exception orelse return error.MissingException).reason;
+                self.reason_len = @min(text.len, self.reason_buf.len);
+                @memcpy(self.reason_buf[0..self.reason_len], text[0..self.reason_len]);
+            },
+            else => {},
+        }
+    }
+
+    fn reason(self: *const TailCaller) []const u8 {
+        return self.reason_buf[0..self.reason_len];
+    }
+};
+
+/// The remote's question id of the tail call (the client's answer id).
+const tail_answer_id: u32 = 900;
+
+const TailHarness = struct {
+    wire: Wire,
+    server_peer: Peer,
+    client_peer: Peer,
+    silent: u8 = 0,
+    target: DeferredTarget = .{},
+    caller: TailCaller = .{},
+    target_export_id: u32 = 0,
+    server_import_id: u32 = 0,
+    question_id: u32 = 0,
+
+    /// The client asks the server's bootstrap a question, which the server
+    /// keeps. Then the wire stops forwarding: the test plays the server.
+    fn start(self: *TailHarness, allocator: std.mem.Allocator) !void {
+        self.* = .{
+            .wire = .{ .allocator = allocator },
+            .server_peer = Peer.initDetached(allocator),
+            .client_peer = Peer.initDetached(allocator),
+        };
+        self.server_peer.disableThreadAffinity();
+        self.client_peer.disableThreadAffinity();
+        self.wire.client_peer = &self.client_peer;
+        self.wire.server_peer = &self.server_peer;
+        self.client_peer.setSendFrameOverride(&self.wire, Wire.clientSend);
+        self.server_peer.setSendFrameOverride(&self.wire, Wire.serverSend);
+
+        _ = try self.server_peer.setBootstrap(.{ .ctx = &self.silent, .on_call = SilentServer.onCall });
+        self.target_export_id = try self.client_peer.addExport(.{ .ctx = &self.target, .on_call = DeferredTarget.onCall });
+
+        var bootstrap_probe = BootstrapProbe{};
+        _ = try self.client_peer.sendBootstrap(&bootstrap_probe, BootstrapProbe.onReturn);
+        self.server_import_id = bootstrap_probe.reflector_import_id orelse return error.BootstrapDidNotResolve;
+        self.question_id = try self.nextQuestion(&self.caller);
+        self.wire.forwarding = false;
+    }
+
+    fn deinit(self: *TailHarness) void {
+        self.client_peer.deinit();
+        self.server_peer.deinit();
+        self.wire.deinit();
+    }
+
+    /// What the C++ reference sends for a tail call: the `yourself` call on
+    /// the client's export, then the redirect for the client's question.
+    fn pushTailCall(self: *TailHarness, allocator: std.mem.Allocator) !void {
+        try self.pushYourselfCall(allocator, tail_answer_id, self.target_export_id);
+        try self.pushRedirect(allocator, self.question_id, tail_answer_id);
+    }
+
+    /// The remote calls the client's export `target_export` with question
+    /// `answer_id` and `sendResultsTo = yourself`.
+    fn pushYourselfCall(self: *TailHarness, allocator: std.mem.Allocator, answer_id: u32, target_export: u32) !void {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var call = try mb.beginCall(answer_id, CALL_INTERFACE_ID, CALL_METHOD_ID);
+        try call.setTargetImportedCap(target_export);
+        call.setSendResultsToYourself();
+        var payload = try call.payloadTyped();
+        _ = try (try payload.initContent()).initStruct(0, 0);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try self.client_peer.handleFrame(frame);
+    }
+
+    /// The remote answers the client's question `question_id` with
+    /// `takeFromOtherQuestion = source`.
+    fn pushRedirect(self: *TailHarness, allocator: std.mem.Allocator, question_id: u32, source: u32) !void {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var ret = try mb.beginReturn(question_id, .takeFromOtherQuestion);
+        ret.setReleaseParamCaps(false);
+        try ret.setTakeFromOtherQuestion(source);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try self.client_peer.handleFrame(frame);
+    }
+
+    /// The remote finishes its question `id` (the client's answer `id`).
+    fn pushFinish(self: *TailHarness, allocator: std.mem.Allocator, id: u32) !void {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        try mb.buildFinish(id, false, false);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try self.client_peer.handleFrame(frame);
+    }
+
+    /// One more question from the client to the server's bootstrap, which
+    /// the test (playing the server) keeps.
+    fn nextQuestion(self: *TailHarness, caller: *TailCaller) !u32 {
+        return self.client_peer.sendCall(
+            self.server_import_id,
+            CALL_INTERFACE_ID,
+            CALL_METHOD_ID,
+            caller,
+            TailCaller.build,
+            TailCaller.onReturn,
+        );
+    }
+};
+
+test "a tail call whose named call is answered first gets that call's results" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushYourselfCall(allocator, tail_answer_id, h.target_export_id);
+    var result = ResultN{ .n = 7 };
+    try h.client_peer.sendReturnResults(tail_answer_id, &result, ResultN.build);
+    try std.testing.expectEqual(@as(usize, 1), h.client_peer.loopback_result_stash.count());
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.results, h.caller.tag.?);
+    try std.testing.expectEqual(@as(u32, 7), h.caller.result_n.?);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+    try h.pushFinish(allocator, tail_answer_id);
+}
+
+// -- A kept answer never reaches a later tail call -----------------------------
+//
+// The remote reuses a question id only after its Finish, and the C++
+// reference reuses the lowest free id first (rpc.c++ `ExportTable`). An
+// answer kept for an earlier call with that id must not answer a tail call
+// that names the new one.
+
+test "a yourself call answered after its redirect keeps no answer past the remote's Finish of the call" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // The C++ order: the call, then the redirect, before the host answers.
+    // The call is pending, so the question gets the bare tag at once.
+    try h.pushTailCall(allocator);
+    try std.testing.expectEqual(@as(?u32, tail_answer_id), h.target.answer_id);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, h.caller.tag.?);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, h.question_id));
+
+    // The host answers the call later. No redirect will take this answer.
+    var first = ResultN{ .n = 7 };
+    try h.client_peer.sendReturnResults(tail_answer_id, &first, ResultN.build);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+
+    // rpc.capnp `Call.sendResultsTo.yourself`: the remote finishes the call
+    // after our Finish of the question, so every redirect that names the
+    // call has come. Nothing is kept past this Finish.
+    try h.pushFinish(allocator, tail_answer_id);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+
+    // The remote reuses the id for its next tail call.
+    var caller2 = TailCaller{};
+    const q2 = try h.nextQuestion(&caller2);
+    h.target.answer_id = null;
+    try h.pushYourselfCall(allocator, tail_answer_id, h.target_export_id);
+    try h.pushRedirect(allocator, q2, tail_answer_id);
+    try std.testing.expectEqual(@as(?u32, tail_answer_id), h.target.answer_id);
+    // The new call is pending too: the bare tag, never the old call's value.
+    try std.testing.expectEqual(@as(u32, 1), caller2.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, caller2.tag.?);
+    try std.testing.expectEqual(@as(?u32, null), caller2.result_n);
+
+    var second = ResultN{ .n = 8 };
+    try h.client_peer.sendReturnResults(tail_answer_id, &second, ResultN.build);
+    try h.pushFinish(allocator, tail_answer_id);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+}
+
+test "a question cancelled before its redirect: the named call's answer is not kept past the call's Finish" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // The host cancels the question while the remote's tail call for it is
+    // on the way. The cancelled question absorbs the redirect.
+    try h.client_peer.cancelQuestion(h.question_id, "host cancel");
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try h.pushTailCall(allocator);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+
+    var first = ResultN{ .n = 7 };
+    try h.client_peer.sendReturnResults(tail_answer_id, &first, ResultN.build);
+    try h.pushFinish(allocator, tail_answer_id);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+
+    // The remote reuses the id for its next tail call: the new question
+    // never gets the old call's value.
+    var caller2 = TailCaller{};
+    const q2 = try h.nextQuestion(&caller2);
+    try h.pushYourselfCall(allocator, tail_answer_id, h.target_export_id);
+    try h.pushRedirect(allocator, q2, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), caller2.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, caller2.tag.?);
+    try std.testing.expectEqual(@as(?u32, null), caller2.result_n);
+
+    var second = ResultN{ .n = 8 };
+    try h.client_peer.sendReturnResults(tail_answer_id, &second, ResultN.build);
+    try h.pushFinish(allocator, tail_answer_id);
+}
+
+test "a kept answer of a yourself call is dropped when the remote reuses the call's id" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // The call is answered before any redirect names it: the answer is
+    // kept for that redirect.
+    try h.pushYourselfCall(allocator, tail_answer_id, h.target_export_id);
+    var first = ResultN{ .n = 7 };
+    try h.client_peer.sendReturnResults(tail_answer_id, &first, ResultN.build);
+    try std.testing.expectEqual(@as(usize, 1), h.client_peer.loopback_result_stash.count());
+
+    // A remote that reuses the id without its Finish: the new Call makes
+    // the kept answer stale, so it is dropped when the Call arrives.
+    h.target.answer_id = null;
+    try h.pushYourselfCall(allocator, tail_answer_id, h.target_export_id);
+    try std.testing.expectEqual(@as(?u32, tail_answer_id), h.target.answer_id);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+
+    // The redirect names the new call, which is pending: the bare tag.
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, h.caller.tag.?);
+    try std.testing.expectEqual(@as(?u32, null), h.caller.result_n);
+
+    var second = ResultN{ .n = 8 };
+    try h.client_peer.sendReturnResults(tail_answer_id, &second, ResultN.build);
+    try h.pushFinish(allocator, tail_answer_id);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+}
+
+/// Results whose build delivers the remote's Finish of the call first, as
+/// a synchronous transport can while a handler runs.
+const FinishInsideBuild = struct {
+    h: *TailHarness,
+    allocator: std.mem.Allocator,
+
+    fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+        const self: *const FinishInsideBuild = castCtx(*const FinishInsideBuild, ctx_ptr);
+        try self.h.pushFinish(self.allocator, tail_answer_id);
+        var result = ResultN{ .n = 7 };
+        try ResultN.build(&result, ret);
+    }
+};
+
+test "a yourself call finished while its results build keeps no answer" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushYourselfCall(allocator, tail_answer_id, h.target_export_id);
+    var inside = FinishInsideBuild{ .h = &h, .allocator = allocator };
+    try h.client_peer.sendReturnResults(tail_answer_id, &inside, FinishInsideBuild.build);
+    // The Finish came first: no redirect can name the call any more.
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
 }

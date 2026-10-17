@@ -734,10 +734,20 @@ pub const Peer = struct {
     /// (the reflected-loopback / Level-1 tail-call optimization). Keyed by the
     /// answered call's answer id (the forwarder's forwarded-question id); the
     /// value is an owned Return-results frame. Consumed inline when the matching
-    /// `takeFromOtherQuestion` arrives (see `handleReturn`); freed at deinit if
-    /// that redirect never comes. NOT freed on the answered call's Finish — the
-    /// forwarder's `Finish` for the forwarded question can arrive BEFORE the
-    /// `takeFromOtherQuestion`, so freeing there would drop the results early.
+    /// `takeFromOtherQuestion` arrives (see `handleReturn`). Freed at the
+    /// remote's Finish of the answered call when no redirect took it: a
+    /// redirect that names the call comes before that Finish (rpc.capnp
+    /// `Call.sendResultsTo.yourself`: the tail caller finishes the call
+    /// only after the question's Finish; the C++ reference sends the
+    /// redirect right after the call, and capnp-zig's `.sent_elsewhere`
+    /// forwarder relays the Finish only at the question's Finish). So an
+    /// answer given after its redirect came, or after the question was
+    /// cancelled, is not kept past that Finish, and never reaches a later
+    /// call that reuses the id (the C++ reference reuses the lowest free
+    /// id). A Finish that arrives while the results build keeps them out
+    /// (`completeSelfLoopbackReturn`), a new Call with the id drops an entry
+    /// still there (`handleCall`), and deinit frees the rest. Bounded by
+    /// `limits.max_loopback_result_stash`.
     /// Only cap-free results are stashed.
     loopback_result_stash: std.AutoHashMap(u32, []u8),
 
@@ -4722,6 +4732,12 @@ pub const Peer = struct {
         // entries do: until the remote finishes the question.
         if (self.failed_answers.fetchRemove(qid)) |failed| {
             self.allocator.free(failed.value.reason);
+        }
+        // So does a kept answer of a `sendResultsTo = yourself` call
+        // (`loopback_result_stash`): every redirect that names the call
+        // comes before this Finish, so none can take the answer now.
+        if (self.loopback_result_stash.fetchRemove(qid)) |kept| {
+            self.allocator.free(kept.value);
         }
         const finished_completing_join = self.finishCompletingJoinAnswer(qid, finish_msg.release_result_caps);
         // Experimental `setAnswerFinishedHandler`: the host was handed this

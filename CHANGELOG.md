@@ -47,6 +47,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RPC: a tail call no longer gets the kept answer of an earlier call with
+  the same id.** A tail call is a Return with `takeFromOtherQuestion`. It
+  names a call that the remote sent to this peer with `sendResultsTo =
+  yourself`. The Peer keeps that call's cap-free answer for the redirect
+  (`loopback_result_stash`). When the redirect came first (the C++
+  reference sends it right after the call) or the question was cancelled,
+  no redirect took the answer, and nothing removed it. The C++ reference
+  reuses the lowest free question id, so its next tail call with that id
+  got the old answer as its results, before the new call was answered. The
+  native C ABI gave it to the host as RETURN RESULTS. Now the answer is
+  dropped at the remote's Finish of the call: every redirect that names the
+  call comes before that Finish. A Finish that arrives while the results
+  build keeps them out, and a new Call with the id drops an answer that is
+  still kept. A tail call that names a pending call still gets the bare
+  `takeFromOtherQuestion` tag at once. New tests are in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
+  `src/native/conn_test.zig` ("tail call: ...").
 - **Stable `Listener.close` on Windows aborted the process when a thread
   waited in accept.** `close` closed the listening handle under the wait,
   and std 0.17.0's accept treats that cancelled wait as `unreachable`: a

@@ -1621,3 +1621,168 @@ test "u32_le: a zero or oversized length prefix fails framing" {
         try testing.expectError(error.Protocol, a.pushBytes(&prefix));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tail calls: a Return whose takeFromOtherQuestion names a call to us
+// ---------------------------------------------------------------------------
+
+/// The remote's question id of the tail call (A's answer id).
+const tail_answer: u32 = 77;
+
+/// A tail call as the C++ reference sends it: a Call on A's export
+/// `target_export` whose sendResultsTo is `yourself`...
+fn yourselfCallFrame(alloc: std.mem.Allocator, answer_id: u32, target_export: u32) ![]const u8 {
+    var mb = protocol.MessageBuilder.init(alloc);
+    defer mb.deinit();
+    var call = try mb.beginCall(answer_id, iface, 4);
+    try call.setTargetImportedCap(target_export);
+    call.setSendResultsToYourself();
+    var payload = try call.payloadTyped();
+    _ = try (try payload.initContent()).initStruct(0, 0);
+    return mb.finish();
+}
+
+/// ...then the Return of A's question `qid` that says "your results are that
+/// call's results".
+fn tailCallReturnFrame(alloc: std.mem.Allocator, qid: u32, answer_id: u32) ![]const u8 {
+    var mb = protocol.MessageBuilder.init(alloc);
+    defer mb.deinit();
+    var ret = try mb.beginReturn(qid, .takeFromOtherQuestion);
+    ret.setReleaseParamCaps(false);
+    try ret.setTakeFromOtherQuestion(answer_id);
+    return mb.finish();
+}
+
+fn finishFrame(alloc: std.mem.Allocator, qid: u32) ![]const u8 {
+    var mb = protocol.MessageBuilder.init(alloc);
+    defer mb.deinit();
+    try mb.buildFinish(qid, false, false);
+    return mb.finish();
+}
+
+fn pushFrame(alloc: std.mem.Allocator, c: *Conn, frame: anyerror![]const u8) !void {
+    const bytes = try frame;
+    defer alloc.free(bytes);
+    try c.pushBytes(bytes);
+}
+
+/// Return OUT_FRAMEs that `rec` kept for `answer_id`: all of them, or only
+/// those with `tag`.
+fn countReturnFrames(rec: *Rec, answer_id: u32, tag: ?protocol.ReturnTag) !usize {
+    var n: usize = 0;
+    for (rec.frames.items) |bytes| {
+        var d = try protocol.DecodedMessage.init(testing.allocator, bytes);
+        defer d.deinit();
+        if (d.tag != .@"return") continue;
+        const ret = try d.asReturn();
+        if (ret.answer_id != answer_id) continue;
+        if (tag) |want| {
+            if (ret.tag != want) continue;
+        }
+        n += 1;
+    }
+    return n;
+}
+
+/// `qid` got exactly one RETURN, of `kind`. On a mismatch, print what it got.
+fn expectOneReturn(rec: *Rec, qid: u32, kind: effects.ReturnKind) !RecReturn {
+    const n = rec.countReturns(qid);
+    const r = rec.returnFor(qid) orelse {
+        std.debug.print("question {d}: no RETURN, want one {s}\n", .{ qid, @tagName(kind) });
+        return error.TestNoReturn;
+    };
+    if (n != 1 or r.kind != kind) {
+        std.debug.print("question {d}: {d} RETURN(s), first {s} type {d} \"{s}\"; want one {s}\n", .{
+            qid, n, @tagName(r.kind), r.exception_type, r.reason, @tagName(kind),
+        });
+        return error.TestWrongReturn;
+    }
+    return r;
+}
+
+/// A and B connected: A holds B's bootstrap `boot`, exports a cap the remote
+/// will tail-call (`ea`, tag 200) and has asked B question `q`, which B holds.
+/// From here on each test plays the remote itself: it pushes frames into A,
+/// and A's OUT_FRAMEs stay in `ra.frames`.
+const TailSetup = struct { boot: Cap, ea: u32, q: u32 };
+
+fn startTailCall(alloc: std.mem.Allocator, a: *Conn, ra: *Rec, b: *Conn, rb: *Rec) !TailSetup {
+    const boot = try connectPair(a, ra, b, rb);
+    const ea = try a.exportCap(200);
+    const p = try msgU64(alloc, 1);
+    defer alloc.free(p);
+    const q = try a.call(boot, iface, 0, p, &.{}, 0);
+    try pump(a, ra, b, rb);
+    try testing.expectEqual(@as(usize, 1), rb.calls.items.len);
+    return .{ .boot = boot, .ea = ea, .q = q };
+}
+
+/// One more question from A to the remote, its Call frame kept in `ra`.
+fn nextQuestion(alloc: std.mem.Allocator, a: *Conn, ra: *Rec, t: TailSetup) !u32 {
+    const p = try msgU64(alloc, 2);
+    defer alloc.free(p);
+    const q = try a.call(t.boot, iface, 0, p, &.{}, 0);
+    try drainAll(a, ra);
+    return q;
+}
+
+/// The remote tail-calls A's export with question `answer_id` and answers
+/// `q` with the redirect, in one push: A's host has not seen the call yet,
+/// so `q` gets the bare redirect, which the shim ends with one RETURN
+/// EXCEPTION (`unimplemented`).
+fn pushPendingTailCall(alloc: std.mem.Allocator, a: *Conn, ra: *Rec, t: TailSetup, q: u32, answer_id: u32) !void {
+    const call = try yourselfCallFrame(alloc, answer_id, t.ea);
+    defer alloc.free(call);
+    const ret = try tailCallReturnFrame(alloc, q, answer_id);
+    defer alloc.free(ret);
+    const both = try std.mem.concat(alloc, u8, &.{ call, ret });
+    defer alloc.free(both);
+    try a.pushBytes(both);
+    try drainAll(a, ra);
+    const c = ra.lastCall();
+    try testing.expectEqual(answer_id, c.answer_id);
+    try testing.expectEqual(t.ea, c.export_id);
+    try testing.expectEqual(@as(u64, 200), c.host_tag);
+    const r = try expectOneReturn(ra, q, .exception);
+    try testing.expectEqual(@backingInt(protocol.ExceptionType.unimplemented), r.exception_type);
+}
+
+test "tail call: an answer given after the redirect is not given to a later tail call with the same id" {
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    // The C++ order: the call and the redirect before the host answers.
+    try pushPendingTailCall(alloc, a, &ra, t, t.q, tail_answer);
+    try a.finish(t.q, false);
+    const old = try msgU64(alloc, 42);
+    defer alloc.free(old);
+    try a.returnResults(tail_answer, old, &.{});
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, .resultsSentElsewhere));
+    // The remote finishes the call after our Finish of the question.
+    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
+
+    // The remote reuses the id for its next tail call (the C++ reference
+    // reuses the lowest free id). The new call is pending, so the new
+    // question gets the bare redirect, never the old call's 42.
+    const q2 = try nextQuestion(alloc, a, &ra, t);
+    try pushPendingTailCall(alloc, a, &ra, t, q2, tail_answer);
+    const res = try msgU64(alloc, 99);
+    defer alloc.free(res);
+    try a.returnResults(tail_answer, res, &.{});
+    try a.finish(q2, false);
+    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(q2));
+    try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
+}
