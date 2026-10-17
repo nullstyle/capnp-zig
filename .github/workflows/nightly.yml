@@ -6,6 +6,17 @@ on:
     - cron: "17 9 * * *"
   workflow_dispatch:
 
+# Failure names. `just release-tag` runs `just check-nightly-gate`, which
+# needs 3 Nightly runs on the release commit that are green or that fail only
+# on rows of .github/known-flakes.txt (RELEASING.md step 5). To match a row,
+# the gate reads the nightly-failure annotations of each failed job. So each
+# step that can fail has an `id`, runs in bash (`-eo pipefail`, so the tee
+# keeps the exit code) and copies its output to $RUNNER_TEMP/<id>.log
+# ($GITHUB_ACTION is the step id). The final `if: failure()` step of each job
+# reads those logs with tools/ci_gates.ts and writes one annotation per
+# failed test (`error: '<test>' failed`) and per `soak: FAIL` line, or
+# `step:<id>` for a failed step with neither.
+
 jobs:
   soak:
     name: RPC soak (chaos + deadlines, ${{ matrix.os }})
@@ -26,15 +37,30 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
 
+      # Proves the log wiring that the final step depends on (the step id in
+      # $GITHUB_ACTION, the tee into $RUNNER_TEMP, Deno reading the log) on
+      # Linux and Windows, on green runs too. It writes no annotation.
+      - name: Check the failure-name wiring
+        id: log_wiring
+        shell: bash
+        run: |
+          echo "error: 'ci_gates.wiring' failed:" | tee "$RUNNER_TEMP/$GITHUB_ACTION.log" > /dev/null
+          NIGHTLY_STEPS='{"log_wiring":{"outcome":"failure","conclusion":"failure"}}' \
+            deno run --allow-read --allow-env --no-config tools/ci_gates.ts annotate --log-dir "$RUNNER_TEMP" --expect ci_gates.wiring
+
       # --rss-gate report: the process-RSS trend check prints its verdict
       # (plus a ::warning:: annotation when it would fail) but never fails
       # the lane. It lands report-only until RSS baselines exist; switch a
       # lane to `--rss-gate enforce` to gate on it.
       - name: Run soak harness (2 minutes, 8 workers)
-        run: zig build soak -- --seconds 120 --workers 8 --rss-gate report
+        id: soak_8w
+        shell: bash
+        run: zig build soak -- --seconds 120 --workers 8 --rss-gate report 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
 
       - name: Run soak harness under ReleaseSafe (1 minute)
-        run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 8 --rss-gate report
+        id: soak_8w_releasesafe
+        shell: bash
+        run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 8 --rss-gate report 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
 
       # 64 workers, not 8: the accept-churn abort class (setTcpNoDelay
       # dying through std.posix.setsockopt's `unreachable` errno arms when
@@ -48,8 +74,9 @@ jobs:
       # (soak-windows-64w below), on a fresh runner with a wider port range.
       - name: Run soak harness under ReleaseSafe (64 workers)
         if: runner.os == 'Linux'
+        id: soak_64w
         shell: bash
-        run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 64 --rss-gate report
+        run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 64 --rss-gate report 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
 
       # Linux-only: the TSan lane is validated on Linux only (libtsan used to
       # segfault at startup on darwin), and Windows has no zig TSan runtime;
@@ -59,7 +86,18 @@ jobs:
       # slowdown.
       - name: Run soak harness under ThreadSanitizer (30 seconds)
         if: runner.os == 'Linux'
-        run: zig build soak-tsan -- --seconds 30 --workers 8
+        id: soak_tsan
+        shell: bash
+        run: zig build soak-tsan -- --seconds 30 --workers 8 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
+
+      # The tag gate reads these annotations. See "Failure names" at the top
+      # of this file.
+      - name: Name the failures for the tag gate
+        if: failure()
+        shell: bash
+        env:
+          NIGHTLY_STEPS: ${{ toJSON(steps) }}
+        run: deno run --allow-read --allow-env --no-config tools/ci_gates.ts annotate --log-dir "$RUNNER_TEMP"
 
   # The Windows 64-worker soak lane (see the 64-worker step above for why 64
   # workers and ReleaseSafe). It has its own job so that it starts on a fresh
@@ -144,8 +182,18 @@ jobs:
           exit 0
 
       - name: Run soak harness under ReleaseSafe (64 workers, 20 seconds)
+        id: soak_64w
         shell: bash
-        run: zig build -Doptimize=ReleaseSafe soak -- --seconds 20 --workers 64 --rss-gate report
+        run: zig build -Doptimize=ReleaseSafe soak -- --seconds 20 --workers 64 --rss-gate report 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
+
+      # The tag gate reads these annotations. See "Failure names" at the top
+      # of this file.
+      - name: Name the failures for the tag gate
+        if: failure()
+        shell: bash
+        env:
+          NIGHTLY_STEPS: ${{ toJSON(steps) }}
+        run: deno run --allow-read --allow-env --no-config tools/ci_gates.ts annotate --log-dir "$RUNNER_TEMP"
 
   fuzz:
     name: Coverage-guided fuzzing with per-target evidence
@@ -179,17 +227,23 @@ jobs:
       - uses: ./.github/actions/setup-zig
 
       - name: Prove evidence rejects missing activity and oracle failures
-        run: mise exec -- zig test tools/fuzz_evidence.zig
+        id: fuzz_evidence_selftest
+        shell: bash
+        run: mise exec -- zig test tools/fuzz_evidence.zig 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
 
       - name: Fuzz each target with a measured activity floor
-        run: mise exec -- zig run tools/fuzz_evidence.zig -- --runs=10000
+        id: fuzz_targets
+        shell: bash
+        run: mise exec -- zig run tools/fuzz_evidence.zig -- --runs=10000 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
 
       # Random operation sequences over the native C ABI (src/native/,
       # capnp-swift handoff H7). Not coverage-guided: a seeded driver that
       # exits 1 on the first violated invariant and prints the seed to
       # replay. `test-fuzz-smoke` runs it for 3 seconds on every push.
       - name: Fuzz the native C ABI (10 minutes, ReleaseSafe)
-        run: mise exec -- zig build -Doptimize=ReleaseSafe fuzz-native-abi -- --seconds 600
+        id: fuzz_native_abi
+        shell: bash
+        run: mise exec -- zig build -Doptimize=ReleaseSafe fuzz-native-abi -- --seconds 600 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
 
       - name: Preserve fuzz receipts, reports, and replay corpus
         if: always()
@@ -203,6 +257,15 @@ jobs:
             .zig-cache/fuzz-evidence/
             .zig-cache/f/
             .zig-cache/v/
+
+      # The tag gate reads these annotations. See "Failure names" at the top
+      # of this file.
+      - name: Name the failures for the tag gate
+        if: failure()
+        shell: bash
+        env:
+          NIGHTLY_STEPS: ${{ toJSON(steps) }}
+        run: deno run --allow-read --allow-env --no-config tools/ci_gates.ts annotate --log-dir "$RUNNER_TEMP"
 
   extended-gates:
     name: Extended gates
@@ -236,6 +299,7 @@ jobs:
           key: zig-packages-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
 
       - name: Prefetch dependency tree
+        id: prefetch
         # Retries transient upstream failures (boringssl.googlesource.com
         # 503s took down the 2026-07-03 nightly) so the QUIC gate below
         # only ever fails on real regressions.
@@ -253,7 +317,9 @@ jobs:
           exit 1
 
       - name: Full test suite
-        run: zig build test --summary all
+        id: full_suite
+        shell: bash
+        run: zig build test --summary all 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
 
       # The self-healing arc, gated nightly end to end: abrupt server
       # deaths every 2s, half the workers running persistent
@@ -268,7 +334,9 @@ jobs:
       # 172 MB over ~89,600 handshakes; macOS, 2026-10-03), so the RSS
       # verdict now gates.
       - name: QUIC self-healing soak (abrupt deaths + healing workers)
-        run: zig build -Dquic=true -Doptimize=ReleaseSafe soak -- --transport quic --abrupt-death-every-ms 2000 --seconds 20 --workers 16 --heal-workers 8 --rss-gate enforce
+        id: quic_heal_soak
+        shell: bash
+        run: zig build -Dquic=true -Doptimize=ReleaseSafe soak -- --transport quic --abrupt-death-every-ms 2000 --seconds 20 --workers 16 --heal-workers 8 --rss-gate enforce 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
 
       # The same soak against the hardened preset (Retry on) with .restore_only
       # 0-RTT, where every restart loads the same session-ticket key and
@@ -289,13 +357,19 @@ jobs:
       # clock that restarts at zero (no 16e: over 100 unexplained Retries).
       # Same binary as the step above.
       - name: QUIC self-healing soak with a persisted ticket key (0-RTT heals)
-        run: zig build -Dquic=true -Doptimize=ReleaseSafe soak -- --transport quic --abrupt-death-every-ms 2000 --seconds 20 --workers 16 --heal-workers 8 --ticket-key --rss-gate enforce
+        id: quic_ticket_key_soak
+        shell: bash
+        run: zig build -Dquic=true -Doptimize=ReleaseSafe soak -- --transport quic --abrupt-death-every-ms 2000 --seconds 20 --workers 16 --heal-workers 8 --ticket-key --rss-gate enforce 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
 
       - name: ReleaseSafe hardening tests
-        run: zig build test-release-safe --summary all
+        id: release_safe_tests
+        shell: bash
+        run: zig build test-release-safe --summary all 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
 
       - name: QUIC transport tests
-        run: zig build -Dquic=true test-rpc-quic --summary all
+        id: quic_transport_tests
+        shell: bash
+        run: zig build -Dquic=true test-rpc-quic --summary all 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
 
       # Heads-up for the owner, never a failure: ci.yml's evented canary is
       # green only while std.Io.Evented fails to compile with the known std
@@ -309,6 +383,15 @@ jobs:
           else
             echo "::notice title=std.Io.Evented canary changed::check-evented-canary no longer sees the expected processReplacePath error. If std.Io.Evented now compiles, flip evented_available in src/io_backend.zig and retarget build/evented_canary.zig; otherwise update its expected error and the fork handoff."
           fi
+
+      # The tag gate reads these annotations. See "Failure names" at the top
+      # of this file.
+      - name: Name the failures for the tag gate
+        if: failure()
+        shell: bash
+        env:
+          NIGHTLY_STEPS: ${{ toJSON(steps) }}
+        run: deno run --allow-read --allow-env --no-config tools/ci_gates.ts annotate --log-dir "$RUNNER_TEMP"
 
   # The QUIC twin of ci.yml's bench-check, which is TCP-only. Before this job
   # bench-check-quic ran in no workflow at all. Its own job, so a regression
@@ -337,6 +420,7 @@ jobs:
           key: zig-packages-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
 
       - name: Prefetch dependency tree
+        id: prefetch
         run: |
           for attempt in 1 2 3; do
             if zig build --fetch=all; then
@@ -351,4 +435,15 @@ jobs:
           exit 1
 
       - name: Run QUIC benchmark regression checks
-        run: zig build -Dquic=true -Doptimize=ReleaseFast bench-check-quic
+        id: bench_quic
+        shell: bash
+        run: zig build -Dquic=true -Doptimize=ReleaseFast bench-check-quic 2>&1 | tee "$RUNNER_TEMP/$GITHUB_ACTION.log"
+
+      # The tag gate reads these annotations. See "Failure names" at the top
+      # of this file.
+      - name: Name the failures for the tag gate
+        if: failure()
+        shell: bash
+        env:
+          NIGHTLY_STEPS: ${{ toJSON(steps) }}
+        run: deno run --allow-read --allow-env --no-config tools/ci_gates.ts annotate --log-dir "$RUNNER_TEMP"

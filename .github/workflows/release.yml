@@ -3,10 +3,14 @@ name: Release tag audit
 # Detective control for the release ceremony (RELEASING.md).
 #
 # `just release-tag` refuses to create a tag on a commit without a green CI
-# run. This job is what catches a tag created any other way: it runs on the tag
-# itself, so bypassing the rule leaves a permanent red mark on the release
-# rather than being discovered twelve days later, which is exactly how v0.4.0
-# shipped with the hardening and benchmark gates red on all three OSes.
+# run, or without 3 Nightly runs that pass `just check-nightly-gate`. This job
+# is what catches a tag created any other way: it runs on the tag itself, so
+# bypassing the rule leaves a permanent red mark on the release rather than
+# being discovered twelve days later, which is exactly how v0.4.0 shipped
+# with the hardening and benchmark gates red on all three OSes.
+#
+# It cannot refuse a tag. The tag exists before this job starts. A failed
+# check only turns this workflow red.
 
 on:
   push:
@@ -16,6 +20,9 @@ on:
 permissions:
   contents: read
   actions: read
+  # The Nightly gate reads the nightly-failure annotations of failed jobs
+  # through the check-runs API.
+  checks: read
 
 jobs:
   audit:
@@ -51,6 +58,21 @@ jobs:
           fi
 
           echo "CI is green for ${sha}."
+
+      - uses: jdx/mise-action@v4
+        if: ${{ !cancelled() }}
+        with:
+          version: 2026.7.17
+          install_args: deno
+
+      # The same check that `just release-tag` runs before it tags
+      # (`just check-nightly-gate`; RELEASING.md step 5). Here it can only
+      # report: a failure turns this workflow red, and the tag stays.
+      - name: The tagged commit must pass the Nightly gate (3 runs, known flakes only)
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: deno run --allow-run=gh,git --allow-read --allow-env --no-config tools/ci_gates.ts nightly-gate "$(git rev-parse HEAD)" --repo "${GITHUB_REPOSITORY}"
 
       - name: The tag must match the manifest and the CHANGELOG
         run: |

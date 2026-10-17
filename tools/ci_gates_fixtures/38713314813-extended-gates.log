@@ -1,0 +1,26 @@
+2026-10-15T09:46:07.7827045Z ##[endgroup]
+2026-10-15T09:48:52.6618402Z test-rpc-quic
+2026-10-15T09:48:52.6620043Z +- run test w
+2026-10-15T09:48:52.6620717Z [rpc_quic] (warn): dropping truncated UDP datagram (exceeds 2048-byte rx buffer)
+2026-10-15T09:48:52.6621596Z [rpc_quic] (warn): dropping truncated UDP datagram (exceeds 2048-byte rx buffer)
+2026-10-15T09:48:52.6623062Z failed command: ./.zig-cache/o/9bdbe5716d03e3facabac9d666d0e7fe/test --cache-dir=./.zig-cache --seed=0xfc2e9eb --listen=-
+2026-10-15T09:48:52.6623942Z 
+2026-10-15T09:48:54.4387342Z test-rpc-quic
+2026-10-15T09:48:54.4387821Z +- run test 42 pass, 1 fail (43 total)
+2026-10-15T09:48:54.4388807Z error: 'rpc_quic_peer_test.test.WarmRedialClient.requestStop never writes into a generation that ended on its own' failed:
+2026-10-15T09:48:54.4389757Z        expected 1, found 0
+2026-10-15T09:48:54.4390814Z        /home/runner/.local/share/mise/installs/zig/0.17.0/lib/std/testing.zig:93:17: 0x1919eb4 in expectEqualInner__func_2804 (std.zig)
+2026-10-15T09:48:54.4392053Z                        return error.TestExpectedEqual;
+2026-10-15T09:48:54.4392553Z                        ^
+2026-10-15T09:48:54.4393331Z        /home/runner/.local/share/mise/installs/zig/0.17.0/lib/std/testing.zig:57:5: 0x191bba0 in expectEqual (rpc_quic_peer_test.zig)
+2026-10-15T09:48:54.4394050Z            return expectEqualInner(T, expected, actual);
+2026-10-15T09:48:54.4394394Z            ^
+2026-10-15T09:48:54.4395321Z        /home/runner/work/capnp-zig/capnp-zig/tests/rpc/transport/quic/rpc_quic_peer_test.zig:3931:5: 0x191bd0d in runStopRace (rpc_quic_peer_test.zig)
+2026-10-15T09:48:54.4396457Z            try std.testing.expectEqual(@as(u32, 1), outcome.generations);
+2026-10-15T09:48:54.4397082Z            ^
+2026-10-15T09:48:54.4398524Z        /home/runner/work/capnp-zig/capnp-zig/tests/rpc/transport/quic/rpc_quic_peer_test.zig:3937:20: 0x191cb79 in test.WarmRedialClient.requestStop never writes into a generation that ended on its own (rpc_quic_peer_test.zig)
+2026-10-15T09:48:54.4400244Z            for (0..4) |_| try runStopRace(std.testing.allocator);
+2026-10-15T09:48:54.4400808Z                           ^
+2026-10-15T09:48:54.4401730Z failed command: ./.zig-cache/o/b04fc2e236ab537b130b9e261df910c5/test --cache-dir=./.zig-cache --seed=0xfc2e9eb --listen=-
+2026-10-15T09:48:54.4402571Z 
+2026-10-15T09:48:54.4402796Z Build Summary: 16/18 steps succeeded (1 failed); 222/223 tests passed (1 failed)

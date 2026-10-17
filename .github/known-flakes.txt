@@ -1,0 +1,41 @@
+# Known Nightly flakes. The tag gate reads this file:
+#     just check-nightly-gate <sha>     (just release-tag runs it)
+# The rules are in tools/ci_gates.ts and in RELEASING.md step 5.
+#
+# One row per line, fields separated by "|":
+#
+#     job | run id | owner | added | expires | test
+#
+#   job      The Nightly job name as GitHub shows it, with its matrix value,
+#            for example "RPC soak (chaos + deadlines, windows-latest)".
+#   run id   The Nightly run that showed the flake. This is the evidence.
+#   owner    The person who watches the flake and removes the row.
+#   added    The date the row was added, YYYY-MM-DD (UTC).
+#   expires  The last date the row is in force, YYYY-MM-DD (UTC). It must
+#            be 0 to 30 days after "added".
+#   test     Optional. One name from a nightly-failure annotation of that
+#            job: a test name, "<step id>: <soak reason>" (each number in
+#            the reason is N) or "step:<step id>". The test is the last
+#            field, so it can contain "|".
+#
+# How a row covers a failed job:
+#   - A failed job with nightly-failure annotations is covered only when
+#     each of its annotations has a row in force with this job and that
+#     test. A row with no test does not cover it.
+#   - A failed job with no nightly-failure annotation is covered only by a
+#     row in force with this job and no test.
+#   - A row covers its job in every Nightly run while the row is in force,
+#     not only in the run that it names.
+#   - A job that has more failures than annotations
+#     (nightly-failure-overflow) is never covered.
+#
+# Add a row only for a failure that is not caused by the commit: it does
+# not occur again on the same commit, and the test or lane is known to be
+# sensitive to timing or to the runner. Fix a real failure; do not add a
+# row for it. When a row expires, remove it, or renew it with a new date
+# and the id of a new run that shows the flake.
+#
+# Example (not a row):
+#   Extended gates | 38713314813 | nullstyle | 2026-10-15 | 2026-10-29 | rpc_quic_peer_test.test.WarmRedialClient.requestStop never writes into a generation that ended on its own
+#
+# Lines that start with "#" are comments. This file has no rows.

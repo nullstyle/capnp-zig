@@ -451,10 +451,22 @@ release-preflight VERSION="":
 # Alias for the complete local release preflight
 preflight VERSION="": (release-preflight VERSION)
 
+# Usage: just check-nightly-gate "$(git rev-parse HEAD)"
+# Passes only when the 3 most recent completed Nightly runs on SHA are each
+# green or fail only on unexpired rows of .github/known-flakes.txt (that file
+# has the row format and the matching rules; RELEASING.md step 5 has the
+# procedure). Exit 1 refuses; exit 2 means the gate could not run. Read-only:
+# it calls `gh api` and nothing else. Extra flags go to tools/ci_gates.ts
+# (--today, --created-before, --flakes).
+# Refuse SHA unless 3 Nightly runs on it are green or fail only on known flakes
+check-nightly-gate SHA *ARGS:
+    deno run --allow-run=gh,git --allow-read --allow-write --allow-env --no-config tools/ci_gates.ts nightly-gate "{{ SHA }}" {{ ARGS }}
+
 # Create and push an annotated release tag — but refuse when the commit being
-# tagged does not already have a green CI run. v0.4.0 was tagged three minutes
-# before its own push run went red on four jobs; this recipe is the preventive
-# half of that lesson (.github/workflows/release.yml is the detective half).
+# tagged does not already have a green CI run, or does not pass the Nightly
+# tag gate (`check-nightly-gate`). v0.4.0 was tagged three minutes before its
+# own push run went red on four jobs; this recipe is the preventive half of
+# that lesson (.github/workflows/release.yml is the detective half).
 # It also refuses a VERSION that under-declares the surface drift since the
 # last release tag (`check-release-drift`), before anything is tagged.
 # Usage: just release-tag 0.5.0 "one-line theme"
@@ -465,6 +477,7 @@ release-tag VERSION THEME="":
     just check-release-drift "$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude 'v{{VERSION}}')" {{VERSION}}
     zig build docs-smoke
     gh api "repos/:owner/:repo/actions/runs?head_sha=$(git rev-parse HEAD)" --jq '[.workflow_runs[] | select(.name == "CI")] | if length == 0 then "NO_RUN" elif all(.conclusion == "success") then "GREEN" else "RED" end' | grep -qx GREEN || { echo "ERROR: HEAD has no green CI run — push and wait for CI before tagging (see RELEASING.md step 2)"; exit 1; }
+    just check-nightly-gate "$(git rev-parse HEAD)" || { echo "ERROR: HEAD does not pass the Nightly tag gate — start 3 Nightlies on it and apply the known-flakes rule (see RELEASING.md step 5)"; exit 1; }
     git tag -a "v{{VERSION}}" -m "$(test -n "{{THEME}}" && echo "v{{VERSION}} — {{THEME}}" || echo "v{{VERSION}}")"
     git push origin "v{{VERSION}}"
     @echo "Tagged v{{VERSION}}. Now do RELEASING.md step 6: real zig fetch, record the hash (just verify-release-hash {{VERSION}}), create the GitHub Release."

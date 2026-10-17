@@ -101,7 +101,9 @@ at the relevant section of the Cap'n Proto spec.
 
 Cutting a tagged release follows [RELEASING.md](RELEASING.md). The two rules
 that are easy to get wrong: a tag may only be created on a commit whose CI has
-**already** concluded green (`just release-tag X.Y.Z` enforces this), and a
+**already** concluded green and that has 3 Nightly runs that are green or
+fail only on rows of `.github/known-flakes.txt` (`just release-tag X.Y.Z`
+enforces both), and a
 change to the *shape of generated code* is a Stable-tier break requiring a minor
 bump and a `### Breaking` CHANGELOG entry — `zig build check-api` snapshots
 library declarations only and cannot see it.
