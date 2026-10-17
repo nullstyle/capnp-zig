@@ -140,6 +140,10 @@ pub const promise_export_released_reason = "promise export released before it re
 /// remote's question, not to a pipeline here.
 pub const tail_call_pipelining_reason = "pipelining is not supported on a tail-called answer";
 
+/// Exception reason for a call still queued on an answer when the remote
+/// finishes that answer and no Return for it is still to come.
+const pipelined_on_finished_answer_reason = "pipelined on a finished answer";
+
 /// An exported capability: a context pointer and its call handler.
 pub const Export = struct {
     ctx: *anyopaque,
@@ -4917,6 +4921,18 @@ pub const Peer = struct {
         // the high-range id forever.
         if (canceled_automatic_target) {
             _ = self.finished_early_answers.remove(qid);
+        }
+        // No Return for this answer is still to come (none is being sent,
+        // and no tombstone or join completion keeps one owed): nothing will
+        // replay calls still queued on it, which a skipped failed-answer
+        // record lets arrive after its Return. Fail them now, before the
+        // remote reuses the id for a call whose results would replay them.
+        if (self.pending_promises.contains(qid) and
+            !self.finished_early_answers.contains(qid) and
+            !self.resolving_answers.contains(qid) and
+            !self.completing_join_answers.contains(qid))
+        {
+            self.failQueuedPromisedCalls(qid, pipelined_on_finished_answer_reason, .failed);
         }
         // A Return sent while this Finish was applied (a queued call the peer
         // cancelled itself) consumed the tombstone: then nobody owes one. A

@@ -220,9 +220,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   results for its pipeline). The record and the drain are best effort, as
   for a failed answer: the Peer skips the record when it is out of memory
   or keeps `max_active_inbound_questions` failed-answer records already,
-  and a call pipelined after a skipped record queues as before this fix.
-  For a tail call forwarded back to the remote, such a call fails at the
-  remote's Finish of the tail call. Tests in
+  and a call pipelined after a skipped record queues until the remote's
+  Finish of the answer, which fails it (see the next entry). Tests in
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` (queued before
   and after the answer, a failed tail call, a forwarded tail call, a
   `receiverAnswer` param, a Finish inside the send, the records full),
@@ -240,16 +239,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   calls, each with its own exception Return: the prebuilt exception, or a
   fixed reason (`rpc.peer.tail_call_pipelining_reason` for a
   `takeFromOtherQuestion`). The answer is kept in `failed_answers` until its
-  Finish, so a call pipelined on it later fails at once, with the same
-  limits as any failed-answer record. The C++ reference bounces a call
+  Finish, so a call pipelined on it later fails at once. That record has
+  the limits of any failed-answer record. When the Peer skips it, a call
+  pipelined later queues, and the remote's Finish of the answer now fails
+  it: a call still queued on an answer at its Finish, with no Return for
+  the answer still to come, gets an exception Return. A question whose
+  tail call names such a queued call is not held: it gets the bare tag at
+  once. The C++ reference bounces a call
   pipelined on a question it sent here as a tail call (`Call(W,
   sendResultsTo = yourself, target = promisedAnswer(A))` and `Return(W0,
   takeFromOtherQuestion = W)`), so W0 waited forever when the host answered
   A this way. Now W0 gets W's exception. Tests in
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` cover a prebuilt
   exception (before and after the bounced call arrives, and the id reuse),
-  `acceptFromThirdParty`, and a forward the remote answers with
-  `takeFromOtherQuestion` or `resultsSentElsewhere`.
+  `acceptFromThirdParty`, a forward the remote answers with
+  `takeFromOtherQuestion` or `resultsSentElsewhere`, and the records full
+  (a held tail call refused, also behind a second queued call, and the
+  Finish that fails the queued call before its id is reused).
 - **Native C ABI (Experimental): a tail-call Return no longer ends the
   question with "unsupported Return variant".** With the Peer changes above,
   the question gets one RETURN with the named call's results (when they

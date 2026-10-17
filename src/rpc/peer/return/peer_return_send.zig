@@ -442,10 +442,12 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// never come here.
         ///
         /// Only a marked call is held, and a hold never outlives the mark:
-        /// see `dropYourselfMark`.
+        /// see `dropYourselfMark`. Nor is a call held that waits on an
+        /// answer nothing will replay (`stuckOnReturnedAnswer`).
         pub fn holdTailCall(self: *Peer, source_answer_id: u32, question_id: u32) bool {
             if (!self.send_results_to_yourself.contains(source_answer_id)) return false;
             if (forwardedToRemote(self, source_answer_id)) return false;
+            if (stuckOnReturnedAnswer(self, source_answer_id)) return false;
             if (self.held_tail_calls.count() >= self.limits.max_send_results_to_yourself) return false;
             return self.held_tail_calls.put(self.allocator, source_answer_id, question_id) catch |err| {
                 log.debug("tail call for question {} not held: {}", .{ question_id, err });
@@ -620,6 +622,40 @@ pub fn ReturnSend(comptime Peer: type) type {
                 if (upstream_answer_id.* == answer_id) return true;
             }
             return false;
+        }
+
+        /// True when call `answer_id` waits in `pending_promises` on an
+        /// answer whose Return already went out without failing it: the
+        /// answer's failed-answer record was skipped (the records are
+        /// bounded and best effort), so the call queued when it came after
+        /// that Return. Also when the answer it waits on waits on such an
+        /// answer in turn. Nothing will ever replay or fail the call until
+        /// that answer's Finish, which a compliant remote sends only after
+        /// the held question's Finish. An answer whose Return is still to
+        /// come is active, being sent, or finished early (its tombstone).
+        fn stuckOnReturnedAnswer(self: *Peer, answer_id: u32) bool {
+            var call_id = answer_id;
+            var hops: usize = 0;
+            while (hops <= self.pending_promises.count()) : (hops += 1) {
+                const promised = queuedOnAnswer(self, call_id) orelse return false;
+                if (self.resolving_answers.contains(promised) or
+                    self.finished_early_answers.contains(promised)) return false;
+                if (!self.active_inbound_questions.contains(promised)) return true;
+                call_id = promised;
+            }
+            // A cycle of queued calls: none of them can run.
+            return true;
+        }
+
+        /// The answer that call `call_id` waits on in `pending_promises`.
+        fn queuedOnAnswer(self: *Peer, call_id: u32) ?u32 {
+            var it = self.pending_promises.iterator();
+            while (it.next()) |entry| {
+                for (entry.value_ptr.items) |pending_call| {
+                    if (pending_call.question_id == call_id) return entry.key_ptr.*;
+                }
+            }
+            return null;
         }
 
         /// True when a built Return-results frame carries any capability

@@ -2112,6 +2112,19 @@ fn sendPrebuiltException(h: *TailHarness, allocator: std.mem.Allocator, answer_i
 /// The plain call the bounced tail call is pipelined on.
 const pipelined_on_answer_id: u32 = 960;
 
+/// Results whose content is the client's export `export_id`: a call
+/// pipelined on them dispatches to that export.
+const ResultCap = struct {
+    export_id: u32,
+
+    fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+        const self: *const ResultCap = castCtx(*const ResultCap, ctx_ptr);
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        try any.setCapability(.{ .id = self.export_id });
+    }
+};
+
 /// Push a plain call A to the client's (deferred) export, then the bounced
 /// tail call W pipelined on it and the redirect W0 that names W. W0 is
 /// held: W waits for A.
@@ -2145,13 +2158,14 @@ test "a held tail call pipelined on a call the host fails with a prebuilt except
     try std.testing.expectEqual(@as(usize, 0), h.client_peer.held_tail_calls.count());
 
     // The remote finishes A and reuses its id for a call whose results the
-    // host gives: W is gone, so it is never replayed against them.
+    // host gives (the client's export): W is gone, so it is never replayed
+    // against them.
     try h.pushFinish(allocator, pipelined_on_answer_id);
     h.target.answer_id = null;
     try pushCallerCall(&h, allocator, pipelined_on_answer_id, h.target_export_id);
     try std.testing.expectEqual(@as(?u32, pipelined_on_answer_id), h.target.answer_id);
-    var result = ResultN{ .n = 42 };
-    try h.client_peer.sendReturnResults(pipelined_on_answer_id, &result, ResultN.build);
+    var result = ResultCap{ .export_id = h.target_export_id };
+    try h.client_peer.sendReturnResults(pipelined_on_answer_id, &result, ResultCap.build);
     try std.testing.expectEqual(@as(?u32, pipelined_on_answer_id), h.target.answer_id);
     try std.testing.expectEqual(@as(u32, 1), w0.returns);
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, null));
@@ -2252,4 +2266,110 @@ test "a held tail call pipelined on a forwarded call that the remote answers res
     try std.testing.expectEqual(protocol.ReturnTag.exception, w0.tag.?);
     try std.testing.expect(!h.client_peer.pending_promises.contains(pipelined_on_answer_id));
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, .resultsSentElsewhere));
+}
+
+// -- A call queued on an answer that already returned --------------------------
+//
+// The failed-answer records are bounded (`max_active_inbound_questions`) and
+// best effort. When a record is skipped, a call pipelined on the answer
+// after its Return queues, and nothing replays it. A tail call that names
+// such a call must not be held: it gets the bare redirect at once, as
+// before holds existed. The answer's Finish fails the queued call, so a
+// later call with the answer's id never replays it.
+
+/// Fill the failed-answer records: the next failed answer is not kept.
+/// Two calls to an unknown capability fail and are kept; the bound on the
+/// records is the active-question bound, set to two.
+fn fillFailedAnswerRecords(h: *TailHarness, allocator: std.mem.Allocator) !void {
+    h.client_peer.limits.max_active_inbound_questions = 2;
+    const unknown_export: u32 = 9999;
+    try pushCallerCall(h, allocator, 800, unknown_export);
+    try pushCallerCall(h, allocator, 801, unknown_export);
+    try std.testing.expectEqual(@as(usize, 2), h.client_peer.failed_answers.count());
+}
+
+test "a tail call that names a call queued on an answer that already returned gets the bare redirect at once" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try fillFailedAnswerRecords(&h, allocator);
+    try pushCallerCall(&h, allocator, pipelined_on_answer_id, h.target_export_id);
+    try sendPrebuiltException(&h, allocator, pipelined_on_answer_id, "host failed A");
+    try std.testing.expect(!h.client_peer.failed_answers.contains(pipelined_on_answer_id));
+
+    // The bounced call comes after A's Return and finds no record: it
+    // queues, and nothing will replay it.
+    var w0 = TailCaller{};
+    const w0_id = try h.nextQuestion(&w0);
+    try h.pushPipelinedCall(allocator, pipelined_answer_id, pipelined_on_answer_id, true);
+    try std.testing.expect(h.client_peer.pending_promises.contains(pipelined_on_answer_id));
+    try h.pushRedirect(allocator, w0_id, pipelined_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), w0.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, w0.tag.?);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.held_tail_calls.count());
+
+    // The remote's Finish of A fails the queued call: one Return,
+    // resultsSentElsewhere, and nothing waits on A.
+    try h.pushFinish(allocator, pipelined_on_answer_id);
+    try std.testing.expect(!h.client_peer.pending_promises.contains(pipelined_on_answer_id));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, .resultsSentElsewhere));
+    try std.testing.expectEqual(@as(u32, 1), w0.returns);
+}
+
+test "a tail call that names a call queued behind a call on an answer that already returned gets the bare redirect" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try fillFailedAnswerRecords(&h, allocator);
+    const returned_id: u32 = 970;
+    try pushCallerCall(&h, allocator, returned_id, h.target_export_id);
+    try sendPrebuiltException(&h, allocator, returned_id, "host failed");
+    // A plain call queued on the returned answer, and the bounced call
+    // queued on that call's answer.
+    try h.pushPipelinedCall(allocator, pipelined_on_answer_id, returned_id, false);
+    var w0 = TailCaller{};
+    const w0_id = try h.nextQuestion(&w0);
+    try h.pushPipelinedCall(allocator, pipelined_answer_id, pipelined_on_answer_id, true);
+    try h.pushRedirect(allocator, w0_id, pipelined_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), w0.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, w0.tag.?);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.held_tail_calls.count());
+
+    // The Finish of the returned answer fails both queued calls.
+    try h.pushFinish(allocator, returned_id);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.pending_promises.count());
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_on_answer_id, .exception));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, .resultsSentElsewhere));
+}
+
+test "a call queued on an answer that already returned fails at the answer's Finish, not against a reused id" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try fillFailedAnswerRecords(&h, allocator);
+    try pushCallerCall(&h, allocator, pipelined_on_answer_id, h.target_export_id);
+    try sendPrebuiltException(&h, allocator, pipelined_on_answer_id, "host failed A");
+    const late_call_id: u32 = 902;
+    try h.pushPipelinedCall(allocator, late_call_id, pipelined_on_answer_id, false);
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, late_call_id, null));
+
+    try h.pushFinish(allocator, pipelined_on_answer_id);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, late_call_id, .exception));
+
+    // The remote reuses A's id for a call the host answers with results
+    // (the client's export): the late call is gone and is not replayed
+    // against them.
+    h.target.answer_id = null;
+    try pushCallerCall(&h, allocator, pipelined_on_answer_id, h.target_export_id);
+    var result = ResultCap{ .export_id = h.target_export_id };
+    try h.client_peer.sendReturnResults(pipelined_on_answer_id, &result, ResultCap.build);
+    try std.testing.expectEqual(@as(?u32, pipelined_on_answer_id), h.target.answer_id);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, late_call_id, null));
 }
