@@ -65,27 +65,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
   `src/native/conn_test.zig` ("tail call: ...").
 - **RPC: a `sendResultsTo = yourself` call that fails is now answered with
-  `resultsSentElsewhere`.** rpc.capnp answers such a call that way also
-  when it fails. The C++ reference rejects an exception Return for its tail
-  call ("Tail call `Return` must set `resultsSentElsewhere`, not
-  `exception`") and drops the connection. The Peer sent the exception on
-  the wire. Now the remote gets `resultsSentElsewhere`, and the Peer keeps
-  the exception for the redirect that names the call, as it keeps cap-free
-  results: a redirect that comes later gets the exception. This covers an
-  exception from the host (`sendReturnException`, the native
-  `capnp_return_exception`). It covers a results build that fails, as when
-  a generated DIRECT handler fails or a native host's
+  `resultsSentElsewhere`.** rpc.capnp answers such a call that way also when
+  it fails. The C++ reference rejects an exception Return for its tail call
+  ("Tail call `Return` must set `resultsSentElsewhere`, not `exception`")
+  and drops the connection. The Peer sent the exception on the wire. Now the
+  remote gets `resultsSentElsewhere`, and the Peer keeps the exception for
+  the redirect that names the call, as it keeps cap-free results: a redirect
+  that comes later gets the exception. This covers
+  `Peer.sendReturnException` and the native `capnp_return_exception`. It
+  does not cover `HostPeer` (`respondHostCallException`, the WASM host ABI),
+  which still sends the exception. It covers a results build that fails, as
+  when a generated DIRECT handler fails or a native host's
   `capnp_return_results` fails: the call now stays marked as a `yourself`
   call until its `resultsSentElsewhere` Return is sent, so the follow-up
   exception takes the same path. It also covers a call that fails before a
   handler runs: an unknown capability, a broken promise export, a refused
-  queue, a param or pipelined target that names a failed answer, a
-  pipelined target that names no capability or that the Peer cannot
-  follow, and a call parked on a promise export that the host rejects or
-  that cannot park again. Such a call is marked only for the send of its
-  exception, so no mark outlives it. A redirect that comes before the
-  failure still gets the bare `takeFromOtherQuestion` tag at once. New
-  tests are in `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
+  queue, a param or pipelined target that names a failed answer, a pipelined
+  target that names no capability or that the Peer cannot follow, and a call
+  parked on a promise export that the host rejects or that cannot park
+  again. It also covers a call queued on one of the Peer's own pending
+  answers (a call pipelined on it, as the C++ reference sends when a method
+  tail-calls into the result of a call it made to this peer) when that
+  answer fails, when the remote cancels the call it waits on, or when its
+  replay cannot park again. The queued call notes its `sendResultsTo` at
+  enqueue (Experimental `state.PendingCall.send_results_to_yourself`). Such
+  a call is marked only for the send of its exception, so no mark outlives
+  it. A redirect that comes before the failure still gets the bare
+  `takeFromOtherQuestion` tag at once. New tests are in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
   `src/native/conn_test.zig`.
 - **Stable `Listener.close` on Windows aborted the process when a thread
   waited in accept.** `close` closed the listening handle under the wait,

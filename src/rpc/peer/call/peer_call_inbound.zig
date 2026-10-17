@@ -389,6 +389,7 @@ pub fn CallInbound(comptime Peer: type) type {
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
                 replayQueuedPromisedCall,
+                markYourselfCallForException,
             );
         }
 
@@ -413,6 +414,7 @@ pub fn CallInbound(comptime Peer: type) type {
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
                 replayQueuedPromisedCall,
+                markYourselfCallForException,
             );
         }
 

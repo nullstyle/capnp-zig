@@ -1031,6 +1031,66 @@ test "a yourself call pipelined on a failed answer: the remote gets resultsSentE
     try expectRedirectGetsException(&h, allocator, "answer 500 failed");
 }
 
+// A yourself call pipelined on one of our answers that is still pending
+// queues on that answer (`pending_promises`). The C++ reference sends such a
+// call when its method tail-calls a capability in the result of a call it
+// made to us. The failure drain of that queue answers the call too.
+
+test "a yourself call queued on an answer that then fails: the remote gets resultsSentElsewhere, the tail call that failure" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // Answer 500 is pending (the deferred target keeps it), so the tail
+    // call queues on it.
+    try h.pushPlainCall(allocator, 500, h.target_export_id);
+    try h.pushPipelinedYourselfCall(allocator, tail_answer_id, 500, &.{});
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try h.client_peer.sendReturnException(500, "answer 500 failed");
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "answer 500 failed");
+    try h.pushFinish(allocator, 500);
+}
+
+test "a yourself call queued on an answer whose replay cannot park again: the remote gets resultsSentElsewhere" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // Answer 500 resolves to an unresolved promise export, so the replay
+    // parks the queued call on it; the queue budget refuses that.
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushPlainCall(allocator, 500, h.target_export_id);
+    try h.pushPipelinedYourselfCall(allocator, tail_answer_id, 500, &.{});
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    h.client_peer.limits.max_pending_queued_calls = 0;
+    var result = ResultCap{ .export_id = promise_id };
+    try h.client_peer.sendReturnResults(500, &result, ResultCap.build);
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "PeerLimitExceeded");
+    try h.pushFinish(allocator, 500);
+}
+
+test "a yourself call queued on a call the remote cancels: the remote gets resultsSentElsewhere" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // Call 600 parks on a promise export, and the tail call queues on 600.
+    // The remote's Finish of 600 cancels it, and the calls queued on it fail.
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushPlainCall(allocator, 600, promise_id);
+    try h.pushPipelinedYourselfCall(allocator, tail_answer_id, 600, &.{});
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try h.pushFinish(allocator, 600);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, .canceled));
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "pipelined on a cancelled call");
+}
+
 test "a yourself call pipelined on an answer that holds no capability: the remote gets resultsSentElsewhere" {
     const allocator = std.testing.allocator;
     var h: TailHarness = undefined;

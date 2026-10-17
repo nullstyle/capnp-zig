@@ -3054,6 +3054,7 @@ capnpc-zig.rpc.peer.state.PeerTimeouts: struct
 capnpc-zig.rpc.peer.state.PendingCall.caps: field rpc.caps.inbound.InboundCapTable
 capnpc-zig.rpc.peer.state.PendingCall.frame: field []u8
 capnpc-zig.rpc.peer.state.PendingCall.question_id: field ?u32
+capnpc-zig.rpc.peer.state.PendingCall.send_results_to_yourself: field bool = false
 capnpc-zig.rpc.peer.state.PendingCall: struct
 capnpc-zig.rpc.peer.state.PendingEmbargoedAccept.answer_id: field u32
 capnpc-zig.rpc.peer.state.PendingEmbargoedAccept.provided_question_id: field u32

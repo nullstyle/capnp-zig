@@ -512,7 +512,9 @@ pub fn ReturnSend(comptime Peer: type) type {
 
         /// Fail and drain every pipelined call queued against `answer_id` (and,
         /// transitively, calls pipelined on those). Each queued call is sent a
-        /// Return(exception) and has its inbound caps released.
+        /// Return(exception) and has its inbound caps released; a queued
+        /// `sendResultsTo = yourself` call gets `resultsSentElsewhere`, and
+        /// its exception is kept for the redirect (`sendReturnExceptionNoDrain`).
         ///
         /// Drains iteratively via an explicit worklist rather than recursing, so
         /// a hostile peer cannot exhaust the stack with a deep pipelined chain.
@@ -545,6 +547,17 @@ pub fn ReturnSend(comptime Peer: type) type {
                     // a valid wire question id and must receive its terminal Return.
                     const child_qid = pending_call.question_id orelse continue;
 
+                    // A queued `sendResultsTo = yourself` call never reached a
+                    // handler, so nothing marked it: mark it here, as
+                    // `peer_call_orchestration.markYourselfCallForException`
+                    // does at the other pre-dispatch failure sites, so its
+                    // Return is `resultsSentElsewhere` and the exception is
+                    // kept for the redirect that names it. Best effort.
+                    if (pending_call.send_results_to_yourself) {
+                        self.noteSendResultsToYourself(child_qid) catch |err| {
+                            log.debug("yourself call {} not marked for its exception: {}", .{ child_qid, err });
+                        };
+                    }
                     // Non-draining send: descendants are handled by the worklist,
                     // not by re-entering this drain.
                     sendReturnExceptionNoDrain(self, child_qid, reason, ex_type) catch |err| {

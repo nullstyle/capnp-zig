@@ -158,6 +158,11 @@ pub const PendingCall = struct {
     /// per-inbound-message duplicate-id and cancellation scans never re-run a
     /// validating parse over every stored frame (an amplification vector).
     question_id: ?u32,
+    /// The queued call carries `sendResultsTo = yourself`, decoded at enqueue
+    /// with `question_id`. The failure drain (`failQueuedPromisedCalls`)
+    /// answers such a call `resultsSentElsewhere`, not with an exception
+    /// (`peer_call_orchestration.markYourselfCallForException`).
+    send_results_to_yourself: bool = false,
 };
 
 pub const ResolvedImport = struct {

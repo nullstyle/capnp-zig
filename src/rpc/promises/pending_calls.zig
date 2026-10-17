@@ -31,16 +31,19 @@ pub fn queuePendingCall(
     // remain distinguishable so cancellation/failure drains still settle it.
     // Out of memory is not "undecodable": queueing a real call with a null id
     // would let the failure drain skip its terminal Return, so the enqueue
-    // fails instead and the caller answers the call.
-    const call_question_id: ?u32 = blk: {
+    // fails instead and the caller answers the call. The same decode notes a
+    // `sendResultsTo = yourself` call, which the failure drain answers
+    // `resultsSentElsewhere`.
+    const QueuedCallInfo = struct { question_id: ?u32 = null, yourself: bool = false };
+    const info: QueuedCallInfo = blk: {
         var decoded = protocol.DecodedMessage.init(allocator, copy) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
-            break :blk null;
+            break :blk .{};
         };
         defer decoded.deinit();
-        if (decoded.tag != .call) break :blk null;
-        const call = decoded.asCall() catch break :blk null;
-        break :blk call.question_id;
+        if (decoded.tag != .call) break :blk .{};
+        const call = decoded.asCall() catch break :blk .{};
+        break :blk .{ .question_id = call.question_id, .yourself = call.send_results_to.tag == .yourself };
     };
 
     var entry = try pending_calls.getOrPut(key);
@@ -51,7 +54,12 @@ pub fn queuePendingCall(
     errdefer if (inserted and entry.value_ptr.items.len == 0) {
         _ = pending_calls.remove(key);
     };
-    try entry.value_ptr.append(allocator, .{ .frame = copy, .caps = inbound_caps_owned, .question_id = call_question_id });
+    try entry.value_ptr.append(allocator, .{
+        .frame = copy,
+        .caps = inbound_caps_owned,
+        .question_id = info.question_id,
+        .send_results_to_yourself = info.yourself,
+    });
 }
 
 pub fn deinitPendingCallOwnedFrame(comptime PendingCallType: type, pending_call: *PendingCallType, allocator: std.mem.Allocator) void {
@@ -103,6 +111,7 @@ pub fn recordResolvedAnswer(
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
     replay_promised_call: ReplayPromisedCallFn(PeerType, InboundCapsType),
+    mark_yourself_call: *const fn (*PeerType, protocol.Call) void,
 ) !void {
     const resolved_entry = try resolved_answers.getOrPut(question_id);
     storeResolvedFrame(ResolvedAnswerType, allocator, question_id, resolved_entry, frame);
@@ -119,6 +128,7 @@ pub fn recordResolvedAnswer(
         release_inbound_caps,
         report_nonfatal_error,
         replay_promised_call,
+        mark_yourself_call,
     );
 }
 
@@ -143,6 +153,7 @@ pub fn recordResolvedAnswerAssumeCapacity(
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
     replay_promised_call: ReplayPromisedCallFn(PeerType, InboundCapsType),
+    mark_yourself_call: *const fn (*PeerType, protocol.Call) void,
 ) void {
     const resolved_entry = resolved_answers.getOrPutAssumeCapacity(question_id);
     storeResolvedFrame(ResolvedAnswerType, allocator, question_id, resolved_entry, frame);
@@ -159,6 +170,7 @@ pub fn recordResolvedAnswerAssumeCapacity(
         release_inbound_caps,
         report_nonfatal_error,
         replay_promised_call,
+        mark_yourself_call,
     );
 }
 
@@ -192,6 +204,11 @@ fn drainPendingPromises(
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
     replay_promised_call: ReplayPromisedCallFn(PeerType, InboundCapsType),
+    /// Runs before a replayed call is answered with an exception here (the
+    /// replay failed, for example it could not park again): the Peer marks a
+    /// `sendResultsTo = yourself` call, so its exception Return is
+    /// `resultsSentElsewhere` (`peer_call_orchestration.markYourselfCallForException`).
+    mark_yourself_call: *const fn (*PeerType, protocol.Call) void,
 ) void {
     var pending = pending_promises.fetchRemove(question_id) orelse return;
     defer pending.value.deinit(allocator);
@@ -213,6 +230,7 @@ fn drainPendingPromises(
         };
         if (call.target.promised_answer == null) continue;
         const requeued = replay_promised_call(peer, pending_call.frame, call, &pending_call.caps) catch |err| blk: {
+            mark_yourself_call(peer, call);
             send_return_exception(peer, call.question_id, @errorName(err)) catch |send_err| {
                 report_nonfatal_error(peer, send_err);
             };
@@ -299,6 +317,7 @@ test "pending_calls queuePendingCall clones frame and appends" {
         frame: []u8,
         caps: DummyCaps,
         question_id: ?u32 = null,
+        send_results_to_yourself: bool = false,
     };
 
     var pending = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(std.testing.allocator);
@@ -359,6 +378,7 @@ test "pending_calls deinitPendingCallOwnedFrameForPeerFn releases caps and frame
         frame: []u8,
         caps: DummyCaps,
         question_id: ?u32 = null,
+        send_results_to_yourself: bool = false,
     };
     const Peer = struct {};
 
@@ -383,6 +403,7 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
         frame: []u8,
         caps: DummyCaps,
         question_id: ?u32 = null,
+        send_results_to_yourself: bool = false,
     };
     const FakePeer = struct {
         exception_count: usize = 0,
