@@ -226,6 +226,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   16,262 dials. The soak reports the edge on its own warning line. The edge
   does not end the judged memory window, because dials go through again
   after it.
+- **Windows: a TCP read that the local network stack ended failed with
+  `error.Unexpected` and printed a stack trace.** The transport's own
+  Windows receive maps statuses as std 0.17.0's `netReadWindows` does, and
+  std has no arm for `STATUS_LOCAL_DISCONNECT` or
+  `STATUS_CONNECTION_ABORTED`. Now both are `error.ConnectionResetByPeer`,
+  as the remote disconnect statuses are. `Connection` handles every read
+  error the same way, so only the error value changes, and no trace is
+  printed. The Debug lane of the Windows soak in Nightly 38377271133
+  printed 2,974 of these traces for `LOCAL_DISCONNECT` and 4 for
+  `CONNECTION_ABORTED`. The status-mapping test in `stream_transport.zig`
+  now runs on every host and checks both statuses. Writes and shutdowns
+  still go through std, which has the same gaps, so their traces stay.
+  The new `docs/upstream/handoff-zig-fork-netreadwindows-stray-cancel.md`
+  asks std for these arms, and for a fix of the stray `STATUS_CANCELLED`
+  read that 0.26.0 works around. `handoff-zig-fork-netacceptwindows.md`
+  now says that capnp-zig's Windows TCP accepts no longer use std's
+  `netAcceptWindows`.
 - **QUIC (Experimental): the owned loops ignored a RESET of stream 0.**
   `Connection` and `Server` kept the session up after the peer reset stream
   0, so a question that waited ran to its deadline and ended
