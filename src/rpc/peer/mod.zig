@@ -4930,16 +4930,18 @@ pub const Peer = struct {
         if (canceled_automatic_target) {
             _ = self.finished_early_answers.remove(qid);
         }
-        // No Return for this answer is still to come (none is being sent,
-        // and no tombstone or join completion keeps one owed): nothing will
-        // replay calls still queued on it, which a skipped failed-answer
-        // record lets arrive after its Return. Fail them now, before the
-        // remote reuses the id for a call whose results would replay them.
-        if (self.pending_promises.contains(qid) and
-            !self.finished_early_answers.contains(qid) and
-            !self.resolving_answers.contains(qid) and
-            !self.completing_join_answers.contains(qid))
-        {
+        // No Return for this answer is still to come: its Return went out
+        // before this Finish (the answer was not active, being sent or in a
+        // join completion), or none follows (a synthetic answer canceled
+        // before result delivery). Nothing will replay calls still queued
+        // on it, which a skipped failed-answer record lets arrive after its
+        // Return. Fail them now, before the remote reuses the id for a call
+        // whose results would replay them. An answer still owed its Return
+        // keeps its queue for that Return, as the C++ reference keeps a
+        // finished answer's pipeline for the calls on it.
+        const no_return_to_come = (!was_active and !was_resolving and !finished_completing_join) or
+            canceled_automatic_target;
+        if (no_return_to_come and self.pending_promises.contains(qid)) {
             self.failQueuedPromisedCalls(qid, pipelined_on_finished_answer_reason, .failed);
         }
         // A Return sent while this Finish was applied (a queued call the peer
