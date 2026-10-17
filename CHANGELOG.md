@@ -227,6 +227,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and after the answer, a failed tail call, a forwarded tail call, a
   `receiverAnswer` param, a Finish inside the send, the records full),
   `tests/rpc/peer/rpc_peer_test.zig` and `src/native/conn_test.zig`.
+- **RPC: a call pipelined on an answer whose Return brings no results now
+  gets its Return.** Such a call waits in the Peer's queue until the answer
+  resolves. Some Returns sent no results to this peer and left the queue
+  alone: a prebuilt frame that is not `results` (`sendPrebuiltReturnFrame`,
+  so `HostPeer.respondHostCallException` and the WASM host ABI), and the
+  `takeFromOtherQuestion`, `acceptFromThirdParty`, `resultsSentElsewhere`
+  and `canceled` Returns that a forward relays. So the queued call never
+  got its Return. A call that the remote sent after that Return queued the
+  same way, and a later call that reused the answer's id replayed the old
+  queue against its own results. Now every such Return fails the queued
+  calls, each with its own exception Return: the prebuilt exception, or a
+  fixed reason (`rpc.peer.tail_call_pipelining_reason` for a
+  `takeFromOtherQuestion`). The answer is kept in `failed_answers` until its
+  Finish, so a call pipelined on it later fails at once, with the same
+  limits as any failed-answer record. The C++ reference bounces a call
+  pipelined on a question it sent here as a tail call (`Call(W,
+  sendResultsTo = yourself, target = promisedAnswer(A))` and `Return(W0,
+  takeFromOtherQuestion = W)`), so W0 waited forever when the host answered
+  A this way. Now W0 gets W's exception. Tests in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` cover a prebuilt
+  exception (before and after the bounced call arrives, and the id reuse),
+  `acceptFromThirdParty`, and a forward the remote answers with
+  `takeFromOtherQuestion` or `resultsSentElsewhere`.
 - **Native C ABI (Experimental): a tail-call Return no longer ends the
   question with "unsupported Return variant".** With the Peer changes above,
   the question gets one RETURN with the named call's results (when they

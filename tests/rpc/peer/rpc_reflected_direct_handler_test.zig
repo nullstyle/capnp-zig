@@ -2069,3 +2069,187 @@ test "one allocation failure anywhere while the remote finishes a held tail call
 test "one allocation failure anywhere while the remote releases the promise a held tail call's call waits on: one Return" {
     try sweepHeldTailCall(.release);
 }
+
+// -- A call pipelined on an answer whose Return brings no results ----------------
+//
+// The C++ reference bounces a call pipelined on a question it sent us as a
+// tail call: Call(W, sendResultsTo = yourself, target = promisedAnswer(A))
+// plus Return(W0, takeFromOtherQuestion = W). W waits for A. Every Return
+// for A that brings this peer no results (a prebuilt exception, the
+// `HostPeer` and WASM host path; a relayed takeFromOtherQuestion,
+// acceptFromThirdParty or resultsSentElsewhere) must fail W, or W0 waits
+// forever, and a later call that reuses A's id replays W against it.
+
+/// The remote calls the client's export (or promise export) `target_export`
+/// with question `answer_id`; the results go to the remote. Empty params.
+fn pushCallerCall(h: *TailHarness, allocator: std.mem.Allocator, answer_id: u32, target_export: u32) !void {
+    var mb = protocol.MessageBuilder.init(allocator);
+    defer mb.deinit();
+    var call = try mb.beginCall(answer_id, CALL_INTERFACE_ID, CALL_METHOD_ID);
+    try call.setTargetImportedCap(target_export);
+    var payload = try call.payloadTyped();
+    _ = try (try payload.initContent()).initStruct(0, 0);
+    const frame = try mb.finish();
+    defer allocator.free(frame);
+    try h.client_peer.handleFrame(frame);
+}
+
+/// The host answers `answer_id` with a prebuilt exception frame, as
+/// `HostPeer.respondHostCallException` (and so the WASM host ABI) does.
+fn sendPrebuiltException(h: *TailHarness, allocator: std.mem.Allocator, answer_id: u32, reason: []const u8) !void {
+    var mb = protocol.MessageBuilder.init(allocator);
+    defer mb.deinit();
+    var ret = try mb.beginReturn(answer_id, .exception);
+    ret.setReleaseParamCaps(false);
+    try ret.setException(reason);
+    const frame = try mb.finish();
+    defer allocator.free(frame);
+    var decoded = try protocol.DecodedMessage.init(allocator, frame);
+    defer decoded.deinit();
+    try h.client_peer.sendPrebuiltReturnFrame(try decoded.asReturn(), frame);
+}
+
+/// The plain call the bounced tail call is pipelined on.
+const pipelined_on_answer_id: u32 = 960;
+
+/// Push a plain call A to the client's (deferred) export, then the bounced
+/// tail call W pipelined on it and the redirect W0 that names W. W0 is
+/// held: W waits for A.
+fn holdBouncedTailCall(h: *TailHarness, allocator: std.mem.Allocator, w0: *TailCaller, target_export: u32) !void {
+    try pushCallerCall(h, allocator, pipelined_on_answer_id, target_export);
+    const w0_id = try h.nextQuestion(w0);
+    try h.pushPipelinedCall(allocator, pipelined_answer_id, pipelined_on_answer_id, true);
+    try h.pushRedirect(allocator, w0_id, pipelined_answer_id);
+    try std.testing.expectEqual(@as(u32, 0), w0.returns);
+    try std.testing.expectEqual(@as(usize, 1), h.client_peer.held_tail_calls.count());
+    try std.testing.expect(h.client_peer.pending_promises.contains(pipelined_on_answer_id));
+}
+
+test "a held tail call pipelined on a call the host fails with a prebuilt exception gets that exception" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    var w0 = TailCaller{};
+    try holdBouncedTailCall(&h, allocator, &w0, h.target_export_id);
+    try std.testing.expectEqual(@as(?u32, pipelined_on_answer_id), h.target.answer_id);
+
+    try sendPrebuiltException(&h, allocator, pipelined_on_answer_id, "host failed A");
+    try std.testing.expectEqual(@as(u32, 1), w0.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, w0.tag.?);
+    try std.testing.expectEqualStrings("host failed A", w0.reason());
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, .resultsSentElsewhere));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, null));
+    try std.testing.expect(!h.client_peer.pending_promises.contains(pipelined_on_answer_id));
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.held_tail_calls.count());
+
+    // The remote finishes A and reuses its id for a call whose results the
+    // host gives: W is gone, so it is never replayed against them.
+    try h.pushFinish(allocator, pipelined_on_answer_id);
+    h.target.answer_id = null;
+    try pushCallerCall(&h, allocator, pipelined_on_answer_id, h.target_export_id);
+    try std.testing.expectEqual(@as(?u32, pipelined_on_answer_id), h.target.answer_id);
+    var result = ResultN{ .n = 42 };
+    try h.client_peer.sendReturnResults(pipelined_on_answer_id, &result, ResultN.build);
+    try std.testing.expectEqual(@as(?u32, pipelined_on_answer_id), h.target.answer_id);
+    try std.testing.expectEqual(@as(u32, 1), w0.returns);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, null));
+}
+
+test "a tail call pipelined on a call the host already failed with a prebuilt exception gets that exception at once" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try pushCallerCall(&h, allocator, pipelined_on_answer_id, h.target_export_id);
+    try sendPrebuiltException(&h, allocator, pipelined_on_answer_id, "host failed A");
+    // The bounced call arrives after A's Return.
+    var w0 = TailCaller{};
+    const w0_id = try h.nextQuestion(&w0);
+    try h.pushPipelinedCall(allocator, pipelined_answer_id, pipelined_on_answer_id, true);
+    try h.pushRedirect(allocator, w0_id, pipelined_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), w0.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, w0.tag.?);
+    try std.testing.expectEqualStrings("host failed A", w0.reason());
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.pending_promises.count());
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, .resultsSentElsewhere));
+}
+
+test "a held tail call pipelined on a call answered with acceptFromThirdParty fails" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    var w0 = TailCaller{};
+    try holdBouncedTailCall(&h, allocator, &w0, h.target_export_id);
+    try Peer.test_hooks.sendReturnAcceptFromThirdParty(&h.client_peer, pipelined_on_answer_id, null);
+    try std.testing.expectEqual(@as(u32, 1), w0.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, w0.tag.?);
+    try std.testing.expect(!h.client_peer.pending_promises.contains(pipelined_on_answer_id));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, .resultsSentElsewhere));
+}
+
+/// Push a plain call A parked on a fresh client promise export, the bounced
+/// tail call W pipelined on A and its redirect W0, then resolve the promise
+/// to the server's bootstrap: the client forwards A to the server
+/// (`sendResultsTo = caller`, translate mode). Returns the forwarded id.
+fn holdBouncedTailCallOnForward(h: *TailHarness, allocator: std.mem.Allocator, w0: *TailCaller) !u32 {
+    const promise_id = try h.client_peer.addPromiseExport();
+    try holdBouncedTailCall(h, allocator, w0, promise_id);
+    try h.client_peer.resolvePromiseExportToImport(promise_id, h.server_import_id);
+    const forwarded = try lastClientCallId(&h.wire);
+    try std.testing.expectEqual(@as(u32, 0), w0.returns);
+    return forwarded;
+}
+
+test "a held tail call pipelined on a forwarded call that the remote redirects elsewhere fails" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // Another call the client forwards, which the redirect below names.
+    const other_answer_id: u32 = 950;
+    const other_promise = try h.client_peer.addPromiseExport();
+    try h.pushYourselfCall(allocator, other_answer_id, other_promise);
+    try h.client_peer.resolvePromiseExportToImport(other_promise, h.server_import_id);
+    const other_forwarded = try lastClientCallId(&h.wire);
+
+    var w0 = TailCaller{};
+    const forwarded = try holdBouncedTailCallOnForward(&h, allocator, &w0);
+    {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var ret = try mb.beginReturn(forwarded, .takeFromOtherQuestion);
+        ret.setReleaseParamCaps(false);
+        try ret.setTakeFromOtherQuestion(other_forwarded);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try h.client_peer.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_on_answer_id, .takeFromOtherQuestion));
+    try std.testing.expectEqual(@as(u32, 1), w0.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, w0.tag.?);
+    try std.testing.expectEqualStrings(peer_impl.tail_call_pipelining_reason, w0.reason());
+    try std.testing.expect(!h.client_peer.pending_promises.contains(pipelined_on_answer_id));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, .resultsSentElsewhere));
+}
+
+test "a held tail call pipelined on a forwarded call that the remote answers resultsSentElsewhere fails" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    var w0 = TailCaller{};
+    const forwarded = try holdBouncedTailCallOnForward(&h, allocator, &w0);
+    try pushServerReturn(&h, allocator, forwarded, .resultsSentElsewhere, "");
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_on_answer_id, .resultsSentElsewhere));
+    try std.testing.expectEqual(@as(u32, 1), w0.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, w0.tag.?);
+    try std.testing.expect(!h.client_peer.pending_promises.contains(pipelined_on_answer_id));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, .resultsSentElsewhere));
+}

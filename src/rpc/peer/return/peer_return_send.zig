@@ -247,8 +247,40 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// with `tail_call_pipelining_reason`. The drain's worklist
         /// allocates, so it runs only when a call waits.
         fn failTailCalledPipeline(self: *Peer, answer_id: u32) void {
+            failAnswerPipeline(self, answer_id, tail_call_pipelining_failure);
+        }
+
+        /// A Return for `answer_id` went out that brings this peer no
+        /// results: nothing will ever replay the calls queued on the
+        /// answer (`pending_promises`), so each fails with `failure` now.
+        /// The drain's worklist allocates, so it runs only when a call
+        /// waits. Not for a loopback answer (callers check before the send,
+        /// which consumes the marker): its id is one of this peer's
+        /// question ids, and a queue under that id holds the remote's calls.
+        fn failAnswerPipeline(self: *Peer, answer_id: u32, failure: peer_call_targets.FailedAnswerView) void {
             if (!self.pending_promises.contains(answer_id)) return;
-            failQueuedPromisedCalls(self, answer_id, Peer.tail_call_pipelining_reason_text, .failed);
+            failQueuedPromisedCalls(self, answer_id, failure.reason, failure.ex_type);
+        }
+
+        const results_sent_elsewhere_failure: peer_call_targets.FailedAnswerView = .{
+            .reason = results_sent_elsewhere_no_pipelining,
+            .ex_type = .failed,
+        };
+
+        const answer_canceled_failure: peer_call_targets.FailedAnswerView = .{
+            .reason = answer_canceled_no_pipelining,
+            .ex_type = .failed,
+        };
+
+        /// What a call pipelined on an answer gets when the answer's Return
+        /// is the prebuilt `ret`, which is not `results`.
+        fn prebuiltPipelineFailure(ret: protocol.Return) peer_call_targets.FailedAnswerView {
+            return switch (ret.tag) {
+                .exception => if (ret.exception) |ex| .{ .reason = ex.reason, .ex_type = ex.kind() } else results_sent_elsewhere_failure,
+                .takeFromOtherQuestion => tail_call_pipelining_failure,
+                .canceled => answer_canceled_failure,
+                else => results_sent_elsewhere_failure,
+            };
         }
 
         /// Answer a `sendResultsTo = yourself` call with an exception. rpc.capnp
@@ -348,7 +380,7 @@ pub fn ReturnSend(comptime Peer: type) type {
             // Before the send: a remote Finish inside it removes the record,
             // as it removes any failed-answer record.
             const recorded = recordTailCalledAnswer(self, answer_id, pipeline_failure);
-            sendReturnTag(self, answer_id, .resultsSentElsewhere) catch |err| {
+            sendReturnTagNoDrain(self, answer_id, .resultsSentElsewhere) catch |err| {
                 // Not answered after all: the caller's next answer records
                 // its own.
                 if (recorded) dropFailedAnswerRecord(self, answer_id);
@@ -378,7 +410,10 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// results went to the remote's question, never to a pipeline here,
         /// so a call pipelined on this answer later fails at once
         /// (`fail_broken_answer`) instead of waiting in `pending_promises`
-        /// for results that never come. Only while the call is still active:
+        /// for results that never come. Every other Return that brings no
+        /// results here (a prebuilt frame that is not `results`, a tag
+        /// Return, `takeFromOtherQuestion`, `acceptFromThirdParty`) is kept
+        /// the same way. Only while the call is still active:
         /// a loopback answer, or one the remote already finished, gets no
         /// Finish that would remove the record. Best-effort and bounded like
         /// any failed-answer record. True when it recorded one.
@@ -572,7 +607,7 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// first (`~RpcCallContext`). Calls still queued on it (their record
         /// was skipped at the forward) fail as on any tail-called answer.
         pub fn answerFinishedForwardedCall(self: *Peer, answer_id: u32) !void {
-            try sendReturnTag(self, answer_id, .resultsSentElsewhere);
+            try sendReturnTagNoDrain(self, answer_id, .resultsSentElsewhere);
             failTailCalledPipeline(self, answer_id);
         }
 
@@ -634,6 +669,13 @@ pub fn ReturnSend(comptime Peer: type) type {
             // See sendReturnResults: loopback answers may not be recorded — no
             // Finish will clear them and the id would be poisoned for reuse.
             const should_record = ret.tag == .results and !is_loopback;
+            // Any other Return brings this peer no results: the answer is kept
+            // as failed until its Finish, and the calls queued on it fail,
+            // as for `sendReturnException` (`failAnswerPipeline`).
+            const pipeline_failure: ?peer_call_targets.FailedAnswerView = if (ret.tag == .results or is_loopback)
+                null
+            else
+                prebuiltPipelineFailure(ret);
 
             // Reserve record resources before the send so recording is infallible
             // afterward and cannot force a second (exception) Return for this
@@ -650,6 +692,8 @@ pub fn ReturnSend(comptime Peer: type) type {
                 try self.resolving_answers.put(ret.answer_id, {});
                 resolving_answer = true;
             }
+            const recorded_failure = if (pipeline_failure) |failure| recordTailCalledAnswer(self, ret.answer_id, failure) else false;
+            errdefer if (recorded_failure) dropFailedAnswerRecord(self, ret.answer_id);
 
             try sendReturnFrameWithLoopback(self, ret.answer_id, frame);
             rollback_outbound_refs = false;
@@ -665,6 +709,7 @@ pub fn ReturnSend(comptime Peer: type) type {
             // question. Last, so a held question's callback runs after the
             // answer is recorded.
             clearSendResultsRouting(self, ret.answer_id);
+            if (pipeline_failure) |failure| failAnswerPipeline(self, ret.answer_id, failure);
         }
 
         /// Send a return with an exception for a previously received call.
@@ -958,7 +1003,7 @@ pub fn ReturnSend(comptime Peer: type) type {
             if (!self.send_results_to_third_party.contains(answer_id)) {
                 return error.ResultsNotRedirected;
             }
-            try sendReturnTag(self, answer_id, .resultsSentElsewhere);
+            try sendReturnTagNoDrain(self, answer_id, .resultsSentElsewhere);
             failQueuedPromisedCalls(self, answer_id, results_sent_elsewhere_no_pipelining, .failed);
         }
 
@@ -975,16 +1020,43 @@ pub fn ReturnSend(comptime Peer: type) type {
         pub fn sendReturnCanceled(self: *Peer, answer_id: u32) !void {
             self.assertThreadAffinity();
             if (self.active_inbound_questions.contains(answer_id)) return error.AnswerNotFinished;
-            try sendReturnTag(self, answer_id, .canceled);
+            try sendReturnTagNoDrain(self, answer_id, .canceled);
             failQueuedPromisedCalls(self, answer_id, answer_canceled_no_pipelining, .failed);
         }
 
+        /// Send a tag Return (`resultsSentElsewhere` or `canceled`). It
+        /// brings this peer no results, so the answer is kept as failed
+        /// until its Finish (`recordTailCalledAnswer`) and the calls queued
+        /// on it fail (`failAnswerPipeline`).
         pub fn sendReturnTag(self: *Peer, answer_id: u32, tag: protocol.ReturnTag) !void {
+            return sendReturnTagWith(self, answer_id, tag, tagPipelineFailure(self, answer_id, tag));
+        }
+
+        /// `sendReturnTag` for a caller that fails the answer's pipeline
+        /// itself, or must not: one that walks `pending_promises` or answers
+        /// a call for the queued-call drain, and the `yourself` answer.
+        pub fn sendReturnTagNoDrain(self: *Peer, answer_id: u32, tag: protocol.ReturnTag) !void {
+            return sendReturnTagWith(self, answer_id, tag, null);
+        }
+
+        fn tagPipelineFailure(self: *Peer, answer_id: u32, tag: protocol.ReturnTag) peer_call_targets.FailedAnswerView {
+            if (tag == .canceled) return answer_canceled_failure;
             // A `yourself` call still marked here is one this peer forwarded
             // back to the remote: its results never come back here either
             // (`settleSelfLoopbackAnswer` drops the mark before it sends).
-            const tail_called = tag == .resultsSentElsewhere and self.send_results_to_yourself.contains(answer_id);
-            const recorded = tail_called and recordTailCalledAnswer(self, answer_id, tail_call_pipelining_failure);
+            if (self.send_results_to_yourself.contains(answer_id)) return tail_call_pipelining_failure;
+            return results_sent_elsewhere_failure;
+        }
+
+        fn sendReturnTagWith(
+            self: *Peer,
+            answer_id: u32,
+            tag: protocol.ReturnTag,
+            pipeline_failure: ?peer_call_targets.FailedAnswerView,
+        ) !void {
+            // Capture before delivery consumes the loopback marker.
+            const is_loopback = self.loopback_questions.contains(answer_id);
+            const recorded = if (pipeline_failure) |failure| recordTailCalledAnswer(self, answer_id, failure) else false;
             peer_return_dispatch.sendReturnTagForPeer(
                 Peer,
                 self,
@@ -998,14 +1070,18 @@ pub fn ReturnSend(comptime Peer: type) type {
                 return err;
             };
             _ = self.finished_early_answers.remove(answer_id);
-            if (tail_called) failTailCalledPipeline(self, answer_id);
+            if (pipeline_failure) |failure| {
+                if (!is_loopback) failAnswerPipeline(self, answer_id, failure);
+            }
         }
 
+        /// The answer's results come from another question (a tail call):
+        /// none come to a pipeline here, so the answer is kept as failed
+        /// until its Finish and the calls queued on it fail, with
+        /// `tail_call_pipelining_reason`.
         pub fn sendReturnTakeFromOtherQuestion(self: *Peer, answer_id: u32, other_question_id: u32) !void {
-            // As in `sendReturnTag`: a forwarded `yourself` call's results
-            // never come back here.
-            const tail_called = self.send_results_to_yourself.contains(answer_id);
-            const recorded = tail_called and recordTailCalledAnswer(self, answer_id, tail_call_pipelining_failure);
+            const is_loopback = self.loopback_questions.contains(answer_id);
+            const recorded = recordTailCalledAnswer(self, answer_id, tail_call_pipelining_failure);
             peer_return_dispatch.sendReturnTakeFromOtherQuestionForPeer(
                 Peer,
                 self,
@@ -1019,11 +1095,16 @@ pub fn ReturnSend(comptime Peer: type) type {
                 return err;
             };
             _ = self.finished_early_answers.remove(answer_id);
-            if (tail_called) failTailCalledPipeline(self, answer_id);
+            if (!is_loopback) failTailCalledPipeline(self, answer_id);
         }
 
+        /// The answer's results come from a third party: none come to a
+        /// pipeline here, so the answer is kept as failed until its Finish
+        /// and the calls queued on it fail.
         pub fn sendReturnAcceptFromThirdParty(self: *Peer, answer_id: u32, await_payload: ?[]const u8) !void {
-            try peer_return_dispatch.sendReturnAcceptFromThirdPartyForPeer(
+            const is_loopback = self.loopback_questions.contains(answer_id);
+            const recorded = recordTailCalledAnswer(self, answer_id, results_sent_elsewhere_failure);
+            peer_return_dispatch.sendReturnAcceptFromThirdPartyForPeer(
                 Peer,
                 self,
                 answer_id,
@@ -1031,8 +1112,12 @@ pub fn ReturnSend(comptime Peer: type) type {
                 self.returnReleasesParamCaps(answer_id),
                 clearSendResultsRouting,
                 sendReturnFrameWithLoopback,
-            );
+            ) catch |err| {
+                if (recorded) dropFailedAnswerRecord(self, answer_id);
+                return err;
+            };
             _ = self.finished_early_answers.remove(answer_id);
+            if (!is_loopback) failAnswerPipeline(self, answer_id, results_sent_elsewhere_failure);
         }
 
         /// Clear an answered call's `sendResultsTo` routing. Every Return

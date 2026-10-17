@@ -5024,9 +5024,9 @@ pub const Peer = struct {
                 // cancelled by a Finish. Send Return(canceled) so the caller's
                 // question entry can drain (a compliant peer keeps it reserved
                 // until this arrives) and shutdown can complete. Non-draining
-                // by construction (sendReturnTag does not touch
-                // pending_promises), so it is safe while iterating that map.
-                self.sendReturnTag(question_id, .canceled) catch |err| {
+                // (`sendReturnTagNoDrain` does not touch pending_promises), so
+                // it is safe while iterating that map; the caller drains.
+                ReturnSendImpl.sendReturnTagNoDrain(self, question_id, .canceled) catch |err| {
                     self.reportNonfatalError(err);
                 };
                 canceled = true;
@@ -6241,6 +6241,12 @@ pub const Peer = struct {
             recipient: ?message.AnyPointerReader,
         ) !void {
             return Peer.noteSendResultsToThirdParty(self, answer_id, recipient);
+        }
+
+        /// Answer `answer_id` with `awaitFromThirdParty`, as a forward in
+        /// translate mode relays one.
+        pub fn sendReturnAcceptFromThirdParty(self: *Peer, answer_id: u32, await_payload: ?[]const u8) !void {
+            return Peer.sendReturnAcceptFromThirdParty(self, answer_id, await_payload);
         }
 
         pub fn removeQuestion(self: *Peer, question_id: u32) void {
