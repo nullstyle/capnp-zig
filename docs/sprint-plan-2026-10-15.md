@@ -17,6 +17,38 @@ Fix both Nightly failures at their cause, close two capnp-swift correctness asks
   - 38231937129 (10-12): success
   - 38128471120 (10-11): success
 
+## Status (2026-10-17)
+
+**Process change.** On 2026-10-16 the owner said: no more PRs. Work lands on main directly. A branch can run the full CI by hand: `gh workflow run CI --ref <branch>`.
+
+**Landed on main**
+
+| item | commits | proof |
+|---|---|---|
+| P0-1 WarmRedialClient stop race | `66d43fd` | red CI 38918341458 (3 OSes); green CI 38960486931 |
+| P0-2 soak window and Windows 64-worker job | `8916bf8`..`5c705a3` | branch Nightly 38918359027: 55,535 ports, 0 setup failures |
+| P1-2 stream 0 RESET and FIN end the session | `1fdc029` | 14 new tests red before, green after |
+| P1-2 e2e over QUIC lane | `ea5066c`, `e7df409` | CI 38970205763: job "Zig e2e over QUIC" green in 5 min |
+| P1-1 Windows `Listener.close` | `8c36f35`, `fd4ae7d` | red CI 38918354154 (abort); green branch CI 38970028135 |
+| P1-3a tail-call fixes (see below) | `e8e19f5`..`d0ca8d6` | green branch CI 39008635610, with the Docker cross-implementation lanes |
+| Not planned: pycapnp scripts below Python 3.15 | `6dd8780` | macOS CI broke on 2026-10-16 (CPython 3.15 has no pycapnp wheel) |
+| Not planned: manual CI trigger | `e9f37e1` | `workflow_dispatch` in `ci.yml` |
+
+**P1-3 was split.**
+
+- The "hold" design (hold a `takeFromOtherQuestion` Return until the named call is answered) is deferred. Five review rounds found new ways that a held question never ends. The last check also found a hang at shutdown and CPU work that a remote peer can force. All 29 commits are on branch `archive/p1-3-tail-call-hold` (`663dbd3`). The review reports list every case.
+- P1-3a landed two fixes for defects that main already had:
+  - A kept tail-call answer is dropped at the call's Finish and when the remote reuses the id. Before, a later question could get another call's answer.
+  - A `yourself` call that fails answers `resultsSentElsewhere` on the wire. Before, it sent an exception Return, and the C++ reference drops the connection for that.
+- The capnp-swift ask `tail-call-returns-for-native.md` stays open. A tail call that names a pending call still gets the bare `takeFromOtherQuestion`.
+
+**Still to do:** P1-4, P1-5, P2-1, P2-2, P2-3, S-1, then the v0.27.0 ceremony. Each lands on main directly.
+
+**Notes for the owner to relay to capnp-swift**
+
+- **QUIC stream 0 (H11 check 9).** capnp-zig main (`1fdc029`, for v0.27.0) ends the RPC session when stream 0 ends, in baseline and native mode, for `connect`, `serve` and `EmbeddedSession`. After a clean FIN, capnp-zig dispatches every whole frame that came before it, then closes with code 0 (normal) and cause `peer_close`. Waiting questions end `Disconnected` in under 1 s. A partial frame at the FIN closes with `frame_error` (0x434e5001). A RESET_STREAM closes at once with code 0 and cause `transport_error`. The ALPN stays `capnp-rpc/1`. Send every frame you want delivered before your FIN. Do not send a FIN while you still expect replies. After you pin v0.27.0, run H11 check 9 again. CI now runs the Zig e2e over QUIC (`zig build -Dquic=true e2e-quic`). No Swift cross-implementation test exists yet.
+- **Tail calls for native.** The hold is deferred, so the native shim still reports "capnp-swift core: unsupported Return variant" for a tail call that names a pending call. Keep your workaround. Two fixes landed: a failing `yourself` call now answers `resultsSentElsewhere`, and a kept answer can no longer reach a later question with a reused id.
+
 **Words used in this plan**
 
 - **Red before:** a new test fails on the old code, which proves that the test can catch the defect.
