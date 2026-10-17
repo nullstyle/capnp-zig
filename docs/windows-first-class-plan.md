@@ -31,6 +31,10 @@ Progress notes:
   Windows execution remains the hosted acceptance gate after capnp-zig is
   pushed. The broader full-repository QUIC-root gate remains Linux-only.
 
+  Superseded: the counts in this note are from 2026-08-11. The Windows QUIC
+  job now runs green natively. For the current floors and evidence, see
+  [stability.md](stability.md#platform-support).
+
 - TCP truthfulness follow-up (2026-08-11): the Windows soak path no longer has
   a successful no-op. A pass requires positive session, call, chaos-close, and
   applicable deadline-cancellation counters. The thirteen portable

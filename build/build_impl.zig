@@ -277,6 +277,17 @@ pub fn buildImpl(b: *std.Build) !void {
         }),
     });
     const run_quic_test_evidence = b.addRunArtifact(quic_test_evidence);
+    // The scanner's own tests (the floors-doc match). They need no -Dquic,
+    // so `test` runs them too.
+    const quic_test_evidence_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/quic_test_evidence.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &quic_test_evidence_tests.step) catch @panic("OOM");
+    const run_quic_test_evidence_tests = &b.addRunArtifact(quic_test_evidence_tests).step;
 
     const package_preflight = b.addExecutable(.{
         .name = "package-preflight",
@@ -1642,6 +1653,7 @@ pub fn buildImpl(b: *std.Build) !void {
         test_rpc_quic_evidence_step.dependOn(run_rpc_quic_connection_internal_tests.?);
         test_rpc_quic_evidence_step.dependOn(run_rpc_quic_peer_tests.?);
         test_rpc_quic_evidence_step.dependOn(&run_quic_test_evidence.step);
+        test_rpc_quic_evidence_step.dependOn(run_quic_test_evidence_tests);
     } else {
         test_rpc_quic_evidence_step.dependOn(&b.addFail("test-rpc-quic-evidence requires -Dquic=true").step);
     }
@@ -2032,6 +2044,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_step.dependOn(test_oom_step);
     test_step.dependOn(test_soak_harness_step);
     test_step.dependOn(run_package_preflight_tests);
+    test_step.dependOn(run_quic_test_evidence_tests);
     test_step.dependOn(test_snapshot_render_step);
     test_step.dependOn(test_release_drift_step);
     for (apple.host_tests) |host_test| test_step.dependOn(host_test);
