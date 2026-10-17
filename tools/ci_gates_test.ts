@@ -227,6 +227,9 @@ Deno.test("every Zig test-failure line gives the test name", () => {
     "error: 'a.test.leaks' leaked 2 allocations:",
     "error: 'a.test.logs' logged 1 errors:",
     "error: 'a.test.crashes' terminated with signal ABRT with stderr:",
+    "error: 'a.test.exits' exited with code 3 with stderr:",
+    "error: 'a.test.exits.quietly' exited with code 3",
+    "error: 'a.test.stops' stopped with signal STOP",
     "error: 'a.test.hangs' timed out after 10s",
     "error: 'a.test.it's quoted' failed:",
     "\x1b[31merror: 'a.test.colored' failed:\x1b[0m\r",
@@ -244,12 +247,101 @@ Deno.test("every Zig test-failure line gives the test name", () => {
     "a.test.leaks",
     "a.test.logs",
     "a.test.crashes",
+    "a.test.exits",
+    "a.test.exits.quietly",
+    "a.test.stops",
     "a.test.hangs",
     "a.test.it's quoted",
     "a.test.colored",
     "a.test.stamped",
     "full_suite: N healing client(s) gave up",
   ], "names");
+});
+
+Deno.test("a failure with no test name adds step:<id> after the test names", () => {
+  const flaky = "error: 'a.test.flaky' failed:";
+  const names = (...lines: string[]) =>
+    failureNames("full_suite", [flaky, ...lines].join("\n"));
+  const both = ["a.test.flaky", "step:full_suite"];
+  assertEquals(
+    names("error: test process unexpectedly exited with code 1"),
+    both,
+    "the test process crashed between tests",
+  );
+  assertEquals(
+    names(
+      "error: unable to write stdin (BrokenPipe); test process unexpectedly terminated with signal SEGV",
+    ),
+    both,
+    "the test process closed stdin",
+  );
+  assertEquals(
+    names("error: test runner failed to respond for 30s"),
+    both,
+    "the test runner hangs",
+  );
+  assertEquals(
+    names(
+      "error: test 'a.test.fuzz' terminated with signal ABRT; input saved to '.zig-cache/f/1'",
+    ),
+    both,
+    "a fuzz crash",
+  );
+  assertEquals(
+    names("src/rpc/peer.zig:12:5: error: expected type 'u32', found 'bool'"),
+    both,
+    "a compile error",
+  );
+  assertEquals(
+    names(
+      "Build Summary: 16/18 steps succeeded (1 failed); 221/223 tests passed (2 failed)",
+    ),
+    both,
+    "the summary counts a failed test that the log does not name",
+  );
+  assertEquals(
+    names(
+      "error: 'a.test.leaks' leaked 1 allocations:",
+      "Build Summary: 16/18 steps succeeded (1 failed); 221/223 tests passed (1 skipped, 1 failed)",
+    ),
+    ["a.test.flaky", "a.test.leaks"],
+    "the summary counts only the named failure; a leak is not counted",
+  );
+  assertEquals(
+    names(
+      "error: 'a.test.leaks' leaked 1 allocations:",
+      "Build Summary: 16/18 steps succeeded (1 failed); 221/223 tests passed (2 failed)",
+    ),
+    ["a.test.flaky", "a.test.leaks", "step:full_suite"],
+    "a leak line does not stand for a failed test of the summary",
+  );
+  assertEquals(
+    names(
+      "Build Summary: 16/18 steps succeeded (1 failed); 220/223 tests passed (1 failed, 1 crashed, 1 timed out)",
+    ),
+    both,
+    "crashed and timed-out tests count",
+  );
+  assertEquals(
+    names(
+      "error: 'b.test.crash' exited with code 3 with stderr:",
+      "       thread 1 panic: reached unreachable code",
+      "       /home/runner/work/x.zig:3:5: 0x10 in crash (x.zig)",
+      "error: test process unexpectedly exited with code 3",
+    ),
+    ["a.test.flaky", "b.test.crash", "step:full_suite"],
+    "a crashed test, then the test process",
+  );
+  assertEquals(
+    names(
+      "       src/indented.zig:1:2: error: in the stderr of a test",
+      "error: process exited with code 1",
+      "error: the following build command exited with code 1:",
+      "error: SoakFailed",
+    ),
+    ["a.test.flaky"],
+    "the build runner's own exit lines are not failures",
+  );
 });
 
 Deno.test("a failed step with no test or soak line is named step:<id>", () => {
@@ -356,6 +448,23 @@ Deno.test("bbf91e7 is refused: run 38713314813 failed in Extended gates", async 
     result.lines.filter((l) => l.startsWith("REFUSED")),
     [`REFUSED: run 38713314813, job "${EXTENDED}": no row in force covers the job, with no test`],
     "refusals",
+  );
+  // The failed run of 10-13 is older than the 3 runs; the gate lists it.
+  assertEquals(
+    evidence.older.map((r) => [r.id, r.conclusion]),
+    [[38377271133, "failure"], [38231937129, "success"], [
+      38128471120,
+      "success",
+    ]],
+    "older runs",
+  );
+  assert(
+    result.lines.some((l) =>
+      l.startsWith(
+        "run 38377271133 (2026-10-13T",
+      ) && l.includes("failure, older than the 3 runs above")
+    ),
+    result.lines.join("\n"),
   );
 });
 
@@ -519,6 +628,42 @@ Deno.test("a re-run does not hide a failed attempt", async () => {
   );
 });
 
+Deno.test("a cancelled job fails the gate, also when a re-run went green", async () => {
+  // Run 38542668305 as if attempt 1 was cancelled in Extended gates and a
+  // re-run (attempt 2) went green.
+  const responses = fixture("bbf91e7.json");
+  const runs = (responses[runsKey(BBF)] as {
+    workflow_runs: { id: number; run_attempt: number }[];
+  }).workflow_runs;
+  runs.find((r) => r.id === 38542668305)!.run_attempt = 2;
+  const listing = responses[jobsKey(38542668305)] as {
+    total_count: number;
+    jobs: Record<string, unknown>[];
+  };
+  for (const job of listing.jobs) job.run_attempt = 2;
+  listing.jobs.push({
+    id: 1,
+    name: EXTENDED,
+    status: "completed",
+    conclusion: "cancelled",
+    run_attempt: 1,
+  });
+  listing.total_count += 1;
+  responses[annotationsKey(1)] = [];
+  const { result } = await gate(responses, BBF, [], "2026-10-17");
+  assert(!result.pass, "must refuse");
+  assert(
+    result.lines.includes(
+      `REFUSED: run 38542668305, job "${EXTENDED}": no row in force covers the job, with no test`,
+    ),
+    result.lines.join("\n"),
+  );
+  assert(
+    result.lines.some((l) => l.includes("(attempt 1): cancelled")),
+    result.lines.join("\n"),
+  );
+});
+
 Deno.test("runs in progress, other commits and failed runs with no failed job", async () => {
   const responses = fixture("bbf91e7.json");
   const listing = responses[runsKey(BBF)] as {
@@ -594,7 +739,12 @@ Deno.test("fewer than 3 completed runs are refused, and a second page is an erro
 });
 
 Deno.test("evaluateGate refuses a bad today", () => {
-  const evidence: Evidence = { sha: BBF, completed: [], inProgress: [] };
+  const evidence: Evidence = {
+    sha: BBF,
+    completed: [],
+    inProgress: [],
+    older: [],
+  };
   assertThrows(
     () => evaluateGate(evidence, [] as FlakeRow[], "17-10-2026"),
     /--today 17-10-2026/,

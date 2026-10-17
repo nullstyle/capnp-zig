@@ -250,9 +250,12 @@ cancelled run counts, and its cancelled jobs fail the gate.
 
 The final step of each Nightly job writes one `nightly-failure` annotation
 for each failed test (`error: '<test>' failed`) and for each `soak: FAIL`
-line. A failed step with neither line gets the name `step:<step id>`. The
-gate matches a failed job to a row by the job name, and by the annotation
-name when the job has annotations. The header of `.github/known-flakes.txt`
+line. A failed step with neither line gets the name `step:<step id>`. A
+step also gets `step:<step id>`, after its test names, when its log shows a
+failure with no test name: a crashed test process, a compile error, or a
+Build Summary that counts more failed tests than the log names. The gate
+matches a failed job to a row by the job name, and by the annotation name
+when the job has annotations. The header of `.github/known-flakes.txt`
 gives the row format and the matching rules.
 
 When a ceremony Nightly fails:
@@ -262,7 +265,9 @@ When a ceremony Nightly fails:
    CI run, and start 3 new Nightlies on it.
 2. If it is a flake, you have two choices:
    - Start more Nightlies on the same commit. The gate reads only the 3 most
-     recent runs, so 3 green runs after the flaky run also pass.
+     recent runs, so 3 green runs after the flaky run also pass. The gate
+     output still lists each older run that did not succeed. Read those
+     runs before you tag.
    - Add a row, if the flake is likely to come back. Copy the job name and
      the annotation name exactly. Give the run id, an owner, today's date and
      an expiry that is not more than 30 days later. The gate reads the rows

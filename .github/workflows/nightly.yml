@@ -10,13 +10,19 @@ on:
 # needs 3 Nightly runs on the release commit that are green or that fail only
 # on rows of .github/known-flakes.txt (RELEASING.md step 5). To match a row,
 # the gate reads the nightly-failure annotations of each failed job. So each
-# step that can fail has an `id`. Most of them run in bash (`-eo pipefail`,
-# so the tee keeps the exit code) and copy their output to
-# $RUNNER_TEMP/<id>.log ($GITHUB_ACTION is the step id). The final
+# step that runs a build, a test or a soak has an `id`. Most of them run in
+# bash (`-eo pipefail`, so the tee keeps the exit code) and copy their output
+# to $RUNNER_TEMP/<id>.log ($GITHUB_ACTION is the step id). The final
 # `if: failure()` step of each job reads those logs with tools/ci_gates.ts and
-# writes one annotation per failed test (`error: '<test>' failed`) and per
-# `soak: FAIL` line, or `step:<id>` for a failed step with neither line or
-# with no log.
+# writes one annotation per failed test (`error: '<test>' failed` and the
+# other Zig test-failure lines) and per `soak: FAIL` line. It writes
+# `step:<id>` for a failed step with neither line or with no log, and also
+# for a step whose log shows a failure with no test name (a crashed test
+# process, a compile error, or a Build Summary that counts more failed tests
+# than the log names). The setup steps (checkout, mise-action, setup-zig,
+# setup-capnp, cache, upload-artifact) have no `id`: when one of them fails,
+# the job has no nightly-failure annotation, and only a row with no test
+# covers it.
 
 jobs:
   soak:

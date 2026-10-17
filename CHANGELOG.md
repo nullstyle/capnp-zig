@@ -26,9 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.github/known-flakes.txt`. A row gives a Nightly job, a run id, an owner,
   the date it was added, an expiry date (30 days or less after it) and, as
   an option, a test name. The gate reads every attempt of a run, so a
-  re-run that went green does not hide a failure. `release-tag` runs the
-  gate after its CI check. The "Release tag audit" workflow runs the same
-  gate when a tag is pushed. It cannot refuse the tag; it only turns red.
+  re-run that went green does not hide a failure. The gate also lists each
+  run on SHA that did not succeed and is older than the 3 runs it reads.
+  `release-tag` runs the gate after its CI check. The "Release tag audit"
+  workflow runs the same gate when a tag is pushed. It cannot refuse the
+  tag; it only turns red.
   RELEASING.md step 5 gives the procedure: freeze `main`, start 3 Nightlies
   with `gh workflow run Nightly --ref main`, and apply the known-flakes rule.
   The gate is `tools/ci_gates.ts`. Its tests use recorded API responses, and
@@ -38,9 +40,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   step in each job reads the logs. It writes one `nightly-failure`
   annotation for each failed Zig test (`error: '<test>' failed`) and for
   each `soak: FAIL` line. A failed step with neither line gets
-  `step:<step id>`. The tag gate reads these annotations. The soak job
-  checks this wiring on each run, also when the run is green. The soak
-  steps on Windows now run in bash.
+  `step:<step id>`. A step also gets `step:<step id>` when its log shows a
+  failure with no test name: a crashed test process, a compile error, or a
+  Build Summary that counts more failed tests than the log names. So a row
+  for one flaky test does not cover a second failure in the same step. The
+  tag gate reads these annotations. The soak job checks this wiring on each
+  run, also when the run is green. The soak steps on Windows now run in
+  bash.
 
 ### Changed
 

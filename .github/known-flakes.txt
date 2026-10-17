@@ -15,8 +15,9 @@
 #            be 0 to 30 days after "added".
 #   test     Optional. One name from a nightly-failure annotation of that
 #            job: a test name, "<step id>: <soak reason>" (each number in
-#            the reason is N) or "step:<step id>". The test is the last
-#            field, so it can contain "|".
+#            the reason is N) or "step:<step id>" (a failure with no test
+#            name in that step). The test is the last field, so it can
+#            contain "|".
 #
 # How a row covers a failed job:
 #   - A failed job with nightly-failure annotations is covered only when

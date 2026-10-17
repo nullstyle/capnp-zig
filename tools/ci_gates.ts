@@ -15,7 +15,8 @@
 //   failed job. It passes only when there are 3 runs and each run is green or
 //   fails only on failures that an unexpired row of .github/known-flakes.txt
 //   covers. The header of that file gives the row format and the matching
-//   rules. Exit 0: pass. Exit 1: refused. Exit 2: the gate could not be
+//   rules. It also lists the older completed runs on SHA that did not
+//   succeed; it does not count them. Exit 0: pass. Exit 1: refused. Exit 2: the gate could not be
 //   evaluated (bad arguments, a bad row, an API error). Callers must treat
 //   every nonzero exit as a refusal.
 //
@@ -33,7 +34,12 @@
 //       the test name;
 //     - `soak: FAIL — <reason>` gives `<step id>: <reason>`, with each number
 //       in the reason written as N, so the name is the same from run to run;
-//     - a failed step with neither line gives `step:<step id>`.
+//     - a failed step with neither line gives `step:<step id>`;
+//     - a step also gives `step:<step id>` when its log shows a failure that
+//       has no test name: the test process crashed or stopped responding, a
+//       compile error, or a Build Summary that counts more failed, crashed
+//       or timed-out tests than the log names. So a row for one flaky test
+//       does not cover a second failure in the same step.
 //   GitHub keeps at most 10 error annotations per step. When there are more
 //   than 9 names, the 10th annotation has the title nightly-failure-overflow,
 //   and the gate refuses that job: no row can cover failures it cannot see.
@@ -169,8 +175,19 @@ export function rowInForce(row: FlakeRow, today: string): boolean {
 // Failure names from step logs (annotate)
 
 // The Zig build runner's per-test errors (lib/compiler/Maker/Step/Run.zig).
+// Group 2 is set for the forms that the Build Summary counts as a failed,
+// crashed or timed-out test; leaks and logged errors are not counted there.
 const TEST_LINE =
-  /^error: '(.+)' (?:failed:?|failed without output|errored|leaked \d+ allocations:?|logged \d+ errors:?|terminated .*|timed out after .*)$/;
+  /^error: '(.+)' (?:leaked \d+ allocations:?|logged \d+ errors:?|(failed:?|failed without output|errored|exited with .*|terminated .*|stopped with .*|timed out after .*))$/;
+// Failures with no test name: the test process crashed between tests or
+// stopped responding (Run.zig step.fail), or a compile error.
+const UNNAMED_LINE =
+  /^error: (?:unable to write stdin \(.*\); )?test process unexpectedly |^error: test runner failed to respond |^error: test '.+' .*; input saved to |^\S.*:\d+:\d+: error: /;
+// "Build Summary: 16/18 steps succeeded (1 failed); 222/223 tests passed
+// (1 failed)". The parentheses can also hold "N skipped", "N crashed" and
+// "N timed out" (lib/compiler/Maker.zig).
+const SUMMARY_LINE = /^Build Summary: .*; \d+\/\d+ tests passed \(([^)]*)\)/;
+const SUMMARY_COUNT = /(\d+) (?:failed|crashed|timed out)/g;
 const SOAK_LINE = /^soak: FAIL\s*(?:—|--?)\s*(.+)$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z /;
 // deno-lint-ignore no-control-regex
@@ -185,20 +202,40 @@ export function soakName(stepId: string, reason: string): string {
 }
 
 // The names for one failed step. Never empty: a failed step with no test or
-// soak line is named `step:<id>`.
+// soak line is named `step:<id>`. A step that also has a failure with no
+// test name gets `step:<id>` after its test names.
 export function failureNames(stepId: string, log: string | null): string[] {
   const names: string[] = [];
+  let unnamed = false;
+  let counted = 0; // test lines of the kinds that the Build Summary counts
+  let summarized = 0; // failed + crashed + timed out, from the Build Summary
   for (const raw of (log ?? "").split("\n")) {
     const line = cleanLine(raw);
     const test = TEST_LINE.exec(line);
     if (test) {
       names.push(test[1]);
+      if (test[2] !== undefined) counted++;
       continue;
     }
     const soak = SOAK_LINE.exec(line);
-    if (soak) names.push(soakName(stepId, soak[1]));
+    if (soak) {
+      names.push(soakName(stepId, soak[1]));
+      continue;
+    }
+    if (UNNAMED_LINE.test(line)) {
+      unnamed = true;
+      continue;
+    }
+    const summary = SUMMARY_LINE.exec(line);
+    if (summary) {
+      for (const m of summary[1].matchAll(SUMMARY_COUNT)) {
+        summarized += Number(m[1]);
+      }
+    }
   }
-  if (names.length === 0) names.push(`step:${stepId}`);
+  if (names.length === 0 || unnamed || summarized > counted) {
+    names.push(`step:${stepId}`);
+  }
   return names;
 }
 
@@ -288,6 +325,14 @@ export interface Evidence {
   sha: string;
   completed: RunEvidence[];
   inProgress: { id: number; status: string; createdAt: string }[];
+  // Completed runs older than the ones the gate reads. The gate does not
+  // count them, but it lists the ones that did not succeed.
+  older: {
+    id: number;
+    conclusion: string | null;
+    createdAt: string;
+    url: string;
+  }[];
 }
 
 interface RawRun {
@@ -362,13 +407,15 @@ export async function collectEvidence(
   const inProgress = mine
     .filter((r) => r.status !== "completed")
     .map((r) => ({ id: r.id, status: r.status, createdAt: r.created_at }));
+  const done = mine.filter((r) => r.status === "completed");
+  const older = done.slice(REQUIRED_RUNS).map((r) => ({
+    id: r.id,
+    conclusion: r.conclusion,
+    createdAt: r.created_at,
+    url: r.html_url,
+  }));
   const completed: RunEvidence[] = [];
-  for (
-    const run of mine.filter((r) => r.status === "completed").slice(
-      0,
-      REQUIRED_RUNS,
-    )
-  ) {
+  for (const run of done.slice(0, REQUIRED_RUNS)) {
     const jobListing = await api.get(jobsPath(repo, run.id));
     const rawJobs = field<RawJob[]>(
       jobListing,
@@ -420,7 +467,7 @@ export async function collectEvidence(
       jobs,
     });
   }
-  return { sha, completed, inProgress };
+  return { sha, completed, inProgress, older };
 }
 
 export interface GateResult {
@@ -507,6 +554,13 @@ export function evaluateGate(
         );
       }
     }
+  }
+
+  for (const run of evidence.older) {
+    if (run.conclusion === "success") continue;
+    lines.push(
+      `run ${run.id} (${run.createdAt}): ${run.conclusion}, older than the ${REQUIRED_RUNS} runs above; the gate does not count it, but read it before you tag ${run.url}`,
+    );
   }
 
   const count = evidence.completed.length;
