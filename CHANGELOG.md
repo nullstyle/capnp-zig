@@ -212,11 +212,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the bare `takeFromOtherQuestion` at once, and W stayed queued with no
   Return. Limit: pipelining on a tail call's answer is not supported, also
   when its results carry capabilities (the C++ reference keeps those
-  results for its pipeline). Under memory pressure the record and the
-  drain are best effort, as for a failed answer. Tests in
+  results for its pipeline). The record and the drain are best effort, as
+  for a failed answer: the Peer skips the record when it is out of memory
+  or keeps `max_active_inbound_questions` failed-answer records already,
+  and a call pipelined after a skipped record queues as before this fix.
+  For a tail call forwarded back to the remote, such a call fails at the
+  remote's Finish of the tail call. Tests in
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` (queued before
   and after the answer, a failed tail call, a forwarded tail call, a
-  `receiverAnswer` param, a Finish inside the send),
+  `receiverAnswer` param, a Finish inside the send, the records full),
   `tests/rpc/peer/rpc_peer_test.zig` and `src/native/conn_test.zig`.
 - **Native C ABI (Experimental): a tail-call Return no longer ends the
   question with "unsupported Return variant".** With the Peer changes above,
