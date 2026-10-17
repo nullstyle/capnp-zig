@@ -84,6 +84,47 @@ pub fn remapContentCaps(
     content: message.AnyPointerBuilder,
     caps: []const Cap,
 ) !void {
+    try rewriteContentCaps(allocator, table, content, caps, .remap);
+}
+
+/// Copy a host message (`msg` + `caps`, as `writeHostContent` takes them)
+/// to a standalone message in which every capability pointer to a NONE
+/// entry is null, as the Peer encodes it. `error.ContentCarriesCaps` when
+/// the content points at any other entry: as results, it carries
+/// capabilities. An entry nothing points at does not count. Touches no cap
+/// table entry.
+pub fn copyCapFreeHostContent(
+    allocator: std.mem.Allocator,
+    table: *cap_table.CapTable,
+    host_msg: []const u8,
+    caps: []const Cap,
+) ![]const u8 {
+    var src = try message.Message.init(allocator, host_msg, .{});
+    defer src.deinit();
+    var mb = message.MessageBuilder.init(allocator);
+    defer mb.deinit();
+    const root = try mb.initRootAnyPointer();
+    try message.cloneAnyPointer(try src.getRootAnyPointer(), root);
+    try rewriteContentCaps(allocator, table, root, caps, .null_only);
+    return mb.toBytes();
+}
+
+/// How `rewriteContentCaps` rewrites one capability pointer.
+const Rewrite = enum {
+    /// Host index -> origin-tagged real id (`remapContentCaps`).
+    remap,
+    /// A NONE entry -> null; any other entry fails with
+    /// `error.ContentCarriesCaps` (`copyCapFreeHostContent`).
+    null_only,
+};
+
+fn rewriteContentCaps(
+    allocator: std.mem.Allocator,
+    table: *cap_table.CapTable,
+    content: message.AnyPointerBuilder,
+    caps: []const Cap,
+    comptime mode: Rewrite,
+) !void {
     const builder = content.builder;
     // A read view over the builder's own segments: walking it with the
     // reader's resolve functions follows far pointers and list encodings
@@ -95,7 +136,7 @@ pub fn remapContentCaps(
     const seg = view.msg.segments[content.segment_id];
     if (content.pointer_pos + 8 > seg.len) return error.OutOfBounds;
     const word = std.mem.readInt(u64, seg[content.pointer_pos..][0..8], .little);
-    try walk(&view.msg, builder, table, caps, content.segment_id, content.pointer_pos, word, remap.max_traversal_depth);
+    try walk(&view.msg, builder, table, caps, mode, content.segment_id, content.pointer_pos, word, remap.max_traversal_depth);
 }
 
 fn walk(
@@ -103,6 +144,7 @@ fn walk(
     builder: *message.MessageBuilder,
     table: *cap_table.CapTable,
     caps: []const Cap,
+    comptime mode: Rewrite,
     segment_id: u32,
     pointer_pos: usize,
     pointer_word: u64,
@@ -120,7 +162,7 @@ fn walk(
             var i: usize = 0;
             while (i < s.pointer_count) : (i += 1) {
                 const pos = base + i * 8;
-                try walk(msg, builder, table, caps, s.segment_id, pos, try slotWord(msg, s.segment_id, pos), depth - 1);
+                try walk(msg, builder, table, caps, mode, s.segment_id, pos, try slotWord(msg, s.segment_id, pos), depth - 1);
             }
         },
         // List: only pointer lists and struct lists can hold capabilities.
@@ -130,7 +172,7 @@ fn walk(
                 var i: u32 = 0;
                 while (i < list.element_count) : (i += 1) {
                     const pos = list.content_offset + @as(usize, i) * 8;
-                    try walk(msg, builder, table, caps, list.segment_id, pos, try slotWord(msg, list.segment_id, pos), depth - 1);
+                    try walk(msg, builder, table, caps, mode, list.segment_id, pos, try slotWord(msg, list.segment_id, pos), depth - 1);
                 }
             } else if (list.element_size == 7) {
                 const ic = try msg.resolveInlineCompositeList(resolved.segment_id, resolved.pointer_pos, resolved.pointer_word);
@@ -141,13 +183,13 @@ fn walk(
                     var p: usize = 0;
                     while (p < ic.pointer_words) : (p += 1) {
                         const pos = base + p * 8;
-                        try walk(msg, builder, table, caps, ic.segment_id, pos, try slotWord(msg, ic.segment_id, pos), depth - 1);
+                        try walk(msg, builder, table, caps, mode, ic.segment_id, pos, try slotWord(msg, ic.segment_id, pos), depth - 1);
                     }
                 }
             }
         },
         // Capability: host index -> origin-tagged real id.
-        3 => try rewriteCap(builder, table, caps, resolved.segment_id, resolved.pointer_pos, resolved.pointer_word),
+        3 => try rewriteCap(builder, table, caps, mode, resolved.segment_id, resolved.pointer_pos, resolved.pointer_word),
         else => return error.InvalidPointer,
     }
 }
@@ -164,6 +206,7 @@ fn rewriteCap(
     builder: *message.MessageBuilder,
     table: *cap_table.CapTable,
     caps: []const Cap,
+    comptime mode: Rewrite,
     segment_id: u32,
     pointer_pos: usize,
     pointer_word: u64,
@@ -176,6 +219,7 @@ fn rewriteCap(
         .pointer_pos = pointer_pos,
     };
     const cap = caps[index];
+    if (mode == .null_only and cap.kind != .none) return error.ContentCarriesCaps;
     switch (cap.kind) {
         .none => try dest.setNull(),
         .import => {

@@ -105,6 +105,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stream 0. The ALPN stays `capnp-rpc/1`. "Wire constants (frozen)" in
   docs/quic-transport.md gives the rule and the reasons.
 
+- **Native C ABI (Experimental): a tail call to a call the host still owes
+  now gets that call's answer.** The remote can answer a question with
+  `takeFromOtherQuestion`: "your results are those of my call Y to you",
+  where Y has `sendResultsTo = yourself`. The C++ reference does this when
+  it forwards a parked call back to us (`resolve_disembargo`). When the
+  host had not answered Y yet, the shim ended the question at once with
+  RETURN EXCEPTION "capnp-swift core: unsupported Return variant". Now, when
+  Y is an INBOUND_CALL that the host has not answered, the question waits.
+  The host's `capnp_return_results` for Y becomes the question's RETURN
+  RESULTS (a copy of the same message, with NONE capabilities as null
+  pointers), and its `capnp_return_exception` becomes RETURN EXCEPTION with
+  the same type and reason. The remote still gets `resultsSentElsewhere`
+  for Y, once. Results that point at a capability give RETURN EXCEPTION
+  (`unimplemented`, `tail_call_caps_reason`). While the question waits, it
+  is an open question: `capnp_cancel` sends its Finish and ends it with
+  RETURN CANCELED, its deadline ends it on a tick, `capnp_finish` returns
+  `CAPNP_E_BUSY`, `capnp_conn_transport_closed` ends it with RETURN
+  DISCONNECTED, and a graceful shutdown waits for it (up to
+  `shutdown_drain_timeout_ms`). As for other questions, a cancel or a
+  deadline ends it also when its Finish cannot be sent. If the remote reuses Y's id for a new call
+  before the host answered, the question ends with RETURN EXCEPTION
+  (`tail_call_reused_reason`). A redirect that names a call the Peer still
+  holds (parked on a promise, queued on an answer, forwarded) keeps the
+  old RETURN EXCEPTION. The Peer is unchanged, so other Peer users still get
+  the bare tag for a pending call. The C ABI and the header are unchanged.
+  docs/notes/tail-call-hold-design.md has the design and the proof that
+  every held question ends once. capnp-swift handoff
+  `tail-call-returns-for-native.md`.
+
 ### Fixed
 
 - **RPC: a tail call no longer gets the kept answer of an earlier call with
@@ -120,8 +149,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dropped at the remote's Finish of the call: every redirect that names the
   call comes before that Finish. A Finish that arrives while the results
   build keeps them out, and a new Call with the id drops an answer that is
-  still kept. A tail call that names a pending call still gets the bare
-  `takeFromOtherQuestion` tag at once. New tests are in
+  still kept. In the Peer, a tail call that names a pending call still
+  gets the bare `takeFromOtherQuestion` tag at once (the native shim now
+  waits for the call, see Changed). New tests are in
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
   `src/native/conn_test.zig` ("tail call: ...").
 - **RPC: a call the Peer forwards is held open from its send, also on a

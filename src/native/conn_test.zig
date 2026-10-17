@@ -1728,8 +1728,9 @@ fn nextQuestion(alloc: std.mem.Allocator, a: *Conn, ra: *Rec, t: TailSetup) !u32
 
 /// The remote tail-calls A's export with question `answer_id` and answers
 /// `q` with the redirect, in one push: A's host has not seen the call yet,
-/// so `q` gets the bare redirect, which the shim ends with one RETURN
-/// EXCEPTION (`unimplemented`).
+/// as when the C++ reference forwards a parked call back to us. The call
+/// reaches the host before the redirect is read, so `q` is held: it has no
+/// RETURN until the host answers the call (docs/notes/tail-call-hold-design.md).
 fn pushPendingTailCall(alloc: std.mem.Allocator, a: *Conn, ra: *Rec, t: TailSetup, q: u32, answer_id: u32) !void {
     const call = try yourselfCallFrame(alloc, answer_id, t.ea);
     defer alloc.free(call);
@@ -1743,48 +1744,47 @@ fn pushPendingTailCall(alloc: std.mem.Allocator, a: *Conn, ra: *Rec, t: TailSetu
     try testing.expectEqual(answer_id, c.answer_id);
     try testing.expectEqual(t.ea, c.export_id);
     try testing.expectEqual(@as(u64, 200), c.host_tag);
-    const r = try expectOneReturn(ra, q, .exception);
-    try testing.expectEqual(@backingInt(protocol.ExceptionType.unimplemented), r.exception_type);
+    try expectNoReturnYet(ra, q);
 }
 
-test "tail call: an answer given after the redirect is not given to a later tail call with the same id" {
-    const alloc = testing.allocator;
-    const a = try Conn.init(alloc, .{ .now_ns = 0 });
-    defer a.deinit();
-    const b = try Conn.init(alloc, .{ .now_ns = 0 });
-    defer b.deinit();
-    var ra = Rec.init(alloc);
-    defer ra.deinit();
-    var rb = Rec.init(alloc);
-    defer rb.deinit();
+/// `qid` has no RETURN yet. On a mismatch, print what it got.
+fn expectNoReturnYet(rec: *Rec, qid: u32) !void {
+    const r = rec.returnFor(qid) orelse return;
+    std.debug.print("question {d}: RETURN {s} type {d} \"{s}\" before the tail call was answered\n", .{
+        qid, @tagName(r.kind), r.exception_type, r.reason,
+    });
+    return error.TestEarlyReturn;
+}
 
-    const t = try startTailCall(alloc, a, &ra, b, &rb);
-    // The C++ order: the call and the redirect before the host answers.
-    try pushPendingTailCall(alloc, a, &ra, t, t.q, tail_answer);
-    try a.finish(t.q, false);
-    const old = try msgU64(alloc, 42);
-    defer alloc.free(old);
-    try a.returnResults(tail_answer, old, &.{});
-    try drainAll(a, &ra);
-    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, .resultsSentElsewhere));
-    // The remote finishes the call after our Finish of the question.
-    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
-    try drainAll(a, &ra);
-    try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
+/// The redirect was not followed: one RETURN EXCEPTION (`unimplemented`),
+/// as for every Return variant the shim does not map.
+fn expectUnfollowed(rec: *Rec, qid: u32) !void {
+    const r = try expectOneReturn(rec, qid, .exception);
+    try testing.expectEqual(@backingInt(protocol.ExceptionType.unimplemented), r.exception_type);
+    try testing.expectEqualStrings("capnp-swift core: unsupported Return variant", r.reason);
+}
 
-    // The remote reuses the id for its next tail call (the C++ reference
-    // reuses the lowest free id). The new call is pending, so the new
-    // question gets the bare redirect, never the old call's 42.
-    const q2 = try nextQuestion(alloc, a, &ra, t);
-    try pushPendingTailCall(alloc, a, &ra, t, q2, tail_answer);
-    const res = try msgU64(alloc, 99);
-    defer alloc.free(res);
-    try a.returnResults(tail_answer, res, &.{});
-    try a.finish(q2, false);
-    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
-    try drainAll(a, &ra);
-    try testing.expectEqual(@as(usize, 1), ra.countReturns(q2));
-    try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
+/// A Call on A's export `target_export` with `sendResultsTo = caller`.
+fn plainCallFrame(alloc: std.mem.Allocator, answer_id: u32, target_export: u32) ![]const u8 {
+    var mb = protocol.MessageBuilder.init(alloc);
+    defer mb.deinit();
+    var call = try mb.beginCall(answer_id, iface, 4);
+    try call.setTargetImportedCap(target_export);
+    var payload = try call.payloadTyped();
+    _ = try (try payload.initContent()).initStruct(0, 0);
+    return mb.finish();
+}
+
+/// Finish OUT_FRAMEs that `rec` kept for question `qid`.
+fn countFinishFrames(rec: *Rec, qid: u32) !usize {
+    var n: usize = 0;
+    for (rec.frames.items) |bytes| {
+        var d = try protocol.DecodedMessage.init(testing.allocator, bytes);
+        defer d.deinit();
+        if (d.tag != .finish) continue;
+        if ((try d.asFinish()).question_id == qid) n += 1;
+    }
+    return n;
 }
 
 /// A sent exactly one Return for `answer_id`, and it is
@@ -1797,67 +1797,409 @@ fn expectOnlyResultsSentElsewhere(rec: *Rec, answer_id: u32) !void {
     try testing.expectEqual(@as(usize, 1), try countReturnFrames(rec, answer_id, .resultsSentElsewhere));
 }
 
-test "tail call: a host exception for the call after its redirect puts only resultsSentElsewhere on the wire" {
-    const alloc = testing.allocator;
-    const a = try Conn.init(alloc, .{ .now_ns = 0 });
-    defer a.deinit();
-    const b = try Conn.init(alloc, .{ .now_ns = 0 });
-    defer b.deinit();
-    var ra = Rec.init(alloc);
-    defer ra.deinit();
-    var rb = Rec.init(alloc);
-    defer rb.deinit();
+/// Two connections and records, freed in reverse order.
+const TailPair = struct {
+    a: *Conn,
+    b: *Conn,
+    ra: Rec,
+    rb: Rec,
 
-    const t = try startTailCall(alloc, a, &ra, b, &rb);
-    try pushPendingTailCall(alloc, a, &ra, t, t.q, tail_answer);
-    try a.finish(t.q, false);
-    try a.returnException(tail_answer, 0, "tail target failed");
-    try drainAll(a, &ra);
-    try expectOnlyResultsSentElsewhere(&ra, tail_answer);
-    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
-    try drainAll(a, &ra);
-    try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
-    try testing.expectEqual(@as(usize, 1), ra.countReturns(t.q));
+    fn init(alloc: std.mem.Allocator, a_opts: conn_mod.Options) !TailPair {
+        const a = try Conn.init(alloc, a_opts);
+        errdefer a.deinit();
+        const b = try Conn.init(alloc, .{ .now_ns = a_opts.now_ns });
+        return .{ .a = a, .b = b, .ra = Rec.init(alloc), .rb = Rec.init(alloc) };
+    }
+
+    fn deinit(self: *TailPair) void {
+        self.rb.deinit();
+        self.ra.deinit();
+        self.b.deinit();
+        self.a.deinit();
+    }
+
+    fn start(self: *TailPair, alloc: std.mem.Allocator) !TailSetup {
+        return startTailCall(alloc, self.a, &self.ra, self.b, &self.rb);
+    }
+};
+
+test "tail call: a pending cap-free answer becomes the question's one RETURN" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+
+    // The C++ order (resolve_disembargo): the call and the redirect come
+    // before the host answers the call.
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    const res = try msgU64(alloc, 42);
+    defer alloc.free(res);
+    try p.a.returnResults(tail_answer, res, &.{});
+    try drainAll(p.a, &p.ra);
+
+    const r = try expectOneReturn(&p.ra, t.q, .results);
+    try testing.expectEqual(@as(u64, 42), try readU64(alloc, r.msg));
+    try testing.expectEqual(@as(usize, 0), r.caps.len);
+    try expectOnlyResultsSentElsewhere(&p.ra, tail_answer);
+    // The question is an ordinary returned question now.
+    try p.a.finish(t.q, false);
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), try countFinishFrames(&p.ra, t.q));
+    try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), p.ra.countReturns(t.q));
 }
 
-test "tail call: a call to a rejected promise export answers resultsSentElsewhere; the redirect gets the rejection" {
+test "tail call: a pending answer that fails gives the question one exception RETURN" {
     const alloc = testing.allocator;
-    const a = try Conn.init(alloc, .{ .now_ns = 0 });
-    defer a.deinit();
-    const b = try Conn.init(alloc, .{ .now_ns = 0 });
-    defer b.deinit();
-    var ra = Rec.init(alloc);
-    defer ra.deinit();
-    var rb = Rec.init(alloc);
-    defer rb.deinit();
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
 
-    const t = try startTailCall(alloc, a, &ra, b, &rb);
-    // The call parks on the promise; the host rejects the promise; then
-    // the redirect names the call.
-    const p = try a.promiseExport();
-    try pushFrame(alloc, a, yourselfCallFrame(alloc, tail_answer, p));
-    try drainAll(a, &ra);
-    try testing.expectEqual(@as(usize, 0), try countReturnFrames(&ra, tail_answer, null));
-    try a.rejectPromise(p, "rejected by host");
-    try drainAll(a, &ra);
-    try expectOnlyResultsSentElsewhere(&ra, tail_answer);
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    try p.a.returnException(tail_answer, 1, "tail target failed");
+    try drainAll(p.a, &p.ra);
 
-    try pushFrame(alloc, a, tailCallReturnFrame(alloc, t.q, tail_answer));
-    try drainAll(a, &ra);
-    const r = try expectOneReturn(&ra, t.q, .exception);
-    try testing.expectEqualStrings("promise broken", r.reason);
-    try a.finish(t.q, false);
-    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
-    try drainAll(a, &ra);
-    try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
+    const r = try expectOneReturn(&p.ra, t.q, .exception);
+    try testing.expectEqual(@as(u16, 1), r.exception_type);
+    try testing.expectEqualStrings("tail target failed", r.reason);
+    try expectOnlyResultsSentElsewhere(&p.ra, tail_answer);
+    try p.a.finish(t.q, false);
+    try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 0), p.a.peer.loopback_result_stash.count());
+    try testing.expectEqual(@as(usize, 1), p.ra.countReturns(t.q));
 }
 
-test "tail call: a capnp_return_results that fails, then capnp_return_exception, puts only resultsSentElsewhere on the wire" {
+test "tail call: an answer given before the redirect arrives is delivered at once" {
+    // The Peer's kept-answer path, results and exception: a guard.
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+
+    try pushFrame(alloc, p.a, yourselfCallFrame(alloc, tail_answer, t.ea));
+    try drainAll(p.a, &p.ra);
+    const res = try msgU64(alloc, 43);
+    defer alloc.free(res);
+    try p.a.returnResults(tail_answer, res, &.{});
+    try drainAll(p.a, &p.ra);
+    try pushFrame(alloc, p.a, tailCallReturnFrame(alloc, t.q, tail_answer));
+    try drainAll(p.a, &p.ra);
+    const r = try expectOneReturn(&p.ra, t.q, .results);
+    try testing.expectEqual(@as(u64, 43), try readU64(alloc, r.msg));
+    try expectOnlyResultsSentElsewhere(&p.ra, tail_answer);
+    try p.a.finish(t.q, false);
+
+    const q2 = try nextQuestion(alloc, p.a, &p.ra, t);
+    try pushFrame(alloc, p.a, yourselfCallFrame(alloc, tail_answer + 1, t.ea));
+    try drainAll(p.a, &p.ra);
+    try p.a.returnException(tail_answer + 1, 0, "failed before the redirect");
+    try drainAll(p.a, &p.ra);
+    try pushFrame(alloc, p.a, tailCallReturnFrame(alloc, q2, tail_answer + 1));
+    try drainAll(p.a, &p.ra);
+    const r2 = try expectOneReturn(&p.ra, q2, .exception);
+    try testing.expectEqual(@as(u16, 0), r2.exception_type);
+    try testing.expectEqualStrings("failed before the redirect", r2.reason);
+    try expectOnlyResultsSentElsewhere(&p.ra, tail_answer + 1);
+    try p.a.finish(q2, false);
+}
+
+test "tail call: results with capabilities give one exception RETURN, without a leak" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+    const with_cap = try msgCap(alloc, 9, 0);
+    defer alloc.free(with_cap);
+    const cap = [_]Cap{.{ .kind = .@"export", .id = t.ea }};
+
+    // Pending: the question is held, then the answer carries a capability.
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    try p.a.returnResults(tail_answer, with_cap, &cap);
+    try drainAll(p.a, &p.ra);
+    const r = try expectOneReturn(&p.ra, t.q, .exception);
+    try testing.expectEqual(@backingInt(protocol.ExceptionType.unimplemented), r.exception_type);
+    try testing.expectEqualStrings(conn_mod.tail_call_caps_reason, r.reason);
+    try expectOnlyResultsSentElsewhere(&p.ra, tail_answer);
+    try p.a.finish(t.q, false);
+
+    // Answered before the redirect arrives: the Peer keeps no such results,
+    // so the redirect is not followed.
+    const q2 = try nextQuestion(alloc, p.a, &p.ra, t);
+    try pushFrame(alloc, p.a, yourselfCallFrame(alloc, tail_answer + 1, t.ea));
+    try drainAll(p.a, &p.ra);
+    try p.a.returnResults(tail_answer + 1, with_cap, &cap);
+    try drainAll(p.a, &p.ra);
+    try pushFrame(alloc, p.a, tailCallReturnFrame(alloc, q2, tail_answer + 1));
+    try drainAll(p.a, &p.ra);
+    try expectUnfollowed(&p.ra, q2);
+    try p.a.finish(q2, false);
+    try drainAll(p.a, &p.ra);
+    // Nobody received those results, so they hold no reference on the
+    // export they named: no EXPORT_DROPPED fires, and testing.allocator
+    // finds no leak after both deinits.
+    try testing.expectEqual(@as(usize, 0), p.ra.dropped.items.len);
+}
+
+test "tail call: results whose capabilities are all null, or unused, are cap-free" {
+    // The Peer encodes a NONE entry as a null pointer and ignores an entry
+    // nothing points at, so such results carry no capability, whether the
+    // host answers before the redirect or after.
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+    const null_cap = try msgCap(alloc, 9, 0);
+    defer alloc.free(null_cap);
+    const plain = try msgU64(alloc, 10);
+    defer alloc.free(plain);
+    const none = [_]Cap{.{ .kind = .none }};
+    const unused = [_]Cap{.{ .kind = .@"export", .id = t.ea }};
+
+    const Case = struct { msg: []const u8, caps: []const Cap, want: u64 };
+    const cases = [_]Case{
+        .{ .msg = null_cap, .caps = &none, .want = 9 },
+        .{ .msg = plain, .caps = &unused, .want = 10 },
+    };
+    var answer: u32 = tail_answer;
+    var q = t.q;
+    for (cases) |c| {
+        for ([_]bool{ true, false }) |redirect_first| {
+            if (redirect_first) {
+                try pushPendingTailCall(alloc, p.a, &p.ra, t, q, answer);
+                try p.a.returnResults(answer, c.msg, c.caps);
+            } else {
+                try pushFrame(alloc, p.a, yourselfCallFrame(alloc, answer, t.ea));
+                try drainAll(p.a, &p.ra);
+                try p.a.returnResults(answer, c.msg, c.caps);
+                try drainAll(p.a, &p.ra);
+                try pushFrame(alloc, p.a, tailCallReturnFrame(alloc, q, answer));
+            }
+            try drainAll(p.a, &p.ra);
+            const r = try expectOneReturn(&p.ra, q, .results);
+            try testing.expectEqual(c.want, try readU64(alloc, r.msg));
+            try testing.expectEqual(@as(usize, 0), r.caps.len);
+            var m = try message.Message.init(alloc, r.msg, .{});
+            defer m.deinit();
+            const root = try m.getRootStruct();
+            if (c.msg.ptr == null_cap.ptr) try testing.expect(root.isPointerNull(0));
+            try p.a.finish(q, false);
+            answer += 1;
+            q = try nextQuestion(alloc, p.a, &p.ra, t);
+        }
+    }
+}
+
+test "tail call: a later tail call that reuses the id gets its own answer, never the old one" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    const old = try msgU64(alloc, 42);
+    defer alloc.free(old);
+    try p.a.returnResults(tail_answer, old, &.{});
+    try drainAll(p.a, &p.ra);
+    const r = try expectOneReturn(&p.ra, t.q, .results);
+    try testing.expectEqual(@as(u64, 42), try readU64(alloc, r.msg));
+    try p.a.finish(t.q, false);
+    // The remote finishes the call after our Finish of the question.
+    try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 0), p.a.peer.loopback_result_stash.count());
+
+    // The remote reuses the id for its next tail call (the C++ reference
+    // reuses the lowest free id). The new question waits for the new call
+    // and gets its 99, never the old call's 42.
+    const q2 = try nextQuestion(alloc, p.a, &p.ra, t);
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, q2, tail_answer);
+    const res = try msgU64(alloc, 99);
+    defer alloc.free(res);
+    try p.a.returnResults(tail_answer, res, &.{});
+    try drainAll(p.a, &p.ra);
+    const r2 = try expectOneReturn(&p.ra, q2, .results);
+    try testing.expectEqual(@as(u64, 99), try readU64(alloc, r2.msg));
+    try p.a.finish(q2, false);
+    try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 0), p.a.peer.loopback_result_stash.count());
+}
+
+test "tail call: a capnp_return_results that fails, then capnp_return_exception, gives the question that exception" {
     // A host whose capnp_return_results fails (its results do not build)
     // answers with capnp_return_exception, in either order with the
     // redirect. The remote gets resultsSentElsewhere, once.
     const alloc = testing.allocator;
-    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+
+    // Not a Cap'n Proto message: the results build fails.
+    const bad_results = [_]u8{ 1, 2, 3 };
+
+    // The C++ order: the redirect comes first. A refused answer keeps the
+    // question held.
+    const t = try p.start(alloc);
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    if (p.a.returnResults(tail_answer, &bad_results, &.{})) |_| return error.TestResultsBuilt else |_| {}
+    try drainAll(p.a, &p.ra);
+    try expectNoReturnYet(&p.ra, t.q);
+    try p.a.returnException(tail_answer, 0, "results did not build");
+    try drainAll(p.a, &p.ra);
+    try expectOnlyResultsSentElsewhere(&p.ra, tail_answer);
+    const r = try expectOneReturn(&p.ra, t.q, .exception);
+    try testing.expectEqualStrings("results did not build", r.reason);
+    try p.a.finish(t.q, false);
+    try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+    try drainAll(p.a, &p.ra);
+
+    // Answered before the redirect arrives: the redirect gets the exception.
+    const q2 = try nextQuestion(alloc, p.a, &p.ra, t);
+    try pushFrame(alloc, p.a, yourselfCallFrame(alloc, tail_answer + 1, t.ea));
+    try drainAll(p.a, &p.ra);
+    if (p.a.returnResults(tail_answer + 1, &bad_results, &.{})) |_| return error.TestResultsBuilt else |_| {}
+    try p.a.returnException(tail_answer + 1, 0, "results did not build");
+    try drainAll(p.a, &p.ra);
+    try expectOnlyResultsSentElsewhere(&p.ra, tail_answer + 1);
+    try pushFrame(alloc, p.a, tailCallReturnFrame(alloc, q2, tail_answer + 1));
+    try drainAll(p.a, &p.ra);
+    const r2 = try expectOneReturn(&p.ra, q2, .exception);
+    try testing.expectEqualStrings("results did not build", r2.reason);
+    try p.a.finish(q2, false);
+    try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer + 1));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 0), p.a.peer.loopback_result_stash.count());
+}
+
+test "tail call: a call to a rejected promise export answers resultsSentElsewhere; the redirect gets the rejection" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+
+    // The call parks on the promise; the host rejects the promise; then
+    // the redirect names the call.
+    const pe = try p.a.promiseExport();
+    try pushFrame(alloc, p.a, yourselfCallFrame(alloc, tail_answer, pe));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 0), try countReturnFrames(&p.ra, tail_answer, null));
+    try p.a.rejectPromise(pe, "rejected by host");
+    try drainAll(p.a, &p.ra);
+    try expectOnlyResultsSentElsewhere(&p.ra, tail_answer);
+
+    try pushFrame(alloc, p.a, tailCallReturnFrame(alloc, t.q, tail_answer));
+    try drainAll(p.a, &p.ra);
+    const r = try expectOneReturn(&p.ra, t.q, .exception);
+    try testing.expectEqualStrings("promise broken", r.reason);
+    try p.a.finish(t.q, false);
+    try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 0), p.a.peer.loopback_result_stash.count());
+}
+
+test "tail call: no hold for a redirect that names no call the host owes" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+
+    // An id that names no call.
+    try pushFrame(alloc, p.a, tailCallReturnFrame(alloc, t.q, 999));
+    try drainAll(p.a, &p.ra);
+    try expectUnfollowed(&p.ra, t.q);
+    try p.a.finish(t.q, false);
+
+    // A call the host owes, but with `sendResultsTo = caller`.
+    const q2 = try nextQuestion(alloc, p.a, &p.ra, t);
+    try pushFrame(alloc, p.a, plainCallFrame(alloc, tail_answer, t.ea));
+    try pushFrame(alloc, p.a, tailCallReturnFrame(alloc, q2, tail_answer));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(tail_answer, p.ra.lastCall().answer_id);
+    try expectUnfollowed(&p.ra, q2);
+    const res = try msgU64(alloc, 5);
+    defer alloc.free(res);
+    try p.a.returnResults(tail_answer, res, &.{});
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), p.ra.countReturns(q2));
+    try p.a.finish(q2, false);
+
+    // A `yourself` call the Peer still holds: parked on a promise export.
+    const q3 = try nextQuestion(alloc, p.a, &p.ra, t);
+    const pe = try p.a.promiseExport();
+    try pushFrame(alloc, p.a, yourselfCallFrame(alloc, tail_answer + 1, pe));
+    try pushFrame(alloc, p.a, tailCallReturnFrame(alloc, q3, tail_answer + 1));
+    try drainAll(p.a, &p.ra);
+    try expectUnfollowed(&p.ra, q3);
+    try p.a.finish(q3, false);
+
+    // The bootstrap question is not a `capnp_call` question.
+    const qb = try p.a.bootstrap();
+    try drainAll(p.a, &p.ra);
+    try pushFrame(alloc, p.a, yourselfCallFrame(alloc, tail_answer + 2, t.ea));
+    try pushFrame(alloc, p.a, tailCallReturnFrame(alloc, qb, tail_answer + 2));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(tail_answer + 2, p.ra.lastCall().answer_id);
+    try expectUnfollowed(&p.ra, qb);
+    try p.a.returnResults(tail_answer + 2, res, &.{});
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), p.ra.countReturns(qb));
+}
+
+test "tail call: a second redirect that names a held call is not followed; the first still gets the answer" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    const q2 = try nextQuestion(alloc, p.a, &p.ra, t);
+    try pushFrame(alloc, p.a, tailCallReturnFrame(alloc, q2, tail_answer));
+    try drainAll(p.a, &p.ra);
+    try expectUnfollowed(&p.ra, q2);
+    try expectNoReturnYet(&p.ra, t.q);
+
+    const res = try msgU64(alloc, 7);
+    defer alloc.free(res);
+    try p.a.returnResults(tail_answer, res, &.{});
+    try drainAll(p.a, &p.ra);
+    const r = try expectOneReturn(&p.ra, t.q, .results);
+    try testing.expectEqual(@as(u64, 7), try readU64(alloc, r.msg));
+    try testing.expectEqual(@as(usize, 1), p.ra.countReturns(q2));
+}
+
+test "tail call: capnp_cancel ends a held question once and sends its Finish" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    try p.a.cancel(t.q);
+    try drainAll(p.a, &p.ra);
+    const r = try expectOneReturn(&p.ra, t.q, .canceled);
+    try testing.expectEqual(@backingInt(protocol.ExceptionType.failed), r.exception_type);
+    try testing.expectEqualStrings(conn_mod.cancel_reason, r.reason);
+    try testing.expectEqual(@as(usize, 1), try countFinishFrames(&p.ra, t.q));
+    // The question is gone, as after any cancel.
+    try testing.expectError(error.BadId, p.a.cancel(t.q));
+    try testing.expectError(error.UnknownRetainedQuestion, p.a.finish(t.q, false));
+
+    // The host still answers the call; the question gets nothing more.
+    const res = try msgU64(alloc, 1);
+    defer alloc.free(res);
+    try p.a.returnResults(tail_answer, res, &.{});
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), p.ra.countReturns(t.q));
+    try expectOnlyResultsSentElsewhere(&p.ra, tail_answer);
+}
+
+test "tail call: a cancel with no memory at all still ends a held question once" {
+    // As the Peer's own cancel: the question ends even when its Finish
+    // cannot be sent, and its id is gone.
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{});
+    const alloc = testing.allocator;
+    const a = try Conn.init(failing.allocator(), .{ .now_ns = 0 });
     defer a.deinit();
     const b = try Conn.init(alloc, .{ .now_ns = 0 });
     defer b.deinit();
@@ -1865,35 +2207,302 @@ test "tail call: a capnp_return_results that fails, then capnp_return_exception,
     defer ra.deinit();
     var rb = Rec.init(alloc);
     defer rb.deinit();
-
-    // Not a Cap'n Proto message: the results build fails.
-    const bad_results = [_]u8{ 1, 2, 3 };
-
-    // The C++ order: the redirect comes first.
     const t = try startTailCall(alloc, a, &ra, b, &rb);
-    try pushPendingTailCall(alloc, a, &ra, t, t.q, tail_answer);
-    if (a.returnResults(tail_answer, &bad_results, &.{})) |_| return error.TestResultsBuilt else |_| {}
-    try a.returnException(tail_answer, 0, "results did not build");
-    try drainAll(a, &ra);
-    try expectOnlyResultsSentElsewhere(&ra, tail_answer);
-    try a.finish(t.q, false);
-    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
-    try drainAll(a, &ra);
 
-    // Answered before the redirect arrives: the redirect gets the exception.
-    const q2 = try nextQuestion(alloc, a, &ra, t);
-    try pushFrame(alloc, a, yourselfCallFrame(alloc, tail_answer + 1, t.ea));
+    try pushPendingTailCall(alloc, a, &ra, t, t.q, tail_answer);
+    failing.fail_index = failing.alloc_index;
+    try a.cancel(t.q);
+    try testing.expectError(error.UnknownRetainedQuestion, a.finish(t.q, false));
+    failing.fail_index = std.math.maxInt(usize);
     try drainAll(a, &ra);
-    if (a.returnResults(tail_answer + 1, &bad_results, &.{})) |_| return error.TestResultsBuilt else |_| {}
-    try a.returnException(tail_answer + 1, 0, "results did not build");
+    const r = try expectOneReturn(&ra, t.q, .canceled);
+    try testing.expectEqualStrings(conn_mod.cancel_reason, r.reason);
+    try testing.expectEqual(@as(usize, 0), try countFinishFrames(&ra, t.q));
+    try testing.expectError(error.BadId, a.cancel(t.q));
+}
+
+test "tail call: a deadline ends a held question once and sends its Finish" {
+    const alloc = testing.allocator;
+    const ms = std.time.ns_per_ms;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0, .timeouts = .{ .default_call_timeout_ms = 100 } });
+    defer p.deinit();
+    _ = p.a.tick(1 * ms);
+    const t = try p.start(alloc);
+
+    // The default deadline, set when the question was sent.
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    try testing.expectEqual(@as(usize, 0), p.a.tick(50 * ms));
+    try drainAll(p.a, &p.ra);
+    try expectNoReturnYet(&p.ra, t.q);
+    try testing.expectEqual(@as(usize, 1), p.a.tick(200 * ms));
+    try drainAll(p.a, &p.ra);
+    const r = try expectOneReturn(&p.ra, t.q, .exception);
+    try testing.expectEqual(@backingInt(protocol.ExceptionType.overloaded), r.exception_type);
+    try testing.expectEqualStrings(capnp.rpc.peer.deadline_reason, r.reason);
+    try testing.expectEqual(@as(usize, 1), try countFinishFrames(&p.ra, t.q));
+    try testing.expectError(error.UnknownRetainedQuestion, p.a.finish(t.q, false));
+    const res = try msgU64(alloc, 1);
+    defer alloc.free(res);
+    try p.a.returnResults(tail_answer, res, &.{});
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), p.ra.countReturns(t.q));
+
+    // A deadline set while the question is held.
+    const q2 = try nextQuestion(alloc, p.a, &p.ra, t);
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, q2, tail_answer + 1);
+    try p.a.setDeadline(q2, 10);
+    try testing.expectEqual(@as(usize, 0), p.a.tick(205 * ms));
+    try testing.expectEqual(@as(usize, 1), p.a.tick(211 * ms));
+    try drainAll(p.a, &p.ra);
+    const r2 = try expectOneReturn(&p.ra, q2, .exception);
+    try testing.expectEqualStrings(capnp.rpc.peer.deadline_reason, r2.reason);
+    try testing.expectEqual(@as(usize, 0), p.a.tick(300 * ms));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), p.ra.countReturns(q2));
+}
+
+test "tail call: a deadline with no memory at all still ends a held question on that tick" {
+    const ms = std.time.ns_per_ms;
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{});
+    const alloc = testing.allocator;
+    const a = try Conn.init(failing.allocator(), .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+
+    try pushPendingTailCall(alloc, a, &ra, t, t.q, tail_answer);
+    try a.setDeadline(t.q, 10);
+    failing.fail_index = failing.alloc_index;
+    try testing.expectEqual(@as(usize, 1), a.tick(20 * ms));
+    try testing.expectError(error.UnknownRetainedQuestion, a.finish(t.q, false));
+    failing.fail_index = std.math.maxInt(usize);
     try drainAll(a, &ra);
-    try expectOnlyResultsSentElsewhere(&ra, tail_answer + 1);
-    try pushFrame(alloc, a, tailCallReturnFrame(alloc, q2, tail_answer + 1));
-    try drainAll(a, &ra);
-    const r2 = try expectOneReturn(&ra, q2, .exception);
-    try testing.expectEqualStrings("results did not build", r2.reason);
-    try a.finish(q2, false);
-    try pushFrame(alloc, a, finishFrame(alloc, tail_answer + 1));
-    try drainAll(a, &ra);
-    try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
+    const r = try expectOneReturn(&ra, t.q, .exception);
+    try testing.expectEqualStrings(capnp.rpc.peer.deadline_reason, r.reason);
+    try testing.expectEqual(@as(usize, 0), try countFinishFrames(&ra, t.q));
+    try testing.expectEqual(@as(usize, 0), a.tick(30 * ms));
+}
+
+test "tail call: a held question's deadline emits one timeout event" {
+    const alloc = testing.allocator;
+    const ms = std.time.ns_per_ms;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0, .observer = true });
+    defer p.deinit();
+    const t = try p.start(alloc);
+    const timeout_tag: u8 = @intCast(@backingInt(std.meta.Tag(capnp.rpc.events.Event).timeout));
+
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    try p.a.setDeadline(t.q, 10);
+    try testing.expectEqual(@as(usize, 1), p.a.tick(20 * ms));
+    try drainAll(p.a, &p.ra);
+    var timeouts: usize = 0;
+    for (p.ra.events.items) |e| {
+        if (e.tag == timeout_tag) timeouts += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), timeouts);
+}
+
+test "tail call: capnp_finish of a held question is busy until its RETURN" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    try testing.expectError(error.Busy, p.a.finish(t.q, false));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 0), try countFinishFrames(&p.ra, t.q));
+    const res = try msgU64(alloc, 3);
+    defer alloc.free(res);
+    try p.a.returnResults(tail_answer, res, &.{});
+    try drainAll(p.a, &p.ra);
+    _ = try expectOneReturn(&p.ra, t.q, .results);
+    try p.a.finish(t.q, false);
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), try countFinishFrames(&p.ra, t.q));
+}
+
+test "tail call: transportClosed ends a held question with one RETURN DISCONNECTED" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    p.a.transportClosed();
+    try drainAll(p.a, &p.ra);
+    const r = try expectOneReturn(&p.ra, t.q, .disconnected);
+    try testing.expectEqualStrings(capnp.rpc.peer.disconnected_reason, r.reason);
+    const res = try msgU64(alloc, 1);
+    defer alloc.free(res);
+    p.a.returnResults(tail_answer, res, &.{}) catch {};
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), p.ra.countReturns(t.q));
+}
+
+test "tail call: freeing the connection with a held question leaks nothing" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    const q2 = try nextQuestion(alloc, p.a, &p.ra, t);
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, q2, tail_answer + 1);
+    // `p.deinit` frees both held questions; testing.allocator checks.
+}
+
+test "tail call: the remote's Finish of the named call keeps the hold; the host's answer still reaches the question" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+    try drainAll(p.a, &p.ra);
+    try expectNoReturnYet(&p.ra, t.q);
+    const res = try msgU64(alloc, 11);
+    defer alloc.free(res);
+    try p.a.returnResults(tail_answer, res, &.{});
+    try drainAll(p.a, &p.ra);
+    const r = try expectOneReturn(&p.ra, t.q, .results);
+    try testing.expectEqual(@as(u64, 11), try readU64(alloc, r.msg));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, tail_answer, null));
+}
+
+test "tail call: a new call that reuses a held call's id ends the held question once" {
+    // The remote finishes the held call, then reuses its id before the host
+    // answered. The Peer allows that only when its finished-early records
+    // are full (here: 2 of 2). The host's next answer for the id can no
+    // longer be told apart, so the question ends at once.
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0, .limits = .{ .max_active_inbound_questions = 2 } });
+    defer p.deinit();
+    const t = try p.start(alloc);
+
+    for ([_]u32{ 10, 11 }) |id| {
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, id, t.ea));
+        try pushFrame(alloc, p.a, finishFrame(alloc, id));
+    }
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+    try drainAll(p.a, &p.ra);
+    try expectNoReturnYet(&p.ra, t.q);
+
+    try pushFrame(alloc, p.a, yourselfCallFrame(alloc, tail_answer, t.ea));
+    try drainAll(p.a, &p.ra);
+    const r = try expectOneReturn(&p.ra, t.q, .exception);
+    try testing.expectEqualStrings(conn_mod.tail_call_reused_reason, r.reason);
+    try testing.expectEqual(@as(usize, 2), blk: {
+        var n: usize = 0;
+        for (p.ra.calls.items) |c| {
+            if (c.answer_id == tail_answer) n += 1;
+        }
+        break :blk n;
+    });
+    const res = try msgU64(alloc, 1);
+    defer alloc.free(res);
+    try p.a.returnResults(tail_answer, res, &.{});
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), p.ra.countReturns(t.q));
+}
+
+test "tail call: a graceful shutdown waits for a held question" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+    defer p.deinit();
+    const t = try p.start(alloc);
+
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    p.a.shutdown();
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 0), p.ra.close_requested);
+    try expectNoReturnYet(&p.ra, t.q);
+
+    const res = try msgU64(alloc, 8);
+    defer alloc.free(res);
+    try p.a.returnResults(tail_answer, res, &.{});
+    try drainAll(p.a, &p.ra);
+    const r = try expectOneReturn(&p.ra, t.q, .results);
+    try testing.expectEqual(@as(u64, 8), try readU64(alloc, r.msg));
+    try testing.expectEqual(@as(usize, 1), p.ra.close_requested);
+}
+
+test "tail call: the shutdown drain bound ends a held question" {
+    const alloc = testing.allocator;
+    const ms = std.time.ns_per_ms;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0, .timeouts = .{ .shutdown_drain_timeout_ms = 100 } });
+    defer p.deinit();
+    const t = try p.start(alloc);
+
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    p.a.shutdown();
+    try testing.expectEqual(@as(usize, 0), p.a.tick(50 * ms));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 0), p.ra.close_requested);
+    try expectNoReturnYet(&p.ra, t.q);
+    try testing.expectEqual(@as(usize, 1), p.a.tick(150 * ms));
+    try drainAll(p.a, &p.ra);
+    const r = try expectOneReturn(&p.ra, t.q, .disconnected);
+    try testing.expectEqual(@backingInt(protocol.ExceptionType.disconnected), r.exception_type);
+    try testing.expectEqualStrings(capnp.rpc.peer.shutdown_reason, r.reason);
+    try testing.expectEqual(@as(usize, 1), p.ra.close_requested);
+    // Ended by the core, as the Peer's drain ends its own questions.
+    try testing.expectEqual(@as(usize, 1), try countFinishFrames(&p.ra, t.q));
+    try testing.expectError(error.UnknownRetainedQuestion, p.a.finish(t.q, false));
+}
+
+test "tail call: one allocation failure anywhere in the answer to a held call gives the question one RETURN, no leak" {
+    // For every allocation of capnp_return_results (then of
+    // capnp_return_exception): fail it. A refused answer is answered again
+    // with capnp_return_exception. The question gets one RETURN; after
+    // capnp_return_results the remote's call gets only resultsSentElsewhere.
+    const alloc = testing.allocator;
+    for ([_]bool{ true, false }) |with_results| {
+        var k: usize = 0;
+        while (true) : (k += 1) {
+            var failing = std.testing.FailingAllocator.init(testing.allocator, .{});
+            const a = try Conn.init(failing.allocator(), .{ .now_ns = 0 });
+            defer a.deinit();
+            const b = try Conn.init(alloc, .{ .now_ns = 0 });
+            defer b.deinit();
+            var ra = Rec.init(alloc);
+            defer ra.deinit();
+            var rb = Rec.init(alloc);
+            defer rb.deinit();
+            const t = try startTailCall(alloc, a, &ra, b, &rb);
+            try pushPendingTailCall(alloc, a, &ra, t, t.q, tail_answer);
+
+            const res = try msgU64(alloc, 42);
+            defer alloc.free(res);
+            failing.fail_index = failing.alloc_index + k;
+            const answered = if (with_results)
+                a.returnResults(tail_answer, res, &.{})
+            else
+                a.returnException(tail_answer, 0, "host failure");
+            failing.fail_index = std.math.maxInt(usize);
+            const induced = failing.has_induced_failure;
+            if (answered) |_| {} else |_| try a.returnException(tail_answer, 0, "fallback");
+            try drainAll(a, &ra);
+
+            const first = ra.returnFor(t.q) orelse return error.TestNoReturn;
+            const r = try expectOneReturn(&ra, t.q, first.kind);
+            switch (r.kind) {
+                .results => try testing.expectEqual(@as(u64, 42), try readU64(alloc, r.msg)),
+                .exception => {},
+                else => return error.TestWrongReturn,
+            }
+            // A capnp_return_exception that fails ends the call's `yourself`
+            // mark anyway (`Peer.sendReturnExceptionNoDrain`), so its retry
+            // puts an exception Return on the wire. That is the Peer's rule,
+            // not the hold's; only the results path is checked here.
+            if (with_results) try expectOnlyResultsSentElsewhere(&ra, tail_answer);
+            if (!induced) break;
+        }
+    }
 }
