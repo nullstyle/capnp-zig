@@ -92,10 +92,12 @@ already resolved to an import: the core forwards it when it arrives, and
 the question gets that RETURN when the redirect arrives. The question does
 not wait for the forwarded call to return: the C++ reference answers that
 call only when a redirect names it or when its Finish arrives, and it
-finishes the call it sent only after you finish the question. If the
-remote releases the promise export before it resolves (it drops its last
-reference, as the C++ reference does after a tail call on a
-promise the host passed it), the export is gone and the call can never
+finishes the call it sent only after you finish the question. When that
+Finish comes, the core relays it to the forwarded call, and the remote's
+call gets `resultsSentElsewhere` if the forwarded call has not returned
+yet. If the remote releases the promise export before it resolves (it
+drops its last reference, as the C++ reference does after a tail call on
+a promise the host passed it), the export is gone and the call can never
 run: the remote gets `resultsSentElsewhere`, and the question gets one
 RETURN EXCEPTION (`failed`) with the reason
 `rpc.peer.promise_export_released_reason`. Every call the remote parked on

@@ -52,7 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `takeFromOtherQuestion` names it or at its Finish. When the forwarded
   call's Return comes, this peer answers the remote's call
   `resultsSentElsewhere`, also when that Return is an exception: the
-  exception stays with the remote. If the remote finishes the named call
+  exception stays with the remote. If the remote finishes its call first,
+  this peer relays that Finish to the forwarded call and answers the call
+  the same way (see "Fixed"). If the remote finishes the named call
   before it is answered, the question ends with
   `rpc.peer.tail_call_finished_reason`.
   If the named call waits on a promise export of ours and the remote
@@ -143,6 +145,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   promise export that is later resolved or rejected, a call forwarded
   back to the remote that fails, and a failed `resultsSentElsewhere` send
   (including a one-allocation-failure sweep of `capnp_return_results`).
+- **RPC: a `sendResultsTo = yourself` call that this peer forwards back to
+  the remote now gets its Return.** When a promise export resolves to a
+  capability of the remote, a `yourself` call that waited on it goes back
+  to the remote, again with `yourself`. The C++ reference answers such a
+  call only when a `takeFromOtherQuestion` names it or when its Finish
+  arrives, and capnp-zig sent neither: it finished the forwarded call only
+  after that call's Return. So the forwarded call never returned, the
+  remote's call never got its Return, and the entries for both calls on
+  both ends stayed until the connection closed. Now the remote's Finish of
+  its call is relayed to the forwarded call, as for the other forwarding
+  modes. If the forwarded call has not returned by then, the remote's call
+  gets `resultsSentElsewhere` at that Finish, as the C++ reference answers
+  a redirected call whose Finish comes first, and calls still queued on it
+  fail with `rpc.peer.tail_call_pipelining_reason`. The remote's late
+  Return for the forwarded call is absorbed. A forwarded call that returns
+  first is now finished at the remote's Finish of its call, not on its own
+  Return. A call that this peer sent to itself (a loopback question) gets
+  no Finish, so a forward of it is still finished on its Return. Tests in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` (the remote
+  answers only at the Finish, answers at once, and a call queued with the
+  failed-answer records full),
+  `tests/rpc/peer/rpc_peer_from_peer_zig_test.zig` (a loopback forward) and
+  `src/native/conn_test.zig`.
 - **RPC: a call parked on a promise export that the remote releases now
   gets its Return.** A call to one of our promise exports waits until the
   host resolves the promise. If the remote released its last reference to

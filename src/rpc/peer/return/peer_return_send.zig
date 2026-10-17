@@ -482,12 +482,27 @@ pub fn ReturnSend(comptime Peer: type) type {
         ///     one fail at once (`recordTailCalledAnswer`).
         ///
         /// The call itself is answered `resultsSentElsewhere` when the
-        /// forwarded call returns (`peer_forwarded_return_logic`).
+        /// forwarded call returns (`peer_forwarded_return_logic`), or when
+        /// the remote finishes it first: the Finish is relayed to the
+        /// forwarded call (`answerFinishedForwardedCall`).
         pub fn noteYourselfCallForwarded(self: *Peer, answer_id: u32) void {
             if (!self.send_results_to_yourself.contains(answer_id)) return;
             _ = recordTailCalledAnswer(self, answer_id, tail_call_pipelining_failure);
             failTailCalledPipeline(self, answer_id);
             releaseHeldTailCall(self, answer_id);
+        }
+
+        /// The remote finished the `sendResultsTo = yourself` call
+        /// `answer_id`, which this peer forwarded back to it, before the
+        /// forwarded call returned, and the Finish relay dropped the
+        /// forwarded call (`Peer.sendTailFinishAndNeutralize`). The call
+        /// still owes the remote its one Return: `resultsSentElsewhere`, as
+        /// the C++ reference sends for a redirected call whose Finish came
+        /// first (`~RpcCallContext`). Calls still queued on it (their record
+        /// was skipped at the forward) fail as on any tail-called answer.
+        pub fn answerFinishedForwardedCall(self: *Peer, answer_id: u32) !void {
+            try sendReturnTag(self, answer_id, .resultsSentElsewhere);
+            failTailCalledPipeline(self, answer_id);
         }
 
         /// True when inbound call `answer_id` is the upstream of a call this

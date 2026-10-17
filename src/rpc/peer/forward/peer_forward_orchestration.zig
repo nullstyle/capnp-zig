@@ -134,6 +134,9 @@ pub fn finishForwardResolvedCall(
     mode: ForwardReturnMode,
     upstream_question_id: u32,
     forwarded_question_id: u32,
+    /// The upstream question is one of this peer's own loopback questions,
+    /// which gets no Finish when it completes.
+    upstream_is_loopback: bool,
     forwarded_questions: *std.AutoHashMap(u32, u32),
     forwarded_tail_questions: *std.AutoHashMap(u32, u32),
     questions: *std.AutoHashMap(u32, QuestionType),
@@ -154,7 +157,18 @@ pub fn finishForwardResolvedCall(
     // forwarded Finish through the upstream Finish (rather than auto-finishing on
     // the forwarded return) also cancels the forwarded question cleanly when the
     // caller Finishes before the forwarded return arrives (ordering race).
-    if (mode == .sent_elsewhere or mode == .translate_to_caller) {
+    //
+    // `.propagate_results_sent_elsewhere` (a `yourself` call forwarded with
+    // `yourself` again) relays the Finish too, and emits nothing now. The C++
+    // reference answers a `yourself` call it received only when a
+    // `takeFromOtherQuestion` names it or when its Finish arrives
+    // (rpc.c++ `~RpcCallContext`), so without the relay the forwarded call
+    // never returned and the upstream call never got its Return. Not for a
+    // loopback upstream: no Finish of it would ever come, so the forwarded
+    // question auto-finishes on its return as before.
+    const relays_finish = mode == .sent_elsewhere or mode == .translate_to_caller or
+        (mode == .propagate_results_sent_elsewhere and !upstream_is_loopback);
+    if (relays_finish) {
         try forwarded_tail_questions.put(upstream_question_id, forwarded_question_id);
         if (questions.getEntry(forwarded_question_id)) |question| {
             question.value_ptr.suppress_auto_finish = true;
@@ -325,14 +339,17 @@ test "peer_forward_orchestration finishForwardResolvedCall records forwarding an
     var questions = std.AutoHashMap(u32, Question).init(std.testing.allocator);
     defer questions.deinit();
 
-    // A non-tail mode (propagate-results-sent-elsewhere): records only the
-    // forwarded_questions mapping, no tail state, no eager take-from redirect.
+    // A `yourself` call forwarded for a loopback upstream question
+    // (propagate-results-sent-elsewhere): records only the
+    // forwarded_questions mapping, no tail state, no eager take-from
+    // redirect. No Finish of a loopback question ever comes to relay.
     try questions.put(20, .{});
     const completion_normal = try finishForwardResolvedCall(
         Question,
         .propagate_results_sent_elsewhere,
         10,
         20,
+        true,
         &forwarded_questions,
         &forwarded_tail_questions,
         &questions,
@@ -343,6 +360,26 @@ test "peer_forward_orchestration finishForwardResolvedCall records forwarding an
     try std.testing.expectEqual(@as(usize, 0), forwarded_tail_questions.count());
     try std.testing.expect(!questions.get(20).?.suppress_auto_finish);
 
+    // The same mode for a remote's question: the upstream Finish is relayed
+    // (tail mapping + suppressed auto-finish), and nothing is returned now.
+    try questions.put(23, .{});
+    const completion_propagate = try finishForwardResolvedCall(
+        Question,
+        .propagate_results_sent_elsewhere,
+        13,
+        23,
+        false,
+        &forwarded_questions,
+        &forwarded_tail_questions,
+        &questions,
+    );
+
+    try std.testing.expect(!completion_propagate.send_take_from_other_question);
+    try std.testing.expectEqual(@as(u32, 13), forwarded_questions.get(23).?);
+    try std.testing.expectEqual(@as(u32, 23), forwarded_tail_questions.get(13).?);
+    try std.testing.expect(questions.get(23).?.suppress_auto_finish);
+    _ = forwarded_tail_questions.remove(13);
+
     // The spec-canonical tail-call mode: tail mapping + suppressed auto-finish +
     // eager takeFromOtherQuestion redirect on the upstream question.
     try questions.put(21, .{});
@@ -351,6 +388,7 @@ test "peer_forward_orchestration finishForwardResolvedCall records forwarding an
         .sent_elsewhere,
         11,
         21,
+        false,
         &forwarded_questions,
         &forwarded_tail_questions,
         &questions,
@@ -371,6 +409,7 @@ test "peer_forward_orchestration finishForwardResolvedCall records forwarding an
         .translate_to_caller,
         12,
         22,
+        false,
         &forwarded_questions,
         &forwarded_tail_questions,
         &questions,

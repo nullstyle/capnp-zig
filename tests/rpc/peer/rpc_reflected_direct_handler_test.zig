@@ -1194,6 +1194,92 @@ test "a forwarded yourself call that fails: the remote gets resultsSentElsewhere
     try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
 }
 
+test "a forwarded yourself call that the remote answers only at its Finish: the Finish is relayed" {
+    // The C++ reference: it finishes its tail call after the question's
+    // Finish, and answers the forwarded call only when that Finish reaches
+    // it (`~RpcCallContext` sends resultsSentElsewhere).
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const forwarded = try forwardParkedTailCall(&h, allocator);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, h.question_id));
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countFinishes(.client_to_server, forwarded));
+
+    try h.pushFinish(allocator, tail_answer_id);
+    // The Finish goes on to the forwarded call, and the remote's call gets
+    // its one Return.
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, forwarded));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+
+    // The remote's late answer to the forwarded call is absorbed.
+    try pushServerReturn(&h, allocator, forwarded, .resultsSentElsewhere, "");
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, forwarded));
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expect(!h.client_peer.questions.contains(forwarded));
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.forwarded_questions.count());
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.forwarded_tail_questions.count());
+    try std.testing.expect(!try h.client_peer.inboundAnswerQuestionIdInUse(tail_answer_id));
+}
+
+test "a forwarded yourself call that the remote answers at once is finished at the remote's Finish of the call" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const forwarded = try forwardParkedTailCall(&h, allocator);
+    try pushServerReturn(&h, allocator, forwarded, .resultsSentElsewhere, "");
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+    // As for a tail call this peer forwards: the forwarded call stays open
+    // until the remote finishes the call it relays.
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countFinishes(.client_to_server, forwarded));
+
+    try h.pushFinish(allocator, tail_answer_id);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, forwarded));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.forwarded_tail_questions.count());
+    try std.testing.expect(!try h.client_peer.inboundAnswerQuestionIdInUse(tail_answer_id));
+}
+
+test "a call queued on a forwarded yourself call fails when the remote finishes that call" {
+    // With the failed-answer records full, the forward records nothing, so
+    // a call pipelined on the forwarded call queues on it. The remote's
+    // Finish of the forwarded call still ends it.
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    h.client_peer.limits.max_active_inbound_questions = 2;
+    // Two failed `yourself` calls (an unknown capability): their records
+    // stay until their Finish and fill the bound.
+    try h.pushYourselfCall(allocator, 950, 0xdead);
+    try h.pushYourselfCall(allocator, 951, 0xdead);
+    try std.testing.expectEqual(@as(usize, 2), h.client_peer.failed_answers.count());
+
+    const forwarded = try forwardParkedTailCall(&h, allocator);
+    try std.testing.expect(!h.client_peer.failed_answers.contains(tail_answer_id));
+    var w0 = TailCaller{};
+    const w0_id = try h.nextQuestion(&w0);
+    try h.pushPipelinedCall(allocator, pipelined_answer_id, tail_answer_id, true);
+    try h.pushRedirect(allocator, w0_id, pipelined_answer_id);
+    try std.testing.expectEqual(@as(u32, 0), w0.returns);
+    try std.testing.expectEqual(@as(usize, 1), h.client_peer.pending_promises.count());
+
+    try h.pushFinish(allocator, tail_answer_id);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, forwarded));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+    try std.testing.expectEqual(@as(u32, 1), w0.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, w0.tag.?);
+    try std.testing.expectEqualStrings(peer_impl.tail_call_pipelining_reason, w0.reason());
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, .resultsSentElsewhere));
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.pending_promises.count());
+}
+
 test "a held tail call whose parked call the remote finishes ends with tail_call_finished_reason" {
     const allocator = std.testing.allocator;
     var h: TailHarness = undefined;

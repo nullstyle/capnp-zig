@@ -1661,6 +1661,14 @@ test "handleResolvedCall forwards sendResultsTo.yourself when forwarding importe
 
     try std.testing.expect(callback_ctx.seen);
     try std.testing.expect(!peer.forwarded_questions.contains(forwarded_question_id));
+    // The upstream is a loopback question, which gets no Finish to relay:
+    // the forwarded question is finished on its own Return.
+    try std.testing.expectEqual(@as(usize, 0), peer.forwarded_tail_questions.count());
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+    var finish_msg = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
+    defer finish_msg.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.finish, finish_msg.tag);
+    try std.testing.expectEqual(forwarded_question_id, (try finish_msg.asFinish()).question_id);
 }
 
 test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promised target" {

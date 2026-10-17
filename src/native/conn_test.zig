@@ -2319,6 +2319,61 @@ test "tail call: a redirect that names a call already forwarded back to the remo
     try testing.expectEqual(@as(usize, 1), ra.countReturns(t.q));
 }
 
+test "tail call: the remote finishes a call forwarded back to it; A relays the Finish and answers the call" {
+    // The C++ reference answers a forwarded `yourself` call only when its
+    // Finish arrives, and it finishes the call it sent A only after A
+    // finishes the question. A relays that Finish to the forwarded call and
+    // answers the remote's call, so both ends free their entries.
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    const p = try a.promiseExport();
+    try pushFrame(alloc, a, yourselfCallFrame(alloc, tail_answer, p));
+    try pushFrame(alloc, a, tailCallReturnFrame(alloc, t.q, tail_answer));
+    try drainAll(a, &ra);
+    try a.resolvePromise(p, t.boot);
+    try drainAll(a, &ra);
+    const forwarded = try lastCallFrameId(&ra);
+    _ = try expectOneReturn(&ra, t.q, .exception);
+    try a.finish(t.q, false);
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 0), try countFinishFrames(&ra, forwarded));
+
+    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), try countFinishFrames(&ra, forwarded));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, null));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, .resultsSentElsewhere));
+
+    // The remote's answer to the forwarded call, sent at that Finish.
+    try pushFrame(alloc, a, tagReturnFrame(alloc, forwarded, .resultsSentElsewhere));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, null));
+    try testing.expectEqual(@as(usize, 1), try countFinishFrames(&ra, forwarded));
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(t.q));
+    try testing.expect(!a.peer.questions.contains(forwarded));
+}
+
+/// Finish OUT_FRAMEs that `rec` kept for A's question `qid`.
+fn countFinishFrames(rec: *Rec, qid: u32) !usize {
+    var n: usize = 0;
+    for (rec.frames.items) |bytes| {
+        var d = try protocol.DecodedMessage.init(testing.allocator, bytes);
+        defer d.deinit();
+        if (d.tag != .finish) continue;
+        if ((try d.asFinish()).question_id == qid) n += 1;
+    }
+    return n;
+}
+
 /// The question id of the last Call frame A sent.
 fn lastCallFrameId(rec: *Rec) !u32 {
     var i = rec.frames.items.len;

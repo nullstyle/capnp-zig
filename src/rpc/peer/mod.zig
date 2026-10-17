@@ -3370,6 +3370,7 @@ pub const Peer = struct {
             mode,
             call.question_id,
             forwarded_question_id,
+            self.loopback_questions.contains(call.question_id),
             &self.forwarded_questions,
             &self.forwarded_tail_questions,
             &self.questions,
@@ -3418,6 +3419,14 @@ pub const Peer = struct {
     /// here through `finishLoopbackAnswer`, and its cancelled question absorbs
     /// the Return. `.sent_elsewhere` answered the upstream question
     /// (`takeFromOtherQuestion`) when it forwarded, so it owes nothing.
+    ///
+    /// `.propagate_results_sent_elsewhere` (a `yourself` call forwarded with
+    /// `yourself` again) reaches the race order against the C++ reference
+    /// every time: it answers the forwarded call only at this Finish
+    /// (`~RpcCallContext`). The upstream call owes its one Return too, and
+    /// gets `resultsSentElsewhere`, as the C++ reference answers a
+    /// redirected call whose Finish came first
+    /// (`ReturnSend.answerFinishedForwardedCall`).
     fn sendTailFinishAndNeutralize(self: *Peer, tail_question_id: u32, release_result_caps: bool) !void {
         try peer_outbound_control.sendFinishWithFlagsViaSendFrame(
             Peer,
@@ -3427,14 +3436,19 @@ pub const Peer = struct {
             false,
             Peer.sendFrameControl,
         );
-        var unanswered_upstream_id: ?u32 = null;
+        var unanswered_upstream: ?struct { answer_id: u32, mode: ForwardReturnMode } = null;
         if (self.questions.getPtr(tail_question_id)) |question| {
             if (question.deinit_ctx) |deinit_ctx| {
                 // Still pending and still owning its forward context: its
                 // Return has not been translated onto the upstream answer.
                 if (!question.cancelled and question.on_return == &onForwardedReturn) {
                     const ctx: *const ForwardCallContext = castCtx(*const ForwardCallContext, question.ctx);
-                    if (ctx.mode == .translate_to_caller) unanswered_upstream_id = ctx.answer_id;
+                    switch (ctx.mode) {
+                        .translate_to_caller, .propagate_results_sent_elsewhere => {
+                            unanswered_upstream = .{ .answer_id = ctx.answer_id, .mode = ctx.mode };
+                        },
+                        .sent_elsewhere, .propagate_accept_from_third_party => {},
+                    }
                 }
                 deinit_ctx(self.allocator, question.ctx);
                 question.deinit_ctx = null;
@@ -3442,12 +3456,14 @@ pub const Peer = struct {
             question.cancelled = true;
         }
         _ = self.forwarded_questions.remove(tail_question_id);
-        if (unanswered_upstream_id) |upstream_answer_id| {
+        if (unanswered_upstream) |upstream| {
             // Nonfatal like the queued-call cancel: the Finish itself is
             // applied either way.
-            ReturnSendImpl.sendReturnCanceled(self, upstream_answer_id) catch |err| {
-                self.reportNonfatalError(err);
-            };
+            const answered = if (upstream.mode == .propagate_results_sent_elsewhere)
+                ReturnSendImpl.answerFinishedForwardedCall(self, upstream.answer_id)
+            else
+                ReturnSendImpl.sendReturnCanceled(self, upstream.answer_id);
+            answered catch |err| self.reportNonfatalError(err);
         }
     }
 
