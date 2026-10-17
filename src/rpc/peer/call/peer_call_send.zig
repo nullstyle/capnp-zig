@@ -342,12 +342,48 @@ pub fn CallSend(comptime Peer: type) type {
             options: CallOptions,
             restore_on_return_error: bool,
         ) !u32 {
-            self.assertThreadAffinity();
-            if (self.is_shutting_down) return error.PeerShuttingDown;
-            const allocate_question: *const fn (*Peer, *anyopaque, QuestionCallback) anyerror!u32 = switch (options.result_lifetime) {
+            const allocate_question: AllocateQuestionFn = switch (options.result_lifetime) {
                 .automatic => if (restore_on_return_error) Peer.allocateQuestion else Peer.allocateQuestionNoRestore,
                 .retained => Peer.allocateRetainedQuestion,
             };
+            const allocate_loopback_question: AllocateQuestionFn = switch (options.result_lifetime) {
+                .automatic => if (restore_on_return_error) Peer.allocateLoopbackQuestion else Peer.allocateLoopbackQuestionNoRestore,
+                .retained => Peer.allocateRetainedLoopbackQuestion,
+            };
+            return sendCallResolvedAllocating(
+                self,
+                target,
+                interface_id,
+                method_id,
+                ctx,
+                build,
+                on_return,
+                allocate_question,
+                allocate_loopback_question,
+            );
+        }
+
+        const AllocateQuestionFn = *const fn (*Peer, *anyopaque, QuestionCallback) anyerror!u32;
+
+        /// `sendCallResolved` with the caller's question allocators:
+        /// `allocate_question` for a remote target, `allocate_loopback_question`
+        /// for one of this peer's own exports. For a caller that must put
+        /// state in place for the question before its Call is sent
+        /// (`Peer.forwardResolvedCall`): a synchronous transport, or the
+        /// loopback, can deliver the Return inside the send.
+        pub fn sendCallResolvedAllocating(
+            self: *Peer,
+            target: cap_table.ResolvedCap,
+            interface_id: u64,
+            method_id: u16,
+            ctx: *anyopaque,
+            build: ?CallBuildFn,
+            on_return: QuestionCallback,
+            allocate_question: AllocateQuestionFn,
+            allocate_loopback_question: AllocateQuestionFn,
+        ) !u32 {
+            self.assertThreadAffinity();
+            if (self.is_shutting_down) return error.PeerShuttingDown;
             return switch (target) {
                 .imported => |cap| peer_call_sender.sendCallToImport(
                     Peer,
@@ -370,7 +406,15 @@ pub fn CallSend(comptime Peer: type) type {
                     Peer.recordQuestionParamExports,
                     PeerFds.sendCall,
                 ),
-                .promised => |promised| sendCallPromisedWithOptionsRestore(
+                .promised => |promised| peer_call_sender.sendCallPromised(
+                    Peer,
+                    CallBuildFn,
+                    QuestionCallback,
+                    self.allocator,
+                    &self.caps,
+                    self,
+                    Peer.onOutboundCap,
+                    Peer.rollbackOutboundCap,
                     self,
                     promised,
                     interface_id,
@@ -378,15 +422,13 @@ pub fn CallSend(comptime Peer: type) type {
                     ctx,
                     build,
                     on_return,
-                    options,
-                    restore_on_return_error,
+                    allocate_question,
+                    Peer.removeQuestion,
+                    Peer.recordQuestionParamExports,
+                    PeerFds.sendCall,
                 ),
                 .exported => |cap| blk: {
                     try ensureCountLimit(false, self.loopback_questions.count(), self.limits.max_loopback_questions);
-                    const allocate_loopback_question: *const fn (*Peer, *anyopaque, QuestionCallback) anyerror!u32 = switch (options.result_lifetime) {
-                        .automatic => if (restore_on_return_error) Peer.allocateLoopbackQuestion else Peer.allocateLoopbackQuestionNoRestore,
-                        .retained => Peer.allocateRetainedLoopbackQuestion,
-                    };
                     break :blk peer_call_sender.sendCallToExport(
                         Peer,
                         Question,

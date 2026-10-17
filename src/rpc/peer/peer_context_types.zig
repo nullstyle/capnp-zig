@@ -287,6 +287,9 @@ pub fn ForwardCallContextOf(comptime Peer: type) type {
         send_results_to_third_party_payload: ?[]u8 = null,
         answer_id: u32,
         mode: ForwardReturnMode,
+        /// The forwarded question, once `Peer.forwardResolvedCall`'s
+        /// allocation hook has registered it (before the Call is sent).
+        forwarded_question_id: ?u32 = null,
 
         pub fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
             const ctx: *ForwardCallContext = @ptrCast(@alignCast(ctx_ptr));

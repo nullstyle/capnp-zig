@@ -64,6 +64,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `takeFromOtherQuestion` tag at once. New tests are in
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
   `src/native/conn_test.zig` ("tail call: ...").
+- **RPC: a call the Peer forwards is held open from its send, also on a
+  synchronous transport.** When the Peer forwards a call to a promise that
+  resolved elsewhere (`forwardResolvedCall`), it keeps the forwarded call
+  open until the caller finishes the original call, and then relays one
+  Finish. It set this up only after the forwarded Call was sent. A
+  synchronous transport (the Experimental `Peer.setSendFrameOverride`, which
+  the in-repo tests use) or the loopback can deliver the forwarded Return,
+  and the caller's Finish, inside that send. Then the forwarded call was
+  finished on its Return and again at the caller's Finish, the second time
+  with an id the Peer may already have reused. A Finish of the original
+  call that came inside the send found nothing to relay, and the mapping
+  stayed behind. With the fix above, which drops a kept tail-call answer
+  at the call's Finish, the early Finish also lost the value of a tail call
+  (`.sent_elsewhere` mode): the caller got the bare `takeFromOtherQuestion`
+  tag. Now the forwarded question is set up when its id is allocated,
+  before the Call goes out, as rpc.capnp `Call.sendResultsTo.yourself` asks:
+  the forwarder finishes the forwarded call only after the caller's Finish.
+  The question is also allocated never to be restored after a callback
+  error, because its return callback frees the forward context. Real
+  asynchronous transports (TCP, QUIC, the native C ABI) did not reach this
+  order. New tests are in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` ("a tail call this
+  peer forwards on a synchronous transport: ...", and the forward mappings
+  in "reflected loopback runs a DIRECT handler ...").
 - **RPC: a `sendResultsTo = yourself` call that fails is now answered with
   `resultsSentElsewhere`.** rpc.capnp answers such a call that way also when
   it fails. The C++ reference rejects an exception Return for its tail call

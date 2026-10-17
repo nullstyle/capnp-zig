@@ -131,11 +131,32 @@ pub fn buildForwardCallPlan(
     };
 }
 
-pub const ForwardResolvedCompletion = struct {
-    send_take_from_other_question: bool = false,
-};
-
-pub fn finishForwardResolvedCall(
+/// Record the bookkeeping of a forwarded call when its question id is
+/// allocated, BEFORE its Call is sent (`Peer.forwardResolvedCall`): on a
+/// synchronous transport the forwarded Return, and the upstream caller's
+/// Finish after it, can arrive inside that send.
+///
+/// Both the spec-canonical tail-call (`.sent_elsewhere`) and the W1
+/// reflected-loopback translate mode (`.translate_to_caller`) hold the
+/// forwarded outbound question OPEN until the upstream caller sends its Finish
+/// for the original question: register the tail mapping so `handleFinish`
+/// relays a single Finish to the forwarded question, and suppress the
+/// forwarded question's own auto-finish so it is not finished twice (once on
+/// its own return, once on the relayed upstream Finish). rpc.capnp
+/// `Call.sendResultsTo.yourself` asks exactly this of `.sent_elsewhere`: the
+/// callee keeps the forwarded call's answer for our `takeFromOtherQuestion`
+/// until that Finish. The two modes differ only in what is returned on the
+/// upstream question: `.sent_elsewhere` emits the eager
+/// `takeFromOtherQuestion` redirect after the send; `.translate_to_caller`
+/// emits nothing then and later translates the real results back (see
+/// peer_forwarded_return_logic + onForwardedReturn). Routing the forwarded
+/// Finish through the upstream Finish (rather than auto-finishing on the
+/// forwarded return) also cancels the forwarded question cleanly when the
+/// caller Finishes before the forwarded return arrives (ordering race).
+///
+/// On failure nothing stays registered. A send that fails after this undoes
+/// it with `unregisterForwardedQuestion`.
+pub fn registerForwardedQuestion(
     comptime QuestionType: type,
     mode: ForwardReturnMode,
     upstream_question_id: u32,
@@ -143,31 +164,30 @@ pub fn finishForwardResolvedCall(
     forwarded_questions: *std.AutoHashMap(u32, u32),
     forwarded_tail_questions: *std.AutoHashMap(u32, u32),
     questions: *std.AutoHashMap(u32, QuestionType),
-) !ForwardResolvedCompletion {
+) !void {
     try forwarded_questions.put(forwarded_question_id, upstream_question_id);
+    errdefer _ = forwarded_questions.remove(forwarded_question_id);
 
-    // Both the spec-canonical tail-call (`.sent_elsewhere`) and the W1
-    // reflected-loopback translate mode (`.translate_to_caller`) hold the
-    // forwarded outbound question OPEN until the upstream caller sends its Finish
-    // for the original question: register the tail mapping so `handleFinish`
-    // relays a single Finish to the forwarded question, and suppress the
-    // forwarded question's own auto-finish so it is not finished twice (once on
-    // its own return, once on the relayed upstream Finish). The two modes differ
-    // only in what is returned on the upstream question NOW: `.sent_elsewhere`
-    // emits the eager `takeFromOtherQuestion` redirect; `.translate_to_caller`
-    // emits nothing yet and later translates the real results back
-    // (see peer_forwarded_return_logic + onForwardedReturn). Routing the
-    // forwarded Finish through the upstream Finish (rather than auto-finishing on
-    // the forwarded return) also cancels the forwarded question cleanly when the
-    // caller Finishes before the forwarded return arrives (ordering race).
     if (mode == .sent_elsewhere or mode == .translate_to_caller) {
         try forwarded_tail_questions.put(upstream_question_id, forwarded_question_id);
         if (questions.getEntry(forwarded_question_id)) |question| {
             question.value_ptr.suppress_auto_finish = true;
         }
-        return .{ .send_take_from_other_question = mode == .sent_elsewhere };
     }
-    return .{};
+}
+
+/// Undo `registerForwardedQuestion` for a forwarded call whose Call was not
+/// sent.
+pub fn unregisterForwardedQuestion(
+    upstream_question_id: u32,
+    forwarded_question_id: u32,
+    forwarded_questions: *std.AutoHashMap(u32, u32),
+    forwarded_tail_questions: *std.AutoHashMap(u32, u32),
+) void {
+    _ = forwarded_questions.remove(forwarded_question_id);
+    if (forwarded_tail_questions.get(upstream_question_id)) |tail| {
+        if (tail == forwarded_question_id) _ = forwarded_tail_questions.remove(upstream_question_id);
+    }
 }
 
 pub fn lookupForwardedQuestionForPeer(comptime PeerType: type, peer: *PeerType, local_question_id: u32) ?u32 {
@@ -317,7 +337,7 @@ test "peer_forward_orchestration buildForwardCallPlan maps modes to sendResultsT
     }
 }
 
-test "peer_forward_orchestration finishForwardResolvedCall records forwarding and tail state" {
+test "peer_forward_orchestration registerForwardedQuestion records forwarding and tail state" {
     const Question = struct {
         suppress_auto_finish: bool = false,
     };
@@ -332,9 +352,9 @@ test "peer_forward_orchestration finishForwardResolvedCall records forwarding an
     defer questions.deinit();
 
     // A non-tail mode (propagate-results-sent-elsewhere): records only the
-    // forwarded_questions mapping, no tail state, no eager take-from redirect.
+    // forwarded_questions mapping, no tail state.
     try questions.put(20, .{});
-    const completion_normal = try finishForwardResolvedCall(
+    try registerForwardedQuestion(
         Question,
         .propagate_results_sent_elsewhere,
         10,
@@ -344,15 +364,13 @@ test "peer_forward_orchestration finishForwardResolvedCall records forwarding an
         &questions,
     );
 
-    try std.testing.expect(!completion_normal.send_take_from_other_question);
     try std.testing.expectEqual(@as(u32, 10), forwarded_questions.get(20).?);
     try std.testing.expectEqual(@as(usize, 0), forwarded_tail_questions.count());
     try std.testing.expect(!questions.get(20).?.suppress_auto_finish);
 
-    // The spec-canonical tail-call mode: tail mapping + suppressed auto-finish +
-    // eager takeFromOtherQuestion redirect on the upstream question.
+    // The spec-canonical tail-call mode: tail mapping + suppressed auto-finish.
     try questions.put(21, .{});
-    const completion_tail = try finishForwardResolvedCall(
+    try registerForwardedQuestion(
         Question,
         .sent_elsewhere,
         11,
@@ -362,17 +380,15 @@ test "peer_forward_orchestration finishForwardResolvedCall records forwarding an
         &questions,
     );
 
-    try std.testing.expect(completion_tail.send_take_from_other_question);
     try std.testing.expectEqual(@as(u32, 11), forwarded_questions.get(21).?);
     try std.testing.expectEqual(@as(u32, 21), forwarded_tail_questions.get(11).?);
     try std.testing.expect(questions.get(21).?.suppress_auto_finish);
 
     // W1 reflected-loopback translate mode: tail mapping + suppressed auto-finish
     // (so the forwarded question is finished exactly once, via the relayed
-    // upstream Finish) but NO eager takeFromOtherQuestion — the real results are
-    // translated back on the upstream question later instead.
+    // upstream Finish).
     try questions.put(22, .{});
-    const completion_translate = try finishForwardResolvedCall(
+    try registerForwardedQuestion(
         Question,
         .translate_to_caller,
         12,
@@ -382,10 +398,18 @@ test "peer_forward_orchestration finishForwardResolvedCall records forwarding an
         &questions,
     );
 
-    try std.testing.expect(!completion_translate.send_take_from_other_question);
     try std.testing.expectEqual(@as(u32, 12), forwarded_questions.get(22).?);
     try std.testing.expectEqual(@as(u32, 22), forwarded_tail_questions.get(12).?);
     try std.testing.expect(questions.get(22).?.suppress_auto_finish);
+
+    // A send that failed: the registration is undone, and only its own.
+    unregisterForwardedQuestion(11, 21, &forwarded_questions, &forwarded_tail_questions);
+    try std.testing.expect(!forwarded_questions.contains(21));
+    try std.testing.expect(!forwarded_tail_questions.contains(11));
+    try std.testing.expectEqual(@as(u32, 12), forwarded_questions.get(22).?);
+    try std.testing.expectEqual(@as(u32, 22), forwarded_tail_questions.get(12).?);
+    unregisterForwardedQuestion(12, 99, &forwarded_questions, &forwarded_tail_questions);
+    try std.testing.expectEqual(@as(u32, 22), forwarded_tail_questions.get(12).?);
 }
 
 test "peer_forward_orchestration peer-map helpers lookup/remove/take/remove-send-results" {

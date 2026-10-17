@@ -403,7 +403,12 @@ test "reflected loopback runs a DIRECT handler and delivers its result value inl
 
     // Resolve P to the client-hosted direct-handler cap. This forwards the
     // parked call back to the client's cap with sendResultsTo=yourself.
+    const resolve_mark = wire.events.items.len;
     try server_peer.resolvePromiseExportToImport(promise_export_id, target_import_id);
+    var forwarded_call_id: ?u32 = null;
+    for (wire.events.items[resolve_mark..]) |event| {
+        if (event.dir == .server_to_client and event.tag == .call) forwarded_call_id = event.id;
+    }
 
     // *** Primary bug: the DIRECT handler body must have run. ***
     try std.testing.expect(target.ran);
@@ -415,6 +420,13 @@ test "reflected loopback runs a DIRECT handler and delivers its result value inl
     try std.testing.expect(call1.returned);
     try std.testing.expectEqual(protocol.ReturnTag.results, call1.return_tag.?);
     try std.testing.expectEqual(@as(u32, 0), call1.result_n.?);
+    // The server held the forwarded call open until the client's Finish of
+    // the pipelined call, and finished it once, also on this synchronous
+    // wire. That Finish took the call's tail mapping: none is left to relay
+    // a Finish when the client reuses the pipelined call's id.
+    try std.testing.expectEqual(@as(usize, 1), wire.countFinishes(.server_to_client, forwarded_call_id orelse return error.CallNotForwarded));
+    try std.testing.expectEqual(@as(usize, 0), server_peer.forwarded_tail_questions.count());
+    try std.testing.expectEqual(@as(usize, 0), server_peer.forwarded_questions.count());
 
     // The reflected resolution embargoed the cap: senderLoopback out,
     // receiverLoopback back.
@@ -447,6 +459,180 @@ test "reflected loopback runs a DIRECT handler and delivers its result value inl
     try server_peer.releaseImport(target_import_id, 1);
     try std.testing.expect(!server_peer.caps.hasImport(target_import_id));
     try std.testing.expect(!client_peer.exports.contains(target_export_id));
+}
+
+// -- A tail call this peer forwards ------------------------------------------
+//
+// The server forwards the client's call X as the rpc.capnp tail call
+// (`.sent_elsewhere`): it sends Call(Y, sendResultsTo = yourself) to a
+// capability the client hosts, then Return(X, takeFromOtherQuestion = Y).
+// rpc.capnp `Call.sendResultsTo.yourself` has it finish Y only after the
+// client's Finish of X, so the client still holds Y's answer when the
+// redirect comes. On this synchronous wire Y's `resultsSentElsewhere` comes
+// back inside the send of Y.
+
+/// A client export whose results are one capability: the client's export
+/// `cap_export`.
+const CapResultServer = struct {
+    cap_export: u32,
+
+    const BuildCtx = struct {
+        id: u32,
+        fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+            const self: *const BuildCtx = castCtx(*const BuildCtx, ctx_ptr);
+            var payload = try ret.payloadTyped();
+            var any = try payload.initContent();
+            try any.setCapability(.{ .id = self.id });
+        }
+    };
+
+    fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *CapResultServer = castCtx(*CapResultServer, ctx_ptr);
+        var bc = BuildCtx{ .id = self.cap_export };
+        try peer.sendReturnResults(call.question_id, &bc, BuildCtx.build);
+    }
+};
+
+/// A question whose Return the test does not inspect.
+const IgnoredCall = struct {
+    returned: bool = false,
+
+    fn build(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+        var payload = try call.payloadTyped();
+        var any = try payload.initContent();
+        _ = try any.initStruct(0, 0);
+    }
+
+    fn onReturn(ctx_ptr: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *IgnoredCall = castCtx(*IgnoredCall, ctx_ptr);
+        self.returned = true;
+    }
+};
+
+/// The server's bootstrap. Method 1 takes the client's capability U (its
+/// param) and calls it with a retained result (question `qb`). Method 0
+/// forwards the call to `qb`'s result, a capability the client hosts, as
+/// a promise that resolved to a promised answer is forwarded.
+const TailForwardServer = struct {
+    qb: ?u32 = null,
+    u_import: ?u32 = null,
+    qb_call: IgnoredCall = .{},
+
+    fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *TailForwardServer = castCtx(*TailForwardServer, ctx_ptr);
+        if (call.method_id == 1) {
+            var mutable_caps: *cap_table.InboundCapTable = @constCast(caps);
+            const cap = try call.params.content.getCapability();
+            const resolved = try mutable_caps.resolveCapability(cap);
+            try mutable_caps.retainCapability(cap);
+            self.u_import = switch (resolved) {
+                .imported => |imp| imp.id,
+                else => return error.TargetNotImported,
+            };
+            try peer.sendReturnEmptyStruct(call.question_id);
+            self.qb = try peer.sendCallWithOptions(
+                self.u_import.?,
+                CALL_INTERFACE_ID,
+                CALL_METHOD_ID,
+                &self.qb_call,
+                IgnoredCall.build,
+                IgnoredCall.onReturn,
+                .{ .result_lifetime = .retained },
+            );
+            return;
+        }
+        try Peer.test_hooks.handleResolvedCall(peer, call, caps, .{ .promised = .{
+            .question_id = self.qb orelse return error.MissingRetainedQuestion,
+            .transform = .{ .list = null },
+        } });
+    }
+};
+
+/// A client call whose params are one capability: the client's export
+/// `cap_export`.
+const CapParamCall = struct {
+    cap_export: u32,
+    returned: bool = false,
+
+    fn build(ctx_ptr: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+        const self: *const CapParamCall = castCtx(*const CapParamCall, ctx_ptr);
+        var payload = try call.payloadTyped();
+        var any = try payload.initContent();
+        try any.setCapability(.{ .id = self.cap_export });
+    }
+
+    fn onReturn(ctx_ptr: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *CapParamCall = castCtx(*CapParamCall, ctx_ptr);
+        self.returned = true;
+    }
+};
+
+test "a tail call this peer forwards on a synchronous transport: the caller gets the value, the named call one Finish" {
+    const allocator = std.testing.allocator;
+    var wire = Wire{ .allocator = allocator };
+    defer wire.deinit();
+
+    var server_peer = Peer.initDetached(allocator);
+    server_peer.disableThreadAffinity();
+    defer server_peer.deinit();
+
+    var client_peer = Peer.initDetached(allocator);
+    client_peer.disableThreadAffinity();
+    defer client_peer.deinit();
+
+    defer wire.forwarding = false;
+
+    wire.client_peer = &client_peer;
+    wire.server_peer = &server_peer;
+    client_peer.setSendFrameOverride(&wire, Wire.clientSend);
+    server_peer.setSendFrameOverride(&wire, Wire.serverSend);
+
+    var forwarder = TailForwardServer{};
+    _ = try server_peer.setBootstrap(.{ .ctx = &forwarder, .on_call = TailForwardServer.onCall });
+
+    // The client hosts T (a DIRECT handler) and U (whose results are T).
+    var target = DirectHandlerServer{ .counter = 42 };
+    const t_export = try client_peer.addExport(.{ .ctx = &target, .on_call = DirectHandlerServer.onCall });
+    var u_server = CapResultServer{ .cap_export = t_export };
+    const u_export = try client_peer.addExport(.{ .ctx = &u_server, .on_call = CapResultServer.onCall });
+
+    var bootstrap_probe = BootstrapProbe{};
+    _ = try client_peer.sendBootstrap(&bootstrap_probe, BootstrapProbe.onReturn);
+    const server_import = bootstrap_probe.reflector_import_id orelse return error.BootstrapDidNotResolve;
+
+    // The server keeps question QB on U; its result is T.
+    var hand_over = CapParamCall{ .cap_export = u_export };
+    _ = try client_peer.sendCall(server_import, CALL_INTERFACE_ID, 1, &hand_over, CapParamCall.build, CapParamCall.onReturn);
+    try std.testing.expect(hand_over.returned);
+    try std.testing.expect(forwarder.qb_call.returned);
+    const qb = forwarder.qb orelse return error.MissingRetainedQuestion;
+
+    // X: the server forwards it to QB's result T as the tail call Y.
+    var x = OutboundCall{};
+    const wire_mark = wire.events.items.len;
+    _ = try client_peer.sendCall(server_import, CALL_INTERFACE_ID, CALL_METHOD_ID, &x, OutboundCall.build, OutboundCall.onReturn);
+    try std.testing.expect(target.ran);
+
+    var tail_call_id: ?u32 = null;
+    for (wire.events.items[wire_mark..]) |event| {
+        if (event.dir == .server_to_client and event.tag == .call) tail_call_id = event.id;
+    }
+    const y = tail_call_id orelse return error.TailCallNotSent;
+    try std.testing.expectEqual(@as(usize, 1), wire.countReturns(.client_to_server, y, .resultsSentElsewhere));
+
+    // The redirect found Y's answer: X got T's value, not the bare tag.
+    try std.testing.expect(x.returned);
+    try std.testing.expectEqual(protocol.ReturnTag.results, x.return_tag.?);
+    try std.testing.expectEqual(@as(u32, 42), x.result_n.?);
+    try std.testing.expectEqual(@as(usize, 0), client_peer.loopback_result_stash.count());
+    // The server finished Y once: when it relayed the client's Finish of X.
+    try std.testing.expectEqual(@as(usize, 1), wire.countFinishes(.server_to_client, y));
+    try std.testing.expectEqual(@as(usize, 0), server_peer.forwarded_tail_questions.count());
+    try std.testing.expectEqual(@as(usize, 0), server_peer.forwarded_questions.count());
+
+    try server_peer.finishRetainedQuestion(qb, false);
+    try server_peer.releaseImport(forwarder.u_import.?, 1);
+    try client_peer.releaseImport(server_import, 1);
 }
 
 // -- Tail calls whose named call the host answers ------------------------------

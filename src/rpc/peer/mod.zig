@@ -740,7 +740,9 @@ pub const Peer = struct {
     /// `Call.sendResultsTo.yourself`: the tail caller finishes the call
     /// only after the question's Finish; the C++ reference sends the
     /// redirect right after the call, and capnp-zig's `.sent_elsewhere`
-    /// forwarder relays the Finish only at the question's Finish). So an
+    /// forwarder relays the Finish only at the question's Finish, also on a
+    /// synchronous transport, since `forwardResolvedCall` suppresses the
+    /// forwarded call's own Finish before it sends the call). So an
     /// answer given after its redirect came, or after the question was
     /// cancelled, is not kept past that Finish, and never reaches a later
     /// call that reuses the id (the C++ reference reuses the lowest free
@@ -3289,33 +3291,79 @@ pub const Peer = struct {
         ctx.send_results_to = forwarded_plan.send_results_to;
         ctx.send_results_to_third_party_payload = forwarded_plan.send_results_to_third_party_payload;
 
-        const forwarded_question_id = try self.sendCallResolved(
+        // The forwarded question's bookkeeping goes in place when its id is
+        // allocated, before the Call is sent (`allocateForwardedQuestion`):
+        // a synchronous transport, or the loopback, can deliver its Return,
+        // and the upstream caller's Finish after that, inside the send. A
+        // tail call registered only after the send was auto-finished on that
+        // Return, so the callee dropped its answer before our
+        // `takeFromOtherQuestion` came, and the relayed upstream Finish
+        // later finished it a second time.
+        errdefer if (ctx_owned) {
+            if (ctx.forwarded_question_id) |forwarded_question_id| {
+                peer_forward_orchestration.unregisterForwardedQuestion(
+                    call.question_id,
+                    forwarded_question_id,
+                    &self.forwarded_questions,
+                    &self.forwarded_tail_questions,
+                );
+            }
+        };
+        const forwarded_question_id = try CallSendImpl.sendCallResolvedAllocating(
+            self,
             target,
             call.interface_id,
             call.method_id,
             ctx,
             buildForwardedCall,
             onForwardedReturn,
+            allocateForwardedQuestion,
+            allocateForwardedLoopbackQuestion,
         );
-        // Once the question is registered, its deinit_ctx handles cleanup
-        // on peer.deinit(); the local errdefer must no longer fire.
-        if (self.questions.getPtr(forwarded_question_id)) |q| {
-            q.deinit_ctx = ForwardCallContext.deinit;
-            q.restore_on_return_error = false;
-        }
+        // The question owns the context now (its `deinit_ctx`); on a
+        // synchronous transport its return callback may have freed it.
         ctx_owned = false;
-        const completion = try peer_forward_orchestration.finishForwardResolvedCall(
+        if (mode == .sent_elsewhere) {
+            try self.sendReturnTakeFromOtherQuestion(call.question_id, forwarded_question_id);
+        }
+    }
+
+    /// Allocation hook of `forwardResolvedCall` for a remote target.
+    fn allocateForwardedQuestion(self: *Peer, ctx_ptr: *anyopaque, on_return: QuestionCallback) anyerror!u32 {
+        const question_id = try self.allocateQuestionNoRestore(ctx_ptr, on_return);
+        errdefer self.removeQuestion(question_id);
+        try self.registerForwardedQuestion(question_id, ctx_ptr);
+        return question_id;
+    }
+
+    /// Allocation hook of `forwardResolvedCall` for one of our own exports.
+    fn allocateForwardedLoopbackQuestion(self: *Peer, ctx_ptr: *anyopaque, on_return: QuestionCallback) anyerror!u32 {
+        const question_id = try self.allocateLoopbackQuestionNoRestore(ctx_ptr, on_return);
+        errdefer self.removeQuestion(question_id);
+        try self.registerForwardedQuestion(question_id, ctx_ptr);
+        return question_id;
+    }
+
+    /// Put a forwarded question's bookkeeping in place before its Call is
+    /// built and sent (`peer_forward_orchestration.registerForwardedQuestion`).
+    /// The question is allocated never to be restored after a callback
+    /// error: `onForwardedReturn` frees the context, also when the Return
+    /// comes inside the send. Its `deinit_ctx` frees the context at teardown;
+    /// `forwardResolvedCall` frees it itself when the send fails, since
+    /// removing the question does not.
+    fn registerForwardedQuestion(self: *Peer, question_id: u32, ctx_ptr: *anyopaque) !void {
+        const ctx: *ForwardCallContext = castCtx(*ForwardCallContext, ctx_ptr);
+        try peer_forward_orchestration.registerForwardedQuestion(
             Question,
-            mode,
-            call.question_id,
-            forwarded_question_id,
+            ctx.mode,
+            ctx.answer_id,
+            question_id,
             &self.forwarded_questions,
             &self.forwarded_tail_questions,
             &self.questions,
         );
-        if (completion.send_take_from_other_question) {
-            try self.sendReturnTakeFromOtherQuestion(call.question_id, forwarded_question_id);
-        }
+        if (self.questions.getPtr(question_id)) |q| q.deinit_ctx = ForwardCallContext.deinit;
+        ctx.forwarded_question_id = question_id;
     }
 
     /// Send the tail-Finish for a forwarded question (relayed from the upstream
@@ -3325,7 +3373,7 @@ pub const Peer = struct {
     ///
     /// Both forwarding modes that hold the forwarded question open until the
     /// upstream Finish route their forwarded Finish through here
-    /// (`forwarded_tail_questions`, see finishForwardResolvedCall):
+    /// (`forwarded_tail_questions`, see registerForwardedQuestion):
     ///   - `.sent_elsewhere` (spec tail-call): the late return is a bare
     ///     `resultsSentElsewhere` marker — harmless either way.
     ///   - `.translate_to_caller` (W1 reflected loopback): the late return
@@ -4794,7 +4842,7 @@ pub const Peer = struct {
             .clear_pending_accept_question = Peer.clearPendingAcceptQuestionRouted,
             .take_forwarded_tail_question = peer_forward_orchestration.takeForwardedTailQuestionForPeerFn(Peer),
             // The tail Finish is only ever sent for a forwarded question held open
-            // by finishForwardResolvedCall; neutralize that question here so a late
+            // by registerForwardedQuestion; neutralize that question here so a late
             // forwarded return is absorbed rather than re-emitted (see
             // sendTailFinishAndNeutralize / W1).
             .send_finish = Peer.sendTailFinishAndNeutralize,
