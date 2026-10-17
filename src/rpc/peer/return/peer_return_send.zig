@@ -778,7 +778,13 @@ pub fn ReturnSend(comptime Peer: type) type {
                 }
                 return self.sendAutomaticThirdPartyException(route, reason, ex_type);
             }
-            try sendReturnExceptionNoDrain(self, answer_id, reason, ex_type);
+            // The answer is decided: the calls queued on it fail also when
+            // its own Return cannot be sent (out of memory). The caller may
+            // retry that Return; it finds nothing queued.
+            sendReturnExceptionNoDrain(self, answer_id, reason, ex_type) catch |err| {
+                failQueuedPromisedCalls(self, answer_id, reason, ex_type);
+                return err;
+            };
             failQueuedPromisedCalls(self, answer_id, reason, ex_type);
         }
 
@@ -895,46 +901,86 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// The caller must NOT be iterating the live `pending_promises` map when
         /// invoking this (it fetchRemoves buckets); callers that resolve a
         /// detached bucket, or fail a parent answer outside iteration, are safe.
+        ///
+        /// Out of memory never leaves a queued call behind: the root bucket
+        /// needs no worklist entry, the first `drain_worklist_inline` entries
+        /// live on the stack, and a call whose own queue cannot be entered
+        /// in the worklist has that queue failed by a nested drain. A nested
+        /// drain starts only when its parent holds that many queued calls
+        /// still to fail, so the nesting is bounded by
+        /// `max_pending_queued_calls / drain_worklist_inline`.
         pub fn failQueuedPromisedCalls(
             self: *Peer,
             answer_id: u32,
             reason: []const u8,
             ex_type: protocol.ExceptionType,
         ) void {
-            var worklist = std.ArrayList(u32).empty;
-            defer worklist.deinit(self.allocator);
-            // Best-effort under OOM: if we cannot even seed the worklist the
-            // queued children leak rather than crash; report and bail.
-            worklist.append(self.allocator, answer_id) catch |err| {
-                reportNonfatalError(self, err);
-                return;
-            };
-            while (worklist.pop()) |aid| {
-                var pending = self.pending_promises.fetchRemove(aid) orelse continue;
-                defer pending.value.deinit(self.allocator);
-                for (pending.value.items) |*pending_call| {
-                    defer pending_call.caps.deinit();
-                    defer self.allocator.free(pending_call.frame);
+            var inline_ids: [drain_worklist_inline]u32 = undefined;
+            var worklist: DrainWorklist = .{ .inline_ids = &inline_ids };
+            defer worklist.heap.deinit(self.allocator);
+            failQueuedBucket(self, answer_id, reason, ex_type, &worklist);
+            while (worklist.pop()) |aid| failQueuedBucket(self, aid, reason, ex_type, &worklist);
+        }
 
-                    // question_id was decoded once at enqueue; null means the frame
-                    // was not a decodable Call, so there is nothing to fail. Zero is
-                    // a valid wire question id and must receive its terminal Return.
-                    const child_qid = pending_call.question_id orelse continue;
+        const drain_worklist_inline = 64;
 
-                    // Non-draining send: descendants are handled by the worklist,
-                    // not by re-entering this drain.
-                    sendReturnExceptionNoDrain(self, child_qid, reason, ex_type) catch |err| {
-                        reportNonfatalError(self, err);
-                    };
-                    self.releaseInboundCaps(&pending_call.caps) catch |err| {
-                        reportNonfatalError(self, err);
-                    };
-                    worklist.append(self.allocator, child_qid) catch |err| {
-                        // Cannot enqueue this child's descendants for draining;
-                        // they leak under memory pressure. Report and continue.
-                        reportNonfatalError(self, err);
-                    };
+        /// The answers whose queues a drain still has to fail: on the stack
+        /// first, then the heap.
+        const DrainWorklist = struct {
+            inline_ids: []u32,
+            inline_len: usize = 0,
+            heap: std.ArrayList(u32) = .empty,
+
+            fn push(self: *DrainWorklist, allocator: std.mem.Allocator, id: u32) !void {
+                if (self.inline_len < self.inline_ids.len) {
+                    self.inline_ids[self.inline_len] = id;
+                    self.inline_len += 1;
+                    return;
                 }
+                try self.heap.append(allocator, id);
+            }
+
+            fn pop(self: *DrainWorklist) ?u32 {
+                if (self.heap.pop()) |id| return id;
+                if (self.inline_len == 0) return null;
+                self.inline_len -= 1;
+                return self.inline_ids[self.inline_len];
+            }
+        };
+
+        /// Fail every call queued on `aid`; a failed call with a queue of
+        /// its own goes on `worklist`.
+        fn failQueuedBucket(
+            self: *Peer,
+            aid: u32,
+            reason: []const u8,
+            ex_type: protocol.ExceptionType,
+            worklist: *DrainWorklist,
+        ) void {
+            var pending = self.pending_promises.fetchRemove(aid) orelse return;
+            defer pending.value.deinit(self.allocator);
+            for (pending.value.items) |*pending_call| {
+                defer pending_call.caps.deinit();
+                defer self.allocator.free(pending_call.frame);
+
+                // question_id was decoded once at enqueue; null means the frame
+                // was not a decodable Call, so there is nothing to fail. Zero is
+                // a valid wire question id and must receive its terminal Return.
+                const child_qid = pending_call.question_id orelse continue;
+
+                // Non-draining send: descendants are handled by the worklist,
+                // not by re-entering this drain.
+                sendReturnExceptionNoDrain(self, child_qid, reason, ex_type) catch |err| {
+                    reportNonfatalError(self, err);
+                };
+                self.releaseInboundCaps(&pending_call.caps) catch |err| {
+                    reportNonfatalError(self, err);
+                };
+                if (!self.pending_promises.contains(child_qid)) continue;
+                worklist.push(self.allocator, child_qid) catch |err| {
+                    reportNonfatalError(self, err);
+                    failQueuedPromisedCalls(self, child_qid, reason, ex_type);
+                };
             }
         }
 

@@ -176,6 +176,33 @@ fn storeResolvedFrame(
     resolved_entry.value_ptr.* = ResolvedAnswerType{ .frame = frame };
 }
 
+/// The Call in a queued call's decoded frame.
+fn queuedCall(decoded: *protocol.DecodedMessage) !protocol.Call {
+    if (decoded.tag != .call) return error.UnexpectedMessage;
+    return decoded.asCall();
+}
+
+/// A queued call that cannot be replayed: answer it with an exception,
+/// through the question id decoded when it was queued, and release its
+/// params' capabilities. Null id: the frame never was a Call, so nothing
+/// is owed. A `sendResultsTo = yourself` call is answered
+/// `resultsSentElsewhere`, and a question held on it gets the exception.
+fn dropQueuedCall(
+    comptime PeerType: type,
+    comptime PendingCallType: type,
+    comptime InboundCapsType: type,
+    peer: *PeerType,
+    pending_call: *PendingCallType,
+    reason: []const u8,
+    send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
+    report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+) void {
+    const question_id = pending_call.question_id orelse return;
+    send_return_exception(peer, question_id, reason) catch |err| report_nonfatal_error(peer, err);
+    release_inbound_caps(peer, &pending_call.caps) catch |err| report_nonfatal_error(peer, err);
+}
+
 /// Replay, in arrival order, every call parked on answer `question_id`.
 /// A replayed call runs the full target plan again, so one whose answer
 /// turned out to be an unresolved promise export parks on that export (H10)
@@ -201,17 +228,23 @@ fn drainPendingPromises(
         defer if (caps_owned) pending_call.caps.deinit();
         defer allocator.free(pending_call.frame);
 
+        // A call that cannot be decoded (out of memory) still gets its
+        // one Return, through the question id decoded when it was queued.
         var decoded = protocol.DecodedMessage.init(allocator, pending_call.frame) catch |err| {
             report_nonfatal_error(peer, err);
+            dropQueuedCall(PeerType, PendingCallType, InboundCapsType, peer, pending_call, @errorName(err), send_return_exception, release_inbound_caps, report_nonfatal_error);
             continue;
         };
         defer decoded.deinit();
-        if (decoded.tag != .call) continue;
-        const call = decoded.asCall() catch |err| {
+        const call = queuedCall(&decoded) catch |err| {
             report_nonfatal_error(peer, err);
+            dropQueuedCall(PeerType, PendingCallType, InboundCapsType, peer, pending_call, @errorName(err), send_return_exception, release_inbound_caps, report_nonfatal_error);
             continue;
         };
-        if (call.target.promised_answer == null) continue;
+        if (call.target.promised_answer == null) {
+            dropQueuedCall(PeerType, PendingCallType, InboundCapsType, peer, pending_call, "queued call has no promised target", send_return_exception, release_inbound_caps, report_nonfatal_error);
+            continue;
+        }
         const requeued = replay_promised_call(peer, pending_call.frame, call, &pending_call.caps) catch |err| blk: {
             send_return_exception(peer, call.question_id, @errorName(err)) catch |send_err| {
                 report_nonfatal_error(peer, send_err);
@@ -250,14 +283,17 @@ pub fn replayResolvedPromiseExport(
         defer if (caps_owned) pending_call.caps.deinit();
         defer allocator.free(pending_call.frame);
 
+        // As in `drainPendingPromises`: an undecodable call still gets
+        // its one Return.
         var decoded = protocol.DecodedMessage.init(allocator, pending_call.frame) catch |err| {
             report_nonfatal_error(peer, err);
+            dropQueuedCall(PeerType, PendingCallType, InboundCapsType, peer, pending_call, @errorName(err), send_return_exception, release_inbound_caps, report_nonfatal_error);
             continue;
         };
         defer decoded.deinit();
-        if (decoded.tag != .call) continue;
-        const call = decoded.asCall() catch |err| {
+        const call = queuedCall(&decoded) catch |err| {
             report_nonfatal_error(peer, err);
+            dropQueuedCall(PeerType, PendingCallType, InboundCapsType, peer, pending_call, @errorName(err), send_return_exception, release_inbound_caps, report_nonfatal_error);
             continue;
         };
 

@@ -2373,3 +2373,210 @@ test "a call queued on an answer that already returned fails at the answer's Fin
     try std.testing.expectEqual(@as(?u32, pipelined_on_answer_id), h.target.answer_id);
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, late_call_id, null));
 }
+
+// -- Out of memory while queued calls are replayed or failed --------------------
+//
+// A call that waits on a promise is replayed or failed when the promise
+// settles. Under memory pressure that step used to drop a call with no
+// Return (its frame could not be decoded, or the drain could not enter it
+// in its worklist), and a question held on it waited forever.
+
+/// How the call that a held tail call names leaves its queue, in
+/// `sweepQueuedTailCall`.
+const QueuedEnd = enum {
+    /// W waits on plain call A, and the host fails A.
+    answer_fails,
+    /// W waits on plain call A, and the host answers A with the client's
+    /// export: W is replayed to that export, and the host answers W.
+    answer_resolves,
+    /// W waits on plain call W1, which waits on A, and the host fails A.
+    chain_fails,
+    /// The call waits on a promise export, and the host resolves it to the
+    /// client's export: the call is replayed there, and the host answers it.
+    promise_resolves,
+};
+
+/// For each `k`, fail the `k`-th allocation of the client peer from the
+/// step that empties the named call's queue (`end`), then let the host
+/// answer whatever reached its export (results, then an exception if that
+/// fails, as generated dispatch does). The question whose tail call names
+/// the queued call must end with exactly one Return.
+fn sweepQueuedTailCall(end: QueuedEnd) !void {
+    const allocator = std.testing.allocator;
+    var k: usize = 0;
+    while (true) : (k += 1) {
+        var one = OneShotAlloc{ .child = allocator };
+        var h: TailHarness = undefined;
+        try h.startWith(allocator, one.allocator());
+        defer h.deinit();
+
+        var w0 = TailCaller{};
+        var promise_id: u32 = 0;
+        const named: u32 = pipelined_answer_id;
+        switch (end) {
+            .answer_fails, .answer_resolves => try holdBouncedTailCall(&h, allocator, &w0, h.target_export_id),
+            .chain_fails => {
+                try pushCallerCall(&h, allocator, pipelined_on_answer_id, h.target_export_id);
+                const w1_id: u32 = 961;
+                try h.pushPipelinedCall(allocator, w1_id, pipelined_on_answer_id, false);
+                const w0_id = try h.nextQuestion(&w0);
+                try h.pushPipelinedCall(allocator, named, w1_id, true);
+                try h.pushRedirect(allocator, w0_id, named);
+            },
+            .promise_resolves => {
+                promise_id = try h.client_peer.addPromiseExport();
+                const w0_id = try h.nextQuestion(&w0);
+                try h.pushYourselfCall(allocator, named, promise_id);
+                try h.pushRedirect(allocator, w0_id, named);
+            },
+        }
+        try std.testing.expectEqual(@as(u32, 0), w0.returns);
+        try std.testing.expectEqual(@as(usize, 1), h.client_peer.held_tail_calls.count());
+
+        one.arm(k);
+        var resolve_failed = false;
+        switch (end) {
+            .answer_fails, .chain_fails => h.client_peer.sendReturnException(pipelined_on_answer_id, "host failed A") catch {},
+            .answer_resolves => {
+                var result = ResultCap{ .export_id = h.target_export_id };
+                h.client_peer.sendReturnResults(pipelined_on_answer_id, &result, ResultCap.build) catch |err| {
+                    h.client_peer.sendReturnException(pipelined_on_answer_id, @errorName(err)) catch {};
+                };
+            },
+            .promise_resolves => h.client_peer.resolvePromiseExportToExport(promise_id, h.target_export_id) catch {
+                resolve_failed = true;
+            },
+        }
+        const induced = one.failed;
+        one.disarm();
+        // A resolve that fails leaves the promise as it was, and the call
+        // parked on it: the host resolves it again.
+        if (resolve_failed) h.client_peer.resolvePromiseExportToExport(promise_id, h.target_export_id) catch {};
+        // The host answers the named call if it reached the export.
+        if (h.target.answer_id == named) {
+            var result = ResultN{ .n = 7 };
+            h.client_peer.sendReturnResults(named, &result, ResultN.build) catch |err| {
+                try h.client_peer.sendReturnException(named, @errorName(err));
+            };
+        }
+
+        if (w0.returns != 1) {
+            std.debug.print("queued tail call, {s}, allocation failure at +{d} (induced {}): {d} Return(s), {d} still held, {d} queues\n", .{
+                @tagName(end), k, induced, w0.returns, h.client_peer.held_tail_calls.count(), h.client_peer.pending_promises.count(),
+            });
+            return error.TestHeldQuestionNotSettled;
+        }
+        if (!induced) break;
+    }
+}
+
+test "one allocation failure anywhere while a held tail call's queued call is failed: one Return" {
+    try sweepQueuedTailCall(.answer_fails);
+}
+
+test "one allocation failure anywhere while a held tail call's queued call is replayed: one Return" {
+    try sweepQueuedTailCall(.answer_resolves);
+}
+
+test "one allocation failure anywhere while a chain of queued calls is failed: the held tail call gets one Return" {
+    try sweepQueuedTailCall(.chain_fails);
+}
+
+test "one allocation failure anywhere while a held tail call's parked call is replayed: one Return" {
+    try sweepQueuedTailCall(.promise_resolves);
+}
+
+/// Plain call A with `width` calls queued on it, each with one call queued
+/// on it in turn, and a held tail call that names a `yourself` call queued
+/// under the last of those. With more than 64 of them, the drain's worklist
+/// holds more queues than its stack part. Returns the held question.
+fn holdTailCallInWideTree(h: *TailHarness, allocator: std.mem.Allocator, w0: *TailCaller, width: u32) !void {
+    try pushCallerCall(h, allocator, pipelined_on_answer_id, h.target_export_id);
+    var last: u32 = pipelined_on_answer_id;
+    var id: u32 = 2000;
+    var i: u32 = 0;
+    while (i < width) : (i += 1) {
+        try h.pushPipelinedCall(allocator, id, pipelined_on_answer_id, false);
+        try h.pushPipelinedCall(allocator, id + 1, id, false);
+        last = id + 1;
+        id += 2;
+    }
+    const w0_id = try h.nextQuestion(w0);
+    try h.pushPipelinedCall(allocator, pipelined_answer_id, last, true);
+    try h.pushRedirect(allocator, w0_id, pipelined_answer_id);
+    try std.testing.expectEqual(@as(usize, 1), h.client_peer.held_tail_calls.count());
+}
+
+test "a held tail call in a wide tree of queued calls gets one Return when the tree fails" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    var w0 = TailCaller{};
+    try holdTailCallInWideTree(&h, allocator, &w0, 100);
+    try h.client_peer.sendReturnException(pipelined_on_answer_id, "host failed A");
+    try std.testing.expectEqual(@as(u32, 1), w0.returns);
+    try std.testing.expectEqualStrings("host failed A", w0.reason());
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.pending_promises.count());
+}
+
+/// Fails the first allocation after `armed` with exactly `len` bytes and
+/// `alignment`: by default the first growth of the drain's heap worklist,
+/// a `std.ArrayList(u32)`.
+const ShapeFailAlloc = struct {
+    child: std.mem.Allocator,
+    armed: bool = false,
+    failed: bool = false,
+    len: usize = std.ArrayList(u32).growCapacity(1) * @sizeOf(u32),
+    alignment: std.mem.Alignment = .of(u32),
+
+    fn allocator(self: *ShapeFailAlloc) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *ShapeFailAlloc = castCtx(*ShapeFailAlloc, ctx);
+        if (self.armed and len == self.len and alignment == self.alignment) {
+            self.armed = false;
+            self.failed = true;
+            return null;
+        }
+        return self.child.rawAlloc(len, alignment, ra);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+        const self: *ShapeFailAlloc = castCtx(*ShapeFailAlloc, ctx);
+        return self.child.rawResize(memory, alignment, new_len, ra);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+        const self: *ShapeFailAlloc = castCtx(*ShapeFailAlloc, ctx);
+        return self.child.rawRemap(memory, alignment, new_len, ra);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        const self: *ShapeFailAlloc = castCtx(*ShapeFailAlloc, ctx);
+        self.child.rawFree(memory, alignment, ra);
+    }
+};
+
+test "a wide tree of queued calls whose drain cannot grow its worklist: the held tail call gets one Return" {
+    // The drain enters a queue it cannot keep in its worklist (out of
+    // memory past the stack part) by failing it at once, in a nested drain.
+    const allocator = std.testing.allocator;
+    var shape = ShapeFailAlloc{ .child = allocator };
+    var h: TailHarness = undefined;
+    try h.startWith(allocator, shape.allocator());
+    defer h.deinit();
+
+    var w0 = TailCaller{};
+    try holdTailCallInWideTree(&h, allocator, &w0, 70);
+    shape.armed = true;
+    try h.client_peer.sendReturnException(pipelined_on_answer_id, "host failed A");
+    shape.armed = false;
+    try std.testing.expect(shape.failed);
+    try std.testing.expectEqual(@as(u32, 1), w0.returns);
+    try std.testing.expectEqualStrings("host failed A", w0.reason());
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.pending_promises.count());
+}

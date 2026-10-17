@@ -67,8 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   If the Peer runs out of memory as it gives a held question its answer,
   the question gets the bare tag. If it runs out of memory as it replays
   or fails a call that waited on a promise and that the question names,
-  the question keeps waiting until a cancel, its deadline or the transport
-  close ends it.
+  that call still gets its exception Return (see "Fixed"), and the
+  question gets that exception or the bare tag.
   Limit: `sendPrebuiltReturnFrame` puts its frame on the wire as built,
   also for a `sendResultsTo = yourself` call, and the C++ reference
   rejects a `results` or `exception` Return for its tail call. `HostPeer`
@@ -217,8 +217,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the bare `takeFromOtherQuestion` at once, and W stayed queued with no
   Return. Limit: pipelining on a tail call's answer is not supported, also
   when its results carry capabilities (the C++ reference keeps those
-  results for its pipeline). The record and the drain are best effort, as
-  for a failed answer: the Peer skips the record when it is out of memory
+  results for its pipeline). The record is best effort, as for any
+  failed answer: the Peer skips the record when it is out of memory
   or keeps `max_active_inbound_questions` failed-answer records already,
   and a call pipelined after a skipped record queues until the remote's
   Finish of the answer, which fails it (see the next entry). Tests in
@@ -256,6 +256,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `takeFromOtherQuestion` or `resultsSentElsewhere`, and the records full
   (a held tail call refused, also behind a second queued call, and the
   Finish that fails the queued call before its id is reused).
+- **RPC: a queued call no longer loses its Return when the Peer runs out
+  of memory.** A call that waits on a promise (a promised answer, or a
+  promise export of ours) is replayed or failed when the promise settles.
+  Out of memory there dropped calls with no Return: a replay that could not
+  decode a queued call skipped it, and the drain that fails the calls
+  queued on a failed answer gave up when its worklist could not grow,
+  leaving those calls (or the calls queued on them) queued. An exception
+  Return that could not be sent left the answer's queue alone too. Now a
+  call that cannot be replayed is answered with an exception through the
+  question id kept when it was queued. The drain reaches every queue: it
+  keeps its first 64 entries on the stack and fails a queue it cannot
+  enter at once. The calls queued on an answer fail also when the
+  answer's own exception Return cannot be sent. A Return that cannot be
+  built or sent is still lost, as for any call. A question held on such a
+  call still gets its one Return (see "Changed"). Tests in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` sweep one
+  allocation failure over the replay and the drain, with a held tail
+  call on the queued call, and fail the worklist's growth in a wide tree.
 - **Native C ABI (Experimental): a tail-call Return no longer ends the
   question with "unsupported Return variant".** With the Peer changes above,
   the question gets one RETURN with the named call's results (when they

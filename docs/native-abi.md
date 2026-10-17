@@ -134,9 +134,8 @@ EXCEPTION (`unimplemented`) and the reason `unfollowed_tail_call_reason`.
 The same RETURN ends a waiting question when the core runs out of memory
 as it gives the question the call's answer. If the core runs out of memory
 as it replays or fails a call that waited on a promise (a promise export,
-or a promised answer), that call can lose its Return, and a question whose
-tail call names it keeps waiting until `capnp_cancel`, its deadline or the
-transport close ends it.
+or a promised answer), that call still gets one exception Return, and a
+question whose tail call names it gets that exception or the RETURN above.
 
 Limit: the core cannot give a question tail-call results that carry
 capabilities. Such a question ends with one RETURN EXCEPTION (`unimplemented`)
