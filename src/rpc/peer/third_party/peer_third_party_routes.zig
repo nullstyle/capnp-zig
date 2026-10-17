@@ -7,6 +7,7 @@ const protocol = @import("../../wire/protocol.zig");
 const state = @import("../state.zig");
 const third_party = @import("../third_party.zig");
 const return_routing = @import("../../promises/return_routing.zig");
+const peer_return_send = @import("../return/peer_return_send.zig");
 
 /// The automatic third-party (sendResultsTo.thirdParty) routing family,
 /// extracted from `peer/mod.zig` and made generic over the peer type (the
@@ -670,7 +671,7 @@ pub fn ThirdPartyRoutes(comptime Peer: type) type {
             answer_id: u32,
             ptr: ?message.AnyPointerReader,
         ) !void {
-            _ = self.send_results_to_yourself.remove(answer_id);
+            peer_return_send.ReturnSend(Peer).dropYourselfMark(self, answer_id);
 
             const payload = try captureAnyPointerPayload(self.allocator, ptr);
             var payload_owned = true;

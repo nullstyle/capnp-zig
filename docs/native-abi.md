@@ -130,13 +130,13 @@ Two bounds apply. The core keeps at most
 redirect, and holds at most `PeerLimits.max_send_results_to_yourself` (4096)
 redirects that wait for their call. Past either bound, or when the core
 runs out of memory as it keeps one, the question ends with one RETURN
-EXCEPTION (`unimplemented`) and the reason `unfollowed_tail_call_reason`. If
-the core runs out of memory as it gives a waiting question the call's
-answer, the question keeps waiting until `capnp_cancel`, its deadline or
-the transport close ends it. The same holds when the core runs out of
-memory as it replays or fails a call that waited on a promise (a promise
-export, or a promised answer): that call can lose its Return, and a
-question whose tail call names it keeps waiting.
+EXCEPTION (`unimplemented`) and the reason `unfollowed_tail_call_reason`.
+The same RETURN ends a waiting question when the core runs out of memory
+as it gives the question the call's answer. If the core runs out of memory
+as it replays or fails a call that waited on a promise (a promise export,
+or a promised answer), that call can lose its Return, and a question whose
+tail call names it keeps waiting until `capnp_cancel`, its deadline or the
+transport close ends it.
 
 Limit: the core cannot give a question tail-call results that carry
 capabilities. Such a question ends with one RETURN EXCEPTION (`unimplemented`)

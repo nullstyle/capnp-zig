@@ -608,10 +608,16 @@ const TailHarness = struct {
     /// The client asks the server's bootstrap a question, which the server
     /// keeps. Then the wire stops forwarding: the test plays the server.
     fn start(self: *TailHarness, allocator: std.mem.Allocator) !void {
+        return self.startWith(allocator, allocator);
+    }
+
+    /// `start` with `client_allocator` for the client peer, the peer under
+    /// test (an allocator that fails on purpose).
+    fn startWith(self: *TailHarness, allocator: std.mem.Allocator, client_allocator: std.mem.Allocator) !void {
         self.* = .{
             .wire = .{ .allocator = allocator },
             .server_peer = Peer.initDetached(allocator),
-            .client_peer = Peer.initDetached(allocator),
+            .client_peer = Peer.initDetached(client_allocator),
         };
         self.server_peer.disableThreadAffinity();
         self.client_peer.disableThreadAffinity();
@@ -1857,4 +1863,203 @@ test "a plain parked call whose handler fails on replay gets one exception Retur
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, null));
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, pipelined_answer_id, .exception));
     try std.testing.expect(!h.client_peer.active_inbound_questions.contains(pipelined_answer_id));
+}
+
+// -- The safety net: a held question always gets its one Return -----------------
+//
+// A held tail call waits for the call it names. Whenever that call's local
+// life ends here without an answer that reaches the question (another
+// Return goes out for it, the remote finishes it, its handling fails), or
+// the answer cannot be built or delivered (out of memory), the question
+// still gets exactly one Return: the call's answer when it can, else the
+// bare `takeFromOtherQuestion`, as before holds existed.
+
+/// The remote's Return for `answer_id`, built by the host and sent as is
+/// (`sendPrebuiltReturnFrame`): cap-free results.
+fn sendPrebuiltResults(h: *TailHarness, allocator: std.mem.Allocator, answer_id: u32) !void {
+    var mb = protocol.MessageBuilder.init(allocator);
+    defer mb.deinit();
+    var ret = try mb.beginReturn(answer_id, .results);
+    ret.setReleaseParamCaps(false);
+    var payload = try ret.payloadTyped();
+    _ = try (try payload.initContent()).initStruct(1, 0);
+    const frame = try mb.finish();
+    defer allocator.free(frame);
+    var decoded = try protocol.DecodedMessage.init(allocator, frame);
+    defer decoded.deinit();
+    try h.client_peer.sendPrebuiltReturnFrame(try decoded.asReturn(), frame);
+}
+
+test "a held tail call whose call's prebuilt Return is refused gets the bare redirect at once" {
+    // The resolved-answer budget refuses the prebuilt results; a remote can
+    // fill it with Finish-less calls. The question must not wait for the
+    // remote's Finish of the call, which comes only after its own.
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushTailCall(allocator);
+    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
+    h.client_peer.limits.max_resolved_answers = h.client_peer.resolved_answers.count();
+    try std.testing.expectError(error.PeerLimitExceeded, sendPrebuiltResults(&h, allocator, tail_answer_id));
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, h.caller.tag.?);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.held_tail_calls.count());
+
+    // The host answers the call again; the question has its Return.
+    try h.client_peer.sendReturnException(tail_answer_id, "host retried");
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+}
+
+/// Fails one allocation of the peer under test: the `k`-th one after `arm`.
+const OneShotAlloc = struct {
+    child: std.mem.Allocator,
+    index: usize = 0,
+    fail_at: ?usize = null,
+    failed: bool = false,
+
+    fn allocator(self: *OneShotAlloc) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    fn arm(self: *OneShotAlloc, k: usize) void {
+        self.fail_at = self.index + k;
+        self.failed = false;
+    }
+
+    fn disarm(self: *OneShotAlloc) void {
+        self.fail_at = null;
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *OneShotAlloc = castCtx(*OneShotAlloc, ctx);
+        defer self.index += 1;
+        if (self.fail_at) |at| {
+            if (self.index == at) {
+                self.failed = true;
+                self.fail_at = null;
+                return null;
+            }
+        }
+        return self.child.rawAlloc(len, alignment, ra);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+        const self: *OneShotAlloc = castCtx(*OneShotAlloc, ctx);
+        return self.child.rawResize(memory, alignment, new_len, ra);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+        const self: *OneShotAlloc = castCtx(*OneShotAlloc, ctx);
+        return self.child.rawRemap(memory, alignment, new_len, ra);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        const self: *OneShotAlloc = castCtx(*OneShotAlloc, ctx);
+        self.child.rawFree(memory, alignment, ra);
+    }
+};
+
+/// How the call that a held tail call names ends, in `sweepHeldTailCall`.
+const HeldEnd = enum {
+    /// The host answers with cap-free results (and, as generated dispatch
+    /// and a native host do, with an exception when that fails).
+    results,
+    /// The host answers with an exception.
+    exception,
+    /// The host answers with a prebuilt frame (and with an exception when
+    /// that fails).
+    prebuilt,
+    /// The remote finishes the call first.
+    finish,
+    /// The call is parked on a promise export, and the remote releases the
+    /// export.
+    release,
+};
+
+/// For each `k`, fail the `k`-th allocation of the client peer from the
+/// point where the call that a held tail call names ends (`end`), until
+/// no allocation fails. The question must then have exactly one Return.
+/// An error that leaves `handleFrame` closes the transport, as the
+/// transport owner does (native `Conn` fails the protocol), and that
+/// close settles the question. An error from a host answer does not.
+fn sweepHeldTailCall(end: HeldEnd) !void {
+    const allocator = std.testing.allocator;
+    var k: usize = 0;
+    while (true) : (k += 1) {
+        var one = OneShotAlloc{ .child = allocator };
+        var h: TailHarness = undefined;
+        try h.startWith(allocator, one.allocator());
+        defer h.deinit();
+
+        var caller = TailCaller{};
+        var promise_id: u32 = 0;
+        var question_id = h.question_id;
+        var waiting = &h.caller;
+        if (end == .release) {
+            promise_id = try h.client_peer.addPromiseExport();
+            question_id = try sendPromiseInParams(&h, &caller, promise_id);
+            waiting = &caller;
+            try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+            try h.pushRedirect(allocator, question_id, tail_answer_id);
+        } else {
+            try h.pushTailCall(allocator);
+        }
+        try std.testing.expectEqual(@as(u32, 0), waiting.returns);
+        try std.testing.expectEqual(@as(usize, 1), h.client_peer.held_tail_calls.count());
+
+        one.arm(k);
+        var transport_failed = false;
+        switch (end) {
+            .results => {
+                var result = ResultN{ .n = 7 };
+                h.client_peer.sendReturnResults(tail_answer_id, &result, ResultN.build) catch |err| {
+                    h.client_peer.sendReturnException(tail_answer_id, @errorName(err)) catch {};
+                };
+            },
+            .exception => h.client_peer.sendReturnException(tail_answer_id, "target failed") catch {},
+            .prebuilt => sendPrebuiltResults(&h, allocator, tail_answer_id) catch |err| {
+                h.client_peer.sendReturnException(tail_answer_id, @errorName(err)) catch {};
+            },
+            .finish => h.pushFinish(allocator, tail_answer_id) catch {
+                transport_failed = true;
+            },
+            .release => h.pushRelease(allocator, promise_id, 1) catch {
+                transport_failed = true;
+            },
+        }
+        const induced = one.failed;
+        one.disarm();
+        if (transport_failed) h.client_peer.notifyTransportClosed();
+
+        if (waiting.returns != 1) {
+            std.debug.print("held tail call, {s}, allocation failure at +{d} (induced {}): {d} Return(s), {d} still held\n", .{
+                @tagName(end), k, induced, waiting.returns, h.client_peer.held_tail_calls.count(),
+            });
+            return error.TestHeldQuestionNotSettled;
+        }
+        if (!induced) break;
+    }
+}
+
+test "one allocation failure anywhere while a held tail call's call is answered with results: one Return" {
+    try sweepHeldTailCall(.results);
+}
+
+test "one allocation failure anywhere while a held tail call's call is answered with an exception: one Return" {
+    try sweepHeldTailCall(.exception);
+}
+
+test "one allocation failure anywhere while a held tail call's call is answered with a prebuilt frame: one Return" {
+    try sweepHeldTailCall(.prebuilt);
+}
+
+test "one allocation failure anywhere while the remote finishes a held tail call's call: one Return" {
+    try sweepHeldTailCall(.finish);
+}
+
+test "one allocation failure anywhere while the remote releases the promise a held tail call's call waits on: one Return" {
+    try sweepHeldTailCall(.release);
 }

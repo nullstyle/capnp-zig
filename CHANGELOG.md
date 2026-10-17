@@ -40,7 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sendReturnException` family give a held question the named call's
   results or exception. If the call is answered with
   `sendPrebuiltReturnFrame`, its results never come back to this peer, and
-  the question gets the bare tag as soon as that Return is sent. A call
+  the question gets the bare tag at once, also when the Peer refuses that
+  frame. A call
   that this peer forwards back to the remote, because the promise export it
   waited on resolved to a capability of the remote, never brings its
   results here either. The question gets the bare tag when the call is
@@ -61,9 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   releases that export before it resolves, the question gets the call's
   exception, `rpc.peer.promise_export_released_reason` (see "Fixed").
   If the Peer runs out of memory as it gives a held question its answer,
-  or as it replays or fails a call that waited on a promise and that the
-  question names, the question keeps waiting until a cancel, its deadline
-  or the transport close ends it.
+  the question gets the bare tag. If it runs out of memory as it replays
+  or fails a call that waited on a promise and that the question names,
+  the question keeps waiting until a cancel, its deadline or the transport
+  close ends it.
   Limit: `sendPrebuiltReturnFrame` puts its frame on the wire as built,
   also for a `sendResultsTo = yourself` call, and the C++ reference
   rejects a `results` or `exception` Return for its tail call. `HostPeer`

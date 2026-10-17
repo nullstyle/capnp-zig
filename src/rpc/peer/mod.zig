@@ -789,10 +789,16 @@ pub const Peer = struct {
     /// the answer is not stashed for a redirect that has already come.
     ///
     /// `sendReturnResults` and the `sendReturnException` family give a held
-    /// question the call's results or exception. Other Return paths for the
-    /// call (`sendPrebuiltReturnFrame`; `sendReturnTakeFromOtherQuestion`;
-    /// `sendReturnAcceptFromThirdParty`) carry no results back here: after
-    /// their send, the held question gets the bare redirect. A call this
+    /// question the call's results or exception. The safety net is the
+    /// call's `yourself` mark: only a marked call is held, and every removal
+    /// of the mark ends the hold (`ReturnSend.dropYourselfMark`). Every
+    /// other Return path for the call (`sendPrebuiltReturnFrame`;
+    /// `sendReturnTakeFromOtherQuestion`; `sendReturnAcceptFromThirdParty`;
+    /// the tag Returns) drops the mark and carries no results back here, so
+    /// the held question gets the bare redirect then, as does one whose
+    /// call's handling fails in `handleCall`. A terminal that cannot be
+    /// built or delivered (out of memory) gives the bare redirect too, built
+    /// without the heap. A call this
     /// peer forwards back to the remote (a promise export it waited on
     /// resolved to a capability of the remote) never brings its results
     /// here either: the held question gets the bare redirect when the call
@@ -801,9 +807,10 @@ pub const Peer = struct {
     /// remote's Finish of the call, which a compliant remote sends only
     /// after this question's Finish, nor for the remote's answer to the
     /// forwarded call, which the C++ reference sends only when a
-    /// `takeFromOtherQuestion` names it or at its Finish. A `canceled`
-    /// Return answers a call the remote already finished, and that Finish
-    /// settles the hold.
+    /// `takeFromOtherQuestion` names it or at its Finish. The remote's
+    /// Finish of the call takes the hold first (`handleFinish`), so a
+    /// `canceled` Return for the call, or the mark drop, does not settle it
+    /// with the bare redirect.
     ///
     /// A question removed some other way (transport close, the shutdown
     /// drain) can leave its `by_question` entry behind. That is harmless:
@@ -3878,12 +3885,6 @@ pub const Peer = struct {
         return ReturnSendImpl.holdTailCall(self, source_answer_id, question_id);
     }
 
-    /// The remote finished a call a tail call is held on; body in
-    /// `return/peer_return_send.zig`.
-    fn settleTailCallOnFinish(self: *Peer, source_answer_id: u32) void {
-        ReturnSendImpl.settleTailCallOnFinish(self, source_answer_id);
-    }
-
     /// Send a pre-built return frame, tracking outbound cap refs and recording
     /// the resolved answer; body in `return/peer_return_send.zig`.
     pub fn sendPrebuiltReturnFrame(self: *Peer, ret: protocol.Return, frame: []const u8) !void {
@@ -4821,6 +4822,13 @@ pub const Peer = struct {
         // force-swallowed by the void FinishOps hook below.
         try self.detachProvisionForFinish(qid);
         if (!self.resolving_answers.contains(qid)) self.streaming.cancel(self, qid);
+        // A tail call held on this call can no longer get its results: it
+        // ends with `tail_call_finished_reason`, also when this Finish
+        // fails part way. The hold is taken before anything below drops
+        // the call's `yourself` mark (the cancel of a queued call, the
+        // state cleanup), which would give it the bare redirect instead.
+        const finished_hold = self.held_tail_calls.takeBySource(qid);
+        errdefer if (finished_hold) |question_id| ReturnSendImpl.settleFinishedTailCall(self, question_id, qid);
         const active_entry = self.active_inbound_questions.fetchRemove(qid);
         const was_active = active_entry != null;
         const params_granted_refs = if (active_entry) |entry| entry.value else false;
@@ -4866,7 +4874,7 @@ pub const Peer = struct {
             _ = try self.cancelQueuedPendingQuestion(finish_msg.question_id);
         }
         const ops = finish.FinishOps(Peer){
-            .remove_send_results_to_yourself = peer_forward_orchestration.removeSendResultsToYourselfForPeerFn(Peer),
+            .remove_send_results_to_yourself = ReturnSendImpl.dropYourselfMark,
             .clear_send_results_to_third_party = clearSendResultsToThirdParty,
             .clear_provide = provide_accept_join.provides_state.clearProvideForPeerFn(
                 Peer,
@@ -4895,9 +4903,6 @@ pub const Peer = struct {
             .free_frame = finish.freeOwnedFrameForPeerFn(Peer),
         };
         const cleared_partial_join = self.pending_join_questions.contains(qid);
-        // handleFinishWithOps drops the call's `yourself` mark first; a
-        // later failure must not leave a tail call held on it.
-        errdefer self.settleTailCallOnFinish(qid);
         try finish.handleFinishWithOps(
             Peer,
             self,
@@ -4905,8 +4910,7 @@ pub const Peer = struct {
             finish_msg.release_result_caps,
             ops,
         );
-        // A tail call held on this call can no longer get its results.
-        self.settleTailCallOnFinish(qid);
+        if (finished_hold) |question_id| ReturnSendImpl.settleFinishedTailCall(self, question_id, qid);
         if (cleared_partial_join) self.refreshNextJoinDeadline();
         // No Return will follow for a synthetic answer canceled before result
         // delivery, so its ordinary finished-early tombstone must not reserve

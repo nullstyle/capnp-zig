@@ -3,7 +3,6 @@ const log = std.log.scoped(.rpc_peer);
 
 const cap_table = @import("../../caps/table.zig");
 const protocol = @import("../../wire/protocol.zig");
-const return_routing = @import("../../promises/return_routing.zig");
 const return_send = @import("../../promises/return_send.zig");
 const finish = @import("../finish.zig");
 const peer_call_targets = @import("../call/peer_call_targets.zig");
@@ -222,7 +221,7 @@ pub fn ReturnSend(comptime Peer: type) type {
             // into one; a native host calls capnp_return_exception) still
             // answers `resultsSentElsewhere` and settles the tail call with
             // the error. A Finish during `build` already removed the marker.
-            _ = self.send_results_to_yourself.remove(answer_id);
+            const held_question = takeYourselfMark(self, answer_id);
             // No redirect is left to take results with capabilities, or
             // results of a call the remote finished during `build`: keeping
             // them would only leave a stale stash entry.
@@ -230,7 +229,7 @@ pub fn ReturnSend(comptime Peer: type) type {
                 self.allocator.free(frame);
                 break :blk null;
             } else @constCast(frame);
-            try settleSelfLoopbackAnswer(self, answer_id, kept, tail_call_pipelining_failure);
+            try settleSelfLoopbackAnswer(self, answer_id, held_question, kept, tail_call_pipelining_failure);
             // (An exception answer drains in `sendReturnExceptionTyped`.)
             failTailCalledPipeline(self, answer_id);
         }
@@ -264,21 +263,28 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// so a call pipelined on this answer after its Return fails with it.
         /// Calls already queued on it are failed by `sendReturnExceptionTyped`
         /// (or by the drain that is answering this call).
+        ///
+        /// This is the call's last answer, so it settles a held question
+        /// even when the exception cannot be built (out of memory): that
+        /// question then gets the bare redirect.
         fn completeSelfLoopbackException(
             self: *Peer,
             answer_id: u32,
             reason: []const u8,
             ex_type: protocol.ExceptionType,
         ) !void {
-            const frame = try peer_return_frames.buildReturnExceptionFrame(
+            const frame: ?[]const u8 = peer_return_frames.buildReturnExceptionFrame(
                 self.allocator,
                 answer_id,
                 reason,
                 ex_type,
                 self.returnReleasesParamCaps(answer_id),
-            );
-            _ = self.send_results_to_yourself.remove(answer_id);
-            return settleSelfLoopbackAnswer(self, answer_id, @constCast(frame), .{
+            ) catch |err| blk: {
+                log.debug("exception for yourself call {} not kept: {}", .{ answer_id, err });
+                break :blk null;
+            };
+            const held_question = takeYourselfMark(self, answer_id);
+            return settleSelfLoopbackAnswer(self, answer_id, held_question, if (frame) |bytes| @constCast(bytes) else null, .{
                 .reason = reason,
                 .ex_type = ex_type,
             });
@@ -289,22 +295,24 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// here; null for results that carry capabilities, which cannot be
         /// delivered locally. The remote is told `resultsSentElsewhere`. The
         /// Return goes to the question whose `takeFromOtherQuestion` names this
-        /// call: now when that redirect is held (`held_tail_calls`), else through
-        /// the stash when it arrives. `pipeline_failure` is what a call
-        /// pipelined on this answer later gets (`recordTailCalledAnswer`).
+        /// call: now when that redirect is held (`held_question`, taken with
+        /// the call's mark by `takeYourselfMark`), else through the stash when
+        /// it arrives. `pipeline_failure` is what a call pipelined on this
+        /// answer later gets (`recordTailCalledAnswer`).
+        ///
+        /// The hold is taken before the send: a synchronous transport can
+        /// deliver the remote's Finish for this call inside it, and that
+        /// Finish must not settle the question first.
         fn settleSelfLoopbackAnswer(
             self: *Peer,
             answer_id: u32,
+            held_question: ?u32,
             frame: ?[]u8,
             pipeline_failure: peer_call_targets.FailedAnswerView,
         ) !void {
             var owned = frame;
             defer if (owned) |bytes| self.allocator.free(bytes);
 
-            // Take the hold before the send: a synchronous transport can
-            // deliver the remote's Finish for this call inside it, and that
-            // Finish must not settle the question first.
-            const held_question = self.held_tail_calls.takeBySource(answer_id);
             if (held_question == null) {
                 // Stash BEFORE telling the forwarder: in a synchronous in-process
                 // transport, the `resultsSentElsewhere` we send can re-enter us
@@ -330,7 +338,12 @@ pub fn ReturnSend(comptime Peer: type) type {
             // The held question gets this call's terminal even if the send
             // below fails: the value is decided here, not by the wire. Runs
             // before `owned` is freed.
-            defer if (held_question) |question_id| deliverHeldTailCall(self, question_id, answer_id, owned);
+            defer if (held_question) |question_id| deliverHeldTailCall(
+                self,
+                question_id,
+                answer_id,
+                if (owned) |bytes| .{ .answer = bytes } else .bare,
+            );
 
             // Before the send: a remote Finish inside it removes the record,
             // as it removes any failed-answer record.
@@ -392,6 +405,9 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// before holds existed. Also false for a call this peer forwarded
         /// back to the remote (`noteYourselfCallForwarded`): its results
         /// never come here.
+        ///
+        /// Only a marked call is held, and a hold never outlives the mark:
+        /// see `dropYourselfMark`.
         pub fn holdTailCall(self: *Peer, source_answer_id: u32, question_id: u32) bool {
             if (!self.send_results_to_yourself.contains(source_answer_id)) return false;
             if (forwardedToRemote(self, source_answer_id)) return false;
@@ -402,66 +418,121 @@ pub fn ReturnSend(comptime Peer: type) type {
             };
         }
 
-        /// The remote finished `source_answer_id` before it was answered: a tail
-        /// call held on it can no longer get its results. A question cancelled
-        /// meanwhile is retired, as its late Return would retire it; any other
-        /// ends with `tail_call_finished_reason`.
-        pub fn settleTailCallOnFinish(self: *Peer, source_answer_id: u32) void {
-            const question_id = self.held_tail_calls.takeBySource(source_answer_id) orelse return;
-            if (!self.questions.contains(question_id)) return;
-            const frame = peer_return_frames.buildReturnExceptionFrame(
-                self.allocator,
-                question_id,
-                Peer.tail_call_finished_reason_text,
-                .failed,
-                false,
-            ) catch |err| return reportNonfatalError(self, err);
-            defer self.allocator.free(frame);
-            deliverStashedLoopbackResults(self, question_id, frame) catch |err| reportNonfatalError(self, err);
+        /// The safety net of `held_tail_calls`. Every removal of a
+        /// `yourself` mark goes through here, except the call's own answer
+        /// (`takeYourselfMark`) and the remote's Finish of it, which takes
+        /// the hold first (`Peer.handleFinish`). The mark goes when another
+        /// Return goes out for the call (`clearSendResultsRouting`), when the
+        /// remote finishes it, or when its handling fails. A
+        /// tail call still held on the call can no longer get the call's
+        /// answer, and the remote's Finish of the call comes only after the
+        /// held question's Finish (rpc.capnp `Call.sendResultsTo`), so the
+        /// question gets the bare redirect now, as before holds existed.
+        /// `holdTailCall` holds only a marked call, so no hold outlives its
+        /// call's mark.
+        pub fn dropYourselfMark(self: *Peer, answer_id: u32) void {
+            _ = self.send_results_to_yourself.remove(answer_id);
+            releaseHeldTailCall(self, answer_id);
         }
 
-        /// Deliver the terminal of a held tail call to its question: `frame`,
-        /// the named call's Return re-keyed, or with no frame the bare
-        /// `takeFromOtherQuestion`, as when nothing was held. The named call's
-        /// terminal is already decided, so a delivery error is reported, not
-        /// returned.
+        /// The call's own answer: drop its `yourself` mark and take the
+        /// hold on it with the mark, for `settleSelfLoopbackAnswer` to
+        /// deliver the answer to.
+        fn takeYourselfMark(self: *Peer, answer_id: u32) ?u32 {
+            _ = self.send_results_to_yourself.remove(answer_id);
+            return self.held_tail_calls.takeBySource(answer_id);
+        }
+
+        /// The remote finished `source_answer_id` before it was answered:
+        /// the tail call that was held on it (`Peer.handleFinish` takes the
+        /// hold first) can no longer get its results. A question cancelled
+        /// meanwhile is retired, as its late Return would retire it; any
+        /// other ends with `tail_call_finished_reason`.
+        pub fn settleFinishedTailCall(self: *Peer, question_id: u32, source_answer_id: u32) void {
+            deliverHeldTailCall(self, question_id, source_answer_id, .finished);
+        }
+
+        /// What a held question gets as its Return.
+        const HeldTerminal = union(enum) {
+            /// The named call's Return (cap-free results or an exception),
+            /// re-keyed to the question.
+            answer: []const u8,
+            /// The remote finished the named call before it was answered:
+            /// `tail_call_finished_reason`.
+            finished,
+            /// The bare `takeFromOtherQuestion`, as before holds existed.
+            bare,
+        };
+
+        /// Stack bytes for the synthetic Return of a held question (the
+        /// frame and its decode), so the bare redirect needs no heap.
+        const held_return_stack_bytes = 4096;
+
+        /// Deliver the terminal of a held tail call to its question. The
+        /// named call's terminal is already decided, so a delivery error is
+        /// reported, not returned. If the terminal cannot be built or
+        /// delivered (out of memory), the question is still open, and it
+        /// gets the bare redirect, built and decoded in a stack buffer: a
+        /// held question always gets its one Return.
         ///
         /// The held redirect's own flags are not kept: the delivered frame
         /// says `noFinishNeeded = false`, so the question still sends its
         /// Finish. The C++ reference never sets that flag on a tail-call
         /// Return.
-        fn deliverHeldTailCall(self: *Peer, question_id: u32, source_answer_id: u32, frame: ?[]const u8) void {
+        fn deliverHeldTailCall(self: *Peer, question_id: u32, source_answer_id: u32, terminal: HeldTerminal) void {
             // Settled meanwhile (transport close, the shutdown drain bound):
             // nothing is owed.
             if (!self.questions.contains(question_id)) return;
-            if (frame) |bytes| {
-                deliverStashedLoopbackResults(self, question_id, bytes) catch |err| reportNonfatalError(self, err);
-                return;
+            switch (terminal) {
+                .answer => |bytes| deliverStashedLoopbackResults(self, question_id, bytes) catch |err| {
+                    reportNonfatalError(self, err);
+                },
+                .finished => deliverSyntheticTailReturn(self, question_id, source_answer_id, .finished),
+                .bare => {},
             }
-            const bare = peer_return_frames.buildReturnTakeFromOtherQuestionFrame(
-                self.allocator,
-                question_id,
-                source_answer_id,
-                false,
-            ) catch |err| return reportNonfatalError(self, err);
-            defer self.allocator.free(bare);
-            deliverStashedLoopbackResults(self, question_id, bare) catch |err| reportNonfatalError(self, err);
+            // Delivered, or held again (the bare redirect re-enters
+            // `handleReturn`, which holds it if the call is still marked).
+            if (!self.questions.contains(question_id) or self.held_tail_calls.holdsQuestion(question_id)) return;
+            deliverSyntheticTailReturn(self, question_id, source_answer_id, .bare);
         }
 
-        /// A Return for `answer_id` went out that does not carry the call's
-        /// results to this peer: `sendPrebuiltReturnFrame` (its frame goes on
-        /// the wire as built), the `resultsSentElsewhere` of a call this peer
-        /// forwarded back to the remote, `sendReturnTakeFromOtherQuestion`,
-        /// `sendReturnAcceptFromThirdParty`. Or the call was forwarded back
-        /// to the remote (`noteYourselfCallForwarded`). A tail call held on
-        /// the call can no longer get them, and the remote's Finish of the
-        /// call comes only after this question's Finish (rpc.capnp
-        /// `Call.sendResultsTo`), so waiting for it would never end: give the
-        /// question the bare redirect now, as before holds existed. Runs
-        /// after the send, so no question callback runs inside it.
+        /// Build a held question's synthetic Return in a stack buffer (the
+        /// heap only past it) and deliver it through `handleReturn`.
+        fn deliverSyntheticTailReturn(
+            self: *Peer,
+            question_id: u32,
+            source_answer_id: u32,
+            kind: enum { finished, bare },
+        ) void {
+            var buffer: [held_return_stack_bytes]u8 align(16) = undefined;
+            var fallback = std.heap.BufferFirstAllocator.init(&buffer, self.allocator);
+            const allocator = fallback.allocator();
+            const frame = switch (kind) {
+                .finished => peer_return_frames.buildReturnExceptionFrame(
+                    allocator,
+                    question_id,
+                    Peer.tail_call_finished_reason_text,
+                    .failed,
+                    false,
+                ),
+                .bare => peer_return_frames.buildReturnTakeFromOtherQuestionFrame(
+                    allocator,
+                    question_id,
+                    source_answer_id,
+                    false,
+                ),
+            } catch |err| return reportNonfatalError(self, err);
+            defer allocator.free(frame);
+            var decoded = protocol.DecodedMessage.init(allocator, frame) catch |err| return reportNonfatalError(self, err);
+            defer decoded.deinit();
+            const ret = decoded.asReturn() catch |err| return reportNonfatalError(self, err);
+            self.handleReturn(frame, ret) catch |err| reportNonfatalError(self, err);
+        }
+
+        /// End the hold on `answer_id`, if any, with the bare redirect.
         fn releaseHeldTailCall(self: *Peer, answer_id: u32) void {
             const question_id = self.held_tail_calls.takeBySource(answer_id) orelse return;
-            deliverHeldTailCall(self, question_id, answer_id, null);
+            deliverHeldTailCall(self, question_id, answer_id, .bare);
         }
 
         /// This peer forwarded the `sendResultsTo = yourself` call
@@ -589,7 +660,6 @@ pub fn ReturnSend(comptime Peer: type) type {
             }
 
             commitOrRollbackResolvedAnswerAfterSend(self, ret.answer_id, frame, &reservation);
-            releaseHeldTailCall(self, ret.answer_id);
         }
 
         /// Send a return with an exception for a previously received call.
@@ -923,10 +993,6 @@ pub fn ReturnSend(comptime Peer: type) type {
                 return err;
             };
             _ = self.finished_early_answers.remove(answer_id);
-            // `canceled` answers a call the remote already finished: that
-            // Finish settles a hold (`settleTailCallOnFinish`). A
-            // `yourself` answer took its hold before this send.
-            if (tag != .canceled) releaseHeldTailCall(self, answer_id);
             if (tail_called) failTailCalledPipeline(self, answer_id);
         }
 
@@ -948,7 +1014,6 @@ pub fn ReturnSend(comptime Peer: type) type {
                 return err;
             };
             _ = self.finished_early_answers.remove(answer_id);
-            releaseHeldTailCall(self, answer_id);
             if (tail_called) failTailCalledPipeline(self, answer_id);
         }
 
@@ -963,16 +1028,15 @@ pub fn ReturnSend(comptime Peer: type) type {
                 sendReturnFrameWithLoopback,
             );
             _ = self.finished_early_answers.remove(answer_id);
-            releaseHeldTailCall(self, answer_id);
         }
 
+        /// Clear an answered call's `sendResultsTo` routing. Every Return
+        /// family but the `yourself` answer itself runs this, so a tail call
+        /// still held on the call gets the bare redirect then
+        /// (`dropYourselfMark`).
         fn clearSendResultsRouting(self: *Peer, answer_id: u32) void {
-            return_routing.clearSendResultsRoutingForPeer(
-                Peer,
-                self,
-                answer_id,
-                Peer.clearSendResultsToThirdParty,
-            );
+            dropYourselfMark(self, answer_id);
+            Peer.clearSendResultsToThirdParty(self, answer_id);
         }
 
         /// `sendReturnFrameWithLoopback` for a Return built with fds attached

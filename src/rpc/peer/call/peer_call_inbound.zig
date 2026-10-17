@@ -15,6 +15,7 @@ const peer_call_targets = @import("./peer_call_targets.zig");
 const message = @import("../../../serialization/message.zig");
 const peer_forward_orchestration = @import("../forward/peer_forward_orchestration.zig");
 const peer_return_dispatch = @import("../return/peer_return_dispatch.zig");
+const peer_return_send = @import("../return/peer_return_send.zig");
 
 /// The inbound Call path and resolved-answer bookkeeping, extracted from
 /// `peer/mod.zig` and made generic over the peer type (the JoinCoordinator
@@ -139,11 +140,13 @@ pub fn CallInbound(comptime Peer: type) type {
             );
 
             // `routeCall` marks a `yourself` call. If this call still fails
-            // out of handleCall, drop the mark with the answer record above.
-            // (A failed mark leaves none, and the catch below answers with
-            // an exception, as for any call it refuses.)
+            // out of handleCall, drop the mark with the answer record above,
+            // and with it any tail call held on the call
+            // (`ReturnSend.dropYourselfMark`). (A failed mark leaves none, and
+            // the catch below answers with an exception, as for any call it
+            // refuses.)
             errdefer if (call.send_results_to.tag == .yourself) {
-                _ = self.send_results_to_yourself.remove(call.question_id);
+                peer_return_send.ReturnSend(Peer).dropYourselfMark(self, call.question_id);
             };
             routeCall(self, frame, call) catch |err| {
                 log.debug("call routing error for question {}: {}", .{ call.question_id, err });
