@@ -6112,7 +6112,10 @@ pub const Peer = struct {
         // (`held_tail_calls`). Falls through to the normal path otherwise
         // (results carried caps, the redirect names no such call, or a bound
         // overflowed): the caller then sees `takeFromOtherQuestion` as before.
-        if (ret.tag == .takeFromOtherQuestion) {
+        // Only a Return from the remote: a loopback one names one of this
+        // peer's own questions, whose id can equal an unrelated call the
+        // remote sent with `sendResultsTo = yourself`.
+        if (origin == .transport and ret.tag == .takeFromOtherQuestion) {
             if (ret.take_from_other_question) |source_answer_id| {
                 if (self.questions.contains(ret.answer_id)) {
                     if (self.loopback_result_stash.fetchRemove(source_answer_id)) |entry| {
@@ -6257,6 +6260,12 @@ pub const Peer = struct {
             recipient: ?message.AnyPointerReader,
         ) !void {
             return Peer.noteSendResultsToThirdParty(self, answer_id, recipient);
+        }
+
+        /// Answer `answer_id` with `takeFromOtherQuestion`, as a forward in
+        /// `sent_elsewhere` mode does.
+        pub fn sendReturnTakeFromOtherQuestion(self: *Peer, answer_id: u32, other_question_id: u32) !void {
+            return Peer.sendReturnTakeFromOtherQuestion(self, answer_id, other_question_id);
         }
 
         /// Answer `answer_id` with `awaitFromThirdParty`, as a forward in

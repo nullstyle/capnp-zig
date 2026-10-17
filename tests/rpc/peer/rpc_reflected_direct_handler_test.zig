@@ -2580,3 +2580,52 @@ test "a wide tree of queued calls whose drain cannot grow its worklist: the held
     try std.testing.expectEqualStrings("host failed A", w0.reason());
     try std.testing.expectEqual(@as(usize, 0), h.client_peer.pending_promises.count());
 }
+
+// -- A loopback tail call -----------------------------------------------------
+
+/// A client export whose handler answers every call with a tail call onto
+/// `other`, one of the client's own question ids.
+const LoopbackRedirector = struct {
+    other: u32,
+
+    fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *const LoopbackRedirector = castCtx(*const LoopbackRedirector, ctx_ptr);
+        try Peer.test_hooks.sendReturnTakeFromOtherQuestion(peer, call.question_id, self.other);
+    }
+};
+
+test "a loopback tail call never takes the kept answer of a remote call with the same id" {
+    // The client calls its own export, and the handler answers with a tail
+    // call onto question `tail_answer_id`, one of the client's own ids. The
+    // remote sent a `yourself` call with that id too, and its answer is
+    // kept for the remote's redirect. The loopback question gets the bare
+    // redirect; the remote's question gets the kept answer.
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushYourselfCall(allocator, tail_answer_id, h.target_export_id);
+    var result = ResultN{ .n = 7 };
+    try h.client_peer.sendReturnResults(tail_answer_id, &result, ResultN.build);
+    try std.testing.expectEqual(@as(usize, 1), h.client_peer.loopback_result_stash.count());
+
+    var redirector = LoopbackRedirector{ .other = tail_answer_id };
+    const redirector_id = try h.client_peer.addExport(.{ .ctx = &redirector, .on_call = LoopbackRedirector.onCall });
+    var local = TailCaller{};
+    _ = try h.client_peer.sendCallResolved(
+        .{ .exported = .{ .id = redirector_id } },
+        CALL_INTERFACE_ID,
+        CALL_METHOD_ID,
+        &local,
+        TailCaller.build,
+        TailCaller.onReturn,
+    );
+    try std.testing.expectEqual(@as(u32, 1), local.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, local.tag.?);
+    try std.testing.expectEqual(@as(usize, 1), h.client_peer.loopback_result_stash.count());
+
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(@as(u32, 7), h.caller.result_n.?);
+}

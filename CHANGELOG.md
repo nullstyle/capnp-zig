@@ -113,6 +113,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tests in `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
   `src/native/conn_test.zig` cover both cases, with results and with an
   exception.
+- **RPC: a loopback tail call no longer takes another call's answer.** A
+  handler of this peer can answer a call that this peer sent to its own
+  export with `takeFromOtherQuestion`. That Return names one of this
+  peer's own questions, and its id can equal a call that the remote sent
+  with `sendResultsTo = yourself`. The Peer looked the id up as a remote
+  call: the loopback question took that call's kept answer, or waited for
+  it. Now only a `takeFromOtherQuestion` from the remote is followed, and
+  the loopback question gets the bare tag. A test in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` covers it.
 - **RPC: a `sendResultsTo = yourself` call that fails is now answered with
   `resultsSentElsewhere`.** rpc.capnp answers such a call with
   `resultsSentElsewhere`, and the C++ reference rejects an exception Return
