@@ -2629,3 +2629,67 @@ test "a loopback tail call never takes the kept answer of a remote call with the
     try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
     try std.testing.expectEqual(@as(u32, 7), h.caller.result_n.?);
 }
+
+// -- A yourself call relayed from another connection -----------------------------
+//
+// A `yourself` call on a cross-peer proxy export (a capability this peer
+// proxies to another connection, as three-party handoff mints) is
+// forwarded there, and its Return relayed back. A relay whose results did
+// not build or send was dropped: the call got no Return, and a question
+// held on it waited forever.
+
+/// A frame sink for the second connection's peer.
+const NullSink = struct {
+    fn send(_: *anyopaque, _: []const u8) anyerror!void {}
+};
+
+test "one allocation failure anywhere in a cross-peer relay of a held tail call's results: one Return" {
+    const allocator = std.testing.allocator;
+    var k: usize = 0;
+    while (true) : (k += 1) {
+        var one = OneShotAlloc{ .child = allocator };
+        var h: TailHarness = undefined;
+        try h.startWith(allocator, one.allocator());
+        defer h.deinit();
+        // The connection the proxy forwards to. Torn down first: a forward
+        // still pending settles the client's answer.
+        var sink: u8 = 0;
+        var source = Peer.initDetached(allocator);
+        source.disableThreadAffinity();
+        source.setSendFrameOverride(&sink, NullSink.send);
+        defer source.deinit();
+        var source_target = DeferredTarget{};
+        const source_export = try source.addExport(.{ .ctx = &source_target, .on_call = DeferredTarget.onCall });
+        const proxy_id = try Peer.test_hooks.addCrossPeerProxyExport(
+            &h.client_peer,
+            &source,
+            .{ .exported = .{ .id = source_export } },
+            null,
+            null,
+        );
+
+        try h.pushYourselfCall(allocator, tail_answer_id, proxy_id);
+        try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+        const forwarded = source_target.answer_id orelse return error.TestCallNotForwarded;
+        try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
+        try std.testing.expectEqual(@as(usize, 1), h.client_peer.held_tail_calls.count());
+
+        one.arm(k);
+        var result = ResultN{ .n = 7 };
+        source.sendReturnResults(forwarded, &result, ResultN.build) catch {};
+        const induced = one.failed;
+        one.disarm();
+
+        if (h.caller.returns != 1) {
+            std.debug.print("cross-peer relay, allocation failure at +{d}: {d} Return(s), {d} still held\n", .{
+                k, h.caller.returns, h.client_peer.held_tail_calls.count(),
+            });
+            return error.TestHeldQuestionNotSettled;
+        }
+        if (!induced) {
+            try std.testing.expectEqual(protocol.ReturnTag.results, h.caller.tag.?);
+            try std.testing.expectEqual(@as(u32, 7), h.caller.result_n.?);
+            break;
+        }
+    }
+}

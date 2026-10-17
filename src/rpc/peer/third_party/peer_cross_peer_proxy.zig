@@ -330,6 +330,14 @@ pub fn CrossPeerProxy(comptime Peer: type) type {
 
             relayReturnAcrossPeers(recipient, answer_id, peer, ret, inbound_caps, release_param_caps) catch |err| {
                 log.debug("cross-peer proxy return relay failed for question {}: {}", .{ answer_id, err });
+                // As generated dispatch does: a relay that did not answer
+                // (its results did not build or send) is answered with the
+                // error, so the call still gets its one Return, and a
+                // question held on a `sendResultsTo = yourself` call gets
+                // the exception.
+                recipient.sendReturnException(answer_id, @errorName(err)) catch |send_err| {
+                    log.debug("cross-peer proxy return relay: no exception for question {}: {}", .{ answer_id, send_err });
+                };
             };
         }
 

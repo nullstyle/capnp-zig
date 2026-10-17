@@ -113,6 +113,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tests in `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
   `src/native/conn_test.zig` cover both cases, with results and with an
   exception.
+- **RPC: a call relayed from another connection gets its Return when the
+  relay fails.** A call on a cross-peer proxy export, or a parked call that
+  a three-party handoff forwards to the third vat, is answered by relaying
+  the other connection's Return. When that relay failed (for example, the
+  results did not build because the Peer ran out of memory), the error was
+  logged and the call got no Return. Now the call is answered with the
+  error as an exception, as generated dispatch answers a handler error, and
+  a question whose tail call names a `sendResultsTo = yourself` call gets
+  that exception. A one-allocation-failure sweep in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` covers the
+  cross-peer proxy relay.
 - **RPC: a loopback tail call no longer takes another call's answer.** A
   handler of this peer can answer a call that this peer sent to its own
   export with `takeFromOtherQuestion`. That Return names one of this

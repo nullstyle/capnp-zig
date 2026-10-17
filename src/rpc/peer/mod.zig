@@ -2599,8 +2599,8 @@ pub const Peer = struct {
     /// exactly once and frees the relay ctx.
     ///
     /// This callback deliberately NEVER propagates an error: it relays
-    /// best-effort (a send failure completing VatA's question is logged, not
-    /// returned) and always frees the ctx. It also sets `settled_flag` — when the
+    /// best-effort (a relay that fails is answered with an exception, and a
+    /// failure of that is logged, not returned) and always frees the ctx. It also sets `settled_flag` — when the
     /// caller is still on the stack (the synchronous-loopback case) — the instant
     /// it runs, BEFORE freeing the ctx. Together these keep the ctx single-freed
     /// and VatA answered exactly once even when `sendCall` ITSELF fails in
@@ -2634,13 +2634,19 @@ pub const Peer = struct {
         const live_recipient = recipient orelse return;
         relayForwardedVineReturn(live_recipient, answer_id, peer, ret, inbound_caps, release_param_caps) catch |err| {
             log.debug("forwarded pipelined return relay failed for question {}: {}", .{ answer_id, err });
+            // As in `onCrossPeerProxyReturn`: the call still gets its one
+            // Return, the relay's error.
+            live_recipient.sendReturnException(answer_id, @errorName(err)) catch |send_err| {
+                log.debug("forwarded pipelined return relay: no exception for question {}: {}", .{ answer_id, send_err });
+            };
         };
     }
 
     /// Complete VatA's original pipelined question (`answer_id` on `recipient`,
     /// B↔A) from VatC's forwarded Return. Results are cloned onto VatA's Return
     /// with the same cross-peer capability proxying used for forwarded params.
-    /// Its errors are swallowed by `forwardVineReturn`.
+    /// `forwardVineReturn` answers its errors with an exception and never
+    /// returns them.
     fn relayForwardedVineReturn(
         recipient: *Peer,
         answer_id: u32,
