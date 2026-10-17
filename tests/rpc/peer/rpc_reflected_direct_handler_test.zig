@@ -1305,9 +1305,13 @@ test "a held tail call whose parked call the remote finishes ends with tail_call
 const FinishInsideBuild = struct {
     h: *TailHarness,
     allocator: std.mem.Allocator,
+    /// Receive the redirect that names the call first, also inside the
+    /// build.
+    redirect_first: bool = false,
 
     fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
         const self: *FinishInsideBuild = castCtx(*FinishInsideBuild, ctx_ptr);
+        if (self.redirect_first) try self.h.pushRedirect(self.allocator, self.h.question_id, tail_answer_id);
         try self.h.pushFinish(self.allocator, tail_answer_id);
         var result = ResultN{ .n = 7 };
         try ResultN.build(&result, ret);
@@ -1334,6 +1338,25 @@ test "a Finish during a held tail call's results build ends the question; the re
     try std.testing.expect(!h.client_peer.failed_answers.contains(tail_answer_id));
     // The call still gets its one Return.
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+}
+
+test "a redirect and a Finish during a yourself call's results build end the question; the results are not kept" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushYourselfCall(allocator, tail_answer_id, h.target_export_id);
+    var build_ctx = FinishInsideBuild{ .h = &h, .allocator = allocator, .redirect_first = true };
+    try h.client_peer.sendReturnResults(tail_answer_id, &build_ctx, FinishInsideBuild.build);
+
+    // The redirect was held, and the Finish ended it. No redirect follows
+    // the Finish, so the results are not kept.
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings(peer_impl.tail_call_finished_reason, h.caller.reason());
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
 }
 
