@@ -195,8 +195,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tool prints the count and the floor of each root. Its total check could
   never fail, so it is gone. `docs/stability.md` gave other floors
   (26 + 1 + 17 + 8 = 52). The tool now fails if that doc does not give its
-  floors. In a scratch copy with one test removed from
-  `rpc_quic_peer_test.zig`, the old tool passes and the new tool fails.
+  floors. The check ignores letter case, so a stale "Per-root floors ..."
+  at the start of a sentence also fails. In a scratch copy with one test
+  removed from `rpc_quic_peer_test.zig`, the old tool passes and the new
+  tool fails.
 - **Docs: stale claims in `stability.md`, `supported-surface.md`,
   `quic-transport.md` and `security-regression-matrix.md`.** They named
   quic-zig v0.24.0 as the pinned tag (the pin is v0.38.0). They said that
@@ -206,7 +208,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and that the native Windows lane was still pending. All three OSes run the
   four roots in CI. They said that the full Windows QUIC test tree
   cross-compiles 113/113. No CI job does that. The Stable promise said
-  "within 0.3.x".
+  "within 0.3.x". They said that two quic-zig `reuse_port` smokes skip on
+  Windows. At v0.38.0, three do. They said that every `capnp` call in the
+  tests goes through the WASM helper. The three opt-in C++ interop steps
+  also call the native `capnp`, and CI runs them on Linux only. They said
+  that CI runs the QUIC evidence from each OS's native shell. It runs it
+  under `bash`. A note in `windows-first-class-plan.md` now marks its
+  2026-08-11 QUIC counts as superseded.
 
 ## [0.26.0] - 2026-10-10
 

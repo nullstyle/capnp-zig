@@ -49,8 +49,8 @@ CI matrix runs exactly four roots in Debug and ReleaseSafe. A native Zig
 scanner (`tools/quic_test_evidence.zig`) rejects `SkipZigTest`, enforces
 per-root floors 116 + 1 + 45 + 50 = 212, and makes the four runnable
 artifacts direct build dependencies; it does not parse output or rely on a
-CI-only shell. The floors are the test counts on `b51fc6d` (2026-10-17).
-The scanner fails if the floors in this paragraph are not its own. Linux
+CI-only shell. The floors are the test counts at `b51fc6d`. The scanner
+fails if the floors in this paragraph are not its own. Linux
 alone also runs the full build/check/test/API/docs surface against the QUIC
 root. The `QUIC targeted transport` jobs on macOS and Windows run the four
 evidence roots natively, in Debug and ReleaseSafe with skips rejected, and
@@ -62,11 +62,11 @@ full suite against the QUIC library root", the strict QUIC API snapshot, and
 the QUIC doc-snippet fixtures are all skipped there and remain Linux-only.
 No CI job cross-compiles the full QUIC test tree for Windows.
 
-Getting the Windows leg green required fixing a real defect rather than adjusting an
-expectation: Windows AFD reports an oversized datagram as a failed receive
-(`STATUS_BUFFER_OVERFLOW` -> `error.MessageOversize`, payload and sender
-address discarded, `flags.trunc` never set), where POSIX reports it as a
-successful receive with `MSG_TRUNC`. That error propagated out of the
+Getting the Windows leg green required fixing a real defect rather than
+adjusting an expectation: Windows AFD reports an oversized datagram as a
+failed receive (`STATUS_BUFFER_OVERFLOW` -> `error.MessageOversize`, payload
+and sender address discarded, `flags.trunc` never set), where POSIX reports
+it as a successful receive with `MSG_TRUNC`. That error propagated out of the
 connection step, so one spoofed oversized UDP datagram could kill a Windows
 QUIC connection. The bridge now normalizes both spellings into one
 `truncated` outcome.
@@ -76,16 +76,19 @@ precisely what the dependency does and does not prove. In quic-zig v0.38.0
 (the pinned tag), `windows-latest` is a tier-1 **blocking** CI leg —
 `advisory: false` in `.github/workflows/test.yml` — running the full
 `zig build test` in Debug and in ReleaseSafe (1748 tests on the v0.24.0
-release commit; the v0.38.0 count was not read), so the protocol
-engine, wire/frame codecs, conformance suite, and in-memory TLS handshakes
-genuinely execute on Windows rather than merely cross-compiling. quic-zig's own bundled UDP loop (`runUdpServer` /
-`runUdpClient`) does **not** run there: on native Windows it refuses up front
-with `error.WindowsBundledLoopUnsupported` (std has no overlapped-I/O path for
-its timed receive), and its loop smokes pin that refusal as a platform
-contract instead of skipping. Two `reuse_port` smokes still skip on Windows
-unconditionally. capnp-zig does not use the bundled loop; it drives
-connections through its own UDP bridge, so quic-zig's Windows evidence covers
-the protocol engine, not a Windows socket loop. (At v0.10.1 the three loop
+release commit; the v0.38.0 count was not read), so the protocol engine,
+wire/frame codecs, conformance suite, and in-memory TLS handshakes genuinely
+execute on Windows rather than merely cross-compiling. quic-zig's own bundled
+UDP loop (`runUdpServer` / `runUdpClient`) does **not** run there: on native
+Windows it refuses up front with `error.WindowsBundledLoopUnsupported` (std
+has no overlapped-I/O path for its timed receive), and its loop smokes pin
+that refusal as a platform contract instead of skipping. Three `reuse_port`
+smokes in `tests/e2e/server_loop_smoke.zig` still skip on Windows
+unconditionally: the two that set the flag, and the contrast arm that binds
+without it. They are the only unconditional Windows skips under quic-zig's
+`tests/`. capnp-zig does not use the bundled loop; it drives connections
+through its own UDP bridge, so quic-zig's Windows evidence covers the
+protocol engine, not a Windows socket loop. (At v0.10.1 the three loop
 smokes were unconditional Windows skips — "untested, not known-broken".)
 For v0.38.0, the bundled-loop refusal was re-read in the v0.38.0 tarball, and
 the CI leg and the `reuse_port` skips were re-read at the v0.38.0 tag
@@ -140,19 +143,24 @@ peers' path MTU is a misconfiguration, and this is how it becomes visible.
 Windows QUIC still stays **experimental**: the hosted leg remains the gate for
 the error arm, since the mapping is comptime-gated and unreachable off Windows.
 
-Note on **Windows codegen**: every `capnp`-driven serialization/codegen
-invocation in the tests goes through one helper
+Note on **Windows codegen**: the Zig serialization/codegen tests send every
+`capnp` invocation through one helper
 (`tests/serialization/support/capnp_cli.zig`). It runs the pinned Cap'n Proto
 WASM compiler ([capnp-wasm-toolchain.md](capnp-wasm-toolchain.md)) and
 injects `-Ivendor/ext/capnproto/c++/src`, so absolute imports such as
 `/capnp/stream.capnp` use the same vendored standard schemas on Linux, macOS,
-and Windows. The Windows job installs that compiler as the Linux and macOS
-jobs do: `.github/actions/setup-capnp` runs `mise run bootstrap:capnp`,
-which downloads the pinned archive and checks its digest, then
-`mise run check:capnp`. No native `capnp.exe` goes on `PATH`. The job fails
-up front if the compiler does not verify, and runs the ordinary native suite.
-This is full native codegen coverage; local developers without the compiler
-retain the documented optional-test skips.
+and Windows. The three opt-in C++ reference interop steps
+(`test-codegen-streaming-cpp`, `test-codegen-generic-rpc-cpp`,
+`test-rpc-fd-cpp`) are the exception: they also call the native `capnp` for
+`-o c++`. CI runs them only in the Linux `reflection-conformance` job,
+against the C++ reference that job builds. The Windows job installs the WASM
+compiler as the Linux and macOS jobs do: `.github/actions/setup-capnp` runs
+`mise run bootstrap:capnp`, which downloads the pinned archive and checks
+its digest, then `mise run check:capnp`. No native `capnp.exe` goes on
+`PATH`. The job fails up front if the compiler does not verify, and runs the
+ordinary native suite. This is full native coverage of the Zig codegen
+tests; local developers without the compiler retain the documented
+optional-test skips.
 
 Note on the **Evented `std.Io` backend**: nothing evented is compiled or
 run, and the limit is upstream, not here. At the pinned toolchain (`0.17.0`)

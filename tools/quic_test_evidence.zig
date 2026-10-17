@@ -149,12 +149,13 @@ fn collapseWhitespace(gpa: std.mem.Allocator, bytes: []const u8) ![]u8 {
 const FloorsStatement = enum { matches, missing, stale };
 
 /// `matches` when `text` states the floors at least once and every
-/// statement equals `sentence`.
+/// statement equals `sentence`. Letter case is ignored, so a statement that
+/// starts a sentence ("Per-root floors ...") is checked too.
 fn checkFloorsStatement(text: []const u8, sentence: []const u8) FloorsStatement {
     var found = false;
     var offset: usize = 0;
-    while (std.mem.indexOfPos(u8, text, offset, floors_prefix)) |start| {
-        if (!std.mem.startsWith(u8, text[start..], sentence)) return .stale;
+    while (std.ascii.findIgnoreCasePos(text, offset, floors_prefix)) |start| {
+        if (!std.ascii.startsWithIgnoreCase(text[start..], sentence)) return .stale;
         // "= 212" must not be the head of "= 2120".
         const end = start + sentence.len;
         if (end < text.len and std.ascii.isDigit(text[end])) return .stale;
@@ -224,6 +225,13 @@ test "checkFloorsStatement accepts only statements equal to the sentence" {
     try std.testing.expectEqual(FloorsStatement.stale, checkFloorsStatement("per-root floors 1 + 2 = 4", sentence));
     try std.testing.expectEqual(FloorsStatement.stale, checkFloorsStatement("per-root floors 1 + 2 = 30", sentence));
     try std.testing.expectEqual(FloorsStatement.stale, checkFloorsStatement("per-root floors 1 + 2 = 3 and per-root floors 0 + 2 = 2", sentence));
+}
+
+test "checkFloorsStatement finds a statement in any letter case" {
+    const sentence = "per-root floors 1 + 2 = 3";
+    try std.testing.expectEqual(FloorsStatement.matches, checkFloorsStatement("Per-root floors 1 + 2 = 3.", sentence));
+    try std.testing.expectEqual(FloorsStatement.stale, checkFloorsStatement("per-root floors 1 + 2 = 3. Per-root floors 0 + 2 = 2.", sentence));
+    try std.testing.expectEqual(FloorsStatement.stale, checkFloorsStatement("PER-ROOT FLOORS 1 + 2 = 4", sentence));
 }
 
 test "collapseWhitespace joins a sentence that Markdown wraps" {
