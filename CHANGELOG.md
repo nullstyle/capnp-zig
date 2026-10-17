@@ -40,8 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sendReturnException` family give a held question the named call's
   results or exception. If the call is answered with
   `sendPrebuiltReturnFrame`, its results never come back to this peer, and
-  the question gets the bare tag at once, also when the Peer refuses that
-  frame. A call
+  the question gets the bare tag as soon as that Return is sent. If the
+  Peer refuses the frame (for example, `max_resolved_answers` is full),
+  nothing is sent and the call stays a `yourself` call: a later
+  `sendReturnException` for it still sends `resultsSentElsewhere`, and the
+  question gets that exception. A call
   that this peer forwards back to the remote, because the promise export it
   waited on resolved to a capability of the remote, never brings its
   results here either. The question gets the bare tag when the call is

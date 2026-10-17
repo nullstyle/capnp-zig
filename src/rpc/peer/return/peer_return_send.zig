@@ -422,8 +422,8 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// `yourself` mark goes through here, except the call's own answer
         /// (`takeYourselfMark`) and the remote's Finish of it, which takes
         /// the hold first (`Peer.handleFinish`). The mark goes when another
-        /// Return goes out for the call (`clearSendResultsRouting`), when the
-        /// remote finishes it, or when its handling fails. A
+        /// Return goes out for the call (`clearSendResultsRouting`, after the
+        /// send), when the remote finishes it, or when its handling fails. A
         /// tail call still held on the call can no longer get the call's
         /// answer, and the remote's Finish of the call comes only after the
         /// held question's Finish (rpc.capnp `Call.sendResultsTo`), so the
@@ -630,7 +630,6 @@ pub fn ReturnSend(comptime Peer: type) type {
                 };
             };
             if (!is_loopback) try noteOutboundReturnCapRefs(self, ret);
-            clearSendResultsRouting(self, ret.answer_id);
 
             // See sendReturnResults: loopback answers may not be recorded — no
             // Finish will clear them and the id would be poisoned for reuse.
@@ -660,6 +659,12 @@ pub fn ReturnSend(comptime Peer: type) type {
             }
 
             commitOrRollbackResolvedAnswerAfterSend(self, ret.answer_id, frame, &reservation);
+            // Only now that the Return is out: a refused or failed send leaves
+            // a `yourself` call marked, so the caller's follow-up exception
+            // still answers it `resultsSentElsewhere` and reaches a held
+            // question. Last, so a held question's callback runs after the
+            // answer is recorded.
+            clearSendResultsRouting(self, ret.answer_id);
         }
 
         /// Send a return with an exception for a previously received call.
@@ -1031,9 +1036,10 @@ pub fn ReturnSend(comptime Peer: type) type {
         }
 
         /// Clear an answered call's `sendResultsTo` routing. Every Return
-        /// family but the `yourself` answer itself runs this, so a tail call
-        /// still held on the call gets the bare redirect then
-        /// (`dropYourselfMark`).
+        /// family but the `yourself` answer itself runs this after its send,
+        /// so a tail call still held on the call gets the bare redirect then
+        /// (`dropYourselfMark`), and a send that fails leaves the routing for
+        /// the caller's next answer.
         fn clearSendResultsRouting(self: *Peer, answer_id: u32) void {
             dropYourselfMark(self, answer_id);
             Peer.clearSendResultsToThirdParty(self, answer_id);

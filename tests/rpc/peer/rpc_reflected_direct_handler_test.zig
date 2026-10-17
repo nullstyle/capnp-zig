@@ -1890,10 +1890,12 @@ fn sendPrebuiltResults(h: *TailHarness, allocator: std.mem.Allocator, answer_id:
     try h.client_peer.sendPrebuiltReturnFrame(try decoded.asReturn(), frame);
 }
 
-test "a held tail call whose call's prebuilt Return is refused gets the bare redirect at once" {
+test "a held tail call whose call's prebuilt Return is refused keeps waiting; the host's exception reaches it" {
     // The resolved-answer budget refuses the prebuilt results; a remote can
-    // fill it with Finish-less calls. The question must not wait for the
-    // remote's Finish of the call, which comes only after its own.
+    // fill it with Finish-less calls. Nothing went out, so the call is still
+    // a `yourself` call: the host's next answer, an exception, goes to the
+    // held question, and the remote gets resultsSentElsewhere, never the
+    // exception Return the C++ reference rejects for its tail call.
     const allocator = std.testing.allocator;
     var h: TailHarness = undefined;
     try h.start(allocator);
@@ -1903,14 +1905,18 @@ test "a held tail call whose call's prebuilt Return is refused gets the bare red
     try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
     h.client_peer.limits.max_resolved_answers = h.client_peer.resolved_answers.count();
     try std.testing.expectError(error.PeerLimitExceeded, sendPrebuiltResults(&h, allocator, tail_answer_id));
-    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
-    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, h.caller.tag.?);
-    try std.testing.expectEqual(@as(usize, 0), h.client_peer.held_tail_calls.count());
+    try std.testing.expectEqual(@as(u32, 0), h.caller.returns);
+    try std.testing.expect(h.client_peer.send_results_to_yourself.contains(tail_answer_id));
+    try std.testing.expectEqual(@as(usize, 1), h.client_peer.held_tail_calls.count());
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, tail_answer_id, null));
 
-    // The host answers the call again; the question has its Return.
     try h.client_peer.sendReturnException(tail_answer_id, "host retried");
     try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings("host retried", h.caller.reason());
     try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, tail_answer_id, .resultsSentElsewhere));
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.held_tail_calls.count());
 }
 
 /// Fails one allocation of the peer under test: the `k`-th one after `arm`.
