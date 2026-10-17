@@ -7,12 +7,36 @@ const Root = struct {
     minimum_tests: usize,
 };
 
+// Each floor is the count of `test "` lines in its root when the floor was
+// last raised. When you add tests to a root, raise its floor, then put the
+// sentence that this tool prints on a mismatch in `floors_doc`.
 const roots = [_]Root{
-    .{ .path = "tests/rpc/transport/quic/rpc_quic_transport_test.zig", .minimum_tests = 43 },
+    .{ .path = "tests/rpc/transport/quic/rpc_quic_transport_test.zig", .minimum_tests = 116 },
     .{ .path = "tests/rpc/transport/quic/rpc_quic_public_api_test.zig", .minimum_tests = 1 },
-    .{ .path = "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", .minimum_tests = 36 },
-    .{ .path = "tests/rpc/transport/quic/rpc_quic_peer_test.zig", .minimum_tests = 37 },
+    .{ .path = "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", .minimum_tests = 45 },
+    .{ .path = "tests/rpc/transport/quic/rpc_quic_peer_test.zig", .minimum_tests = 50 },
 };
+
+/// The doc that states the floors. Every statement of them in it must equal
+/// `floors_sentence`, so the doc cannot drift from `roots`.
+const floors_doc = "docs/stability.md";
+const floors_prefix = "per-root floors ";
+
+/// "per-root floors A + B + C + D = SUM" for `entries`.
+fn renderFloorsSentence(comptime entries: []const Root) []const u8 {
+    comptime {
+        var text: []const u8 = floors_prefix;
+        var sum: usize = 0;
+        for (entries, 0..) |root, index| {
+            if (index != 0) text = text ++ " + ";
+            text = text ++ std.fmt.comptimePrint("{d}", .{root.minimum_tests});
+            sum += root.minimum_tests;
+        }
+        return text ++ std.fmt.comptimePrint(" = {d}", .{sum});
+    }
+}
+
+const floors_sentence = renderFloorsSentence(&roots);
 
 fn countTests(bytes: []const u8) usize {
     var count: usize = 0;
@@ -103,6 +127,60 @@ fn enforceWindowsReceiveBackend(init: std.process.Init) !void {
     }
 }
 
+/// Copies `bytes` with each run of whitespace (line breaks included) made
+/// one space, so a sentence that Markdown wraps still matches.
+fn collapseWhitespace(gpa: std.mem.Allocator, bytes: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.ensureTotalCapacity(gpa, bytes.len);
+    var in_space = false;
+    for (bytes) |byte| {
+        if (std.ascii.isWhitespace(byte)) {
+            if (!in_space) out.appendAssumeCapacity(' ');
+            in_space = true;
+        } else {
+            out.appendAssumeCapacity(byte);
+            in_space = false;
+        }
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+const FloorsStatement = enum { matches, missing, stale };
+
+/// `matches` when `text` states the floors at least once and every
+/// statement equals `sentence`.
+fn checkFloorsStatement(text: []const u8, sentence: []const u8) FloorsStatement {
+    var found = false;
+    var offset: usize = 0;
+    while (std.mem.indexOfPos(u8, text, offset, floors_prefix)) |start| {
+        if (!std.mem.startsWith(u8, text[start..], sentence)) return .stale;
+        // "= 212" must not be the head of "= 2120".
+        const end = start + sentence.len;
+        if (end < text.len and std.ascii.isDigit(text[end])) return .stale;
+        found = true;
+        offset = end;
+    }
+    return if (found) .matches else .missing;
+}
+
+fn enforceFloorsDoc(init: std.process.Init) !void {
+    const bytes = try readSource(init, floors_doc);
+    defer init.gpa.free(bytes);
+    const text = try collapseWhitespace(init.gpa, bytes);
+    defer init.gpa.free(text);
+    switch (checkFloorsStatement(text, floors_sentence)) {
+        .matches => {},
+        .missing, .stale => |verdict| {
+            std.debug.print(
+                "{s} must state the QUIC floors as \"{s}\" ({s})\n",
+                .{ floors_doc, floors_sentence, @tagName(verdict) },
+            );
+            return error.QuicFloorsDocDrift;
+        },
+    }
+}
+
 pub fn main(init: std.process.Init) !void {
     comptime {
         if (roots.len != 4) @compileError("QUIC evidence must register exactly four test roots");
@@ -113,6 +191,7 @@ pub fn main(init: std.process.Init) !void {
         const bytes = try readSource(init, root.path);
         defer init.gpa.free(bytes);
         const count = countTests(bytes);
+        std.debug.print("QUIC evidence root {s}: {d} tests (floor {d})\n", .{ root.path, count, root.minimum_tests });
         if (count < root.minimum_tests) {
             std.debug.print(
                 "QUIC evidence inventory fell for {s}: found {d}, require at least {d}\n",
@@ -122,8 +201,34 @@ pub fn main(init: std.process.Init) !void {
         }
         total += count;
     }
-    if (total < 52) return error.QuicTestInventoryTooSmall;
+    try enforceFloorsDoc(init);
     try rejectSkipTokens(init);
     try enforceWindowsReceiveBackend(init);
     std.debug.print("QUIC evidence inventory: {d} tests across {d} runnable roots, zero skips\n", .{ total, roots.len });
+}
+
+test "renderFloorsSentence names every floor and their sum" {
+    const entries = [_]Root{
+        .{ .path = "a", .minimum_tests = 116 },
+        .{ .path = "b", .minimum_tests = 1 },
+        .{ .path = "c", .minimum_tests = 45 },
+    };
+    try std.testing.expectEqualStrings("per-root floors 116 + 1 + 45 = 162", comptime renderFloorsSentence(&entries));
+}
+
+test "checkFloorsStatement accepts only statements equal to the sentence" {
+    const sentence = "per-root floors 1 + 2 = 3";
+    try std.testing.expectEqual(FloorsStatement.matches, checkFloorsStatement("enforces per-root floors 1 + 2 = 3, and", sentence));
+    try std.testing.expectEqual(FloorsStatement.matches, checkFloorsStatement("a per-root floors 1 + 2 = 3. b per-root floors 1 + 2 = 3", sentence));
+    try std.testing.expectEqual(FloorsStatement.missing, checkFloorsStatement("no statement here", sentence));
+    try std.testing.expectEqual(FloorsStatement.stale, checkFloorsStatement("per-root floors 1 + 2 = 4", sentence));
+    try std.testing.expectEqual(FloorsStatement.stale, checkFloorsStatement("per-root floors 1 + 2 = 30", sentence));
+    try std.testing.expectEqual(FloorsStatement.stale, checkFloorsStatement("per-root floors 1 + 2 = 3 and per-root floors 0 + 2 = 2", sentence));
+}
+
+test "collapseWhitespace joins a sentence that Markdown wraps" {
+    const gpa = std.testing.allocator;
+    const text = try collapseWhitespace(gpa, "per-root\r\n  floors 1 +\n2 = 3");
+    defer gpa.free(text);
+    try std.testing.expectEqualStrings("per-root floors 1 + 2 = 3", text);
 }

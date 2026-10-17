@@ -29,7 +29,7 @@ updated as phases land.
 | ThreadSanitizer lane (`test-tsan`, threaded transport suites) | **runs clean**: 11/11 steps, 26/26 tests, no races reported (run 31634824440) | not run (the lane is gated to Linux hosts; a 2026-10-03 probe on Darwin 27 at 0.17.0 starts clean and reports a seeded race, but the full lane has never run here) | not available |
 | Coverage-guided fuzzing (`--fuzz`) | full | full | blocked upstream (zig fuzzer is ELF/Mach-O only) |
 | Evented `std.Io` backend | blocked upstream: does not compile at 0.17.0, selector returns `EventedBackendUnsupported` (see below) | blocked upstream: does not compile at 0.17.0, selector returns `EventedBackendUnsupported` (see below) | blocked upstream (`EventedBackendUnsupported`) |
-| QUIC transport | experimental (`-Dquic=true`; four-root evidence runs in Debug + ReleaseSafe, and the full repository is also tested against the QUIC-enabled root) | experimental (four-root Debug + ReleaseSafe evidence; locally proven 64/64 on macOS) | experimental (native Debug + ReleaseSafe no-skip evidence **executes and passes** on `windows-latest`; the full QUIC-root suite is not run there) |
+| QUIC transport | experimental (`-Dquic=true`; four-root evidence runs in Debug + ReleaseSafe, and the full repository is also tested against the QUIC-enabled root) | experimental (four-root Debug + ReleaseSafe evidence in CI) | experimental (native Debug + ReleaseSafe no-skip evidence **executes and passes** on `windows-latest`; the full QUIC-root suite is not run there) |
 | Fd passing, fd closer, AF_UNIX transport | full (`-Dfd-passing`, default on; the full suite also runs with `-Dfd-passing=false`) | full (same; plus `check-fd-passing-off-symbols`) | not available (no `SCM_RIGHTS`) |
 
 **iOS (Experimental, compile-only).** `capnpc-zig-core` compiles as a
@@ -46,22 +46,23 @@ Mac Catalyst, DriverKit, tvOS, watchOS and visionOS are not gated.
 The targeted QUIC evidence gate is intentionally different from testing the
 entire repository through the QUIC-enabled library root. The three-OS native
 CI matrix runs exactly four roots in Debug and ReleaseSafe. A native Zig
-scanner rejects `SkipZigTest`, enforces per-root floors 26 + 1 + 17 + 8 = 52,
-and makes the four runnable artifacts direct build dependencies; it does not
-parse output or rely on a CI-only shell. Linux alone also runs the full
-build/check/test/API/docs surface against the QUIC root. At this sprint's local
-handoff, macOS runs all four evidence roots in both modes (per-root minimum
-test counts enforced by `tools/quic_test_evidence.zig`). Windows full-tree test
-cross-compilation passes 113/113, and native Windows runtime acceptance is no
-longer pending: the `QUIC targeted transport (windows-latest)` job runs both
+scanner (`tools/quic_test_evidence.zig`) rejects `SkipZigTest`, enforces
+per-root floors 116 + 1 + 45 + 50 = 212, and makes the four runnable
+artifacts direct build dependencies; it does not parse output or rely on a
+CI-only shell. The floors are the test counts on `b51fc6d` (2026-10-17).
+The scanner fails if the floors in this paragraph are not its own. Linux
+alone also runs the full build/check/test/API/docs surface against the QUIC
+root. The `QUIC targeted transport` jobs on macOS and Windows run the four
 evidence roots natively, in Debug and ReleaseSafe with skips rejected, and
-passes. Scope, because the job's own step list is the honest limit — only the
-evidence roots run on Windows; "Build QUIC-enabled targets", "Check
-QUIC-enabled build graph", "Run the full suite against the QUIC library root",
-the strict QUIC API snapshot, and the QUIC doc-snippet fixtures are all
-skipped there and remain Linux-only.
+pass (CI run 39015025482 on `b51fc6d`: 241/241 tests in each mode on each
+OS). Scope, because the job's own step list is the honest limit — only the
+evidence roots and the one-round-trip QUIC example run on macOS and Windows;
+"Build QUIC-enabled targets", "Check QUIC-enabled build graph", "Run the
+full suite against the QUIC library root", the strict QUIC API snapshot, and
+the QUIC doc-snippet fixtures are all skipped there and remain Linux-only.
+No CI job cross-compiles the full QUIC test tree for Windows.
 
-Getting that leg green required fixing a real defect rather than adjusting an
+Getting the Windows leg green required fixing a real defect rather than adjusting an
 expectation: Windows AFD reports an oversized datagram as a failed receive
 (`STATUS_BUFFER_OVERFLOW` -> `error.MessageOversize`, payload and sender
 address discarded, `flags.trunc` never set), where POSIX reports it as a
@@ -70,11 +71,12 @@ connection step, so one spoofed oversized UDP datagram could kill a Windows
 QUIC connection. The bridge now normalizes both spellings into one
 `truncated` outcome.
 
-That pending claim also rests on a layer below us, so it is worth stating
-precisely what the dependency does and does not prove. In quic-zig v0.24.0
+The Windows QUIC claim also rests on a layer below us, so it is worth stating
+precisely what the dependency does and does not prove. In quic-zig v0.38.0
 (the pinned tag), `windows-latest` is a tier-1 **blocking** CI leg —
 `advisory: false` in `.github/workflows/test.yml` — running the full
-`zig build test` (1748 tests on the v0.24.0 release commit), so the protocol
+`zig build test` in Debug and in ReleaseSafe (1748 tests on the v0.24.0
+release commit; the v0.38.0 count was not read), so the protocol
 engine, wire/frame codecs, conformance suite, and in-memory TLS handshakes
 genuinely execute on Windows rather than merely cross-compiling. quic-zig's own bundled UDP loop (`runUdpServer` /
 `runUdpClient`) does **not** run there: on native Windows it refuses up front
@@ -85,15 +87,15 @@ unconditionally. capnp-zig does not use the bundled loop; it drives
 connections through its own UDP bridge, so quic-zig's Windows evidence covers
 the protocol engine, not a Windows socket loop. (At v0.10.1 the three loop
 smokes were unconditional Windows skips — "untested, not known-broken".)
-The bundled-loop refusal was re-read in the v0.24.0 tarball; the CI leg and
-the `reuse_port` skips were re-read on quic-zig's main branch just past the
-tag (the tarball ships neither `.github/` nor `tests/`), and the Windows test
-count comes from the release note.
+For v0.38.0, the bundled-loop refusal was re-read in the v0.38.0 tarball, and
+the CI leg and the `reuse_port` skips were re-read at the v0.38.0 tag
+through the GitHub API (the tarball ships neither `.github/` nor `tests/`).
+The Windows test count comes from the v0.24.0 release note.
 
-The practical consequence for our own Windows QUIC acceptance is that the
-socket layer is unproven on *both* sides of the boundary. Treat a Windows
-runtime run as genuine discovery work that may surface real defects, not as a
-formality expected to confirm a working path.
+So before our own Windows QUIC job ran, the socket layer was unproven on
+*both* sides of the boundary. The first Windows runtime run was discovery
+work that could surface real defects, not a formality expected to confirm a
+working path.
 
 **And it did — and what it found was ours, not upstream's.** The hosted `QUIC
 targeted transport (windows-latest)` leg reported **60/61**, failing exactly
@@ -138,15 +140,19 @@ peers' path MTU is a misconfiguration, and this is how it becomes visible.
 Windows QUIC still stays **experimental**: the hosted leg remains the gate for
 the error arm, since the mapping is comptime-gated and unreachable off Windows.
 
-Note on **Windows codegen**: the upstream prebuilt Windows tools still contain
-the executables but not the standard schema tree. The repository now routes
-every `capnp`-driven serialization/codegen invocation through one helper that
+Note on **Windows codegen**: every `capnp`-driven serialization/codegen
+invocation in the tests goes through one helper
+(`tests/serialization/support/capnp_cli.zig`). It runs the pinned Cap'n Proto
+WASM compiler ([capnp-wasm-toolchain.md](capnp-wasm-toolchain.md)) and
 injects `-Ivendor/ext/capnproto/c++/src`, so absolute imports such as
 `/capnp/stream.capnp` use the same vendored standard schemas on Linux, macOS,
-and Windows. The Windows job downloads the pinned archive with a checksum,
-places `capnp.exe` on `PATH`, fails up front if the tool is unavailable, and
-runs the ordinary native suite. This is full native codegen coverage; local
-developers without `capnp` retain the documented optional-test skips.
+and Windows. The Windows job installs that compiler as the Linux and macOS
+jobs do: `.github/actions/setup-capnp` runs `mise run bootstrap:capnp`,
+which downloads the pinned archive and checks its digest, then
+`mise run check:capnp`. No native `capnp.exe` goes on `PATH`. The job fails
+up front if the compiler does not verify, and runs the ordinary native suite.
+This is full native codegen coverage; local developers without the compiler
+retain the documented optional-test skips.
 
 Note on the **Evented `std.Io` backend**: nothing evented is compiled or
 run, and the limit is upstream, not here. At the pinned toolchain (`0.17.0`)
@@ -329,7 +335,7 @@ interop contract.
 | RPC fd passing | `src/rpc/transport/fd_passing.zig`, `src/rpc/peer/peer_fds.zig`, `src/rpc/transport/tcp/stream_transport.zig` (`enableFdPassing`, `enqueueWriteWithFds`, `takeFrameFd`) | Fds tied to capabilities over AF_UNIX (Linux and macOS; compiled out elsewhere, iOS and every other Apple target included, and everywhere with the build option `-Dfd-passing=false`: `FdHandle` is empty, `setExportFd` returns `FdPassingUnsupported`). `fd_passing.supported` is the one gate (`target_supported and -Dfd-passing`); `fd_closer`, `fd_budget`, `fd_io` and `rpc.transport.unix` all read it. `-Dfd-passing` (default on) goes through the `capnp_build_options` module ([build-integration.md](build-integration.md#compiling-fd-passing-out--dfd-passing-experimental)); `zig build check-fd-passing-off-symbols` proves on a macOS host that a core static library built with it off imports no `___ulock_*`, `_pthread_create` or `_getrlimit` and defines no fd closer function. `rpc.transport.unix.FdPassing` on `ListenOptions`/`ConnectOptions` turns it on for both directions; `Peer.setExportFd` (borrowed), `Peer.importFd` (lent until the import is released), `Peer.clearExportFd`, `Peer.setMaxLiveImportedFds`, `Connection.enableFdPassing`/`sendFrameWithFds`/`takeFrameFd`, `TransportBinding` fd hooks. Exact-boundary reads, per-message and per-connection caps, the process fd budget, every close off-thread. Outside the frozen cap table (`docs/api-snapshot.txt` unchanged). `docs/rpc-unix-sockets.md` has the contract, the platform matrix and the threat table with a named proof per row; `zig build example-rpc-fd` runs it. CI runs it against the C++ reference on Linux, in both directions (`zig build test-rpc-fd-cpp`, in the reflection-conformance job). macOS is left out on purpose: kj reads in bulk and can give a frame's fds to the next frame there, so do not send fds to a C++ peer on macOS. Not frozen. |
 | RPC Events | `src/rpc/events.zig` | Redacted transport-general observer events, plus the typed disconnect-cause enum (`DisconnectCause`, the QUIC death certificate). Event names may grow while payloads stay redacted. `Source`, `Resource` and `DisconnectCause` are non-exhaustive (`enum(u8) { ..., _ }`): switch on them with an `else` or `_` arm, and name a value you did not construct with `std.enums.tagName`. `Event` is a tagged union and cannot be non-exhaustive, so each new variant breaks a `switch` that lists every variant: switch on an `Event` with an `else` arm. |
 | Switchable Io Backend | `src/io_backend.zig` | Backend selection (`process_init`/`threaded`/`evented`). Selector shape may change. |
-| RPC QUIC Transport | `src/rpc/transport/quic` | Optional QUIC baseline/native transport, gated by `-Dquic=true`. Windows uses a single-in-flight cancellable UDP receive bridge; fanout sessions are heap-stable before `Peer` attachment. Native Windows acceptance runs both evidence roots in CI (Debug + ReleaseSafe, skips rejected). |
+| RPC QUIC Transport | `src/rpc/transport/quic` | Optional QUIC baseline/native transport, gated by `-Dquic=true`. Windows uses a single-in-flight cancellable UDP receive bridge; fanout sessions are heap-stable before `Peer` attachment. Native Windows acceptance runs all four evidence roots in CI (Debug + ReleaseSafe, skips rejected). |
 | RPC QUIC session-ticket key | `src/rpc/transport/quic/options.zig` (`ServerOptions.session_ticket_key`, `session_ticket_lifetime_s`, `previous_session_ticket_key` / `previous_session_ticket_key_until_us`, `new_token_clock` / `new_token_max_clock_skew_us`, `ClientOptions.session_ticket_lifetime_s`, `serverConfigFromOptions`, `zeroServerConfigSecrets`), `src/rpc/transport/quic/session_ticket.zig` (`loadTicketKeyFile`), `Server.rotateSessionTicketKey` / `Listener.rotateSessionTicketKey` | Experimental (`-Dquic=true`; the Experimental-quic snapshot), opt-in and null by default, in the hardened preset too. A persisted 48-byte key lets a crash-restarted server open its predecessor's tickets, so a `WarmRedialClient` heal restores in 0-RTT, behind a Retry too. The key goes through quic-zig v0.27.0's `Server.Config.session_ticket_key` (a `.pem` reload keeps it); rotation runs on the loop thread with the listener's clock, and a restarted process keeps the key before it open through quic-zig v0.29.0's `previous_session_ticket_key`. Refused: an all-zero key, a key with `.with_anti_replay`, a lifetime outside 1 s to 2 days (server or client), a previous key with no key, all zero, or with the current key's name. A stolen key opens recorded 0-RTT data and lets its holder impersonate the server to resuming clients until their tickets expire: read "Session-ticket key" in `docs/quic-transport.md` before setting it. Crash-restart, rotation and refusal tests run in the QUIC evidence roots; the Nightly ticket-key soak gates a 0-RTT heal with no Retry per abrupt death. |
 | RPC Host Peer | `src/rpc/integration/host_peer.zig` | Host-neutral detached frame-pump for wasm environments. |
 | Native connection and C ABI | `src/native/*`, `src/native/include/capnp_core.h` | `native.conn` (a sans-IO connection: a detached `Peer`, a framer and an effect queue) and `native.abi`, its C ABI (`export fn capnp_*`, ABI version 1), moved from capnp-swift (handoff H7). In all three roots; needs only `capnpc-zig-core`. The symbols are emitted only where a root references `native.abi`. The header is gated against the exports (`src/native/abi_header_test.zig`); see [native-abi.md](native-abi.md). |

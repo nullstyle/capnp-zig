@@ -19,25 +19,27 @@ just test-rpc-quic-evidence ReleaseSafe
 
 The native Zig evidence executable scans the complete QUIC test directory,
 rejects `SkipZigTest`, and then requires exactly four runnable roots: transport,
-public API, internal implementation, and real `Peer`-over-QUIC behavior. Its
-per-root floors are 43 + 1 + 36 + 32 = 112 tests (raised to the actual counts on
-2026-10-03, so a silently dropped test fails the gate). The build step fails immediately
-when `-Dquic=true` is absent, and each root is a direct build dependency, so the
-gate neither parses test output nor relies on a CI-only shell or package.
+public API, internal implementation, and real `Peer`-over-QUIC behavior. Each
+root has a floor, its test count when the floor was last raised, so a silently
+dropped test fails the gate. [`stability.md`](stability.md#platform-support)
+gives the floors, and the executable fails if they are not its own. The build
+step fails immediately when `-Dquic=true` is absent, and each root is a direct
+build dependency, so the gate neither parses test output nor relies on a
+CI-only shell or package.
 
 CI is configured to run the Debug + ReleaseSafe pair from each operating
 system's native shell on Linux, macOS, and Windows. Linux also runs the full
 repository build/check/test/API/docs surface against the QUIC-enabled root;
 that broader root-wide gate is not duplicated on macOS or Windows.
 
-Current evidence is intentionally stated narrowly: macOS passes the four
-evidence roots in both Debug and ReleaseSafe (per-root minimum test counts are
-enforced by `tools/quic_test_evidence.zig`, so a silently shrunken root fails
-the gate; exact totals grow with the suites and are not restated here). The Windows QUIC tree passes
-full-tree test cross-compilation (113/113), but that is not runtime evidence.
-The native Windows no-skip lane remains a hosted acceptance gate after
-capnp-zig itself is pushed; do not infer Windows runtime parity from the
-dependency pushes or cross-compilation result.
+Current evidence is intentionally stated narrowly. Linux, macOS and Windows
+each run the four evidence roots natively in Debug and ReleaseSafe, with skips
+rejected, and pass (CI run 39015025482 on `b51fc6d`: 241/241 tests in each
+mode on each OS). On macOS and Windows, these roots and the one-round-trip
+QUIC example are the whole QUIC gate. The full suite against the QUIC root
+runs on Linux only, and no CI job cross-compiles the full QUIC test tree for
+Windows. Do not infer Windows parity for QUIC code that the four roots do not
+reach.
 
 The transport uses ALPN `capnp-rpc/1`. One QUIC connection represents one
 Cap'n Proto RPC vat session. The payload above the QUIC transport is still the

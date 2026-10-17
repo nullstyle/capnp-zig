@@ -22,8 +22,8 @@ version (`zig fetch --save …#v0.26.0`) and read the CHANGELOG before bumping.
   [`docs/generated-shape.txt`](generated-shape.txt) and
   `zig build check-generated-shape` (see
   [What is frozen in generated code](generated-api.md#what-is-frozen-in-generated-code)).
-  Breaking changes are avoided within 0.3.x and called out in the CHANGELOG
-  when unavoidable; `just check-release-drift` fails a release that changes a
+  Breaking changes to the Stable surface are avoided, and are called out in
+  the CHANGELOG when unavoidable; `just check-release-drift` fails a release that changes a
   Stable line without a Stable `### Breaking` entry (an entry tagged
   `(Experimental)` does not count).
 - **Experimental** (retained outbound-answer lifetimes, L3/L4 three-party
