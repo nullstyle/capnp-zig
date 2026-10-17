@@ -11,6 +11,9 @@ pub fn clearSendResultsToThirdPartyForPeer(
     }
 }
 
+/// Not for `rpc.peer.Peer`: the Peer drops a `yourself` mark only through
+/// `ReturnSend.dropYourselfMark`, which also ends a tail call held on the
+/// call (`Peer.held_tail_calls`).
 pub fn clearSendResultsRoutingForPeer(
     comptime PeerType: type,
     peer: *PeerType,
@@ -31,6 +34,9 @@ pub fn noteSendResultsToYourselfForPeer(
     _ = try peer.send_results_to_yourself.getOrPut(answer_id);
 }
 
+/// Not for `rpc.peer.Peer`: the Peer drops a `yourself` mark only through
+/// `ReturnSend.dropYourselfMark`, which also ends a tail call held on the
+/// call (`Peer.held_tail_calls`).
 pub fn noteSendResultsToThirdPartyForPeer(
     comptime PeerType: type,
     peer: *PeerType,

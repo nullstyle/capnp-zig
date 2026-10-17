@@ -34,20 +34,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **RPC: a question whose tail call names an unanswered call now waits for
   that call.** The question's Return callback runs when the named
   `sendResultsTo = yourself` call is answered. Before, it ran at once with
-  the bare `takeFromOtherQuestion` tag. "Fixed" below has the details. The
-  hold is bounded by `max_send_results_to_yourself`. Past that bound, the
-  question gets the bare tag at once, as before. `sendReturnResults` and the
-  `sendReturnException` family give a held question the named call's
-  results or exception. If the call is answered with
-  `sendPrebuiltReturnFrame`, its results never come back to this peer, and
-  the question gets the bare tag as soon as that Return is sent. If the
-  Peer refuses the frame (for example, `max_resolved_answers` is full),
-  nothing is sent and the call stays a `yourself` call: a later
-  `sendReturnException` for it still sends `resultsSentElsewhere`, and the
-  question gets that exception. A call
-  that this peer forwards back to the remote, because the promise export it
-  waited on resolved to a capability of the remote, never brings its
-  results here either. The question gets the bare tag when the call is
+  the bare `takeFromOtherQuestion` tag. "Fixed" below has the details.
+  `sendReturnResults` and the `sendReturnException` family give a held
+  question the named call's results or exception. If the remote finishes
+  the named call before it is answered, the question ends with
+  `rpc.peer.tail_call_finished_reason`. If the named call waits on a
+  promise export of ours and the remote releases that export before it
+  resolves, the question gets the call's exception,
+  `rpc.peer.promise_export_released_reason` (see "Fixed"). Fallback rule:
+  if the Peer cannot give a held question the named call's answer, the
+  question gets the bare tag at once, as before. That happens when the
+  hold table is full (`max_send_results_to_yourself`) or out of memory,
+  when the call is answered with `sendPrebuiltReturnFrame` (its frame goes
+  on the wire as built, so its results never come back here), when its
+  handling fails before it is answered, when it is queued on an answer
+  whose Return already went out without failing it, when this peer
+  forwards it back to the remote, and when the Peer runs out of memory as
+  it builds or delivers the answer. A prebuilt frame gives the bare tag
+  once it is sent. If the Peer refuses the frame (for
+  example, `max_resolved_answers` is full), nothing is sent and the call
+  stays a `yourself` call: a later `sendReturnException` for it still
+  sends `resultsSentElsewhere`, and the question gets that exception. A
+  call that this peer forwards back to the remote, because the promise
+  export it waited on resolved to a capability of the remote, never brings
+  its results here. The question gets the bare tag when the call is
   forwarded, or when the redirect arrives if the call was forwarded first.
   The question waits neither for the remote's Finish of the call nor for
   the remote's answer to the forwarded call. A remote that follows
@@ -58,17 +68,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `resultsSentElsewhere`, also when that Return is an exception: the
   exception stays with the remote. If the remote finishes its call first,
   this peer relays that Finish to the forwarded call and answers the call
-  the same way (see "Fixed"). If the remote finishes the named call
-  before it is answered, the question ends with
-  `rpc.peer.tail_call_finished_reason`.
-  If the named call waits on a promise export of ours and the remote
-  releases that export before it resolves, the question gets the call's
-  exception, `rpc.peer.promise_export_released_reason` (see "Fixed").
-  If the Peer runs out of memory as it gives a held question its answer,
-  the question gets the bare tag. If it runs out of memory as it replays
+  the same way (see "Fixed"). If the Peer runs out of memory as it replays
   or fails a call that waited on a promise and that the question names,
   that call still gets its exception Return (see "Fixed"), and the
-  question gets that exception or the bare tag.
+  question gets that exception or the bare tag. A held question still
+  waits as long as the named call waits for its host: if the host never
+  answers that call (or the call it is queued on), only a cancel, the
+  question's deadline or the transport close ends the question. Tests in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` sweep one
+  allocation failure over the answer (results, exception, prebuilt), the
+  remote's Finish, the Release of a promise export, the replay and the
+  drain of queued calls, and a cross-peer relay.
   Limit: `sendPrebuiltReturnFrame` puts its frame on the wire as built,
   also for a `sendResultsTo = yourself` call, and the C++ reference
   rejects a `results` or `exception` Return for its tail call. `HostPeer`

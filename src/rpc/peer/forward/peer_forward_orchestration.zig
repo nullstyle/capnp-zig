@@ -209,6 +209,9 @@ pub fn takeForwardedTailQuestionForPeerFn(comptime PeerType: type) *const fn (*P
     }.call;
 }
 
+/// Not for `rpc.peer.Peer`: the Peer drops a `yourself` mark only through
+/// `ReturnSend.dropYourselfMark`, which also ends a tail call held on the
+/// call (`Peer.held_tail_calls`).
 pub fn removeSendResultsToYourselfForPeer(comptime PeerType: type, peer: *PeerType, answer_id: u32) void {
     _ = peer.send_results_to_yourself.remove(answer_id);
 }

@@ -802,7 +802,9 @@ pub const Peer = struct {
     /// the held question gets the bare redirect then, as does one whose
     /// call's handling fails in `handleCall`. A terminal that cannot be
     /// built or delivered (out of memory) gives the bare redirect too, built
-    /// without the heap. A call this
+    /// without the heap. No question is held on a call queued on an answer
+    /// whose Return already went out without failing it
+    /// (`ReturnSend.holdTailCall`): nothing would replay it. A call this
     /// peer forwards back to the remote (a promise export it waited on
     /// resolved to a capability of the remote) never brings its results
     /// here either: the held question gets the bare redirect when the call
