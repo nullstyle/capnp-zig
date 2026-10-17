@@ -127,11 +127,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call's results after the promise resolves, or its exception when the
   promise is rejected or the remote releases it first. Before, the
   question got the bare tag at once, and the call's later answer stayed in
-  the stash. It also applies when the results fail to build. The usual case is a generated DIRECT handler that
-  returns an error: its body runs inside the `sendReturnResults` build, and
-  the dispatch then answers with the error name. Before, `sendReturnResults`
-  dropped the `yourself` mark before the build, so the exception after a
-  failed build still went on the wire. A native host whose
+  the stash. It also applies when the results fail to build. The usual
+  case is a generated DIRECT handler that returns an error: its body runs
+  inside the `sendReturnResults` build, and the dispatch then answers with
+  the error name. Before, `sendReturnResults` dropped the `yourself` mark
+  before the build, so the exception after a failed build still went on
+  the wire. A native host whose
   `capnp_return_results` fails and that then calls `capnp_return_exception`
   takes the same path. If the `resultsSentElsewhere` send itself fails (out
   of memory), the call stays marked, so that follow-up exception still sends

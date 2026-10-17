@@ -764,10 +764,12 @@ pub const Peer = struct {
     /// never comes (rpc.capnp lets the remote skip it), the entry is freed
     /// when the remote reuses the id for a new Call (`handleCall`: the
     /// remote reuses an id only after its Finish, and a redirect that names
-    /// the old call comes before that Finish), or at deinit. NOT freed on the
-    /// answered call's Finish — the forwarder's `Finish` for the forwarded
-    /// question can arrive BEFORE the `takeFromOtherQuestion`, so freeing
-    /// there would drop the results early.
+    /// the old call comes before that Finish), or at deinit. Not freed on the
+    /// answered call's Finish: the id reuse or deinit frees an entry still
+    /// kept then. The redirect comes before that Finish: the C++
+    /// reference finishes its tail call only after the question's Finish,
+    /// and capnp-zig's forwarder relays the Finish only then
+    /// (`finishForwardResolvedCall`).
     /// Only cap-free results are stashed, and exceptions: rpc.capnp answers
     /// such a call with `resultsSentElsewhere` also when it fails, so its
     /// exception reaches the caller only through this stash.
