@@ -462,11 +462,12 @@ preflight VERSION="": (release-preflight VERSION)
 check-nightly-gate SHA *ARGS:
     deno run --allow-run=gh,git --allow-read --allow-write --allow-env --no-config tools/ci_gates.ts nightly-gate "{{ SHA }}" {{ ARGS }}
 
-# The same check as the CI job "CI gate tools": a step-level timeout-minutes
-# does not count, and a hung job without a job-level cap runs for 6 hours.
+# The same check as the CI job "CI gate tools", on every .yml and .yaml file
+# in .github/workflows: a step-level timeout-minutes does not count, and a
+# hung job without a job-level cap runs for 6 hours.
 # Fail when a workflow job has no job-level timeout-minutes
 check-job-timeouts:
-    deno run --allow-read --no-config tools/ci_gates.ts job-timeouts .github/workflows/ci.yml .github/workflows/nightly.yml .github/workflows/release.yml
+    deno run --allow-read --no-config tools/ci_gates.ts job-timeouts
 
 # Create and push an annotated release tag — but refuse when the commit being
 # tagged does not already have a green CI run, or does not pass the Nightly

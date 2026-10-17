@@ -7,7 +7,7 @@
 //   deno run --allow-read --allow-env --no-config \
 //     tools/ci_gates.ts annotate --log-dir DIR [--expect NAME]
 //   deno run --allow-read --no-config \
-//     tools/ci_gates.ts job-timeouts WORKFLOW.yml...
+//     tools/ci_gates.ts job-timeouts [WORKFLOW.yml...]
 //
 // nightly-gate (`just check-nightly-gate SHA`; `just release-tag` runs it)
 //   Reads the 3 most recent completed Nightly runs whose head_sha is SHA, with
@@ -57,7 +57,9 @@
 //   or when its value is not a whole number from 1 to 360. A step-level
 //   `timeout-minutes` does not count. The scan reads the block structure by
 //   indentation and stops with an error on a layout it does not know, so an
-//   unusual file is a failure, not a silent pass.
+//   unusual file is a failure, not a silent pass. With no file, it checks
+//   every .yml and .yaml file in .github/workflows, so a new workflow is
+//   checked too.
 
 export const REQUIRED_RUNS = 3;
 export const ROW_MAX_DAYS = 30;
@@ -67,6 +69,7 @@ export const OVERFLOW_TITLE = "nightly-failure-overflow";
 export const NIGHTLY_WORKFLOW = "nightly.yml";
 export const DEFAULT_FLAKES = ".github/known-flakes.txt";
 export const MAX_TIMEOUT_MINUTES = 360;
+export const WORKFLOW_DIR = ".github/workflows";
 
 // Job conclusions that are not a failure.
 const OK_JOB = new Set(["success", "skipped", "neutral"]);
@@ -911,12 +914,34 @@ function annotateCommand(args: string[]): number {
   return 0;
 }
 
-async function jobTimeoutsCommand(args: string[]): Promise<number> {
-  if (args.length === 0) {
-    throw new GateError("usage: job-timeouts WORKFLOW.yml...");
+async function workflowFiles(): Promise<string[]> {
+  const files: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(WORKFLOW_DIR)) {
+      if (entry.isFile && /\.ya?ml$/.test(entry.name)) {
+        files.push(`${WORKFLOW_DIR}/${entry.name}`);
+      }
+    }
+  } catch (error) {
+    throw new GateError(
+      `cannot read ${WORKFLOW_DIR}: ${
+        error instanceof Error ? error.message : error
+      }`,
+    );
   }
+  if (files.length === 0) {
+    throw new GateError(`${WORKFLOW_DIR} has no .yml or .yaml file`);
+  }
+  return files.sort();
+}
+
+async function jobTimeoutsCommand(args: string[]): Promise<number> {
+  if (args.some((a) => a.startsWith("--"))) {
+    throw new GateError("usage: job-timeouts [WORKFLOW.yml...]");
+  }
+  const files = args.length > 0 ? args : await workflowFiles();
   const problems: string[] = [];
-  for (const file of args) {
+  for (const file of files) {
     const jobs = jobTimeouts(await Deno.readTextFile(file), file);
     const found = timeoutProblems(file, jobs);
     problems.push(...found);

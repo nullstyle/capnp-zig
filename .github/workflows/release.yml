@@ -75,6 +75,7 @@ jobs:
         run: deno run --allow-run=gh,git --allow-read --allow-env --no-config tools/ci_gates.ts nightly-gate "$(git rev-parse HEAD)" --repo "${GITHUB_REPOSITORY}"
 
       - name: The tag must match the manifest and the CHANGELOG
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"

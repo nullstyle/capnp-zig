@@ -60,12 +60,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   job-level timeout.** Seven jobs had none, so a hung job could run for
   GitHub's 6-hour default. `fmt-check`, `evented-check`, `docs-smoke`,
   `bench-check`, `wasm-build` and `release-build` get 10 min (their slowest
-  green run was 4.2 min or less). `cross-targets` gets 60 min (slowest 35.9
-  min). `e2e-quic` goes from 25 to 10 min (slowest 5.3 min), and
+  green run was 4.3 min or less). `cross-targets` gets 60 min (slowest 35.9
+  min). `e2e-quic` goes from 25 to 15 min (slowest 5.3 min), and
   `release-safe-tests` from 60 to 75 min (slowest 50.5 min). These figures
-  come from 17 green CI runs, 10-10 to 10-17. A new step in the "CI gate
-  tools" job (also `just check-job-timeouts`) fails when a job has no
-  job-level `timeout-minutes`. A step-level timeout does not count. The
+  come from 19 green CI runs, 10-10 to 10-17. A new step in the "CI gate
+  tools" job (also `just check-job-timeouts`) fails when a job in any file
+  of `.github/workflows` has no job-level `timeout-minutes`. A step-level
+  timeout does not count. The
   `evented-check` e2e step and the `bench-check` step now run under
   `tools/stall_watchdog.sh`.
 - **Nightly: the Windows 64-worker soak lane runs in its own job.** It used

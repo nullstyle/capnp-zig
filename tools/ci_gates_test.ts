@@ -1035,6 +1035,38 @@ Deno.test("job-timeouts passes on the workflows and fails when one job loses its
     const ok = await cli(["job-timeouts", ...files]);
     assertEquals(ok.code, 0, `committed workflows:\n${ok.stdout}`);
 
+    // With no file it checks every workflow in .github/workflows.
+    const all = await cli(["job-timeouts"]);
+    assertEquals(all.code, 0, `all workflows:\n${all.stdout}`);
+    for (const f of files) {
+      assert(all.stdout.includes(`${f}: `), `${f} is checked:\n${all.stdout}`);
+    }
+    const repo = `${dir}/repo`;
+    await Deno.mkdir(`${repo}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${repo}/.github/workflows/a.yml`,
+      "jobs:\n  a:\n    timeout-minutes: 5\n",
+    );
+    await Deno.writeTextFile(
+      `${repo}/.github/workflows/new.yaml`,
+      "jobs:\n  b:\n    runs-on: ubuntu-latest\n",
+    );
+    await Deno.writeTextFile(`${repo}/.github/workflows/README`, "not yaml\n");
+    const added = await cli(["job-timeouts"], {}, repo);
+    assertEquals(added.code, 1, `a new workflow:\n${added.stdout}`);
+    assert(
+      added.stdout.includes(
+        '.github/workflows/new.yaml:2: job "b" has no job-level timeout-minutes',
+      ),
+      added.stdout,
+    );
+    await Deno.mkdir(`${dir}/empty/.github/workflows`, { recursive: true });
+    assertEquals(
+      (await cli(["job-timeouts"], {}, `${dir}/empty`)).code,
+      2,
+      "no workflow file",
+    );
+
     // The Test job keeps a step-level timeout-minutes, so a count of the
     // key in the file still sees one there. The check must not.
     const ci = await Deno.readTextFile(`${ROOT}/.github/workflows/ci.yml`);

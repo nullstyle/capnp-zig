@@ -125,7 +125,8 @@ jobs:
       - name: Portable compiler driver integrity and execution tests
         # Uses the real WASM compiler and a fixture plugin process on every OS,
         # including Windows binary streams and workspace/output paths with spaces.
-        # The package preflight below exercises the package-built Zig generator.
+        # The package preflight below (Linux only per push; Nightly runs it on
+        # all three OSes) exercises the package-built Zig generator.
         # Missing artifacts or Wasmtime fail these tests rather than skip them.
         run: deno test --allow-all --no-config tools/capnp_tool_test.ts
 
@@ -235,7 +236,7 @@ jobs:
   fmt-check:
     name: Format check
     runs-on: ubuntu-latest
-    # Slowest healthy run: 0.3 min (17 green runs, 10-10 to 10-17). 10 min
+    # Slowest healthy run: 0.3 min (19 green runs, 10-10 to 10-17). 10 min
     # is the floor for short jobs, so a slow runner or a cold mise cache does
     # not fail a healthy run.
     timeout-minutes: 10
@@ -271,15 +272,17 @@ jobs:
         run: deno test --allow-all --no-config tools/ci_gates_test.ts
 
       # A hung job without a job-level cap runs for GitHub's 6-hour default.
-      # A step-level timeout-minutes does not count. The tests above prove
-      # that the check fails when one job loses its cap.
+      # A step-level timeout-minutes does not count. With no file argument
+      # the check reads every .yml and .yaml file in .github/workflows. The
+      # tests above prove that it fails when one job loses its cap.
       - name: Every job has a job-level timeout-minutes
-        run: deno run --allow-read --no-config tools/ci_gates.ts job-timeouts .github/workflows/ci.yml .github/workflows/nightly.yml .github/workflows/release.yml
+        run: deno run --allow-read --no-config tools/ci_gates.ts job-timeouts
 
   evented-check:
     name: Evented backend check
     runs-on: ubuntu-latest
-    # Slowest healthy run: 2.2 min (17 green runs, 10-10 to 10-17). 10 min
+    # Slowest healthy run: 2.3 min (run 38031326412; 19 green runs, 10-10 to
+    # 10-17). 10 min
     # is the floor for short jobs, so a slow runner or a cold mise cache does
     # not fail a healthy run.
     timeout-minutes: 10
@@ -473,7 +476,8 @@ jobs:
   docs-smoke:
     name: Docs smoke and snippets
     runs-on: ubuntu-latest
-    # Slowest healthy run: 4.2 min (17 green runs, 10-10 to 10-17). 10 min
+    # Slowest healthy run: 4.3 min (run 38016756553; 19 green runs, 10-10 to
+    # 10-17). 10 min
     # is the floor for short jobs, so a slow runner or a cold mise cache does
     # not fail a healthy run.
     timeout-minutes: 10
@@ -508,7 +512,7 @@ jobs:
   cross-targets:
     name: Cross-target compile (${{ matrix.target }})
     runs-on: ubuntu-latest
-    # Slowest healthy run: 35.9 min (x86-linux-gnu, run 38977730732; 17 green
+    # Slowest healthy run: 35.9 min (x86-linux-gnu, run 38977730732; 19 green
     # runs, 10-10 to 10-17). The other targets took at most 19.2 min.
     timeout-minutes: 60
     strategy:
@@ -776,8 +780,9 @@ jobs:
     # The Zig e2e server and client over the QUIC baseline wire, all seven
     # schemas: the mode capnp-swift tests against. The first green run took
     # 5m14s (run 38970205763, with a 1.5 min dependency fetch). The slowest
-    # of the 5 green runs to 10-17 took 5.3 min, so 10 (about 2x).
-    timeout-minutes: 10
+    # of the 5 green runs to 10-17 took 5.3 min (run 39008635610). 15 (about
+    # 3x) leaves room for a cold package cache.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
         with:
@@ -826,7 +831,7 @@ jobs:
   bench-check:
     name: Benchmark regression check
     runs-on: ubuntu-latest
-    # Slowest healthy run: 3.3 min (17 green runs, 10-10 to 10-17). 10 min
+    # Slowest healthy run: 3.3 min (19 green runs, 10-10 to 10-17). 10 min
     # is the floor for short jobs, so a slow runner or a cold mise cache does
     # not fail a healthy run.
     timeout-minutes: 10
@@ -849,7 +854,8 @@ jobs:
   wasm-build:
     name: WASM build
     runs-on: ubuntu-latest
-    # Slowest healthy run: 2.2 min (17 green runs, 10-10 to 10-17). 10 min
+    # Slowest healthy run: 2.5 min (run 38031326412; 19 green runs, 10-10 to
+    # 10-17). 10 min
     # is the floor for short jobs, so a slow runner or a cold mise cache does
     # not fail a healthy run.
     timeout-minutes: 10
@@ -870,7 +876,7 @@ jobs:
   release-build:
     name: Release build
     runs-on: ubuntu-latest
-    # Slowest healthy run: 3.2 min (17 green runs, 10-10 to 10-17). 10 min
+    # Slowest healthy run: 3.1 min (19 green runs, 10-10 to 10-17). 10 min
     # is the floor for short jobs, so a slow runner or a cold mise cache does
     # not fail a healthy run.
     timeout-minutes: 10
@@ -893,7 +899,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Slowest healthy run measured across the matrix: 50.5 min (windows, run
     # 38960486931); macOS peaked at 47.8 min (run 39011164672) and Linux at
-    # 45.5 min (17 green runs, 10-10 to 10-17). The cap was 60, so the
+    # 45.5 min (19 green runs, 10-10 to 10-17). The cap was 60, so the
     # slowest leg used 84% of it. 75 is 1.5x the peak.
     timeout-minutes: 75
     strategy:

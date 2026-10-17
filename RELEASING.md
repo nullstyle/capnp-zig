@@ -220,8 +220,9 @@ not run on it yet. `release-tag` needs 3 Nightly runs on it.
 1. Freeze `main` at the release commit. Tell everyone who lands work. A new
    push to `main` moves it, and then the Nightlies run on a commit that you
    do not tag.
-2. Start 3 Nightlies on the release commit. Each run takes about 20 minutes,
-   and the 3 runs can run at the same time.
+2. Start 3 Nightlies on the release commit. Each run takes about 30
+   minutes, and the 3 runs can run at the same time. The longest job is the
+   Windows package preflight: its step took up to 21.7 min in CI.
 
    ```bash
    gh workflow run Nightly --ref main
