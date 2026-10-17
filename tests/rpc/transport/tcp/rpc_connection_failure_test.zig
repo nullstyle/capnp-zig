@@ -535,8 +535,12 @@ test "transport enqueueWrite counts writer-owned bytes against byte budget" {
     try transport.startWriter();
     try transport.enqueueWrite("abcd");
 
-    for (0..10_000) |_| {
-        if (state.entered.load(.acquire)) break;
+    // The writer thread enters the hook when the scheduler runs it. A fixed
+    // count of yields ran out on a loaded CI runner (CI run 39063420132), so
+    // wait on the clock, up to 5 s.
+    const wait_start = std.Io.Clock.awake.now(std.testing.io).nanoseconds;
+    while (!state.entered.load(.acquire)) {
+        if (std.Io.Clock.awake.now(std.testing.io).nanoseconds - wait_start > 5 * std.time.ns_per_s) break;
         std.Thread.yield() catch {};
     }
     try std.testing.expect(state.entered.load(.acquire));
