@@ -2693,3 +2693,37 @@ test "one allocation failure anywhere in a cross-peer relay of a held tail call'
         }
     }
 }
+
+test "a held tail call's synthetic Return is built and decoded without the heap" {
+    // The safety net delivers the bare redirect (and the Finish's
+    // exception) from a 4096-byte stack buffer, the heap only past it
+    // (`ReturnSend.deliverSyntheticTailReturn`). With a heap that refuses
+    // every allocation, both frames still build and decode.
+    var buffer: [4096]u8 align(16) = undefined;
+    var fallback = std.heap.BufferFirstAllocator.init(&buffer, std.testing.failing_allocator);
+    const allocator = fallback.allocator();
+    {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var ret = try mb.beginReturn(7, .takeFromOtherQuestion);
+        ret.setReleaseParamCaps(false);
+        try ret.setTakeFromOtherQuestion(tail_answer_id);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        var decoded = try protocol.DecodedMessage.init(allocator, frame);
+        defer decoded.deinit();
+        try std.testing.expectEqual(@as(?u32, tail_answer_id), (try decoded.asReturn()).take_from_other_question);
+    }
+    {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var ret = try mb.beginReturn(7, .exception);
+        ret.setReleaseParamCaps(false);
+        try ret.setExceptionTyped(peer_impl.tail_call_finished_reason, .failed);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        var decoded = try protocol.DecodedMessage.init(allocator, frame);
+        defer decoded.deinit();
+        try std.testing.expectEqualStrings(peer_impl.tail_call_finished_reason, (try decoded.asReturn()).exception.?.reason);
+    }
+}
