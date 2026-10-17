@@ -1,0 +1,71 @@
+2026-10-13T09:40:04.4217630Z soak: memory steady-state head_mean=840108B tail_mean=838543B growth=-0.19% peak=859040B threshold=25.0%
+2026-10-13T09:40:04.4218307Z soak: rss curve (resident bytes, 544 samples @ 100ms):
+2026-10-13T09:40:04.4218751Z   [▁▇▅▇▆█▇▆▇▇▇▆█▇▇▇▇▇▇▇▇▆▇▇▇▇█▇▇█▆▇▇▇▇▇▇▇▇▇▇█▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇█▇▅]  lo=4030464B hi=7884800B
+2026-10-13T09:40:04.4219293Z soak: rss steady-state head_mean=7294863B tail_mean=7291331B growth=-0.05% delta=-3532B peak=7884800B threshold=25.0% floor=16MiB
+2026-10-13T09:40:04.4219776Z soak: rss verdict: PASS (report)
+2026-10-13T09:40:04.4220251Z soak: transport-error bound: transport_errors=3373 allowed=3406 (chaos_closes=3373 + death_allowance=0 + tolerance=33) -> ok
+2026-10-13T09:40:04.4221372Z soak: windows connect-stage error.Unexpected: 1 dials failed from +57.9s, after 16262 successful dials (port exhaustion needs >= 100); 591 dials succeeded since -> NOT the port-exhaustion shape: unexplained
+2026-10-13T09:40:04.4222370Z soak: WARN — 1 unexplained setup failures, within the tolerance of 33; see the setup failures line
+2026-10-13T09:40:04.4240791Z ##[warning]1 unexplained setup failures, within the tolerance of 33; see the setup failures line
+2026-10-13T09:40:04.4246223Z soak: PASS
+2026-10-13T09:40:04.5114608Z ##[group]Run zig build -Doptimize=ReleaseSafe soak -- --seconds 20 --workers 64 --rss-gate report
+2026-10-13T09:40:04.5115063Z [36;1mzig build -Doptimize=ReleaseSafe soak -- --seconds 20 --workers 64 --rss-gate report[0m
+2026-10-13T09:40:04.5126907Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+2026-10-13T09:40:04.5127142Z env:
+2026-10-13T09:40:04.5127264Z   MISE_LOG_LEVEL: info
+2026-10-13T09:40:04.5128777Z   MISE_GITHUB_TOKEN: ***
+2026-10-13T09:40:04.5128948Z   MISE_TRUSTED_CONFIG_PATHS: D:\a\capnp-zig\capnp-zig
+2026-10-13T09:40:04.5129123Z   MISE_YES: 1
+2026-10-13T09:40:04.5129312Z   DENO_INSTALL_ROOT: C:\Users\runneradmin\AppData\Local\mise\installs\deno\2.9.6\.deno
+2026-10-13T09:40:04.5129605Z   GOBIN: C:\Users\runneradmin\AppData\Local\mise\installs\go\1.26.0\bin
+2026-10-13T09:40:04.5129868Z   GOROOT: C:\Users\runneradmin\AppData\Local\mise\installs\go\1.26.0
+2026-10-13T09:40:04.5130144Z   ZIG_GLOBAL_CACHE_DIR: D:\a\capnp-zig\capnp-zig/.zig-global-cache
+2026-10-13T09:40:04.5130373Z   ZIG_LOCAL_CACHE_DIR: D:\a\capnp-zig\capnp-zig/.zig-cache
+2026-10-13T09:40:04.5130556Z ##[endgroup]
+2026-10-13T09:40:04.7109275Z soak: tcp server listening on port 53843 (workers 64, inflight 1, pool concurrency 32)
+2026-10-13T09:40:05.3479370Z soak: worker 58 setup failure (ambiguous, connect stage): error.Unexpected
+2026-10-13T09:40:05.3519046Z soak: worker 21 setup failure (ambiguous, connect stage): error.Unexpected
+2026-10-13T09:40:05.3573904Z soak: worker 24 setup failure (ambiguous, connect stage): error.Unexpected
+2026-10-13T09:40:05.8012030Z warning(rpc_peer): dispatch error for call: error.BrokenPipe
+2026-10-13T09:40:05.8017193Z warning(rpc_peer): dispatch error for call: error.BrokenPipe
+2026-10-13T09:40:05.8298006Z warning(rpc_peer): dispatch error for call: error.BrokenPipe
+2026-10-13T09:40:05.8299236Z warning(rpc_peer): dispatch error for call: error.BrokenPipe
+2026-10-13T09:40:05.8512111Z warning(rpc_peer): dispatch error for call: error.BrokenPipe
+2026-10-13T09:40:05.9569299Z warning(rpc_peer): dispatch error for call: error.BrokenPipe
+2026-10-13T09:40:07.8508962Z warning(rpc_peer): dispatch error for call: error.BrokenPipe
+2026-10-13T09:40:08.8178724Z warning(rpc_peer): dispatch error for call: error.BrokenPipe
+2026-10-13T09:40:17.8125318Z warning(rpc_peer): dispatch error for call: error.BrokenPipe
+2026-10-13T09:40:21.8312538Z warning(rpc_peer): dispatch error for call: error.BrokenPipe
+2026-10-13T09:40:24.7898248Z soak: workers joined, draining server
+2026-10-13T09:40:25.8034447Z soak: pool drained, joining pool thread
+2026-10-13T09:40:25.8034703Z soak: pool deinit complete
+2026-10-13T09:40:25.8036831Z soak: sessions=2267 calls_ok=39904 cancelled=1082 chaos_closes=506 transport_errors=506 expected_disconnects=506 contention_disconnects=0 unexpected_exceptions=0
+2026-10-13T09:40:25.8038039Z soak: setup failures=36927 (refused=0 port_exhaustion=0 resources=0 timeout=0 ambiguous=36927 other=0)
+2026-10-13T09:40:25.8038980Z soak: session close causes: unknown=2267 local_close=0 peer_close=0 idle_timeout=0 stateless_reset=0 transport_error=0 handshake_timeout=0
+2026-10-13T09:40:25.8039802Z soak: latency p50=1449983ns p99=12648447ns max=41943800ns (samples=39904, client TCP_NODELAY=unavailable (std AFD))
+2026-10-13T09:40:25.8040685Z soak: memory curve (live bytes, 180 samples @ 100ms):
+2026-10-13T09:40:25.8041416Z   [▁█▇▆▁▁▆▁▁▆▁▁▅▁▁▅▁▁▆▁▁▆▁▁▆▁▁▆▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁█]  lo=1280B hi=6814844B
+2026-10-13T09:40:25.8050658Z soak: memory steady-state head_mean=587821B tail_mean=1224517B growth=108.31% peak=6814844B threshold=25.0%
+2026-10-13T09:40:25.8055674Z soak: rss curve (resident bytes, 180 samples @ 100ms):
+2026-10-13T09:40:25.8056466Z   [▁█▇▇▃▃▇▃▃▆▃▃▇▃▃▇▃▃▇▃▃▇▃▃▇▃▃▇▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▇]  lo=5332992B hi=23818240B
+2026-10-13T09:40:25.8057281Z soak: rss steady-state head_mean=11550037B tail_mean=12657209B growth=9.59% delta=1107172B peak=23818240B threshold=25.0% floor=16MiB
+2026-10-13T09:40:25.8089711Z soak: rss verdict: PASS (report)
+2026-10-13T09:40:25.8090098Z soak: transport-error bound: transport_errors=506 allowed=514 (chaos_closes=506 + death_allowance=0 + tolerance=8) -> ok
+2026-10-13T09:40:25.8090659Z soak: windows connect-stage error.Unexpected: 36927 dials failed from +0.6s, after 483 successful dials (port exhaustion needs >= 100); 1784 dials succeeded since -> port-exhaustion shape
+2026-10-13T09:40:25.8091685Z soak: WARN — host ephemeral-port exhaustion: 36927 dials failed from +0.6s of a 20s run; traffic after that point was not exercised
+2026-10-13T09:40:25.8093286Z ##[warning]host ephemeral-port exhaustion: 36927 dials failed from +0.6s of a 20s run; traffic after that point was not exercised
+2026-10-13T09:40:25.8094412Z soak: FAIL — steady-state live heap grew 108.31% (> 25.0% threshold)
+2026-10-13T09:40:25.8094615Z error: SoakFailed
+2026-10-13T09:40:25.8097211Z soak
+2026-10-13T09:40:25.8097390Z +- run exe soak-rpc failure
+2026-10-13T09:40:25.8097730Z error: process exited with code 1
+2026-10-13T09:40:25.8098680Z failed command: ".\\.zig-cache\\o\\04de8adb4683b7590a43ebe09849effb\\soak-rpc.exe" --seconds 20 --workers 64 --rss-gate report
+2026-10-13T09:40:25.8099078Z 
+2026-10-13T09:40:25.8099187Z Build Summary: 2/4 steps succeeded (1 failed)
+2026-10-13T09:40:25.8099434Z soak transitive failure
+2026-10-13T09:40:25.8099632Z +- run exe soak-rpc failure
+2026-10-13T09:40:25.8099871Z 
+2026-10-13T09:40:25.8112189Z error: the following build command exited with code 1:
+2026-10-13T09:40:25.8113474Z .zig-global-cache\o\ef838a92866a8cd72539cb5aecb312f7\maker.exe build --zig-lib=C:\Users\runneradmin\AppData\Local\mise\installs\zig\0.17.0\lib --zig=C:\Users\runneradmin\AppData\Local\mise\installs\zig\0.17.0\zig.exe --global-cache=.zig-global-cache --seed=0x3e268d27 -Doptimize=ReleaseSafe soak -- --seconds 20 --workers 64 --rss-gate report
+2026-10-13T09:40:25.8196441Z ##[error]Process completed with exit code 1.
+2026-10-13T09:40:25.8350470Z Post job cleanup.

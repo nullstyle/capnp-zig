@@ -19,9 +19,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--insecure`). The step prints one result line per schema and fails if
   any schema fails. It stops every server it starts, also on a failure.
   Without `-Dquic=true` the step fails and says that it needs that flag.
+- **Release: `just release-tag` now needs 3 Nightly runs on the release
+  commit.** The new recipe `just check-nightly-gate SHA` reads the 3 most
+  recent completed Nightly runs on SHA. It passes only when there are 3
+  runs, and each run is green or fails only on rows in force of the new file
+  `.github/known-flakes.txt`. A row gives a Nightly job, a run id, an owner,
+  the date it was added, an expiry date (30 days or less after it) and, as
+  an option, a test name. The gate reads every attempt of a run, so a
+  re-run that went green does not hide a failure. The gate also lists each
+  run on SHA that did not succeed and is older than the 3 runs it reads.
+  `release-tag` runs the gate after its CI check. The "Release tag audit"
+  workflow runs the same gate when a tag is pushed. It cannot refuse the
+  tag; it only turns red.
+  RELEASING.md step 5 gives the procedure: freeze `main`, start 3 Nightlies
+  with `gh workflow run Nightly --ref main`, and apply the known-flakes rule.
+  The gate is `tools/ci_gates.ts`. Its tests use recorded API responses, and
+  the new CI job "CI gate tools" runs them.
+- **Nightly: a failed job names its failures in annotations.** The steps
+  that can fail copy their output to a log. A new final `if: failure()`
+  step in each job reads the logs. It writes one `nightly-failure`
+  annotation for each failed Zig test (`error: '<test>' failed`) and for
+  each `soak: FAIL` line. A failed step with neither line gets
+  `step:<step id>`. A step also gets `step:<step id>` when its log shows a
+  failure with no test name: a crashed test process, a compile error, or a
+  Build Summary that counts more failed tests than the log names. So a row
+  for one flaky test does not cover a second failure in the same step. The
+  tag gate reads these annotations. The soak job checks this wiring on each
+  run, also when the run is green. The soak steps on Windows now run in
+  bash.
 
 ### Changed
 
+- **CI: the package preflight runs on Linux only for each push, and Nightly
+  runs it on all three OSes.** On Windows the step took 11.7 to 21.7 min of
+  the 45-min Test job (10 green runs, 10-11 to 10-17), and the job peaked at
+  42.6 min. The new Nightly job `package-preflight` runs it on Linux, macOS
+  and Windows. The tag gate needs green Nightlies on the release commit, so
+  a release still gets the preflight on all three OSes.
+- **CI: every job in `ci.yml`, `nightly.yml` and `release.yml` has a
+  job-level timeout.** Seven jobs had none, so a hung job could run for
+  GitHub's 6-hour default. `fmt-check`, `evented-check`, `docs-smoke`,
+  `bench-check`, `wasm-build` and `release-build` get 10 min (their slowest
+  green run was 4.3 min or less). `cross-targets` gets 60 min (slowest 35.9
+  min). `e2e-quic` goes from 25 to 15 min (slowest 5.3 min), and
+  `release-safe-tests` from 60 to 75 min (slowest 50.5 min). These figures
+  come from 19 green CI runs, 10-10 to 10-17. A new step in the "CI gate
+  tools" job (also `just check-job-timeouts`) fails when a job in any file
+  of `.github/workflows` has no job-level `timeout-minutes`. A step-level
+  timeout does not count. The
+  `evented-check` e2e step and the `bench-check` step now run under
+  `tools/stall_watchdog.sh`.
 - **Nightly: the Windows 64-worker soak lane runs in its own job.** It used
   to run after the two 8-worker lanes on the same runner, so it often began
   with about 16k ports in TIME_WAIT. 8 of the 17 Windows Nightlies from

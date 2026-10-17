@@ -94,6 +94,10 @@ git status --short          # must be empty
       reflection metadata whenever the compiler pin changes.
 - [ ] `just check-generated` is clean; no committed consumer binding was made
       stale by a generator change.
+- [ ] `.github/known-flakes.txt` is current. Remove the rows that expired.
+      Add a row for each flake that recent Nightlies showed and that is not
+      fixed (see "The known-flakes rule" in step 5). The tag gate reads the
+      rows from the release commit, so they must be in it.
 - [ ] `just package-preflight` passes. This is the manifest-filtered package
       gate, not a working-tree/path-dependency build: it archives and re-fetches
       the `.paths` result, runs the documented pinned-plugin codegen consumer
@@ -197,7 +201,7 @@ reason.
 - [ ] Update the link footer: repoint `[Unreleased]` at
       `compare/vX.Y.Z...HEAD` and add `[X.Y.Z]: …compare/<prev>...vX.Y.Z`.
 
-## 5. Land, verify, tag
+## 5. Land, verify, run the Nightly gate, tag
 
 ```bash
 git commit -am "release: cut vX.Y.Z"
@@ -207,20 +211,96 @@ gh run watch                       # the release commit must go green too
 
 - [ ] The release commit's own CI is green before the tag is created.
 
+### Freeze main and run 3 Nightlies
+
+Nightly runs the soaks, the fuzzers and the extended gates that per-push CI
+does not run. The release commit is new, so the daily Nightly (09:17 UTC) has
+not run on it yet. `release-tag` needs 3 Nightly runs on it.
+
+1. Freeze `main` at the release commit. Tell everyone who lands work. A new
+   push to `main` moves it, and then the Nightlies run on a commit that you
+   do not tag.
+2. Start 3 Nightlies on the release commit. Each run takes about 30
+   minutes, and the 3 runs can run at the same time. The longest job is the
+   Windows package preflight: its step took up to 21.7 min in CI.
+
+   ```bash
+   gh workflow run Nightly --ref main
+   gh workflow run Nightly --ref main
+   gh workflow run Nightly --ref main
+   gh run list --workflow Nightly --limit 3
+   ```
+
+3. When the 3 runs are complete, run the gate:
+
+   ```bash
+   just check-nightly-gate "$(git rev-parse HEAD)"
+   ```
+
+- [ ] `check-nightly-gate` passes.
+
+The gate reads the 3 most recent completed Nightly runs on the commit. A
+scheduled run on the same commit counts too. It passes only when there are 3
+runs and each run is green or fails only on failures that rows of
+`.github/known-flakes.txt` cover. It reads every attempt of a run, so a
+re-run that went green does not hide the failure of the first attempt. It
+does not count a run that is in progress. Do not cancel a ceremony run: a
+cancelled run counts, and its cancelled jobs fail the gate.
+
+### The known-flakes rule
+
+The final step of each Nightly job writes one `nightly-failure` annotation
+for each failed test (`error: '<test>' failed`) and for each `soak: FAIL`
+line. A failed step with neither line gets the name `step:<step id>`. A
+step also gets `step:<step id>`, after its test names, when its log shows a
+failure with no test name: a crashed test process, a compile error, or a
+Build Summary that counts more failed tests than the log names. The gate
+matches a failed job to a row by the job name, and by the annotation name
+when the job has annotations. The header of `.github/known-flakes.txt`
+gives the row format and the matching rules.
+
+When a ceremony Nightly fails:
+
+1. Read the failure first. If the release causes it, fix it in a new commit
+   on `main`. Then do this step 5 again for that commit: wait for its green
+   CI run, and start 3 new Nightlies on it.
+2. If it is a flake, you have two choices:
+   - Start more Nightlies on the same commit. The gate reads only the 3 most
+     recent runs, so 3 green runs after the flaky run also pass. The gate
+     output still lists each older run that did not succeed. Read those
+     runs before you tag.
+   - Add a row, if the flake is likely to come back. Copy the job name and
+     the annotation name exactly. Give the run id, an owner, today's date and
+     an expiry that is not more than 30 days later. The gate reads the rows
+     from the commit that it checks, so the row goes into a new commit on
+     `main`, and that commit needs its own CI run and its own 3 Nightlies.
+3. A flake is a failure that does not come back on the same commit, in a
+   test or a lane that is known to be sensitive to timing or to the runner.
+   Do not add a row for a real failure. Fix it.
+
 ```bash
 just release-tag X.Y.Z "<one-line theme>"
 ```
 
 `release-tag` refuses a dirty tree, a `build.zig.zon` that does not say
 X.Y.Z, a failing `check-release-drift` (the CHANGELOG now has its
-`## [X.Y.Z]` section, so the hook reads that one), a failing docs-smoke, and a
-commit without a green CI run. Then it creates and pushes the annotated tag,
-the same as:
+`## [X.Y.Z]` section, so the hook reads that one), a failing docs-smoke, a
+commit without a green CI run, and a commit that does not pass
+`check-nightly-gate`. Then it creates and pushes the annotated tag, the same
+as:
 
 ```bash
 git tag -a vX.Y.Z -m "vX.Y.Z — <one-line theme>"
 git push origin vX.Y.Z
 ```
+
+The tag push starts the "Release tag audit" workflow
+(`.github/workflows/release.yml`). It runs the CI check and
+`check-nightly-gate` again on the tagged commit. It cannot refuse the tag,
+because the tag already exists. It turns red, so a tag made without
+`release-tag` is visible.
+
+- [ ] The "Release tag audit" run for the tag is green.
 
 ## 6. Post-tag
 

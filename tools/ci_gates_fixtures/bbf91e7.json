@@ -1,0 +1,262 @@
+{
+  "repos/:owner/:repo/actions/workflows/nightly.yml/runs?head_sha=bbf91e702cce40935eb98d1793622a34f87bab5f&per_page=100": {
+    "total_count": 6,
+    "workflow_runs": [
+      {
+        "id": 38880648176,
+        "name": "Nightly",
+        "head_sha": "bbf91e702cce40935eb98d1793622a34f87bab5f",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-16T09:28:04Z",
+        "event": "schedule",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/38880648176"
+      },
+      {
+        "id": 38713314813,
+        "name": "Nightly",
+        "head_sha": "bbf91e702cce40935eb98d1793622a34f87bab5f",
+        "status": "completed",
+        "conclusion": "failure",
+        "created_at": "2026-10-15T09:29:31Z",
+        "event": "schedule",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/38713314813"
+      },
+      {
+        "id": 38542668305,
+        "name": "Nightly",
+        "head_sha": "bbf91e702cce40935eb98d1793622a34f87bab5f",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-14T09:29:02Z",
+        "event": "schedule",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/38542668305"
+      },
+      {
+        "id": 38377271133,
+        "name": "Nightly",
+        "head_sha": "bbf91e702cce40935eb98d1793622a34f87bab5f",
+        "status": "completed",
+        "conclusion": "failure",
+        "created_at": "2026-10-13T09:34:19Z",
+        "event": "schedule",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/38377271133"
+      },
+      {
+        "id": 38231937129,
+        "name": "Nightly",
+        "head_sha": "bbf91e702cce40935eb98d1793622a34f87bab5f",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-12T09:45:28Z",
+        "event": "schedule",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/38231937129"
+      },
+      {
+        "id": 38128471120,
+        "name": "Nightly",
+        "head_sha": "bbf91e702cce40935eb98d1793622a34f87bab5f",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-11T09:28:08Z",
+        "event": "schedule",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/38128471120"
+      }
+    ]
+  },
+  "repos/:owner/:repo/actions/runs/38880648176/jobs?filter=all&per_page=100": {
+    "total_count": 5,
+    "jobs": [
+      {
+        "id": 116906289970,
+        "name": "QUIC benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 116906290284,
+        "name": "Extended gates",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 116906290297,
+        "name": "Coverage-guided fuzzing with per-target evidence",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 116906290415,
+        "name": "RPC soak (chaos + deadlines, windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 116906290418,
+        "name": "RPC soak (chaos + deadlines, ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      }
+    ]
+  },
+  "repos/:owner/:repo/actions/runs/38713314813/jobs?filter=all&per_page=100": {
+    "total_count": 5,
+    "jobs": [
+      {
+        "id": 116349833595,
+        "name": "Extended gates",
+        "status": "completed",
+        "conclusion": "failure",
+        "run_attempt": 1
+      },
+      {
+        "id": 116349833869,
+        "name": "RPC soak (chaos + deadlines, windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 116349833998,
+        "name": "QUIC benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 116349834000,
+        "name": "RPC soak (chaos + deadlines, ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 116349834122,
+        "name": "Coverage-guided fuzzing with per-target evidence",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      }
+    ]
+  },
+  "repos/:owner/:repo/check-runs/116349833595/annotations?per_page=100": [
+    {
+      "annotation_level": "failure",
+      "title": "",
+      "message": "Process completed with exit code 1."
+    },
+    {
+      "annotation_level": "notice",
+      "title": "",
+      "message": "\"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\""
+    }
+  ],
+  "repos/:owner/:repo/actions/runs/38542668305/jobs?filter=all&per_page=100": {
+    "total_count": 5,
+    "jobs": [
+      {
+        "id": 115781008891,
+        "name": "RPC soak (chaos + deadlines, ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 115781009289,
+        "name": "QUIC benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 115781009394,
+        "name": "Extended gates",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 115781009440,
+        "name": "Coverage-guided fuzzing with per-target evidence",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 115781009508,
+        "name": "RPC soak (chaos + deadlines, windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      }
+    ]
+  },
+  "repos/:owner/:repo/actions/runs/38377271133/jobs?filter=all&per_page=100": {
+    "total_count": 5,
+    "jobs": [
+      {
+        "id": 115228694395,
+        "name": "Extended gates",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 115228694573,
+        "name": "QUIC benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 115228694675,
+        "name": "Coverage-guided fuzzing with per-target evidence",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      },
+      {
+        "id": 115228694695,
+        "name": "RPC soak (chaos + deadlines, windows-latest)",
+        "status": "completed",
+        "conclusion": "failure",
+        "run_attempt": 1
+      },
+      {
+        "id": 115228694890,
+        "name": "RPC soak (chaos + deadlines, ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1
+      }
+    ]
+  },
+  "repos/:owner/:repo/check-runs/115228694695/annotations?per_page=100": [
+    {
+      "annotation_level": "failure",
+      "title": "",
+      "message": "Process completed with exit code 1."
+    },
+    {
+      "annotation_level": "warning",
+      "title": "soak",
+      "message": "host ephemeral-port exhaustion: 36927 dials failed from +0.6s of a 20s run; traffic after that point was not exercised"
+    },
+    {
+      "annotation_level": "warning",
+      "title": "soak",
+      "message": "1 unexplained setup failures, within the tolerance of 33; see the setup failures line"
+    }
+  ]
+}
