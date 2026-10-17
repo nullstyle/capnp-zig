@@ -2075,8 +2075,9 @@ fn ioReadVecTimeout(
 /// - `error.Unexpected`: a backend that reports success with the receive
 ///   still pending, a run of receives that Windows cancelled without data
 ///   that lasted `retry.give_up_after`, or an unknown NTSTATUS.
-/// - the rest as std's `netReadWindows` maps a completed receive
-///   (`windowsReceiveResult`).
+/// - the rest as std's `netReadWindows` maps a completed receive, except
+///   that STATUS_LOCAL_DISCONNECT and STATUS_CONNECTION_ABORTED are
+///   `error.ConnectionResetByPeer` (`windowsReceiveResult`).
 ///
 /// The batch, its storage, `receive` and `vectors` live on this stack, and
 /// the deferred `cancelWindowsReceive` joins every receive posted, so the
@@ -2363,15 +2364,28 @@ fn completedReceive(batch: *std.Io.Batch) ?std.os.windows.IO_STATUS_BLOCK {
 }
 
 /// A completed receive, mapped as std's (0.17.0) `netReadWindows` maps it,
-/// so a read keeps the errors std's own read gave. Never `error.Canceled`,
-/// which means an Io cancellation the caller asked for: `windowsReceive`
-/// never passes a cancelled receive here (`completedReceive`), and one that
-/// arrives anyway is `error.Unexpected`.
+/// so a read keeps the errors std's own read gave. Three statuses differ:
+/// - CANCELLED is never `error.Canceled`, which means an Io cancellation
+///   the caller asked for: `windowsReceive` never passes a cancelled
+///   receive here (`completedReceive`), and one that arrives anyway is
+///   `error.Unexpected`. std treats it as `unreachable`.
+/// - LOCAL_DISCONNECT and CONNECTION_ABORTED (the local network stack
+///   ended the connection) are `error.ConnectionResetByPeer`, as the remote
+///   statuses are. std has no arm for them, so its read returns
+///   `error.Unexpected` and prints a stack trace when unexpected-error
+///   tracing is on.
+///
+/// `docs/upstream/handoff-zig-fork-netreadwindows-stray-cancel.md` asks std
+/// for both changes.
 fn windowsReceiveResult(iosb: std.os.windows.IO_STATUS_BLOCK) Transport.ReadError!usize {
     return switch (iosb.u.Status) {
         .SUCCESS => iosb.Information,
         .INSUFFICIENT_RESOURCES => error.SystemResources,
-        .CONNECTION_RESET, .REMOTE_DISCONNECT => error.ConnectionResetByPeer,
+        .CONNECTION_RESET,
+        .REMOTE_DISCONNECT,
+        .LOCAL_DISCONNECT,
+        .CONNECTION_ABORTED,
+        => error.ConnectionResetByPeer,
         .IO_TIMEOUT => error.ConnectionTimedOut,
         .CANCELLED => error.Unexpected,
         else => |status| std.os.windows.unexpectedStatus(status),
@@ -2475,8 +2489,8 @@ test "socketFamily: AF_UNIX, IP, another family (Linux AF_NETLINK) and one getso
     try std.testing.expectEqual(if (os == .linux) SocketFamily.other else SocketFamily.unknown, socketFamily(fd));
 }
 
-test "a completed Windows receive maps as std's netReadWindows maps it" {
-    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+test "a completed Windows receive maps as std's netReadWindows maps it, except CANCELLED and the local disconnects" {
+    // Runs on every host: the mapping is pure.
     const windows = std.os.windows;
     const Iosb = struct {
         fn of(status: windows.NTSTATUS, information: usize) windows.IO_STATUS_BLOCK {
@@ -2496,6 +2510,15 @@ test "a completed Windows receive maps as std's netReadWindows maps it" {
     // mapping, it is not error.Canceled, which means an Io cancellation the
     // caller asked for.
     try std.testing.expectError(error.Unexpected, windowsReceiveResult(Iosb.of(.CANCELLED, 0)));
+    // std has no arm for LOCAL_DISCONNECT or CONNECTION_ABORTED: its read
+    // returns error.Unexpected and, with unexpected-error tracing on (the
+    // Debug default), prints a stack trace. The Windows soak of Nightly
+    // 38377271133 printed 2,974 such traces from this function for
+    // LOCAL_DISCONNECT and 4 for CONNECTION_ABORTED as its connections
+    // closed. A connection that the local stack ended is a disconnect, as a
+    // reset is.
+    try std.testing.expectError(error.ConnectionResetByPeer, windowsReceiveResult(Iosb.of(.LOCAL_DISCONNECT, 0)));
+    try std.testing.expectError(error.ConnectionResetByPeer, windowsReceiveResult(Iosb.of(.CONNECTION_ABORTED, 0)));
 }
 
 test "SpuriousCancelRetry: a run's first re-post at once, then 50 us doubling to 5 ms, for 10 s" {

@@ -1,5 +1,28 @@
 # HANDOFF — zig fork change branch: netAcceptWindows CANCELLED abort
 
+**Status (2026-10-17): open in std. capnp-zig no longer goes through std's
+`netAcceptWindows` for its TCP accepts.**
+
+- Tagged 0.17.0 and the fork checkout (`feat/evented-0.17`) still have all
+  three `.CANCELLED => unreachable` arms.
+- Since capnp-zig `8c36f35` (for v0.27.0), capnp-zig accepts TCP
+  connections on Windows with its own AFD accept (`windows_accept.accept`
+  in `src/rpc/transport/tcp/windows_accept.zig`). `Listener.accept`,
+  `Listener.acceptFd`, `ServerSession.accept` and the `WorkerPool` workers
+  use it. `Listener.close` and `WorkerPool` shutdown cancel the parked waits
+  (`windows_accept.stopWaits`) before they close the handle. `WorkerPool`
+  no longer dials its own listener on Windows.
+- On Windows, capnp-zig still calls std's accept only in
+  `createLoopbackSocketPair` (`runtime.zig`) and in a test helper. Each of
+  them accepts a connection that it dialed just before, and nothing closes
+  the listener under that accept.
+- Every other std user that closes a listener under a parked accept still
+  aborts. capnp-zig's Windows CI run 38918354154 (2026-10-16, before
+  `8c36f35`) panicked at `Threaded.zig:12836` in all three capnp-zig accept
+  entry points (`tests/rpc/transport/tcp/rpc_listener_close_test.zig`).
+- The `LOCAL_DISCONNECT` read and write arms that this handoff asked for
+  are now in `handoff-zig-fork-netreadwindows-stray-cancel.md`.
+
 Paste this into a session working on the nullstyle zig fork. It is
 self-contained. Context: upstream zig does not accept this contribution
 path, so the fix lands as a maintained change branch on the fork (one of
@@ -49,7 +72,8 @@ uncatchable by the caller.
   with self-connect dials BEFORE closing — commit `76ae51d` there), but
   the workaround fails under ephemeral-port exhaustion (the dials
   themselves fail), and then the abort is unavoidable. The std arm is
-  the root cause.
+  the root cause. (On Windows, `8c36f35` replaced that workaround: see the
+  status at the top.)
 
 ## Minimal repro (Windows)
 
@@ -93,65 +117,25 @@ Map `.CANCELLED` to a recoverable error instead of `unreachable`:
   `.CANCELLED => {}` (tolerated, like its `else` arm which already
   swallows unexpected statuses).
 
-### Same branch: map `STATUS_LOCAL_DISCONNECT` on read and write
+### Moved: `STATUS_LOCAL_DISCONNECT` on read and write
 
-The 0.17.0 source shows a sibling gap in the same AFD layer.
-`netReadWindows` (Threaded.zig:12990) and `netWriteWindows` (13470) map
-the remote-side disconnect statuses but not the local one:
-
-```zig
-.CONNECTION_RESET, .REMOTE_DISCONNECT => return error.ConnectionResetByPeer, // 13012 and 13526
-```
-
-`STATUS_LOCAL_DISCONNECT` (`0xC000013B`, `os/windows/ntstatus.zig:1074`,
-"the network transport on your computer has closed a network connection")
-is not mapped anywhere in std, so it falls to
-`else => windows.unexpectedStatus(status)`: `error.Unexpected`, plus a
-printed NTSTATUS and stack dump when unexpected-error tracing is on (the
-Debug default). capnp-zig's Windows soak sees exactly this on its chaos
-closes: `error.Unexpected NTSTATUS=0xc000013b` from the reader task. A
-connection the local stack tore down is an ordinary disconnect, not an
-unexpected state. Add it to both arms:
-
-```zig
-.CONNECTION_RESET, .REMOTE_DISCONNECT, .LOCAL_DISCONNECT => return error.ConnectionResetByPeer,
-```
-
-(If the fork prefers a distinct error for a locally initiated disconnect,
-that also works; the requirement is a named error rather than
-`error.Unexpected`.)
+This section asked for a `LOCAL_DISCONNECT` arm in `netReadWindows` and
+`netWriteWindows`. That request, with more statuses and the soak counts, is
+now in `handoff-zig-fork-netreadwindows-stray-cancel.md`. The fork can put
+both fixes on one branch.
 
 ## Verification
 
 1. The repro above: aborts before, prints "clean" after.
-2. If convenient, integration-check with capnp-zig: point its toolchain
-   at the patched fork (its `mise.toml` pins zig; `mise exec` or PATH
-   override) and run
-   `zig build soak -Dquic=true -Doptimize=ReleaseSafe -- --transport tcp --no-chaos --seconds 20 --workers 64`
-   on Windows — pre-fix this aborted at teardown before capnp-zig's own
-   workaround landed.
+2. capnp-zig cannot check this fix any more: since `8c36f35` its
+   Windows accepts do not go through `netAcceptWindows` (see the status at
+   the top). Use the repro above.
 3. Whatever std test convention the fork uses for Windows-only Io
    behavior: a test asserting accept returns an error (not aborts) when
    the listener closes underneath it, gated to Windows.
-4. For the `LOCAL_DISCONNECT` arm: capnp-zig's Windows chaos soak
-   (`zig build soak -- --transport tcp --seconds 20`, chaos on by default)
-   should stop printing `error.Unexpected NTSTATUS=0xc000013b`, but only
-   after capnp-zig also adds the arm on its side. The std fix alone does
-   not pass this check. With std's Threaded Io, capnp-zig's Windows socket
-   reads, timed and untimed, now use its own AFD receive, not std's
-   `net_read`. That
-   receive maps statuses itself (`windowsReceiveResult` in
-   `src/rpc/transport/tcp/stream_transport.zig`). It uses the same mapping
-   as `netReadWindows`, except that `CANCELLED` gives `error.Unexpected`
-   where std has `unreachable`. So the soak's reader task keeps printing
-   until `windowsReceiveResult` gets the `LOCAL_DISCONNECT` arm too. The
-   std fix covers std's `net_read` (capnp-zig uses it only when the Io
-   cannot run the receive batch concurrently) and the `net_write`
-   operation.
 
 ## Bookkeeping
 
 Record the branch in the fork's change-branch list with a one-line
 rationale ("close/CancelIoEx during parked accept must error, not abort
-the process; LOCAL_DISCONNECT is a disconnect, not Unexpected") so rebases
-onto upstream keep carrying it.
+the process") so rebases onto upstream keep carrying it.
