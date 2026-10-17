@@ -470,10 +470,32 @@ const SilentServer = struct {
 /// A client export whose handler answers later.
 const DeferredTarget = struct {
     answer_id: ?u32 = null,
+    /// Answer inside the call instead, as a generated DIRECT handler does,
+    /// with a handler that fails while it builds its results. The error
+    /// leaves `onCall`, and the Peer's dispatch answers the call with it.
+    fail_inline: bool = false,
+    /// As `fail_inline`, but answer the build error inside the call with
+    /// `sendReturnException`, as generated dispatch does
+    /// (`handleCallDirect(...) catch |err| try peer.sendReturnException(...)`).
+    fail_inline_answered: bool = false,
 
-    fn onCall(ctx_ptr: *anyopaque, _: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+    fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
         const self: *DeferredTarget = castCtx(*DeferredTarget, ctx_ptr);
         self.answer_id = call.question_id;
+        if (self.fail_inline) try peer.sendReturnResults(call.question_id, self, FailingBuild.build);
+        if (self.fail_inline_answered) {
+            peer.sendReturnResults(call.question_id, self, FailingBuild.build) catch |err| {
+                try peer.sendReturnException(call.question_id, @errorName(err));
+            };
+        }
+    }
+};
+
+/// A results build that fails: the body of a generated DIRECT handler runs
+/// inside `sendReturnResults`'s build, so a handler error surfaces here.
+const FailingBuild = struct {
+    fn build(_: *anyopaque, _: *protocol.ReturnBuilder) anyerror!void {
+        return error.TailHandlerFailed;
     }
 };
 
@@ -585,6 +607,66 @@ const TailHarness = struct {
         call.setSendResultsToYourself();
         var payload = try call.payloadTyped();
         _ = try (try payload.initContent()).initStruct(0, 0);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try self.client_peer.handleFrame(frame);
+    }
+
+    /// The remote calls the client's export `target_export` with question
+    /// `answer_id`; the results go to the remote (`sendResultsTo = caller`).
+    fn pushPlainCall(self: *TailHarness, allocator: std.mem.Allocator, answer_id: u32, target_export: u32) !void {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var call = try mb.beginCall(answer_id, CALL_INTERFACE_ID, CALL_METHOD_ID);
+        try call.setTargetImportedCap(target_export);
+        var payload = try call.payloadTyped();
+        _ = try (try payload.initContent()).initStruct(0, 0);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try self.client_peer.handleFrame(frame);
+    }
+
+    /// The remote calls the client's answer `promised` (a call pipelined on
+    /// it) with question `answer_id` and `sendResultsTo = yourself`, as the
+    /// C++ reference sends a call it bounces back to us as a tail call.
+    fn pushPipelinedYourselfCall(
+        self: *TailHarness,
+        allocator: std.mem.Allocator,
+        answer_id: u32,
+        promised: u32,
+        ops: []const protocol.PromisedAnswerOp,
+    ) !void {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var call = try mb.beginCall(answer_id, CALL_INTERFACE_ID, CALL_METHOD_ID);
+        try call.setTargetPromisedAnswerWithOps(promised, ops);
+        call.setSendResultsToYourself();
+        var payload = try call.payloadTyped();
+        _ = try (try payload.initContent()).initStruct(0, 0);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try self.client_peer.handleFrame(frame);
+    }
+
+    /// `pushYourselfCall` whose params are one `receiverAnswer` capability:
+    /// the result of the client's answer `promised`, pipelined into the
+    /// call's arguments.
+    fn pushYourselfCallWithAnswerParam(
+        self: *TailHarness,
+        allocator: std.mem.Allocator,
+        answer_id: u32,
+        target_export: u32,
+        promised: u32,
+    ) !void {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var call = try mb.beginCall(answer_id, CALL_INTERFACE_ID, CALL_METHOD_ID);
+        try call.setTargetImportedCap(target_export);
+        call.setSendResultsToYourself();
+        var payload = try call.payloadTyped();
+        try (try payload.initContent()).setCapability(.{ .id = 0 });
+        var cap_list = try call.initCapTableTyped(1);
+        try protocol.CapDescriptor.writeReceiverAnswer((try cap_list.get(0))._builder, promised, &.{});
         const frame = try mb.finish();
         defer allocator.free(frame);
         try self.client_peer.handleFrame(frame);
@@ -788,4 +870,289 @@ test "a yourself call finished while its results build keeps no answer" {
     try h.client_peer.sendReturnResults(tail_answer_id, &inside, FinishInsideBuild.build);
     // The Finish came first: no redirect can name the call any more.
     try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+}
+
+// -- A yourself call that fails ------------------------------------------------
+//
+// rpc.capnp answers a `sendResultsTo = yourself` call with
+// `resultsSentElsewhere`, also when it fails, and the C++ reference drops the
+// connection on an exception Return for its tail call ("Tail call `Return`
+// must set `resultsSentElsewhere`, not `exception`", rpc.c++ handleReturn).
+// So the remote gets `resultsSentElsewhere`, and the exception is kept for the
+// redirect, as cap-free results are. This holds for a call that fails before
+// it reaches a handler too: an unknown or broken target, a refused queue, a
+// param that names a failed answer, or a promise export it waited on that the
+// host rejects.
+
+/// The client sent exactly one Return for `answer_id`, and it is
+/// `resultsSentElsewhere`.
+fn expectOnlyResultsSentElsewhere(h: *const TailHarness, answer_id: u32) !void {
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, answer_id, .exception));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, answer_id, null));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, answer_id, .resultsSentElsewhere));
+}
+
+/// The redirect for the harness question, after the tail call failed: the
+/// question gets the call's exception, and nothing is kept.
+fn expectRedirectGetsException(h: *TailHarness, allocator: std.mem.Allocator, reason: []const u8) !void {
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqualStrings(reason, h.caller.reason());
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+    try h.pushFinish(allocator, tail_answer_id);
+}
+
+test "a yourself call to an unknown capability: the remote gets resultsSentElsewhere, the tail call the exception" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushYourselfCall(allocator, tail_answer_id, 0x7fff_0000);
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "unknown capability");
+}
+
+test "a yourself call to a rejected promise export: the remote gets resultsSentElsewhere, the tail call the rejection" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.client_peer.resolvePromiseExportToException(promise_id, "broken by host");
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "promise broken");
+}
+
+test "a yourself call parked on a promise export the host then rejects: the remote gets resultsSentElsewhere" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // The C++ order: the call parks on the promise, and the redirect comes
+    // while it waits, so the question gets the bare tag at once.
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, h.caller.tag.?);
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+
+    try h.client_peer.resolvePromiseExportToException(promise_id, "rejected by host");
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    // The remote finishes the call after our Finish of the question:
+    // nothing is kept for it.
+    try h.pushFinish(allocator, tail_answer_id);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+}
+
+test "a yourself call parked on a promise export the host rejects, then its redirect: the tail call gets the rejection" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try h.client_peer.resolvePromiseExportToException(promise_id, "rejected by host");
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "promise broken");
+}
+
+test "a yourself call whose queueing is refused: the remote gets resultsSentElsewhere, the tail call the refusal" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // No call may wait on a promise: the call cannot park, and the Peer
+    // answers it with the refusal.
+    h.client_peer.limits.max_pending_queued_calls = 0;
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "PeerLimitExceeded");
+}
+
+test "a yourself call whose param names a failed answer: the remote gets resultsSentElsewhere, the tail call that failure" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // The remote's plain call 500 fails; then its tail call passes 500's
+    // result as a param. The Peer fails the call with 500's exception
+    // before the handler runs.
+    try h.pushPlainCall(allocator, 500, h.target_export_id);
+    try h.client_peer.sendReturnException(500, "answer 500 failed");
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 500, .exception));
+    h.target.answer_id = null;
+    try h.pushYourselfCallWithAnswerParam(allocator, tail_answer_id, h.target_export_id, 500);
+    try std.testing.expectEqual(@as(?u32, null), h.target.answer_id);
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "answer 500 failed");
+}
+
+test "a yourself call parked on a promise export that cannot park again on replay: the remote gets resultsSentElsewhere" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // The call parks on promise 1. Promise 1 then resolves to promise 2,
+    // which is unresolved, so the replay parks the call again; the queue
+    // budget refuses that.
+    const promise1 = try h.client_peer.addPromiseExport();
+    const promise2 = try h.client_peer.addPromiseExport();
+    try h.pushYourselfCall(allocator, tail_answer_id, promise1);
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    h.client_peer.limits.max_pending_queued_calls = 0;
+    try h.client_peer.resolvePromiseExportToExport(promise1, promise2);
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "PeerLimitExceeded");
+}
+
+test "a yourself call pipelined on a failed answer: the remote gets resultsSentElsewhere, the tail call that failure" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushPlainCall(allocator, 500, h.target_export_id);
+    try h.client_peer.sendReturnException(500, "answer 500 failed");
+    try h.pushPipelinedYourselfCall(allocator, tail_answer_id, 500, &.{});
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "answer 500 failed");
+}
+
+test "a yourself call pipelined on an answer that holds no capability: the remote gets resultsSentElsewhere" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // Answer 500's results are a plain struct, so a call on them names no
+    // capability, and the Peer fails it.
+    try h.pushPlainCall(allocator, 500, h.target_export_id);
+    var result = ResultN{ .n = 7 };
+    try h.client_peer.sendReturnResults(500, &result, ResultN.build);
+    h.target.answer_id = null;
+    try h.pushPipelinedYourselfCall(allocator, tail_answer_id, 500, &.{});
+    try std.testing.expectEqual(@as(?u32, null), h.target.answer_id);
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "promised answer missing");
+}
+
+/// Results whose content is a capability: the client's export `export_id`.
+const ResultCap = struct {
+    export_id: u32,
+
+    fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+        const self: *const ResultCap = castCtx(*const ResultCap, ctx_ptr);
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        try any.setCapability(.{ .id = self.export_id });
+    }
+};
+
+test "a yourself call pipelined through an answer its transform cannot follow: the remote gets resultsSentElsewhere" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // Answer 500's results are a capability, and the call asks for pointer
+    // field 0 of them, as if they were a struct: the Peer cannot resolve
+    // the target and fails the call.
+    try h.pushPlainCall(allocator, 500, h.target_export_id);
+    var result = ResultCap{ .export_id = h.target_export_id };
+    try h.client_peer.sendReturnResults(500, &result, ResultCap.build);
+    h.target.answer_id = null;
+    const field0 = [_]protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = 0 }};
+    try h.pushPipelinedYourselfCall(allocator, tail_answer_id, 500, &field0);
+    try std.testing.expectEqual(@as(?u32, null), h.target.answer_id);
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, h.caller.tag.?);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+    try h.pushFinish(allocator, tail_answer_id);
+    try h.pushFinish(allocator, 500);
+}
+
+test "a DIRECT handler that fails a yourself call made through a resolved promise export: the remote gets resultsSentElsewhere" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.client_peer.resolvePromiseExportToExport(promise_id, h.target_export_id);
+    h.target.fail_inline = true;
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try std.testing.expectEqual(@as(?u32, tail_answer_id), h.target.answer_id);
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "TailHandlerFailed");
+}
+
+test "a DIRECT handler that fails a yourself call: the remote gets resultsSentElsewhere, the tail call the error" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    h.target.fail_inline = true;
+    try h.pushYourselfCall(allocator, tail_answer_id, h.target_export_id);
+    try std.testing.expectEqual(@as(?u32, tail_answer_id), h.target.answer_id);
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "TailHandlerFailed");
+}
+
+test "a generated DIRECT handler whose results build fails for a yourself call: the remote gets resultsSentElsewhere" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // Generated dispatch answers the build error itself, with
+    // sendReturnException; the call is still a `yourself` call then.
+    h.target.fail_inline_answered = true;
+    try h.pushYourselfCall(allocator, tail_answer_id, h.target_export_id);
+    try std.testing.expectEqual(@as(?u32, tail_answer_id), h.target.answer_id);
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "TailHandlerFailed");
+}
+
+test "the host answers a yourself call with an exception: the remote gets resultsSentElsewhere, the tail call the exception" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    try h.pushYourselfCall(allocator, tail_answer_id, h.target_export_id);
+    try h.client_peer.sendReturnException(tail_answer_id, "target failed");
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "target failed");
+}
+
+test "the host's exception for a yourself call after its redirect: only resultsSentElsewhere on the wire, nothing kept past the Finish" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // The C++ order: the call and the redirect, then the host's answer.
+    try h.pushTailCall(allocator);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, h.caller.tag.?);
+    try h.client_peer.sendReturnException(tail_answer_id, "target failed");
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try h.pushFinish(allocator, tail_answer_id);
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
 }

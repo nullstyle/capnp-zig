@@ -1786,3 +1786,114 @@ test "tail call: an answer given after the redirect is not given to a later tail
     try testing.expectEqual(@as(usize, 1), ra.countReturns(q2));
     try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
 }
+
+/// A sent exactly one Return for `answer_id`, and it is
+/// `resultsSentElsewhere`: rpc.capnp answers a `yourself` call that way,
+/// also when it fails, and the C++ reference drops the connection on an
+/// exception Return for its tail call.
+fn expectOnlyResultsSentElsewhere(rec: *Rec, answer_id: u32) !void {
+    try testing.expectEqual(@as(usize, 0), try countReturnFrames(rec, answer_id, .exception));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(rec, answer_id, null));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(rec, answer_id, .resultsSentElsewhere));
+}
+
+test "tail call: a host exception for the call after its redirect puts only resultsSentElsewhere on the wire" {
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    try pushPendingTailCall(alloc, a, &ra, t, t.q, tail_answer);
+    try a.finish(t.q, false);
+    try a.returnException(tail_answer, 0, "tail target failed");
+    try drainAll(a, &ra);
+    try expectOnlyResultsSentElsewhere(&ra, tail_answer);
+    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(t.q));
+}
+
+test "tail call: a call to a rejected promise export answers resultsSentElsewhere; the redirect gets the rejection" {
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    // The call parks on the promise; the host rejects the promise; then
+    // the redirect names the call.
+    const p = try a.promiseExport();
+    try pushFrame(alloc, a, yourselfCallFrame(alloc, tail_answer, p));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 0), try countReturnFrames(&ra, tail_answer, null));
+    try a.rejectPromise(p, "rejected by host");
+    try drainAll(a, &ra);
+    try expectOnlyResultsSentElsewhere(&ra, tail_answer);
+
+    try pushFrame(alloc, a, tailCallReturnFrame(alloc, t.q, tail_answer));
+    try drainAll(a, &ra);
+    const r = try expectOneReturn(&ra, t.q, .exception);
+    try testing.expectEqualStrings("promise broken", r.reason);
+    try a.finish(t.q, false);
+    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
+}
+
+test "tail call: a capnp_return_results that fails, then capnp_return_exception, puts only resultsSentElsewhere on the wire" {
+    // A host whose capnp_return_results fails (its results do not build)
+    // answers with capnp_return_exception, in either order with the
+    // redirect. The remote gets resultsSentElsewhere, once.
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    // Not a Cap'n Proto message: the results build fails.
+    const bad_results = [_]u8{ 1, 2, 3 };
+
+    // The C++ order: the redirect comes first.
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    try pushPendingTailCall(alloc, a, &ra, t, t.q, tail_answer);
+    if (a.returnResults(tail_answer, &bad_results, &.{})) |_| return error.TestResultsBuilt else |_| {}
+    try a.returnException(tail_answer, 0, "results did not build");
+    try drainAll(a, &ra);
+    try expectOnlyResultsSentElsewhere(&ra, tail_answer);
+    try a.finish(t.q, false);
+    try pushFrame(alloc, a, finishFrame(alloc, tail_answer));
+    try drainAll(a, &ra);
+
+    // Answered before the redirect arrives: the redirect gets the exception.
+    const q2 = try nextQuestion(alloc, a, &ra, t);
+    try pushFrame(alloc, a, yourselfCallFrame(alloc, tail_answer + 1, t.ea));
+    try drainAll(a, &ra);
+    if (a.returnResults(tail_answer + 1, &bad_results, &.{})) |_| return error.TestResultsBuilt else |_| {}
+    try a.returnException(tail_answer + 1, 0, "results did not build");
+    try drainAll(a, &ra);
+    try expectOnlyResultsSentElsewhere(&ra, tail_answer + 1);
+    try pushFrame(alloc, a, tailCallReturnFrame(alloc, q2, tail_answer + 1));
+    try drainAll(a, &ra);
+    const r2 = try expectOneReturn(&ra, q2, .exception);
+    try testing.expectEqualStrings("results did not build", r2.reason);
+    try a.finish(q2, false);
+    try pushFrame(alloc, a, finishFrame(alloc, tail_answer + 1));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 0), a.peer.loopback_result_stash.count());
+}

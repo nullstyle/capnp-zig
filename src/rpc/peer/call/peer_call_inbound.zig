@@ -70,6 +70,13 @@ pub fn CallInbound(comptime Peer: type) type {
         }
         const third_party_results_unsupported =
             "sendResultsTo.thirdParty unsupported: this vat cannot route results to a third party";
+        /// Records a call's `sendResultsTo` routing (the `yourself` mark, or
+        /// the third-party target) before it is answered.
+        const noteCallSendResults = third_party.noteCallSendResultsForPeerFn(
+            Peer,
+            Peer.noteSendResultsToYourself,
+            Peer.noteSendResultsToThirdParty,
+        );
 
         pub fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
             // Reject duplicate question IDs from the remote peer (spec violation).
@@ -149,11 +156,7 @@ pub fn CallInbound(comptime Peer: type) type {
                     queuePromiseExportCall,
                     Peer.releaseInboundCaps,
                     peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
-                    third_party.noteCallSendResultsForPeerFn(
-                        Peer,
-                        Peer.noteSendResultsToYourself,
-                        Peer.noteSendResultsToThirdParty,
-                    ),
+                    noteCallSendResults,
                     Peer.sendReturnException,
                     handleResolvedCall,
                     prepareParamCapsForDispatch,
@@ -173,6 +176,7 @@ pub fn CallInbound(comptime Peer: type) type {
                     Peer.releaseInboundCaps,
                     peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
                     prepareParamCapsForDispatch,
+                    noteCallSendResults,
                 ),
             ) catch |err| {
                 log.debug("call routing error for question {}: {}", .{ call.question_id, err });
@@ -181,6 +185,9 @@ pub fn CallInbound(comptime Peer: type) type {
                 // reached the source caller. Never risk a second terminal Return
                 // on that answer id; let the transport-level error close the peer.
                 if (err == error.AutomaticThirdPartySourceSettlementFailed) return err;
+                // A routing error that reached no handler, such as a refused
+                // queue: a `yourself` call still answers resultsSentElsewhere.
+                peer_call_orchestration.markYourselfCallForException(Peer, self, call, noteCallSendResults);
                 try self.sendReturnException(call.question_id, @errorName(err));
             };
             if (self.automatic_third_party_routes.get(call.question_id)) |route| {
@@ -271,6 +278,7 @@ pub fn CallInbound(comptime Peer: type) type {
             inbound_caps: *cap_table.InboundCapTable,
         ) anyerror!bool {
             const failed = try resolvePromisedParamCaps(self, call, inbound_caps) orelse return true;
+            peer_call_orchestration.markYourselfCallForException(Peer, self, call, noteCallSendResults);
             try self.sendReturnExceptionTyped(call.question_id, failed.reason, failed.ex_type);
             return false;
         }
@@ -291,11 +299,7 @@ pub fn CallInbound(comptime Peer: type) type {
                 peer_call_orchestration.handleResolvedExportedCallForPeerFn(
                     Peer,
                     cap_table.InboundCapTable,
-                    third_party.noteCallSendResultsForPeerFn(
-                        Peer,
-                        Peer.noteSendResultsToYourself,
-                        Peer.noteSendResultsToThirdParty,
-                    ),
+                    noteCallSendResults,
                     handleResolvedCall,
                     Peer.sendReturnException,
                     Peer.maybeForwardVineCall,
@@ -306,6 +310,7 @@ pub fn CallInbound(comptime Peer: type) type {
                     Peer.forwardResolvedCall,
                 ),
                 Peer.sendReturnException,
+                markYourselfCallForException,
             );
         }
 
@@ -487,7 +492,14 @@ pub fn CallInbound(comptime Peer: type) type {
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
                 replayQueuedExportCall,
+                markYourselfCallForException,
             );
+        }
+
+        /// `peer_call_orchestration.markYourselfCallForException` for this
+        /// peer, the hook the replay drains take.
+        fn markYourselfCallForException(self: *Peer, call: protocol.Call) void {
+            peer_call_orchestration.markYourselfCallForException(Peer, self, call, noteCallSendResults);
         }
 
         /// `handleResolvedCall` for a replayed call: a handler error is
@@ -535,6 +547,7 @@ pub fn CallInbound(comptime Peer: type) type {
                 Peer.sendReturnExceptionTyped,
                 handleResolvedCallReportingErrors,
                 prepareParamCapsForDispatch,
+                noteCallSendResults,
             );
         }
 

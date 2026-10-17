@@ -82,6 +82,11 @@ pub fn handleResolvedCall(
     handle_exported: *const fn (*PeerType, protocol.Call, *const InboundCapsType, u32) anyerror!void,
     forward_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap, ForwardResolvedMode) anyerror!void,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    /// Runs before a call whose target resolved to no capability is answered
+    /// with an exception: the Peer marks a `sendResultsTo = yourself` call,
+    /// so that Return is `resultsSentElsewhere`
+    /// (`peer_call_orchestration.markYourselfCallForException`).
+    mark_yourself_call: *const fn (*PeerType, protocol.Call) void,
 ) !void {
     switch (resolved) {
         .exported => |cap| {
@@ -94,6 +99,7 @@ pub fn handleResolvedCall(
             };
         },
         .none => {
+            mark_yourself_call(peer, call);
             try send_return_exception(peer, call.question_id, "promised answer missing");
         },
     }

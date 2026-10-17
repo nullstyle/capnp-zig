@@ -1,8 +1,32 @@
 const std = @import("std");
+const log = std.log.scoped(.rpc_peer);
 const cap_table = @import("../../caps/table.zig");
 const peer_call_targets = @import("./peer_call_targets.zig");
 const protocol = @import("../../wire/protocol.zig");
 const peer_fds = @import("../peer_fds.zig");
+
+/// Mark a `sendResultsTo = yourself` call that failed before a handler ran
+/// (an unknown or broken target, a refused queue, a param or pipelined target
+/// that names a failed answer, a parked call whose promise was rejected),
+/// right before its exception Return. Dispatch marks a call only when a
+/// handler runs. The exception Return then sees the mark, as for a handler's
+/// own exception: the remote gets `resultsSentElsewhere`, and the exception
+/// is kept for the redirect that names the call (`Peer.sendReturnException`,
+/// which ends the mark). The mark lives only until that send, so no path
+/// leaves one behind. Other calls are left alone. Best effort: past
+/// `limits.max_send_results_to_yourself`, or out of memory, the exception
+/// goes on the wire as before.
+pub fn markYourselfCallForException(
+    comptime PeerType: type,
+    peer: *PeerType,
+    call: protocol.Call,
+    note_call_send_results: *const fn (*PeerType, protocol.Call) anyerror!void,
+) void {
+    if (call.send_results_to.tag != .yourself) return;
+    note_call_send_results(peer, call) catch |err| {
+        log.debug("yourself call {} not marked for its exception: {}", .{ call.question_id, err });
+    };
+}
 
 pub fn routeCallTarget(call: protocol.Call) !union(enum) {
     imported: u32,
@@ -77,6 +101,7 @@ pub fn dispatchImportedTargetPlan(
 ) !void {
     switch (target_plan) {
         .promise_broken => {
+            markYourselfCallForException(PeerType, peer, call, note_call_send_results);
             try send_return_exception(peer, call.question_id, "promise broken");
         },
         .handle_resolved => |resolved| {
@@ -238,6 +263,7 @@ pub fn handleCallImportedTargetForPeer(
 
     if (target_plan == .unknown_capability) {
         release_caps = true;
+        markYourselfCallForException(PeerType, peer, call, note_call_send_results);
         try send_return_exception(peer, call.question_id, "unknown capability");
         return;
     }
@@ -353,6 +379,7 @@ pub fn routePromisedTargetCall(
     send_return_exception_typed: *const fn (*PeerType, u32, []const u8, protocol.ExceptionType) anyerror!void,
     handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
+    note_call_send_results: *const fn (*PeerType, protocol.Call) anyerror!void,
 ) !bool {
     const target_plan = peer_call_targets.planPromisedTarget(
         PeerType,
@@ -373,6 +400,7 @@ pub fn routePromisedTargetCall(
             return true;
         },
         .send_exception => |err| {
+            markYourselfCallForException(PeerType, peer, call, note_call_send_results);
             try send_return_exception(peer, call.question_id, @errorName(err));
             return false;
         },
@@ -382,6 +410,7 @@ pub fn routePromisedTargetCall(
             // queued BEFORE the exception Return; this one arrived after, so
             // fail it the same way — a copy of the answer's own exception,
             // preserving the retryability signal.
+            markYourselfCallForException(PeerType, peer, call, note_call_send_results);
             try send_return_exception_typed(peer, call.question_id, failed.reason, failed.ex_type);
             return false;
         },
@@ -412,6 +441,7 @@ pub fn handleCallPromisedTargetForPeer(
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
     prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
+    note_call_send_results: *const fn (*PeerType, protocol.Call) anyerror!void,
 ) !void {
     var inbound_caps = try initCallInboundCaps(PeerType, InboundCapsType, peer, call);
     // Fd passing: imports the params noted take the fds their descriptors
@@ -450,6 +480,7 @@ pub fn handleCallPromisedTargetForPeer(
         send_return_exception_typed,
         handle_resolved_call,
         prepare_param_caps,
+        note_call_send_results,
     )) inbound_caps_owned = false;
 }
 
@@ -467,6 +498,7 @@ pub fn handleCallPromisedTargetForPeerFn(
     comptime release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     comptime report_nonfatal_error: *const fn (*PeerType, anyerror) void,
     comptime prepare_param_caps: *const fn (*PeerType, protocol.Call, *InboundCapsType) anyerror!bool,
+    comptime note_call_send_results: *const fn (*PeerType, protocol.Call) anyerror!void,
 ) *const fn (*PeerType, []const u8, protocol.Call, protocol.PromisedAnswer) anyerror!void {
     return struct {
         fn call(peer: *PeerType, frame: []const u8, call_msg: protocol.Call, promised: protocol.PromisedAnswer) anyerror!void {
@@ -488,6 +520,7 @@ pub fn handleCallPromisedTargetForPeerFn(
                 release_inbound_caps,
                 report_nonfatal_error,
                 prepare_param_caps,
+                note_call_send_results,
             );
         }
     }.call;

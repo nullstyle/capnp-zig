@@ -241,6 +241,11 @@ pub fn replayResolvedPromiseExport(
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
     replay_export_call: ReplayExportCallFn(PeerType, InboundCapsType),
+    /// Runs before a parked call is answered with an exception here (the
+    /// promise was rejected, or the replay failed): the Peer marks a
+    /// `sendResultsTo = yourself` call, so its exception Return is
+    /// `resultsSentElsewhere` (`peer_call_orchestration.markYourselfCallForException`).
+    mark_yourself_call: *const fn (*PeerType, protocol.Call) void,
 ) !void {
     var pending = pending_export_promises.fetchRemove(export_id) orelse return;
     defer pending.value.deinit(allocator);
@@ -262,11 +267,13 @@ pub fn replayResolvedPromiseExport(
         };
 
         if (resolved == .none) {
+            mark_yourself_call(peer, call);
             send_return_exception(peer, call.question_id, "promise broken") catch |err| {
                 report_nonfatal_error(peer, err);
             };
         } else {
             const requeued = replay_export_call(peer, pending_call.frame, call, &pending_call.caps, resolved) catch |err| blk: {
+                mark_yourself_call(peer, call);
                 send_return_exception(peer, call.question_id, @errorName(err)) catch |send_err| {
                     report_nonfatal_error(peer, send_err);
                 };
@@ -382,6 +389,7 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
         release_count: usize = 0,
         handled_count: usize = 0,
         nonfatal_count: usize = 0,
+        marked_count: usize = 0,
         last_question_id: u32 = 0,
         last_reason: []const u8 = "",
     };
@@ -403,9 +411,16 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
         }
 
         fn sendReturnException(peer: *FakePeer, question_id: u32, reason: []const u8) !void {
+            // The call is marked before its exception is sent.
+            if (peer.marked_count != peer.exception_count + 1) return error.TestCallNotMarked;
             peer.exception_count += 1;
             peer.last_question_id = question_id;
             peer.last_reason = reason;
+        }
+
+        fn markYourselfCall(peer: *FakePeer, call: protocol.Call) void {
+            peer.marked_count += 1;
+            peer.last_question_id = call.question_id;
         }
 
         fn releaseInboundCaps(peer: *FakePeer, inbound_caps: *DummyCaps) !void {
@@ -460,8 +475,10 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
         Hooks.releaseInboundCaps,
         Hooks.reportNonfatal,
         Hooks.replayExportCall,
+        Hooks.markYourselfCall,
     );
 
+    try std.testing.expectEqual(@as(usize, 1), peer.marked_count);
     try std.testing.expectEqual(@as(usize, 1), peer.exception_count);
     try std.testing.expectEqual(@as(u32, 41), peer.last_question_id);
     try std.testing.expectEqualStrings("promise broken", peer.last_reason);

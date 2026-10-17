@@ -8,6 +8,7 @@ const return_send = @import("../../promises/return_send.zig");
 const finish = @import("../finish.zig");
 const peer_call_targets = @import("../call/peer_call_targets.zig");
 const peer_return_dispatch = @import("./peer_return_dispatch.zig");
+const peer_return_frames = @import("./peer_return_frames.zig");
 const state = @import("../state.zig");
 const peer_fds = @import("../peer_fds.zig");
 const peer_export_release = @import("../peer_export_release.zig");
@@ -50,7 +51,13 @@ pub fn ReturnSend(comptime Peer: type) type {
                 return error.ThirdPartyResultsNotRedirected;
             }
 
-            if (self.send_results_to_yourself.remove(answer_id)) {
+            // The mark stays until the `resultsSentElsewhere` Return is sent
+            // (`sendReturnTag` clears it). When `build` (a generated DIRECT
+            // handler's body) or a later step fails, the caller answers with
+            // sendReturnException (generated dispatch does; a native host
+            // calls capnp_return_exception), which must still see a
+            // `yourself` call.
+            if (self.send_results_to_yourself.contains(answer_id)) {
                 try completeSelfLoopbackReturn(self, answer_id, ctx, build);
                 return;
             }
@@ -343,12 +350,31 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// Send an exception Return without draining queued pipelined children.
         /// Used internally where the queued-call drain must not re-enter (e.g.
         /// while iterating the live `pending_promises` map).
+        ///
+        /// A call marked `sendResultsTo = yourself` is answered with
+        /// `resultsSentElsewhere` instead: rpc.capnp answers such a call that
+        /// way also when it fails, and the C++ reference drops the connection
+        /// on an exception Return for its tail call ("Tail call `Return` must
+        /// set `resultsSentElsewhere`, not `exception`", rpc.c++
+        /// handleReturn). The exception goes where the call's results would:
+        /// it is kept for the redirect that names the call
+        /// (`keepSelfLoopbackException`). Dispatch marks such a call before
+        /// its handler runs, and the mark survives a results build that
+        /// fails (`sendReturnResults`); a call that fails before a handler
+        /// runs is marked at the failure site
+        /// (`peer_call_orchestration.markYourselfCallForException`). The mark
+        /// ends here, also when a step below fails.
         pub fn sendReturnExceptionNoDrain(
             self: *Peer,
             answer_id: u32,
             reason: []const u8,
             ex_type: protocol.ExceptionType,
         ) !void {
+            const yourself = self.send_results_to_yourself.remove(answer_id);
+            // Keep BEFORE telling the forwarder, as completeSelfLoopbackReturn
+            // stashes before its send: a synchronous transport can deliver the
+            // redirect inside the send.
+            if (yourself) keepSelfLoopbackException(self, answer_id, reason, ex_type);
             // Capture before delivery consumes the loopback marker (see
             // sendReturnResults).
             const is_loopback = self.loopback_questions.contains(answer_id);
@@ -364,16 +390,28 @@ pub fn ReturnSend(comptime Peer: type) type {
                 if (resolving_owned) _ = self.resolving_answers.remove(answer_id);
             }
 
-            peer_return_dispatch.sendReturnExceptionForPeer(
-                Peer,
-                self,
-                answer_id,
-                reason,
-                ex_type,
-                self.returnReleasesParamCaps(answer_id),
-                clearSendResultsRouting,
-                sendReturnFrameWithLoopback,
-            ) catch |err| {
+            const sent = if (yourself)
+                peer_return_dispatch.sendReturnTagForPeer(
+                    Peer,
+                    self,
+                    answer_id,
+                    .resultsSentElsewhere,
+                    self.returnReleasesParamCaps(answer_id),
+                    clearSendResultsRouting,
+                    sendReturnFrameWithLoopback,
+                )
+            else
+                peer_return_dispatch.sendReturnExceptionForPeer(
+                    Peer,
+                    self,
+                    answer_id,
+                    reason,
+                    ex_type,
+                    self.returnReleasesParamCaps(answer_id),
+                    clearSendResultsRouting,
+                    sendReturnFrameWithLoopback,
+                );
+            sent catch |err| {
                 if (resolving_owned) {
                     _ = self.resolving_answers.remove(answer_id);
                     resolving_owned = false;
@@ -407,6 +445,39 @@ pub fn ReturnSend(comptime Peer: type) type {
             if (!is_loopback and !finished_early) {
                 recordFailedAnswer(self, answer_id, reason, ex_type);
             }
+        }
+
+        /// Keep the exception of a failed `sendResultsTo = yourself` call for
+        /// the redirect that names it, as `completeSelfLoopbackReturn` keeps
+        /// cap-free results (`loopback_result_stash`). Best effort: when the
+        /// stash is full, the call's Finish has come, or memory runs out,
+        /// nothing is kept, and the redirect gets the bare
+        /// `takeFromOtherQuestion` tag.
+        fn keepSelfLoopbackException(
+            self: *Peer,
+            answer_id: u32,
+            reason: []const u8,
+            ex_type: protocol.ExceptionType,
+        ) void {
+            if (!self.active_inbound_questions.contains(answer_id)) return;
+            if (self.loopback_result_stash.count() >= self.limits.max_loopback_result_stash) return;
+            const frame = peer_return_frames.buildReturnExceptionFrame(
+                self.allocator,
+                answer_id,
+                reason,
+                ex_type,
+                self.returnReleasesParamCaps(answer_id),
+            ) catch |err| {
+                log.debug("exception of yourself call {} not kept: {}", .{ answer_id, err });
+                return;
+            };
+            // fetchPut, not put: a plain put would leak an entry already kept.
+            const previous = self.loopback_result_stash.fetchPut(answer_id, @constCast(frame)) catch |err| {
+                self.allocator.free(frame);
+                log.debug("exception of yourself call {} not kept: {}", .{ answer_id, err });
+                return;
+            };
+            if (previous) |old| self.allocator.free(old.value);
         }
 
         /// Best-effort record of an exception Return for `answer_id` (see the
