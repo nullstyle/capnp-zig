@@ -53,7 +53,7 @@ Status words:
 | H11 | The 5-schema QUIC matrix: a `--transport quic` mode on the Zig e2e server and client. | `docs/handoffs/H11-quic-5-schema-matrix.md` | delivered in v0.26.0 | The CI job `e2e-quic` (Zig to Zig, all seven schemas) is on main for v0.27.0. capnp-zig has no Swift cross-implementation test. | 2026-10-17 |
 | H11 check 9 | End the RPC session when the peer ends QUIC stream 0, so `disconnectNow` ends the waiting questions. | `docs/handoffs/quic-server-close-residual.md` | on main for v0.27.0 | `1fdc029`. A clean FIN and a RESET of stream 0 both end the session (owner decision D2, option A). See the relay text below. | 2026-10-17 |
 | H12 | Lookup-backed `type_resolver` contexts lose the nested RPC lexical scopes. | `docs/handoffs/H12-type-resolver-lexical-lookup.md` | deferred | capnp-swift uses `Context.init` with the full request nodes. The fix needs the same reverse lookup as direction #5, so it goes with that work. | 2026-10-17 |
-| Tail calls | Follow a cap-free tail-call Return (`takeFromOtherQuestion`) through the native C ABI. | `docs/handoffs/tail-call-returns-for-native.md` | open | Not in v0.27.0. The "hold" design failed review; its commits are on branch `archive/p1-3-tail-call-hold` (code at `663dbd3`, review reports at `8b01b8c`). Two related fixes are on main for v0.27.0. Keep the workaround. See the relay text below. | 2026-10-17 |
+| Tail calls | Follow a cap-free tail-call Return (`takeFromOtherQuestion`) through the native C ABI. | `docs/handoffs/tail-call-returns-for-native.md` | on main for v0.27.0 | The hold lives in the native shim: a question waits while the host still owes the named call, and the host's answer becomes its one RETURN. Results that point at a capability still end it with RETURN EXCEPTION. Design and termination proof: `docs/notes/tail-call-hold-design.md`. The earlier Peer-level hold is on branch `archive/p1-3-tail-call-hold`. See the relay text below. | 2026-10-17 |
 | Native feature bits | The native ABI v1 feature bits. `capnp_core_features()` reports 0. | none (sprint plan 2026-10-15, "Not in this sprint") | deferred | A new bit changes the header that capnp-swift snapshots. It waits until capnp-swift has taken the tail-call work. | 2026-10-17 |
 
 ### Relay to capnp-swift for v0.27.0
@@ -74,12 +74,19 @@ The owner sends this text after the v0.27.0 tag exists.
 > (`zig build -Dquic=true e2e-quic`). No Swift cross-implementation test
 > exists in capnp-zig yet.
 >
-> **Tail calls for native.** The hold design is deferred, so the native
-> shim still reports "capnp-swift core: unsupported Return variant" for a
-> tail call that names a pending call. Keep your workaround. Two fixes are
-> in v0.27.0: a failing `yourself` call now answers `resultsSentElsewhere`,
-> and a kept tail-call answer can no longer reach a later question with a
-> reused id.
+> **Tail calls for native.** In v0.27.0 the native shim follows a tail
+> call to a call that your host still owes. When the remote answers a
+> question with `takeFromOtherQuestion` naming an INBOUND_CALL that you have
+> not answered, the question waits. Your `capnp_return_results` for that
+> call becomes the question's RETURN RESULTS, and your
+> `capnp_return_exception` becomes its RETURN EXCEPTION. Results that point
+> at a capability give RETURN EXCEPTION (`tail_call_caps_reason`). While it
+> waits, cancel, deadline, transport close and shutdown end it once, as for
+> any open question. docs/native-abi.md has the rules. After you pin
+> v0.27.0, run the C++ `resolve_disembargo` case again and drop your
+> workaround if it passes. Two more fixes are in v0.27.0: a failing
+> `yourself` call now answers `resultsSentElsewhere`, and a kept tail-call
+> answer can no longer reach a later question with a reused id.
 
 ## capnp-deno
 
