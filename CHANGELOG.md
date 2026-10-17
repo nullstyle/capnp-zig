@@ -44,6 +44,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CI: the package preflight runs on Linux only for each push, and Nightly
+  runs it on all three OSes.** On Windows the step took 11.7 to 21.7 min of
+  the 45-min Test job (10 green runs, 10-11 to 10-17), and the job peaked at
+  42.6 min. The new Nightly job `package-preflight` runs it on Linux, macOS
+  and Windows. The tag gate needs green Nightlies on the release commit, so
+  a release still gets the preflight on all three OSes.
+- **CI: every job in `ci.yml`, `nightly.yml` and `release.yml` has a
+  job-level timeout.** Seven jobs had none, so a hung job could run for
+  GitHub's 6-hour default. `fmt-check`, `evented-check`, `docs-smoke`,
+  `bench-check`, `wasm-build` and `release-build` get 10 min (their slowest
+  green run was 4.2 min or less). `cross-targets` gets 60 min (slowest 35.9
+  min). `e2e-quic` goes from 25 to 10 min (slowest 5.3 min), and
+  `release-safe-tests` from 60 to 75 min (slowest 50.5 min). These figures
+  come from 17 green CI runs, 10-10 to 10-17. A new step in the "CI gate
+  tools" job (also `just check-job-timeouts`) fails when a job has no
+  job-level `timeout-minutes`. A step-level timeout does not count. The
+  `evented-check` e2e step and the `bench-check` step now run under
+  `tools/stall_watchdog.sh`.
 - **Nightly: the Windows 64-worker soak lane runs in its own job.** It used
   to run after the two 8-worker lanes on the same runner, so it often began
   with about 16k ports in TIME_WAIT. 8 of the 17 Windows Nightlies from

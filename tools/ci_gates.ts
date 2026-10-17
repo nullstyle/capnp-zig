@@ -1,11 +1,13 @@
-// CI gate tools: the Nightly tag gate and the Nightly failure annotations
-// it reads.
+// CI gate tools: the Nightly tag gate, the Nightly failure annotations it
+// reads, and the job-timeout check for the workflow files.
 //
 //   deno run --allow-run=gh,git --allow-read --allow-write --allow-env --no-config \
 //     tools/ci_gates.ts nightly-gate <sha> [--flakes FILE] [--repo OWNER/REPO]
 //       [--today YYYY-MM-DD] [--created-before ISO-TIME] [--record FILE] [--fixture FILE]
 //   deno run --allow-read --allow-env --no-config \
 //     tools/ci_gates.ts annotate --log-dir DIR [--expect NAME]
+//   deno run --allow-read --no-config \
+//     tools/ci_gates.ts job-timeouts WORKFLOW.yml...
 //
 // nightly-gate (`just check-nightly-gate SHA`; `just release-tag` runs it)
 //   Reads the 3 most recent completed Nightly runs whose head_sha is SHA, with
@@ -43,6 +45,13 @@
 //   of the names. The Nightly soak job uses it on every run, so a green run
 //   also proves the log wiring (the step id in GITHUB_ACTION, the tee into
 //   RUNNER_TEMP) on Linux and Windows.
+//
+// job-timeouts (the CI job "CI gate tools")
+//   Fails when a job in a workflow file has no job-level `timeout-minutes`,
+//   or when its value is not a whole number from 1 to 360. A step-level
+//   `timeout-minutes` does not count. The scan reads the block structure by
+//   indentation and stops with an error on a layout it does not know, so an
+//   unusual file is a failure, not a silent pass.
 
 export const REQUIRED_RUNS = 3;
 export const ROW_MAX_DAYS = 30;
@@ -51,6 +60,7 @@ export const NAME_TITLE = "nightly-failure";
 export const OVERFLOW_TITLE = "nightly-failure-overflow";
 export const NIGHTLY_WORKFLOW = "nightly.yml";
 export const DEFAULT_FLAKES = ".github/known-flakes.txt";
+export const MAX_TIMEOUT_MINUTES = 360;
 
 // Job conclusions that are not a failure.
 const OK_JOB = new Set(["success", "skipped", "neutral"]);
@@ -518,6 +528,119 @@ export function evaluateGate(
 }
 
 // ---------------------------------------------------------------------------
+// Job timeouts
+
+export interface JobTimeout {
+  id: string;
+  line: number;
+  timeout: string | null;
+}
+
+const KEY_LINE = /^([A-Za-z0-9_-]+):(?:[ \t]+(.*))?$/;
+
+function stripComment(value: string): string {
+  return value.replace(/(^|\s)#.*$/, "").trim();
+}
+
+// Lists each job of a workflow file with its job-level timeout-minutes.
+// Throws GateError on a layout the scan does not know.
+export function jobTimeouts(text: string, file = "workflow"): JobTimeout[] {
+  const lines = text.split(/\r?\n/);
+  const content: { n: number; indent: number; body: string }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (raw.trim() === "") continue;
+    const indentText = /^[ \t]*/.exec(raw)![0];
+    if (indentText.includes("\t")) {
+      throw new GateError(`${file}:${i + 1}: a tab in the indentation`);
+    }
+    const body = raw.slice(indentText.length);
+    if (body.startsWith("#")) continue;
+    content.push({ n: i + 1, indent: indentText.length, body });
+  }
+  const start = content.findIndex((l) =>
+    l.indent === 0 && /^jobs:\s*(#.*)?$/.test(l.body)
+  );
+  if (start < 0) throw new GateError(`${file}: no top-level "jobs:" block`);
+  let end = content.length;
+  for (let k = start + 1; k < content.length; k++) {
+    if (content[k].indent === 0) {
+      end = k;
+      break;
+    }
+  }
+  const block = content.slice(start + 1, end);
+  if (block.length === 0) {
+    throw new GateError(`${file}: the "jobs:" block is empty`);
+  }
+  const jobIndent = block[0].indent;
+  const jobs: JobTimeout[] = [];
+  let current: JobTimeout | null = null;
+  let propIndent = -1;
+  for (const l of block) {
+    if (l.indent < jobIndent) {
+      throw new GateError(`${file}:${l.n}: a line outside the job layout`);
+    }
+    if (l.indent === jobIndent) {
+      const m = /^([A-Za-z_][A-Za-z0-9_-]*):\s*(#.*)?$/.exec(l.body);
+      if (!m) {
+        throw new GateError(
+          `${file}:${l.n}: expected a job id, got ${JSON.stringify(l.body)}`,
+        );
+      }
+      current = { id: m[1], line: l.n, timeout: null };
+      jobs.push(current);
+      propIndent = -1;
+      continue;
+    }
+    if (current === null) {
+      throw new GateError(`${file}:${l.n}: a line before the first job`);
+    }
+    if (propIndent < 0) propIndent = l.indent;
+    if (l.indent < propIndent) {
+      throw new GateError(
+        `${file}:${l.n}: a line between the job and its keys`,
+      );
+    }
+    if (l.indent > propIndent) continue; // steps, matrix, env, run scripts
+    const key = KEY_LINE.exec(l.body);
+    if (!key) {
+      throw new GateError(
+        `${file}:${l.n}: expected a job key, got ${JSON.stringify(l.body)}`,
+      );
+    }
+    if (key[1] === "timeout-minutes") {
+      current.timeout = stripComment(key[2] ?? "").replace(
+        /^(["'])(.*)\1$/,
+        "$2",
+      );
+    }
+  }
+  return jobs;
+}
+
+export function timeoutProblems(file: string, jobs: JobTimeout[]): string[] {
+  const problems: string[] = [];
+  for (const job of jobs) {
+    if (job.timeout === null || job.timeout === "") {
+      problems.push(
+        `${file}:${job.line}: job "${job.id}" has no job-level timeout-minutes`,
+      );
+      continue;
+    }
+    const minutes = /^[1-9]\d*$/.test(job.timeout) ? Number(job.timeout) : NaN;
+    if (!(minutes >= 1 && minutes <= MAX_TIMEOUT_MINUTES)) {
+      problems.push(
+        `${file}:${job.line}: job "${job.id}" has timeout-minutes ${
+          JSON.stringify(job.timeout)
+        }; use a whole number from 1 to ${MAX_TIMEOUT_MINUTES}`,
+      );
+    }
+  }
+  return problems;
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 
 const decoder = new TextDecoder();
@@ -734,6 +857,25 @@ function annotateCommand(args: string[]): number {
   return 0;
 }
 
+async function jobTimeoutsCommand(args: string[]): Promise<number> {
+  if (args.length === 0) {
+    throw new GateError("usage: job-timeouts WORKFLOW.yml...");
+  }
+  const problems: string[] = [];
+  for (const file of args) {
+    const jobs = jobTimeouts(await Deno.readTextFile(file), file);
+    const found = timeoutProblems(file, jobs);
+    problems.push(...found);
+    console.log(
+      `${file}: ${jobs.length} jobs, ${
+        jobs.length - found.length
+      } with a job-level timeout-minutes`,
+    );
+  }
+  for (const p of problems) console.log(`error: ${p}`);
+  return problems.length === 0 ? 0 : 1;
+}
+
 export async function main(args: string[]): Promise<number> {
   const [command, ...rest] = args;
   try {
@@ -742,9 +884,11 @@ export async function main(args: string[]): Promise<number> {
         return await nightlyGate(rest);
       case "annotate":
         return annotateCommand(rest);
+      case "job-timeouts":
+        return await jobTimeoutsCommand(rest);
       default:
         console.error(
-          "usage: ci_gates.ts nightly-gate|annotate ...",
+          "usage: ci_gates.ts nightly-gate|annotate|job-timeouts ...",
         );
         return 2;
     }

@@ -195,6 +195,13 @@ jobs:
         # Runs default, core, and opt-in QUIC consumers from a manifest-filtered
         # archive in both Debug and ReleaseSafe. The tool confines all writes to
         # temporary caches and asserts the checkout stays unchanged.
+        #
+        # Linux only per push. On Windows this step took 11.7 to 21.7 min of
+        # the 45-min job (10 green runs, 10-11 to 10-17), and the job peaked
+        # at 42.6 min (run 39011164672). Nightly runs it on all three OSes (job
+        # package-preflight), and the tag gate needs green Nightlies on the
+        # release commit.
+        if: runner.os == 'Linux'
         run: zig build package-preflight --summary all
 
       - name: Soak smoke (2s, loopback TCP)
@@ -228,6 +235,10 @@ jobs:
   fmt-check:
     name: Format check
     runs-on: ubuntu-latest
+    # Slowest healthy run: 0.3 min (17 green runs, 10-10 to 10-17). 10 min
+    # is the floor for short jobs, so a slow runner or a cold mise cache does
+    # not fail a healthy run.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
 
@@ -240,10 +251,10 @@ jobs:
       - name: Check formatting
         run: just fmt-check
 
-  # tools/ci_gates.ts holds the Nightly tag gate (`just check-nightly-gate`)
-  # and the Nightly failure annotations that the gate reads. Its tests use
-  # recorded API responses and real Nightly log excerpts, so they need no
-  # network and no token.
+  # tools/ci_gates.ts holds the Nightly tag gate (`just check-nightly-gate`),
+  # the Nightly failure annotations that the gate reads and the job-timeout
+  # check. Its tests use recorded API responses and real Nightly log
+  # excerpts, so they need no network and no token.
   ci-gates:
     name: CI gate tools
     runs-on: ubuntu-latest
@@ -256,12 +267,22 @@ jobs:
           version: 2026.7.17
           install_args: deno
 
-      - name: Unit tests for the Nightly gate and the failure annotations
+      - name: Unit tests for the Nightly gate, the failure annotations and the timeout check
         run: deno test --allow-all --no-config tools/ci_gates_test.ts
+
+      # A hung job without a job-level cap runs for GitHub's 6-hour default.
+      # A step-level timeout-minutes does not count. The tests above prove
+      # that the check fails when one job loses its cap.
+      - name: Every job has a job-level timeout-minutes
+        run: deno run --allow-read --no-config tools/ci_gates.ts job-timeouts .github/workflows/ci.yml .github/workflows/nightly.yml .github/workflows/release.yml
 
   evented-check:
     name: Evented backend check
     runs-on: ubuntu-latest
+    # Slowest healthy run: 2.2 min (17 green runs, 10-10 to 10-17). 10 min
+    # is the floor for short jobs, so a slow runner or a cold mise cache does
+    # not fail a healthy run.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
@@ -288,7 +309,9 @@ jobs:
       # Ablation for this one: making `parseKind("threaded")` return null leaves
       # the old compile check green and turns this lane red.
       - name: Execute the RPC e2e over the threaded Io selector
-        run: zig build -Dio-backend=threaded e2e-self --summary all
+        # The stall watchdog names a hung process before the job cap kills it.
+        shell: bash
+        run: bash tools/stall_watchdog.sh zig build -Dio-backend=threaded e2e-self --summary all
 
       # Expected-fail canary. This step used to run
       # `zig build -Dio-backend=evented check`, which compiled nothing evented:
@@ -450,6 +473,10 @@ jobs:
   docs-smoke:
     name: Docs smoke and snippets
     runs-on: ubuntu-latest
+    # Slowest healthy run: 4.2 min (17 green runs, 10-10 to 10-17). 10 min
+    # is the floor for short jobs, so a slow runner or a cold mise cache does
+    # not fail a healthy run.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
@@ -481,6 +508,9 @@ jobs:
   cross-targets:
     name: Cross-target compile (${{ matrix.target }})
     runs-on: ubuntu-latest
+    # Slowest healthy run: 35.9 min (x86-linux-gnu, run 38977730732; 17 green
+    # runs, 10-10 to 10-17). The other targets took at most 19.2 min.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -744,11 +774,10 @@ jobs:
     name: Zig e2e over QUIC
     runs-on: ubuntu-latest
     # The Zig e2e server and client over the QUIC baseline wire, all seven
-    # schemas: the mode capnp-swift tests against. No healthy run has been
-    # measured in CI yet. The cap bounds a hang: the build is the QUIC
-    # dependency tree plus two binaries, and the lane itself takes seconds
-    # (each schema's client has a 60 s deadline).
-    timeout-minutes: 25
+    # schemas: the mode capnp-swift tests against. The first green run took
+    # 5m14s (run 38970205763, with a 1.5 min dependency fetch). The slowest
+    # of the 5 green runs to 10-17 took 5.3 min, so 10 (about 2x).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
@@ -797,6 +826,10 @@ jobs:
   bench-check:
     name: Benchmark regression check
     runs-on: ubuntu-latest
+    # Slowest healthy run: 3.3 min (17 green runs, 10-10 to 10-17). 10 min
+    # is the floor for short jobs, so a slow runner or a cold mise cache does
+    # not fail a healthy run.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
@@ -809,11 +842,17 @@ jobs:
       - uses: ./.github/actions/setup-zig
 
       - name: Run benchmark regression checks
-        run: zig build -Doptimize=ReleaseFast bench-check
+        # The stall watchdog names a hung process before the job cap kills it.
+        shell: bash
+        run: bash tools/stall_watchdog.sh zig build -Doptimize=ReleaseFast bench-check
 
   wasm-build:
     name: WASM build
     runs-on: ubuntu-latest
+    # Slowest healthy run: 2.2 min (17 green runs, 10-10 to 10-17). 10 min
+    # is the floor for short jobs, so a slow runner or a cold mise cache does
+    # not fail a healthy run.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
@@ -831,6 +870,10 @@ jobs:
   release-build:
     name: Release build
     runs-on: ubuntu-latest
+    # Slowest healthy run: 3.2 min (17 green runs, 10-10 to 10-17). 10 min
+    # is the floor for short jobs, so a slow runner or a cold mise cache does
+    # not fail a healthy run.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
@@ -848,11 +891,11 @@ jobs:
   release-safe-tests:
     name: ReleaseSafe hardening tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Slowest healthy run measured across the matrix: 41m (windows, 2026-10-06,
-    # run 37513039981; its ReleaseSafe compile alone takes 29-33m). The H1
-    # tests pushed one healthy windows run past 45m (run 37530284324, the
-    # compile step 32.9m), so 60.
-    timeout-minutes: 60
+    # Slowest healthy run measured across the matrix: 50.5 min (windows, run
+    # 38960486931); macOS peaked at 47.8 min (run 39011164672) and Linux at
+    # 45.5 min (17 green runs, 10-10 to 10-17). The cap was 60, so the
+    # slowest leg used 84% of it. 75 is 1.5x the peak.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:

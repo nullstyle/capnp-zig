@@ -10,12 +10,13 @@ on:
 # needs 3 Nightly runs on the release commit that are green or that fail only
 # on rows of .github/known-flakes.txt (RELEASING.md step 5). To match a row,
 # the gate reads the nightly-failure annotations of each failed job. So each
-# step that can fail has an `id`, runs in bash (`-eo pipefail`, so the tee
-# keeps the exit code) and copies its output to $RUNNER_TEMP/<id>.log
-# ($GITHUB_ACTION is the step id). The final `if: failure()` step of each job
-# reads those logs with tools/ci_gates.ts and writes one annotation per
-# failed test (`error: '<test>' failed`) and per `soak: FAIL` line, or
-# `step:<id>` for a failed step with neither.
+# step that can fail has an `id`. Most of them run in bash (`-eo pipefail`,
+# so the tee keeps the exit code) and copy their output to
+# $RUNNER_TEMP/<id>.log ($GITHUB_ACTION is the step id). The final
+# `if: failure()` step of each job reads those logs with tools/ci_gates.ts and
+# writes one annotation per failed test (`error: '<test>' failed`) and per
+# `soak: FAIL` line, or `step:<id>` for a failed step with neither line or
+# with no log.
 
 jobs:
   soak:
@@ -383,6 +384,52 @@ jobs:
           else
             echo "::notice title=std.Io.Evented canary changed::check-evented-canary no longer sees the expected processReplacePath error. If std.Io.Evented now compiles, flip evented_available in src/io_backend.zig and retarget build/evented_canary.zig; otherwise update its expected error and the fork handoff."
           fi
+
+      # The tag gate reads these annotations. See "Failure names" at the top
+      # of this file.
+      - name: Name the failures for the tag gate
+        if: failure()
+        shell: bash
+        env:
+          NIGHTLY_STEPS: ${{ toJSON(steps) }}
+        run: deno run --allow-read --allow-env --no-config tools/ci_gates.ts annotate --log-dir "$RUNNER_TEMP"
+
+  # The clean-room package preflight on all three OSes. Per-push CI runs it
+  # on Linux only, because on Windows the step took 11.7 to 21.7 min of the
+  # 45-min Test job (10 green CI runs, 10-11 to 10-17). The tag gate needs
+  # green Nightlies on the release commit, so a release still gets the
+  # preflight on all three OSes.
+  package-preflight:
+    name: Package preflight (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # The step took at most 21.7 min (Windows), 13.1 min (Linux) and 11.5 min
+    # (macOS) in those CI runs. Setup takes a few minutes more.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.17
+
+      - uses: ./.github/actions/setup-zig
+
+      # The preflight verifies the pinned WASM schema compiler, as in ci.yml.
+      - uses: ./.github/actions/setup-capnp
+
+      # The same step as ci.yml's Test job, in the same default shell (pwsh
+      # on Windows). The preflight runs `tar` from PATH, and Git Bash puts
+      # its own tar first on PATH, so this step does not move to bash for a
+      # tee. A failure here is named step:package_preflight.
+      - name: Clean-room filtered-package consumers
+        id: package_preflight
+        run: zig build package-preflight --summary all
 
       # The tag gate reads these annotations. See "Failure names" at the top
       # of this file.

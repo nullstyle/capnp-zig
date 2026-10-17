@@ -13,11 +13,13 @@ import {
   FixtureApi,
   type FlakeRow,
   GateError,
+  jobTimeouts,
   MAX_NAMED,
   NAME_TITLE,
   OVERFLOW_TITLE,
   parseKnownFlakes,
   rowInForce,
+  timeoutProblems,
 } from "./ci_gates.ts";
 import { collectEvidence, escapeData } from "./ci_gates.ts";
 
@@ -599,6 +601,81 @@ Deno.test("evaluateGate refuses a bad today", () => {
 });
 
 // ---------------------------------------------------------------------------
+// job timeouts
+
+const WORKFLOW = `name: X
+on:
+  push:
+jobs:
+  # a comment
+  with-timeout:
+    name: A
+    runs-on: ubuntu-latest
+    timeout-minutes: 30 # measured
+    steps:
+      - run: echo
+  step-timeout-only:
+    runs-on: ubuntu-latest
+    steps:
+      - name: s
+        timeout-minutes: 35
+        run: |
+          timeout-minutes: 5
+  quoted:
+    timeout-minutes: "12"
+    steps: []
+`;
+
+Deno.test("job-timeouts reads only job-level keys", () => {
+  const jobs = jobTimeouts(WORKFLOW, "x.yml");
+  assertEquals(jobs.map((j) => [j.id, j.timeout]), [["with-timeout", "30"], [
+    "step-timeout-only",
+    null,
+  ], [
+    "quoted",
+    "12",
+  ]], "jobs");
+  assertEquals(timeoutProblems("x.yml", jobs), [
+    'x.yml:12: job "step-timeout-only" has no job-level timeout-minutes',
+  ], "problems");
+});
+
+Deno.test("job-timeouts refuses bad values and unknown layouts", () => {
+  const value = (v: string) =>
+    timeoutProblems(
+      "x.yml",
+      jobTimeouts(`jobs:\n  a:\n    timeout-minutes: ${v}\n`),
+    );
+  assertEquals(value("360").length, 0, "360");
+  for (const bad of ["0", "361", "abc", "${{ matrix.t }}", "1.5"]) {
+    assertEquals(value(bad).length, 1, bad);
+  }
+  assertThrows(() => jobTimeouts("on: push\n"), /no top-level "jobs:"/);
+  assertThrows(() => jobTimeouts("jobs: {a: {}}\n"), /no top-level "jobs:"/);
+  assertThrows(() => jobTimeouts("jobs:\n"), /"jobs:" block is empty/);
+  assertThrows(
+    () => jobTimeouts("jobs:\n  a:\n\ttimeout-minutes: 3\n"),
+    /tab in the indentation/,
+  );
+  assertThrows(
+    () => jobTimeouts("jobs:\n  a: {timeout-minutes: 3}\n"),
+    /expected a job id/,
+  );
+  assertThrows(
+    () => jobTimeouts("jobs:\n    a:\n      x: 1\n  b:\n"),
+    /outside the job layout/,
+  );
+  assertThrows(
+    () => jobTimeouts("jobs:\n  a:\n      x: 1\n    y: 2\n"),
+    /between the job and its keys/,
+  );
+  assertThrows(
+    () => jobTimeouts("jobs:\n  a:\n    - x\n"),
+    /expected a job key/,
+  );
+});
+
+// ---------------------------------------------------------------------------
 // the command line
 
 async function cli(args: string[], env: Record<string, string> = {}) {
@@ -760,4 +837,33 @@ Deno.test("annotate --expect checks the wiring and prints no workflow command", 
       `a log under another step id:\n${wrongId.stdout}`,
     );
     assert(!wrongId.stdout.includes("::"), wrongId.stdout);
+  }));
+
+Deno.test("job-timeouts passes on the workflows and fails when one job loses its timeout", () =>
+  scratch(async (dir) => {
+    const files = ["ci.yml", "nightly.yml", "release.yml"].map((f) =>
+      `.github/workflows/${f}`
+    );
+    const ok = await cli(["job-timeouts", ...files]);
+    assertEquals(ok.code, 0, `committed workflows:\n${ok.stdout}`);
+
+    // The Test job keeps a step-level timeout-minutes, so a count of the
+    // key in the file still sees one there. The check must not.
+    const ci = await Deno.readTextFile(`${ROOT}/.github/workflows/ci.yml`);
+    const testJob = ci.indexOf("\n  test:\n");
+    assert(testJob > 0, "ci.yml has a test job");
+    const jobLevel = ci.indexOf("\n    timeout-minutes:", testJob);
+    const lineEnd = ci.indexOf("\n", jobLevel + 1);
+    const ablated = ci.slice(0, jobLevel) + ci.slice(lineEnd);
+    assert(
+      ablated.slice(testJob).includes("timeout-minutes: 35"),
+      "the step-level timeout stays",
+    );
+    await Deno.writeTextFile(`${dir}/ci.yml`, ablated);
+    const red = await cli(["job-timeouts", `${dir}/ci.yml`]);
+    assertEquals(red.code, 1, `ablated:\n${red.stdout}`);
+    assert(
+      red.stdout.includes('job "test" has no job-level timeout-minutes'),
+      red.stdout,
+    );
   }));
