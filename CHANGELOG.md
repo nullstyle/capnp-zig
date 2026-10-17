@@ -38,15 +38,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hold is bounded by `max_send_results_to_yourself`. Past that bound, the
   question gets the bare tag at once, as before. `sendReturnResults` and the
   `sendReturnException` family give a held question the named call's
-  results or exception. If the call is answered another way, its results
-  never come back to this peer, and the question gets the bare tag as soon
-  as that Return is sent. Two cases: a `sendPrebuiltReturnFrame` answer,
-  and a call that this peer forwards back to the remote because the
-  promise export it waited on resolved to a capability of the remote.
-  The question does not wait for the remote's Finish of the call: a
-  remote that follows rpc.capnp sends that Finish only after this
-  question's Finish. If the remote finishes the named call before it is
-  answered, the question ends with `rpc.peer.tail_call_finished_reason`.
+  results or exception. If the call is answered with
+  `sendPrebuiltReturnFrame`, its results never come back to this peer, and
+  the question gets the bare tag as soon as that Return is sent. A call
+  that this peer forwards back to the remote, because the promise export it
+  waited on resolved to a capability of the remote, never brings its
+  results here either. The question gets the bare tag when the call is
+  forwarded, or when the redirect arrives if the call was forwarded first.
+  The question waits neither for the remote's Finish of the call nor for
+  the remote's answer to the forwarded call. A remote that follows
+  rpc.capnp sends that Finish only after this question's Finish, and the
+  C++ reference answers a forwarded `yourself` call only when a
+  `takeFromOtherQuestion` names it or at its Finish. When the forwarded
+  call's Return comes, this peer answers the remote's call
+  `resultsSentElsewhere`, also when that Return is an exception: the
+  exception stays with the remote. If the remote finishes the named call
+  before it is answered, the question ends with
+  `rpc.peer.tail_call_finished_reason`.
   If the named call waits on a promise export of ours and the remote
   releases that export before it resolves, the question gets the call's
   exception, `rpc.peer.promise_export_released_reason` (see "Fixed").
@@ -162,10 +170,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an exception Return with the reason `rpc.peer.tail_call_pipelining_reason`,
   or the tail call's own exception when that call failed: when the tail
   call is answered for a call queued before, and at once for a call that
-  comes after. This also covers a tail call that this peer forwarded back
-  to the remote (a promise export resolved to an import). The Peer keeps
-  the answered call in `failed_answers` until the remote's Finish, as for
-  any failed answer. So its id stays in use until that Finish: a new call
+  comes after. A tail call that this peer forwards back to the remote (a
+  promise export resolved to an import) counts as answered when it is
+  forwarded: its results never come back here. The Peer keeps the answered
+  call in `failed_answers` until the remote's Finish, as for any failed
+  answer. So its id stays in use until that Finish: a new call
   with that id before the Finish is refused with
   `error.DuplicateQuestionId`, as for any other answer. A call that passes
   such an answer as a `receiverAnswer` capability fails too, as for a

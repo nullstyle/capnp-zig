@@ -346,7 +346,7 @@ fn msToNs(ms: u64) i64 {
 /// | `questions` | question ID | `Question` | Outstanding outbound calls awaiting a Return. Removed when the Return arrives. |
 /// | `question_param_export_refs` | question ID | export IDs (list) | Wire refs the question's Call params took on local exports (one per emitted senderHosted/senderPromise descriptor). Spent when the Return arrives with `releaseParamCaps = true` (the rpc.capnp default), dropped when it is false (the remote sends explicit Releases), freed unspent when the question dies without a wire Return. |
 /// | `resolved_answers` | question ID | `ResolvedAnswer` | Cached Return frames for answered questions (used to resolve PromisedAnswer references). Holds one answer-held reference per results export so pipeline targets survive an early Release. Removed on Finish, releasing those references. |
-/// | `failed_answers` | question ID | `FailedAnswer` | The exception already returned for a failed answer (results-only `resolved_answers` never records it). Lets a call pipelined on that answer arriving after the Return be failed with a copy of the same exception instead of queueing forever. An answered `sendResultsTo = yourself` call is kept here too, with its exception or `tail_call_pipelining_reason`. Removed on Finish. |
+/// | `failed_answers` | question ID | `FailedAnswer` | The exception already returned for a failed answer (results-only `resolved_answers` never records it). Lets a call pipelined on that answer arriving after the Return be failed with a copy of the same exception instead of queueing forever. An answered `sendResultsTo = yourself` call is kept here too, with its exception or `tail_call_pipelining_reason`, and so is one forwarded back to the remote, from its forward. Removed on Finish. |
 /// | `pending_promises` | question ID | `ArrayList(PendingCall)` | Calls targeting a PromisedAnswer whose Return has not yet arrived. Replayed once the answer resolves. |
 /// | `pending_export_promises` | export ID | `ArrayList(PendingCall)` | Calls targeting a promise export not yet resolved. Replayed on `resolvePromiseExportToExport`. Answered with `promise_export_released_reason` when the remote releases the export first. |
 /// | `forwarded_questions` | original answer ID | forwarded question ID | Maps an inbound call's answer ID to the question ID of the forwarded outbound call. |
@@ -788,13 +788,20 @@ pub const Peer = struct {
     ///
     /// `sendReturnResults` and the `sendReturnException` family give a held
     /// question the call's results or exception. Other Return paths for the
-    /// call (`sendPrebuiltReturnFrame`; the `resultsSentElsewhere` of a call
-    /// forwarded back to the remote; `sendReturnTakeFromOtherQuestion`;
+    /// call (`sendPrebuiltReturnFrame`; `sendReturnTakeFromOtherQuestion`;
     /// `sendReturnAcceptFromThirdParty`) carry no results back here: after
-    /// their send, the held question gets the bare redirect. It does not
-    /// wait for the remote's Finish of the call, which a compliant remote
-    /// sends only after this question's Finish. A `canceled` Return answers
-    /// a call the remote already finished, and that Finish settles the hold.
+    /// their send, the held question gets the bare redirect. A call this
+    /// peer forwards back to the remote (a promise export it waited on
+    /// resolved to a capability of the remote) never brings its results
+    /// here either: the held question gets the bare redirect when the call
+    /// is forwarded, and no question is held on the call after that
+    /// (`noteYourselfCallForwarded`). The question does not wait for the
+    /// remote's Finish of the call, which a compliant remote sends only
+    /// after this question's Finish, nor for the remote's answer to the
+    /// forwarded call, which the C++ reference sends only when a
+    /// `takeFromOtherQuestion` names it or at its Finish. A `canceled`
+    /// Return answers a call the remote already finished, and that Finish
+    /// settles the hold.
     ///
     /// A question removed some other way (transport close, the shutdown
     /// drain) can leave its `by_question` entry behind. That is harmless:
@@ -3369,6 +3376,12 @@ pub const Peer = struct {
         );
         if (completion.send_take_from_other_question) {
             try self.sendReturnTakeFromOtherQuestion(call.question_id, forwarded_question_id);
+        }
+        // A `yourself` call forwarded with `yourself` again: its results
+        // stay with the remote, so a question held on it, and calls
+        // pipelined on it, stop waiting for them now.
+        if (mode == .propagate_results_sent_elsewhere) {
+            ReturnSendImpl.noteYourselfCallForwarded(self, call.question_id);
         }
     }
 

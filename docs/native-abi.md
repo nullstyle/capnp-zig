@@ -53,7 +53,7 @@ RETURN for each Return variant that the remote can send:
 | `takeFromOtherQuestion`, the remote finishes the named call before the host answers it | `EXCEPTION` (`failed`), reason `rpc.peer.tail_call_finished_reason` |
 | `takeFromOtherQuestion`, the named call waits on a promise export that the remote releases before it resolves (see below) | `EXCEPTION` (`failed`), reason `rpc.peer.promise_export_released_reason` |
 | `takeFromOtherQuestion`, the named call is pipelined on a tail-called answer (see below) | `EXCEPTION` (`failed`), reason `rpc.peer.tail_call_pipelining_reason`, or the tail call's exception |
-| `takeFromOtherQuestion`, the named call was forwarded back to the remote (see below) | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason`, when the forwarded call returns |
+| `takeFromOtherQuestion`, the named call was forwarded back to the remote (see below) | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason`, when the call is forwarded |
 | `takeFromOtherQuestion` that names no call with `sendResultsTo = yourself` | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
 | `takeFromOtherQuestion` past a bound (see below) | `EXCEPTION` (`unimplemented`), reason `unfollowed_tail_call_reason` |
 | `resultsSentElsewhere` | `EXCEPTION` (`unimplemented`), reason `unsupported_return_reason` |
@@ -85,11 +85,16 @@ exports, the call reaches the host as an INBOUND_CALL, and its answer goes
 to the question. After `capnp_reject_promise`, the question gets one RETURN
 EXCEPTION with the reason `promise broken`. After `capnp_resolve_promise` to
 an import, the core forwards the call back to the remote, and its results
-never come to this side. When the forwarded call returns, the question gets
-one RETURN EXCEPTION (`unimplemented`) with the reason
-`unfollowed_tail_call_reason`, or the forwarded call's exception if it
-failed. If the remote releases the promise export before it resolves (it
-drops its last reference, as the C++ reference does after a tail call on a
+never come to this side. So the question gets one RETURN EXCEPTION
+(`unimplemented`) with the reason `unfollowed_tail_call_reason` when the
+call is forwarded. The same holds for a call to a promise export that
+already resolved to an import: the core forwards it when it arrives, and
+the question gets that RETURN when the redirect arrives. The question does
+not wait for the forwarded call to return: the C++ reference answers that
+call only when a redirect names it or when its Finish arrives, and it
+finishes the call it sent only after you finish the question. If the
+remote releases the promise export before it resolves (it drops its last
+reference, as the C++ reference does after a tail call on a
 promise the host passed it), the export is gone and the call can never
 run: the remote gets `resultsSentElsewhere`, and the question gets one
 RETURN EXCEPTION (`failed`) with the reason
@@ -106,10 +111,9 @@ a tail call back to this side, as another tail call on the tail call's
 answer. That call fails, so your pipelined question gets one RETURN
 EXCEPTION (`failed`) with the reason `rpc.peer.tail_call_pipelining_reason`,
 or the tail call's exception when the tail call failed. This happens when
-the tail call is answered (by the host, or by the remote for a tail call
-the core forwarded back to it), or at once when the bounced call comes
-after that answer. The core keeps the answered tail call's id in use until
-the remote finishes it.
+the host answers the tail call or the core forwards it back to the remote,
+or at once when the bounced call comes after that. The core keeps the
+tail call's id in use until the remote finishes it.
 
 If `capnp_return_results` fails, answer the call with
 `capnp_return_exception`. Usually the results did not build, and the

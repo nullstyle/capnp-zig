@@ -358,16 +358,17 @@ pub fn ReturnSend(comptime Peer: type) type {
             };
         }
 
-        /// Keep an answered `sendResultsTo = yourself` call in `failed_answers`
-        /// until its Finish, with `failure`: the call's exception, or
-        /// `tail_call_pipelining_reason` for results. Those results went to
-        /// the remote's question, never to a pipeline here, so a call
-        /// pipelined on this answer later fails at once (`fail_broken_answer`)
-        /// instead of waiting in `pending_promises` for results that never
-        /// come. Only while the call is still active: a loopback answer, or
-        /// one the remote already finished, gets no Finish that would remove
-        /// the record. Best-effort and bounded like any failed-answer record.
-        /// True when it recorded one.
+        /// Keep an answered `sendResultsTo = yourself` call, or one forwarded
+        /// back to the remote (`noteYourselfCallForwarded`), in
+        /// `failed_answers` until its Finish, with `failure`: the call's
+        /// exception, or `tail_call_pipelining_reason` for results. Those
+        /// results went to the remote's question, never to a pipeline here,
+        /// so a call pipelined on this answer later fails at once
+        /// (`fail_broken_answer`) instead of waiting in `pending_promises`
+        /// for results that never come. Only while the call is still active:
+        /// a loopback answer, or one the remote already finished, gets no
+        /// Finish that would remove the record. Best-effort and bounded like
+        /// any failed-answer record. True when it recorded one.
         fn recordTailCalledAnswer(self: *Peer, answer_id: u32, failure: peer_call_targets.FailedAnswerView) bool {
             if (self.loopback_questions.contains(answer_id)) return false;
             if (!self.active_inbound_questions.contains(answer_id)) return false;
@@ -388,9 +389,12 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// yourself` call (the C++ reference sends the redirect right after that
         /// call). False, with nothing held, otherwise or when the hold table is
         /// full or out of memory: the question then gets the bare redirect, as
-        /// before holds existed.
+        /// before holds existed. Also false for a call this peer forwarded
+        /// back to the remote (`noteYourselfCallForwarded`): its results
+        /// never come here.
         pub fn holdTailCall(self: *Peer, source_answer_id: u32, question_id: u32) bool {
             if (!self.send_results_to_yourself.contains(source_answer_id)) return false;
+            if (forwardedToRemote(self, source_answer_id)) return false;
             if (self.held_tail_calls.count() >= self.limits.max_send_results_to_yourself) return false;
             return self.held_tail_calls.put(self.allocator, source_answer_id, question_id) catch |err| {
                 log.debug("tail call for question {} not held: {}", .{ question_id, err });
@@ -448,15 +452,53 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// results to this peer: `sendPrebuiltReturnFrame` (its frame goes on
         /// the wire as built), the `resultsSentElsewhere` of a call this peer
         /// forwarded back to the remote, `sendReturnTakeFromOtherQuestion`,
-        /// `sendReturnAcceptFromThirdParty`. A tail call held on the call can
-        /// no longer get them, and the remote's Finish of the call comes only
-        /// after this question's Finish (rpc.capnp `Call.sendResultsTo`), so
-        /// waiting for it would never end: give the question the bare
-        /// redirect now, as before holds existed. Runs after the send, so no
-        /// question callback runs inside it.
+        /// `sendReturnAcceptFromThirdParty`. Or the call was forwarded back
+        /// to the remote (`noteYourselfCallForwarded`). A tail call held on
+        /// the call can no longer get them, and the remote's Finish of the
+        /// call comes only after this question's Finish (rpc.capnp
+        /// `Call.sendResultsTo`), so waiting for it would never end: give the
+        /// question the bare redirect now, as before holds existed. Runs
+        /// after the send, so no question callback runs inside it.
         fn releaseHeldTailCall(self: *Peer, answer_id: u32) void {
             const question_id = self.held_tail_calls.takeBySource(answer_id) orelse return;
             deliverHeldTailCall(self, question_id, answer_id, null);
+        }
+
+        /// This peer forwarded the `sendResultsTo = yourself` call
+        /// `answer_id` back to the remote, again with `yourself`
+        /// (`Peer.forwardResolvedCall`): a promise export it waited on
+        /// resolved to a capability of the remote. Its results stay with the
+        /// remote and never come here, so nothing here waits for them:
+        ///
+        ///   - A tail call held on the call gets the bare redirect now, and
+        ///     `holdTailCall` holds none on it later. The C++ reference
+        ///     answers the forwarded call only when a `takeFromOtherQuestion`
+        ///     names it or when its Finish arrives (rpc.c++
+        ///     `sendRedirectReturn`, `~RpcCallContext`), and it finishes the
+        ///     call it sent only after the held question's Finish. Waiting
+        ///     for that answer would never end.
+        ///   - Calls pipelined on the call fail as on any tail-called answer
+        ///     (`tail_call_pipelining_reason`), and the record makes a later
+        ///     one fail at once (`recordTailCalledAnswer`).
+        ///
+        /// The call itself is answered `resultsSentElsewhere` when the
+        /// forwarded call returns (`peer_forwarded_return_logic`).
+        pub fn noteYourselfCallForwarded(self: *Peer, answer_id: u32) void {
+            if (!self.send_results_to_yourself.contains(answer_id)) return;
+            _ = recordTailCalledAnswer(self, answer_id, tail_call_pipelining_failure);
+            failTailCalledPipeline(self, answer_id);
+            releaseHeldTailCall(self, answer_id);
+        }
+
+        /// True when inbound call `answer_id` is the upstream of a call this
+        /// peer forwarded to the remote and has not seen return
+        /// (`forwarded_questions`).
+        fn forwardedToRemote(self: *Peer, answer_id: u32) bool {
+            var it = self.forwarded_questions.valueIterator();
+            while (it.next()) |upstream_answer_id| {
+                if (upstream_answer_id.* == answer_id) return true;
+            }
+            return false;
         }
 
         /// True when a built Return-results frame carries any capability

@@ -2243,11 +2243,13 @@ test "tail call: a redirect that names a call parked on a promise export waits; 
     try drainAll(a, &ra);
 }
 
-test "tail call: a redirect that names a call forwarded back to the remote ends once the forward returns" {
+test "tail call: a redirect that names a call forwarded back to the remote ends when the call is forwarded" {
     // A parked `yourself` call whose promise export resolves to an import
-    // goes back to the remote, and its results never come to A: the
-    // question gets the unfollowed RETURN when the forwarded call returns,
-    // not at the remote's Finish (which comes only after ours).
+    // goes back to the remote, and its results never come to A. The C++
+    // reference answers that forwarded call only at a redirect that names
+    // it or at its Finish, and it finishes its own call only after A
+    // finishes the question. So the question gets the unfollowed RETURN
+    // when the call is forwarded, not when the forwarded call returns.
     const alloc = testing.allocator;
     const a = try Conn.init(alloc, .{ .now_ns = 0 });
     defer a.deinit();
@@ -2269,14 +2271,49 @@ test "tail call: a redirect that names a call forwarded back to the remote ends 
     try drainAll(a, &ra);
     const forwarded = try lastCallFrameId(&ra);
     try testing.expect(forwarded != t.q);
-    try expectNoReturnYet(&ra, t.q);
+    const r = try expectOneReturn(&ra, t.q, .exception);
+    try testing.expectEqualStrings(conn_mod.unfollowed_tail_call_reason, r.reason);
+    try testing.expectEqual(@as(usize, 0), try countReturnFrames(&ra, tail_answer, null));
+    try a.finish(t.q, false);
+    try drainAll(a, &ra);
 
+    // A remote that answers the forwarded call at once, as capnp-zig does:
+    // its call gets resultsSentElsewhere, and the question nothing more.
     try pushFrame(alloc, a, tagReturnFrame(alloc, forwarded, .resultsSentElsewhere));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, null));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, .resultsSentElsewhere));
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(t.q));
+}
+
+test "tail call: a redirect that names a call already forwarded back to the remote ends at once" {
+    // The remote sent the `yourself` call to a promise export that had
+    // already resolved to its own capability: A forwards the call when it
+    // arrives, so the redirect that follows ends the question at once.
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    const p = try a.promiseExport();
+    try a.resolvePromise(p, t.boot);
+    try drainAll(a, &ra);
+    try pushFrame(alloc, a, yourselfCallFrame(alloc, tail_answer, p));
+    try drainAll(a, &ra);
+    const forwarded = try lastCallFrameId(&ra);
+    try testing.expect(forwarded != t.q);
+
+    try pushFrame(alloc, a, tailCallReturnFrame(alloc, t.q, tail_answer));
     try drainAll(a, &ra);
     const r = try expectOneReturn(&ra, t.q, .exception);
     try testing.expectEqualStrings(conn_mod.unfollowed_tail_call_reason, r.reason);
-    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, null));
-    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, tail_answer, .resultsSentElsewhere));
+    try testing.expectEqual(@as(usize, 0), try countReturnFrames(&ra, tail_answer, null));
     try a.finish(t.q, false);
     try drainAll(a, &ra);
     try testing.expectEqual(@as(usize, 1), ra.countReturns(t.q));

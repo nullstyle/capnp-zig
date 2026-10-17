@@ -105,22 +105,16 @@ pub fn handleForwardedReturnWithOps(
             .resultsSentElsewhere, .canceled => {},
             else => return error.UnexpectedForwardedTailReturn,
         },
-        // When the original call requested `sendResultsTo.yourself`, preserve local state by
-        // converting unsupported payload-bearing returns into resultsSentElsewhere.
+        // The original call requested `sendResultsTo.yourself`, so rpc.capnp answers it
+        // with resultsSentElsewhere. The forwarded call went back with `yourself` too, and
+        // whatever its Return carries (results, an exception) stays with the remote: no
+        // question here waits for it (`noteYourselfCallForwarded`).
         .propagate_results_sent_elsewhere => switch (ret.tag) {
-            .resultsSentElsewhere => try ops.send_return_tag(peer, answer_id, .resultsSentElsewhere),
             .canceled => try ops.send_return_tag(peer, answer_id, .canceled),
-            .exception => {
-                const ex = ret.exception orelse {
-                    try ops.send_return_exception(peer, answer_id, "forwarded return missing exception");
-                    return;
-                };
-                try ops.send_return_exception(peer, answer_id, ex.reason);
-            },
             .takeFromOtherQuestion => {
                 try translateTakeFromOtherQuestion(PeerType, InboundCapsType, peer, answer_id, ret, ops);
             },
-            .awaitFromThirdParty, .results => {
+            .resultsSentElsewhere, .exception, .awaitFromThirdParty, .results => {
                 try ops.send_return_tag(peer, answer_id, .resultsSentElsewhere);
             },
         },
