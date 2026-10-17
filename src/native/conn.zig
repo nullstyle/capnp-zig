@@ -167,7 +167,9 @@ pub const cancel_reason = "canceled by the host";
 /// call of this connection with `sendResultsTo = yourself`. The same RETURN
 /// ends a tail call that the Peer could not keep: its answer stash or hold
 /// table was full (`PeerLimits.max_loopback_result_stash`,
-/// `max_send_results_to_yourself`) or out of memory. A tail call to a call
+/// `max_send_results_to_yourself`) or out of memory. It is also the
+/// fallback for every tail call whose named call's answer the Peer cannot
+/// give it (docs/native-abi.md, "Fallback rule"). A tail call to a call
 /// with cap-free results, or one that fails, ends with that call's results
 /// or exception instead.
 pub const unfollowed_tail_call_reason = "capnp-swift core: cannot follow this tail call (its results carry capabilities, or it names no tail-called answer)";

@@ -80,16 +80,16 @@ sends a new call with the same question id, so it never reaches a later
 question.
 
 Fallback rule: if the core cannot give a waiting question the named call's
-answer, the question gets, at once, the RETURN that every tail call got
-before the core followed them: one RETURN EXCEPTION (`unimplemented`) with
-the reason `unfollowed_tail_call_reason`. That happens when the call is
-forwarded back to the remote (below), when it is queued on an answer whose
-Return already went out without failing it, when its handling fails before
-the host sees it, past a bound, and when the core runs out of memory as it
-builds or delivers the answer. The remote's Finish of the named call is the
-one other end: the question gets `rpc.peer.tail_call_finished_reason`. A
-waiting question otherwise waits as long as the call waits for you: answer
-every INBOUND_CALL, or `capnp_cancel` the question.
+answer, the question gets, at once, the RETURN for a tail call the core
+cannot follow: one RETURN EXCEPTION (`unimplemented`) with the reason
+`unfollowed_tail_call_reason`. That happens when the call is forwarded back
+to the remote (below), when it is queued on an answer whose Return already
+went out without failing it, past a bound, and when the core runs out of
+memory as it builds or delivers the answer. The remote's Finish of the
+named call is the one other end: the question gets
+`rpc.peer.tail_call_finished_reason`. A waiting question otherwise waits as
+long as the call waits for you: answer every INBOUND_CALL, or `capnp_cancel`
+the question.
 
 A tail call can also name a call to a promise export
 (`capnp_promise_export`) that is not resolved yet. The call is parked, and
