@@ -38,4 +38,4 @@
 # Example (not a row):
 #   Extended gates | 38713314813 | nullstyle | 2026-10-15 | 2026-10-29 | rpc_quic_peer_test.test.WarmRedialClient.requestStop never writes into a generation that ended on its own
 #
-# Lines that start with "#" are comments. This file has no rows.
+# Lines that start with "#" are comments. Put the rows below this line.

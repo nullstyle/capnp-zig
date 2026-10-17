@@ -120,11 +120,12 @@ function withAnnotations(
 // ---------------------------------------------------------------------------
 // known-flakes rows
 
-Deno.test("the committed known-flakes file parses and has no rows", () => {
-  const rows = parseKnownFlakes(
-    Deno.readTextFileSync(`${ROOT}/.github/known-flakes.txt`),
-  );
-  assertEquals(rows.length, 0, "rows");
+// Only the format: the release procedure adds rows to this file, and a test
+// that counts them or reads today's date would turn CI red on that commit.
+// parseKnownFlakes also refuses a row that expires more than 30 days after
+// it was added.
+Deno.test("the committed known-flakes file parses", () => {
+  parseKnownFlakes(Deno.readTextFileSync(`${ROOT}/.github/known-flakes.txt`));
 });
 
 Deno.test("a row has 5 fields and an optional test that can contain a bar", () => {
@@ -678,7 +679,11 @@ Deno.test("job-timeouts refuses bad values and unknown layouts", () => {
 // ---------------------------------------------------------------------------
 // the command line
 
-async function cli(args: string[], env: Record<string, string> = {}) {
+async function cli(
+  args: string[],
+  env: Record<string, string> = {},
+  cwd = ROOT,
+) {
   const out = await new Deno.Command(Deno.execPath(), {
     args: [
       "run",
@@ -687,7 +692,7 @@ async function cli(args: string[], env: Record<string, string> = {}) {
       `${TOOLS}/ci_gates.ts`,
       ...args,
     ],
-    cwd: ROOT,
+    cwd,
     env,
     stdout: "piped",
     stderr: "piped",
@@ -709,32 +714,30 @@ async function scratch(fn: (dir: string) => Promise<void>) {
   }
 }
 
+// Every case names its rows file, so no case depends on the rows that are
+// committed in .github/known-flakes.txt or on today's date.
 Deno.test("nightly-gate exits 1 to refuse, 0 to pass and 2 when it cannot evaluate", () =>
   scratch(async (dir) => {
     const bbf = `${FIXTURES}/bbf91e7.json`;
+    const empty = `${dir}/empty-flakes.txt`;
+    await Deno.writeTextFile(empty, rowsText([]));
+    const goodRows = rowsText([
+      `${EXTENDED} | 38713314813 | nullstyle | 2026-10-15 | 2026-10-29`,
+      `${WIN_SOAK} | 38377271133 | nullstyle | 2026-10-13 | 2026-10-27`,
+    ]);
     const flakes = `${dir}/known-flakes.txt`;
-    await Deno.writeTextFile(
-      flakes,
-      rowsText([
-        `${EXTENDED} | 38713314813 | nullstyle | 2026-10-15 | 2026-10-29`,
-        `${WIN_SOAK} | 38377271133 | nullstyle | 2026-10-13 | 2026-10-27`,
-      ]),
-    );
-    const plan = [
-      "--created-before",
-      PLAN_WINDOW,
-      "--fixture",
-      bbf,
-      "--flakes",
-      flakes,
-    ];
+    await Deno.writeTextFile(flakes, goodRows);
+    const window = ["--created-before", PLAN_WINDOW, "--fixture", bbf];
+    const plan = [...window, "--flakes", flakes];
+    const today = ["--today", "2026-10-17"];
     assertEquals(
-      (await cli(["nightly-gate", BBF, "--fixture", bbf])).code,
+      (await cli(["nightly-gate", BBF, "--fixture", bbf, "--flakes", empty]))
+        .code,
       1,
-      "committed rows",
+      "no rows",
     );
     assertEquals(
-      (await cli(["nightly-gate", BBF, ...plan, "--today", "2026-10-17"])).code,
+      (await cli(["nightly-gate", BBF, ...plan, ...today])).code,
       0,
       "rows in force",
     );
@@ -743,27 +746,60 @@ Deno.test("nightly-gate exits 1 to refuse, 0 to pass and 2 when it cannot evalua
       1,
       "rows expired",
     );
+
+    // Without --flakes the gate reads .github/known-flakes.txt in the
+    // current directory.
+    const repo = `${dir}/repo`;
+    await Deno.mkdir(`${repo}/.github`, { recursive: true });
+    await Deno.writeTextFile(`${repo}/.github/known-flakes.txt`, goodRows);
+    const byDefault = await cli(
+      ["nightly-gate", BBF, ...window, ...today],
+      {},
+      repo,
+    );
+    assertEquals(byDefault.code, 0, "default rows file");
+    assert(
+      byDefault.stdout.includes("known-flakes: 2 rows in force"),
+      byDefault.stdout,
+    );
+
     assertEquals(
       (await cli([
         "nightly-gate",
         D0C,
         "--fixture",
         `${FIXTURES}/d0ca8d6.json`,
+        "--flakes",
+        flakes,
+        ...today,
       ])).code,
       1,
       "no run",
     );
 
+    const badFlakes = `${dir}/bad-flakes.txt`;
     await Deno.writeTextFile(
-      flakes,
+      badFlakes,
       rowsText([`${EXTENDED} | x | nullstyle | 2026-10-15 | 2026-10-29`]),
     );
-    const bad = await cli(["nightly-gate", BBF, ...plan]);
+    const bad = await cli([
+      "nightly-gate",
+      BBF,
+      ...window,
+      "--flakes",
+      badFlakes,
+    ]);
     assertEquals(bad.code, 2, "bad row");
     assert(bad.stderr.includes("known-flakes line 2: the run id"), bad.stderr);
     assertEquals(
-      (await cli(["nightly-gate", BBF, "--fixture", `${dir}/missing.json`]))
-        .code,
+      (await cli([
+        "nightly-gate",
+        BBF,
+        "--fixture",
+        `${dir}/missing.json`,
+        "--flakes",
+        empty,
+      ])).code,
       2,
       "no fixture",
     );
@@ -773,6 +809,8 @@ Deno.test("nightly-gate exits 1 to refuse, 0 to pass and 2 when it cannot evalua
         BBF,
         "--fixture",
         `${FIXTURES}/d0ca8d6.json`,
+        "--flakes",
+        empty,
       ])).code,
       2,
       "no response",
