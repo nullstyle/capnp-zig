@@ -1,0 +1,226 @@
+{
+ "impl": {
+  "worktree": "/Users/nullstyle/prj/zig/capnp-zig/.claude/worktrees/wf_3473ae2b-ecd-1",
+  "branch": "sprint/p1-3a-tail-call-fixes",
+  "commits": [
+   {
+    "hash": "e8e19f5",
+    "subject": "rpc: drop a kept tail-call answer at the call's Finish"
+   },
+   {
+    "hash": "5f6b454",
+    "subject": "rpc: answer a failed yourself call with resultsSentElsewhere"
+   }
+  ],
+  "red_proof": "Tests were written first and run against unchanged sources (src/rpc checked out at fd4ae7d, new tests kept). Fix 1: 4 of the 5 new Peer tests in tests/rpc/peer/rpc_reflected_direct_handler_test.zig failed with 'expected 0, found 1' (stash count): 'a yourself call answered after its redirect keeps no answer past the remote's Finish of the call', 'a question cancelled before its redirect: ...', 'a kept answer of a yourself call is dropped when the remote reuses the call's id', 'a yourself call finished while its results build keeps no answer'. The native 'tail call: an answer given after the redirect is not given to a later tail call with the same id' (src/native/conn_test.zig) also failed. With its stash assertion temporarily removed, the native test showed the wrong value itself: 'question 2: 1 RETURN(s), first results ...; want one exception', the old answer delivered through the C ABI before the new call was answered. Fix 2, run against the e8e19f5 sources (fix 1 only): all 15 new Peer tests and 3 new native tests failed (Build Summary 143/147, 18 failed), 'expected 0, found 1' on the count of exception Returns for the tail call on the wire. On fd4ae7d: 18 of the 20 tests in the Peer file at that point and all 3 native tests failed. The 2 that passed were the old reflected-loopback test and the answered-first-results guard. Logs: scratchpad/p13a/fix1_red_all.log, fix1_red_ser_probe.log, fix2_red_final.log, all_red_fd4ae7d.log.",
+  "green_proof": "After each fix: 'mise exec -- zig build test-rpc-peer test-serialization' passed (147/147 steps), and the full 'zig build test --summary all' passed: 266/266 steps at fix 1 (2404/2440 tests, 36 skipped) and at fix 2 (21 steps cached; the core root's 394 tests and the reflected Peer file's 21 tests ran). That the tests run: the reflected file is wired into test-rpc-peer (build_impl.zig:1103/1664) and its counts moved 1 -> 6 -> 21. conn_test runs in the capnpc-zig-core root (391 -> 394 tests). The pending_calls unit test is collected by test-lib: a deliberate 7777 probe failed there by name. Final gate run on HEAD 5f6b454: every gate green (see gates). Gate logs: scratchpad/p13a/gates/*.log.",
+  "ablation_proof": "Each change undone alone with test-rpc-peer and test-serialization re-run, then restored (sources checked byte-identical against the saved patch). Fix 1: no stash drop at Finish failed 3 Peer tests and the native test; no drop on id reuse failed 'a kept answer ... is dropped when the remote reuses the call's id'; stashing after a Finish during the build failed 'a yourself call finished while its results build keeps no answer'. Fix 2 (scripted, scratchpad/p13a/ablate_fix2/results.json): exception path off (A0) failed all 18 fix-2 tests (15 Peer and 3 native). Mark removed before the build again (A13) failed the 4 build-failure tests: two DIRECT, the generated-dispatch style, and the native capnp_return_results test. Each mark site removed failed exactly its own test: unknown capability (A1), broken promise export (A2), replay error that cannot park again (A4), handleCall catch / refused queue (A5), prepareParamCapsForDispatch failed param (A6), pipelined on a failed answer (A9), transform that cannot be followed (A10), target with no capability (A11). The rejected-promise replay (A3) failed its 2 Peer tests, the native rejected-promise test and the pending_calls unit test. A12 (the active_inbound_questions check in keepSelfLoopbackException) stayed green: no test reaches it, as stated in the commit body.",
+  "gates": [
+   {
+    "command": "mise exec -- zig fmt --check <the 8 touched .zig files>",
+    "result": "pass"
+   },
+   {
+    "command": "mise exec -- zig build hardening --summary all",
+    "result": "pass, 3/3 steps"
+   },
+   {
+    "command": "mise exec -- zig build check-api --summary all",
+    "result": "pass, 4/4 steps"
+   },
+   {
+    "command": "mise exec -- zig build check-api-experimental --summary all",
+    "result": "pass, 4/4 steps (no snapshot change)"
+   },
+   {
+    "command": "mise exec -- zig build -Dquic=true check-api-quic check-api-experimental-quic --summary all",
+    "result": "pass, 14/14 steps"
+   },
+   {
+    "command": "mise exec -- zig build test --summary all",
+    "result": "pass, 266/266 steps at HEAD 5f6b454; also 266/266 at e8e19f5 (2404/2440 tests, 36 skipped)"
+   },
+   {
+    "command": "mise exec -- zig build test-rpc-peer --summary all",
+    "result": "pass, 50/50 steps"
+   },
+   {
+    "command": "mise exec -- zig build test-native-abi --summary all",
+    "result": "pass, 11/11 steps"
+   },
+   {
+    "command": "mise exec -- zig build fuzz-native-abi -- --seconds 30 --seed 7",
+    "result": "OK: 99328 sessions, 8671226 ops, 116360 returns, 0 live bytes at the end"
+   },
+   {
+    "command": "mise exec -- zig build check-compile -Dtarget=x86_64-windows --summary all",
+    "result": "pass, 15/15 steps"
+   },
+   {
+    "command": "mise exec -- zig build -Dquic=true test-rpc-quic --summary all",
+    "result": "pass, 18/18 steps, 241/241 tests"
+   },
+   {
+    "command": "mise exec -- zig build e2e-self --summary all",
+    "result": "pass, 7/7 steps, 46 pass / 0 fail across 6 schemas"
+   }
+  ],
+  "open_issues": [
+   "Brief mismatch: main (fd4ae7d) had no self-loopback exception path; every failing yourself call put an exception Return on the wire, also after dispatch. Fix 2 adds that path (da17e20's exception half, no hold). It also keeps the yourself mark through the results build (the core of 04d6d63). That is needed because generated dispatch answers a DIRECT handler's build failure itself (interface_gen.zig:341) and a native host follows a failed capnp_return_results with capnp_return_exception, so a mark at the Peer's dispatch catch could not cover them.",
+   "Fix 1 trade-off: the stash is now freed at Finish(Y). On a synchronous in-process transport only, capnp-zig's own .sent_elsewhere forwarder can auto-finish the forwarded call before its eager redirect: a re-entrant Return arrives before suppress_auto_finish is set, a known double-Finish defect. There the question would now get the bare tag instead of the results. Over a real transport the redirect always precedes Finish(Y). No existing test or e2e lane is affected.",
+   "Still not covered (an exception or a raw frame on the wire for a yourself call): sendPrebuiltReturnFrame, used by HostPeer.respondHostCallException / respondHostCallReturnFrame and the WASM host ABI; failQueuedPromisedCalls for a yourself call queued on a promised answer that later fails; the drainPendingPromises replay-error path; a failed forward of a yourself call (forward_resolved_call error); the practically unreachable 'unknown promised capability' site in handleResolvedExportedCallForPeer, left unmarked because no test reaches it.",
+   "markYourselfCallForException is best effort: past limits.max_send_results_to_yourself, or out of memory, the exception goes on the wire as before. A results build that fails with no follow-up keeps its mark until the call's Finish or teardown, counting toward that bound, as the call's active_inbound_questions entry does.",
+   "The active_inbound_questions check in keepSelfLoopbackException has no test that reaches it (ablation stays green). It mirrors fix 1's results rule and is documented as such in the commit body.",
+   "Pre-existing and unchanged: a yourself answer is not recorded as a resolved answer, so a call pipelined on a tail-called answer still queues (review 3 must-fix 2); the hold stays deferred, so a redirect naming a pending call gets the bare takeFromOtherQuestion (native: 'capnp-swift core: unsupported Return variant').",
+   "docs/native-abi.md makes no tail-call claim on main, so it was not changed.",
+   "Not run: the Docker interop lanes (cpp/go/python/rust, e2e-l3-vatc), the Linux and Windows runtime, TSan.",
+   "Nothing pushed, as instructed. Branch sprint/p1-3a-tail-call-fixes is 2 commits ahead of fd4ae7d; the tree is clean."
+  ]
+ },
+ "reviews": [
+  {
+   "verdict": "fix-then-ship",
+   "must_fix": [
+    {
+     "issue": "Fix 2 misses its own defect class at the twin of a site it covers. A sendResultsTo=yourself call queued on a pending promised answer still puts an EXCEPTION Return on the wire when that answer later fails: failQueuedPromisedCalls sends the child's exception through sendReturnExceptionNoDrain with no yourself mark. The same holds when the replay of such a queued call fails in the drainPendingPromises catch. The fix marks the case where the call arrives AFTER the answer failed (routePromisedTargetCall .fail_broken_answer), and that site's own comment names failQueuedPromisedCalls as the path for calls queued BEFORE the failure, which is left unmarked. It is also the promised-answer twin of the brief-listed 'a call parked on our promise export that is later rejected', which is covered.",
+     "where": "src/rpc/peer/return/peer_return_send.zig:550 (failQueuedPromisedCalls -> sendReturnExceptionNoDrain(self, child_qid, ...), no mark); src/rpc/promises/pending_calls.zig:215-218 (drainPendingPromises replay catch -> send_return_exception, no mark hook)",
+     "why": "The C++ reference can reach this. A server calls A.foo() (question Q) and does context.tailCall() on Q's pipelined result, which sends Call(Y, target=promisedAnswer{Q}, sendResultsTo=yourself). A queues Y on pending_promises[Q]. If Q fails while C++ still holds Y's QuestionRef, C++ hits KJ_REQUIRE 'Tail call `Return` must set `resultsSentElsewhere`, not `exception`' (rpc.c++:4055) and drops the connection. That is the same failure fix 2 exists to close. A native host that has not yet called capnp_finish on X widens the window. Also reachable through cancelQueuedPendingQuestion, which fails calls pipelined on a cancelled queued call with 'pipelined on a cancelled call'. The implementer listed both sites under 'still not covered', so the commit does not claim them. Main has the same behavior, so this is not a regression.",
+     "regression": false,
+     "repro": "Probe tests added to a scratch copy of tests/rpc/peer/rpc_reflected_direct_handler_test.zig (saved at scratchpad/rev-p13a-proto/probes_test.zig) and run with 'mise exec -- zig build test-rpc-peer'. PROBE A: h.pushPlainCall(alloc, 500, h.target_export_id) (answer 500 pending); h.pushPipelinedYourselfCall(alloc, tail_answer_id, 500, &.{}) (queues on 500); h.client_peer.sendReturnException(500, \"answer 500 failed\"); expectOnlyResultsSentElsewhere(&h, tail_answer_id) FAILS: 'tail call Returns on wire: exception=1 rse=0 total=1'. PROBE B: same, but 500 is answered with ResultCap{.export_id = addPromiseExport()} and limits.max_pending_queued_calls = 0, so the replay cannot park again: also 'exception=1 rse=0 total=1'.",
+     "suggested_fix": "Record whether each queued call is a yourself call. PendingCall already decodes question_id once at enqueue, so add a send_results_yourself bool there or decode pending_call.frame. Then call self.noteSendResultsToYourself(child_qid) (best effort, as markYourselfCallForException does) right before sendReturnExceptionNoDrain in failQueuedPromisedCalls. Give drainPendingPromises the same mark_yourself_call hook that replayResolvedPromiseExport got, and call it in its replay catch. Add PROBE A and PROBE B as tests, and ablate them like the other sites."
+    }
+   ],
+   "nice_to_have": [
+    "The active_inbound_questions check in keepSelfLoopbackException is reachable, though the implementer wrote that no test reaches it. Test recipe (PROBE D): park a yourself call on h.client_peer.addPromiseExport(), push the redirect, push Finish(tail_answer_id) built with mb.buildFinish(id, false, true) (requireEarlyCancellation), then resolvePromiseExportToException. With the check, stash=0. With the check ablated, stash=1: a stale kept exception, the same defect fix 1 removes, reached through the exception path. Add it as a test.",
+    "The doc comment at src/rpc/peer/mod.zig:742 says capnp-zig's `.sent_elsewhere` forwarder relays the Finish only at the question's Finish. On a synchronous in-process transport that is false. forwardResolvedCall (mod.zig:3292-3317) calls sendCallResolved before finishForwardResolvedCall sets suppress_auto_finish, so a re-entrant rse auto-finishes Y before the redirect goes out. PROBE C (answer Y, push Finish(Y), then push the redirect) now gives the caller the bare takeFromOtherQuestion tag; main gave the stashed results. Only sync test wires reach this, because production transports (TCP, QUIC, the native and HostPeer frame queues) are not re-entrant. It is still the implementer's documented trade-off. Better fix: put the tail mapping and suppress_auto_finish in place before sending the forwarded call, which also removes the known double-Finish. At least state the sync-transport caveat in the comment.",
+    "Other places where a yourself call still sends its exception on the wire. All exist on main too: HostPeer.respondHostCallException and respondHostCallReturnFrame -> sendPrebuiltReturnFrame (the WASM host ABI); the forward_resolved_call catch in peer_forward_orchestration.handleResolvedCall; 'unknown promised capability' in handleResolvedExportedCallForPeer:156; and the best-effort fallback once limits.max_send_results_to_yourself is reached. Where the Call is in hand, choosing rse from call.send_results_to.tag instead of from the mark map would remove the budget fallback.",
+    "CHANGELOG wording: 'This covers an exception from the host (`sendReturnException`, the native `capnp_return_exception`)'. HostPeer and the WASM host ABI are not covered. Name the covered APIs instead of saying 'an exception from the host'.",
+    "A results build that fails with no follow-up exception now keeps the yourself mark. If that call was dispatched by a replay that ran after a Finish with requireEarlyCancellation=true, no later Finish removes the mark, and it poisons the id until teardown (inboundAnswerQuestionIdInUse includes send_results_to_yourself), so a compliant id reuse gets DuplicateQuestionId. This is exotic: the C++ reference sends requireEarlyCancellationWorkaround=false, and it also needs a host bug. Consider dropping marks whose call is no longer in active_inbound_questions when a build fails.",
+    "Pre-existing and out of scope: a yourself answer is not recorded as a resolved answer, so calls pipelined on it queue. A dispatch-time mark set after an early Finish (requireEarlyCancellation) lasts until teardown if the host never answers.",
+    "Not run by the implementer or by me: the Docker interop lanes (cpp and pycapnp resolve_disembargo, where the C++ server tail-calls into a Zig-hosted cap). My analysis finds no success-path change: C++ sends Call(Y) then Return(X, take=Y) at once in directTailCall, so Finish(Y) always comes after the redirect. Still, run the cpp e2e lane before release, since C++ is the peer this change is for."
+   ],
+   "checked": "Read both commits (e8e19f5, 5f6b454) and all touched sources: peer_return_send, peer_call_inbound, peer_call_orchestration, peer_forward_orchestration, pending_calls, mod.zig handleFinish/handleReturn/doc, return_routing, finish.zig, and the mark bound in peer_third_party_routes. Read the new Peer and native tests.\n\nProtocol checks:\n- Fix 1 (stash drop at Finish(Y)) against rpc.capnp:484-492 and rpc.c++ directTailCall / RpcPipeline: Call(Y) < Return(X, take=Y) < Finish(Y) holds on any ordered transport. A capnp-zig .sent_elsewhere forwarder relays Finish(Y) only at Finish(X), except on sync transports.\n- After the rse Return, Y is in no in-use map (sendReturnFrameWithLoopback removes active_inbound_questions), so the handleCall drop after the duplicate-id check is the right guard for non-compliant reuse. Loopback ids come from the top of the space, so they do not collide.\n- The stash is bounded (max_loopback_result_stash = 4096, count bound).\n- The C++ tail-call checks (rpc.c++:4043-4067) apply only while selfRef is alive, and rse is sent only for calls the remote marked yourself, so there is no false rse.\n- Mark discipline: every pre-dispatch mark site calls Peer.sendReturnException(Typed), which reaches sendReturnExceptionNoDrain, which removes the mark first. clearAndSendReturnFrameForPeer clears only after a successful send. Finish clears marks. Each touched path sends exactly one Return; the remaining double-Return shapes (trailing send errors, handler errors after it already answered) exist on main too.\n- Zig .sent_elsewhere and propagate forwarders now get rse in place of an exception. This is an improvement: .sent_elsewhere used to raise UnexpectedForwardedTailReturn.\n- Go and Rust peers never send yourself calls.\n\nExperiments in a scratch copy (worktree left byte-identical, git status clean):\n- test-rpc-peer green on the branch.\n- test-native-abi and test-rpc: 135/135 steps.\n- Full `zig build test`: failures only in codegen/compile suites, caused by the missing capnp WASM bootstrap in my copy; unrelated to this change.\n- Probes A and B fail (exception on the wire, the must-fix). Probe C shows the sync-order trade-off. Probe D passes, and fails with the active_inbound_questions check ablated (stash=1), so that check is reachable and does its job."
+  },
+  {
+   "verdict": "fix-then-ship",
+   "must_fix": [
+    {
+     "issue": "Fix 1 (dropping the kept answer at Finish(Y)) loses a tail call's value when capnp-zig is itself the `.sent_elsewhere` forwarder on a synchronous transport. On main the question gets its results; on this branch it gets the bare takeFromOtherQuestion tag. The mod.zig field doc also states something false: \"capnp-zig's `.sent_elsewhere` forwarder relays the Finish only at the question's Finish\". On a synchronous transport the forwarder auto-finishes the forwarded call when the re-entrant resultsSentElsewhere comes back. That happens before it sets suppress_auto_finish and before it sends the redirect. It then sends a second Finish later, when it relays the question's Finish.",
+     "where": "src/rpc/peer/mod.zig:4739 (the new drop in handleFinish) and mod.zig:734-750 (the false field-doc claim at :743). Root cause on the forwarder side: mod.zig:3292-3317 (forwardResolvedCall sends the Call through sendCallResolved before finishForwardResolvedCall sets suppress_auto_finish, src/rpc/peer/forward/peer_forward_orchestration.zig:166) and src/rpc/peer/return/peer_return_dispatch.zig:214 (auto-finish).",
+     "why": "This is a silent behaviour regression against fd4ae7d. A Zig-to-Zig pair that delivers frames synchronously through the Experimental Peer.setSendFrameOverride is affected: the shape all the in-repo tests use. With a DIRECT or other synchronous handler, the pipelined call's value is lost, and a generated client unwrap reports UnexpectedReturn. The implementer's report mentions the trade-off in open_issues. The CHANGELOG and both commit bodies do not; they say every redirect comes before Finish(Y). Real asynchronous transports (TCP, QUIC, native C ABI, HostPeer) are not affected: there suppress_auto_finish is set before the forwarder can see the resultsSentElsewhere.",
+     "regression": true,
+     "repro": "Probe test 'PROBE sync zig-zig sent_elsewhere tail call delivers the value' in /private/tmp/claude-501/-Users-nullstyle-prj-zig-capnp-zig/c3a2d2f5-ee60-45d5-a475-7f73f5faf366/scratchpad/p13a-review/wt/tests/rpc/peer/review_probe_test.zig. Run it with `mise exec -- zig build review-probe` (a step I added to that copy's build/build_impl.zig:1104-1105). Setup: two Peers on the file's synchronous Wire. A exports T (DIRECT handler, n=42) and U (returns cap T). B keeps a retained question QB on U, then answers A's call X by Peer.test_hooks.handleResolvedCall(.promised = QB), which is the `.sent_elsewhere` tail-call forward. Wire on the branch: `call id=2`, `call id=1 (yourself)`, `return id=1 rt=.resultsSentElsewhere`, `finish id=1`, `return id=2 rt=.takeFromOtherQuestion`, `finish id=2`, `finish id=1`. Result: `TAIL X returned=true tag=.takeFromOtherQuestion n=null`. The same probe on fd4ae7d sources (copy at .../p13a-review/wtmain) prints `tag=.results n=42`.",
+     "suggested_fix": "Preferred: make the forwarder follow rpc.capnp:489-492, which fix 1 relies on. The forwarded question must not auto-finish, and its X->Y tail mapping must be registered, BEFORE the Call goes out. That needs the forwarded question id allocated before the send, as registerRetainedQuestion does at allocation for retained calls. This also removes the known double Finish. Alternative, if the owner accepts the trade-off: put it in the CHANGELOG, correct the mod.zig:743 claim, and pin the probe as a known-behaviour test so the change is visible."
+    },
+    {
+     "issue": "Fix 2 leaves the pre-dispatch failure class open on the promised-answer queue, the twin of the promise-export case it does cover. A `yourself` call queued on one of our pending answers (pending_promises) still puts an EXCEPTION Return on the wire when that answer later fails (failQueuedPromisedCalls). It does the same when its replay errors, for example when it cannot park again (drainPendingPromises catch). The same failures on the promise-export replay path (replayResolvedPromiseExport) are now marked and answer resultsSentElsewhere.",
+     "where": "src/rpc/peer/return/peer_return_send.zig:550 (failQueuedPromisedCalls -> sendReturnExceptionNoDrain with no mark) and src/rpc/promises/pending_calls.zig:215-219 (drainPendingPromises replay-error catch, no mark). Compare the marked twin at pending_calls.zig:270/:276.",
+     "why": "The C++ reference rejects such a Return (\"Tail call `Return` must set `resultsSentElsewhere`, not `exception`\", rpc.c++:4055) and drops the connection, which is exactly the defect P1-3a item (2) is meant to close. C++ reaches this path when a method tail-calls a pipelined capability of a question it sent us. It sends Call(W, yourself, target=promisedAnswer(A)) plus Return(X, takeFromOtherQuestion=W). W queues on our pending A, and A then fails. The brief's list did not name this site, and the implementer disclosed it as uncovered. But it is the same defect class, and the export twin in the same file was fixed. Not a regression: fd4ae7d does the same.",
+     "regression": false,
+     "repro": "In the same probe file: 'PROBE gap: a yourself call queued on a pending answer that then fails'. Steps: pushPlainCall(500) to a deferred handler, pushPipelinedYourselfCall(900 on 500), the redirect, then sendReturnException(500). It prints `GAP rse=0 exc=1`. 'PROBE gap2: ... whose replay cannot park again': answer 500 = an unresolved promise export with max_pending_queued_calls=0. It prints `GAP2 rse=0 exc=1`. Both print the same on fd4ae7d.",
+     "suggested_fix": "At enqueue, note that a queued call is a `yourself` call, as PendingCall already notes question_id. Then call the existing markYourselfCallForException hook before sendReturnExceptionNoDrain in failQueuedPromisedCalls, and in the drainPendingPromises catch (the hook is already threaded through replayResolvedPromiseExport). Add the two probes as tests."
+    }
+   ],
+   "nice_to_have": [
+    "The guard `if (!self.active_inbound_questions.contains(answer_id)) return;` in keepSelfLoopbackException (peer_return_send.zig:462) is reachable but no test covers it. I reached it with a parked yourself call: the remote sends Finish(Y, requireEarlyCancellation=true), which keeps the queued call, and then the host rejects the promise. With the guard, the probe 'PROBE A12' prints stash=0. With the guard removed it prints stash=1: an answer kept past Finish, the fix-1 bug class, which only id reuse or deinit would clear. Add it as a test.",
+    "loopback_result_stash has a count bound only (max_loopback_result_stash=4096) and no byte bound. Fix 2 adds a second kept copy of each failing yourself call's reason (one in the stash, one in failed_answers). The reason can be a copied failed-answer reason that a remote influences: a forwarded exception, up to the frame size. This is a pre-existing class (failed_answers has no byte bound either) and only doubles it. Consider max_loopback_result_stash_bytes following the max_*_bytes pattern.",
+    "Pre-existing use-after-free read, also on fd4ae7d: routePromisedTargetCall `.failed` passes a borrowed lookupFailedAnswer view to sendReturnExceptionTyped. A Finish of the failed answer that arrives re-entrantly during the send frees that reason. recordFailedAnswer and failQueuedPromisedCalls then read freed memory. Probe 'PROBE borrowed failed reason across a re-entrant Finish': failed_answers[900].reason no longer matches (reason_ok=false), on both the branch and main. The new keepSelfLoopbackException copies the reason before the send, so the new code is safe. Dupe the reason before sending.",
+    "Not run as a probe, from reading the code: in completeSelfLoopbackReturn, sendReturnTag clears the mark only after a successful send (clearAndSendReturnFrameForPeer). A trailing transport error leaves the mark set. The caller's sendReturnException then replaces the stashed RESULTS with the exception (fetchPut) and sends a second resultsSentElsewhere. main sent resultsSentElsewhere and then an exception, so both double-Return. The normal results path guards this with finish_proves_delivery; the self-loopback path has no such guard.",
+    "The forwarder's double Finish in the synchronous case (pre-existing, seen on the probe wire as `finish id=1` twice) can land on a question id the forwarder has already freed and reused.",
+    "Still uncovered and disclosed: sendPrebuiltReturnFrame (HostPeer.respondHostCallException, the WASM host ABI), a failed forward of a yourself call (handleResolvedCall forward catch), and 'unknown promised capability' in handleResolvedExportedCallForPeer. All still put a non-resultsSentElsewhere Return on the wire for a tail call."
+   ],
+   "checked": "Read the whole diff fd4ae7d..5f6b454 (src/rpc, src/native/conn_test.zig, the tests, the CHANGELOG, both commit bodies) and the code each change touches: the mark set and clear helpers (return_routing, noteSendResultsToYourself, finish.zig), handleCall, handleFinish, sendReturnFrameWithLoopback (active_inbound_questions is removed at Return send), inboundAnswerQuestionIdInUse, handleReturn's stash consumption, forwardResolvedCall and finishForwardResolvedCall, the native Conn return paths, and C++ rpc.c++ handleReturn (the isTailCall checks apply only while selfRef exists, so a Return after Finish is not rejected). Also read the review2/3/5 findings for pieces this branch inherits.\n\nLifetimes, by reasoning plus probes: every mark that markYourselfCallForException sets is cleared at the first line of sendReturnExceptionNoDrain. All mark sites call Peer.sendReturnException(Typed), and the automatic-third-party branch cannot apply to a yourself call. The mark kept through the build is cleared by any Return family, by Finish, or by deinit. A leftover mark after a failed build with no follow-up lasts exactly as long as the finished-early tombstone main already keeps, so it is not a regression. Stash entries are freed on consume, at Finish, on id reuse (after the duplicate-id check) and at deinit, and fetchPut frees a replaced entry.\n\nProbes, in my rsync copy (.../scratchpad/p13a-review/wt; main sources in .../wtmain):\n- A FailingAllocator sweep over 7 scenarios under std.testing.allocator: an unknown capability with redirect and Finish, a generated-style build failure, a DIRECT build failure, a late answer after the redirect, no Finish, a rejected parked promise, and Finish then a late exception then id reuse. No leak, double free or crash at any fail index.\n- Re-entrant redirect and/or Finish delivered inside the resultsSentElsewhere send, for both an unknown capability and a handler failure: no exception on the wire, no stash, mark or failed-answer record left.\n- The sync `.sent_elsewhere` forwarder regression (must_fix 1), the two promised-answer queue gaps (must_fix 2), the A12 guard reachability with its ablation, and the borrowed-reason UAF. Every finding was run on both the branch and fd4ae7d.\n\nRan `zig build test-rpc-peer test-native-abi` on the copy: 60/60 steps, 593/593 tests. No new O(n) per-frame work; all new operations are hash-map operations. The worktree was left untouched: git status is clean and I built nothing there."
+  }
+ ],
+ "repair": {
+  "worktree": "/Users/nullstyle/prj/zig/capnp-zig/.claude/worktrees/wf_3473ae2b-ecd-1",
+  "branch": "sprint/p1-3a-tail-call-fixes",
+  "commits": [
+   {
+    "hash": "2eb9aa8",
+    "subject": "rpc: answer a failed queued yourself call with resultsSentElsewhere"
+   },
+   {
+    "hash": "dc2e3fb",
+    "subject": "rpc: hold a forwarded call open from its send"
+   },
+   {
+    "hash": "d0ca8d6",
+    "subject": "rpc: answer a yourself call whose forward fails with resultsSentElsewhere"
+   }
+  ],
+  "red_proof": "All three findings were real. Each red run used the new tests on top of the parent commit's src/rpc.\n\nFindings 1 and 3 (the same promised-answer queue gap, reported by both reviewers). I added three tests to tests/rpc/peer/rpc_reflected_direct_handler_test.zig:\n- \"a yourself call queued on an answer that then fails\" (PROBE A)\n- \"a yourself call queued on an answer whose replay cannot park again\" (PROBE B)\n- \"a yourself call queued on a call the remote cancels\" (the cancelQueuedPendingQuestion path)\nOn 5f6b454 all three fail in expectOnlyResultsSentElsewhere with \"expected 0, found 1\": an exception Return for the tail call is on the wire.\n\nFinding 2 (the forwarder over a synchronous transport). I added \"a tail call this peer forwards on a synchronous transport: the caller gets the value, the named call one Finish\". It uses std.testing.allocator and cleans up.\n- On 2eb9aa8 it fails with \"expected .results, found .takeFromOtherQuestion\". This is the regression.\n- On fd4ae7d the value is delivered, but the test fails with \"expected 1, found 2\". That is a double Finish of the forwarded call, a defect main already has.\n- I also added forward-mapping checks to \"reflected loopback runs a DIRECT handler ...\" (translate mode). On 2eb9aa8 they fail with \"expected 0, found 1\": a stale forwarded_tail_questions or forwarded_questions entry is left behind. A later reuse of the caller's question id would relay a Finish to a dead or reused id.\n\nExtra commit, same class as fix 2. I added \"a yourself call whose forward fails\". On dc2e3fb it fails with \"expected 0, found 1\": an exception Return on the wire.",
+  "green_proof": "For each new commit I ran a full `zig build test --summary all` on exactly the committed tree. All were green:\n- 2eb9aa8: 266/266 steps, 2345/2381 tests (36 skipped)\n- dc2e3fb: 266/266 steps, 2346/2382 tests\n- d0ca8d6: 266/266 steps, 2348/2384 tests\n\n`zig build test-rpc-peer` at HEAD: 50/50 steps, 580 tests.\n\nHow each fix works:\n- 2eb9aa8: queuePendingCall now records whether a queued call is a yourself call, in the same decode that reads its question id. The flag is the new Experimental field state.PendingCall.send_results_to_yourself (default false), and both experimental snapshots are refreshed. failQueuedPromisedCalls marks such a call (best effort) before sendReturnExceptionNoDrain. drainPendingPromises takes the mark_yourself_call hook and calls it in its replay-error catch.\n- dc2e3fb: forwardResolvedCall now allocates the forwarded question through a hook. Before the Call is built and sent, the hook:\n  - allocates the question as no-restore\n  - registers forwarded_questions and forwarded_tail_questions (peer_forward_orchestration.registerForwardedQuestion, which replaces finishForwardResolvedCall)\n  - sets suppress_auto_finish and deinit_ctx\n  CallSend.sendCallResolvedAllocating takes the hook. A failed send undoes the registration (unregisterForwardedQuestion). With this, the forwarder follows rpc.capnp:489-492, which fix 1 relies on. The double Finish is gone, and the mod.zig loopback_result_stash doc claim is now true on synchronous transports too.\n- d0ca8d6: the forward_resolved_call catch in handleResolvedCall now marks a yourself call before sending its exception. For a yourself call, the forward mode sends nothing after the forwarded Call, so an error there means the Call never went out.\n\nI also corrected the CHANGELOG. It now names the covered APIs (Peer.sendReturnException and the native capnp_return_exception), says HostPeer and the WASM host ABI are not covered, and says the mark is best effort. There is a new bullet for the forwarder fix.",
+  "ablation_proof": "I undid one change at a time and ran test-rpc-peer (test-rpc too for the forwarder). After each run I restored the file and confirmed with git diff.\n\n2eb9aa8:\n- No mark in failQueuedPromisedCalls: fails \"...queued on an answer that then fails\" and \"...queued on a call the remote cancels\".\n- No mark in the drainPendingPromises catch: fails \"...whose replay cannot park again\".\n- Enqueue flag forced to false: fails the same two tests as the first ablation.\n\ndc2e3fb:\n- Hook only allocates, with registration and deinit_ctx moved back to after the send (the old order): fails only the new forwarder test, \"expected .results, found .takeFromOtherQuestion\".\n- suppress_auto_finish not set: fails the new test, plus two W1 tests in rpc_peer_from_peer_zig_test: \"translates results back\" aborts, and \"ordering races\" gives \"expected 2, found 3\".\n\nd0ca8d6:\n- No mark in the forward catch: fails \"a yourself call whose forward fails\".\n- The active_inbound_questions check in keepSelfLoopbackException removed: fails the new \"a parked yourself call finished before the host rejects its promise keeps no exception\" with \"expected 0, found 1\". So that check is reachable, and the test gives it teeth (this was reviewer PROBE D / A12).",
+  "gates": [
+   {
+    "command": "mise exec -- zig fmt --check <all 11 .zig files touched in fd4ae7d..HEAD>",
+    "result": "pass"
+   },
+   {
+    "command": "mise exec -- zig build hardening",
+    "result": "pass"
+   },
+   {
+    "command": "mise exec -- zig build check-api",
+    "result": "pass (1579 stable frozen; 3821 experimental)"
+   },
+   {
+    "command": "mise exec -- zig build check-api-experimental",
+    "result": "pass (strict, 3821 experimental verified)"
+   },
+   {
+    "command": "mise exec -- zig build -Dquic=true check-api-quic check-api-experimental-quic",
+    "result": "pass"
+   },
+   {
+    "command": "mise exec -- zig build test --summary all",
+    "result": "pass: 266/266 steps, 2348/2384 tests, 36 skipped (uncached run at the d0ca8d6 tree; the gate rerun was a cache hit)"
+   },
+   {
+    "command": "mise exec -- zig build test-rpc-peer --summary all",
+    "result": "pass: 50/50 steps, 580 tests"
+   },
+   {
+    "command": "mise exec -- zig build test-native-abi --summary all",
+    "result": "pass: 11/11 steps"
+   },
+   {
+    "command": "mise exec -- zig build fuzz-native-abi -- --seconds 30",
+    "result": "pass: OK, 106716 sessions, 9357254 ops, 0 bytes live at end"
+   },
+   {
+    "command": "mise exec -- zig build check-compile -Dtarget=x86_64-windows",
+    "result": "pass"
+   },
+   {
+    "command": "mise exec -- zig build -Dquic=true test-rpc-quic --summary all",
+    "result": "pass: 18/18 steps, 241/241 tests"
+   },
+   {
+    "command": "mise exec -- zig build e2e-self --summary all",
+    "result": "pass: 7/7 steps, 46 pass / 0 fail across 6 schemas"
+   },
+   {
+    "command": "git status --short",
+    "result": "clean; nothing pushed, as instructed"
+   }
+  ],
+  "open_issues": [
+   "Nothing is pushed (the brief says not to). The branch has 5 commits on fd4ae7d: e8e19f5 and 5f6b454 from the earlier pass, plus the 3 new ones.",
+   "Not run: the Docker cross-impl lanes, especially the C++ resolve_disembargo lane. The C++ server tail-calls into a Zig-hosted cap there, so run that lane before release. The forwarder change also touches the translate_to_caller forward path that every reference client uses.",
+   "The Experimental snapshot now has state.PendingCall.send_results_to_yourself. The change is additive and needs a minor bump, which v0.27.0 is.",
+   "Still not covered (also on main): HostPeer.respondHostCallException and respondHostCallReturnFrame, i.e. the WASM host ABI via sendPrebuiltReturnFrame. Also the 'unknown promised capability' exception in handleResolvedExportedCallForPeer: I could not build a reachable test, so I left it unmarked. And the best-effort fallback: past limits.max_send_results_to_yourself, or out of memory, the exception still goes on the wire. The CHANGELOG now says so.",
+   "Not fixed (also on fd4ae7d): routePromisedTargetCall .fail_broken_answer passes the borrowed lookupFailedAnswer reason to sendReturnExceptionTyped. A Finish of the failed answer that arrives re-entrantly during the send frees it, and recordFailedAnswer / failQueuedPromisedCalls then read freed memory. Only synchronous transports can reach this. The fix is to dupe the reason before the send.",
+   "Not fixed (also on fd4ae7d): forwardResolvedCall's error path assumes a failed send never ran onForwardedReturn. Some synchronous transports pass a dispatch error back through the send after the forwarded Return was handled, as the test Wire does. On those, the errdefer reads and frees an already-freed context; the old code double-freed it the same way. The vine forwarder's settled_flag pattern would close this.",
+   "loopback_result_stash has a count bound only (max_loopback_result_stash = 4096), no byte bound. Fix 2 keeps a second copy of each failing yourself call's reason. That reason can be remote-influenced, up to frame size. failed_answers has the same unbounded-bytes class. A byte bound means a new PeerLimits field, which is outside this item.",
+   "Exotic: a results build that fails with no follow-up exception keeps the yourself mark. If the call's Finish already came with requireEarlyCancellation, nothing removes the mark until teardown, and a compliant reuse of that id gets DuplicateQuestionId. The C++ reference sends requireEarlyCancellation = false."
+  ]
+ },
+ "verify": {
+  "verdict": "ship",
+  "new_regressions": [],
+  "fixes_close_defects": true,
+  "checked": "Reviewed d0ca8d6 (5 commits on fd4ae7d) in worktree /Users/nullstyle/prj/zig/capnp-zig/.claude/worktrees/wf_3473ae2b-ecd-1. The worktree stayed clean, with nothing written to it. All work ran in /private/tmp/claude-501/-Users-nullstyle-prj-zig-capnp-zig/c3a2d2f5-ee60-45d5-a475-7f73f5faf366/scratchpad/p13a-final in three copies:\n- branch/ = HEAD sources\n- base/ = HEAD tree with the 14 changed files taken from fd4ae7d\n- abl/ = HEAD copy for ablations\nI diffed the copies against git to confirm their sources.\n\n(1) Both defects closed. I wrote my own probes, independent of the implementer's tests, in probes/*.zig, installed as tests/rpc/peer/vprobe_test.zig plus a \"VPROBE\" block in src/native/conn_test.zig. I ran them against both copies.\n- Peer, fix 1. F1a (cancel before the redirect, answer, Finish, id reuse) and F1b (answer after the redirect, Finish, id reuse):\n  - fd4ae7d: the stash count is 1 after Finish, and the new tail call gets the stale value at once (\"tag=.results n=7\").\n  - Branch: stash 0, and the new tail call gets the bare tag.\n  - F1c (a stale kept exception) and F1d (stash bound: 10 answered or failed yourself calls at limit 3) pass on the branch and fail on fd4ae7d.\n- Native C ABI, fix 1. N1 and N2: on fd4ae7d, q2 gets \"RETURN results value=42\" before the new call is answered; on the branch it gets the bare-redirect exception.\n- Fix 2, pre-dispatch failures (Peer F2a-F2h, native N3-N5). Covered: a rejected promise export, an unknown capability, a call parked on a promise export then rejected (both orders), a refused queue, a receiverAnswer param that names a failed answer, a call pipelined on a failed answer, and a call queued on a pending answer that then fails.\n  - fd4ae7d: every case puts \"exception=1 rse=0\" on the wire.\n  - Branch: exactly 1 Return, and it is resultsSentElsewhere. No mark is left after the send. The redirect gets the exception. After Finish there is no mark and no stash, the id is free, and a reuse is accepted and answered once.\n  - Controls G1 and G2 (non-yourself failures still send an exception; a successful yourself call is unchanged) pass on both. G3 (50 failing yourself calls leave 0 marks, 0 stash, 0 failed_answers after Finish) passes on the branch.\n\n(2) No new regression versus fd4ae7d.\n- Gates on a clean branch copy: `zig build test` 266/266 steps, 2602/2638 tests (36 skipped). Also green: test-rpc-peer 50/50, test-native-abi 11/11, fuzz-native-abi 30 s (99735 sessions, 0 live bytes), e2e-self 7/7, hardening, check-api plus check-api-experimental, `-Dquic=true test-rpc-quic` 241/241, and check-compile for x86_64-windows.\n- Docker cross-impl lanes (not run by the implementer): C++ 15 pass / 1 by-design skip, including resolve_disembargo in both directions. Go, Python and Rust: 41 pass / 7 by-design skips. e2e-l3-vatc passed.\n- OOM sweeps (probes/oom_part.zig): one-shot and sticky failure at every allocation index, in 4 scenarios (pre-dispatch failure, id reuse, queued-then-failed, failed build then exception). The peers used a failing allocator over testing.allocator. Branch: 0 anomalies (at most one Return per call, no stale value, no leak); in 1-4 runs per scenario the best-effort fallback still puts an exception on the wire, as documented. fd4ae7d shows the stale value at many indices and an exception on the wire in 31-37 runs per scenario.\n- An early sweep showed 3 Returns at index 42 on both copies. That was a harness artifact: the script answered a call the host never saw. I fixed the script and reran.\n- Code read:\n  - Every mark is set right before the exception send (sendReturnExceptionNoDrain) or clears at Finish or teardown.\n  - The kept-through-build mark clears at Finish. Probe H2: after Finish the id is in use on both copies, because of the finished-early tombstone, so this is no change.\n  - The new work is O(1) (fetchRemove calls) or O(reason). There is no new scan or loop, so no remote-forceable O(n) work.\n  - Nothing is held, so nothing can hang.\n  - dc2e3fb keeps the same allocators and errdefer order and does not double-free. Its only change in behaviour is on synchronous transports.\n\n(3) Teeth. ablscripts/ablate.py ran 21 ablations: each fix undone alone, then every mark site removed one at a time. Each ablation was run against test-rpc-peer, my probes, the native \"tail call\" tests and the pending_calls unit tests, and the sources were restored after each (diff empty). Every ablation failed its targeted test:\n- F1-A, no drop at Finish: 17 failed.\n- F1-B, no drop on reuse: 1.\n- F1-C, stash after Finish during the build: 1.\n- F2-0, exception path off: 36.\n- F2-G, mark helper made a no-op: 26.\n- F2-R, contains changed back to remove: 4.\n- F2-K, active check removed in keepSelfLoopbackException: 1.\n- F2-Q and F2-P, the queued-call drain mark and the enqueue flag: 3 each.\n- Each of the 11 mark sites: 1 to 8.\n- FW-C, the forwarder's old order: 2.\nLogs: ablscripts/ablate2.out and ablscripts/out/*.log.\n\nNon-blocking notes, all pre-existing or outside this item's scope:\n- (a) Each failing yourself call's kept exception is a second count-bounded (4096) copy of a reason that can be remote-influenced. failed_answers already keeps one copy, so this is the same no-byte-bound class as on fd4ae7d at about 2x.\n- (b) A yourself call answered after the remote's Finish(Y) still puts plain results on the wire, on both copies (probe H1). The C++ reference applies its tail-call check only while question.selfRef is set (rpc.c++:4040-4056), so it tolerates this.\n- (c) HostPeer prebuilt frames and the WASM host ABI are still not covered, as the CHANGELOG says."
+ }
+}

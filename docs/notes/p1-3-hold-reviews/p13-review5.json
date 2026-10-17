@@ -1,0 +1,431 @@
+{
+ "inv": {
+  "verdict": "fix-then-ship",
+  "must_fix": [
+   {
+    "issue": "A held question can wait forever when the `yourself` call W it names is queued on a promised answer A, and A is answered by a Return path that neither records A nor drains `pending_promises[A]`. W is then never replayed or failed, so W0 (the question whose takeFromOtherQuestion names W) gets no Return. Two paths do this. (1) `sendPrebuiltReturnFrame` with a non-results tag records nothing for A and drains nothing. HostPeer.respondHostCallException uses this path, so the WASM host ABI reaches it. (2) `sendReturnTakeFromOtherQuestion` and `sendReturnAcceptFromThirdParty` drain A's pipeline only when A itself is a marked `yourself` call. A plain A forwarded with translate_to_caller or sent_elsewhere never drains. On e9f37e1, W was not marked on arrival, so W0 got the bare redirect at once. W itself was stuck there too, so W's missing Return is pre-existing; W0's hang is new. There is a worse follow-on (probe A2). The stale `pending_promises[A]` bucket outlives Finish(A). When the remote reuses A's id for an unrelated call, that call's results replay W against the wrong target, and the held W0 silently gets W's results (n=42) as its RETURN results. On base, W0 had already got the bare tag.",
+    "where": "Hold on any marked W: src/rpc/peer/return/peer_return_send.zig:395-403 (holdTailCall). W is marked when it arrives: src/rpc/peer/call/peer_call_inbound.zig:175. A's paths with no drain: peer_return_send.zig:545-593 (sendPrebuiltReturnFrame: should_record only for .results, no failQueuedPromisedCalls), :933-953 (sendReturnTakeFromOtherQuestion drains only `if (tail_called)`), :955-967 (sendReturnAcceptFromThirdParty never drains). Reach: src/rpc/integration/host_peer.zig:672 (sendSanitizedReturnException -> sendPrebuiltReturnFrame), src/wasm/capnp_host_abi.zig:1463. Forward relays: src/rpc/peer/forward/peer_forwarded_return_logic.zig:91-93 and :155-163. Finish(A) does not drain calls queued on A: mod.zig:4866 cancels only A itself.",
+    "why": "This breaks the invariant: W0 never gets a Return, only a cancel, deadline or disconnect ends it. C++ deadlocks with it, because it finishes W only after our Finish(W0). The C++ reference bounces every call pipelined on a question it sent us back as a tail call (Call(W, yourself, target = promisedAnswer(A)) + Return(W0, take W)). A WASM guest that answers A with an exception is ordinary use. The id-reuse follow-on turns the hang into a silent wrong value.",
+    "regression": true,
+    "repro": "Scratch copy /private/tmp/claude-501/-Users-nullstyle-prj-zig-capnp-zig/c3a2d2f5-ee60-45d5-a475-7f73f5faf366/scratchpad/p13inv/tree. The probes are appended after the 'INVARIANT-AUDIT PROBES' banner in tests/rpc/peer/rpc_reflected_direct_handler_test.zig. Run with `mise exec -- zig build test-rpc-peer` (log ../tree_probe.log). 'PROBE inv A': plain Call 960 to the DeferredTarget; Call 901 (yourself, target = promisedAnswer(960)); Return(W0, take 901); then sendPrebuiltReturnFrame(960, exception). Branch output: 'w0 returns after redirect=0 after A's prebuilt exception=0 ... held=1->1 W queued=true wire Returns W=0', unchanged after Finish(960). 'PROBE inv A2': after that, the remote reuses 960 for a plain call whose results are the client export. Branch output: 'target saw call 901 ... W answered against A2's results: w0 returns=1 tag=.results n=42'. 'PROBE inv B': a plain A parked on a promise export resolved to the server's import; the remote answers the forward with takeFromOtherQuestion. Output: 'w0 returns ... after A's redirect=0 held=1 W queued=true'. Same probes on e9f37e1 sources with the branch harness (scratchpad/p13inv/base): W0 gets 1 RETURN (takeFromOtherQuestion) at the redirect in A, A2 and B, and A2 never gives W0 a value.",
+    "suggested_fix": "Fail the pipeline of every answer whose Return brings no results here. In sendPrebuiltReturnFrame, after the send, when ret.tag != .results, call failQueuedPromisedCalls(answer_id, the exception reason or a fixed reason). In sendReturnTakeFromOtherQuestion and sendReturnAcceptFromThirdParty, call failTailCalledPipeline for every answer, not only `tail_called` ones. I prototyped exactly this in scratchpad/p13inv/fix (logs fix_probe.log, fix_probe2.log). Probes A, A2 and B then pass, and no test in test-rpc-peer or the core root fails. The only test-serialization failures are compiler-dependent suites, from the scratch copy's missing capnp-wasm. A narrower option is to have holdTailCall refuse a W that is still queued in pending_promises. The redirect then gets the bare tag as on main, but the tail_call_pipelining_reason delivery from 543e642 is lost. Commit A, A2 and B as tests and ablate them."
+   },
+   {
+    "issue": "`sendPrebuiltReturnFrame` clears the `yourself` mark before its fallible steps (reserveResolvedAnswer and the send). Every other Return family clears it after a successful send. When the prebuilt Return is refused, the hold stays with no mark. A follow-up answer through the Peer's sendReturnException then takes the plain path. That path puts an exception Return for the tail call on the wire, which the C++ reference rejects. It never calls releaseHeldTailCall, so X waits for Finish(Y), which a compliant remote sends only after Finish(X). The refusal needs no OOM: reserveResolvedAnswer fails with PeerLimitExceeded when max_resolved_answers is full, and a remote can fill it with Finish-less calls (audit item 7). This is the only non-teardown place I found where the invariant 'a hold on Y implies Y's mark' breaks. A retry through HostPeer (respondHostCallException, which goes through prebuilt again) still releases the hold, so the hang needs a host that retries through the plain Peer API.",
+    "where": "src/rpc/peer/return/peer_return_send.zig:562 (clearSendResultsRouting before :579 reserveResolvedAnswer and :584 the send; releaseHeldTailCall only at :592). Compare src/rpc/peer/return/peer_return_dispatch.zig:243-254 (clearAndSendReturnFrameForPeer: send, then clear).",
+    "why": "X gets no Return after a refused prebuilt answer. On e9f37e1, X got the bare redirect at once. The retry also puts on the wire the exception Return for a tail call that the C++ reference treats as a protocol error.",
+    "regression": true,
+    "repro": "'PROBE inv H' in the same scratch file: pushTailCall; set limits.max_resolved_answers = resolved_answers.count(); sendPrebuiltReturnFrame(results) -> error.PeerLimitExceeded; then sendReturnException(900). Branch output: 'mark=false held=1 caller returns=0', then 'wire Returns Y=1 (exception=1 rse=0) held=1 caller returns=0'. Base: the caller has its 1 Return at the redirect. With the prototype in scratchpad/p13inv/fix: 'mark=true held=1', and after the retry 'exception=0 rse=1 held=0 caller returns=1'.",
+    "suggested_fix": "Move clearSendResultsRouting in sendPrebuiltReturnFrame to after the successful send, just before commitOrRollbackResolvedAnswerAfterSend, as clearAndSendReturnFrameForPeer does. The mark then survives a refused send, and the follow-up answer goes through completeSelfLoopbackException: the wire gets resultsSentElsewhere and the held question gets the exception. The prototype does this, and no existing test changes. Commit probe H as a test."
+   }
+  ],
+  "nice_to_have": [
+   "Choke point. Two separate invariants carry the hold, and only one has a choke point. (a) 'A hold on Y implies Y's mark.' This can be made true by construction. Every place that ends Y's local state without a local answer removes the mark: clearSendResultsRouting in each Return family, finish.zig:37, the handleCall errdefer, and completeSelfLoopback*. Route every removal through one dropYourselfMark(Y, outcome). That function takes any hold on Y and queues its delivery (bare redirect, or tail_call_finished_reason) to run after the current send or at handleFrame exit, so no callback runs mid-send. It replaces settleTailCallOnFinish, releaseHeldTailCall and the late handleFinish errdefer, and it covers must-fix 2. The yourself-answer path keeps taking the hold before the send, as today. A forward back to the remote keeps Y marked, so noteYourselfCallForwarded must still release explicitly. (b) 'Y eventually gets a local terminal.' Here nothing is removed, so no removal hook can see it: Y stays marked and stuck (must-fix 1, and the OOM drops below). This needs either a drain rule (every Return for answer A that records neither a resolved nor a failed answer fails pending_promises[A]) or holding only Y states with a guaranteed terminal (dispatched, or parked on our promise export).",
+   "OOM-only waits (documented in general terms; no Return for X). Each one takes the hold, or leaves Y marked, before a fallible step, then swallows the error. (1) Frame build or decode in deliverHeldTailCall, settleTailCallOnFinish and releaseHeldTailCall: peer_return_send.zig:412-448. The H8 stack-buffer pattern from deliverLocalException would make these infallible. (2) failQueuedPromisedCalls when it cannot seed its worklist (:752), and its NoDrain send errors (:770). (3) answerDroppedParkedCall send errors: peer_export_release.zig:488. (4) The replay drains `continue` on decode errors with no Return: src/rpc/promises/pending_calls.zig:204-212 and :253-262. pending_call.question_id is already known, so they could still answer. (5) The relay callbacks swallow a failed sendReturnResults build: peer_cross_peer_proxy.zig:331 and mod.zig:2624. A cross-peer clone can fail without OOM, so this one is not purely OOM.",
+   "handleFinish still registers `errdefer self.settleTailCallOnFinish(qid)` at mod.zig:4900, after `_ = try self.cancelQueuedPendingQuestion(...)` at :4866. That call has already dropped Y's mark through sendReturnTag(.canceled), which skips releaseHeldTailCall by design. The same applies to the handleCall errdefer at peer_call_inbound.zig:145, which removes the mark without settling. Both errors leave handleFrame, and native conn.zig:333-337 and the transport callbacks then close the connection, so X is settled by the disconnect. Still, register the errdefer first; settleTailCallOnFinish is idempotent.",
+   "Still open from round 3: handleReturnFrom's stash and hold lookup (mod.zig:6098-6107) does not check `origin`. A loopback takeFromOtherQuestion names one of our outbound question ids, which can equal a remote `yourself` call id. The loopback question is then held on that unrelated call and gets its results. With must-fix 1 it can also hang. Limit the lookup to origin == .transport.",
+   "Reviewed the round-4 commits a9f73ad..a6b1676 inside this lens; they hold up. noteYourselfCallForwarded plus forwardedToRemote end the forwarded-yourself deadlock, both on a forward after the redirect and on a forward at arrival. The 34efe40 Finish relay answers Y with resultsSentElsewhere through answerFinishedForwardedCall after Finish(Y). That runs after clearFinishQuestionState has dropped the mark, so tail_called is false and the explicit failTailCalledPipeline is the drain. 7e9961d's finished_during_build drops the frame correctly. One sync-transport-only nit: if the remote's Return for Y' re-enters inside sendCallResolved, before finishForwardResolvedCall registers forwarded_questions[Y'], a stale forwarded_questions entry is left behind. forwardedToRemote(Y) then stays true for a reused id: degraded to a bare tag, never a hang.",
+   "Commit the four probes (A, A2, B, H) as regression tests. Add a HostPeer-level variant of A using respondHostCallException with a pipelined yourself call, since that is the public path."
+  ],
+  "checked": "Worktree /Users/nullstyle/prj/zig/capnp-zig/.claude/worktrees/wf_96205a35-f41-2 at a6b1676. Read only; git status is clean and `git diff --quiet HEAD` passes afterwards. I read the full diff e9f37e1..HEAD and the round-2/3/4 reports, then followed every mutation of send_results_to_yourself, held_tail_calls, active_inbound_questions, loopback_result_stash, pending_promises and pending_export_promises. Files read: peer_return_send.zig (all), peer_return_dispatch.zig, return_routing.zig, finish.zig, mod.zig (handleFinish, cancelQueuedPendingQuestion, forwardResolvedCall, sendTailFinishAndNeutralize, onForwardedReturn, handleReturnFrom, the vine forward and relay, inboundAnswerQuestionIdInUse), peer_call_inbound.zig (handleCall, routeCall, prepareParamCapsForDispatch, reserveResolvedAnswer), peer_call_orchestration.zig, peer_call_targets.zig, pending_calls.zig (both drains), peer_cap_lifecycle.destroyExportEntry, peer_export_release (answerDroppedParkedCall, resolvePromisedAnswer), forward orchestration and forwarded-return modes, peer_cross_peer_proxy relay, peer_context_types (vine and cross-peer teardown), peer_lifecycle (deinit, cancelQuestionRouted, forceCancelAllQuestions), stream_dispatch cancel, host_peer prebuilt paths, wasm ABI call sites, native conn handleOneFrame, finish and answers.\n\nExperiments, all in /private/tmp/claude-501/-Users-nullstyle-prj-zig-capnp-zig/c3a2d2f5-ee60-45d5-a475-7f73f5faf366/scratchpad/p13inv:\n- tree/ is an rsync of the branch with the package cache copied. Baseline `mise exec -- zig build test-rpc-peer` is green (base_peer.log). With probes A, A2, B and H appended, only those four fail (tree_probe.log).\n- base/ holds the e9f37e1 versions of every changed src/test file, plus the branch's TailHarness and the same probes. There all four probes give W0/X exactly one Return at the redirect, and no wrong value.\n- fix/ is a prototype: clear the routing after the prebuilt send, fail the pipeline after non-results prebuilt Returns, and fail the pipeline after take/accept for any answer. All probes pass and every rpc-peer and core-root test passes (fix_probe.log, fix_probe2.log). The only test-serialization failures are compiler-dependent suites, because the scratch copy has no capnp-wasm.\n\nConclusion on the lens: the hold settles on every path where Y is answered, refused, finished, released, forwarded back or torn down, except refused prebuilt sends (must-fix 2) and OOM. It does not settle when Y is marked but stuck on an answer whose pipeline is never drained (must-fix 1). That case is a liveness regression and, with id reuse, a silent wrong value. A single mark-removal choke point can enforce 'hold implies mark'. Liveness of Y needs a separate drain rule. Not run: full `zig build test`, the QUIC suites, docker e2e, native conn_test probes for must-fix 1 (the native path drains through sendReturnExceptionTyped, so it is only exposed via the forward relays).",
+  "end_paths": [
+   {
+    "path": "Y answered with results through sendReturnResults: direct handler, generated dispatch, native returnResults, HostPeer respondHostCallResults, cross-peer and vine relays",
+    "code": "peer_return_send.zig:58-60 -> completeSelfLoopbackReturn :190-236 -> settleSelfLoopbackAnswer :307 takeBySource, :333 deferred deliverHeldTailCall",
+    "settles": "yes",
+    "evidence": "Branch test 'a tail call that arrives before its call is answered gets that call's results'. Results with capabilities give the bare redirect (kept=null, :229)."
+   },
+   {
+    "path": "Y's results build fails (handler error)",
+    "code": "peer_return_send.zig:203 keeps the mark; the caller's follow-up sendReturnException -> :640 -> completeSelfLoopbackException :267-285",
+    "settles": "yes",
+    "evidence": "Generated dispatch (peer_call_orchestration.zig:58, :97) and the native host follow up. The relay callbacks swallow the error with no follow-up (peer_cross_peer_proxy.zig:331, mod.zig:2624), so on those paths it is unclear."
+   },
+   {
+    "path": "Y answered with an exception (handler or host)",
+    "code": "sendReturnExceptionNoDrain peer_return_send.zig:640 -> completeSelfLoopbackException -> settleSelfLoopbackAnswer",
+    "settles": "yes",
+    "evidence": "Test 'a tail call held on a call that fails gets that call's exception'. An OOM in buildReturnExceptionFrame (:273) inside a swallowing caller leaves Y marked and X held."
+   },
+   {
+    "path": "Y fails before dispatch: unknown capability, promise_broken, prepareParamCaps refusal, missing handler, queue or budget refusal of the park",
+    "code": "Marked when it arrives (peer_call_inbound.zig:175); routeCall catch :155 or dispatch sendReturnException -> yourself path",
+    "settles": "yes",
+    "evidence": "Tests 'yourself call to an unknown capability' and 'to a rejected promise export'."
+   },
+   {
+    "path": "Y refused while being marked (max_send_results_to_yourself full, or OOM)",
+    "code": "noteSendResultsToYourself fails at peer_call_inbound.zig:175 -> catch :155 plain sendReturnException; no mark, so holdTailCall (:396) refuses",
+    "settles": "yes",
+    "evidence": "The redirect gets the bare tag at once. The wire gets an exception Return for a tail call (pre-existing, documented)."
+   },
+   {
+    "path": "Y refused by the active-inbound budget before routing",
+    "code": "peer_call_inbound.zig:117 `try ensureCountLimit` -> handleFrame error -> transport close",
+    "settles": "yes",
+    "evidence": "No mark is ever set, so no hold exists. The connection closes: native conn.zig:333-337."
+   },
+   {
+    "path": "Y answered by a prebuilt frame (HostPeer respondHostCallReturnFrame or respondHostCallException), send succeeds",
+    "code": "peer_return_send.zig:592 releaseHeldTailCall after the send",
+    "settles": "yes",
+    "evidence": "Test 'a held tail call whose call is answered by a prebuilt frame gets the bare redirect at once'."
+   },
+   {
+    "path": "Prebuilt frame for Y refused (resolved-answer budget, OOM or send failure), then a retry through the Peer's sendReturnException",
+    "code": "peer_return_send.zig:562 clears the mark before :579 and :584; the plain retry never calls releaseHeldTailCall",
+    "settles": "no",
+    "evidence": "PROBE inv H: 'mark=false held=1 caller returns=0', then 'exception=1 rse=0 held=1 caller returns=0'. Base: 1 Return. The prototype (clear after send) fixes it."
+   },
+   {
+    "path": "Finish(Y) before the redirect",
+    "code": "finish.zig:37 removes the mark -> holdTailCall false (peer_return_send.zig:396) -> stash or bare redirect",
+    "settles": "yes",
+    "evidence": "Covered by the stash and id-reuse tests."
+   },
+   {
+    "path": "Finish(Y) after the redirect (held)",
+    "code": "mod.zig:4909 settleTailCallOnFinish (errdefer :4900) -> tail_call_finished_reason",
+    "settles": "yes",
+    "evidence": "Test 'a held tail call whose parked call the remote finishes ends with tail_call_finished_reason'. An OOM building that frame (peer_return_send.zig:412) leaves X waiting."
+   },
+   {
+    "path": "Finish(Y) during the results build",
+    "code": "peer_return_send.zig:210 finished_during_build; the Finish settles",
+    "settles": "yes",
+    "evidence": "Tests 'a Finish during a held tail call's results build' and 'a redirect and a Finish during ... build'."
+   },
+   {
+    "path": "Finish(Y) inside the resultsSentElsewhere send (synchronous transport)",
+    "code": "The hold is taken before the send (peer_return_send.zig:307)",
+    "settles": "yes",
+    "evidence": "Test 'a remote Finish inside the resultsSentElsewhere send does not take the held question's results'."
+   },
+   {
+    "path": "Finish(Y) while Y is queued or parked",
+    "code": "mod.zig:4866 cancelQueuedPendingQuestion -> sendReturnTag(.canceled) (mod.zig:5025; no release at peer_return_send.zig:929) -> mod.zig:4909 settle",
+    "settles": "yes",
+    "evidence": "An error after the canceled send exits before the errdefer at :4900 is registered. It is connection-fatal, so X is settled by the disconnect."
+   },
+   {
+    "path": "Finish(Y) for a streaming call still queued",
+    "code": "mod.zig handleFinish streaming.cancel -> sendReturnException (stream_dispatch.zig:229-236) -> yourself path",
+    "settles": "yes",
+    "evidence": "Goes through completeSelfLoopbackException because the mark is still set when streaming.cancel runs."
+   },
+   {
+    "path": "Parked on a promise export, which then resolves to an export",
+    "code": "replayResolvedPromiseExport (pending_calls.zig:236-288) -> dispatch -> the paths above",
+    "settles": "yes",
+    "evidence": "Tests 'parked ... the call's answer after the resolve reaches it' and 'parked call's handler fails on replay'. A decode error makes the drain `continue` with no Return (pending_calls.zig:253-262): OOM only."
+   },
+   {
+    "path": "Parked, then the promise is rejected",
+    "code": "replay with resolved == .none -> sendReturnException 'promise broken'",
+    "settles": "yes",
+    "evidence": "Test 'a tail call that names a call parked on a promise export waits; the host's rejection reaches it'."
+   },
+   {
+    "path": "Parked, then the remote releases the promise export",
+    "code": "destroyExportEntry (peer_cap_lifecycle.zig:249-273) -> answerDroppedParkedCall (peer_export_release.zig:483-494) -> sendReturnException",
+    "settles": "yes",
+    "evidence": "Tests 'held tail call whose parked call loses its promise export to a Release' and the follow-up tests. An OOM in that send is reported and swallowed."
+   },
+   {
+    "path": "Parked, then the export is destroyed at Peer.deinit",
+    "code": "in_deinit return (peer_export_release.zig:485); X settled first by forceCancelAllQuestions (peer_lifecycle.zig:97)",
+    "settles": "yes",
+    "evidence": "Test 'Peer.deinit with a held tail call gives the question one Return'."
+   },
+   {
+    "path": "Parked, then resolved to the remote's import (forwarded back, propagate_results_sent_elsewhere)",
+    "code": "mod.zig:3387 noteYourselfCallForwarded -> releaseHeldTailCall; later holds refused by forwardedToRemote (peer_return_send.zig:397)",
+    "settles": "yes",
+    "evidence": "Tests 'held tail call whose call is forwarded back' and 'names a call already forwarded'. A failed forward falls to handleResolvedCall's catch -> sendReturnException with the mark still set."
+   },
+   {
+    "path": "Forwarded Y', answered by the remote (results, exception, rse, await, take, canceled)",
+    "code": "peer_forwarded_return_logic.zig:112-120 -> sendReturnTag(rse) or take; no hold can exist",
+    "settles": "yes",
+    "evidence": "Test 'a forwarded yourself call that fails ... nothing is kept'."
+   },
+   {
+    "path": "Forwarded Y', then Finish(Y) arrives first",
+    "code": "sendTailFinishAndNeutralize mod.zig:3465 -> answerFinishedForwardedCall",
+    "settles": "yes",
+    "evidence": "Test 'a forwarded yourself call that the remote answers only at its Finish: the Finish is relayed'."
+   },
+   {
+    "path": "translate_to_caller or sent_elsewhere forwarding of Y",
+    "code": "peer_forward_orchestration.zig:62-73: a yourself call always forwards as propagate",
+    "settles": "yes",
+    "evidence": "Not reachable for a yourself Y."
+   },
+   {
+    "path": "Parked, then resolved to a third party (vine forward)",
+    "code": "maybeForwardVineCall -> forwardVineReturn -> relayReturnAcrossPeers (peer_cross_peer_proxy.zig:336-373) -> sendReturnResults or sendReturnException; teardown of the B-C peer -> ForwardVineCallContext.deinit sendReturnException",
+    "settles": "unclear",
+    "evidence": "Normal and teardown paths settle. A relay build error is swallowed at mod.zig:2624 with no follow-up exception."
+   },
+   {
+    "path": "Y aimed at a cross-peer proxy export",
+    "code": "onCrossPeerProxyReturn -> relayReturnAcrossPeers; forward-peer teardown delivers a synthetic exception through on_return",
+    "settles": "unclear",
+    "evidence": "Same swallowed build error at peer_cross_peer_proxy.zig:331."
+   },
+   {
+    "path": "Queued on promised answer A, and A answered with results (recorded)",
+    "code": "commit/replay -> dispatch",
+    "settles": "yes",
+    "evidence": "The resolved-answer replay runs the normal target plan."
+   },
+   {
+    "path": "Queued on A, and A fails through sendReturnException, or A is itself a yourself call that is answered or forwarded",
+    "code": "peer_return_send.zig:626 failQueuedPromisedCalls, and :235, :491, :930, :952 failTailCalledPipeline",
+    "settles": "yes",
+    "evidence": "Tests 'a tail call pipelined on a held yourself call fails when that call is answered' and the forwarded variants."
+   },
+   {
+    "path": "Queued on A, and A answered by a prebuilt exception (HostPeer and WASM respondHostCallException)",
+    "code": "peer_return_send.zig:545-593: no record, no drain; host_peer.zig:672",
+    "settles": "no",
+    "evidence": "PROBE inv A: W0 has 0 RETURNs, held=1, and W stays queued after Finish(A). PROBE inv A2: after id reuse, W0 gets results n=42 from an unrelated call. Base: 1 bare RETURN at once."
+   },
+   {
+    "path": "Queued on A, and a plain A answered by a relayed takeFromOtherQuestion or acceptFromThirdParty",
+    "code": "peer_return_send.zig:952 (drain only if tail_called), :955-967 (never drains)",
+    "settles": "no",
+    "evidence": "PROBE inv B: W0 has 0 RETURNs, held=1, W queued=true. Base: 1 bare RETURN. Realistic mainly through the translate-mode take-id lookup (peer_forwarded_return_logic.zig:155-163)."
+   },
+   {
+    "path": "Queued on A, and the host never answers A (including A finished early with no sendReturnCanceled)",
+    "code": "pending_promises[A] waits on the application",
+    "settles": "unclear",
+    "evidence": "Not a Peer defect, but X now waits as long as the host; only X's own deadline or cancel bounds it."
+   },
+   {
+    "path": "resultsSentElsewhere send for Y fails after the settle",
+    "code": "peer_return_send.zig:333 delivers to X in a defer; :350-356 restores the mark for the caller's follow-up",
+    "settles": "yes",
+    "evidence": "X has its Return. Y's own Return depends on the caller retrying (test 'a failed resultsSentElsewhere send for a held tail call')."
+   },
+   {
+    "path": "handleCall fails after the mark (the routeCall catch's own send fails)",
+    "code": "peer_call_inbound.zig:145 errdefer removes the mark without a settle -> handleFrame error",
+    "settles": "yes",
+    "evidence": "Connection-fatal (native conn.zig:333-337 failProtocol), so X is settled by the disconnect."
+   },
+   {
+    "path": "Transport close",
+    "code": "forceCancelAllQuestionsRouted (peer_lifecycle.zig:756-819) gives X its disconnected Return; hold entries left stale",
+    "settles": "yes",
+    "evidence": "Every settle checks questions.contains first (peer_return_send.zig:411, :436)."
+   },
+   {
+    "path": "Peer.deinit",
+    "code": "peer_lifecycle.zig:59-97 in_deinit, then forceCancelAllQuestions; held_tail_calls freed at :287",
+    "settles": "yes",
+    "evidence": "Branch test 'Peer.deinit with a held tail call ... leaks nothing'."
+   },
+   {
+    "path": "OOM on the hold path",
+    "code": "holdTailCall put OOM -> false -> bare redirect (:399-402); deliverHeldTailCall, settleTailCallOnFinish and releaseHeldTailCall build or decode take the hold first (:410-448); failQueuedPromisedCalls seed (:752)",
+    "settles": "no",
+    "evidence": "The put OOM settles (bare). The others leave X with no Return until cancel, deadline or disconnect; round-3/4 one-shot sweeps reproduced this (documented OOM wait)."
+   },
+   {
+    "path": "Hold table full (max_send_results_to_yourself)",
+    "code": "peer_return_send.zig:398",
+    "settles": "yes",
+    "evidence": "Bare redirect at once."
+   },
+   {
+    "path": "X cancelled by the host or capnp_cancel, before or while held",
+    "code": "cancelQuestionRouted (peer_lifecycle.zig:525-597) sends Finish(X) and the exception and keeps X as cancelled; a cancelled X is still held (mod.zig:6103-6107); Y's answer or Finish(Y) is absorbed (mod.zig:6115-6127)",
+    "settles": "yes",
+    "evidence": "Test 'a question cancelled before its redirect arrives absorbs the tail call's answer'."
+   },
+   {
+    "path": "X deadline",
+    "code": "checkDeadlines -> cancelQuestionRouted",
+    "settles": "yes",
+    "evidence": "Same as cancel; the round-4 native probe confirmed it."
+   },
+   {
+    "path": "A second Return for a held X",
+    "code": "mod.zig:6082 error.UnknownQuestion -> connection-fatal",
+    "settles": "yes",
+    "evidence": "Test 'a second Return for a question whose tail call is held is refused'."
+   },
+   {
+    "path": "Loopback X whose takeFromOtherQuestion id collides with a remote yourself call",
+    "code": "mod.zig:6098-6107 has no origin check",
+    "settles": "unclear",
+    "evidence": "X is held on an unrelated Y and ends with Y's terminal (a wrong value), or hangs if that Y is stuck as in the no-drain paths. Raised before in round 3; still open."
+   }
+  ]
+ },
+ "fresh": {
+  "verdict": "ship",
+  "must_fix": [],
+  "nice_to_have": [
+   "OOM, new instance from 34efe40: if the `forwarded_tail_questions.put` that propagate mode now does fails (src/rpc/peer/forward/peer_forward_orchestration.zig:172), the forwarded Call(Y') is already on the wire. handleResolvedCall's catch then answers Y with resultsSentElsewhere (the mark is set) and gives the held X `OutOfMemory`. Y' is left pending with no Finish relay and no suppressed auto-finish. Against a remote that answers the forward at once (capnp-zig), Y then gets a SECOND Return: the one-shot OOM sweep `PROBE r5-3/r5-4`, k=12, shows ret(Y)=2. Against C++, Y' is never finished, which is exactly the both-ends leak 34efe40 fixes. The sibling at :144 (`forwarded_questions.put`, k=11, also ret(Y)=2) exists on main. Suggested fix: reserve both map slots (`ensureUnusedCapacity(1)`) in forwardResolvedCall before sendCallResolved and make the registration infallible (`putAssumeCapacity`). Alternatively, on a registration error, neutralize the forwarded question (cancel it, deinit its ctx, send Finish) before the caller answers Y.",
+   "Synchronous re-entrant transport: if the remote's Return for the forwarded call arrives inside the Call(Y') send, onForwardedReturn answers Y and auto-finishes Y' (suppress_auto_finish is not set yet). finishForwardResolvedCall then registers forwarded_questions/forwarded_tail_questions for a question that is already gone, and the remote's Finish(Y) later sends Finish(Y') a second time. Probe `PROBE r5-1` shows fin(Yfwd)=2. Translate mode does the same on unchanged code (`PROBE r5-8`: fin(fwd)=2), so the class predates the branch. The propagate instance is new with 34efe40; before it, the stale forwarded_questions entry leaked for the Peer's lifetime instead. The wire effect is benign: C++ silently ignores a Finish for an unknown id. Suggested fix, for all modes: skip the registration in forwardResolvedCall when `!self.questions.contains(forwarded_question_id)`.",
+   "OOM, new path from 34efe40: sendTailFinishAndNeutralize swallows a failure of `answerFinishedForwardedCall` (src/rpc/peer/return/peer_return_send.zig:504, OOM in buildReturnTagFrame) with reportNonfatalError. Y then gets no Return at all, and its finished_early_answers tombstone stays, so `inboundAnswerQuestionIdInUse(Y)` stays true. Sweep `PROBE r5-5`, k=6..8, and `r5-3`, k=29..31, show ret(Y)=0 with inuse(Y)=true. The translate sibling, sendReturnCanceled, has the same OOM shape. The connection stays up, so the remote's question entry for Y leaks until it closes.",
+   "Functional divergence from C++, unchanged from main: when C++ forwards a call it received with `sendResultsTo = yourself`, directTailCall skips the same-connection tail call because redirectResults is set (rpc.c++:3378). It does a plain `send()` and copies the results into the redirected response (:3416-3431), so the tail-calling question X gets the real results. capnp-zig forwards the call with `yourself` again (propagate mode), so X gets only the bare redirect (native: `unfollowed_tail_call_reason`). Suggested change: forward a marked call in a caller/translate-style mode and answer Y through sendReturnResults. The held X would then get its results, and the remote would not need to keep the forwarded call's answer.",
+   "Stale stash, unchanged from main: a capnp-zig remote that receives the forwarded `yourself` call Y' answers it and stashes its results. No redirect ever names Y'. The entry is freed only when the id is reused, which never happens soon because capnp-zig question ids are monotonic, or at deinit. A long-lived Zig-to-Zig connection can therefore fill `max_loopback_result_stash` (4096), after which genuine tail calls answered before their redirect degrade to the bare tag. 7004322 now argues that the redirect always precedes the call's Finish, so freeing a still-kept stash entry at that Finish would be safe.",
+   "Doc nit (7004322, src/rpc/peer/mod.zig:776-782): 'the C++ reference finishes its tail call only after the question's Finish' holds only while promise pipelining is on. If the tail request carries noPromisePipelining (callNoIntercept copies it, rpc.c++:1113), tailSend gives the pipeline no QuestionRef (:2604-2606). The QuestionRef then drops at once, and the wire order is Call(Y), Finish(Y), Return(X, takeFromOtherQuestion=Y). The id-reuse drop is still safe, because the redirect precedes any reuse, but the sentence overstates the ordering.",
+   "Doc precision (a6b1676 CHANGELOG): 'For a tail call forwarded back to the remote, such a call fails at the remote's Finish of the tail call' holds only in the C++ order, where the forwarded call has not returned by that Finish. I checked this by reading only. If the remote answered the forward first (a capnp-zig remote) and the failed-answer record was skipped, a call pipelined on Y later queues in pending_promises[Y]. Finish(Y) then finds no pending Y' and drains nothing. So the call waits until disconnect, as the skipped-record degrade says.",
+   "Interop note: no interop lane reaches a forwarded `yourself` call or the new propagate-mode relay. e2e-self uses translate mode, and the cpp lane exercises only the hold/stash path, through the C++ reflector tail-calling the Zig client's CallSequence. The round-4 behaviour is therefore covered only by the Peer and native tests. L3 is unaffected: `relays_finish` changed only for `.propagate_results_sent_elsewhere`, and forwardResolvedCall is the only inbound-forwarding site."
+  ],
+  "checked": "Scope. I read a9f73ad..a6b1676 in full (git log -p 2a768bd..HEAD) and the whole e9f37e1..HEAD diff of src/rpc/peer, src/native, CHANGELOG.md and docs/native-abi.md. I also read the prior reports p13-review2.json and p13-review3.json (rounds 3 and 4).\n\nPer commit:\n- a9f73ad. noteYourselfCallForwarded runs only after the forward is registered. forwardedToRemote is load-bearing when the bare redirect re-enters handleReturn. In the propagate arm, an exception becomes resultsSentElsewhere. forwardResolvedCall is the only inbound-forwarding site (grep for ForwardCallContext), so no forward bypasses the note.\n- 34efe40. Order inside handleFinish: the active entry and the failed_answers record are removed, the tombstone is put, the mark is removed (clearFinishQuestionState), then the relay runs. So answerFinishedForwardedCall records nothing stale and consumes the tombstone. host_owes_return stays false, because isForwardedAnswer was computed while forwarded_tail_questions held Y. Exactly one Return for Y in both orders: handleReturn removes the forwarded question before its callback, so a re-entrant Finish(Y) cannot answer Y twice. The loopback-upstream exclusion is correct.\n- 7e9961d. completeSelfLoopbackReturn runs only with the mark set. Once the build has started, only a Finish removes the mark, and a compliant remote cannot reuse the id before the Return.\n- 7004322 and a6b1676 are docs only, checked against the code.\n\nC++ wire behaviour, checked against vendor rpc.c++:\n- A redirected answer is answered only by sendRedirectReturn (take handlers :4073-4114) or ~RpcCallContext at Finish (:3158-3195).\n- A canceled-question take is answered at once (:4096-4114).\n- tailSend's QuestionRef is held by the X answer's pipeline, so Finish(Y) comes after Finish(X), except with noPromisePipelining.\n- A Return for a question the caller already finished is erased without tag checks.\nThe full C++-order flow is clean: forward with yourself, bare redirect, Finish(X), Finish(Y), relayed Finish(Y') plus Return(Y, rse), then ~RpcCallContext's rse, which L absorbs.\n\nSpec: Finish(Y') after Finish(Y) matches rpc.capnp:484-492. The held question's Finish is sent only after its Return.\n\nCHANGELOG and native-abi claims for round 4 are true and tested. I re-ablated them in my copy: removing the propagate relay turns 3 Peer tests red, removing the forward-time note turns 5 red, and reverting 7e9961d's condition turns 1 red.\n\nRuns, all in /private/tmp/claude-501/-Users-nullstyle-prj-zig-capnp-zig/c3a2d2f5-ee60-45d5-a475-7f73f5faf366/scratchpad/p13r5proto/tree (rsync copy, .git link removed, run with mise exec):\n- `zig build test-rpc-peer`: pass, every binary green. This includes the committed round-3 and round-4 probe tests in tests/rpc/peer/rpc_reflected_direct_handler_test.zig, for example 'a held tail call whose call is forwarded back to the remote gets the bare redirect at once' and 'a tail call that names a call already forwarded back...'.\n- `zig build test-native-abi`: pass.\n- `zig build fuzz-native-abi -- --seconds 20 --seed 7`: OK, 75433 sessions, 0 live.\n- `zig build test-serialization`: the core root, which includes src/native/conn_test.zig and its native tail-call tests, passes 405 with 3 skips. The other failures come only from the capnp WASM compiler not being installed in the copy.\n- `zig build e2e-self`: 46/46 across 6 schemas.\n- `zig fmt --check`, `zig build hardening` (82 reviewed findings, 222 files) and `zig build check-api check-api-experimental` (1579 stable, 3835 experimental): all pass.\n- I did not run the Docker interop lanes (cpp/go/python/rust, e2e-l3-vatc): their fixed container names could collide with parallel reviewers. The repairer's cpp run on this HEAD (15 PASS, 1 skip that predates the branch) stands.\n\nProbes, kept in p13r5proto/reflected_probes.zig with logs probe1-4.log:\n- r5-1 (the remote answers the forward inside its send): two Finishes for Y'.\n- r5-2 (Finish(Y) re-entered inside the question's Finish, C++ order): clean.\n- r5-3..r5-6 (one-shot OOM sweeps over the forward, the relayed Finish and the forwarded call's Return). Most failures are frame-decode or Finish-build OOMs that error out of handleFrame. The real findings are k=11/12 (double Return for Y) and answerFinishedForwardedCall's swallowed failure (no Return for Y).\n- r5-8: the same re-entrant double Finish in translate mode, on code this branch did not change.\n\nThe worktree is untouched: git status is clean and HEAD is a6b1676. In the copy, src/ was restored byte-identical after each ablation."
+ },
+ "repair": {
+  "commits": [
+   {
+    "hash": "f43add0",
+    "subject": "rpc: end every held tail call when its call's yourself mark goes"
+   },
+   {
+    "hash": "3284ed3",
+    "subject": "rpc: keep a yourself call marked until its prebuilt Return is sent"
+   },
+   {
+    "hash": "b9d0e2e",
+    "subject": "rpc: fail calls pipelined on an answer whose Return brings no results"
+   },
+   {
+    "hash": "ade565d",
+    "subject": "rpc: hold no tail call on a call queued on an answer that returned"
+   },
+   {
+    "hash": "44cce79",
+    "subject": "rpc: never drop a queued call without a Return under memory pressure"
+   },
+   {
+    "hash": "0340a8d",
+    "subject": "rpc: follow only the remote's tail calls"
+   },
+   {
+    "hash": "cbea612",
+    "subject": "rpc: answer a relayed call whose relay fails"
+   },
+   {
+    "hash": "65bac67",
+    "subject": "docs: state the fallback rule for a held tail call"
+   },
+   {
+    "hash": "50ed37c",
+    "subject": "rpc: keep a finished answer's queue while its Return is still owed"
+   },
+   {
+    "hash": "e27a41b",
+    "subject": "docs: correct the native fallback RETURN and its cases"
+   },
+   {
+    "hash": "663dbd3",
+    "subject": "rpc: test that a held tail call's synthetic Return needs no heap"
+   }
+  ],
+  "safety_net": "The net is tied to one thing: the call's `yourself` mark (src/rpc/peer/return/peer_return_send.zig). holdTailCall holds only a call that is marked, not forwarded, and not stuck in a queue on an answer that already returned. Every removal of the mark goes through ReturnSend.dropYourselfMark, which ends any hold on the call with the bare takeFromOtherQuestion, as before holds existed.\n\nWhere the mark is removed:\n- clearSendResultsRouting, which every Return family runs after its send (sendPrebuiltReturnFrame now does it after the send and the commit).\n- The Finish ops (`.remove_send_results_to_yourself = ReturnSendImpl.dropYourselfMark` in mod.zig).\n- The handleCall errdefer (peer_call_inbound.zig).\n- noteSendResultsToThirdParty (peer_third_party_routes.zig).\n\nTwo paths take the hold themselves instead of releasing it:\n- The call's own answer uses takeYourselfMark, which takes the mark and the hold together.\n- handleFinish takes the hold before anything can drop the mark, and settles it with tail_call_finished_reason, also through an errdefer.\n\nThe per-path releaseHeldTailCall calls in the prebuilt, tag, take and accept sends are removed. noteYourselfCallForwarded still releases explicitly, because a forwarded call keeps its mark.\n\nAll delivery goes through one function, deliverHeldTailCall. If the real terminal cannot be built or delivered and the question is still open (and not held again), it delivers the bare redirect. That frame is built and decoded in a 4096-byte stack buffer, using the heap only past it (deliverSyntheticTailReturn). completeSelfLoopbackException also falls back to the bare redirect when it cannot build its exception frame. So once the answer path is entered, a held question always gets exactly one Return.\n\nTests are in tests/rpc/peer/rpc_reflected_direct_handler_test.zig:\n- A prebuilt Return refused by the max_resolved_answers budget (rewritten in commit 2 to check the must-fix-2 outcome).\n- Five one-allocation-failure sweeps over the end of the named call: results, exception, prebuilt, the remote's Finish, and the Release of a promise export. A transport close follows any error that escapes handleFrame.\n- A test that both synthetic frames build and decode over std.testing.failing_allocator.\n\nAll six commit-1 tests fail on a6b1676 (scratch tree built from HEAD sources). Each ablation turned some red:\n- dropYourselfMark without the release: 3 tests red.\n- No fallback and heap only: all 5 sweeps red.\n- Exception degrade removed: 2 sweeps red.\n- Stack buffer cut to 512 bytes: the heap-free test red.",
+  "fixed": [
+   "MUST-FIX 2 (3284ed3): sendPrebuiltReturnFrame cleared the yourself mark before its fallible steps. It now clears after the send and after commitOrRollbackResolvedAnswerAfterSend. When the frame is refused (PeerLimitExceeded), the call stays marked, so the follow-up sendReturnException sends resultsSentElsewhere and the held question gets that exception. The test is probe H; it is red on f43add0.",
+   "MUST-FIX 1 (b9d0e2e): a call queued on answer A is now failed by every Return for A that brings no results here: a prebuilt non-results frame (the HostPeer and WASM path), takeFromOtherQuestion, acceptFromThirdParty, and the resultsSentElsewhere and canceled Returns a forward relays. A is recorded in failed_answers until its Finish, using the recordTailCalledAnswer pattern before the send. sendReturnTag is split into a draining form and sendReturnTagNoDrain, which the yourself answer, the cancel-at-Finish map walk and the self-draining families use. Tests are probes A plus A2 (id reuse with capability results), a late arrival after a prebuilt exception, accept, and a forward the remote answers with take or resultsSentElsewhere. All are red before; each drain or record ablation turns its own test red.",
+   "Late arrival on an answer whose failed-answer record was skipped (ade565d, 50ed37c). This case is reachable by filling max_active_inbound_questions with Finish-less failing calls, with no OOM needed. holdTailCall now refuses a call queued on an answer whose Return is no longer to come (stuckOnReturnedAnswer, which walks chains). The remote's Finish of an answer that was not active, not being sent, and not in a join completion now fails the calls still queued on it, so a reused id never replays them. Tests: a refused hold, a refused hold behind a second queued call, and the Finish drain before id reuse. Removing the guard, the chain walk or the drain turns them red. Draining every finished answer instead turns 5 existing late-Return and three-party tests red.",
+   "OOM queued-then-dropped (44cce79): the replay drains now answer a call whose frame they cannot decode, using pending_call.question_id. failQueuedPromisedCalls fails the root queue without a worklist entry, keeps 64 entries on the stack, and fails a queue it cannot enqueue in a nested drain; the nesting is bounded by max_pending_queued_calls / 64. sendReturnExceptionTyped now fails the answer's queue even when its own send fails. Tests: four one-allocation sweeps (answer fails, answer resolves and replays, a chain, a parked call replayed after resolve) and a wide-tree drain whose worklist growth fails. All are red before.",
+   "Loopback take id collision (0340a8d): the takeFromOtherQuestion stash and hold lookup in handleReturnFrom now runs only for origin == .transport. Test: a loopback tail call onto the id of a remote yourself call whose answer is kept. It is red without the guard.",
+   "Relay build errors swallowed (cbea612): onCrossPeerProxyReturn and forwardVineReturn now answer a failed relay with sendReturnException. The Join relay already did this and is unchanged. Test: a one-allocation sweep over a cross-peer relay of a held tail call's results. It is red without the follow-up.",
+   "Reviewer nit, handleFinish errdefer order: the hold is now taken first, and its errdefer is registered right after.",
+   "CHANGELOG.md and docs/native-abi.md state the fallback rule in one sentence. The CHANGELOG has: \"Fallback rule: if the Peer cannot give a held question the named call's answer, the question gets the bare tag at once, as before.\" native-abi.md maps it to one RETURN EXCEPTION (unimplemented) with unfollowed_tail_call_reason. Both list the cases, keep the remote's Finish as the one other end, and drop the out-of-memory waits they used to document. New Fixed entries cover the no-results drain, the OOM drain, the loopback guard and the relay follow-up."
+  ],
+  "rejected": [
+   "The reviewer's narrower option, where holdTailCall refuses any call queued in pending_promises. It would lose the tail_call_pipelining_reason and exception delivery from 543e642. I used a stuck-answer guard instead, so only calls that nothing will ever replay are refused.",
+   "A queue-time rule that fails any call pipelined on an answer which no longer owes a Return. Pending Accept and Join answers are not in active_inbound_questions, so the rule could misclassify them. The hold-time guard is safe because a refusal only falls back to the base behaviour (the bare tag).",
+   "Putting the relay follow-up inside relayReturnAcrossPeers. The Join relay caller already answers relay errors itself, so this would send a third Return (rpc_join_readiness_test caught it). The follow-up lives in the two callers that swallowed the error.",
+   "A first version of the Finish drain keyed on the finished-early tombstone. With a full tombstone map it would fail the queue of an answer that still owes its Return. It was replaced by a check of the answer's state when the Finish arrives (50ed37c).",
+   "A full per-allocation sweep over a 70-wide queue tree. It took about 60 s, so it was replaced by a targeted failure of the worklist's first growth, sized as std.ArrayList(u32).growCapacity(1) * 4."
+  ],
+  "gates": [
+   {
+    "command": "mise exec -- zig fmt --check <every .zig file changed since e9f37e1>",
+    "result": "pass"
+   },
+   {
+    "command": "mise exec -- zig build hardening",
+    "result": "pass (82 reviewed findings, 222 files)"
+   },
+   {
+    "command": "mise exec -- zig build check-api",
+    "result": "pass (1579 stable frozen; snapshots unchanged)"
+   },
+   {
+    "command": "mise exec -- zig build check-api-experimental",
+    "result": "pass (3835 experimental verified)"
+   },
+   {
+    "command": "mise exec -- zig build -Dquic=true check-api-quic check-api-experimental-quic",
+    "result": "pass (4741 experimental verified)"
+   },
+   {
+    "command": "mise exec -- zig build test --summary all",
+    "result": "pass at e27a41b: 264/264 steps, 2392/2424 tests passed, 32 skipped. Passes again at 663dbd3. Run before every code commit."
+   },
+   {
+    "command": "mise exec -- zig build test-rpc-peer --summary all",
+    "result": "pass (50/50 steps)"
+   },
+   {
+    "command": "mise exec -- zig build test-native-abi --summary all",
+    "result": "pass (11/11 steps)"
+   },
+   {
+    "command": "mise exec -- zig build fuzz-native-abi -- --seconds 30 --seed 7 (and --seed 11)",
+    "result": "pass: OK, about 100k sessions each, 0 live now"
+   },
+   {
+    "command": "mise exec -- zig build check-compile -Dtarget=x86_64-windows",
+    "result": "pass"
+   },
+   {
+    "command": "mise exec -- zig build -Dquic=true test-rpc-quic --summary all",
+    "result": "pass (18/18 steps, 241/241 tests)"
+   },
+   {
+    "command": "mise exec -- zig build e2e-self --summary all",
+    "result": "pass (46 pass, 0 fail across 6 schemas)"
+   }
+  ],
+  "open_issues": [
+   "Nothing is pushed, as instructed. The branch sprint/p1-3-native-tail-call is 11 commits ahead of a6b1676 in /Users/nullstyle/prj/zig/capnp-zig/.claude/worktrees/wf_96205a35-f41-2, and the tree is clean.",
+   "The vine-forward relay follow-up (forwardVineReturn) has no dedicated test. It uses the same relayReturnAcrossPeers and follow-up as the cross-peer proxy relay, which the sweep covers, but no test reaches a yourself call parked on a promise that is handed off to a third party.",
+   "The 64-entry stack part of the drain worklist is the bound on nesting. It has test teeth only together with the nested-drain ablation; removing it alone keeps the tests green, because the nested drain covers the case.",
+   "By design, a held question still waits as long as its named call waits for the host: a host that never answers the call, or the call it is queued on. The CHANGELOG and native-abi.md say so; only a cancel, a deadline or a transport close bounds it.",
+   "Under out of memory, a Return that cannot be built or sent is still lost for the call itself, as for any call (a plain call's exception, or a yourself call's resultsSentElsewhere inside a drain). The held question still gets its one Return.",
+   "Round-5 fresh-lens nice-to-haves that I did not address: (1) an OOM in the forwarded_questions or forwarded_tail_questions put after the forwarded Call is on the wire can give Y two Returns (r5-3/4). (2) answerFinishedForwardedCall's swallowed OOM leaves Y with no Return. (3) A re-entrant double Finish of Y' on a synchronous transport (benign). (4) The C++ divergence on forwarding a yourself call: X gets the bare tag instead of real results. (5) A stale stash for Zig-to-Zig forwarded Y'. (6) Two doc nits in 7004322 and a6b1676 about noPromisePipelining ordering.",
+   "I did not run the Docker interop lanes (cpp, go, python, rust, e2e-l3-vatc). Their fixed container names can collide with parallel agents.",
+   "Ablation and red-before evidence is in /private/tmp/claude-501/-Users-nullstyle-prj-zig-capnp-zig/c3a2d2f5-ee60-45d5-a475-7f73f5faf366/scratchpad/p13net (abl_*.log, red_c*.log, gates/ and gates2/), with scratch tree p13net/tree. Its .git link was removed."
+  ]
+ },
+ "verify": {
+  "verdict": "not-ready",
+  "new_regressions": [
+   {
+    "issue": "New hang compared with main. A held tail call gets no Return, and a graceful shutdown never completes, when the named yourself call Y is a streaming call queued behind a deferred streaming call. The stream drain (stream_dispatch.zig:185, `!peer.is_shutting_down`) stops dispatching queued streaming calls once shutdown starts. So Y is marked, not forwarded and not stuck on a returned answer, and holdTailCall holds X on it. After that nothing answers Y. The remote finishes Y only after X's Finish, so this is a deadlock. With the bare Peer default (`shutdown_drain_timeout_ms = null`, no call deadline) it never ends. With the 5 s drain bound that TCP and native use, X ends at the bound with 'peer shutting down' and the shutdown waits until then. On main X gets the bare takeFromOtherQuestion at the redirect, and the shutdown completes at once. The same root cause also applies when Y is a plain call queued in pending_promises on a streaming call that is stuck in the stream queue.",
+    "where": "src/rpc/peer/return/peer_return_send.zig:447-456 (holdTailCall has no guard for this) together with src/rpc/peer/stream_dispatch.zig:185 (drain halts while shutting down)",
+    "repro": "In the scratch copy (tree2), see the VERIFIER PROBE tests appended to tests/rpc/peer/rpc_reflected_direct_handler_test.zig. Steps: TailHarness.start. Add an export whose on_call is dispatchStreamingCall, with a handler that defers the first call (beginStreamingCall) and acks later calls with sendReturnEmptyStruct. pushCallerCall(500, export) defers S. Call shutdown(cb). pushYourselfCall(900, export) queues Y behind S. pushRedirect(X, 900) holds X. completeStreamingCall(S). Result: dispatched=1, X returns=0, held=1, Y wire Returns=0, shutdown_done=false; checkDeadlines changes nothing. Probe 2 holds X before shutdown starts and gets the same result. Main snapshot (git archive fd4ae7d) with the same probe: X returns=1 with tag takeFromOtherQuestion, shutdown_done=true. Probe 3 (control, no shutdown): Y runs and X gets results. Probe 5 (100 ms drain bound): X ends with exception 'peer shutting down' at the bound. Logs: scratchpad/vfinal/tree2_probe.log, tree2_probe5.log, main_peer.log."
+   },
+   {
+    "issue": "Remote-forceable CPU amplification. holdTailCall runs stuckOnReturnedAnswer for every takeFromOtherQuestion Return that names a marked call. The walk does up to pending_promises.count() hops, and each hop runs queuedOnAnswer, a full scan of every queued call. That is O(chain x queued calls) per redirect, and it runs before the hold-table-full check. A remote can build a chain of about 4000 pipelined calls (each on the previous answer, the head waiting on our host) within the default limits. Then every redirect for one of our outstanding questions costs about 19 ms in ReleaseFast (438 ms in Debug). The same redirect with no chain costs 0.86 us, and on main it is O(1) at about 0.5 ms Debug at any chain length. forwardedToRemote adds a further O(forwarded_questions) scan per redirect.",
+    "where": "src/rpc/peer/return/peer_return_send.zig:636-659 (stuckOnReturnedAnswer, queuedOnAnswer), 619-625 (forwardedToRemote)",
+    "repro": "VERIFIER PROBE 4 in the tree2 test file. A0 = pushCallerCall(1000, target_export), kept by the host. Chain: pushPipelinedCall(1000+i, 1000+i-1) for i in 1..4000. Then 20 yourself calls pipelined on the chain tail, each with one redirect, timing the redirects. Branch ReleaseFast: chain=1 gives 864 ns per redirect, chain=4000 gives 18,837,595 ns per redirect (tree2_probe4_rf.log). Branch Debug gives 438 ms per redirect (tree2_probe4.log). Main Debug with the same probe gives 539 us (main_probe4.log)."
+   },
+   {
+    "issue": "Minor, out of memory only, already listed by the repair as r5-3/4. Round 4 (34efe40) extended the forwarded_tail_questions put to propagate_results_sent_elsewhere mode. An out-of-memory failure in that put, after the forwarded Call is on the wire, makes handleResolvedCall answer Y with resultsSentElsewhere. Later the forwarded call's return sends Y a second resultsSentElsewhere. Main has this double-Return class only for the forwarded_questions put and for the sent_elsewhere and translate modes, so the branch adds one more failure point.",
+    "where": "src/rpc/peer/forward/peer_forward_orchestration.zig:169-172 together with src/rpc/peer/mod.zig forwardResolvedCall",
+    "repro": "From reading the code (not probed): fail the second allocation in finishForwardResolvedCall during a resolve that forwards a parked yourself call."
+   }
+  ],
+  "safety_net_sound": false,
+  "checked": "Worktree /Users/nullstyle/prj/zig/capnp-zig/.claude/worktrees/wf_96205a35-f41-2 is unchanged: clean at 663dbd3, no stash. All experiments ran in /private/tmp/claude-501/-Users-nullstyle-prj-zig-capnp-zig/c3a2d2f5-ee60-45d5-a475-7f73f5faf366/scratchpad/vfinal/ (tree, tree2, main = git archive of fd4ae7d).\n\n(4) Gates on the branch, all green: zig build test --summary all (264/264 steps, after copying the bootstrapped capnp-wasm cache; the first run without it failed only the compiler-dependent suites), test-rpc-peer (50/50), test-native-abi (11/11), and fuzz-native-abi for 30 s with seeds 13 and 29 (OK, about 105k sessions each, 0 live).\n\n(3) Ablations on test-rpc-peer:\n- dropYourselfMark without the release: red.\n- Final fallback limited to the bare terminal: 6 tests red.\n- stuckOnReturnedAnswer guard removed: red.\n- Finish drain for answers whose Return is not still to come removed: red.\n- Loopback origin guard removed: red.\n- Prebuilt mark cleared at function entry (the f43add0 placement): red (probe H).\n- handleFinish not taking the hold first: red.\n- One gap: clearing the prebuilt mark after the reservation but before the send stays green, so a held call whose prebuilt send fails has no test. The shipped code is correct here.\n\n(2) Double Return for X: no double Return found. Checked the following:\n- deliverHeldTailCall only falls back when the question is still in `questions` and not held again, and handleReturn retires a question once its callback has seen a Return.\n- A second wire Return for a held X is refused (UnknownQuestion, which closes the connection).\n- Stale holds after transport close or the shutdown drain are harmless: every settle checks questions.contains, and question ids advance rather than being reused soon.\n- The cancelled-X absorb path.\n- The relay follow-ups: errors happen only before or during the send.\n- The new Finish drain does not replay twice: the bucket is fetchRemoved.\nOnly the out-of-memory propagate-mode double Return for Y (above) remains.\n\n(1) Hangs: I audited every removal of the yourself mark. Each goes through dropYourselfMark or takeYourselfMark, or through handleFinish's take-first, so the mark rule itself is sound. However, the net does not cover a marked call that the Peer itself stops dispatching: the streaming queue during shutdown (probes 1, 2 and 5; control probe 3). Hence safety_net_sound=false.\n\nAlso found by reading the code, out of memory only, not probed: replay drains call handleResolvedCallReportingErrors, which swallows a maybeForwardVineCall failure (allocation of the relay context or its registration). In that case a replayed yourself call aimed at an L3 vine gets no Return and keeps its mark, so a held X would wait. This contradicts the claim that a held question always gets its one Return under out of memory.\n\nEvidence:\n- Probes: tree2/tests/rpc/peer/rpc_reflected_direct_handler_test.zig (end of file) and main/tests/rpc/peer/rpc_reflected_direct_handler_test.zig.\n- Logs: vfinal/full_test2.log, peer.log, nabi.log, nfuzz13.log, nfuzz29.log, ablate_summary.txt, abl_*.log, tree2_probe*.log, main_peer.log, main_probe4.log."
+ }
+}
