@@ -107,15 +107,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queue, a param or pipelined target that names a failed answer, a pipelined
   target that names no capability or that the Peer cannot follow, and a call
   parked on a promise export that the host rejects or that cannot park
-  again. It also covers a call queued on one of the Peer's own pending
-  answers (a call pipelined on it, as the C++ reference sends when a method
-  tail-calls into the result of a call it made to this peer) when that
-  answer fails, when the remote cancels the call it waits on, or when its
-  replay cannot park again. The queued call notes its `sendResultsTo` at
-  enqueue (Experimental `state.PendingCall.send_results_to_yourself`). Such
-  a call is marked only for the send of its exception, so no mark outlives
-  it. A redirect that comes before the failure still gets the bare
-  `takeFromOtherQuestion` tag at once. New tests are in
+  again, and a call whose forward fails before the forwarded Call goes out
+  (for example past `limits.max_outbound_questions`). It also covers a call
+  queued on one of the Peer's own pending answers (a call pipelined on it,
+  as the C++ reference sends when a method tail-calls into the result of a
+  call it made to this peer) when that answer fails, when the remote cancels
+  the call it waits on, or when its replay cannot park again. The queued
+  call notes its `sendResultsTo` at enqueue (Experimental
+  `state.PendingCall.send_results_to_yourself`). Such a call is marked only
+  for the send of its exception, so no mark outlives it. That mark is best
+  effort: past `limits.max_send_results_to_yourself`, or out of memory, the
+  exception still goes on the wire. A redirect that comes before the failure
+  still gets the bare `takeFromOtherQuestion` tag at once. New tests are in
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
   `src/native/conn_test.zig`.
 - **Stable `Listener.close` on Windows aborted the process when a thread

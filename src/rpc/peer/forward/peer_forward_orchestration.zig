@@ -82,9 +82,10 @@ pub fn handleResolvedCall(
     handle_exported: *const fn (*PeerType, protocol.Call, *const InboundCapsType, u32) anyerror!void,
     forward_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap, ForwardResolvedMode) anyerror!void,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
-    /// Runs before a call whose target resolved to no capability is answered
-    /// with an exception: the Peer marks a `sendResultsTo = yourself` call,
-    /// so that Return is `resultsSentElsewhere`
+    /// Runs before a call whose target resolved to no capability, or whose
+    /// forward failed before the forwarded Call went out, is answered with an
+    /// exception: the Peer marks a `sendResultsTo = yourself` call, so that
+    /// Return is `resultsSentElsewhere`
     /// (`peer_call_orchestration.markYourselfCallForException`).
     mark_yourself_call: *const fn (*PeerType, protocol.Call) void,
 ) !void {
@@ -95,6 +96,7 @@ pub fn handleResolvedCall(
         .imported, .promised => {
             const mode = forwardModeForResolved(resolved, call.send_results_to.tag);
             forward_resolved_call(peer, call, inbound_caps, resolved, mode) catch |err| {
+                mark_yourself_call(peer, call);
                 try send_return_exception(peer, call.question_id, @errorName(err));
             };
         },

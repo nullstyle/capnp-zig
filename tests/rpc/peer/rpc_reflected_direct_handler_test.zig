@@ -1137,6 +1137,58 @@ test "a yourself call parked on a promise export the host then rejects: the remo
     try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
 }
 
+test "a parked yourself call finished before the host rejects its promise keeps no exception" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    try h.pushRedirect(allocator, h.question_id, tail_answer_id);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, h.caller.tag.?);
+    // The remote finishes the call with requireEarlyCancellation, so the
+    // call stays parked; no redirect can name it any more.
+    {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        try mb.buildFinish(tail_answer_id, false, true);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try h.client_peer.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+
+    try h.client_peer.resolvePromiseExportToException(promise_id, "rejected by host");
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    // Nothing is kept for a call the remote has finished, and no mark is
+    // left.
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.loopback_result_stash.count());
+    try std.testing.expectEqual(@as(usize, 0), h.client_peer.send_results_to_yourself.count());
+    try std.testing.expectEqual(@as(u32, 1), h.caller.returns);
+}
+
+test "a yourself call whose forward fails: the remote gets resultsSentElsewhere, the tail call the failure" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // A promise export that resolved to the server's capability: a call on
+    // it is forwarded there. No more outbound questions fit, so the
+    // forward fails before it reaches the wire.
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.client_peer.resolvePromiseExportToImport(promise_id, h.server_import_id);
+    h.client_peer.limits.max_outbound_questions = h.client_peer.questions.count();
+    const wire_mark = h.wire.events.items.len;
+    try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
+    for (h.wire.events.items[wire_mark..]) |event| {
+        try std.testing.expect(event.tag != .call);
+    }
+    try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
+    try expectRedirectGetsException(&h, allocator, "PeerLimitExceeded");
+}
+
 test "a yourself call parked on a promise export the host rejects, then its redirect: the tail call gets the rejection" {
     const allocator = std.testing.allocator;
     var h: TailHarness = undefined;
