@@ -44,6 +44,45 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
 
+      # Windows port budget for the 8-worker lanes. Since 0.27.0 removed the
+      # stack trace that every local disconnect printed (about 1,340 per
+      # 120 s run), the Debug lane runs 3 to 5 times faster: 13k to 24k
+      # sessions in 120 s, against about 5k before. That is more than the
+      # default range of 16,384 ports, which Windows holds in TIME_WAIT for
+      # 120 s. Nightly 39087830935 then failed 908 dials with
+      # ADDRESS_ALREADY_EXISTS from +94 s, after 21,672 dials. So this job
+      # widens the range as soak-windows-64w does (see its comments).
+      - name: Widen the dynamic TCP port range
+        if: runner.os == 'Windows'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          netsh int ipv4 set dynamicport tcp start=10000 num=55535
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::warning title=soak port budget::netsh could not widen the dynamic TCP port range (exit code $LASTEXITCODE). The 8-worker lanes run on the default range."
+          }
+          exit 0
+
+      - name: Show the port budget (dynamic range, exclusions, TIME_WAIT count)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $range = netsh int ipv4 show dynamicport tcp | Out-String
+          Write-Output $range.Trim()
+          Write-Output (netsh int ipv4 show excludedportrange protocol=tcp | Out-String).Trim()
+          $timeWait = (netstat -an -p tcp | Select-String -SimpleMatch 'TIME_WAIT' | Measure-Object).Count
+          Write-Output "TCP connections in TIME_WAIT: $timeWait"
+          if ($range -match 'Number of Ports\s*:\s*(\d+)') {
+            $ports = [int]$Matches[1]
+            if ($ports -lt 55535) {
+              Write-Output "::warning title=soak port budget::The dynamic TCP port range has $ports ports, not 55535."
+            }
+          } else {
+            Write-Output "::warning title=soak port budget::Could not read the dynamic TCP port range from netsh."
+          }
+          exit 0
+
       # Proves the log wiring that the final step depends on (the step id in
       # $GITHUB_ACTION, the tee into $RUNNER_TEMP, Deno reading the log) on
       # Linux and Windows, on green runs too. It writes no annotation.
@@ -105,6 +144,18 @@ jobs:
         env:
           NIGHTLY_STEPS: ${{ toJSON(steps) }}
         run: deno run --allow-read --allow-env --no-config tools/ci_gates.ts annotate --log-dir "$RUNNER_TEMP"
+
+      # The full step logs. The job log in the GitHub UI can end without the
+      # error: Nightly 39087827703 stopped the 8-worker step after 58 s with
+      # exit code 1 and printed no soak summary and no error line.
+      - name: Keep the step logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-step-logs-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/*.log
+          retention-days: 14
+          if-no-files-found: ignore
 
   # The Windows 64-worker soak lane (see the 64-worker step above for why 64
   # workers and ReleaseSafe). It has its own job so that it starts on a fresh
@@ -201,6 +252,16 @@ jobs:
         env:
           NIGHTLY_STEPS: ${{ toJSON(steps) }}
         run: deno run --allow-read --allow-env --no-config tools/ci_gates.ts annotate --log-dir "$RUNNER_TEMP"
+
+      # The full step logs (see the same step in the soak job).
+      - name: Keep the step logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-64w-step-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/*.log
+          retention-days: 14
+          if-no-files-found: ignore
 
   fuzz:
     name: Coverage-guided fuzzing with per-target evidence

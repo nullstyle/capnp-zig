@@ -159,6 +159,18 @@ upgrade.
   port range to 55,535 ports with `netsh`. Before the lane, it prints the
   range, the excluded port ranges and the TIME_WAIT count. If `netsh`
   fails, the job warns and runs on the default range.
+- **Nightly: the Windows 8-worker soak lanes get the same port budget, and
+  a failed soak job keeps its step logs.** A local disconnect no longer
+  prints a stack trace (see Fixed). Since then, the 120 s Debug lane on
+  Windows runs about 3 to 5 times as many sessions: 13k to 24k, against
+  about 5k before. That is more than the default range of 16,384 ports. In
+  Nightly 39087830935, 908 dials failed with `ADDRESS_ALREADY_EXISTS` from
+  +94 s, after 21,672 dials. The job "RPC soak (chaos + deadlines,
+  windows-latest)" now widens the range to 55,535 ports before its lanes,
+  as `soak-windows-64w` does. When a soak job fails, both jobs now upload
+  their step logs (`$RUNNER_TEMP/*.log`) as an artifact for 14 days. The
+  job log can end without the error: in Nightly 39087827703 the 8-worker
+  step stopped after 58 s with exit code 1 and printed no soak summary.
 - **Native C ABI (Experimental): a tail call to a call the host still owes
   now gets that call's answer.** The remote can answer a question with
   `takeFromOtherQuestion`: "your results are those of my call Y to you",
