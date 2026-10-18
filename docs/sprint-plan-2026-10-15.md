@@ -42,7 +42,7 @@ Fix both Nightly failures at their cause, close two capnp-swift correctness asks
   - A `yourself` call that fails answers `resultsSentElsewhere` on the wire. Before, it sent an exception Return, and the C++ reference drops the connection for that.
 - Update 2026-10-17: a separate session redesigned the hold inside the native shim (`src/native/conn.zig`), where the ways the named call can end form a closed set. It needs no Peer change. Its design and termination proof are in `docs/notes/tail-call-hold-design.md`. It closes the capnp-swift ask `tail-call-returns-for-native.md` for v0.27.0.
 
-**Still to do:** P1-4, P1-5, P2-1, P2-2, P2-3, S-1, then the v0.27.0 ceremony. Each lands on main directly.
+**Released (2026-10-18):** v0.27.0 is tagged at `71ddc46` (tag object `0c45a00`). Its CI run and 3 ceremony Nightlies were green, and `just check-nightly-gate` passed. The first 3 ceremony Nightlies, on `37c226a`, found the Windows 8-worker soak out of ports; `71ddc46` fixed that. Package hash: `capnpc_zig-0.27.0-nUduFW1bUAADj3Z26dHIY_B2smK41Np9lQFxke3GcAWN`.
 
 **Notes for the owner to relay to capnp-swift**
 
