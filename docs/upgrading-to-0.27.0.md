@@ -128,13 +128,15 @@ not again for v0.26.0 or v0.27.0.
    `capnp_return_results` for that call becomes the question's RETURN
    RESULTS, and its `capnp_return_exception` becomes RETURN EXCEPTION.
    Results that point at a capability give RETURN EXCEPTION
-   (`tail_call_caps_reason`). While the question waits, `capnp_cancel`,
-   its deadline, `capnp_conn_transport_closed` and the end of the shutdown
-   drain (`shutdown_drain_timeout_ms`) each end it once. A graceful
-   shutdown waits for it, and `capnp_finish` returns `CAPNP_E_BUSY`. If the
-   remote reuses
-   the call's id before the host answers, the question ends with RETURN
-   EXCEPTION (`tail_call_reused_reason`). "Tail calls" in
+   (`unimplemented`, "capnp-swift core: tail call results carry
+   capabilities"; `native.conn.tail_call_caps_reason`). While the question
+   waits, `capnp_cancel`, its deadline, `capnp_conn_transport_closed` and
+   the end of the shutdown drain (`shutdown_drain_timeout_ms`) each end it
+   once. A graceful shutdown waits for it, and `capnp_finish` returns
+   `CAPNP_E_BUSY`. If the remote reuses the call's id before the host
+   answers, the question ends with RETURN EXCEPTION (`failed`, "capnp-swift
+   core: the tail-called call's id was reused before its answer";
+   `native.conn.tail_call_reused_reason`). "Tail calls" in
    [native-abi.md](native-abi.md) has the rules.
 
 6. **Windows: let the first `Listener.close` return before you free the

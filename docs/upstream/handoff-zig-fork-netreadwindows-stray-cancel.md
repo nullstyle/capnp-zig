@@ -108,10 +108,13 @@ receive.
 ```
 
 `netShutdownWindows` (13614) maps only `SUCCESS` and
-`INSUFFICIENT_RESOURCES`. It also has `.CANCELLED => unreachable` (13629),
-as `netWriteWindows` has (13524). A `CANCELLED` status there, for example
-from a close of the handle or a `CancelIoEx` on another thread, aborts the
-process, as in section 1. Every other status falls to
+`INSUFFICIENT_RESOURCES`. Its `.CANCELLED => unreachable` arm (13629) is
+not reached. The call is synchronous (`nonblocking = false`). On
+`CANCELLED`, the synchronous path of `deviceIoControl` sends the call
+again, or returns `error.Canceled` for an Io cancellation (19602-19605).
+`netWriteWindows` is asynchronous, so its `.CANCELLED => unreachable`
+(13524) can abort the process, as in section 1, for example after a
+`CancelIoEx` on another thread. Every other status falls to
 `else => windows.unexpectedStatus(status)`. That gives `error.Unexpected`.
 With unexpected-error tracing on (the Debug default), it also prints the
 NTSTATUS and a stack trace.
@@ -159,9 +162,8 @@ std prints the trace first.
   `netWritePosix` maps `EPIPE` and `ENOTCONN` to it (13456, 13460).
 - **Shutdown:** map `CONNECTION_RESET` to `error.ConnectionResetByPeer`.
   It is already in `net.ShutdownError`.
-- **Write and shutdown:** map `CANCELLED` to a named error, not
-  `unreachable`, in `netWriteWindows` (13524) and `netShutdownWindows`
-  (13629).
+- **Write:** map `CANCELLED` to a named error, not `unreachable`, in
+  `netWriteWindows` (13524).
 
 If the fork prefers other named errors, that also works. The requirement
 is a named error, not `error.Unexpected`.

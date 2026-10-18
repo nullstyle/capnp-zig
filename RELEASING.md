@@ -258,10 +258,14 @@ cancelled run counts, and its cancelled jobs fail the gate.
 ### The known-flakes rule
 
 The final step of each Nightly job writes one `nightly-failure` annotation
-for each failed test (`error: '<test>' failed`) and for each `soak: FAIL`
-line. A failed step with neither line gets the name `step:<step id>`. A
-step also gets `step:<step id>`, after its test names, when its log shows a
-failure with no test name: a crashed test process, a compile error, or a
+for each Zig test-failure line and for each `soak: FAIL` line. A
+test-failure line is `error: '<test>' failed`, or the line for a test that
+errored, exited, was terminated, stopped, timed out, leaked or logged
+errors. A failed step with neither line gets the name `step:<step id>`.
+The package preflight and dependency prefetch steps write no log, so a
+failure in them always gets `step:<step id>`. A step also gets
+`step:<step id>`, after its test names, when its log shows a failure with
+no test name: a crashed test process, a compile error, or a
 Build Summary that counts more failed tests than the log names. The gate
 matches a failed job to a row by the job name, and by the annotation name
 when the job has annotations. The header of `.github/known-flakes.txt`

@@ -889,9 +889,8 @@ cooperating peer.
   RETURN EXCEPTION.
 
 The forwarded-return intermediary case that shipped as the one remaining active
-v0.3.0 limitation is resolved as of v0.6.0. Apart from the pipelined-params,
-loopback-pipelining and tail-call items above, every limitation listed above
-is either a Level-3 surface or a serialization compatibility gap. Historical
+v0.3.0 limitation is resolved as of v0.6.0. Of the items above, only the
+`sendResultsTo = thirdParty` item is a Level-3 surface. Historical
 resolved items are listed below so release-to-release behavior changes stay
 auditable.
 
