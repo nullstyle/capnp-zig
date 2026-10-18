@@ -524,11 +524,10 @@ for QUIC-specific control/data stream routing. For mode selection, helper
 module boundaries, and production hardening defaults, see
 `docs/quic-transport.md`.
 
-The native evidence step runs exactly four roots, rejects `SkipZigTest`, and
-fails when QUIC is not enabled. Local macOS Debug and ReleaseSafe evidence is
-61/61; Windows runtime acceptance remains a hosted gate after this capnp-zig
-revision is pushed, so the passing Windows cross-compile is not presented as a
-runtime claim.
+The evidence step runs exactly four roots, rejects `SkipZigTest`, and fails
+when QUIC is not enabled. Its per-root test floors are in `docs/stability.md`.
+The CI job "QUIC targeted transport" runs the step natively on Linux, macOS
+and Windows, in Debug and ReleaseSafe.
 
 ### RPC Benchmarks
 

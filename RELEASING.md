@@ -178,6 +178,8 @@ passes:
 - [ ] `build.zig.zon` — `.version`
 - [ ] `README.md` — status banner and install pin
 - [ ] `docs/build-integration.md` — install pin, `.url`, `.hash` example
+- [ ] `docs/getting-started-serialization.md` — the tarball install pin,
+      `.url` and `.hash` example
 - [ ] `docs/supported-surface.md` — title, opening sentence, pinning advice,
       "Known limitations" heading
 - [ ] `docs/stability.md` — "The current version is …"
@@ -291,9 +293,11 @@ just release-tag X.Y.Z "<one-line theme>"
 `release-tag` refuses a dirty tree, a `build.zig.zon` that does not say
 X.Y.Z, a failing `check-release-drift` (the CHANGELOG now has its
 `## [X.Y.Z]` section, so the hook reads that one), a failing docs-smoke, a
-commit without a green CI run, and a commit that does not pass
-`check-nightly-gate`. Then it creates and pushes the annotated tag, the same
-as:
+commit with no CI run or with any CI run that did not conclude `success` (a
+run in progress or cancelled counts as red), and a commit that does not pass
+`check-nightly-gate`. Do not start a second CI run on the release commit
+while its push run is in progress: the CI concurrency group cancels the
+push run. Then it creates and pushes the annotated tag, the same as:
 
 ```bash
 git tag -a vX.Y.Z -m "vX.Y.Z — <one-line theme>"
@@ -340,12 +344,16 @@ because the tag already exists. It turns red, so a tag made without
       In each, call something *new in this release* — the version bump is the
       whole reason the release exists, so exercise the thing it added.
 
-- [ ] Record the resulting hash in `docs/build-integration.md`, replacing the
-      `capnpc_zig-X.Y.Z-...` placeholder with the real value. That turns the
-      install snippet into a self-verifying artifact. Then prove the record
-      with `just verify-release-hash X.Y.Z` — it re-fetches the published tag
-      in a clean consumer and asserts the docs carry the exact hosted hash
-      (the stale-digest bug shipped two releases while this was manual).
+- [ ] Record the resulting hash in `docs/build-integration.md`,
+      `docs/getting-started-serialization.md` and
+      `docs/upgrading-to-X.Y.Z.md`, in place of each `capnpc_zig-X.Y.Z-...`
+      placeholder. That turns the install snippets into self-verifying
+      artifacts. Then run `just verify-release-hash X.Y.Z`. It re-fetches
+      the published tag in a clean consumer and checks that
+      `docs/build-integration.md` carries the exact hosted hash (the
+      stale-digest bug shipped two releases while this was manual). It does
+      not check the other two files, so also run
+      `git grep -F 'capnpc_zig-X.Y.Z-...'`: it must find nothing.
 
 - [ ] Create the GitHub Release from the CHANGELOG section, so the tag has a
       rendered notes page and watchers get a notification:

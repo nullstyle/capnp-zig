@@ -98,18 +98,21 @@ upgrade.
   with `gh workflow run Nightly --ref main`, and apply the known-flakes rule.
   The gate is `tools/ci_gates.ts`. Its tests use recorded API responses, and
   the new CI job "CI gate tools" runs them.
-- **Nightly: a failed job names its failures in annotations.** The steps
-  that can fail copy their output to a log. A new final `if: failure()`
-  step in each job reads the logs. It writes one `nightly-failure`
-  annotation for each failed Zig test (`error: '<test>' failed`) and for
-  each `soak: FAIL` line. A failed step with neither line gets
-  `step:<step id>`. A step also gets `step:<step id>` when its log shows a
-  failure with no test name: a crashed test process, a compile error, or a
-  Build Summary that counts more failed tests than the log names. So a row
-  for one flaky test does not cover a second failure in the same step. The
-  tag gate reads these annotations. The soak job checks this wiring on each
-  run, also when the run is green. The soak steps on Windows now run in
-  bash.
+- **Nightly: a failed job names its failures in annotations.** Most steps
+  that can fail copy their output to a log. The package preflight and
+  dependency prefetch steps do not, so a failure in them gets only
+  `step:<step id>`. A new final `if: failure()` step in each job reads the
+  logs. It writes one `nightly-failure` annotation for each Zig
+  test-failure line (`error: '<test>' failed`, and the lines for a test
+  that errored, exited, was terminated, stopped, timed out, leaked or
+  logged errors) and for each `soak: FAIL` line. A failed step with neither
+  line gets `step:<step id>`. A step also gets `step:<step id>` when its log
+  shows a failure with no test name: a crashed test process, a compile
+  error, or a Build Summary that counts more failed tests than the log
+  names. So a row for one flaky test does not cover a second failure in the
+  same step. The tag gate reads these annotations. The soak job checks this
+  wiring on each run, also when the run is green. The soak steps on Windows
+  now run in bash.
 - **Docs: one ledger for downstream asks, and one for upstream handoffs.**
   `docs/downstreams.md` gives the capnp-zig pin of capnp-swift, capnp-deno
   and slcp-zig, and one row for each of their asks: what it asks for, the
@@ -140,14 +143,14 @@ upgrade.
   GitHub's 6-hour default. `fmt-check`, `evented-check`, `docs-smoke`,
   `bench-check`, `wasm-build` and `release-build` get 10 min (their slowest
   green run was 4.3 min or less). `cross-targets` gets 60 min (slowest 35.9
-  min). `e2e-quic` goes from 25 to 15 min (slowest 5.3 min), and
-  `release-safe-tests` from 60 to 75 min (slowest 50.5 min). These figures
-  come from 19 green CI runs, 10-10 to 10-17. A new step in the "CI gate
-  tools" job (also `just check-job-timeouts`) fails when a job in any file
-  of `.github/workflows` has no job-level `timeout-minutes`. A step-level
-  timeout does not count. The
-  `evented-check` e2e step and the `bench-check` step now run under
-  `tools/stall_watchdog.sh`.
+  min). `e2e-quic`, which is new in this release, gets 15 min (slowest 5.3
+  min of its 5 green runs to 10-17). `release-safe-tests` goes from 60 to
+  75 min (slowest 50.5 min). The other figures come from 19 green CI runs,
+  10-10 to 10-17. A new step in the "CI gate tools" job (also
+  `just check-job-timeouts`) fails when a job in any file of
+  `.github/workflows` has no job-level `timeout-minutes`. A step-level
+  timeout does not count. The `evented-check` e2e step and the
+  `bench-check` step now run under `tools/stall_watchdog.sh`.
 - **Nightly: the Windows 64-worker soak lane runs in its own job.** It used
   to run after the two 8-worker lanes on the same runner, so it often began
   with about 16k ports in TIME_WAIT. 8 of the 17 Windows Nightlies from
@@ -263,10 +266,12 @@ upgrade.
   `state.PendingCall.send_results_to_yourself`). Such a call is marked only
   for the send of its exception, so no mark outlives it. That mark is best
   effort: past `limits.max_send_results_to_yourself`, or out of memory, the
-  exception still goes on the wire. A redirect that comes before the failure
-  still gets the bare `takeFromOtherQuestion` tag at once. New tests are in
-  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig` and
-  `src/native/conn_test.zig`.
+  exception still goes on the wire. In the Peer, a redirect that comes
+  before the failure still gets the bare `takeFromOtherQuestion` tag at
+  once. Through the native C ABI, a redirect that names an INBOUND_CALL
+  that the host still owes now waits, and gets the exception (see Changed).
+  New tests are in `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`
+  and `src/native/conn_test.zig`.
 - **Stable `Listener.close` on Windows aborted the process when a thread
   waited in accept.** `close` closed the listening handle under the wait,
   and std 0.17.0's accept treats that cancelled wait as `unreachable`: a
@@ -295,19 +300,21 @@ upgrade.
   listening TCP socket, so a dial is still the only way to wake a parked
   accept, and that wait still has no bound while dials fail.
 - **QUIC (Experimental): a `WarmRedialClient.requestStop` during generation
-  setup reported no generation and cause `.unknown`.** A generation makes its
+  setup left that generation out of the `Outcome`.** A generation makes its
   connection reachable by `requestStop` and then enqueues its Bootstrap and
   Restore frames. A stop in that gap closes the connection, so the enqueue
   fails with `BrokenPipe`. `run` took that for a failed setup, and its
-  `Outcome` said `generations = 0` and `last_cause = .unknown`. Now that
-  generation counts, and `last_cause` is `.local_close`, as for a stop while
-  the generation runs. A setup failure without a stop is still an error, and
-  it still spends a redial. `Outcome.generations` now documents what it
-  counts. Nightly 38713314813 failed this way in the QUIC peer test
-  "WarmRedialClient.requestStop never writes into a generation that ended on
-  its own". The new QUIC peer test "WarmRedialClient.requestStop during
-  generation setup reports 1 generation and .local_close" pauses the
-  generation in the gap with a test-only knob and stops it there.
+  `Outcome` left that generation out of `generations` and out of
+  `last_cause`. A stop during the first setup gave `generations = 0` and
+  `last_cause = .unknown`. Now that generation counts, and `last_cause` is
+  `.local_close`, as for a stop while the generation runs. A setup failure
+  without a stop is still an error, and it still spends a redial.
+  `Outcome.generations` now documents what it counts. Nightly 38713314813
+  failed this way in the QUIC peer test "WarmRedialClient.requestStop never
+  writes into a generation that ended on its own". The new QUIC peer test
+  "WarmRedialClient.requestStop during generation setup reports 1
+  generation and .local_close" pauses the generation in the gap with a
+  test-only knob and stops it there.
 - **Soak: the memory gates judge only the exercised run.** The soak
   harness (`tools/soak_rpc.zig`) now judges the live-heap and RSS trends
   from the end of warmup to the workers' stop. If host port exhaustion

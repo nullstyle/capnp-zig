@@ -874,11 +874,26 @@ cooperating peer.
   own questions needs an `InboundCapTable` entry kind the Stable
   `ResolvedCap` does not have.
 
+- **Tail calls into this peer are followed only in part.** The Peer and the
+  native C ABI answer a failed `sendResultsTo = yourself` call with
+  `resultsSentElsewhere`. `HostPeer` (`respondHostCallException`, the WASM
+  host ABI) still sends an exception Return, and the C++ reference drops
+  the connection for it. This answer is best effort: past
+  `limits.max_send_results_to_yourself`, or out of memory, the exception
+  goes on the wire. For a `takeFromOtherQuestion` that names a call that
+  has not returned yet, a `Peer` caller, HostPeer and the WASM host ABI get
+  the bare `takeFromOtherQuestion` Return. Only the native C ABI waits for
+  the host's answer (see [native-abi.md](native-abi.md#tail-calls)). There,
+  a redirect to a call that the Peer still holds (parked, queued or
+  forwarded), and results that carry capabilities, end the question with
+  RETURN EXCEPTION.
+
 The forwarded-return intermediary case that shipped as the one remaining active
-v0.3.0 limitation is resolved as of v0.6.0. Apart from the pipelined-params
-and loopback-pipelining items above, every limitation listed above is either
-a Level-3 surface or a serialization compatibility gap. Historical resolved items are
-listed below so release-to-release behavior changes stay auditable.
+v0.3.0 limitation is resolved as of v0.6.0. Apart from the pipelined-params,
+loopback-pipelining and tail-call items above, every limitation listed above
+is either a Level-3 surface or a serialization compatibility gap. Historical
+resolved items are listed below so release-to-release behavior changes stay
+auditable.
 
 ### Resolved since v0.9.0
 

@@ -44,8 +44,11 @@ question's results are those of a call Y that the remote sent to us with
 `sendResultsTo = yourself`. The C++ reference does this when it forwards a
 parked call back to us. The core follows such a redirect in two cases:
 
-- **The host answered Y already.** The question gets Y's cap-free results
-  or Y's exception at once.
+- **The host answered Y already, and the core kept Y's answer.** The
+  question gets Y's cap-free results or Y's exception at once. The core
+  keeps that answer until the remote's Finish of Y, for at most 4096 calls
+  at a time (the Peer's `limits.max_loopback_result_stash`), and it keeps
+  nothing when memory runs out.
 - **Y is an INBOUND_CALL that the host has not answered.** The question
   waits. The host's `capnp_return_results` for Y becomes the question's
   RETURN RESULTS (a copy of the same message, with NONE capabilities as
@@ -70,15 +73,20 @@ refuses its id.
 
 The remote's Finish of Y does not end the wait: the host still answers Y.
 If the remote reuses Y's id for a new call before the host answered Y, the
-question ends at once with RETURN EXCEPTION (`tail_call_reused_reason`),
-because the host's next answer for that id could belong to either call.
+question ends at once with RETURN EXCEPTION (`failed`, "capnp-swift core:
+the tail-called call's id was reused before its answer";
+`native.conn.tail_call_reused_reason`), because the host's next answer for
+that id could belong to either call.
 
 Every other redirect ends the question at once with RETURN EXCEPTION
 (`unimplemented`, "capnp-swift core: unsupported Return variant"). That
-covers results of Y that point at a capability (the waiting case gives
-`tail_call_caps_reason` instead), Y still held by the core (parked on a
-promise export, queued on an answer, forwarded back to the remote), a call
-without `sendResultsTo = yourself`, an id that names no call, a second
+covers results of Y that point at a capability (the waiting case instead
+gives `unimplemented`, "capnp-swift core: tail call results carry
+capabilities", which is `native.conn.tail_call_caps_reason`), a Y that the
+host answered but whose answer the core did not keep, Y still held by the
+core (parked on a promise export, queued on an answer, forwarded back to
+the remote), a call without `sendResultsTo = yourself`, an id that names
+no call, a second
 redirect to the same Y, and the bootstrap question. The C++ reference also
 follows those. capnp-zig's own design and termination proof:
 [notes/tail-call-hold-design.md](notes/tail-call-hold-design.md).

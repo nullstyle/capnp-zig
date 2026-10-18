@@ -12,7 +12,7 @@ This is a document, not an upstream issue. Nothing here was filed upstream.
 
 At tagged **0.17.0**, a Debug-mode `std.heap.DebugAllocator(.{})` that allocates and frees small blocks in cycles keeps growing the process, although every allocation is freed and `deinit()` reports `.ok`. Each cycle that reuses a size class maps a fresh 128 KiB slab (`DebugAllocator.alloc` -> `PageAllocator.map(n=131072)`, seen with `lldb` breakpoints on `mmap`), and the slabs of emptied buckets stay mapped.
 
-Observed in capnp-swift's `zig build fuzz-abi -- --seconds 1800` (Debug): with a `DebugAllocator` behind the core's allocator, resident memory grew linearly at about 13 MB/s to 24 GB over 30 minutes while the harness's live-byte counter read 0 after every session (two `Peer`s created and freed per session, roughly 1,500 sessions per second). With `std.heap.page_allocator` in its place the same run stays at 5 MB.
+Observed in capnp-swift's `zig build fuzz-abi -- --seconds 1800` (Debug): with a `DebugAllocator` behind the core's allocator, resident memory grew linearly at about 13 MB/s to 24 GB over 30 minutes while the harness's live-byte counter read 0 after every session (two `Peer`s created and freed per session, 264,940 sessions in 1,800 s, about 150 per second). With `std.heap.page_allocator` in its place the same run stays at about 6 MB.
 
 ## Minimal repro
 
@@ -56,6 +56,6 @@ In `debug_allocator.zig`'s tests: run the loop above for a few thousand rounds w
 
 - `page_allocator` alone, same loop and an `ArrayList` grow/free loop: flat (3.3 MB).
 - The shrink path (`alloc` 70,000 -> `resize` 20,000 -> `free`): flat (2.5 MB) on 16 KiB pages.
-- The fuzz harness with the page-backed counter: 5 MB resident over 30,000 sessions per second, 0 live bytes.
+- The fuzz harness with the page-backed counter: 5,861,875 sessions, about 6 MB resident (checked at 840 s), 0 live bytes at exit (capnp-swift `docs/plan-2026-10-06.md`).
 
 Scratch evidence (not in any repo): `/private/tmp/claude-501/-Users-nullstyle-prj-zig-capnp-swift/08e90148-903c-48bf-adb0-a226a31f27f6/scratchpad/pa-probe/` (`da.zig`, `probe.zig`, `shrink.zig`, `clock.zig`), `lldb-mmapbt.log` (the `mmap` backtraces), `fuzz-1800.log` (the 30-minute run).

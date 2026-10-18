@@ -718,13 +718,14 @@ next tick. The Driver reads the note and reports `.fin` or `.reset`. For a
 host that ticks first, this gives:
 
 - A RESET of stream 0 reaches the seat as `.reset`, and the seat closes the
-  session (the E-order contract), as in the safe order. Through v0.27.0 the
-  seat got `.reaped`, and the session stayed up with no control stream.
+  session (the E-order contract), as in the safe order. Through quic-zig
+  v0.27.0 the seat got `.reaped`, and the session stayed up with no
+  control stream.
 - A native data stream that the peer reset keeps the final size and the
   error code of its RESET. The seat judges the frame as the owned loops do:
   a final size other than the announced length fails it (`InvalidFrame`),
   missing bytes fail it (`DataStreamReset`), and all the bytes complete it.
-  Through v0.27.0 the seat lost the RESET in this order.
+  Through quic-zig v0.27.0 the seat lost the RESET in this order.
 - A data stream that ended clean keeps its bytes until the engine reads
   them, as before.
 

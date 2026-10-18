@@ -35,6 +35,10 @@ the command above — do not hand-write it):
 },
 ```
 
+`zig fetch --save` saves the tag's commit in the URL in place of the tag,
+and keeps the tag as a `?ref=` query. Use `--save-exact` to keep the URL
+as given.
+
 The package exposes two library modules — pick one:
 
 - `capnpc-zig` — the full surface (serialization + codegen + RPC runtime).

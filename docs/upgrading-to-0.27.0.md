@@ -80,7 +80,9 @@ not again for v0.26.0 or v0.27.0.
   (`docs/generated-shape.txt`, `docs/generated-shape-experimental.txt`).
 - Codegen: the codegen ABI stays 2, so files from the 0.23.0 to 0.26.0
   plugins compile against this runtime.
-- The native C ABI and its header, `src/native/include/capnp_core.h`.
+- The functions, types and constants of the native C ABI, and its header,
+  `src/native/include/capnp_core.h`. Its tail-call behavior changes: see
+  checklist item 5.
 - The QUIC ALPN (`capnp-rpc/1`), the stream id, the framing, the
   zero-length and oversize rules, and the close codes.
 - The TCP transport on Linux and macOS.
@@ -160,11 +162,13 @@ not again for v0.26.0 or v0.27.0.
    dials fail.
 
 9. **QUIC `WarmRedialClient`: a stop during setup is a generation.** A
-   `requestStop` that comes after the generation made its connection
+   `requestStop` that came after the generation made its connection
    reachable, and before it enqueued its Bootstrap and Restore frames, used
-   to give `generations = 0` and `last_cause = .unknown`. Now that
-   generation counts, and `last_cause` is `.local_close`. A setup failure
-   without a stop is still an error and still spends a redial.
+   to leave that generation out of `generations` and out of `last_cause`.
+   A stop during the first setup gave `generations = 0` and
+   `last_cause = .unknown`. Now that generation counts, and `last_cause` is
+   `.local_close`. A setup failure without a stop is still an error and
+   still spends a redial.
 
 ## How to verify
 

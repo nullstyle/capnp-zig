@@ -32,7 +32,7 @@ Status words:
 | Consumer | Pins capnp-zig at | Where the pin is | Where its asks are | Checked |
 |---|---|---|---|---|
 | capnp-swift | v0.23.0 for the core and the generator. v0.21.0 for the interop Zig peer and the vendored e2e copy. | `core/build.zig.zon`, `tools/capnpc-swift/build.zig.zon`, `interop/zig-peer/build.zig.zon`, `third_party/capnp-zig/` | `docs/handoffs/` | 2026-10-17 |
-| capnp-deno | `fe6634d` (main after v0.23.0; v0.24.0 is the first tag with it) | the `vendor/capnp-zig` submodule and `tools/runtime-toolchain.json` | `docs/capnp_zig_additions.md`, `docs/CHANGELOG.md` | 2026-10-17 |
+| capnp-deno | `fe6634d` (main after v0.23.0; v0.24.0 is the first tag with it) | the `vendor/capnp-zig` submodule and `tools/runtime-toolchain.json` | `docs/capnp_zig_additions.md`, `docs/CHANGELOG.md`, `docs/rpc_l3_wasm_abi_proposal.md` | 2026-10-17 |
 | slcp-zig | v0.21.0 | `build.zig.zon` | `docs/upstream/` | 2026-10-17 |
 
 ## capnp-swift
@@ -48,7 +48,7 @@ Status words:
 | H7 | Move the sans-IO shim into capnp-zig as `src/native/`. | `docs/handoffs/H7-native-move.md` | delivered in v0.23.0 | The `native` module and its C ABI ([native-abi.md](native-abi.md)). | 2026-10-17 |
 | H8 | A transport close must end every question, also when memory runs out. | `docs/handoffs/H8-force-cancel-alloc-free.md` | delivered in v0.23.0 | | 2026-10-17 |
 | H9 (answered) | Resolve `receiverAnswer` capabilities in call params for the host. | `docs/handoffs/H9-receiver-answer-params.md` | delivered in v0.23.0 | Only for an answer that has returned: the Peer resolves the entry just before the call dispatches, and fails the call with the answer's exception when that answer failed. It never delays a call. | 2026-10-17 |
-| H9 (pending) | A local promise capability, and pipelined params that name a pending answer. | `docs/handoffs/H9-receiver-answer-params.md` | deferred | Such an entry stays `.promised`. Large effort: it needs a design (direction #7). capnp-swift documents it as a limit ("native H9"). | 2026-10-17 |
+| H9 (pending) | A local promise capability, and pipelined params that name a pending answer. | `docs/handoffs/H9-receiver-answer-params.md` | deferred | Such an entry stays `.promised`. Large effort: it needs a design for local promise capabilities first. capnp-swift documents it as a limit ("native H9"). | 2026-10-17 |
 | H10 | Park a queued call again when the answer's Return carries an unresolved promise export. | `docs/handoffs/H10-parked-call-promise-repark.md` | delivered in v0.23.0 | | 2026-10-17 |
 | H11 | The 5-schema QUIC matrix: a `--transport quic` mode on the Zig e2e server and client. | `docs/handoffs/H11-quic-5-schema-matrix.md` | delivered in v0.26.0 | The CI job `e2e-quic` (Zig to Zig, all seven schemas) is on main for v0.27.0. capnp-zig has no Swift cross-implementation test. | 2026-10-17 |
 | H11 check 9 | End the RPC session when the peer ends QUIC stream 0, so `disconnectNow` ends the waiting questions. | `docs/handoffs/quic-server-close-residual.md` | on main for v0.27.0 | `1fdc029`. A clean FIN and a RESET of stream 0 both end the session (owner decision D2, option A). See the relay text below. | 2026-10-17 |
@@ -80,13 +80,16 @@ The owner sends this text after the v0.27.0 tag exists.
 > not answered, the question waits. Your `capnp_return_results` for that
 > call becomes the question's RETURN RESULTS, and your
 > `capnp_return_exception` becomes its RETURN EXCEPTION. Results that point
-> at a capability give RETURN EXCEPTION (`tail_call_caps_reason`). While it
-> waits, cancel, deadline, transport close and shutdown end it once, as for
-> any open question. docs/native-abi.md has the rules. After you pin
-> v0.27.0, run the C++ `resolve_disembargo` case again and drop your
-> workaround if it passes. Two more fixes are in v0.27.0: a failing
-> `yourself` call now answers `resultsSentElsewhere`, and a kept tail-call
-> answer can no longer reach a later question with a reused id.
+> at a capability give RETURN EXCEPTION (type `unimplemented`, reason
+> "capnp-swift core: tail call results carry capabilities"). While it
+> waits, a cancel, its deadline, a transport close or the shutdown drain
+> bound (`shutdown_drain_timeout_ms`) ends it once. A graceful shutdown
+> waits for it, as for any open question. docs/native-abi.md has the
+> rules. After you pin v0.27.0, run the C++ `resolve_disembargo` case
+> again and drop your workaround if it passes. Two more fixes are in
+> v0.27.0: a failing `yourself` call now answers `resultsSentElsewhere`,
+> and a kept tail-call answer can no longer reach a later question with a
+> reused id.
 
 ## capnp-deno
 
@@ -95,9 +98,11 @@ The owner sends this text after the v0.27.0 tag exists.
 | Feature bit 10 | Level-3 handoff origination over the WASM host ABI. | `docs/rpc_l3_wasm_abi_proposal.md` | delivered in v0.22.0 | capnp-deno uses it (`@nullstyle/capnp/advanced`). | 2026-10-17 |
 | Feature bit 11 | Level-3 vat hosting over the WASM host ABI. | `docs/CHANGELOG.md` ("The VatC gap is closed") | delivered in v0.23.0 | capnp-deno uses it. | 2026-10-17 |
 | Feature bit 12 | Host answer cancellation over the WASM host ABI: the answer-finished event and `Return{canceled}`. | `docs/CHANGELOG.md` ("Host answer cancellation") | delivered in v0.24.0 | Its pin `fe6634d` has it, and its artifact advertises bits 0-12. | 2026-10-17 |
+| Feature bit 10 follow-ups | The WASM pickup-handler export, `sendProvide` with a retained-answer or promised-answer target, and `sendThirdPartyAnswer` with a caller-chosen id. | `docs/rpc_l3_wasm_abi_proposal.md` ("Implementation deltas") | deferred | capnp-deno deferred them itself. It uses the host-driven Accept path, `importedCap` targets and auto-allocated answer ids. The two `sendProvide` target forms need no new feature bit. | 2026-10-17 |
 | Upgrade note | The L2, L3 and L4 upgrade guidance for capnp-deno (this repository's old upgrade note, last changed in `31a2ec3`). | none | closed | capnp-deno has moved past it (v0.21.0, v0.22.0, v0.23.0, then `fe6634d`). The tier rules it gave are in [stability.md](stability.md). The note is deleted. | 2026-10-17 |
 
-capnp-deno has no open ask.
+capnp-deno has no open ask. Its deferred feature-bit-10 follow-ups are in
+the table.
 
 ## slcp-zig
 

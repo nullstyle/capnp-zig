@@ -14,7 +14,7 @@ file and the same AFD layer as `fix/netacceptwindows-cancelled`
 (`handoff-zig-fork-netacceptwindows.md`), so one branch can carry both.
 
 All line numbers are for `lib/std/Io/Threaded.zig` at tagged **0.17.0**.
-Find them again on the fork HEAD (on `feat/evented-0.17` they are 30 to 50
+Find them again on the fork HEAD (on `feat/evented-0.17` they are 16 to 53
 lines later).
 
 ## 1. A receive that Windows cancels by itself aborts the read
@@ -108,7 +108,10 @@ receive.
 ```
 
 `netShutdownWindows` (13614) maps only `SUCCESS` and
-`INSUFFICIENT_RESOURCES`. Every other status falls to
+`INSUFFICIENT_RESOURCES`. It also has `.CANCELLED => unreachable` (13629),
+as `netWriteWindows` has (13524). A `CANCELLED` status there, for example
+from a close of the handle or a `CancelIoEx` on another thread, aborts the
+process, as in section 1. Every other status falls to
 `else => windows.unexpectedStatus(status)`. That gives `error.Unexpected`.
 With unexpected-error tracing on (the Debug default), it also prints the
 NTSTATUS and a stack trace.
@@ -156,6 +159,9 @@ std prints the trace first.
   `netWritePosix` maps `EPIPE` and `ENOTCONN` to it (13456, 13460).
 - **Shutdown:** map `CONNECTION_RESET` to `error.ConnectionResetByPeer`.
   It is already in `net.ShutdownError`.
+- **Write and shutdown:** map `CANCELLED` to a named error, not
+  `unreachable`, in `netWriteWindows` (13524) and `netShutdownWindows`
+  (13629).
 
 If the fork prefers other named errors, that also works. The requirement
 is a named error, not `error.Unexpected`.
