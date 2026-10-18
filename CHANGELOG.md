@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-18
+
+This is an RPC tail-call and reliability release. In the Peer, a tail
+call (a Return with `takeFromOtherQuestion`) could get the kept answer of
+an earlier call with the same id. A `sendResultsTo = yourself` call that
+failed put an exception Return on the wire, and the C++ reference drops
+the connection for that. The Peer and the native C ABI now answer such a
+call with `resultsSentElsewhere`; `HostPeer` (the WASM host ABI) does not
+yet. The native C ABI now follows a tail call to a call that the host
+still owes, when the results carry no capability. On QUIC, the end of
+stream 0 now ends the session in both modes. On Windows, the Stable
+`Listener.close` no longer aborts the process while a thread waits in
+accept, and `WorkerPool` shutdown no longer dials its own listener. A
+Windows TCP read that the local network stack ended now fails with
+`error.ConnectionResetByPeer`. CI runs the Zig e2e over QUIC, and
+`just release-tag` now needs 3 Nightly runs on the release commit.
+quic-zig (v0.38.0) and the http3-zig pair (v0.5.7) do not change. No
+Stable API line changes. The two Experimental API snapshots each gain 9
+lines and change 1, the type of `native.conn.Conn.pending_answers`. There
+are two `### Breaking` entries, both Experimental: the QUIC stream-0 rule
+and that type change. docs/upgrading-to-0.27.0.md walks through the
+upgrade.
+
+### Breaking
+
+- **QUIC: a clean FIN on stream 0 now ends the RPC session, in both modes
+  (Experimental behavior).** The receiver first dispatches every whole
+  frame that came before the FIN. Then it closes with close code `normal`,
+  and the close cause is `peer_close`. A partial frame at the FIN is a
+  `frame_error` close. In native mode, a `data_rpc` frame announced before
+  the FIN still completes from its data stream first. This applies to the
+  owned loops (`Connection` and `Server`, which `connect` and `serve` use)
+  and to `EmbeddedSession`. Before, a FIN on stream 0 had no meaning: a
+  question that waited on the session ran to its deadline and ended
+  `CallTimedOut`. Now it ends `Disconnected` at once, as at a TCP EOF. **A
+  peer that half-closes stream 0 (sends its FIN) and still waits for
+  replies now loses the session, and its replies never come.** capnp-zig
+  never sends a FIN on stream 0. The ALPN stays `capnp-rpc/1`. "Wire
+  constants (frozen)" in docs/quic-transport.md gives the rule and the
+  reasons. In the owned loops a RESET of stream 0 now ends the session too
+  (see Fixed).
+  - **Migration:** a peer that ends stream 0 with a FIN must send every
+    frame that it wants delivered before the FIN. It must not send the FIN
+    while it still expects replies. Two capnp-zig peers need no change,
+    because capnp-zig never sends a FIN on stream 0. Code that waits on a
+    question when the peer sends its FIN now gets `Disconnected` at once,
+    not `CallTimedOut` at the deadline.
+- **native: `Conn.pending_answers` now maps each answer id to a `bool`
+  (Experimental).** The field `native.conn.Conn.pending_answers` changes
+  from `std.AutoHashMap(u32, void)` to `std.AutoHashMap(u32, bool)`. The
+  value is true for a call with `sendResultsTo = yourself`, and the native
+  tail-call hold reads it (see Changed). This is the one line that changes
+  in each Experimental API snapshot. The field is internal state of the
+  shim.
+  The C ABI and `capnp_core.h` do not change, so a host that uses the C
+  ABI, such as capnp-swift, sees no change. Only Zig code that uses the
+  field itself can see the new type.
+  - **Migration:** do not use the field. Answer an INBOUND_CALL with
+    `capnp_return_results` or `capnp_return_exception` (in Zig,
+    `Conn.returnResults` or `Conn.returnException`). Code that calls only
+    `contains`, `count` or `remove` on the map compiles unchanged. Code
+    that writes or reads its values must use `bool`.
+
 ### Added
 
 - **CI: the Zig e2e server and client run over QUIC.** The new step
@@ -60,6 +123,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   citation in `tests/native/fuzz_abi.zig` resolves in this repository.
   The RELEASING.md checklist names both ledgers, before the tag and after
   it.
+- **CI: the CI workflow runs on a branch by hand.** `ci.yml` has a
+  `workflow_dispatch` trigger, so `gh workflow run CI --ref <branch>` runs
+  the full matrix on a branch with no pull request.
 
 ### Changed
 
@@ -90,21 +156,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   port range to 55,535 ports with `netsh`. Before the lane, it prints the
   range, the excluded port ranges and the TIME_WAIT count. If `netsh`
   fails, the job warns and runs on the default range.
-- **QUIC (Experimental): a clean FIN on stream 0 now ends the RPC session,
-  in both modes.** The receiver first dispatches every whole frame that came
-  before the FIN. Then it closes with close code `normal`, and the close
-  cause is `peer_close`. A partial frame at the FIN is a `frame_error`
-  close. In native mode, a `data_rpc` frame announced before the FIN still
-  completes from its data stream first. This applies to the owned loops
-  (`Connection` and `Server`, which `connect` and `serve` use) and to
-  `EmbeddedSession`. Before, a FIN on stream 0 had no meaning: a question
-  that waited on the session ran to its deadline and ended `CallTimedOut`.
-  Now it ends `Disconnected` at once, as at a TCP EOF. **A peer that
-  half-closes stream 0 (sends its FIN) and still waits for replies now loses
-  the session, and its replies never come.** capnp-zig never sends a FIN on
-  stream 0. The ALPN stays `capnp-rpc/1`. "Wire constants (frozen)" in
-  docs/quic-transport.md gives the rule and the reasons.
-
 - **Native C ABI (Experimental): a tail call to a call the host still owes
   now gets that call's answer.** The remote can answer a question with
   `takeFromOtherQuestion`: "your results are those of my call Y to you",
@@ -124,15 +175,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CAPNP_E_BUSY`, `capnp_conn_transport_closed` ends it with RETURN
   DISCONNECTED, and a graceful shutdown waits for it (up to
   `shutdown_drain_timeout_ms`). As for other questions, a cancel or a
-  deadline ends it also when its Finish cannot be sent. If the remote reuses Y's id for a new call
-  before the host answered, the question ends with RETURN EXCEPTION
-  (`tail_call_reused_reason`). A redirect that names a call the Peer still
-  holds (parked on a promise, queued on an answer, forwarded) keeps the
-  old RETURN EXCEPTION. The Peer is unchanged, so other Peer users still get
-  the bare tag for a pending call. The C ABI and the header are unchanged.
-  docs/notes/tail-call-hold-design.md has the design and the proof that
-  every held question ends once. capnp-swift handoff
-  `tail-call-returns-for-native.md`.
+  deadline ends it also when its Finish cannot be sent. If the remote
+  reuses Y's id for a new call before the host answered, the question ends
+  with RETURN EXCEPTION (`tail_call_reused_reason`). A redirect that names
+  a call the Peer still holds (parked on a promise, queued on an answer,
+  forwarded) keeps the old RETURN EXCEPTION. The Peer is unchanged, so
+  other Peer users still get the bare tag for a pending call. The C ABI and
+  the header are unchanged. The Zig API of the shim gains Experimental
+  declarations: the reasons `native.conn.tail_call_caps_reason` and
+  `tail_call_reused_reason`, the `Conn` fields `held_tail_calls`,
+  `close_deferred` and `shutdown_deadline_ns` (internal state), and
+  `native.cap_remap.copyCapFreeHostContent`. `Conn.pending_answers`
+  changes type (see Breaking). docs/notes/tail-call-hold-design.md has the
+  design and the proof that every held question ends once. capnp-swift
+  handoff `tail-call-returns-for-native.md`.
 
 ### Fixed
 
@@ -257,8 +313,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the end of warmup to the workers' stop. If host port exhaustion
   starts earlier, the judged window ends at its onset. If the onset comes
   before half of the run, or too few samples remain, the verdict is
-  `not_exercised`. That verdict is a `::warning::`, not a failure. The
-  leak check at exit still gates. Nightly 38377271133 (10-13) failed the
+  `not_exercised`. That verdict is a `::warning::`, not a failure. Its
+  steady-state lines print `n/a` for the means, the growth and the RSS
+  delta, because such a verdict has no real means. The leak check at exit
+  still gates. Nightly 38377271133 (10-13) failed the
   Windows 64-worker lane with 108% heap growth, but that lane was
   port-exhausted from +0.6 s. The gate compared an idle host with bursts of
   traffic.
@@ -322,6 +380,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that CI runs the QUIC evidence from each OS's native shell. It runs it
   under `bash`. A note in `windows-first-class-plan.md` now marks its
   2026-08-11 QUIC counts as superseded.
+- **Tests: the pycapnp interop tests failed where uv picks CPython 3.15.**
+  macOS CI runners (run 38911061944) gave uv CPython 3.15. pycapnp 2.2.4
+  ships no wheel for it, and the build of its sdist failed, so the 4
+  pycapnp interop tests went red. The three inline-script headers in
+  `tests/interop/` now ask for `>=3.10,<3.15`.
+- **Tests: a TCP transport test failed on a loaded runner.** "transport
+  enqueueWrite counts writer-owned bytes against byte budget" waited for its
+  writer thread with a fixed count of 10,000 yields, and the count ran out
+  on a loaded CI runner (run 39063420132). It now waits on the clock, up to
+  5 s.
+
+### Documentation
+
+- `docs/upgrading-to-0.27.0.md` (new): who should take the tail-call, QUIC
+  and Windows fixes, the two Breaking entries, the unchanged coordinated set
+  (quic-zig v0.38.0, http3-zig v0.5.7), and a checklist.
+- The package hash of v0.26.0 is recorded in docs/upgrading-to-0.26.0.md.
+  The install snippets in docs/build-integration.md and
+  docs/getting-started-serialization.md held it until this release moved
+  them to v0.27.0.
 
 ## [0.26.0] - 2026-10-10
 
@@ -7487,7 +7565,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/nullstyle/capnp-zig/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/nullstyle/capnp-zig/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/nullstyle/capnp-zig/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/nullstyle/capnp-zig/compare/v0.23.0...v0.24.0

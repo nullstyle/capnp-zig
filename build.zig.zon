@@ -1,6 +1,6 @@
 .{
     .name = .capnpc_zig,
-    .version = "0.26.0",
+    .version = "0.27.0",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         // Pinned to a TAG, not a raw commit: tags are immutable release
@@ -135,8 +135,8 @@
         // http3-zig v0.5.5); v0.24.0 pins v0.37.2 (pair: http3-zig v0.5.6,
         // tag 6566fa2, one quic module measured at the tag); v0.25.0 pins
         // v0.38.0 (pair: http3-zig v0.5.7, tag e9867fc, one quic module
-        // measured at the tag); v0.26.0 pins the same tag with the same
-        // option map (same pair, not measured again). Since
+        // measured at the tag); v0.26.0 and v0.27.0 pin the same tag with the
+        // same option map (same pair, not measured again). Since
         // 2026-10-07 only packages that link into one program must share a
         // pin: capnp-zig and
         // http3-zig (cluster B) move together; qmsg, qmesh-zig, nest and
