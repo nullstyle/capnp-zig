@@ -180,7 +180,7 @@ upgrade.
   `shutdown_drain_timeout_ms`). As for other questions, a cancel or a
   deadline ends it also when its Finish cannot be sent. If the remote
   reuses Y's id for a new call before the host answered, the question ends
-  with RETURN EXCEPTION (`tail_call_reused_reason`). A redirect that names
+  with RETURN EXCEPTION (`failed`, `tail_call_reused_reason`). A redirect that names
   a call the Peer still holds (parked on a promise, queued on an answer,
   forwarded) keeps the old RETURN EXCEPTION. The Peer is unchanged, so
   other Peer users still get the bare tag for a pending call. The C ABI and
