@@ -1040,6 +1040,10 @@ test "promise export: calls on it wait, resolve delivers them to the target, rej
     const qr = try call(&sa, ip2, 6, p, &.{});
     try pump(&sa, &sb);
     try testing.expectEqual(@as(usize, 0), sa.countReturns(qr));
+    // Not to itself: the promise stays unresolved, and the call still waits.
+    try testing.expectEqual(@as(i32, c.CAPNP_E_INVAL), c.capnp_resolve_promise(sb.conn, promise2, cap(c.CAPNP_CAP_EXPORT, promise2)));
+    try pump(&sa, &sb);
+    try testing.expectEqual(@as(usize, 0), sa.countReturns(qr));
     const reason = "nope";
     try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_reject_promise(sb.conn, promise2, reason, reason.len));
     try pump(&sa, &sb);

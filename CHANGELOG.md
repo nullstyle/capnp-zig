@@ -121,7 +121,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `src/native/abi_test.zig` (through `capnp_core.h`), and
   `fuzz-native-abi`, which now opts in on a random side, calls
   `capnp_return_canceled`, and checks the new invariants. One fuzz session
-  in 4 is now clean (a bootstrap first, no junk bytes, no promises), so
+  in 4 is now clean (a bootstrap first, no junk bytes), so
   calls reach the hosts: a 10-second Debug run with seed 1 now sees 7074
   INBOUND_CALLs and 1128 ANSWER_FINISHED effects; before, the same run saw
   6 INBOUND_CALLs.
@@ -174,6 +174,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is a promise on the host's own question forwards the call" (parked, and
   arriving after the answer), and an allocation-failure sweep over the
   answer that replays the call.
+- **RPC: a promise export resolved to itself no longer overflows the
+  stack.** `Peer.resolvePromiseExportToExport` accepted a promise export
+  resolved to itself, or to a promise export that already led back to it.
+  A call on it then recursed until the stack overflowed, and the remote got
+  a Resolve that named the promise itself. Through the native C ABI, a host
+  reached it with `capnp_resolve_promise(conn, P, {CAPNP_CAP_EXPORT, P})`
+  and any call on P. Now that resolution fails with
+  `error.PromiseResolutionCycle` (`CAPNP_E_INVAL`), sends nothing, and
+  leaves the promise unresolved, so the host can still resolve or reject
+  it. The call path now also follows a chain of resolved promise exports in
+  a loop. Before, each link added a level of recursion, so a legal chain of
+  9000 links overflowed the stack too. A cycle that got past the check
+  would fail the call with "promise resolution cycle". Tests: "promise
+  export: ..." in `src/native/conn_test.zig`, and `capnp_resolve_promise`
+  in `src/native/abi_test.zig`. Clean `fuzz-native-abi` sessions now use
+  promise exports and PROMISED capabilities again. Without the two fixes,
+  a 30-second Debug run with seed 1, 2 or 3 crashes on one of them.
 - **RPC: a late exception Return that fails after the caller's Finish now
   fails, and the answer stays owed.** When the caller sends Finish before
   the host answers, the Peer keeps a tombstone for the id until a Return

@@ -28,13 +28,40 @@ pub fn PromiseExports(comptime Peer: type) type {
             return @ptrCast(@alignCast(ctx));
         }
 
+        /// True when resolving promise `promise_id` to export `export_id`
+        /// makes a cycle: `export_id` is the promise itself, or a promise
+        /// that, through promise exports of ours, resolved to it (or to a
+        /// cycle of its own).
+        fn routesInACycle(self: *Peer, promise_id: u32, export_id: u32) bool {
+            var id = export_id;
+            var links: usize = 0;
+            while (links <= self.exports.count()) : (links += 1) {
+                if (id == promise_id) return true;
+                const entry = self.exports.getEntry(id) orelse return false;
+                if (!entry.value_ptr.is_promise) return false;
+                const resolved = entry.value_ptr.resolved orelse return false;
+                switch (resolved) {
+                    .exported => |next| id = next.id,
+                    else => return false,
+                }
+            }
+            return true;
+        }
+
         /// Resolve a previously exported promise to point at a concrete export.
+        /// `error.PromiseResolutionCycle` when that would make a cycle.
         pub fn resolvePromiseExportToExport(self: *Peer, promise_id: u32, export_id: u32) !void {
             self.assertThreadAffinity();
             var promise_entry = self.exports.getEntry(promise_id) orelse return error.UnknownExport;
             if (!promise_entry.value_ptr.is_promise) return error.ExportIsNotPromise;
             if (promise_entry.value_ptr.resolved != null) return error.PromiseAlreadyResolved;
             if (!self.exports.contains(export_id)) return error.UnknownExport;
+            // A promise resolved to itself, or to a promise that already
+            // leads back to it, would route every call on it in a circle,
+            // and the Resolve would tell the remote the same. Refuse it: the
+            // promise stays unresolved, so it can still be resolved or
+            // rejected.
+            if (routesInACycle(self, promise_id, export_id)) return error.PromiseResolutionCycle;
 
             const tag: protocol.CapDescriptorTag = if (self.caps.isExportPromise(export_id)) .senderPromise else .senderHosted;
             // Fd passing: a Resolve to an export with an fd carries it, as a

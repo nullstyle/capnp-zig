@@ -327,8 +327,9 @@ lists. Zig code can skip the C ABI and use `native.conn.Conn` directly.
   random operation sequences and checks its invariants (one RETURN per
   question, well-formed payloads, no INBOUND_CALL for an id the host still
   owes, ANSWER_FINISHED only as described above, 0 live bytes after free).
-  One session in 4 is clean: no junk bytes and no promises, so calls reach
-  the hosts. A seeded
+  One session in 4 is clean: no junk bytes and no forged capability kinds,
+  so calls reach the hosts, through promise exports and PROMISED
+  capabilities too. A seeded
   3-second run is part of `test-fuzz-smoke`; Nightly runs it for 10 minutes
   in ReleaseSafe.
 - `zig build check-ios` compiles the ABI into the iOS, simulator and macOS

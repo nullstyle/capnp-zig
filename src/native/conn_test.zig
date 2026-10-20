@@ -3577,3 +3577,85 @@ test "pipelined call: an allocation failure anywhere in the answer that replays 
         if (!induced) break;
     }
 }
+
+test "promise export: a resolution to itself, or one that closes a cycle, is refused; the promise stays usable" {
+    // Before, capnp_resolve_promise(P, export P) was accepted, and any Call
+    // on P then recursed until the stack overflowed.
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+
+    const p1 = try a.promiseExport();
+    try testing.expectError(error.PromiseResolutionCycle, a.resolvePromise(p1, .{ .kind = .@"export", .id = p1 }));
+    // p1 -> p2 is fine while p2 is unresolved; p2 -> p1 then closes a cycle.
+    const p2 = try a.promiseExport();
+    try a.resolvePromise(p1, .{ .kind = .@"export", .id = p2 });
+    try testing.expectError(error.PromiseResolutionCycle, a.resolvePromise(p2, .{ .kind = .@"export", .id = p1 }));
+    try drainAll(a, &ra);
+    const frames_before = ra.frames.items.len;
+
+    // A call on p1 parks on p2, which the host can still resolve.
+    try pushFrame(alloc, a, plainCallFrame(alloc, 10, p1));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 0), ra.calls.items.len);
+    const e = try a.exportCap(300);
+    try a.resolvePromise(p2, .{ .kind = .@"export", .id = e });
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), ra.calls.items.len);
+    try testing.expectEqual(e, ra.lastCall().export_id);
+    try testing.expectEqual(@as(u64, 300), ra.lastCall().host_tag);
+    try testing.expect(ra.frames.items.len > frames_before); // the Resolve of p2
+    try testing.expectEqual(@as(usize, 0), ra.close_requested);
+}
+
+test "promise export: a call through a long chain of resolved promise exports does not recurse per link" {
+    // Each link was one more level of recursion in the call path, so a
+    // long enough chain overflowed the stack.
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+
+    // Below the cap table's default bound of 10_000 entries.
+    const links = 9_000;
+    const promises = try alloc.alloc(u32, links);
+    defer alloc.free(promises);
+    for (promises) |*id| id.* = try a.promiseExport();
+    const e = try a.exportCap(300);
+    // Resolve from the end, so no call is parked on a link.
+    try a.resolvePromise(promises[links - 1], .{ .kind = .@"export", .id = e });
+    var i: usize = links - 1;
+    while (i > 0) : (i -= 1) {
+        try a.resolvePromise(promises[i - 1], .{ .kind = .@"export", .id = promises[i] });
+        try drainAll(a, &ra);
+    }
+    try pushFrame(alloc, a, plainCallFrame(alloc, 10, promises[0]));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), ra.calls.items.len);
+    try testing.expectEqual(e, ra.lastCall().export_id);
+}
+
+test "promise export: a cycle that got past the resolve check answers a call with an exception" {
+    // No API makes such a cycle (resolvePromiseExportToExport refuses it);
+    // this guards the call path itself.
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+
+    const p1 = try a.promiseExport();
+    const p2 = try a.promiseExport();
+    try a.resolvePromise(p1, .{ .kind = .@"export", .id = p2 });
+    try drainAll(a, &ra);
+    a.peer.exports.getPtr(p2).?.resolved = .{ .exported = .{ .id = p1 } };
+    defer a.peer.exports.getPtr(p2).?.resolved = null;
+
+    try pushFrame(alloc, a, plainCallFrame(alloc, 10, p1));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 0), ra.calls.items.len);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, 10, .exception));
+}

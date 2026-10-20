@@ -5,9 +5,10 @@
 //!
 //! Drives the C ABI with random operation sequences: two connections wired
 //! back to back (one session in 4 is "clean": it starts with a bootstrap
-//! round trip, pushes no junk or mutated bytes, and uses no promise or
-//! promised capability, so calls reach the hosts and get answered or
-//! finished), every `capnp_*` export called with known and with stale or
+//! round trip and pushes no junk, mutated bytes or forged capability kinds,
+//! so calls reach the hosts, through promise exports and PROMISED
+//! capabilities too, and get answered or finished), every `capnp_*` export
+//! called with known and with stale or
 //! random handles, frames from the other side, from the framing fixtures
 //! (`tests/fixtures/framing/`) and mutated at random, commits without a
 //! `next`, a second `next` before `commit`, ticks, deadlines, cancels,
@@ -117,8 +118,8 @@ const Fuzz = struct {
     fixed_steps: ?usize = null,
     op_mask: [32]bool = @splat(true),
     step: usize = 0,
-    /// This session pushes no junk, mutates no frame, and uses no promise
-    /// export or promised capability (see `session`).
+    /// This session pushes no junk, mutates no frame, and forges no
+    /// capability kind (see `session`).
     clean: bool = false,
     ops: usize = 0,
     sessions: usize = 0,
@@ -149,8 +150,8 @@ const Fuzz = struct {
     }
 
     fn randomCap(self: *Fuzz, side: *Side) Cap {
-        // A clean session: none, import or export (kinds 0..3 below).
-        return switch (self.rand.uintLessThan(u8, if (self.clean) 4 else 6)) {
+        // A clean session forges no kind (kinds 0..4 below).
+        return switch (self.rand.uintLessThan(u8, if (self.clean) 5 else 6)) {
             0 => .{ .kind = .none },
             1, 2 => .{ .kind = .import, .id = self.pickOrRandom(side.imports.items) },
             3 => .{ .kind = .@"export", .id = self.pickOrRandom(side.exports.items) },
@@ -328,9 +329,8 @@ const Fuzz = struct {
             if (tries > 64) return;
             op = self.rand.uintLessThan(u8, 27);
         }
-        // A clean session delivers instead of pushing junk (20, 21) or
-        // using a promise export (13..15).
-        if (self.clean and (op == 20 or op == 21 or (op >= 13 and op <= 15))) op = 26;
+        // A clean session delivers instead of pushing junk (20, 21).
+        if (self.clean and (op == 20 or op == 21)) op = 26;
         switch (op) {
             0 => if (abi.capnp_bootstrap(conn, &out) == abi.CAPNP_OK) try side.open.put(out, {}),
             1, 2, 3, 4 => {

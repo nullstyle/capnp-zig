@@ -347,7 +347,9 @@ int32_t capnp_set_bootstrap(capnp_conn *conn, uint64_t host_tag, uint32_t *out_e
 int32_t capnp_promise_export(capnp_conn *conn, uint32_t *out_promise_id);
 
 /* Resolve promise export promise_id to `to`: one of this connection's EXPORTs,
- * or an IMPORT it holds. Once per promise (CAPNP_E_INVAL afterwards). A no-op
+ * or an IMPORT it holds. Once per promise (CAPNP_E_INVAL afterwards).
+ * CAPNP_E_INVAL, with nothing sent, for the promise itself or a promise
+ * export that resolved back to it: the promise stays unresolved. A no-op
  * once the connection is closed. */
 int32_t capnp_resolve_promise(capnp_conn *conn, uint32_t promise_id, capnp_cap to);
 

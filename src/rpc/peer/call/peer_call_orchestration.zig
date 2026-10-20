@@ -150,11 +150,28 @@ pub fn handleResolvedExportedCallForPeer(
     // through to normal export dispatch. Non-vine exports always return false.
     maybe_forward_export_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, u32) anyerror!bool,
 ) !void {
-    if (try maybe_forward_export_call(peer, call, inbound_caps, export_id)) return;
-
-    const exported_entry = peer.exports.getEntry(export_id) orelse {
-        try send_return_exception(peer, call.question_id, "unknown promised capability");
-        return;
+    // Follow promise exports that resolved to another export of ours here,
+    // one link per turn: a recursion per link overflowed the stack on a long
+    // chain. A cycle (`resolvePromiseExportToExport` refuses to make one)
+    // fails the call once it has taken more links than there are exports.
+    var target_id = export_id;
+    var links: usize = 0;
+    const exported_entry = while (true) {
+        if (try maybe_forward_export_call(peer, call, inbound_caps, target_id)) return;
+        const entry = peer.exports.getEntry(target_id) orelse {
+            try send_return_exception(peer, call.question_id, "unknown promised capability");
+            return;
+        };
+        const next_id = resolvedExportLink(entry.value_ptr.is_promise, entry.value_ptr.resolved) orelse break entry;
+        // Each link of the old recursion noted the call's sendResultsTo
+        // first; the note is idempotent.
+        if (links == 0) try note_call_send_results(peer, call);
+        links += 1;
+        if (links > peer.exports.count()) {
+            try send_return_exception(peer, call.question_id, "promise resolution cycle");
+            return;
+        }
+        target_id = next_id;
     };
     const handler = exported_entry.value_ptr.handler;
 
@@ -173,6 +190,17 @@ pub fn handleResolvedExportedCallForPeer(
         handle_resolved_call,
         send_return_exception,
     );
+}
+
+/// The export a promise export resolved to, when it resolved to another
+/// export of ours; else null.
+fn resolvedExportLink(is_promise: bool, resolved: ?cap_table.ResolvedCap) ?u32 {
+    if (!is_promise) return null;
+    const next = resolved orelse return null;
+    return switch (next) {
+        .exported => |cap| cap.id,
+        else => null,
+    };
 }
 
 pub fn handleResolvedExportedCallForPeerFn(

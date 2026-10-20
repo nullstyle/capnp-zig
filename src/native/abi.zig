@@ -343,6 +343,8 @@ fn codeFor(err: anyerror) i32 {
         error.Invalid,
         error.ExportIsNotPromise,
         error.PromiseAlreadyResolved,
+        // capnp_resolve_promise to the promise itself, or into a cycle.
+        error.PromiseResolutionCycle,
         error.RetainedLoopbackQuestion,
         // capnp_return_canceled before the remote's Finish.
         error.AnswerNotFinished,
