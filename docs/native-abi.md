@@ -37,6 +37,39 @@ Params and results cross the ABI as standalone messages whose capability
 pointers index a `caps[]` table of imports, exports, promised answers and
 null caps. One caller at a time per connection, from any thread.
 
+## Answer ids
+
+The host answers each INBOUND_CALL once, with `capnp_return_results` or
+`capnp_return_exception`. Until that answer, the host owes it, and its id
+stays reserved: the core never hands the host a second INBOUND_CALL with an
+id the host still owes.
+
+A remote that sends a new call with such an id breaks the protocol. The core
+answers the new call with an exception Return (`DuplicateQuestionId`), then
+sends Abort and queues CLOSE_REQUESTED. `capnp_conn_push_bytes` returns
+`CAPNP_E_PROTOCOL`, and `capnp_conn_take_error` names
+`DuplicateQuestionId`. A call that the core kept queued (on a promise
+export, or on an answer) can reach this check later: in
+`capnp_resolve_promise` or `capnp_return_results`. That call returns
+`CAPNP_OK`, and the Abort and CLOSE_REQUESTED follow in the effects.
+
+When the remote sent Finish for the old call and the core keeps a record of
+that Finish, the Peer refuses the reused id itself: Abort, and no Return
+for the new call. That record also refuses a Bootstrap with the id. The
+records are bounded by `max_active_inbound_questions`. When they are full,
+the core can promise only that no second INBOUND_CALL reaches the host: a
+Bootstrap that reuses the id is answered, and the host's late answer for the
+old call then goes out with the same id.
+
+After the host's answer, the remote may reuse the id at once (the C++
+reference hands out the lowest free question id). So a second answer for one
+INBOUND_CALL is a host bug: it gets `CAPNP_E_BAD_ID` only until the remote
+reuses the id, and after that it answers the new call.
+
+The host owes at most `max_active_inbound_questions` answers (default 4096).
+A call beyond that gets an exception Return (`OwedAnswerLimitExceeded`) and
+never reaches the host. The connection stays up.
+
 ## Tail calls
 
 The remote can answer a question with `Return.takeFromOtherQuestion`: the
@@ -73,11 +106,9 @@ question even when its Finish cannot be sent, and `capnp_finish` then
 refuses its id.
 
 The remote's Finish of Y does not end the wait: the host still answers Y.
-If the remote reuses Y's id for a new call before the host answered Y, the
-question ends at once with RETURN EXCEPTION (`failed`, "capnp-swift core:
-the tail-called call's id was reused before its answer";
-`native.conn.tail_call_reused_reason`), because the host's next answer for
-that id could belong to either call.
+A remote that reuses Y's id for a new call before the host answered Y
+closes the connection (see "Answer ids" above). The question then ends at
+transport close, with RETURN DISCONNECTED.
 
 Every other redirect ends the question at once with RETURN EXCEPTION
 (`unimplemented`, "capnp-swift core: unsupported Return variant"). That

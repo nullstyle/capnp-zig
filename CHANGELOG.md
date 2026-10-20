@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **native: a new call that reuses an id the host still owes now closes
+  the connection (Experimental behavior).** After an INBOUND_CALL, the host
+  owes one answer for its id, and the remote must not reuse the id before
+  it gets that Return. The Peer refuses such a call itself
+  while it keeps a record of the remote's Finish of the old call. When
+  those records were full, the core handed the host a second INBOUND_CALL
+  with the same id, so the host's late answer for the old call could
+  answer the new one. A question held on a tail call that waited for the
+  old call ended with RETURN EXCEPTION (`tail_call_reused_reason`). Now the
+  core answers the new call with an exception Return
+  (`DuplicateQuestionId`), sends Abort and queues CLOSE_REQUESTED, and
+  `capnp_conn_push_bytes` returns `CAPNP_E_PROTOCOL`. A call that the Peer
+  kept queued reaches this check when the host releases it: then
+  `capnp_resolve_promise` or `capnp_return_results` returns `CAPNP_OK`, and
+  the Abort and CLOSE_REQUESTED follow in the effects. A held question now
+  ends at transport close, with RETURN DISCONNECTED. The constant
+  `native.conn.tail_call_reused_reason` is removed. This applies to every
+  host. "Answer ids" in docs/native-abi.md gives the rule. The tests are in
+  `src/native/conn_test.zig` ("inbound: a new call that reuses ...", "a
+  queued call ...", "a pipelined call ...", and "tail call: a new call that
+  reuses a held call's id closes the connection; ...").
+  - **Migration:** a host needs no change. Do not use
+    `tail_call_reused_reason`. A remote must not reuse a question id before
+    it gets the Return for it.
+- **native: the host owes at most `max_active_inbound_questions` answers
+  (Experimental behavior).** A call that arrives when the host already owes
+  that many answers (default 4096) now gets an exception Return
+  (`OwedAnswerLimitExceeded`) and never reaches the host. The connection
+  stays up. Before, the core delivered it: the Peer's own limit counts only
+  the calls that the remote has not finished, so a host could owe more. The
+  bound keeps room in the Peer's finished-early records (bounded the same)
+  for each answer the host owes. The test is "inbound: a call beyond
+  max_active_inbound_questions owed answers is refused; ..." in
+  `src/native/conn_test.zig`.
+  - **Migration:** answer every INBOUND_CALL. A host that must owe more
+    answers at once sets `max_active_inbound_questions` higher.
+
 ### Fixed
 
 - **RPC: a late exception Return that fails after the caller's Finish now

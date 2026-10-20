@@ -164,11 +164,6 @@ pub const cancel_reason = "canceled by the host";
 /// on a tail call whose named call's results carry capabilities: they are
 /// not delivered to the question (docs/notes/tail-call-hold-design.md).
 pub const tail_call_caps_reason = "capnp-swift core: tail call results carry capabilities";
-/// Reason text of the RETURN (EXCEPTION, failed) of a question held on a
-/// tail call when the remote reuses the named call's id for a new call
-/// before the host answered the old one: the host's next answer for the id
-/// could belong to either call.
-pub const tail_call_reused_reason = "capnp-swift core: the tail-called call's id was reused before its answer";
 
 /// The name of a Peer observer event tag (`effects.Event.tag`), or "unknown".
 pub fn eventName(tag: u8) [:0]const u8 {
@@ -189,8 +184,11 @@ pub const Conn = struct {
     /// Bootstrap export wrapper (no `deinit_ctx`: the bootstrap export lives
     /// until `deinit`, and never produces EXPORT_DROPPED).
     bootstrap_ctx: ?*ExportCtx = null,
-    /// Answer ids handed to the host as INBOUND_CALL and not yet answered.
-    /// The value is true for a call with `sendResultsTo = yourself`: a
+    /// Answer ids handed to the host as INBOUND_CALL and not yet answered:
+    /// the answers the host owes. An id stays here until the host's one
+    /// answer, so a new call with the same id is refused (`onExportCall`),
+    /// and there are at most `limits.max_active_inbound_questions`. The
+    /// value is true for a call with `sendResultsTo = yourself`: a
     /// tail-call redirect may name it (`held_tail_calls`).
     pending_answers: std.AutoHashMap(u32, bool),
     /// Questions held on a tail call, by the answer id of the call they
@@ -240,6 +238,10 @@ pub const Conn = struct {
     /// The remote closed this connection with an Abort; further input is
     /// refused. Not a protocol failure: the shim sends no Abort back.
     remote_aborted: bool = false,
+    /// Set by `onExportCall` when a new call reuses an id the host still
+    /// owes. The Peer answers that call with an exception; then
+    /// `failOnOwedIdReuse` fails the connection.
+    owed_id_reused: bool = false,
     /// What `capnp_conn_take_error` reports (M1). `error.RemoteAbort` after
     /// a remote Abort, with the remote's reason in `remote_abort_reason`.
     last_error: ?anyerror = null,
@@ -353,10 +355,25 @@ pub const Conn = struct {
     fn handleOneFrame(self: *Conn, frame: []const u8) !void {
         const mark = self.queue.tail;
         self.peer.handleFrame(frame) catch |err| {
+            self.owed_id_reused = false;
             if (err == error.RemoteAbort) return self.closeByRemoteAbort();
             if (!self.abortQueuedSince(mark)) self.sendAbort(err);
             return self.failProtocol(err);
         };
+        if (self.failOnOwedIdReuse()) |err| return err;
+    }
+
+    /// A call reused an id the host still owes (`onExportCall`), and the
+    /// Peer answered it with an exception Return. Now send Abort and fail
+    /// the connection, as for a protocol error. Null when no call did.
+    /// Runs after every Peer entry that can hand a call to the host: a
+    /// frame, and the host calls that release a call the Peer kept queued
+    /// (`resolvePromise`, `returnResults`) or that loop back (`call`).
+    fn failOnOwedIdReuse(self: *Conn) ?error{Protocol} {
+        if (!self.owed_id_reused) return null;
+        self.owed_id_reused = false;
+        self.sendAbort(error.DuplicateQuestionId);
+        return self.failProtocol(error.DuplicateQuestionId);
     }
 
     fn deliverLengthDelimited(self: *Conn, payload: []const u8) anyerror!void {
@@ -458,6 +475,8 @@ pub const Conn = struct {
         flags: u32,
     ) !u32 {
         try self.checkOpen();
+        // A call on one of our own exports loops back to the host.
+        defer _ = self.failOnOwedIdReuse();
         if (flags != 0) return error.Unsupported; // STREAMING: later
         switch (target.kind) {
             .import => if (cap_remap.importRefCount(&self.peer.caps, target.id) == 0) return error.BadId,
@@ -615,6 +634,8 @@ pub const Conn = struct {
     /// or an IMPORT it holds. A no-op once closed.
     pub fn resolvePromise(self: *Conn, promise_id: u32, to: Cap) !void {
         if (self.isClosed()) return;
+        // The calls queued on the promise reach their target now.
+        defer _ = self.failOnOwedIdReuse();
         switch (to.kind) {
             .@"export" => try self.peer.resolvePromiseExportToExport(promise_id, to.id),
             .import => {
@@ -638,6 +659,8 @@ pub const Conn = struct {
         for (caps) |cap| {
             if (cap.kind == .promised and !self.questions.contains(cap.id)) return error.BadId;
         }
+        // The calls pipelined on this answer reach their target now.
+        defer _ = self.failOnOwedIdReuse();
         var bc: ReturnBuildCtx = .{ .conn = self, .msg = msg, .caps = caps };
         try self.peer.sendReturnResults(answer_id, &bc, buildReturn);
         _ = self.pending_answers.remove(answer_id);
@@ -1285,6 +1308,21 @@ fn onExportCall(
     const ec = castPtr(ExportCtx, ctx);
     const self = ec.conn;
     if (self.discarding) return error.ConnectionClosing;
+    // The host still owes an answer for this id: the remote reused it
+    // before our Return (the Peer refuses that itself while it keeps a
+    // record of the finished call; without one it cannot). The host's
+    // late answer could reach either call, so never hand it a second one:
+    // the Peer answers this call with an exception, then the connection
+    // fails (`failOnOwedIdReuse`).
+    if (self.pending_answers.contains(call_msg.question_id)) {
+        self.owed_id_reused = true;
+        return error.DuplicateQuestionId;
+    }
+    // Bound the answers the host owes, so the Peer's finished-early records
+    // (bounded the same) have room for every one the remote finishes.
+    if (self.pending_answers.count() >= self.peer.limits.max_active_inbound_questions) {
+        return error.OwedAnswerLimitExceeded;
+    }
     const node = try effects.Node.create(self.allocator);
     errdefer node.destroy(self.allocator);
     try self.pending_answers.ensureUnusedCapacity(1);
@@ -1303,10 +1341,6 @@ fn onExportCall(
         .msg = in.msg,
         .caps = in.caps,
     } };
-    // The remote reused the id of a call a question is held on before the
-    // host answered it: the host's next answer for the id could belong to
-    // either call, so that question ends now.
-    self.endHeld(call_msg.question_id, tail_call_reused_reason, .failed, false);
     self.pending_answers.putAssumeCapacity(call_msg.question_id, call_msg.send_results_to.tag == .yourself);
     self.pushNode(node);
     // No reply here: the host answers later with returnResults/returnException.

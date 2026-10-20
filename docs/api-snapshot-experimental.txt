@@ -314,6 +314,7 @@ capnpc-zig.native.conn.Conn.live_questions: field ?*native.conn.QuestionCtx = nu
 capnpc-zig.native.conn.Conn.local_disconnect: field bool = false
 capnpc-zig.native.conn.Conn.nextEffect: fn (*native.conn.Conn) error{Busy}!?*const native.effects.Effect
 capnpc-zig.native.conn.Conn.now_ns: field i64 = 0
+capnpc-zig.native.conn.Conn.owed_id_reused: field bool = false
 capnpc-zig.native.conn.Conn.peer: field rpc.peer.mod.Peer
 capnpc-zig.native.conn.Conn.pending_answers: field hash_map.HashMap(u32,bool,hash_map.AutoContext(u32),80)
 capnpc-zig.native.conn.Conn.promiseExport: fn (*native.conn.Conn) error{CapTableFull,Closed,OutOfMemory}!u32
@@ -373,7 +374,6 @@ capnpc-zig.native.conn.oom_results_reason: const *const [47:0]u8
 capnpc-zig.native.conn.oversized_results_reason: const *const [62:0]u8
 capnpc-zig.native.conn.promised_results_reason: const *const [65:0]u8
 capnpc-zig.native.conn.tail_call_caps_reason: const *const [54:0]u8
-capnpc-zig.native.conn.tail_call_reused_reason: const *const [72:0]u8
 capnpc-zig.native.conn: struct
 capnpc-zig.native.effects.Cap.id: field u32 = 0
 capnpc-zig.native.effects.Cap.kind: field native.effects.CapKind
