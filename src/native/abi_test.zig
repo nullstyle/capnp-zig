@@ -42,6 +42,8 @@ const Call = struct {
 
 const Dropped = struct { export_id: u32, host_tag: u64 };
 
+const Finished = struct { answer_id: u32, export_id: u32, host_tag: u64 };
+
 const Side = struct {
     a: std.mem.Allocator,
     conn: *c.capnp_conn,
@@ -49,6 +51,9 @@ const Side = struct {
     calls: std.ArrayList(Call) = .empty,
     dropped: std.ArrayList(Dropped) = .empty,
     frames: std.ArrayList([]u8) = .empty,
+    finished: std.ArrayList(Finished) = .empty,
+    /// The kind of every drained effect, in drain order.
+    kinds: std.ArrayList(u8) = .empty,
     events: usize = 0,
     close_requested: usize = 0,
 
@@ -71,6 +76,8 @@ const Side = struct {
         self.calls.deinit(self.a);
         self.dropped.deinit(self.a);
         self.frames.deinit(self.a);
+        self.finished.deinit(self.a);
+        self.kinds.deinit(self.a);
         c.capnp_conn_free(self.conn);
     }
 
@@ -89,6 +96,14 @@ const Side = struct {
 
     fn lastCall(self: *Side) Call {
         return self.calls.items[self.calls.items.len - 1];
+    }
+
+    fn countFinished(self: *Side, answer_id: u32) usize {
+        var n: usize = 0;
+        for (self.finished.items) |f| {
+            if (f.answer_id == answer_id) n += 1;
+        }
+        return n;
     }
 };
 
@@ -129,6 +144,7 @@ fn drainOne(src: *Side, dst: ?*Side) !bool {
     try testing.expectEqual(@as(i32, 1), rc);
     try testing.expectEqual(@as(u32, @sizeOf(c.capnp_effect)), e.struct_size);
     defer c.capnp_conn_commit_effect(src.conn);
+    try src.kinds.append(src.a, e.kind);
     switch (e.kind) {
         c.CAPNP_EFFECT_OUT_FRAME => {
             try testing.expect(e.msg_len > 0);
@@ -159,6 +175,17 @@ fn drainOne(src: *Side, dst: ?*Side) !bool {
         }),
         c.CAPNP_EFFECT_EXPORT_DROPPED => try src.dropped.append(src.a, .{ .export_id = e.export_id, .host_tag = e.host_tag }),
         c.CAPNP_EFFECT_EVENT => src.events += 1,
+        c.CAPNP_EFFECT_ANSWER_FINISHED => {
+            // Only id, export_id and host_tag are set.
+            try testing.expectEqual(@as(u8, 0), e.return_kind);
+            try testing.expectEqual(@as(u8, 0), e.event_tag);
+            try testing.expectEqual(@as(u16, 0), e.exception_type);
+            try testing.expectEqual(@as(u16, 0), e.method_id);
+            try testing.expectEqual(@as(u64, 0), e.interface_id);
+            try testing.expect(e.msg == null and e.caps == null and e.reason == null);
+            try testing.expectEqual(@as(usize, 0), e.msg_len + e.ncaps + e.reason_len);
+            try src.finished.append(src.a, .{ .answer_id = e.id, .export_id = e.export_id, .host_tag = e.host_tag });
+        },
         else => return error.TestUnknownEffectKind,
     }
     return true;
@@ -1140,4 +1167,168 @@ test "u32_le: accepted, wire frames carry the prefix, alpn exported" {
     const alpn = std.mem.span(c.capnp_core_quic_alpn());
     try testing.expectEqualStrings("capnp-rpc/1", alpn);
     try testing.expectEqual(c.CAPNP_FRAMING_U32_LE, @as(u8, 1));
+}
+
+// ---------------------------------------------------------------------------
+// ANSWER_FINISHED (capnp-swift handoff H13)
+// ---------------------------------------------------------------------------
+
+fn finishedOpts() c.capnp_conn_opts {
+    var opts = defaultOpts();
+    opts.answer_finished = 1;
+    return opts;
+}
+
+/// Return OUT_FRAMEs that `s` kept for `answer_id`: all of them, or only
+/// those with `tag`.
+fn countReturnFrames(s: *Side, answer_id: u32, tag: ?protocol.ReturnTag) !usize {
+    var n: usize = 0;
+    for (s.frames.items) |bytes| {
+        var d = try protocol.DecodedMessage.init(testing.allocator, bytes);
+        defer d.deinit();
+        if (d.tag != .@"return") continue;
+        const ret = try d.asReturn();
+        if (ret.answer_id != answer_id) continue;
+        if (tag) |want| {
+            if (ret.tag != want) continue;
+        }
+        n += 1;
+    }
+    return n;
+}
+
+/// Push every frame `from` kept into `to`, then forget them.
+fn deliverKept(from: *Side, to: *Side) !void {
+    for (from.frames.items) |f| {
+        try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_conn_push_bytes(to.conn, f.ptr, f.len));
+        from.a.free(f);
+    }
+    from.frames.clearRetainingCapacity();
+}
+
+test "answer finished: the feature bit, and the opts field at offset 56 of 60 bytes" {
+    try testing.expect(c.capnp_core_features() & c.CAPNP_FEATURE_ANSWER_FINISHED != 0);
+    try testing.expectEqual(@as(usize, 56), @offsetOf(c.capnp_conn_opts, "answer_finished"));
+    try testing.expectEqual(@as(usize, 60), @sizeOf(c.capnp_conn_opts));
+    // 0 and 1 only.
+    var out: ?*c.capnp_conn = null;
+    var opts = defaultOpts();
+    opts.answer_finished = 2;
+    try testing.expectEqual(@as(i32, c.CAPNP_E_INVAL), c.capnp_conn_new(&opts, 0, &out));
+    try testing.expect(out == null);
+}
+
+test "answer finished: the caller's cancel gives the callee one ANSWER_FINISHED; capnp_return_canceled answers it once" {
+    const a = testing.allocator;
+    var sa = try newSide(a);
+    defer sa.deinit();
+    const ob = finishedOpts();
+    var sb = Side.init(a, try newConn(&ob, 0));
+    defer sb.deinit();
+    const ib = try connectPair(&sa, &sb, 100);
+    const p = try msgU64(a, 1);
+    defer a.free(p);
+
+    const q = try call(&sa, ib, 3, p, &.{});
+    try pump(&sa, &sb);
+    const ic = sb.lastCall();
+    // No Finish yet: nothing to report, and a canceled answer is refused.
+    try testing.expectEqual(@as(usize, 0), sb.finished.items.len);
+    try testing.expectEqual(@as(i32, c.CAPNP_E_INVAL), c.capnp_return_canceled(sb.conn, ic.answer_id));
+    try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_canceled(sb.conn, ic.answer_id + 1000));
+
+    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_cancel(sa.conn, q));
+    try pump(&sa, &sb); // the Finish reaches B
+    try testing.expectEqual(@as(usize, 1), sb.finished.items.len);
+    const f = sb.finished.items[0];
+    try testing.expectEqual(ic.answer_id, f.answer_id);
+    try testing.expectEqual(ic.export_id, f.export_id);
+    try testing.expectEqual(ic.host_tag, f.host_tag);
+    try testing.expectEqual(@as(u64, 100), f.host_tag);
+
+    // One Return{canceled} on the wire; the answer is gone.
+    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_canceled(sb.conn, ic.answer_id));
+    try drainAll(&sb);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&sb, ic.answer_id, .canceled));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&sb, ic.answer_id, null));
+    try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_canceled(sb.conn, ic.answer_id));
+    try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_results(sb.conn, ic.answer_id, p.ptr, p.len, null, 0));
+    try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_exception(sb.conn, ic.answer_id, 0, null, 0));
+    try drainAll(&sb);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&sb, ic.answer_id, null));
+    // A absorbs the late Return: q still has its one RETURN CANCELED.
+    try deliverKept(&sb, &sa);
+    try pump(&sa, &sb);
+    try testing.expectEqual(@as(usize, 1), sa.countReturns(q));
+    try testing.expectEqual(@as(u8, c.CAPNP_RETURN_CANCELED), (sa.returnFor(q) orelse return error.TestNoReturn).kind);
+
+    // The connection is healthy: another call round-trips.
+    const q2 = try call(&sa, ib, 1, p, &.{});
+    try pump(&sa, &sb);
+    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_results(sb.conn, sb.lastCall().answer_id, p.ptr, p.len, null, 0));
+    try pump(&sa, &sb);
+    try testing.expectEqual(@as(u8, c.CAPNP_RETURN_RESULTS), (sa.returnFor(q2) orelse return error.TestNoReturn).kind);
+    try testing.expectEqual(@as(usize, 1), sb.finished.items.len);
+    try testing.expectEqual(@as(usize, 0), sa.close_requested + sb.close_requested);
+}
+
+test "answer finished: without the opt-in no effect, capnp_return_canceled is CAPNP_E_INVAL, the late answer is accepted once" {
+    const a = testing.allocator;
+    const p = try msgU64(a, 1);
+    defer a.free(p);
+    // An older host: its struct ends before answer_finished, so the core
+    // reads 0 although the field holds 1. A new host that leaves it 0.
+    for ([_]bool{ true, false }) |old_struct| {
+        var ob = defaultOpts();
+        if (old_struct) {
+            ob.struct_size = @offsetOf(c.capnp_conn_opts, "answer_finished");
+            ob.answer_finished = 1;
+        }
+        var sa = try newSide(a);
+        defer sa.deinit();
+        var sb = Side.init(a, try newConn(&ob, 0));
+        defer sb.deinit();
+        const ib = try connectPair(&sa, &sb, 100);
+        const q = try call(&sa, ib, 0, p, &.{});
+        try pump(&sa, &sb);
+        const ic = sb.lastCall();
+        try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_cancel(sa.conn, q));
+        try pump(&sa, &sb);
+        try testing.expectEqual(@as(usize, 0), sb.finished.items.len);
+        for (sb.kinds.items) |k| try testing.expect(k != c.CAPNP_EFFECT_ANSWER_FINISHED);
+        try testing.expectEqual(@as(i32, c.CAPNP_E_INVAL), c.capnp_return_canceled(sb.conn, ic.answer_id));
+        try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_results(sb.conn, ic.answer_id, p.ptr, p.len, null, 0));
+        try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_results(sb.conn, ic.answer_id, p.ptr, p.len, null, 0));
+        try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_canceled(sb.conn, ic.answer_id));
+        try pump(&sa, &sb);
+        try testing.expectEqual(@as(usize, 1), sa.countReturns(q));
+    }
+}
+
+test "answer finished: an answer before the host drains the effect makes it stale; it drains before that answer's Return" {
+    const a = testing.allocator;
+    var sa = try newSide(a);
+    defer sa.deinit();
+    const ob = finishedOpts();
+    var sb = Side.init(a, try newConn(&ob, 0));
+    defer sb.deinit();
+    const ib = try connectPair(&sa, &sb, 100);
+    const p = try msgU64(a, 1);
+    defer a.free(p);
+    const q = try call(&sa, ib, 0, p, &.{});
+    try pump(&sa, &sb);
+    const ic = sb.lastCall();
+
+    // The Finish reaches B, and B's host answers before it drains B.
+    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_cancel(sa.conn, q));
+    try drainAll(&sa);
+    try deliverKept(&sa, &sb);
+    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_results(sb.conn, ic.answer_id, p.ptr, p.len, null, 0));
+    const seen = sb.kinds.items.len;
+    try drainAll(&sb);
+    try testing.expectEqualSlices(u8, &.{ c.CAPNP_EFFECT_ANSWER_FINISHED, c.CAPNP_EFFECT_OUT_FRAME }, sb.kinds.items[seen..]);
+    try testing.expectEqual(ic.answer_id, sb.finished.items[0].answer_id);
+    // Stale: the host already answered.
+    try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_canceled(sb.conn, ic.answer_id));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&sb, ic.answer_id, null));
 }

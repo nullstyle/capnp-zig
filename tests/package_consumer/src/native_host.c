@@ -25,10 +25,13 @@ int main(void) {
     if (capnp_core_debug_selftest(&failure) != 0) return fail(4, failure ? failure : "selftest");
 
     /* One connection driven from C: a bootstrap goes out as an OUT_FRAME;
-     * when the transport closes, the question ends with RETURN DISCONNECTED. */
+     * when the transport closes, the question ends with RETURN DISCONNECTED.
+     * It opts in to ANSWER_FINISHED, which this core has. */
+    if ((capnp_core_features() & CAPNP_FEATURE_ANSWER_FINISHED) == 0) return fail(9, "CAPNP_FEATURE_ANSWER_FINISHED");
     capnp_conn_opts opts;
     memset(&opts, 0, sizeof opts);
     opts.struct_size = sizeof opts;
+    opts.answer_finished = 1;
     capnp_conn *conn = NULL;
     if (capnp_conn_new(&opts, 0, &conn) != CAPNP_OK || conn == NULL) return fail(5, "capnp_conn_new");
     uint32_t qid = 0;

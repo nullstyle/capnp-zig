@@ -13,16 +13,18 @@
 //!
 //! Peer API used (written against capnp-zig v0.21.0, `src/rpc/peer/mod.zig`):
 //!   initDetachedWithLimits, disableThreadAffinity, attachTransportBinding,
-//!   setClock, setTimeouts, setObserver, start, handleFrame,
+//!   setClock, setTimeouts, setObserver, setAnswerFinishedHandler, start,
+//!   handleFrame,
 //!   notifyTransportClosed, checkDeadlines, sendBuilder, sendBootstrap,
 //!   sendCallWithOptions and sendCallPromisedWithOpsWithOptions (+ CallOptions
 //!   .retained), setQuestionDeinitCtx, finishRetainedQuestion,
 //!   cancelQuestionTyped, setQuestionDeadline, releaseImport,
 //!   addExportWithDeinit, setBootstrap, addPromiseExport,
 //!   resolvePromiseExportToExport/ToImport/ToException, shutdown,
-//!   sendReturnResults, sendReturnExceptionTyped, getLastRemoteAbortReason,
-//!   deinit; field `caps` (the cap table) is read for handle validation and
-//!   written to note PROMISED payload caps (cap_remap.zig).
+//!   sendReturnResults, sendReturnExceptionTyped, sendReturnCanceled,
+//!   getLastRemoteAbortReason, deinit; field `caps` (the cap table) is read
+//!   for handle validation and written to note PROMISED payload caps
+//!   (cap_remap.zig); field `limits` is read for the owed-answer bound.
 
 const std = @import("std");
 const capnp = @import("capnpc-zig");
@@ -60,6 +62,39 @@ pub const Options = struct {
     /// little-endian u32 length on the way out and de-prefixed on the way
     /// in, matching capnp-zig's QUIC baseline `LengthDelimitedFramer`.
     framing: Framing = .segment_table,
+    /// Queue one ANSWER_FINISHED effect when the remote sends Finish for an
+    /// INBOUND_CALL that the host has not answered (capnp-swift handoff
+    /// H13); the host may then answer it with `returnCanceled`. Off: no such
+    /// effect, and `returnCanceled` refuses every id.
+    answer_finished: bool = false,
+};
+
+/// One answer the host owes (`Conn.pending_answers`).
+pub const PendingAnswer = struct {
+    /// The call has `sendResultsTo = yourself`: a tail-call redirect may
+    /// name it (`Conn.held_tail_calls`).
+    yourself: bool,
+    /// The INBOUND_CALL's export id and host tag; ANSWER_FINISHED repeats
+    /// them.
+    export_id: u32,
+    host_tag: u64,
+    finish: FinishState = .none,
+    /// The ANSWER_FINISHED node reserved when the call was handed to the
+    /// host (only with `Options.answer_finished`), so the effect never needs
+    /// memory: the Peer's handler cannot fail. Null once queued.
+    node: ?*effects.Node = null,
+};
+
+/// What the host has been told about the remote's Finish of a call it owes.
+pub const FinishState = enum {
+    /// No Finish reported (none came, or the opt-in is off).
+    none,
+    /// The remote finished the call while a question held on a tail call
+    /// waits for its answer: ANSWER_FINISHED is withheld until that hold
+    /// ends without the answer (`Conn.endHeld`).
+    withheld,
+    /// ANSWER_FINISHED is queued; `Conn.returnCanceled` may answer.
+    reported,
 };
 
 /// The byte-stream framing of one connection (Options.framing).
@@ -187,10 +222,11 @@ pub const Conn = struct {
     /// Answer ids handed to the host as INBOUND_CALL and not yet answered:
     /// the answers the host owes. An id stays here until the host's one
     /// answer, so a new call with the same id is refused (`onExportCall`),
-    /// and there are at most `limits.max_active_inbound_questions`. The
-    /// value is true for a call with `sendResultsTo = yourself`: a
-    /// tail-call redirect may name it (`held_tail_calls`).
-    pending_answers: std.AutoHashMap(u32, bool),
+    /// and there are at most `limits.max_active_inbound_questions`.
+    pending_answers: std.AutoHashMap(u32, PendingAnswer),
+    /// `Options.answer_finished`: each call handed to the host reserves its
+    /// ANSWER_FINISHED node (`PendingAnswer.node`).
+    answer_finished: bool = false,
     /// Questions held on a tail call, by the answer id of the call they
     /// wait for (docs/notes/tail-call-hold-design.md). The remote answered
     /// each with `takeFromOtherQuestion` naming a `yourself` call that is in
@@ -264,11 +300,12 @@ pub const Conn = struct {
             .framer = Framer.initWithOptions(allocator, .{ .max_buffered_bytes = opts.max_frame_bytes }),
             .framing = opts.framing,
             .length_codec = .{ .max_bytes = opts.max_frame_bytes },
-            .pending_answers = std.AutoHashMap(u32, bool).init(allocator),
+            .pending_answers = std.AutoHashMap(u32, PendingAnswer).init(allocator),
             .held_tail_calls = std.AutoHashMap(u32, *QuestionCtx).init(allocator),
             .questions = std.AutoHashMap(u32, *QuestionCtx).init(allocator),
             .close_node = close_node,
             .now_ns = opts.now_ns,
+            .answer_finished = opts.answer_finished,
         };
         // Swift actors hop threads; the host serializes calls per connection.
         self.peer.disableThreadAffinity();
@@ -283,6 +320,7 @@ pub const Conn = struct {
         self.peer.setClock(.{ .ctx = self, .now_fn = clockNow });
         if (opts.timeouts) |t| self.peer.setTimeouts(t);
         if (opts.observer) self.peer.setObserver(.{ .ctx = self, .on_event = onEvent });
+        if (opts.answer_finished) self.peer.setAnswerFinishedHandler(self, onAnswerFinished);
         self.peer.start(self, onPeerError, onPeerClose);
         return self;
     }
@@ -311,6 +349,11 @@ pub const Conn = struct {
         self.queue.deinit(a);
         // After the queue: RETURN effects may borrow it.
         if (self.remote_abort_reason) |r| a.free(r);
+        // ANSWER_FINISHED nodes reserved for answers still owed.
+        var owed = self.pending_answers.valueIterator();
+        while (owed.next()) |pa| {
+            if (pa.node) |n| n.destroy(a);
+        }
         self.pending_answers.deinit();
         self.questions.deinit();
         self.framer.deinit();
@@ -663,7 +706,7 @@ pub const Conn = struct {
         defer _ = self.failOnOwedIdReuse();
         var bc: ReturnBuildCtx = .{ .conn = self, .msg = msg, .caps = caps };
         try self.peer.sendReturnResults(answer_id, &bc, buildReturn);
-        _ = self.pending_answers.remove(answer_id);
+        self.removePendingAnswer(answer_id);
         // A question held on this call gets these results as its RETURN.
         if (self.takeHold(answer_id)) |qc| self.endHeldWithResults(qc, msg, caps);
     }
@@ -672,9 +715,45 @@ pub const Conn = struct {
     pub fn returnException(self: *Conn, answer_id: u32, exception_type: u16, reason: []const u8) !void {
         if (!self.pending_answers.contains(answer_id)) return error.BadId;
         try self.peer.sendReturnExceptionTyped(answer_id, reason, @fromBackingInt(exception_type));
-        _ = self.pending_answers.remove(answer_id);
+        self.removePendingAnswer(answer_id);
         // A question held on this call gets this exception as its RETURN.
         self.endHeld(answer_id, reason, @fromBackingInt(exception_type), false);
+    }
+
+    /// Answer an INBOUND_CALL that the remote finished with `Return{canceled}`
+    /// (handoff H13). `error.BadId` when the host does not owe the answer;
+    /// `error.Invalid` unless ANSWER_FINISHED was queued for it (the opt-in
+    /// is off, no Finish came, or a tail-call hold withholds it). A Peer
+    /// error (out of memory, a failed send) sends nothing and leaves the
+    /// answer owed. After ANSWER_FINISHED the host may also answer with
+    /// `returnResults` or `returnException`; it answers once.
+    pub fn returnCanceled(self: *Conn, answer_id: u32) !void {
+        const owed = self.pending_answers.get(answer_id) orelse return error.BadId;
+        if (owed.finish != .reported) return error.Invalid;
+        // `reported` means no question is held on this call (`holdTailCall`).
+        std.debug.assert(!self.held_tail_calls.contains(answer_id));
+        try self.peer.sendReturnCanceled(answer_id);
+        self.removePendingAnswer(answer_id);
+    }
+
+    /// The host answered `answer_id`: it owes nothing more, and its
+    /// ANSWER_FINISHED node, if still reserved, is freed.
+    fn removePendingAnswer(self: *Conn, answer_id: u32) void {
+        const entry = self.pending_answers.fetchRemove(answer_id) orelse return;
+        if (entry.value.node) |n| n.destroy(self.allocator);
+    }
+
+    /// Queue ANSWER_FINISHED for `answer_id` from its reserved node.
+    fn reportAnswerFinished(self: *Conn, answer_id: u32, owed: *PendingAnswer) void {
+        const node = owed.node orelse return;
+        owed.node = null;
+        owed.finish = .reported;
+        node.effect = .{ .answer_finished = .{
+            .answer_id = answer_id,
+            .export_id = owed.export_id,
+            .host_tag = owed.host_tag,
+        } };
+        self.pushNode(node);
     }
 
     // ------------------------------------------------------------------
@@ -694,8 +773,10 @@ pub const Conn = struct {
             if (entry.is_loopback) return false;
         }
         const answer_id = ret.take_from_other_question orelse return false;
-        const yourself = self.pending_answers.get(answer_id) orelse return false;
-        if (!yourself) return false;
+        const owed = self.pending_answers.get(answer_id) orelse return false;
+        // A call already reported finished is never held: the host may
+        // answer it canceled, which is no answer for the question.
+        if (!owed.yourself or owed.finish != .none) return false;
         const slot = self.held_tail_calls.getOrPut(answer_id) catch return false;
         if (slot.found_existing) return false;
         slot.value_ptr.* = qc;
@@ -740,6 +821,13 @@ pub const Conn = struct {
             node.freePayload(self.allocator);
             node.effect = .{ .@"return" = self.fallbackReturn(ret, canceled, err) };
         };
+        // The hold ended without the host's answer (an answer removes the
+        // call from `pending_answers` first): report the remote's Finish of
+        // the call now, if the hold withheld it. Before the RETURN, so it
+        // also comes before a close request that the RETURN lets through.
+        if (self.pending_answers.getPtr(answer_id)) |owed| {
+            if (owed.finish == .withheld) self.reportAnswerFinished(answer_id, owed);
+        }
         self.queueHeldReturn(qc);
     }
 
@@ -1208,6 +1296,23 @@ fn onPeerClose(_: ?*anyopaque, _: *Peer) void {
     // Only reached from `notifyTransportClosed`, i.e. the host already knows.
 }
 
+/// The Peer's answer-finished handler (`Options.answer_finished`): the
+/// remote sent Finish for a call the host owes, and the Peer keeps a record
+/// of it (it runs at most once per answer). Queue ANSWER_FINISHED from the
+/// call's reserved node, or withhold it while a question held on a tail
+/// call waits for the answer (`Conn.endHeld` reports it).
+fn onAnswerFinished(ctx: *anyopaque, _: *Peer, answer_id: u32, _: bool) void {
+    const self = castPtr(Conn, ctx);
+    if (self.discarding) return;
+    const owed = self.pending_answers.getPtr(answer_id) orelse return;
+    if (owed.finish != .none) return;
+    if (self.held_tail_calls.contains(answer_id)) {
+        owed.finish = .withheld;
+        return;
+    }
+    self.reportAnswerFinished(answer_id, owed);
+}
+
 fn onEvent(ctx: *anyopaque, event: events.Event) void {
     const self = castPtr(Conn, ctx);
     if (self.discarding) return;
@@ -1326,6 +1431,9 @@ fn onExportCall(
     const node = try effects.Node.create(self.allocator);
     errdefer node.destroy(self.allocator);
     try self.pending_answers.ensureUnusedCapacity(1);
+    // With the opt-in, the ANSWER_FINISHED node is reserved now.
+    const finished_node: ?*effects.Node = if (self.answer_finished) try effects.Node.create(self.allocator) else null;
+    errdefer if (finished_node) |n| n.destroy(self.allocator);
     // Retains the param imports as its last step; nothing below may fail.
     // An error here (e.g. error.PayloadCopyExceedsFrame for aliased params)
     // makes the Peer answer the call with an exception named after it.
@@ -1341,7 +1449,12 @@ fn onExportCall(
         .msg = in.msg,
         .caps = in.caps,
     } };
-    self.pending_answers.putAssumeCapacity(call_msg.question_id, call_msg.send_results_to.tag == .yourself);
+    self.pending_answers.putAssumeCapacity(call_msg.question_id, .{
+        .yourself = call_msg.send_results_to.tag == .yourself,
+        .export_id = ec.export_id,
+        .host_tag = ec.host_tag,
+        .node = finished_node,
+    });
     self.pushNode(node);
     // No reply here: the host answers later with returnResults/returnException.
 }

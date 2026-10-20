@@ -105,7 +105,8 @@ fn buildNative(
             .link_libc = true,
         }),
     });
-    host.root_module.addCSourceFile(.{ .file = b.path("src/native_host.c") });
+    // A C host built with warnings as errors must compile the header.
+    host.root_module.addCSourceFile(.{ .file = b.path("src/native_host.c"), .flags = &.{ "-Wall", "-Wextra", "-Werror" } });
     host.root_module.linkLibrary(core);
     b.installArtifact(host);
 }

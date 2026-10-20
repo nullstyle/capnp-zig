@@ -18,7 +18,7 @@
 //! `capnp_set_deadline`, `capnp_finish`, `capnp_release`, `capnp_export`,
 //! `capnp_set_bootstrap`, `capnp_promise_export`, `capnp_resolve_promise`,
 //! `capnp_reject_promise`, `capnp_return_results`, `capnp_return_exception`,
-//! `capnp_core_event_name`). The logic lives in `conn.zig` (Zig API, tested
+//! `capnp_return_canceled`, `capnp_core_event_name`). The logic lives in `conn.zig` (Zig API, tested
 //! by `conn_test.zig`); this file is the C-type adapter, tested through the
 //! header by `abi_test.zig` (`zig build test-native-abi`) and, with a
 //! counting allocator, by its own tests below.
@@ -36,8 +36,12 @@ const Conn = conn_mod.Conn;
 /// Must equal `CAPNP_CORE_ABI_VERSION` in `capnp_core.h` (checked by a test).
 pub const abi_version: u32 = 1;
 
-/// Feature bits reported by `capnp_core_features()`. None are defined in M0.
-pub const features: u64 = 0;
+/// `capnp_conn_opts.answer_finished`, `CAPNP_EFFECT_ANSWER_FINISHED` and
+/// `capnp_return_canceled` exist (capnp-swift handoff H13).
+pub const CAPNP_FEATURE_ANSWER_FINISHED: u64 = 1 << 0;
+
+/// Feature bits reported by `capnp_core_features()`.
+pub const features: u64 = CAPNP_FEATURE_ANSWER_FINISHED;
 
 /// "core <core version> / capnp-zig <pinned version> / <pinned hash>" (plan
 /// §4, §10: each release reports the exact capnp-zig package it pins). Only
@@ -181,6 +185,8 @@ pub const capnp_conn_opts = extern struct {
     max_pending_promises: u32,
     max_pending_export_promises: u32,
     max_resolved_imports: u32,
+    // H13 (appended; an older struct_size reads 0): 0 off, 1 on.
+    answer_finished: u32,
 };
 
 /// `capnp_cap` is `effects.Cap` itself (an extern struct), so host `caps[]`
@@ -328,6 +334,8 @@ fn codeFor(err: anyerror) i32 {
         error.RetainedQuestionAlreadyTransferred,
         error.RetainedQuestionNoFinishNeeded,
         error.RetainedQuestionNotTransferred,
+        // capnp_return_canceled: the Peer knows of no answer owed for the id.
+        error.AnswerNotOwed,
         => CAPNP_E_BAD_ID,
         error.Protocol => CAPNP_E_PROTOCOL,
         error.Unsupported,
@@ -336,6 +344,8 @@ fn codeFor(err: anyerror) i32 {
         error.ExportIsNotPromise,
         error.PromiseAlreadyResolved,
         error.RetainedLoopbackQuestion,
+        // capnp_return_canceled before the remote's Finish.
+        error.AnswerNotFinished,
         => CAPNP_E_INVAL,
         error.OutOfMemory => CAPNP_E_NOMEM,
         error.PeerLimitExceeded,
@@ -376,6 +386,7 @@ pub export fn capnp_conn_new(opts: ?*const capnp_conn_opts, now_uptime_ns: i64, 
         CAPNP_FRAMING_U32_LE => .u32_le,
         else => return CAPNP_E_INVAL,
     };
+    if (o.answer_finished > 1) return CAPNP_E_INVAL;
 
     var limits: rpc.peer.PeerLimits = .{};
     if (o.max_outbound_questions != 0) limits.max_outbound_questions = o.max_outbound_questions;
@@ -400,6 +411,7 @@ pub export fn capnp_conn_new(opts: ?*const capnp_conn_opts, now_uptime_ns: i64, 
         .max_frame_bytes = if (o.max_frame_bytes != 0) o.max_frame_bytes else rpc.wire.framing.Framer.default_max_buffered_bytes,
         .observer = o.observer != 0,
         .framing = framing,
+        .answer_finished = o.answer_finished == 1,
     }) catch |err| {
         gpa.destroy(h);
         return codeFor(err);
@@ -533,6 +545,12 @@ pub export fn capnp_conn_next_effect(c: ?*capnp_conn, out: ?*capnp_effect) callc
             e.event_tag = ev.tag;
             e.reason = ptrOrNull(u8, ev.err_name);
             e.reason_len = ev.err_name.len;
+        },
+        .answer_finished => |f| {
+            e.kind = @backingInt(effects.Kind.answer_finished);
+            e.id = f.answer_id;
+            e.export_id = f.export_id;
+            e.host_tag = f.host_tag;
         },
     }
     // struct_size versioning: fill only what the caller has room for, and
@@ -710,6 +728,16 @@ pub export fn capnp_return_exception(
     return CAPNP_OK;
 }
 
+/// Answer an INBOUND_CALL that the remote finished (after its
+/// `CAPNP_EFFECT_ANSWER_FINISHED`) with `Return{canceled}` (H13).
+pub export fn capnp_return_canceled(c: ?*capnp_conn, answer_id: u32) callconv(.c) i32 {
+    const h = handleOf(c) orelse return CAPNP_E_INVAL;
+    h.enter();
+    defer h.leave();
+    h.conn.returnCanceled(answer_id) catch |err| return codeFor(err);
+    return CAPNP_OK;
+}
+
 /// The host's `caps[]` may only hold the four known kinds (a stray byte from
 /// C would otherwise reach a Zig `enum(u8)` switch), and a PROMISED entry
 /// with ops must point at them.
@@ -751,6 +779,9 @@ test "codeFor: the plan's error map" {
     try testing.expectEqual(CAPNP_E_BUSY, codeFor(error.Busy));
     // capnp_finish on a question with no RETURN yet (capnp_core.h).
     try testing.expectEqual(CAPNP_E_BUSY, codeFor(error.RetainedQuestionPending));
+    // capnp_return_canceled refused by the Peer.
+    try testing.expectEqual(CAPNP_E_BAD_ID, codeFor(error.AnswerNotOwed));
+    try testing.expectEqual(CAPNP_E_INVAL, codeFor(error.AnswerNotFinished));
     try testing.expectEqual(CAPNP_E_CLOSED, codeFor(error.Closed));
     try testing.expectEqual(CAPNP_E_CLOSED, codeFor(error.RemoteAbort));
     try testing.expectEqual(CAPNP_E_BAD_ID, codeFor(error.BadId));
@@ -780,6 +811,7 @@ test "counting allocator: 0 live bytes after capnp_conn_free, through every M1/M
     var opts: capnp_conn_opts = std.mem.zeroes(capnp_conn_opts);
     opts.struct_size = @sizeOf(capnp_conn_opts);
     opts.shutdown_drain_timeout_ms = 100;
+    opts.answer_finished = 1;
     var a: ?*capnp_conn = null;
     var b: ?*capnp_conn = null;
     try testing.expectEqual(CAPNP_OK, capnp_conn_new(&opts, 0, &a));
@@ -809,6 +841,13 @@ test "counting allocator: 0 live bytes after capnp_conn_free, through every M1/M
     try testing.expectEqual(CAPNP_OK, capnp_call(a, .{ .kind = .promised, .id = q1, .ops = &path, .nops = 1 }, 1, 1, params.ptr, params.len, null, 0, 0, &q2));
     try testing.expectEqual(CAPNP_OK, capnp_set_deadline(a, q2, 5_000));
     try testing.expectEqual(CAPNP_OK, capnp_cancel(a, q2));
+    try countingPump(a.?, b.?);
+    // A cancels q1, which B's host never answered: B gets ANSWER_FINISHED
+    // and answers it canceled (B's answer id is A's question id).
+    try testing.expectEqual(CAPNP_OK, capnp_cancel(a, q1));
+    try countingPump(a.?, b.?);
+    try testing.expectEqual(CAPNP_OK, capnp_return_canceled(b, q1));
+    try testing.expectEqual(CAPNP_E_BAD_ID, capnp_return_canceled(b, q1));
     try countingPump(a.?, b.?);
     try testing.expectEqual(CAPNP_OK, capnp_resolve_promise(b, promise, .{ .kind = .@"export", .id = eb }));
     try testing.expectEqual(CAPNP_E_INVAL, capnp_reject_promise(b, promise, "x", 1)); // already resolved
@@ -868,7 +907,7 @@ test "event names" {
 
 test "abi version, features and version string" {
     try testing.expectEqual(@as(u32, 1), capnp_core_abi_version());
-    try testing.expectEqual(@as(u64, 0), capnp_core_features());
+    try testing.expectEqual(CAPNP_FEATURE_ANSWER_FINISHED, capnp_core_features());
     const v = std.mem.span(capnp_core_version());
     // The embedder's root supplies the exact string (capnp-swift pins it in
     // its own test); the test root here declares none, so the default.

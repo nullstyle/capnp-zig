@@ -134,7 +134,7 @@ fn drainOne(allocator: std.mem.Allocator, src: *Conn, seen: *Seen, dst: *Conn) !
             defer m.deinit();
             seen.call_value = (try m.getRootStruct()).readU64(0);
         },
-        .export_dropped, .event => return error.SelftestUnexpectedEffect,
+        .export_dropped, .event, .answer_finished => return error.SelftestUnexpectedEffect,
     }
     return true;
 }

@@ -42,6 +42,9 @@ test "capnp_core.h constants match the Zig values" {
     try testing.expectEqual(@backingInt(effects.Kind.inbound_call), @as(u8, c.CAPNP_EFFECT_INBOUND_CALL));
     try testing.expectEqual(@backingInt(effects.Kind.export_dropped), @as(u8, c.CAPNP_EFFECT_EXPORT_DROPPED));
     try testing.expectEqual(@backingInt(effects.Kind.event), @as(u8, c.CAPNP_EFFECT_EVENT));
+    try testing.expectEqual(@backingInt(effects.Kind.answer_finished), @as(u8, c.CAPNP_EFFECT_ANSWER_FINISHED));
+    // Feature bits.
+    try testing.expectEqual(abi.CAPNP_FEATURE_ANSWER_FINISHED, @as(u64, c.CAPNP_FEATURE_ANSWER_FINISHED));
     try testing.expectEqual(@backingInt(effects.ReturnKind.results), @as(u8, c.CAPNP_RETURN_RESULTS));
     try testing.expectEqual(@backingInt(effects.ReturnKind.exception), @as(u8, c.CAPNP_RETURN_EXCEPTION));
     try testing.expectEqual(@backingInt(effects.ReturnKind.canceled), @as(u8, c.CAPNP_RETURN_CANCELED));

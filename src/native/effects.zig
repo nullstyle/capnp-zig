@@ -10,9 +10,10 @@
 //! - Every effect lives in its own heap `Node`, and every payload slice the
 //!   node owns is its own allocation, so a borrowed payload keeps a stable
 //!   address until its `commit` even while more effects are queued.
-//! - Terminal effects whose producer cannot fail (a question's `deinit_ctx`,
-//!   an export's `deinit_ctx`) use a `Node` reserved when the question or
-//!   export was created, so they never need memory at the moment they fire.
+//! - Effects whose producer cannot fail (a question's `deinit_ctx`, an
+//!   export's `deinit_ctx`, the Peer's answer-finished handler) use a `Node`
+//!   reserved when the question, export or inbound call was created, so they
+//!   never need memory at the moment they fire.
 
 const std = @import("std");
 
@@ -89,6 +90,15 @@ pub const ExportDropped = struct {
     host_tag: u64,
 };
 
+/// The remote sent Finish for an INBOUND_CALL that the host has not
+/// answered (handoff H13; `Options.answer_finished`). The ids repeat the
+/// INBOUND_CALL's.
+pub const AnswerFinished = struct {
+    answer_id: u32,
+    export_id: u32,
+    host_tag: u64,
+};
+
 pub const Event = struct {
     /// `@intFromEnum` of the `events.Event` tag.
     tag: u8,
@@ -103,6 +113,7 @@ pub const Kind = enum(u8) {
     inbound_call = 3,
     export_dropped = 4,
     event = 5,
+    answer_finished = 6,
 };
 
 pub const Effect = union(Kind) {
@@ -112,6 +123,7 @@ pub const Effect = union(Kind) {
     inbound_call: InboundCall,
     export_dropped: ExportDropped,
     event: Event,
+    answer_finished: AnswerFinished,
 };
 
 /// One queued effect and the allocations it owns.

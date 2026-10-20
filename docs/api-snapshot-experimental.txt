@@ -176,6 +176,7 @@ capnpc-zig.native.abi.CAPNP_E_INVAL: const i32
 capnpc-zig.native.abi.CAPNP_E_LIMIT: const i32
 capnpc-zig.native.abi.CAPNP_E_NOMEM: const i32
 capnpc-zig.native.abi.CAPNP_E_PROTOCOL: const i32
+capnpc-zig.native.abi.CAPNP_FEATURE_ANSWER_FINISHED: const u64
 capnpc-zig.native.abi.CAPNP_FRAMING_SEGMENT_TABLE: const u8
 capnpc-zig.native.abi.CAPNP_FRAMING_U32_LE: const u8
 capnpc-zig.native.abi.CAPNP_OK: const i32
@@ -200,6 +201,7 @@ capnpc-zig.native.abi.capnp_conn_commit_effect: fn (?*native.abi.capnp_conn) cal
 capnpc-zig.native.abi.capnp_conn_free: fn (?*native.abi.capnp_conn) callconv(.c) void
 capnpc-zig.native.abi.capnp_conn_new: fn (?*const native.abi.capnp_conn_opts, i64, ?*?*native.abi.capnp_conn) callconv(.c) i32
 capnpc-zig.native.abi.capnp_conn_next_effect: fn (?*native.abi.capnp_conn, ?*native.abi.capnp_effect) callconv(.c) i32
+capnpc-zig.native.abi.capnp_conn_opts.answer_finished: field u32
 capnpc-zig.native.abi.capnp_conn_opts.default_call_timeout_ms: field u32
 capnpc-zig.native.abi.capnp_conn_opts.framing: field u8
 capnpc-zig.native.abi.capnp_conn_opts.max_active_inbound_questions: field u32
@@ -252,6 +254,7 @@ capnpc-zig.native.abi.capnp_promise_export: fn (?*native.abi.capnp_conn, ?*u32) 
 capnpc-zig.native.abi.capnp_reject_promise: fn (?*native.abi.capnp_conn, u32, ?[*]const u8, usize) callconv(.c) i32
 capnpc-zig.native.abi.capnp_release: fn (?*native.abi.capnp_conn, u32, u32) callconv(.c) i32
 capnpc-zig.native.abi.capnp_resolve_promise: fn (?*native.abi.capnp_conn, u32, native.effects.Cap) callconv(.c) i32
+capnpc-zig.native.abi.capnp_return_canceled: fn (?*native.abi.capnp_conn, u32) callconv(.c) i32
 capnpc-zig.native.abi.capnp_return_exception: fn (?*native.abi.capnp_conn, u32, u16, ?[*]const u8, usize) callconv(.c) i32
 capnpc-zig.native.abi.capnp_return_results: fn (?*native.abi.capnp_conn, u32, ?[*]const u8, usize, ?[*]const native.effects.Cap, usize) callconv(.c) i32
 capnpc-zig.native.abi.capnp_set_bootstrap: fn (?*native.abi.capnp_conn, u64, ?*u32) callconv(.c) i32
@@ -291,6 +294,7 @@ capnpc-zig.native.conn.CapKind.none: enumerant = 0
 capnpc-zig.native.conn.CapKind.promised: enumerant = 3
 capnpc-zig.native.conn.CapKind: enum
 capnpc-zig.native.conn.Conn.allocator: field mem.Allocator
+capnpc-zig.native.conn.Conn.answer_finished: field bool = false
 capnpc-zig.native.conn.Conn.bootstrap: fn (*native.conn.Conn) anyerror!u32
 capnpc-zig.native.conn.Conn.bootstrap_ctx: field ?*native.conn.ExportCtx = null
 capnpc-zig.native.conn.Conn.call: fn (*native.conn.Conn, native.effects.Cap, u64, u16, []const u8, []const native.effects.Cap, u32) anyerror!u32
@@ -316,7 +320,7 @@ capnpc-zig.native.conn.Conn.nextEffect: fn (*native.conn.Conn) error{Busy}!?*con
 capnpc-zig.native.conn.Conn.now_ns: field i64 = 0
 capnpc-zig.native.conn.Conn.owed_id_reused: field bool = false
 capnpc-zig.native.conn.Conn.peer: field rpc.peer.mod.Peer
-capnpc-zig.native.conn.Conn.pending_answers: field hash_map.HashMap(u32,bool,hash_map.AutoContext(u32),80)
+capnpc-zig.native.conn.Conn.pending_answers: field hash_map.HashMap(u32,native.conn.PendingAnswer,hash_map.AutoContext(u32),80)
 capnpc-zig.native.conn.Conn.promiseExport: fn (*native.conn.Conn) error{CapTableFull,Closed,OutOfMemory}!u32
 capnpc-zig.native.conn.Conn.pushBytes: fn (*native.conn.Conn, []const u8) error{Closed,Protocol}!void
 capnpc-zig.native.conn.Conn.questions: field hash_map.HashMap(u32,*native.conn.QuestionCtx,hash_map.AutoContext(u32),80)
@@ -326,6 +330,7 @@ capnpc-zig.native.conn.Conn.release: fn (*native.conn.Conn, u32, u32) anyerror!v
 capnpc-zig.native.conn.Conn.remote_abort_reason: field ?[]const u8 = null
 capnpc-zig.native.conn.Conn.remote_aborted: field bool = false
 capnpc-zig.native.conn.Conn.resolvePromise: fn (*native.conn.Conn, u32, native.effects.Cap) anyerror!void
+capnpc-zig.native.conn.Conn.returnCanceled: fn (*native.conn.Conn, u32) anyerror!void
 capnpc-zig.native.conn.Conn.returnException: fn (*native.conn.Conn, u32, u16, []const u8) anyerror!void
 capnpc-zig.native.conn.Conn.returnResults: fn (*native.conn.Conn, u32, []const u8, []const native.effects.Cap) anyerror!void
 capnpc-zig.native.conn.Conn.sending_qctx: field ?*native.conn.QuestionCtx = null
@@ -339,6 +344,7 @@ capnpc-zig.native.conn.Conn.tick: fn (*native.conn.Conn, i64) usize
 capnpc-zig.native.conn.Conn.transportClosed: fn (*native.conn.Conn) void
 capnpc-zig.native.conn.Conn.transport_closed: field bool = false
 capnpc-zig.native.conn.Conn: struct
+capnpc-zig.native.conn.Effect.answer_finished: variant native.effects.AnswerFinished
 capnpc-zig.native.conn.Effect.close_requested: variant void
 capnpc-zig.native.conn.Effect.event: variant native.effects.Event
 capnpc-zig.native.conn.Effect.export_dropped: variant native.effects.ExportDropped
@@ -346,9 +352,14 @@ capnpc-zig.native.conn.Effect.inbound_call: variant native.effects.InboundCall
 capnpc-zig.native.conn.Effect.out_frame: variant []const u8
 capnpc-zig.native.conn.Effect.return: variant native.effects.Return
 capnpc-zig.native.conn.Effect: union
+capnpc-zig.native.conn.FinishState.none: enumerant = 0
+capnpc-zig.native.conn.FinishState.reported: enumerant = 2
+capnpc-zig.native.conn.FinishState.withheld: enumerant = 1
+capnpc-zig.native.conn.FinishState: enum
 capnpc-zig.native.conn.Framing.segment_table: enumerant = 0
 capnpc-zig.native.conn.Framing.u32_le: enumerant = 1
 capnpc-zig.native.conn.Framing: enum
+capnpc-zig.native.conn.Options.answer_finished: field bool = false
 capnpc-zig.native.conn.Options.framing: field native.conn.Framing = .segment_table
 capnpc-zig.native.conn.Options.limits: field rpc.peer.state.PeerLimits = <default>
 capnpc-zig.native.conn.Options.max_frame_bytes: field usize = 67110920
@@ -356,6 +367,12 @@ capnpc-zig.native.conn.Options.now_ns: field i64
 capnpc-zig.native.conn.Options.observer: field bool = false
 capnpc-zig.native.conn.Options.timeouts: field ?rpc.peer.state.PeerTimeouts = null
 capnpc-zig.native.conn.Options: struct
+capnpc-zig.native.conn.PendingAnswer.export_id: field u32
+capnpc-zig.native.conn.PendingAnswer.finish: field native.conn.FinishState = .none
+capnpc-zig.native.conn.PendingAnswer.host_tag: field u64
+capnpc-zig.native.conn.PendingAnswer.node: field ?*native.effects.Node = null
+capnpc-zig.native.conn.PendingAnswer.yourself: field bool
+capnpc-zig.native.conn.PendingAnswer: struct
 capnpc-zig.native.conn.ReturnKind.canceled: enumerant = 2
 capnpc-zig.native.conn.ReturnKind.disconnected: enumerant = 3
 capnpc-zig.native.conn.ReturnKind.exception: enumerant = 1
@@ -375,6 +392,10 @@ capnpc-zig.native.conn.oversized_results_reason: const *const [62:0]u8
 capnpc-zig.native.conn.promised_results_reason: const *const [65:0]u8
 capnpc-zig.native.conn.tail_call_caps_reason: const *const [54:0]u8
 capnpc-zig.native.conn: struct
+capnpc-zig.native.effects.AnswerFinished.answer_id: field u32
+capnpc-zig.native.effects.AnswerFinished.export_id: field u32
+capnpc-zig.native.effects.AnswerFinished.host_tag: field u64
+capnpc-zig.native.effects.AnswerFinished: struct
 capnpc-zig.native.effects.Cap.id: field u32 = 0
 capnpc-zig.native.effects.Cap.kind: field native.effects.CapKind
 capnpc-zig.native.effects.Cap.nops: field u16 = 0
@@ -385,6 +406,7 @@ capnpc-zig.native.effects.CapKind.import: enumerant = 1
 capnpc-zig.native.effects.CapKind.none: enumerant = 0
 capnpc-zig.native.effects.CapKind.promised: enumerant = 3
 capnpc-zig.native.effects.CapKind: enum
+capnpc-zig.native.effects.Effect.answer_finished: variant native.effects.AnswerFinished
 capnpc-zig.native.effects.Effect.close_requested: variant void
 capnpc-zig.native.effects.Effect.event: variant native.effects.Event
 capnpc-zig.native.effects.Effect.export_dropped: variant native.effects.ExportDropped
@@ -406,6 +428,7 @@ capnpc-zig.native.effects.InboundCall.interface_id: field u64
 capnpc-zig.native.effects.InboundCall.method_id: field u16
 capnpc-zig.native.effects.InboundCall.msg: field []const u8
 capnpc-zig.native.effects.InboundCall: struct
+capnpc-zig.native.effects.Kind.answer_finished: enumerant = 6
 capnpc-zig.native.effects.Kind.close_requested: enumerant = 1
 capnpc-zig.native.effects.Kind.event: enumerant = 5
 capnpc-zig.native.effects.Kind.export_dropped: enumerant = 4

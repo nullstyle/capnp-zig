@@ -45,6 +45,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `src/native/conn_test.zig`.
   - **Migration:** answer every INBOUND_CALL. A host that must owe more
     answers at once sets `max_active_inbound_questions` higher.
+- **native: `Conn.pending_answers` now maps each answer id to a
+  `PendingAnswer` (Experimental).** The field
+  `native.conn.Conn.pending_answers` changes from
+  `std.AutoHashMap(u32, bool)` to `std.AutoHashMap(u32, PendingAnswer)`. A
+  `PendingAnswer` holds the `yourself` flag that the bool was, the
+  INBOUND_CALL's export id and host tag, the ANSWER_FINISHED state
+  (`native.conn.FinishState`) and its reserved effect node. The field is
+  internal state of the shim. The C ABI does not see it.
+  - **Migration:** do not use the field. Code that calls only `contains`
+    or `count` compiles unchanged. Do not `remove` an entry: with
+    `Options.answer_finished` that leaks its reserved node. Answer with
+    `Conn.returnResults`, `Conn.returnException` or `Conn.returnCanceled`.
+- **native: `effects.Effect` and `effects.Kind` gain `answer_finished`
+  (Experimental).** Zig code that switches on a `native.conn.Effect` with
+  no `else` arm no longer compiles. The core produces the new effect only
+  with `Options.answer_finished` (see Added). The C ABI is additive: a C
+  host that does not opt in never sees effect kind 6.
+  - **Migration:** add an `.answer_finished` arm (or an `else` arm) to the
+    switch.
+
+### Added
+
+- **native: ANSWER_FINISHED tells a host that the caller finished a call
+  it still owes (capnp-swift handoff H13, Experimental).** All of it is
+  additive in C ABI v1, and a host must opt in, so a host built against
+  the 0.27.0 header sees no change. The first native feature bit,
+  `CAPNP_FEATURE_ANSWER_FINISHED` (bit 0), says that this core has the
+  three parts:
+  - the opt-in `uint32_t answer_finished`, appended to `capnp_conn_opts`
+    at offset 56 (the struct grows from 56 to 60 bytes). 1 is on, 0 is
+    off, and any other value makes `capnp_conn_new` return
+    `CAPNP_E_INVAL`. An older `struct_size` reads 0. In Zig it is
+    `Options.answer_finished`;
+  - the effect `CAPNP_EFFECT_ANSWER_FINISHED` (6). The core queues it once
+    when the remote sends Finish for an INBOUND_CALL that the host has not
+    answered. `id` is the answer id, and `export_id` and `host_tag` are
+    those of the INBOUND_CALL. Its node is reserved with the INBOUND_CALL,
+    so a lack of memory cannot lose it. While a question held on a tail
+    call waits for that call, the core withholds the effect; it queues it
+    if the wait ends without the answer. It also comes for the host's own
+    loopback call when the host cancels its question;
+  - `int32_t capnp_return_canceled(capnp_conn *, uint32_t answer_id)`
+    (`Conn.returnCanceled`) answers such a call with `Return{canceled}`.
+    It returns `CAPNP_E_BAD_ID` for an answer the host does not owe, and
+    `CAPNP_E_INVAL` unless the core queued ANSWER_FINISHED for it.
+  The effect can be stale when the host answered before it drained it; a
+  host applies effects in drain order and ignores it then. When the Peer
+  cannot record the Finish (its records are full), no effect comes and the
+  host's ordinary answer goes out. "Answer finished" in docs/native-abi.md
+  gives every rule. Tests: `src/native/conn_test.zig` ("answer finished:
+  ...", including an allocation-failure sweep over the whole lifecycle),
+  `src/native/abi_test.zig` (through `capnp_core.h`), and
+  `fuzz-native-abi`, which now opts in on a random side, calls
+  `capnp_return_canceled`, and checks the new invariants. One fuzz session
+  in 4 is now clean (a bootstrap first, no junk bytes, no promises), so
+  calls reach the hosts: a 10-second Debug run with seed 1 now sees 7074
+  INBOUND_CALLs and 1128 ANSWER_FINISHED effects; before, the same run saw
+  6 INBOUND_CALLs.
 
 ### Fixed
 
@@ -76,6 +134,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for -1 here must check for -3. The C-level test is in
   `src/native/abi_test.zig` ("finish: an in-flight question is
   CAPNP_E_BUSY, ...").
+- **native: two `capnp_core.h` comments.** The comment of
+  `capnp_conn_take_error` had `/*` inside a block comment twice, so a C
+  host built with `-Wall -Werror` failed to compile the header. The package
+  preflight now compiles its C host with `-Wall -Wextra -Werror`, and with
+  the old comment it fails on both. The comment of `capnp_return_results`
+  said that an answer after the remote's early Finish gets
+  `CAPNP_E_BAD_ID`. The core accepts that answer, once.
 
 ## [0.27.0] - 2026-10-18
 

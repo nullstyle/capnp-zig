@@ -4,7 +4,10 @@
 //! to bisect a finding.
 //!
 //! Drives the C ABI with random operation sequences: two connections wired
-//! back to back, every `capnp_*` export called with known and with stale or
+//! back to back (one session in 4 is "clean": it starts with a bootstrap
+//! round trip, pushes no junk or mutated bytes, and uses no promise or
+//! promised capability, so calls reach the hosts and get answered or
+//! finished), every `capnp_*` export called with known and with stale or
 //! random handles, frames from the other side, from the framing fixtures
 //! (`tests/fixtures/framing/`) and mutated at random, commits without a
 //! `next`, a second `next` before `commit`, ticks, deadlines, cancels,
@@ -28,6 +31,10 @@
 //!     (exactly one RETURN per question);
 //!   - every RETURN/INBOUND_CALL payload is a well-formed standalone message
 //!     no larger than its frame could be;
+//!   - an INBOUND_CALL never reuses an id the host still owes;
+//!   - ANSWER_FINISHED (H13) comes only to a side that opted in, for an
+//!     answer the host still owes, at most once per INBOUND_CALL, and
+//!     `capnp_return_canceled` succeeds only for an answer it reported;
 //!   - a second `next_effect` before `commit` is BUSY;
 //!   - 0 live bytes after both connections are freed (and the
 //!     DebugAllocator reports no leak at exit).
@@ -65,6 +72,10 @@ const Side = struct {
     promises: std.ArrayList(u32),
     /// INBOUND_CALL answer ids not yet answered.
     answers: std.ArrayList(u32),
+    /// Answers reported by ANSWER_FINISHED and not yet answered.
+    finished: std.AutoHashMap(u32, void),
+    /// The side set `capnp_conn_opts.answer_finished`.
+    answer_finished: bool = false,
     /// Frames to deliver to the other side.
     outbox: std.ArrayList([]u8),
     closed: bool = false,
@@ -80,6 +91,7 @@ const Side = struct {
             .exports = .empty,
             .promises = .empty,
             .answers = .empty,
+            .finished = std.AutoHashMap(u32, void).init(a),
             .outbox = .empty,
         };
     }
@@ -90,6 +102,7 @@ const Side = struct {
         self.exports.deinit(a);
         self.promises.deinit(a);
         self.answers.deinit(a);
+        self.finished.deinit();
         for (self.outbox.items) |f| a.free(f);
         self.outbox.deinit(a);
     }
@@ -104,12 +117,20 @@ const Fuzz = struct {
     fixed_steps: ?usize = null,
     op_mask: [32]bool = @splat(true),
     step: usize = 0,
+    /// This session pushes no junk, mutates no frame, and uses no promise
+    /// export or promised capability (see `session`).
+    clean: bool = false,
     ops: usize = 0,
     sessions: usize = 0,
     frames_pushed: usize = 0,
     returns: usize = 0,
     busy_seen: usize = 0,
     protocol_fails: usize = 0,
+    /// INBOUND_CALL and ANSWER_FINISHED effects, and answers
+    /// capnp_return_canceled gave.
+    calls_seen: usize = 0,
+    finished_seen: usize = 0,
+    canceled_answers: usize = 0,
 
     fn fail(self: *Fuzz, comptime what: []const u8, args: anytype) error{Violation} {
         std.debug.print("fuzz-abi: VIOLATION (seed {d}, session {d}, step {d}): " ++ what ++ "\n", .{ self.seed, self.sessions, self.step } ++ args);
@@ -128,7 +149,8 @@ const Fuzz = struct {
     }
 
     fn randomCap(self: *Fuzz, side: *Side) Cap {
-        return switch (self.rand.uintLessThan(u8, 6)) {
+        // A clean session: none, import or export (kinds 0..3 below).
+        return switch (self.rand.uintLessThan(u8, if (self.clean) 4 else 6)) {
             0 => .{ .kind = .none },
             1, 2 => .{ .kind = .import, .id = self.pickOrRandom(side.imports.items) },
             3 => .{ .kind = .@"export", .id = self.pickOrRandom(side.exports.items) },
@@ -213,12 +235,25 @@ const Fuzz = struct {
                 } else if (e.msg_len != 0) return self.fail("non-RESULTS RETURN carries a payload", .{});
             },
             @backingInt(effects.Kind.inbound_call) => {
+                for (side.answers.items) |owed| {
+                    if (owed == e.id) return self.fail("INBOUND_CALL {d} while the host still owes that answer", .{e.id});
+                }
                 try side.answers.append(self.a, e.id);
                 side.calls_in += 1;
+                self.calls_seen += 1;
                 try self.checkPayload(e.msg, e.msg_len, e.caps, e.ncaps, side);
             },
             @backingInt(effects.Kind.export_dropped) => {},
             @backingInt(effects.Kind.event) => {},
+            @backingInt(effects.Kind.answer_finished) => {
+                // Effects are drained after every host call, so none is stale.
+                if (!side.answer_finished) return self.fail("ANSWER_FINISHED {d} without the opt-in", .{e.id});
+                for (side.answers.items) |owed| {
+                    if (owed == e.id) break;
+                } else return self.fail("ANSWER_FINISHED {d} for an answer the host does not owe", .{e.id});
+                if ((try side.finished.fetchPut(e.id, {})) != null) return self.fail("second ANSWER_FINISHED {d}", .{e.id});
+                self.finished_seen += 1;
+            },
             else => return self.fail("unknown effect kind {d}", .{e.kind}),
         }
         return true;
@@ -258,7 +293,7 @@ const Fuzz = struct {
         while (from.outbox.items.len > 0) {
             const frame = from.outbox.orderedRemove(0);
             defer self.a.free(frame);
-            if (self.rand.uintLessThan(u8, 24) == 0 and frame.len > 0) {
+            if (!self.clean and self.rand.uintLessThan(u8, 24) == 0 and frame.len > 0) {
                 // Mutate a byte, or truncate.
                 if (self.rand.boolean()) {
                     frame[self.rand.uintLessThan(usize, frame.len)] ^= @as(u8, 1) << @intCast(self.rand.uintLessThan(u8, 8));
@@ -287,12 +322,15 @@ const Fuzz = struct {
         const conn = side.conn orelse return;
         self.ops += 1;
         var out: u32 = 0;
-        var op = self.rand.uintLessThan(u8, 26);
+        var op = self.rand.uintLessThan(u8, 27);
         var tries: usize = 0;
         while (!self.op_mask[op]) : (tries += 1) {
             if (tries > 64) return;
-            op = self.rand.uintLessThan(u8, 26);
+            op = self.rand.uintLessThan(u8, 27);
         }
+        // A clean session delivers instead of pushing junk (20, 21) or
+        // using a promise export (13..15).
+        if (self.clean and (op == 20 or op == 21 or (op >= 13 and op <= 15))) op = 26;
         switch (op) {
             0 => if (abi.capnp_bootstrap(conn, &out) == abi.CAPNP_OK) try side.open.put(out, {}),
             1, 2, 3, 4 => {
@@ -344,9 +382,9 @@ const Fuzz = struct {
                     for (caps_buf[0..ncaps]) |*cap| cap.* = self.randomCap(side);
                     const results = try self.randomPayload(ncaps);
                     defer self.a.free(results);
-                    if (abi.capnp_return_results(conn, answer, results.ptr, results.len, if (ncaps == 0) null else &caps_buf, ncaps) == abi.CAPNP_OK) removeId(&side.answers, answer);
+                    if (abi.capnp_return_results(conn, answer, results.ptr, results.len, if (ncaps == 0) null else &caps_buf, ncaps) == abi.CAPNP_OK) answered(side, answer);
                 } else {
-                    if (abi.capnp_return_exception(conn, answer, self.rand.int(u16) % 5, "boom", 4) == abi.CAPNP_OK) removeId(&side.answers, answer);
+                    if (abi.capnp_return_exception(conn, answer, self.rand.int(u16) % 5, "boom", 4) == abi.CAPNP_OK) answered(side, answer);
                 }
             },
             19 => _ = abi.capnp_conn_tick(conn, @intCast(self.step * 7_000_000)),
@@ -371,9 +409,31 @@ const Fuzz = struct {
                 var code: i32 = 0;
                 _ = abi.capnp_conn_take_error(conn, &code, null, null, null, null);
             },
+            25 => {
+                // A reported answer, an owed one, or a random id.
+                var keys: [8]u32 = undefined;
+                var n: usize = 0;
+                var it = side.finished.keyIterator();
+                while (it.next()) |k| : (n += 1) {
+                    if (n == keys.len) break;
+                    keys[n] = k.*;
+                }
+                const answer = if (n > 0 and self.rand.boolean()) keys[self.rand.uintLessThan(usize, n)] else self.pickOrRandom(side.answers.items);
+                if (abi.capnp_return_canceled(conn, answer) == abi.CAPNP_OK) {
+                    if (!side.finished.contains(answer)) return self.fail("capnp_return_canceled({d}) OK without ANSWER_FINISHED", .{answer});
+                    answered(side, answer);
+                    self.canceled_answers += 1;
+                }
+            },
             else => try self.deliver(other, side),
         }
         try self.drainAll(side);
+    }
+
+    /// The host's answer for `id` was accepted.
+    fn answered(side: *Side, id: u32) void {
+        removeId(&side.answers, id);
+        _ = side.finished.remove(id);
     }
 
     fn removeId(list: *std.ArrayList(u32), id: u32) void {
@@ -395,15 +455,22 @@ const Fuzz = struct {
         if (self.rand.uintLessThan(u8, 4) == 0) opts.max_outbound_questions = 1 + self.rand.int(u32) % 6;
         if (self.rand.uintLessThan(u8, 4) == 0) opts.max_retained_questions = 1 + self.rand.int(u32) % 6;
         opts.observer = @intFromBool(self.rand.boolean());
+        // H13's opt-in, per side.
+        var opts_a = opts;
+        var opts_b = opts;
+        opts_a.answer_finished = @intFromBool(self.rand.boolean());
+        opts_b.answer_finished = @intFromBool(self.rand.boolean());
 
         var ca: ?*conn_t = null;
         var cb: ?*conn_t = null;
-        if (abi.capnp_conn_new(&opts, 0, &ca) != abi.CAPNP_OK) return self.fail("conn_new failed", .{});
-        if (abi.capnp_conn_new(&opts, 0, &cb) != abi.CAPNP_OK) return self.fail("conn_new failed", .{});
+        if (abi.capnp_conn_new(&opts_a, 0, &ca) != abi.CAPNP_OK) return self.fail("conn_new failed", .{});
+        if (abi.capnp_conn_new(&opts_b, 0, &cb) != abi.CAPNP_OK) return self.fail("conn_new failed", .{});
         var a = Side.init(self.a, ca.?);
         defer a.deinit(self.a);
+        a.answer_finished = opts_a.answer_finished == 1;
         var b = Side.init(self.a, cb.?);
         defer b.deinit(self.a);
+        b.answer_finished = opts_b.answer_finished == 1;
         var eid: u32 = 0;
         _ = abi.capnp_set_bootstrap(cb.?, 100, &eid);
         try b.exports.append(self.a, eid);
@@ -412,6 +479,15 @@ const Fuzz = struct {
             try a.exports.append(self.a, eid);
         }
 
+        self.clean = self.rand.uintLessThan(u8, 4) == 0;
+        if (self.clean) {
+            // A bootstrap round trip first, so A holds an import to call.
+            var qid: u32 = 0;
+            if (abi.capnp_bootstrap(ca.?, &qid) == abi.CAPNP_OK) try a.open.put(qid, {});
+            try self.drainAll(&a);
+            try self.deliver(&a, &b);
+            try self.deliver(&b, &a);
+        }
         const steps = self.fixed_steps orelse 8 + self.rand.uintLessThan(usize, 160);
         var i: usize = 0;
         while (i < steps) : (i += 1) {
@@ -531,7 +607,7 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("fuzz-abi: {d} s, {d} sessions, {d} ops, {d} frames, {d} returns, {d} protocol failures, {d} BUSY checks\n", .{ elapsed / std.time.ns_per_s, fuzz.sessions, fuzz.ops, fuzz.frames_pushed, fuzz.returns, fuzz.protocol_fails, fuzz.busy_seen });
         }
     }
-    std.debug.print("fuzz-abi: OK: {d} sessions, {d} ops, {d} frames pushed, {d} returns, {d} protocol failures, {d} BUSY checks, peak {d} bytes live, 0 live now\n", .{ fuzz.sessions, fuzz.ops, fuzz.frames_pushed, fuzz.returns, fuzz.protocol_fails, fuzz.busy_seen, counting.peak });
+    std.debug.print("fuzz-abi: OK: {d} sessions, {d} ops, {d} frames pushed, {d} returns, {d} protocol failures, {d} BUSY checks, {d} INBOUND_CALL, {d} ANSWER_FINISHED, {d} canceled answers, peak {d} bytes live, 0 live now\n", .{ fuzz.sessions, fuzz.ops, fuzz.frames_pushed, fuzz.returns, fuzz.protocol_fails, fuzz.busy_seen, fuzz.calls_seen, fuzz.finished_seen, fuzz.canceled_answers, counting.peak });
     if (counting.live != 0) {
         std.debug.print("fuzz-abi: FAIL: {d} live bytes at exit\n", .{counting.live});
         std.process.exit(1);

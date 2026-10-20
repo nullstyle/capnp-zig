@@ -56,6 +56,9 @@ const Rec = struct {
     calls: std.ArrayList(RecCall) = .empty,
     dropped: std.ArrayList(effects.ExportDropped) = .empty,
     events: std.ArrayList(effects.Event) = .empty,
+    finished: std.ArrayList(effects.AnswerFinished) = .empty,
+    /// The kind of every recorded effect, in drain order.
+    order: std.ArrayList(effects.Kind) = .empty,
     /// OUT_FRAMEs kept when there is no peer to forward to.
     frames: std.ArrayList([]u8) = .empty,
     frames_seen: usize = 0,
@@ -80,10 +83,13 @@ const Rec = struct {
         self.calls.deinit(self.a);
         self.dropped.deinit(self.a);
         self.events.deinit(self.a);
+        self.finished.deinit(self.a);
+        self.order.deinit(self.a);
         self.frames.deinit(self.a);
     }
 
     fn record(self: *Rec, eff: *const effects.Effect) !void {
+        try self.order.append(self.a, std.meta.activeTag(eff.*));
         switch (eff.*) {
             .out_frame => |bytes| try self.frames.append(self.a, try self.a.dupe(u8, bytes)),
             .close_requested => self.close_requested += 1,
@@ -106,7 +112,16 @@ const Rec = struct {
             }),
             .export_dropped => |d| try self.dropped.append(self.a, d),
             .event => |e| try self.events.append(self.a, e),
+            .answer_finished => |f| try self.finished.append(self.a, f),
         }
+    }
+
+    fn countFinished(self: *Rec, answer_id: u32) usize {
+        var n: usize = 0;
+        for (self.finished.items) |f| {
+            if (f.answer_id == answer_id) n += 1;
+        }
+        return n;
     }
 
     fn returnFor(self: *Rec, qid: u32) ?RecReturn {
@@ -1866,6 +1881,428 @@ test "inbound: a call beyond max_active_inbound_questions owed answers is refuse
     try testing.expectEqual(@as(usize, 1), countCalls(&ra, 13));
     try testing.expectEqual(@as(usize, 0), ra.close_requested);
     try testing.expect(a.last_error == null);
+}
+
+// ---------------------------------------------------------------------------
+// ANSWER_FINISHED (capnp-swift handoff H13)
+// ---------------------------------------------------------------------------
+
+/// A Conn that opted in, with export `ea` (tag 200), and its recording host.
+const Finished = struct {
+    a: *Conn,
+    ra: Rec,
+    ea: u32,
+
+    fn init(alloc: std.mem.Allocator, opts: conn_mod.Options) !Finished {
+        const a = try Conn.init(alloc, opts);
+        errdefer a.deinit();
+        return .{ .a = a, .ra = Rec.init(alloc), .ea = try a.exportCap(200) };
+    }
+
+    fn deinit(self: *Finished) void {
+        self.ra.deinit();
+        self.a.deinit();
+    }
+};
+
+test "answer finished: the remote's Finish of an unanswered call queues one ANSWER_FINISHED; returnCanceled answers it once" {
+    const alloc = testing.allocator;
+    var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+    defer f.deinit();
+
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 10, f.ea));
+    try pushFrame(alloc, f.a, finishFrame(alloc, 10));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqualSlices(effects.Kind, &.{ .inbound_call, .answer_finished }, f.ra.order.items);
+    try testing.expectEqual(effects.AnswerFinished{ .answer_id = 10, .export_id = f.ea, .host_tag = 200 }, f.ra.finished.items[0]);
+    // A second Finish of the same id changes nothing.
+    try pushFrame(alloc, f.a, finishFrame(alloc, 10));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), f.ra.finished.items.len);
+
+    try f.a.returnCanceled(10);
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 10, .canceled));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 10, null));
+    // Answered: every further answer is a stale id, and nothing is sent.
+    const res = try msgU64(alloc, 1);
+    defer alloc.free(res);
+    try testing.expectError(error.BadId, f.a.returnCanceled(10));
+    try testing.expectError(error.BadId, f.a.returnResults(10, res, &.{}));
+    try testing.expectError(error.BadId, f.a.returnException(10, 0, "late"));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 10, null));
+    // The remote may reuse the id now: a new call, a new answer.
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 10, f.ea));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 2), countCalls(&f.ra, 10));
+    try f.a.returnResults(10, res, &.{});
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 2), try countReturnFrames(&f.ra, 10, null));
+    try testing.expectEqual(@as(usize, 1), f.ra.finished.items.len);
+    try testing.expectEqual(@as(usize, 0), f.ra.close_requested);
+}
+
+test "answer finished: after ANSWER_FINISHED the host may answer with results or an exception instead, once" {
+    const alloc = testing.allocator;
+    const res = try msgU64(alloc, 1);
+    defer alloc.free(res);
+    for ([_]bool{ true, false }) |with_results| {
+        var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+        defer f.deinit();
+        try pushFrame(alloc, f.a, plainCallFrame(alloc, 10, f.ea));
+        try pushFrame(alloc, f.a, finishFrame(alloc, 10));
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqual(@as(usize, 1), f.ra.countFinished(10));
+        if (with_results) try f.a.returnResults(10, res, &.{}) else try f.a.returnException(10, 0, "stopped");
+        try testing.expectError(error.BadId, f.a.returnCanceled(10));
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 10, null));
+        try testing.expectEqual(@as(usize, 0), try countReturnFrames(&f.ra, 10, .canceled));
+    }
+}
+
+test "answer finished: without the opt-in no effect; returnCanceled is refused; the late answer goes out once" {
+    const alloc = testing.allocator;
+    var f = try Finished.init(alloc, .{ .now_ns = 0 });
+    defer f.deinit();
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 10, f.ea));
+    try pushFrame(alloc, f.a, finishFrame(alloc, 10));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqualSlices(effects.Kind, &.{.inbound_call}, f.ra.order.items);
+    try testing.expectError(error.Invalid, f.a.returnCanceled(10));
+    const res = try msgU64(alloc, 1);
+    defer alloc.free(res);
+    try f.a.returnResults(10, res, &.{});
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 10, null));
+    try testing.expectError(error.BadId, f.a.returnCanceled(10));
+}
+
+test "answer finished: returnCanceled before the Finish is refused, and on an unknown id is a stale id" {
+    const alloc = testing.allocator;
+    var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+    defer f.deinit();
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 10, f.ea));
+    try drainAll(f.a, &f.ra);
+    try testing.expectError(error.Invalid, f.a.returnCanceled(10));
+    try testing.expectError(error.BadId, f.a.returnCanceled(11));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 0), try countReturnFrames(&f.ra, 10, null));
+    // Still owed: the Finish now reports it.
+    try pushFrame(alloc, f.a, finishFrame(alloc, 10));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), f.ra.countFinished(10));
+    try f.a.returnCanceled(10);
+}
+
+test "answer finished: an answer given before the effect is drained makes the effect stale" {
+    // The effect is queued with the Finish; the host answers before it
+    // drains it. FIFO: the effect comes before that answer's Return frame,
+    // so a host that applies effects in drain order sees it first and knows
+    // it is stale: the id is already answered.
+    const alloc = testing.allocator;
+    var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+    defer f.deinit();
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 10, f.ea));
+    try pushFrame(alloc, f.a, finishFrame(alloc, 10));
+    const res = try msgU64(alloc, 1);
+    defer alloc.free(res);
+    try f.a.returnResults(10, res, &.{});
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqualSlices(effects.Kind, &.{ .inbound_call, .answer_finished, .out_frame }, f.ra.order.items);
+    try testing.expectError(error.BadId, f.a.returnCanceled(10));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 10, null));
+}
+
+test "answer finished: after ANSWER_FINISHED a Call or Bootstrap that reuses the id closes the connection, with no Return" {
+    // The Peer keeps a record of the Finish until the host's answer, so it
+    // refuses the reused id itself, for a Bootstrap too.
+    const alloc = testing.allocator;
+    for ([_]bool{ false, true }) |bootstrap| {
+        var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+        defer f.deinit();
+        _ = try f.a.setBootstrap(100);
+        try pushFrame(alloc, f.a, plainCallFrame(alloc, 10, f.ea));
+        try pushFrame(alloc, f.a, finishFrame(alloc, 10));
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqual(@as(usize, 1), f.ra.countFinished(10));
+        const reuse = if (bootstrap) blk: {
+            var mb = protocol.MessageBuilder.init(alloc);
+            defer mb.deinit();
+            try mb.buildBootstrap(10);
+            break :blk mb.finish();
+        } else plainCallFrame(alloc, 10, f.ea);
+        try testing.expectError(error.Protocol, pushFrame(alloc, f.a, reuse));
+        try testing.expectEqual(@as(?anyerror, error.DuplicateQuestionId), f.a.last_error);
+        try drainAll(f.a, &f.ra);
+        try expectAbortThenClose(&f.ra);
+        try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 10));
+    }
+}
+
+test "answer finished: with the Peer's finished-early records full, no effect; the ordinary answer goes out" {
+    // Records held by calls queued on a promise export (2 of 2). The Peer
+    // cannot record call 10's Finish, so it does not report it, and the
+    // core never learns of it.
+    const alloc = testing.allocator;
+    var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true, .limits = .{ .max_active_inbound_questions = 2 } });
+    defer f.deinit();
+    try fillFinishedRecords(alloc, f.a, &.{ 20, 21 });
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 10, f.ea));
+    try pushFrame(alloc, f.a, finishFrame(alloc, 10));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 10));
+    try testing.expectEqual(@as(usize, 0), f.ra.finished.items.len);
+    try testing.expectError(error.Invalid, f.a.returnCanceled(10));
+    const res = try msgU64(alloc, 1);
+    defer alloc.free(res);
+    try f.a.returnResults(10, res, &.{});
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 10, null));
+}
+
+test "answer finished: a Finish of a held call is withheld; each end of the hold without the answer reports it once" {
+    // The remote finishes Y (77) while question X waits for Y's answer: X
+    // still wants it, so the host is not told. When X ends without Y's
+    // answer (cancel, its deadline, the shutdown drain bound), the core
+    // reports Y. Then returnCanceled answers Y with one Return.
+    const alloc = testing.allocator;
+    const ms = std.time.ns_per_ms;
+    const Ending = enum { cancel, deadline, drain };
+    for ([_]Ending{ .cancel, .deadline, .drain }) |ending| {
+        var p = try TailPair.init(alloc, .{
+            .now_ns = 0,
+            .answer_finished = true,
+            .timeouts = .{ .shutdown_drain_timeout_ms = 100 },
+        });
+        defer p.deinit();
+        const t = try p.start(alloc);
+        try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+        try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
+        try testing.expectError(error.Invalid, p.a.returnCanceled(tail_answer));
+        try expectNoReturnYet(&p.ra, t.q);
+
+        switch (ending) {
+            .cancel => try p.a.cancel(t.q),
+            .deadline => {
+                try p.a.setDeadline(t.q, 10);
+                try testing.expectEqual(@as(usize, 1), p.a.tick(20 * ms));
+            },
+            .drain => {
+                p.a.shutdown();
+                try testing.expectEqual(@as(usize, 1), p.a.tick(150 * ms));
+            },
+        }
+        try drainAll(p.a, &p.ra);
+        _ = try expectOneReturn(&p.ra, t.q, switch (ending) {
+            .cancel => .canceled,
+            .deadline => .exception,
+            .drain => .disconnected,
+        });
+        try testing.expectEqual(@as(usize, 1), p.ra.countFinished(tail_answer));
+        try testing.expectEqual(effects.AnswerFinished{ .answer_id = tail_answer, .export_id = t.ea, .host_tag = 200 }, p.ra.finished.items[0]);
+        try p.a.returnCanceled(tail_answer);
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, tail_answer, null));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, tail_answer, .canceled));
+        try testing.expectEqual(@as(usize, 1), p.ra.countFinished(tail_answer));
+        try testing.expectEqual(@as(usize, 1), p.ra.countReturns(t.q));
+    }
+}
+
+test "answer finished: a Finish of a held call, then the host's answer: the question gets it, and nothing is reported" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+    defer p.deinit();
+    const t = try p.start(alloc);
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+    const res = try msgU64(alloc, 11);
+    defer alloc.free(res);
+    try p.a.returnResults(tail_answer, res, &.{});
+    try drainAll(p.a, &p.ra);
+    const r = try expectOneReturn(&p.ra, t.q, .results);
+    try testing.expectEqual(@as(u64, 11), try readU64(alloc, r.msg));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, tail_answer, null));
+    try p.a.finish(t.q, false);
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
+    try testing.expectError(error.BadId, p.a.returnCanceled(tail_answer));
+}
+
+test "answer finished: a call already reported finished is not held; the redirect to it is not followed" {
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+    defer p.deinit();
+    const t = try p.start(alloc);
+    try pushFrame(alloc, p.a, yourselfCallFrame(alloc, tail_answer, t.ea));
+    try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), p.ra.countFinished(tail_answer));
+    try pushFrame(alloc, p.a, tailCallReturnFrame(alloc, t.q, tail_answer));
+    try drainAll(p.a, &p.ra);
+    try expectUnfollowed(&p.ra, t.q);
+    try testing.expectEqual(@as(usize, 0), p.a.held_tail_calls.count());
+    try p.a.returnCanceled(tail_answer);
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, tail_answer, null));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, tail_answer, .canceled));
+    try testing.expectEqual(@as(usize, 1), p.ra.countReturns(t.q));
+}
+
+test "answer finished: the host's cancel of its own loopback call reports it before the RETURN CANCELED" {
+    // B resolves a promise it gave A to A's own export, so A's call on that
+    // import loops back to A's host. A's cancel is the call's Finish.
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+    const ib = try connectPair(a, &ra, b, &rb);
+    const ea = try a.exportCap(200);
+    const pe = try b.promiseExport();
+    const pc = try msgCap(alloc, 1, 0);
+    defer alloc.free(pc);
+    // A passes ea to B; B answers with the promise.
+    const q1 = try a.call(ib, iface, 0, pc, &.{.{ .kind = .@"export", .id = ea }}, 0);
+    try pump(a, &ra, b, &rb);
+    const c1 = rb.lastCall();
+    const ia = try rootCap(alloc, c1.msg, c1.caps);
+    try b.returnResults(c1.answer_id, pc, &.{.{ .kind = .@"export", .id = pe }});
+    try pump(a, &ra, b, &rb);
+    const ip = try rootCap(alloc, ra.returnFor(q1).?.msg, ra.returnFor(q1).?.caps);
+    try a.finish(q1, false);
+    try b.resolvePromise(pe, ia);
+    try pump(a, &ra, b, &rb);
+
+    const calls_before = ra.calls.items.len;
+    const p = try msgU64(alloc, 5);
+    defer alloc.free(p);
+    const q2 = try a.call(ip, iface, 7, p, &.{}, 0);
+    try pump(a, &ra, b, &rb);
+    try testing.expectEqual(calls_before + 1, ra.calls.items.len);
+    const loop = ra.lastCall();
+    try testing.expectEqual(ea, loop.export_id);
+    try testing.expectEqual(@as(u16, 7), loop.method_id);
+    try testing.expectEqual(@as(usize, 1), rb.calls.items.len); // B saw only c1
+
+    const order_before = ra.order.items.len;
+    try a.cancel(q2);
+    try drainAll(a, &ra);
+    try testing.expectEqualSlices(effects.Kind, &.{ .answer_finished, .@"return" }, ra.order.items[order_before..]);
+    try testing.expectEqual(loop.answer_id, ra.finished.items[0].answer_id);
+    _ = try expectOneReturn(&ra, q2, .canceled);
+    try a.returnCanceled(loop.answer_id);
+    try pump(a, &ra, b, &rb);
+    try testing.expectEqual(@as(usize, 1), ra.countReturns(q2));
+    try testing.expectError(error.BadId, a.returnCanceled(loop.answer_id));
+}
+
+test "answer finished: freeing the connection while the host owes answers leaks nothing" {
+    // Owed answers at free time: one never finished (its node reserved),
+    // one reported and drained, one reported and still queued, and one
+    // withheld by a tail-call hold. testing.allocator checks after deinit.
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+    defer p.deinit();
+    const t = try p.start(alloc);
+    try pushFrame(alloc, p.a, plainCallFrame(alloc, 10, t.ea));
+    try pushFrame(alloc, p.a, plainCallFrame(alloc, 11, t.ea));
+    try pushFrame(alloc, p.a, finishFrame(alloc, 11));
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), p.ra.countFinished(11));
+    try pushFrame(alloc, p.a, plainCallFrame(alloc, 12, t.ea));
+    try pushFrame(alloc, p.a, finishFrame(alloc, 12));
+    try testing.expectEqual(@as(usize, 4), p.a.pending_answers.count());
+}
+
+/// The H13 lifecycle on one opted-in Conn whose every allocation goes
+/// through `failing`, with the allocations of one host call failing from
+/// its `k`-th on (the failure ends with that host call): a call, the
+/// remote's Finish, the host's answer `answer` (or, without an
+/// ANSWER_FINISHED, an exception), retried until it is accepted.
+/// Checks: the host sees the call at most once, at most one ANSWER_FINISHED
+/// and only for a call it saw; the wire carries exactly one Return for the
+/// call while the connection is up, and at most one after it failed.
+/// Returns whether the failure was induced (the sweep's end condition).
+const FinishedAnswer = enum { canceled, results, exception };
+
+fn finishedLifecycleUnderOom(k: usize, answer: FinishedAnswer) !bool {
+    const alloc = testing.allocator;
+    var failing = std.testing.FailingAllocator.init(alloc, .{});
+    const a = try Conn.init(failing.allocator(), .{ .now_ns = 0, .answer_finished = true });
+    defer a.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    const ea = try a.exportCap(200);
+    const res = try msgU64(alloc, 1);
+    defer alloc.free(res);
+
+    const start = failing.alloc_index;
+    failing.fail_index = start + k;
+    const Step = enum { call, finish, drain, answer };
+    var answered = false;
+    for ([_]Step{ .call, .finish, .drain, .answer }) |step| {
+        switch (step) {
+            .call => pushFrame(alloc, a, plainCallFrame(alloc, 10, ea)) catch {},
+            .finish => pushFrame(alloc, a, finishFrame(alloc, 10)) catch {},
+            .drain => try drainAll(a, &ra),
+            .answer => if (a.pending_answers.contains(10)) {
+                const reported = ra.countFinished(10) == 1;
+                if (!reported) try testing.expectError(error.Invalid, a.returnCanceled(10));
+                // Retry after a failure: the failure ends with the host call.
+                var tries: usize = 0;
+                while (!answered) : (tries += 1) {
+                    if (tries > 2) return error.TestAnswerNeverAccepted;
+                    const r = if (reported) switch (answer) {
+                        .canceled => a.returnCanceled(10),
+                        .results => a.returnResults(10, res, &.{}),
+                        .exception => a.returnException(10, 0, "stopped"),
+                    } else a.returnException(10, 0, "stopped");
+                    if (r) |_| answered = true else |err| {
+                        try testing.expectEqual(error.OutOfMemory, err);
+                        try testing.expect(a.pending_answers.contains(10));
+                        failing.fail_index = std.math.maxInt(usize);
+                    }
+                }
+            },
+        }
+        if (failing.has_induced_failure) failing.fail_index = std.math.maxInt(usize);
+    }
+    try drainAll(a, &ra);
+
+    const calls = countCalls(&ra, 10);
+    try testing.expect(calls <= 1);
+    try testing.expect(ra.countFinished(10) <= calls);
+    try testing.expect(!a.pending_answers.contains(10) or a.failed);
+    const returns = try countReturnFrames(&ra, 10, null);
+    if (a.failed) {
+        try testing.expect(returns <= 1);
+    } else {
+        try testing.expectEqual(@as(usize, 1), returns);
+        if (calls == 1) try testing.expect(answered);
+    }
+    // Freeing with whatever is left: testing.allocator finds no leak.
+    return failing.has_induced_failure;
+}
+
+test "answer finished: an allocation failure anywhere in the lifecycle keeps one Return per call and leaks nothing" {
+    for (std.enums.values(FinishedAnswer)) |answer| {
+        var k: usize = 0;
+        while (try finishedLifecycleUnderOom(k, answer)) : (k += 1) {
+            if (k > 10_000) return error.TestSweepRunaway;
+        }
+        try testing.expect(k > 10);
+    }
 }
 
 // ---------------------------------------------------------------------------

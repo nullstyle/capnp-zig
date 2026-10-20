@@ -70,6 +70,74 @@ The host owes at most `max_active_inbound_questions` answers (default 4096).
 A call beyond that gets an exception Return (`OwedAnswerLimitExceeded`) and
 never reaches the host. The connection stays up.
 
+## Answer finished
+
+A host can learn that the caller finished a call that the host has not
+answered, and stop the work (capnp-swift handoff H13). It is an opt-in:
+
+- Check `capnp_core_features() & CAPNP_FEATURE_ANSWER_FINISHED`. A core
+  without that bit ignores the field below.
+- Set `capnp_conn_opts.answer_finished = 1`. 0 is off, and any other value
+  makes `capnp_conn_new` return `CAPNP_E_INVAL`. A host built against an
+  older header passes a smaller `struct_size`, so it gets 0.
+
+When the remote sends Finish for an INBOUND_CALL that the host owes, the
+core queues one `CAPNP_EFFECT_ANSWER_FINISHED` (6). Its `id` is the answer
+id, `export_id` and `host_tag` are those of the INBOUND_CALL, and every
+other field is 0. The core queues it at most once per call. Its node is
+reserved when the INBOUND_CALL is queued, so a lack of memory cannot lose it.
+
+The host stops the work and answers once. Normally it calls
+`capnp_return_canceled(conn, answer_id)`: the core sends `Return{canceled}`,
+and the caller can reuse its question id. That call returns
+`CAPNP_E_BAD_ID` for an answer the host does not owe. It returns
+`CAPNP_E_INVAL` when no ANSWER_FINISHED was queued for the answer: the
+opt-in is off, no Finish came, or a tail-call hold withholds it. On any
+other error it sends nothing, and the host still owes the answer. Instead of
+`capnp_return_canceled`, the host may answer with `capnp_return_results` or
+`capnp_return_exception`. A `sendResultsTo = yourself` call also gets
+`Return{canceled}`, not `resultsSentElsewhere`.
+
+**Drain order.** Apply effects in drain order. An ANSWER_FINISHED can be
+stale: the host answered the call after the Finish came, but before it
+drained the effect. The effect then comes before that answer's Return
+OUT_FRAME, and the remote can reuse the id only after it gets that Return.
+So an ANSWER_FINISHED for an id that the host already answered is stale:
+ignore it (`capnp_return_canceled` returns `CAPNP_E_BAD_ID` for it).
+
+**The late answer.** From the Finish to the host's answer, the core keeps a
+record of the Finish. While that record exists, a Call or a Bootstrap that
+reuses the id closes the connection before any Return for it ("Answer ids").
+So after ANSWER_FINISHED, the host's late answer can never reach another
+call.
+
+**When no effect comes.** The core reports a Finish only when it can record
+it. The records are bounded by `max_active_inbound_questions`. When they are
+full, or when the record cannot get memory, no ANSWER_FINISHED comes,
+`capnp_return_canceled` returns `CAPNP_E_INVAL`, and the host's ordinary
+answer goes out. This is rare. The host never owes more answers than the
+bound ("Answer ids"), so a record always fits for each of them. The other
+records come from calls that the core still holds queued (on a promise
+export, or on an answer) when the remote finishes them with
+`requireEarlyCancellationWorkaround` set. That flag defaults to true. The
+C++ reference (1.0 and later) sends false, but go-capnp never sets it, so
+with a go-capnp caller, each Finish of a queued call takes this path. Such
+a call reaches the host after its Finish and gets no ANSWER_FINISHED:
+answer it as usual.
+
+**Tail calls.** While a question X waits for the answer to a call Y ("Tail
+calls" below), a Finish of Y does not queue ANSWER_FINISHED: X still wants
+Y's answer. If the wait ends without Y's answer (`capnp_cancel` of X, X's
+deadline, or the shutdown drain bound), the core queues ANSWER_FINISHED for
+Y then, before X's RETURN. A transport close queues none. The core never
+makes X wait for a Y that it already reported: X then gets RETURN EXCEPTION
+(`unimplemented`).
+
+**Loopback calls.** A call from this connection to one of its own exports
+is an INBOUND_CALL too. When the host cancels the question of such a call,
+the core queues ANSWER_FINISHED for the call before the question's RETURN
+CANCELED. Answer it as any other; the canceled question absorbs the answer.
+
 ## Tail calls
 
 The remote can answer a question with `Return.takeFromOtherQuestion`: the
@@ -105,8 +173,9 @@ As for other questions, a cancel, a deadline or the drain bound ends the
 question even when its Finish cannot be sent, and `capnp_finish` then
 refuses its id.
 
-The remote's Finish of Y does not end the wait: the host still answers Y.
-A remote that reuses Y's id for a new call before the host answered Y
+The remote's Finish of Y does not end the wait: the host still answers Y,
+and ANSWER_FINISHED for Y waits too ("Answer finished"). A remote that
+reuses Y's id for a new call before the host answered Y
 closes the connection (see "Answer ids" above). The question then ends at
 transport close, with RETURN DISCONNECTED.
 
@@ -223,13 +292,17 @@ lists. Zig code can skip the C ABI and use `native.conn.Conn` directly.
   (`tests/native/abi_lib_root.zig`); it never imports abi.zig.
 - `zig build fuzz-native-abi -- --seconds N [--seed S]` drives the ABI with
   random operation sequences and checks its invariants (one RETURN per
-  question, well-formed payloads, 0 live bytes after free). A seeded
+  question, well-formed payloads, no INBOUND_CALL for an id the host still
+  owes, ANSWER_FINISHED only as described above, 0 live bytes after free).
+  One session in 4 is clean: no junk bytes and no promises, so calls reach
+  the hosts. A seeded
   3-second run is part of `test-fuzz-smoke`; Nightly runs it for 10 minutes
   in ReleaseSafe.
 - `zig build check-ios` compiles the ABI into the iOS, simulator and macOS
   (fd passing off) libraries; `check-fd-passing-off-symbols` reads the macOS
   one. `zig build package-preflight` builds the consumer above, with a C
-  program that includes the header, and runs it.
+  program that includes the header (compiled with `-Wall -Wextra -Werror`),
+  and runs it.
 - `zig build hardening` scans `src/native/`. An ABI change shows in review
   twice: in the header and in `docs/api-snapshot-experimental.txt`, where
   every export and C struct field has a line.
