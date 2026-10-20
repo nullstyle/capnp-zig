@@ -1719,17 +1719,23 @@ fn expectReturnAbortClose(c: *Conn, answer_id: u32, reason: []const u8) !void {
     {
         const eff = (try c.nextEffect()) orelse return error.TestNoEffect;
         defer c.commitEffect();
-        var d = try protocol.DecodedMessage.init(testing.allocator, eff.out_frame);
+        var d = try protocol.DecodedMessage.init(testing.allocator, framePayload(c, eff.out_frame));
         defer d.deinit();
         const ret = try d.asReturn();
         try testing.expectEqual(answer_id, ret.answer_id);
         try testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
         try testing.expectEqualStrings(reason, ret.exception.?.reason);
     }
+    try expectAbortClose(c);
+}
+
+/// The next effects of `c` are an Abort, then CLOSE_REQUESTED, and nothing
+/// more.
+fn expectAbortClose(c: *Conn) !void {
     {
         const eff = (try c.nextEffect()) orelse return error.TestNoEffect;
         defer c.commitEffect();
-        var d = try protocol.DecodedMessage.init(testing.allocator, eff.out_frame);
+        var d = try protocol.DecodedMessage.init(testing.allocator, framePayload(c, eff.out_frame));
         defer d.deinit();
         try testing.expectEqual(protocol.MessageTag.abort, d.tag);
     }
@@ -1742,36 +1748,97 @@ fn expectReturnAbortClose(c: *Conn, answer_id: u32, reason: []const u8) !void {
 }
 
 test "inbound: a new call that reuses an id the host still owes closes the connection" {
-    // The remote finishes call 10 before the host answers it, then sends a
-    // new call 10. With a record of the finished call, the Peer refuses the
-    // id itself: Abort, no Return. With its records full (2 of 2, held by
-    // calls queued on a promise export), the Peer accepts the id; the core
-    // answers the new call with an exception, sends Abort and asks to
-    // close. Either way the host sees one INBOUND_CALL 10.
+    // The host owes call 10, and the remote sends a new call 10. While the
+    // Peer has a record of the old call (no Finish yet, or a recorded
+    // Finish), it refuses the id itself: Abort, no Return. With its
+    // finished-early records full (2 of 2, held by calls queued on a promise
+    // export), the Peer accepts the id after the Finish; the core answers
+    // the new call with an exception, sends Abort and asks to close. In
+    // every case the host sees one INBOUND_CALL 10, the push fails once,
+    // and `last_error` names DuplicateQuestionId, in both framings.
     const alloc = testing.allocator;
-    for ([_]bool{ false, true }) |records_full| {
-        const a = try Conn.init(alloc, .{ .now_ns = 0, .limits = .{ .max_active_inbound_questions = 2 } });
-        defer a.deinit();
-        var ra = Rec.init(alloc);
-        defer ra.deinit();
-        const ea = try a.exportCap(200);
-        if (records_full) try fillFinishedRecords(alloc, a, &.{ 20, 21 });
-        try pushFrame(alloc, a, plainCallFrame(alloc, 10, ea));
-        try pushFrame(alloc, a, finishFrame(alloc, 10));
-        try drainAll(a, &ra);
-        try testing.expectEqual(@as(usize, 1), countCalls(&ra, 10));
-
-        try testing.expectError(error.Protocol, pushFrame(alloc, a, plainCallFrame(alloc, 10, ea)));
-        try testing.expectEqual(@as(?anyerror, error.DuplicateQuestionId), a.last_error);
-        if (records_full) {
-            try expectReturnAbortClose(a, 10, "DuplicateQuestionId");
-        } else {
+    const Case = enum { no_finish, finish_recorded, records_full };
+    for ([_]conn_mod.Framing{ .segment_table, .u32_le }) |framing| {
+        for (std.enums.values(Case)) |case| {
+            const a = try Conn.init(alloc, .{
+                .now_ns = 0,
+                .framing = framing,
+                .limits = .{ .max_active_inbound_questions = 2 },
+            });
+            defer a.deinit();
+            var ra = Rec.init(alloc);
+            defer ra.deinit();
+            const ea = try a.exportCap(200);
+            if (case == .records_full) try fillFinishedRecords(alloc, a, &.{ 20, 21 });
+            try pushFrame(alloc, a, plainCallFrame(alloc, 10, ea));
+            if (case != .no_finish) try pushFrame(alloc, a, finishFrame(alloc, 10));
             try drainAll(a, &ra);
-            try expectAbortThenClose(&ra);
+            try testing.expectEqual(@as(usize, 1), countCalls(&ra, 10));
+
+            try testing.expectError(error.Protocol, pushFrame(alloc, a, plainCallFrame(alloc, 10, ea)));
+            try testing.expectEqual(@as(?anyerror, error.DuplicateQuestionId), a.last_error);
+            if (case == .records_full) {
+                try expectReturnAbortClose(a, 10, "DuplicateQuestionId");
+            } else {
+                try expectAbortClose(a);
+            }
+            try testing.expectEqual(@as(usize, 1), countCalls(&ra, 10));
+            try testing.expectError(error.Closed, pushFrame(alloc, a, plainCallFrame(alloc, 11, ea)));
         }
-        try drainAll(a, &ra);
-        try testing.expectEqual(@as(usize, 1), countCalls(&ra, 10));
-        try testing.expectError(error.Closed, pushFrame(alloc, a, plainCallFrame(alloc, 11, ea)));
+    }
+}
+
+test "u32_le: a bad frame or a remote Abort ends the connection once, as in segment-table framing" {
+    // A frame that fails gives one Abort (the Peer's own here), then
+    // CLOSE_REQUESTED, and `last_error` names the cause. A remote Abort is
+    // an orderly close: `error.Closed`, no Abort back, CLOSE_REQUESTED,
+    // and `last_error` is RemoteAbort.
+    const alloc = testing.allocator;
+    // One segment of one word; the root struct pointer points 1000 words
+    // past the end of the segment.
+    var bad: [16]u8 = undefined;
+    std.mem.writeInt(u32, bad[0..4], 0, .little);
+    std.mem.writeInt(u32, bad[4..8], 1, .little);
+    std.mem.writeInt(u64, bad[8..16], (@as(u64, 1) << 32) | (1000 << 2), .little);
+    const abort = blk: {
+        var mb = protocol.MessageBuilder.init(alloc);
+        defer mb.deinit();
+        try mb.buildAbort("server shutting down");
+        break :blk try mb.finish();
+    };
+    defer alloc.free(abort);
+
+    testing.log_level = .err;
+    for ([_][]const u8{ &bad, abort }) |frame| {
+        const remote_abort = frame.ptr == abort.ptr;
+        var last_errors: [2]?anyerror = undefined;
+        for ([_]conn_mod.Framing{ .segment_table, .u32_le }, 0..) |framing, i| {
+            const a = try Conn.init(alloc, .{ .now_ns = 0, .framing = framing });
+            defer a.deinit();
+            var ra = Rec.init(alloc);
+            defer ra.deinit();
+            const pushed = pushFrame(alloc, a, alloc.dupe(u8, frame));
+            last_errors[i] = a.last_error;
+            if (remote_abort) {
+                try testing.expectError(error.Closed, pushed);
+                try testing.expectEqual(@as(?anyerror, error.RemoteAbort), a.last_error);
+                try testing.expectEqualStrings("server shutting down", a.remote_abort_reason orelse return error.TestNoReason);
+                try testing.expect(!a.failed);
+                const eff = (try a.nextEffect()) orelse return error.TestNoEffect;
+                try testing.expect(eff.* == .close_requested);
+                a.commitEffect();
+                try testing.expect((try a.nextEffect()) == null);
+            } else {
+                try testing.expectError(error.Protocol, pushed);
+                try testing.expect(a.last_error != null);
+                try expectAbortClose(a);
+            }
+            try testing.expectError(error.Closed, pushFrame(alloc, a, alloc.dupe(u8, frame)));
+            try drainAll(a, &ra);
+            try testing.expectEqual(@as(usize, 0), ra.frames.items.len);
+            try testing.expectEqual(@as(usize, 0), ra.close_requested);
+        }
+        try testing.expectEqual(last_errors[0], last_errors[1]);
     }
 }
 
@@ -2349,10 +2416,25 @@ fn finishFrameWith(alloc: std.mem.Allocator, qid: u32, require_early_cancellatio
     return mb.finish();
 }
 
+/// Push one standalone message into `c`, in one push. With `.u32_le`
+/// framing, its length prefix comes first.
 fn pushFrame(alloc: std.mem.Allocator, c: *Conn, frame: anyerror![]const u8) !void {
     const bytes = try frame;
     defer alloc.free(bytes);
+    if (c.framing == .u32_le) {
+        var prefix: [4]u8 = undefined;
+        std.mem.writeInt(u32, &prefix, @intCast(bytes.len), .little);
+        const prefixed = try std.mem.concat(alloc, u8, &.{ &prefix, bytes });
+        defer alloc.free(prefixed);
+        return c.pushBytes(prefixed);
+    }
     try c.pushBytes(bytes);
+}
+
+/// The standalone message in an OUT_FRAME of `c`: without the length
+/// prefix in `.u32_le` framing.
+fn framePayload(c: *const Conn, bytes: []const u8) []const u8 {
+    return if (c.framing == .u32_le) bytes[4..] else bytes;
 }
 
 /// Return OUT_FRAMEs that `rec` kept for `answer_id`: all of them, or only

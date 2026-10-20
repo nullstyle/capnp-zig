@@ -390,7 +390,14 @@ pub const Conn = struct {
             .u32_le => {
                 // The codec owns reassembly; each complete payload is exactly
                 // one standalone message.
-                self.length_codec.push(self.allocator, bytes, self, deliverLengthDelimited) catch |err| return self.failFraming(err);
+                self.length_codec.push(self.allocator, bytes, self, deliverLengthDelimited) catch |err| {
+                    // A frame already failed the connection, or a remote
+                    // Abort closed it (`handleOneFrame`): pass that result
+                    // through. Only the codec's own errors fail it here.
+                    if (self.remote_aborted) return error.Closed;
+                    if (self.failed) return error.Protocol;
+                    return self.failFraming(err);
+                };
             },
         }
     }
@@ -995,7 +1002,10 @@ pub const Conn = struct {
         while (it.next()) |node| {
             switch (node.effect) {
                 .out_frame => |bytes| {
-                    var decoded = protocol.DecodedMessage.init(self.allocator, bytes) catch continue;
+                    // In `.u32_le` framing, `bindingSend` put the length
+                    // prefix first.
+                    const payload = if (self.framing == .u32_le and bytes.len >= 4) bytes[4..] else bytes;
+                    var decoded = protocol.DecodedMessage.init(self.allocator, payload) catch continue;
                     defer decoded.deinit();
                     if (decoded.tag == .abort) return true;
                 },

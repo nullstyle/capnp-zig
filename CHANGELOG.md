@@ -134,6 +134,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for -1 here must check for -3. The C-level test is in
   `src/native/abi_test.zig` ("finish: an in-flight question is
   CAPNP_E_BUSY, ...").
+- **native: with u32_le framing, a frame that fails the connection now
+  fails it once, and a remote Abort is an orderly close again.** With
+  `CAPNP_FRAMING_U32_LE`, `capnp_conn_push_bytes` failed the connection a
+  second time after a frame had already failed it, or after a remote Abort
+  had closed it. A protocol failure then sent more than one Abort, and
+  `capnp_conn_take_error` named `Protocol`, not the cause. A remote Abort
+  made the call return `CAPNP_E_PROTOCOL` instead of `CAPNP_E_CLOSED`, sent
+  an Abort back, and `take_error` named `Closed`, not `RemoteAbort`. The
+  core also missed the Peer's own Abort, because it did not remove the
+  length prefix before it decoded the frame. Now u32_le behaves as the
+  segment-table framing does, as `capnp_core.h` says: one Abort, then
+  CLOSE_REQUESTED, and the cause in `take_error`; for a remote Abort,
+  `CAPNP_E_CLOSED`, no Abort back, and `RemoteAbort`. capnp-swift uses
+  u32_le for QUIC. The test is "u32_le: a bad frame or a remote Abort ends
+  the connection once, ..." in `src/native/conn_test.zig`.
 - **native: two `capnp_core.h` comments.** The comment of
   `capnp_conn_take_error` had `/*` inside a block comment twice, so a C
   host built with `-Wall -Werror` failed to compile the header. The package
