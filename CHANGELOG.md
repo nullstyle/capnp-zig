@@ -129,8 +129,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema (capnp-swift H9-pending).** The cross-implementation runner
   (`tools/e2e_runner.zig`) had only PASS, FAIL and SKIP. It now reads a
   committed list, `tools/e2e_known_limits.zig`: each row names a client,
-  server, transport and schema, the exact checks that fail, a reason and a
-  link. A case is XFAIL when exactly those checks fail and the rest pass.
+  server, transport and schema, the exact checks that fail, the exception
+  text that the client output must contain, a reason and a link. A case is
+  XFAIL when exactly those checks fail with that text and the rest pass.
   Any other failure stays FAIL. A listed check that passes is XPASS, and
   XPASS fails the gate like FAIL, so a fix must also change the list and
   the docs. The summary JSON counts `xfailed` and `xpassed`. The logic is in

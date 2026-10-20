@@ -53,21 +53,26 @@ on Linux.
 
 Each case gets one status:
 
-- `PASS`: the client exited 0 and printed no `not ok` line.
+- `PASS`: the client exited 0, printed at least one `ok` line and no
+  `not ok` line, and the case has no known limit. A known-limit case that
+  passes every check is `XPASS`.
 - `FAIL`: anything else that ran. It fails the run.
 - `SKIP`: not run, for a reason the runner states (a reference-library gap,
   or a direction that the scenario does not have).
 - `XFAIL`: a known limit. `tools/e2e_known_limits.zig` lists each such case
   (client, server, transport, schema) with the exact descriptions of the
-  checks that fail, a reason and a link. A case is XFAIL only when exactly
-  those checks fail, every other check passes, the `1..N` plan line
-  matches, and the client exits 1.
+  checks that fail, the text that the client output must contain (the
+  exception that those checks fail with), a reason and a link. A case is
+  XFAIL only when exactly those checks fail, every other check passes, the
+  `1..N` plan line matches, the client exits 1, and its output contains
+  that text.
 - `XPASS`: a listed check passed. It fails the run like `FAIL`: when a fix
   lands, remove its rows from the list and update the docs that the row
   links.
 
-`tools/e2e_outcome.zig` holds this logic. `zig build test` runs its tests
-(also `zig build test-e2e-outcome`). The summary JSON counts `xfailed` and
+`tools/e2e_outcome.zig` holds this logic and the gate verdict (`FAIL` or
+`XPASS` fails the run). `zig build test` runs its tests (also
+`zig build test-e2e-outcome`). The summary JSON counts `xfailed` and
 `xpassed` next to `passed`, `failed` and `skipped`.
 
 ## Reference Backends

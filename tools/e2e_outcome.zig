@@ -5,7 +5,8 @@
 //! - `SKIP(...)`: not run (the runner decides this before the run).
 //! - `XFAIL(id,f/t)`: a known limit (tools/e2e_known_limits.zig). Exactly
 //!   its listed checks failed, every other check passed, the plan line
-//!   matches, and the client exited 1.
+//!   matches, the client exited 1, and its output contains the limit's
+//!   expected text (the exception the checks fail with).
 //! - `XPASS(id: desc; ...)`: a listed check of a known limit passed. This
 //!   fails the gate, so a fix must also remove its rows and update the docs.
 //! - `FAIL(...)`: anything else.
@@ -106,9 +107,13 @@ fn countOf(list: []const []const u8, item: []const u8) usize {
     return n;
 }
 
-/// The status of one run. `limit` is the case's known limit, if any.
-/// The caller owns the returned text.
-pub fn status(allocator: Allocator, exit_code: i32, tap: *const Tap, limit: ?*const KnownLimit) Allocator.Error![]u8 {
+/// The status of one run, from the client's exit code and its combined
+/// output. `limit` is the case's known limit, if any. The caller owns the
+/// returned text.
+pub fn status(allocator: Allocator, exit_code: i32, output: []const u8, limit: ?*const KnownLimit) Allocator.Error![]u8 {
+    var tap_value = try evalTap(allocator, output);
+    defer tap_value.deinit(allocator);
+    const tap = &tap_value;
     const fail_count = tap.failed.items.len;
     const run_total = tap.total();
     if (limit == null and exit_code == 0 and fail_count == 0 and run_total > 0 and !tap.bailed) {
@@ -161,6 +166,10 @@ pub fn status(allocator: Allocator, exit_code: i32, tap: *const Tap, limit: ?*co
     }
     if (exit_code != 1) {
         return plainFail(allocator, exit_code, fail_count, run_total, .{ "exit", "a known limit needs exit code 1" });
+    }
+    // The checks must fail for the limit's reason, not some other fault.
+    if (std.mem.indexOf(u8, output, known.expect_output) == null) {
+        return plainFail(allocator, exit_code, fail_count, run_total, .{ "output lacks", known.expect_output });
     }
     return std.fmt.allocPrint(allocator, "XFAIL({s},{d}/{d})", .{ known.id, fail_count, run_total });
 }
@@ -243,14 +252,13 @@ const test_limit: KnownLimit = .{
     .transport = "tcp",
     .schema = "pipelined_params_deferred",
     .checks = &.{ check_mint, check_fail },
+    .expect_output = "PromiseUnresolved",
     .reason = "test",
     .link = "test",
 };
 
 fn expectStatus(expected: []const u8, exit_code: i32, output: []const u8, limit: ?*const KnownLimit) !void {
-    var tap = try evalTap(testing.allocator, output);
-    defer tap.deinit(testing.allocator);
-    const got = try status(testing.allocator, exit_code, &tap, limit);
+    const got = try status(testing.allocator, exit_code, output, limit);
     defer testing.allocator.free(got);
     try testing.expectEqualStrings(expected, got);
 }
@@ -319,9 +327,19 @@ test "status without a known limit keeps the PASS and FAIL texts" {
 test "status is XFAIL when exactly the listed checks fail" {
     try expectStatus("XFAIL(test-limit,2/4)", 1, cpp_xfail_output, &test_limit);
     // A leading plan line (the Rust client) counts the same.
-    try expectStatus("XFAIL(test-limit,2/4)", 1, "1..4\nnot ok 1 - " ++ check_mint ++ "\nok 2 - m\nok 3 - f\nnot ok 4 - " ++ check_fail ++ "\n", &test_limit);
+    try expectStatus("XFAIL(test-limit,2/4)", 1, "1..4\nnot ok 1 - " ++ check_mint ++ "\n  # PromiseUnresolved\nok 2 - m\nok 3 - f\nnot ok 4 - " ++ check_fail ++ "\n", &test_limit);
     try testing.expectEqual(Bucket.xfail, bucket("XFAIL(test-limit,2/4)"));
     try testing.expect(!bucket("XFAIL(test-limit,2/4)").failsGate());
+}
+
+test "status is FAIL when the listed checks fail without the expected output" {
+    // The same two lines fail, but not with the limit's exception: some
+    // other fault, which must not pass as the known limit.
+    const other_fault = "not ok 1 - " ++ check_mint ++ "\n  # remote exception: Disconnected\nok 2 - m\nok 3 - f\nnot ok 4 - " ++ check_fail ++ "\n1..4\n";
+    try expectStatus("FAIL(exit=1,2/4,output lacks: PromiseUnresolved)", 1, other_fault, &test_limit);
+    // No diagnostics at all.
+    const bare = "not ok 1 - " ++ check_mint ++ "\nok 2 - m\nok 3 - f\nnot ok 4 - " ++ check_fail ++ "\n1..4\n";
+    try expectStatus("FAIL(exit=1,2/4,output lacks: PromiseUnresolved)", 1, bare, &test_limit);
 }
 
 test "status is XPASS, a gate failure, when a listed check passes" {
@@ -472,6 +490,7 @@ test "the committed known-limits list is well formed" {
     for (known_limits.list, 0..) |limit, i| {
         try testing.expect(limit.id.len > 0);
         try testing.expect(limit.reason.len > 0);
+        try testing.expect(limit.expect_output.len > 0);
         try testing.expect(limit.link.len > 0);
         try testing.expect(limit.schema.len > 0);
         try testing.expect(std.mem.eql(u8, limit.transport, "tcp") or std.mem.eql(u8, limit.transport, "unix"));

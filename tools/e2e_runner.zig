@@ -857,9 +857,7 @@ fn stopRefServer(allocator: Allocator, io: std.Io, backend: Backend, schema: Sch
 /// The status of one finished case, from the client's combined output and
 /// exit code, and the case's known limit if it has one (tools/e2e_outcome.zig).
 fn caseStatus(allocator: Allocator, case: outcome.Case, exit_code: i32, combined: []const u8) ![]u8 {
-    var tap = try outcome.evalTap(allocator, combined);
-    defer tap.deinit(allocator);
-    return outcome.status(allocator, exit_code, &tap, outcome.findLimit(&outcome.known_limits.list, case));
+    return outcome.status(allocator, exit_code, combined, outcome.findLimit(&outcome.known_limits.list, case));
 }
 
 /// The matrix place of a case: Zig on one side, `backend` on the other.
