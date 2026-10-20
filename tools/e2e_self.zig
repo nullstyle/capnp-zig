@@ -1,5 +1,7 @@
 //! Self-interop e2e: drive the Zig e2e client against the Zig e2e server
-//! for every schema, with TAP accounting.
+//! for each schema in `schemas` and `quic_schemas` below, with TAP
+//! accounting. It leaves out pipelined_params_deferred, whose checks fail
+//! by design.
 //!
 //! This is the no-docker complement to tools/e2e_runner.zig: it needs no
 //! reference-implementation containers, builds on `std.Io` only, and runs

@@ -145,9 +145,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a pending answer stays `.promised`. A client that waits for `mint()`
   before it sends `check()` still passes: the server also answers a call
   that it has held for 500 ms, on its next loop tick.
-  `docs/supported-surface.md` and `docs/native-abi.md` now say that a
-  native-ABI host always hits this limit when both calls arrive in one
-  `capnp_conn_push_bytes`.
+  `docs/supported-surface.md` and `docs/native-abi.md` now say when a
+  native-ABI host hits this limit: when the pipelined call dispatches
+  before the host answers the call that it names. This always happens when
+  both calls arrive in one `capnp_conn_push_bytes` and the pipelined call
+  goes to a capability that the host exports.
 
 ### Fixed
 

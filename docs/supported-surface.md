@@ -866,10 +866,13 @@ cooperating peer.
   target and would need `Disembargo` reflections held behind it.
   A native-ABI host answers every call after its dispatch, so a pipelined
   param fails whenever the host has not answered the named call when the
-  pipelined call arrives; this is always so when both arrive in one
-  `capnp_conn_push_bytes`. The e2e schema `pipelined_params_deferred`
-  shows this case against all four reference clients (the known limit
-  `h9-pending-answer` in `tools/e2e_known_limits.zig`). Second,
+  pipelined call dispatches. A call to a capability that the host exports
+  dispatches as soon as it arrives, so this always happens when both calls
+  arrive in one `capnp_conn_push_bytes`. A call that is parked behind the
+  named answer dispatches only after the host answers it. The e2e schema
+  `pipelined_params_deferred` shows this case against all four reference
+  clients (the known limit `h9-pending-answer` in
+  `tools/e2e_known_limits.zig`). Second,
   when the answer resolved to a capability the caller itself hosts: the
   descriptor grants no wire reference, and an `.imported` entry would
   promise the handler one. Third, when the call was parked behind another

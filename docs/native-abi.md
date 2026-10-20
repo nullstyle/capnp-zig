@@ -37,17 +37,20 @@ Params and results cross the ABI as standalone messages whose capability
 pointers index a `caps[]` table of imports, exports, promised answers and
 null caps. One caller at a time per connection, from any thread.
 
-A native-ABI host answers every call after its dispatch, so a pipelined
-param fails whenever the host has not answered the named call when the
-pipelined call arrives; this is always so when both arrive in one
-`capnp_conn_push_bytes`. Such a param names a question of the caller that
-the host has not answered yet (a `receiverAnswer` descriptor). The core
-refuses the call with an exception, reason `PromisedCapUnsupported`, and
-the host never sees it. In the `pipelined_params` e2e flow, the C++, Go,
-Rust and Python reference clients in `tests/e2e` all send the param this
-way. See the pending-answer limit in docs/supported-surface.md ("A
-pipelined capability in call params resolves only once its answer has
-returned").
+A pipelined param names a question of the caller (a `receiverAnswer`
+descriptor). The core resolves it when the pipelined call dispatches, not
+when it arrives. A native-ABI host answers every call after its dispatch,
+so the param fails whenever the host has not answered the named call by
+then: the core refuses the call with an exception, reason
+`PromisedCapUnsupported`, and the host never sees it. A call to a
+capability that the host exports dispatches as soon as it arrives, so this
+always happens when both calls arrive in one `capnp_conn_push_bytes`. A
+call that is parked behind the named answer dispatches only after the host
+answers it. In the `pipelined_params` e2e flow, the C++, Go, Rust and
+Python reference clients in `tests/e2e` all send such a param in a call
+to the host's bootstrap capability. See the pending-answer limit in
+docs/supported-surface.md ("A pipelined capability in call params resolves
+only once its answer has returned").
 
 ## Answer ids
 
