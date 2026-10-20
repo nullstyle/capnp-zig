@@ -189,9 +189,13 @@ typedef struct capnp_cap {
 #define CAPNP_EFFECT_EVENT           5  /* a Peer observer event (opts.observer):
                                            event_tag names it (capnp_core_event_name),
                                            reason holds its error name or "" */
-#define CAPNP_EFFECT_ANSWER_FINISHED 6  /* opts.answer_finished: the remote sent
-                                           Finish for an INBOUND_CALL the host
-                                           has not answered. id = its answer id;
+#define CAPNP_EFFECT_ANSWER_FINISHED 6  /* opts.answer_finished: the caller
+                                           finished an INBOUND_CALL that the host
+                                           has not answered (the remote sent
+                                           Finish or, for a call from this
+                                           connection to one of its own exports,
+                                           the host canceled that question or its
+                                           deadline passed). id = its answer id;
                                            export_id and host_tag as in that
                                            INBOUND_CALL (it can come after that
                                            export's EXPORT_DROPPED: find the
@@ -369,17 +373,22 @@ int32_t capnp_return_results(capnp_conn *conn, uint32_t answer_id, const uint8_t
 
 /* Answer an INBOUND_CALL with an exception (exception_type: 0 failed,
  * 1 overloaded, 2 disconnected, 3 unimplemented; reason is not
- * NUL-terminated and may be empty). */
+ * NUL-terminated and may be empty). CAPNP_E_BAD_ID for an answer the host
+ * does not owe. An answer after the remote's Finish of the call is still
+ * accepted, once. On a failed send (for example CAPNP_E_NOMEM) nothing is
+ * sent and the answer stays owed: answer it again. */
 int32_t capnp_return_exception(capnp_conn *conn, uint32_t answer_id, uint16_t exception_type,
                                const char *reason, size_t reason_len);
 
 /* Answer an INBOUND_CALL that the remote finished with Return{canceled}
  * (CAPNP_FEATURE_ANSWER_FINISHED). CAPNP_E_BAD_ID for an answer the host does
  * not owe; CAPNP_E_INVAL unless a CAPNP_EFFECT_ANSWER_FINISHED was queued for
- * it (opts.answer_finished off, no Finish yet, or a tail-call hold withholds
- * it). On another error nothing is sent and the answer stays owed. Instead of
- * this, the host may answer with capnp_return_results or
- * capnp_return_exception; it answers once. */
+ * it (opts.answer_finished off, no Finish yet, a tail-call hold withholds it,
+ * or the core did not report the Finish: its records were full or out of
+ * memory, or the call was still queued in the core when the Finish came). On
+ * another error nothing is sent and the answer stays owed. Instead of this,
+ * the host may answer with capnp_return_results or capnp_return_exception;
+ * it answers once. */
 int32_t capnp_return_canceled(capnp_conn *conn, uint32_t answer_id);
 
 #ifdef __cplusplus

@@ -53,9 +53,9 @@ on Linux.
 
 Each case gets one status:
 
-- `PASS`: the client exited 0, printed at least one `ok` line and no
-  `not ok` line, and the case has no known limit. A known-limit case that
-  passes every check is `XPASS`.
+- `PASS`: the client exited 0 and printed at least one `ok` line, no
+  `not ok` line and no `Bail out!` line, and the case has no known limit.
+  A known-limit case that passes every check is `XPASS`.
 - `FAIL`: anything else that ran. It fails the run.
 - `SKIP`: not run, for a reason the runner states (a reference-library gap,
   or a direction that the scenario does not have).
@@ -66,9 +66,10 @@ Each case gets one status:
   XFAIL only when exactly those checks fail, every other check passes, the
   `1..N` plan line matches, the client exits 1, and its output contains
   that text.
-- `XPASS`: a listed check passed. It fails the run like `FAIL`: when a fix
-  lands, remove its rows from the list and update the docs that the row
-  links.
+- `XPASS`: a listed check passed, and no check that the limit does not
+  list failed (such a failure makes the case `FAIL`). It fails the run
+  like `FAIL`: when a fix lands, remove its rows from the list and update
+  the docs that the row links.
 
 `tools/e2e_outcome.zig` holds this logic and the gate verdict (`FAIL` or
 `XPASS` fails the run). `zig build test` runs its tests (also

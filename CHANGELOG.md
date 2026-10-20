@@ -19,10 +19,11 @@ on a question with no RETURN yet now returns `CAPNP_E_BUSY`, as
 `capnp_core.h` says. A new call that reuses an id the host still owes now
 closes the connection, and the host owes at most
 `max_active_inbound_questions` answers. With u32_le framing, a failed frame
-now sends one Abort, and a remote Abort is an orderly close again. The
-release also fixes two Peer crashes and one out-of-memory defect. A call
-pipelined on an answer whose results name a promise on another answer read
-freed memory. A promise export resolved into a cycle overflowed the stack.
+now sends one Abort, and a remote Abort is now an orderly close, as in
+segment-table framing. The release also fixes two Peer crashes and one
+lost-answer defect. A call pipelined on an answer whose results name a
+promise on another answer read freed memory. A promise export resolved
+into a cycle overflowed the stack.
 When a late exception Return after the caller's Finish could not be sent,
 the Peer reported success, and no Return went out. A native host reached
 all three through the C ABI. The e2e runner now records known limits as
@@ -41,9 +42,10 @@ docs/upgrading-to-0.28.0.md walks through the upgrade.
 - **native: a new call that reuses an id the host still owes now closes
   the connection (Experimental behavior).** After an INBOUND_CALL, the host
   owes one answer for its id, and the remote must not reuse the id before
-  it gets that Return. The Peer refuses such a call itself
-  while it keeps a record of the remote's Finish of the old call. When
-  those records were full, the core handed the host a second INBOUND_CALL
+  it gets that Return. The Peer refuses such a call itself (Abort, no
+  Return) while the old call is not finished, or while it keeps a record
+  of the remote's Finish of the old call. When those records were full,
+  the core handed the host a second INBOUND_CALL
   with the same id, so the host's late answer for the old call could
   answer the new one. A question held on a tail call that waited for the
   old call ended with RETURN EXCEPTION (`tail_call_reused_reason`). Now the
@@ -133,33 +135,36 @@ docs/upgrading-to-0.28.0.md walks through the upgrade.
     when the remote sends Finish for an INBOUND_CALL that the host has not
     answered. `id` is the answer id, and `export_id` and `host_tag` are
     those of the INBOUND_CALL. Its node is reserved with the INBOUND_CALL,
-    so a lack of memory cannot lose it. While a question held on a tail
-    call waits for that call, the core withholds the effect; it queues it
-    if the wait ends without the answer. It also comes for the host's own
-    loopback call when the host cancels its question or the question's
-    deadline passes. It can come after the EXPORT_DROPPED of its export,
-    so a host finds the work by answer id;
+    so queueing it needs no memory. While a question held on a tail call
+    waits for that call, the core withholds the effect. It queues it when
+    a cancel, a deadline or the shutdown drain bound ends the wait without
+    the answer. A transport close queues none. It also comes for the
+    host's own loopback call when the host cancels its question or the
+    question's deadline passes. It can come after the EXPORT_DROPPED of
+    its export, so a host finds the work by answer id;
   - `int32_t capnp_return_canceled(capnp_conn *, uint32_t answer_id)`
     (`Conn.returnCanceled`) answers such a call with `Return{canceled}`.
     It returns `CAPNP_E_BAD_ID` for an answer the host does not owe, and
     `CAPNP_E_INVAL` unless the core queued ANSWER_FINISHED for it.
   The effect can be stale when the host answered before it drained it; a
   host applies effects in drain order and ignores it then. When the Peer
-  cannot record the Finish (its records are full), no effect comes and the
-  host's ordinary answer goes out. "Answer finished" in docs/native-abi.md
-  gives every rule. The Zig API of the shim gains Experimental
-  declarations: `Options.answer_finished`, `Conn.returnCanceled`, the
+  cannot record the Finish (its records are full, or the record gets no
+  memory), no effect comes and the host's ordinary answer goes out.
+  "Answer finished" in docs/native-abi.md gives every rule. The Zig API of
+  the shim gains Experimental declarations: `Options.answer_finished`,
+  `Conn.returnCanceled`, the
   effect payload `native.effects.AnswerFinished`, `native.conn.PendingAnswer`
   and `FinishState` (see Breaking), and the `Conn` field `answer_finished`
   (internal state). Tests: `src/native/conn_test.zig` ("answer finished:
   ...", including an allocation-failure sweep over the whole lifecycle),
   `src/native/abi_test.zig` (through `capnp_core.h`), and
-  `fuzz-native-abi`, which now opts in on a random side, calls
+  `fuzz-native-abi`, which now opts each side in at random, calls
   `capnp_return_canceled`, and checks the new invariants. One fuzz session
-  in 4 is now clean (a bootstrap first, no junk bytes), so
-  calls reach the hosts: a 10-second Debug run with seed 1 now sees 7074
-  INBOUND_CALLs and 1128 ANSWER_FINISHED effects; before, the same run saw
-  6 INBOUND_CALLs.
+  in 4 is now clean (a bootstrap first, no junk bytes), so calls reach the
+  hosts. At the release commit, a 10-second Debug run with seed 1 sees
+  about 3000 to 3500 INBOUND_CALLs and about 500 ANSWER_FINISHED effects.
+  Before clean sessions, the same run saw fewer than 10 INBOUND_CALLs. The
+  run is timed, so the counts depend on the machine.
 - **e2e: known limits, recorded as XFAIL, and the `pipelined_params_deferred`
   schema (capnp-swift H9-pending).** The cross-implementation runner
   (`tools/e2e_runner.zig`) had only PASS, FAIL and SKIP. It now reads a
@@ -185,7 +190,8 @@ docs/upgrading-to-0.28.0.md walks through the upgrade.
   native-ABI host hits this limit: when the pipelined call dispatches
   before the host answers the call that it names. This always happens when
   both calls arrive in one `capnp_conn_push_bytes` and the pipelined call
-  goes to a capability that the host exports.
+  goes to a capability that the host exports with `capnp_export` or
+  `capnp_set_bootstrap`.
 
 ### Fixed
 
@@ -225,9 +231,10 @@ docs/upgrading-to-0.28.0.md walks through the upgrade.
   9000 links overflowed the stack too. A cycle that got past the check
   would fail the call with "promise resolution cycle". Tests: "promise
   export: ..." in `src/native/conn_test.zig`, and `capnp_resolve_promise`
-  in `src/native/abi_test.zig`. Clean `fuzz-native-abi` sessions now use
-  promise exports and PROMISED capabilities again. Without the two fixes,
-  a 30-second Debug run with seed 1, 2 or 3 crashes on one of them.
+  in `src/native/abi_test.zig`. The clean `fuzz-native-abi` sessions (new
+  in this release, see Added) also use promise exports and PROMISED
+  capabilities. Without the two fixes, a 30-second Debug run with seed 1,
+  2 or 3 crashes on one of them.
 - **RPC: a late exception Return that fails after the caller's Finish now
   fails, and the answer stays owed.** When the caller sends Finish before
   the host answers, the Peer keeps a tombstone for the id until a Return
@@ -248,7 +255,8 @@ docs/upgrading-to-0.28.0.md walks through the upgrade.
   `HostPeer` (WASM host ABI) exception answer keep the tombstone when
   their send fails.
 - **native: with u32_le framing, a frame that fails the connection now
-  fails it once, and a remote Abort is an orderly close again.** With
+  fails it once, and a remote Abort is an orderly close, as in
+  segment-table framing.** With
   `CAPNP_FRAMING_U32_LE`, `capnp_conn_push_bytes` failed the connection a
   second time after a frame had already failed it, or after a remote Abort
   had closed it. A protocol failure then sent more than one Abort, and

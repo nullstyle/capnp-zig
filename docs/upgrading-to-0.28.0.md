@@ -15,8 +15,8 @@ these changes:
   `max_active_inbound_questions` answers. `capnp_finish` on a question with
   no RETURN yet returns `CAPNP_E_BUSY`, as `capnp_core.h` says.
 - With u32_le framing (the QUIC path of capnp-swift), a frame that fails
-  the connection sends one Abort, and a remote Abort is an orderly close
-  again.
+  the connection sends one Abort, and a remote Abort is an orderly close,
+  as with segment-table framing.
 - Three fixes in the RPC Peer. A call pipelined on an answer whose results
   name a promise on another answer read freed memory. A promise export
   resolved into a cycle overflowed the stack. When a late exception Return
@@ -44,23 +44,33 @@ authoritative list of changes.
   freed memory, `capnp_resolve_promise` of a promise to itself overflowed
   the stack on the next call to that promise, and `capnp_return_exception`
   after the remote's Finish could return `CAPNP_OK` and drop the answer. Two
-  `capnp_core.h` comments are fixed: the 0.27.0 header failed to compile
-  in a C host built with `-Wall -Werror`. The header spells
-  `CAPNP_FEATURE_ANSWER_FINISHED` as `(1ULL << 0)`, so Swift imports it.
+  `capnp_core.h` comments are fixed. The comment of `capnp_conn_take_error`
+  had `/*` inside a block comment twice, so the 0.27.0 header failed to
+  compile in a C host built with `-Wall -Werror`. The comment of
+  `capnp_return_results` said that an answer after the remote's Finish
+  gets `CAPNP_E_BAD_ID`; the core accepts that answer once. The header
+  spells `CAPNP_FEATURE_ANSWER_FINISHED` as `(1ULL << 0)`, so Swift imports
+  it.
 - **Zig code that uses the `native` module.** Read checklist items 6 and 7:
   `Conn.pending_answers` changes type, and a switch on a
   `native.conn.Effect` needs an arm for `.answer_finished`.
 - **Every user of the RPC Peer.** The three Peer fixes apply on every
-  transport. A Peer can read freed memory when its answer's results name a
-  promise on one of its own questions (a `receiverAnswer` capability), and
-  the remote pipelines a call on that capability. The Stable
-  `Peer.resolvePromiseExportToExport` now refuses a cycle (checklist item
-  8). A late exception answer after an early Finish now fails when its
-  Return cannot be built or sent, for example when memory runs out.
+  transport. Before v0.28.0, a Peer could read freed memory when its
+  answer's results named a promise on one of its own questions (a
+  `receiverAnswer` capability), and the remote pipelined a call on that
+  capability. The Stable `Peer.resolvePromiseExportToExport` now refuses a
+  cycle (checklist item 8). A late exception answer after an early Finish
+  now fails when its Return cannot be built or sent, for example when
+  memory runs out.
 - Contributors who work in this repository: read the e2e note in "How to
   verify".
 
-This release has no security advisory.
+This release has no security advisory. One fix is a memory-safety fix of a
+kind that [SECURITY.md](../SECURITY.md) lists. Before v0.28.0, a remote
+could make the Peer read freed memory: it pipelined a call on an answer
+whose results named a promise on one of the Peer's own questions. Debug
+and ReleaseSafe builds panicked. Upgrade if your code returns such a
+promise in its results.
 
 ## The coordinated set
 

@@ -29,9 +29,11 @@ panic hook. The host:
   (`capnp_conn_transport_closed`);
 - after every call, drains effects (`capnp_conn_next_effect` /
   `capnp_conn_commit_effect`): frames to send, a close request, one RETURN
-  per question, inbound calls to answer, dropped exports, and observer
-  events. One effect is in flight at a time, and its payload is borrowed
-  until its commit.
+  per question, inbound calls to answer, dropped exports, observer events,
+  and (with the `answer_finished` opt-in) inbound calls that the caller
+  finished before the host answered them (ANSWER_FINISHED, see "Answer
+  finished"). One effect is in flight at a time, and its payload is
+  borrowed until its commit.
 
 Params and results cross the ABI as standalone messages whose capability
 pointers index a `caps[]` table of imports, exports, promised answers and
@@ -43,10 +45,13 @@ when it arrives. A native-ABI host answers every call after its dispatch,
 so the param fails whenever the host has not answered the named call by
 then: the core refuses the call with an exception, reason
 `PromisedCapUnsupported`, and the host never sees it. A call to a
-capability that the host exports dispatches as soon as it arrives, so this
-always happens when both calls arrive in one `capnp_conn_push_bytes`. A
-call that is parked behind the named answer dispatches only after the host
-answers it. In the `pipelined_params` e2e flow, the C++, Go, Rust and
+capability that the host exports with `capnp_export` or
+`capnp_set_bootstrap` dispatches as soon as it arrives, so this always
+happens when both calls arrive in one `capnp_conn_push_bytes`. A call to an
+unresolved promise export dispatches only when the core releases it, after
+the host resolves the promise. A call that is parked behind the named
+answer dispatches only after the host answers it. In the
+`pipelined_params` e2e flow, the C++, Go, Rust and
 Python reference clients in `tests/e2e` all send such a param in a call
 to the host's bootstrap capability. See the pending-answer limit in
 docs/supported-surface.md ("A pipelined capability in call params resolves
@@ -70,8 +75,9 @@ Abort depends on what the core still knows of the old call:
   and no Return for it goes out. A record of the Finish also refuses a
   Bootstrap with the id.
 - The core keeps no record of the old call's Finish, because its records
-  were full (see below). Then the core answers the new call with an
-  exception Return (`DuplicateQuestionId`) before the Abort.
+  were full or the record got no memory (see below). Then the core answers
+  the new call with an exception Return (`DuplicateQuestionId`) before the
+  Abort.
 
 A call that the core kept queued (on a promise export, or on an answer) can
 reach this check later: in `capnp_resolve_promise` or
@@ -110,14 +116,17 @@ When the remote sends Finish for an INBOUND_CALL that the host owes, the
 core queues one `CAPNP_EFFECT_ANSWER_FINISHED` (6). Its `id` is the answer
 id, `export_id` and `host_tag` are those of the INBOUND_CALL, and every
 other field is 0. The core queues it at most once per call. Its node is
-reserved when the INBOUND_CALL is queued, so a lack of memory cannot lose it.
+reserved when the INBOUND_CALL is queued, so after the core records the
+Finish, a lack of memory cannot lose the effect. The record itself can fail
+for lack of memory. Then no effect comes (see "When no effect comes").
 
 The host stops the work and answers once. Normally it calls
 `capnp_return_canceled(conn, answer_id)`: the core sends `Return{canceled}`,
 and the caller can reuse its question id. That call returns
 `CAPNP_E_BAD_ID` for an answer the host does not owe. It returns
 `CAPNP_E_INVAL` when no ANSWER_FINISHED was queued for the answer: the
-opt-in is off, no Finish came, or a tail-call hold withholds it. On any
+opt-in is off, no Finish came, a tail-call hold withholds it, or the core
+did not report the Finish (see "When no effect comes"). On any
 other error it sends nothing, and the host still owes the answer. Instead of
 `capnp_return_canceled`, the host may answer with `capnp_return_results` or
 `capnp_return_exception`. A `sendResultsTo = yourself` call also gets
@@ -149,10 +158,13 @@ answer goes out. The bound on owed answers ("Answer ids") does not keep a
 record free for each of them: other inbound calls use the same records. A
 call that the core still holds queued (on a promise export, or on an
 answer) takes one when the remote finishes it with
-`requireEarlyCancellationWorkaround` set, and keeps it until the call is
-delivered or its promise settles. So with promises that never settle, the
-records can stay full for the life of the connection, and then no call gets
-ANSWER_FINISHED. That flag defaults to true. The C++ reference (1.0 and
+`requireEarlyCancellationWorkaround` set. It keeps that record until a
+Return for the call goes out: the host's answer after the core delivers the
+call, or the core's own exception Return (for example, when the promise is
+rejected). So with promises that never settle, or delivered calls that the
+host does not answer, the records can stay full for the life of the
+connection, and then no call gets ANSWER_FINISHED. That flag defaults to
+true. The C++ reference (1.0 and
 later) sends false, but go-capnp never sets it, so with a go-capnp caller,
 each Finish of a queued call takes a record. Such a queued call reaches the
 host after its Finish and gets no ANSWER_FINISHED: answer it as usual.
