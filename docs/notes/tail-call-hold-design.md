@@ -231,8 +231,10 @@ Pre-existing issues it found, not changed here (follow-ups):
   (ABI v2) would let the host know. Closed for 0.28.0 without a
   generation: a new call that reuses an id the host still owes closes the
   connection, and ANSWER_FINISHED is an opt-in in ABI v1 ("Answer ids" and
-  "Answer finished" in docs/native-abi.md). A Bootstrap that reuses such an
-  id when the Peer keeps no record of its Finish is still not caught.
+  "Answer finished" in docs/native-abi.md). When the Peer keeps no record
+  of the old call's Finish, a Bootstrap that reuses such an id, or a Call
+  that the core answers itself (it never reaches a host export), is still
+  not caught.
 - `capnp_finish` on a question that is still in flight returned
   `CAPNP_E_INVAL`; the header says `CAPNP_E_BUSY`. Fixed for 0.28.0: it
   returns `CAPNP_E_BUSY`.

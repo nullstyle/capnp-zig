@@ -19,17 +19,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer the new one. A question held on a tail call that waited for the
   old call ended with RETURN EXCEPTION (`tail_call_reused_reason`). Now the
   core answers the new call with an exception Return
-  (`DuplicateQuestionId`), sends Abort and queues CLOSE_REQUESTED, and
-  `capnp_conn_push_bytes` returns `CAPNP_E_PROTOCOL`. A call that the Peer
-  kept queued reaches this check when the host releases it: then
-  `capnp_resolve_promise` or `capnp_return_results` returns `CAPNP_OK`, and
-  the Abort and CLOSE_REQUESTED follow in the effects. A held question now
-  ends at transport close, with RETURN DISCONNECTED. The constant
-  `native.conn.tail_call_reused_reason` is removed. This applies to every
-  host. "Answer ids" in docs/native-abi.md gives the rule. The tests are in
-  `src/native/conn_test.zig` ("inbound: a new call that reuses ...", "a
-  queued call ...", "a pipelined call ...", and "tail call: a new call that
-  reuses a held call's id closes the connection; ...").
+  (`DuplicateQuestionId`), sends Abort and queues CLOSE_REQUESTED.
+  `capnp_conn_push_bytes` returns `CAPNP_E_PROTOCOL`, and
+  `capnp_conn_take_error` names `DuplicateQuestionId`, in either framing. A
+  call that the Peer kept queued reaches this check when the host releases
+  it: then `capnp_resolve_promise` or `capnp_return_results` returns
+  `CAPNP_OK`, and the Return, the Abort and CLOSE_REQUESTED follow in the
+  effects. A held question now ends at transport close, with RETURN
+  DISCONNECTED. The constant `native.conn.tail_call_reused_reason` is
+  removed. This applies to every host. The core sees only the calls that
+  reach a host export. With full records, a reused id on a Bootstrap, or on
+  a Call that the core answers itself (for example, to an export id that
+  does not exist), still gets the core's own answer, and the host's late
+  answer for the old call then goes out with the same id. "Answer ids" in
+  docs/native-abi.md gives the rule and this limit. The tests are in
+  `src/native/conn_test.zig` ("inbound: a new call that reuses ...", which
+  runs in both framings, "a queued call ...", "a pipelined call ...",
+  "inbound: with the Peer's records full, a reused id on a call the core
+  answers itself is not caught", and "tail call: a new call that reuses a
+  held call's id closes the connection; ...").
   - **Migration:** a host needs no change. Do not use
     `tail_call_reused_reason`. A remote must not reuse a question id before
     it gets the Return for it.
@@ -38,13 +46,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that many answers (default 4096) now gets an exception Return
   (`OwedAnswerLimitExceeded`) and never reaches the host. The connection
   stays up. Before, the core delivered it: the Peer's own limit counts only
-  the calls that the remote has not finished, so a host could owe more. The
-  bound keeps room in the Peer's finished-early records (bounded the same)
-  for each answer the host owes. The test is "inbound: a call beyond
+  the calls that the remote has not finished, so a host could owe more.
+  The Peer's finished-early records have the same bound, but other inbound
+  calls use them too, so the bound keeps no record free for each owed
+  answer ("When no effect comes" in docs/native-abi.md). The test is
+  "inbound: a call beyond
   max_active_inbound_questions owed answers is refused; ..." in
   `src/native/conn_test.zig`.
   - **Migration:** answer every INBOUND_CALL. A host that must owe more
     answers at once sets `max_active_inbound_questions` higher.
+- **native: `capnp_finish` on a question with no RETURN yet now returns
+  `CAPNP_E_BUSY`, as `capnp_core.h` says (Experimental behavior).** It
+  returned `CAPNP_E_INVAL` (-1). Now it returns `CAPNP_E_BUSY` (-3), as it
+  already did for a question held on a tail call. This is so before the
+  Call reaches the callee and after. The refused call still sends nothing
+  and queues no effect, and `capnp_finish` works after the RETURN. The
+  C-level test is in `src/native/abi_test.zig` ("finish: an in-flight
+  question is CAPNP_E_BUSY, ...").
+  - **Migration:** a host that checked for `CAPNP_E_INVAL` (-1) from
+    `capnp_finish` on an in-flight question checks for `CAPNP_E_BUSY` (-3).
 - **native: `Conn.pending_answers` now maps each answer id to a
   `PendingAnswer` (Experimental).** The field
   `native.conn.Conn.pending_answers` changes from
@@ -85,7 +105,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     so a lack of memory cannot lose it. While a question held on a tail
     call waits for that call, the core withholds the effect; it queues it
     if the wait ends without the answer. It also comes for the host's own
-    loopback call when the host cancels its question;
+    loopback call when the host cancels its question or the question's
+    deadline passes. It can come after the EXPORT_DROPPED of its export,
+    so a host finds the work by answer id;
   - `int32_t capnp_return_canceled(capnp_conn *, uint32_t answer_id)`
     (`Conn.returnCanceled`) answers such a call with `Return{canceled}`.
     It returns `CAPNP_E_BAD_ID` for an answer the host does not owe, and
@@ -125,15 +147,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Finish, ..."). Tests also pin that `sendReturnCanceled` and the
   `HostPeer` (WASM host ABI) exception answer keep the tombstone when
   their send fails.
-- **native: `capnp_finish` on a question with no RETURN yet now returns
-  `CAPNP_E_BUSY`, as `capnp_core.h` says.** It returned `CAPNP_E_INVAL`
-  (-1). Now it returns `CAPNP_E_BUSY` (-3), as it already did for a
-  question held on a tail call. This is so before the Call reaches the
-  callee and after. The refused call still sends nothing and queues no
-  effect, and `capnp_finish` works after the RETURN. A host that checked
-  for -1 here must check for -3. The C-level test is in
-  `src/native/abi_test.zig` ("finish: an in-flight question is
-  CAPNP_E_BUSY, ...").
 - **native: with u32_le framing, a frame that fails the connection now
   fails it once, and a remote Abort is an orderly close again.** With
   `CAPNP_FRAMING_U32_LE`, `capnp_conn_push_bytes` failed the connection a

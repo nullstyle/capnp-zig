@@ -1433,8 +1433,10 @@ fn onExportCall(
         self.owed_id_reused = true;
         return error.DuplicateQuestionId;
     }
-    // Bound the answers the host owes, so the Peer's finished-early records
-    // (bounded the same) have room for every one the remote finishes.
+    // Bound the answers the host owes: the Peer's own limit counts only the
+    // calls the remote has not finished. The Peer's finished-early records
+    // are bounded the same, but other inbound calls (calls it keeps queued)
+    // use them too, so this keeps no record free for an owed answer.
     if (self.pending_answers.count() >= self.peer.limits.max_active_inbound_questions) {
         return error.OwedAnswerLimitExceeded;
     }

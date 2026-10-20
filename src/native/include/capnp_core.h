@@ -191,7 +191,9 @@ typedef struct capnp_cap {
                                            Finish for an INBOUND_CALL the host
                                            has not answered. id = its answer id;
                                            export_id and host_tag as in that
-                                           INBOUND_CALL. At most once per call.
+                                           INBOUND_CALL (it can come after that
+                                           export's EXPORT_DROPPED: find the
+                                           work by id). At most once per call.
                                            Stop the work and answer, normally
                                            with capnp_return_canceled. Stale if
                                            the host answered the call before it

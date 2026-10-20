@@ -39,27 +39,37 @@ null caps. One caller at a time per connection, from any thread.
 
 ## Answer ids
 
-The host answers each INBOUND_CALL once, with `capnp_return_results` or
-`capnp_return_exception`. Until that answer, the host owes it, and its id
-stays reserved: the core never hands the host a second INBOUND_CALL with an
-id the host still owes.
+The host answers each INBOUND_CALL once, with `capnp_return_results`,
+`capnp_return_exception` or `capnp_return_canceled` ("Answer finished").
+Until that answer, the host owes it, and its id stays reserved: the core
+never hands the host a second INBOUND_CALL with an id the host still owes.
 
 A remote that sends a new call with such an id breaks the protocol. The core
-answers the new call with an exception Return (`DuplicateQuestionId`), then
-sends Abort and queues CLOSE_REQUESTED. `capnp_conn_push_bytes` returns
-`CAPNP_E_PROTOCOL`, and `capnp_conn_take_error` names
-`DuplicateQuestionId`. A call that the core kept queued (on a promise
-export, or on an answer) can reach this check later: in
-`capnp_resolve_promise` or `capnp_return_results`. That call returns
-`CAPNP_OK`, and the Abort and CLOSE_REQUESTED follow in the effects.
+sends Abort and queues CLOSE_REQUESTED, in either framing.
+`capnp_conn_push_bytes` returns `CAPNP_E_PROTOCOL`, and
+`capnp_conn_take_error` names `DuplicateQuestionId`. What comes before the
+Abort depends on what the core still knows of the old call:
 
-When the remote sent Finish for the old call and the core keeps a record of
-that Finish, the Peer refuses the reused id itself: Abort, and no Return
-for the new call. That record also refuses a Bootstrap with the id. The
-records are bounded by `max_active_inbound_questions`. When they are full,
-the core can promise only that no second INBOUND_CALL reaches the host: a
-Bootstrap that reuses the id is answered, and the host's late answer for the
-old call then goes out with the same id.
+- The remote has not sent Finish for the old call, or it has and the core
+  keeps a record of that Finish. Then the Peer refuses the new call itself,
+  and no Return for it goes out. A record of the Finish also refuses a
+  Bootstrap with the id.
+- The core keeps no record of the old call's Finish, because its records
+  were full (see below). Then the core answers the new call with an
+  exception Return (`DuplicateQuestionId`) before the Abort.
+
+A call that the core kept queued (on a promise export, or on an answer) can
+reach this check later: in `capnp_resolve_promise` or
+`capnp_return_results`. That call returns `CAPNP_OK`, and the exception
+Return, the Abort and CLOSE_REQUESTED follow in the effects.
+
+The records of finished calls are bounded by `max_active_inbound_questions`.
+When they are full, the core can promise only that no second INBOUND_CALL
+reaches the host. It does not catch a reused id on a Bootstrap, or on a Call
+that it answers itself because the call never reaches a host export (for
+example, a call to an export id that does not exist). The core answers such
+a call, the connection stays up, and the host's late answer for the old call
+then goes out with the same id.
 
 After the host's answer, the remote may reuse the id at once (the C++
 reference hands out the lowest free question id). So a second answer for one
@@ -105,6 +115,11 @@ OUT_FRAME, and the remote can reuse the id only after it gets that Return.
 So an ANSWER_FINISHED for an id that the host already answered is stale:
 ignore it (`capnp_return_canceled` returns `CAPNP_E_BAD_ID` for it).
 
+**Export ids.** `export_id` and `host_tag` are those of the INBOUND_CALL.
+The remote can release that export before it sends Finish, so an
+ANSWER_FINISHED can come after the EXPORT_DROPPED of its export. Find the
+work by its answer id, not by `export_id` or `host_tag`.
+
 **The late answer.** From the Finish to the host's answer, the core keeps a
 record of the Finish. While that record exists, a Call or a Bootstrap that
 reuses the id closes the connection before any Return for it ("Answer ids").
@@ -115,15 +130,17 @@ call.
 it. The records are bounded by `max_active_inbound_questions`. When they are
 full, or when the record cannot get memory, no ANSWER_FINISHED comes,
 `capnp_return_canceled` returns `CAPNP_E_INVAL`, and the host's ordinary
-answer goes out. This is rare. The host never owes more answers than the
-bound ("Answer ids"), so a record always fits for each of them. The other
-records come from calls that the core still holds queued (on a promise
-export, or on an answer) when the remote finishes them with
-`requireEarlyCancellationWorkaround` set. That flag defaults to true. The
-C++ reference (1.0 and later) sends false, but go-capnp never sets it, so
-with a go-capnp caller, each Finish of a queued call takes this path. Such
-a call reaches the host after its Finish and gets no ANSWER_FINISHED:
-answer it as usual.
+answer goes out. The bound on owed answers ("Answer ids") does not keep a
+record free for each of them: other inbound calls use the same records. A
+call that the core still holds queued (on a promise export, or on an
+answer) takes one when the remote finishes it with
+`requireEarlyCancellationWorkaround` set, and keeps it until the call is
+delivered or its promise settles. So with promises that never settle, the
+records can stay full for the life of the connection, and then no call gets
+ANSWER_FINISHED. That flag defaults to true. The C++ reference (1.0 and
+later) sends false, but go-capnp never sets it, so with a go-capnp caller,
+each Finish of a queued call takes a record. Such a queued call reaches the
+host after its Finish and gets no ANSWER_FINISHED: answer it as usual.
 
 **Tail calls.** While a question X waits for the answer to a call Y ("Tail
 calls" below), a Finish of Y does not queue ANSWER_FINISHED: X still wants
@@ -135,8 +152,9 @@ makes X wait for a Y that it already reported: X then gets RETURN EXCEPTION
 
 **Loopback calls.** A call from this connection to one of its own exports
 is an INBOUND_CALL too. When the host cancels the question of such a call,
-the core queues ANSWER_FINISHED for the call before the question's RETURN
-CANCELED. Answer it as any other; the canceled question absorbs the answer.
+or the question's deadline passes, the core queues ANSWER_FINISHED for the
+call before the question's RETURN (CANCELED or EXCEPTION). Answer it as any
+other; the ended question absorbs the answer.
 
 ## Tail calls
 

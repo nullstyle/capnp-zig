@@ -1788,6 +1788,33 @@ test "inbound: a new call that reuses an id the host still owes closes the conne
     }
 }
 
+test "inbound: with the Peer's records full, a reused id on a call the core answers itself is not caught" {
+    // The documented limit of the rule above ("Answer ids" in
+    // docs/native-abi.md): the core sees only calls that reach a host
+    // export. A new call 10 on an unknown export gets the Peer's own
+    // exception Return, the connection stays up, and the host's late
+    // answer for the old call 10 is a second Return with that id.
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0, .limits = .{ .max_active_inbound_questions = 2 } });
+    defer a.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    const ea = try a.exportCap(200);
+    try fillFinishedRecords(alloc, a, &.{ 20, 21 });
+    try pushFrame(alloc, a, plainCallFrame(alloc, 10, ea));
+    try pushFrame(alloc, a, finishFrame(alloc, 10));
+    try pushFrame(alloc, a, plainCallFrame(alloc, 10, 999));
+    const res = try msgU64(alloc, 1);
+    defer alloc.free(res);
+    try a.returnResults(10, res, &.{});
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), countCalls(&ra, 10));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, 10, .exception));
+    try testing.expectEqual(@as(usize, 2), try countReturnFrames(&ra, 10, null));
+    try testing.expect(!a.failed);
+    try testing.expectEqual(@as(usize, 0), ra.close_requested);
+}
+
 test "u32_le: a bad frame or a remote Abort ends the connection once, as in segment-table framing" {
     // A frame that fails gives one Abort (the Peer's own here), then
     // CLOSE_REQUESTED, and `last_error` names the cause. A remote Abort is
@@ -2152,6 +2179,7 @@ test "answer finished: a Finish of a held call is withheld; each end of the hold
         try testing.expectError(error.Invalid, p.a.returnCanceled(tail_answer));
         try expectNoReturnYet(&p.ra, t.q);
 
+        const order_before = p.ra.order.items.len;
         switch (ending) {
             .cancel => try p.a.cancel(t.q),
             .deadline => {
@@ -2164,6 +2192,19 @@ test "answer finished: a Finish of a held call is withheld; each end of the hold
             },
         }
         try drainAll(p.a, &p.ra);
+        // ANSWER_FINISHED for Y comes before X's RETURN, so also before the
+        // close request that the RETURN of the last hold lets through.
+        var order: std.ArrayList(effects.Kind) = .empty;
+        defer order.deinit(alloc);
+        for (p.ra.order.items[order_before..]) |kind| switch (kind) {
+            .answer_finished, .@"return", .close_requested => try order.append(alloc, kind),
+            else => {},
+        };
+        const want_order: []const effects.Kind = switch (ending) {
+            .cancel, .deadline => &.{ .answer_finished, .@"return" },
+            .drain => &.{ .answer_finished, .@"return", .close_requested },
+        };
+        try testing.expectEqualSlices(effects.Kind, want_order, order.items);
         _ = try expectOneReturn(&p.ra, t.q, switch (ending) {
             .cancel => .canceled,
             .deadline => .exception,
@@ -2220,9 +2261,78 @@ test "answer finished: a call already reported finished is not held; the redirec
     try testing.expectEqual(@as(usize, 1), p.ra.countReturns(t.q));
 }
 
-test "answer finished: the host's cancel of its own loopback call reports it before the RETURN CANCELED" {
+test "answer finished: the end of the host's own loopback question reports its call before the question's RETURN" {
     // B resolves a promise it gave A to A's own export, so A's call on that
-    // import loops back to A's host. A's cancel is the call's Finish.
+    // import loops back to A's host. A's cancel of the question, or its
+    // deadline, is the call's Finish.
+    const alloc = testing.allocator;
+    const ms = std.time.ns_per_ms;
+    const Ending = enum { cancel, deadline };
+    for ([_]Ending{ .cancel, .deadline }) |ending| {
+        const a = try Conn.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+        defer a.deinit();
+        const b = try Conn.init(alloc, .{ .now_ns = 0 });
+        defer b.deinit();
+        var ra = Rec.init(alloc);
+        defer ra.deinit();
+        var rb = Rec.init(alloc);
+        defer rb.deinit();
+        const ib = try connectPair(a, &ra, b, &rb);
+        const ea = try a.exportCap(200);
+        const pe = try b.promiseExport();
+        const pc = try msgCap(alloc, 1, 0);
+        defer alloc.free(pc);
+        // A passes ea to B; B answers with the promise.
+        const q1 = try a.call(ib, iface, 0, pc, &.{.{ .kind = .@"export", .id = ea }}, 0);
+        try pump(a, &ra, b, &rb);
+        const c1 = rb.lastCall();
+        const ia = try rootCap(alloc, c1.msg, c1.caps);
+        try b.returnResults(c1.answer_id, pc, &.{.{ .kind = .@"export", .id = pe }});
+        try pump(a, &ra, b, &rb);
+        const r1 = ra.returnFor(q1) orelse return error.TestNoReturn;
+        const ip = try rootCap(alloc, r1.msg, r1.caps);
+        try a.finish(q1, false);
+        try b.resolvePromise(pe, ia);
+        try pump(a, &ra, b, &rb);
+
+        const calls_before = ra.calls.items.len;
+        const p = try msgU64(alloc, 5);
+        defer alloc.free(p);
+        const q2 = try a.call(ip, iface, 7, p, &.{}, 0);
+        try pump(a, &ra, b, &rb);
+        try testing.expectEqual(calls_before + 1, ra.calls.items.len);
+        const loop = ra.lastCall();
+        try testing.expectEqual(ea, loop.export_id);
+        try testing.expectEqual(@as(u16, 7), loop.method_id);
+        try testing.expectEqual(@as(usize, 1), rb.calls.items.len); // B saw only c1
+
+        const order_before = ra.order.items.len;
+        switch (ending) {
+            .cancel => try a.cancel(q2),
+            .deadline => {
+                try a.setDeadline(q2, 10);
+                try testing.expectEqual(@as(usize, 1), a.tick(20 * ms));
+            },
+        }
+        try drainAll(a, &ra);
+        try testing.expectEqualSlices(effects.Kind, &.{ .answer_finished, .@"return" }, ra.order.items[order_before..]);
+        try testing.expectEqual(loop.answer_id, ra.finished.items[0].answer_id);
+        _ = try expectOneReturn(&ra, q2, switch (ending) {
+            .cancel => .canceled,
+            .deadline => .exception,
+        });
+        try a.returnCanceled(loop.answer_id);
+        try pump(a, &ra, b, &rb);
+        try testing.expectEqual(@as(usize, 1), ra.countReturns(q2));
+        try testing.expectEqual(@as(usize, 1), ra.countFinished(loop.answer_id));
+        try testing.expectError(error.BadId, a.returnCanceled(loop.answer_id));
+    }
+}
+
+test "answer finished: the effect can come after EXPORT_DROPPED for its export; the answer id names the work" {
+    // B releases its import of A's export, then cancels its call on it: A
+    // drains EXPORT_DROPPED first, then ANSWER_FINISHED with the dropped
+    // export's id and tag. The host still owes the answer, by answer id.
     const alloc = testing.allocator;
     const a = try Conn.init(alloc, .{ .now_ns = 0, .answer_finished = true });
     defer a.deinit();
@@ -2234,42 +2344,35 @@ test "answer finished: the host's cancel of its own loopback call reports it bef
     defer rb.deinit();
     const ib = try connectPair(a, &ra, b, &rb);
     const ea = try a.exportCap(200);
-    const pe = try b.promiseExport();
     const pc = try msgCap(alloc, 1, 0);
     defer alloc.free(pc);
-    // A passes ea to B; B answers with the promise.
-    const q1 = try a.call(ib, iface, 0, pc, &.{.{ .kind = .@"export", .id = ea }}, 0);
+    _ = try a.call(ib, iface, 0, pc, &.{.{ .kind = .@"export", .id = ea }}, 0);
     try pump(a, &ra, b, &rb);
     const c1 = rb.lastCall();
     const ia = try rootCap(alloc, c1.msg, c1.caps);
-    try b.returnResults(c1.answer_id, pc, &.{.{ .kind = .@"export", .id = pe }});
-    try pump(a, &ra, b, &rb);
-    const ip = try rootCap(alloc, ra.returnFor(q1).?.msg, ra.returnFor(q1).?.caps);
-    try a.finish(q1, false);
-    try b.resolvePromise(pe, ia);
-    try pump(a, &ra, b, &rb);
-
-    const calls_before = ra.calls.items.len;
     const p = try msgU64(alloc, 5);
     defer alloc.free(p);
-    const q2 = try a.call(ip, iface, 7, p, &.{}, 0);
+    const qb = try b.call(ia, iface, 3, p, &.{}, 0);
     try pump(a, &ra, b, &rb);
-    try testing.expectEqual(calls_before + 1, ra.calls.items.len);
-    const loop = ra.lastCall();
-    try testing.expectEqual(ea, loop.export_id);
-    try testing.expectEqual(@as(u16, 7), loop.method_id);
-    try testing.expectEqual(@as(usize, 1), rb.calls.items.len); // B saw only c1
+    const call = ra.lastCall();
+    try testing.expectEqual(ea, call.export_id);
 
     const order_before = ra.order.items.len;
-    try a.cancel(q2);
-    try drainAll(a, &ra);
-    try testing.expectEqualSlices(effects.Kind, &.{ .answer_finished, .@"return" }, ra.order.items[order_before..]);
-    try testing.expectEqual(loop.answer_id, ra.finished.items[0].answer_id);
-    _ = try expectOneReturn(&ra, q2, .canceled);
-    try a.returnCanceled(loop.answer_id);
+    try b.release(ia.id, 1);
+    try b.cancel(qb);
     try pump(a, &ra, b, &rb);
-    try testing.expectEqual(@as(usize, 1), ra.countReturns(q2));
-    try testing.expectError(error.BadId, a.returnCanceled(loop.answer_id));
+    var order: std.ArrayList(effects.Kind) = .empty;
+    defer order.deinit(alloc);
+    for (ra.order.items[order_before..]) |kind| switch (kind) {
+        .export_dropped, .answer_finished => try order.append(alloc, kind),
+        else => {},
+    };
+    try testing.expectEqualSlices(effects.Kind, &.{ .export_dropped, .answer_finished }, order.items);
+    try testing.expectEqual(effects.ExportDropped{ .export_id = ea, .host_tag = 200 }, ra.dropped.items[0]);
+    try testing.expectEqual(effects.AnswerFinished{ .answer_id = call.answer_id, .export_id = ea, .host_tag = 200 }, ra.finished.items[0]);
+    try a.returnCanceled(call.answer_id);
+    try pump(a, &ra, b, &rb);
+    _ = try expectOneReturn(&rb, qb, .canceled);
 }
 
 test "answer finished: freeing the connection while the host owes answers leaks nothing" {
@@ -2298,8 +2401,9 @@ test "answer finished: freeing the connection while the host owes answers leaks 
 /// remote's Finish, the host's answer `answer` (or, without an
 /// ANSWER_FINISHED, an exception), retried until it is accepted.
 /// Checks: the host sees the call at most once, at most one ANSWER_FINISHED
-/// and only for a call it saw; the wire carries exactly one Return for the
-/// call while the connection is up, and at most one after it failed.
+/// and only for a call it saw, and exactly one when the Peer recorded the
+/// Finish; the wire carries exactly one Return for the call while the
+/// connection is up, and at most one after it failed.
 /// Returns whether the failure was induced (the sweep's end condition).
 const FinishedAnswer = enum { canceled, results, exception };
 
@@ -2322,7 +2426,14 @@ fn finishedLifecycleUnderOom(k: usize, answer: FinishedAnswer) !bool {
         switch (step) {
             .call => pushFrame(alloc, a, plainCallFrame(alloc, 10, ea)) catch {},
             .finish => pushFrame(alloc, a, finishFrame(alloc, 10)) catch {},
-            .drain => try drainAll(a, &ra),
+            .drain => {
+                try drainAll(a, &ra);
+                // The Peer recorded the Finish of a call the host saw, so
+                // the effect came: its node was reserved with the call.
+                if (!a.failed and countCalls(&ra, 10) == 1 and a.peer.finished_early_answers.contains(10)) {
+                    try testing.expectEqual(@as(usize, 1), ra.countFinished(10));
+                }
+            },
             .answer => if (a.pending_answers.contains(10)) {
                 const reported = ra.countFinished(10) == 1;
                 if (!reported) try testing.expectError(error.Invalid, a.returnCanceled(10));
