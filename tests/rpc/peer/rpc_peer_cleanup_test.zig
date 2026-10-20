@@ -53,6 +53,10 @@ test "peer_cleanup deinitResolvedAnswerMap/deinitProvideEntryMap/deinitJoinState
 
     const ResolvedAnswer = struct {
         frame: []u8,
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.frame);
+        }
     };
     const Target = struct {
         count: *usize,

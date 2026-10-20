@@ -3386,3 +3386,194 @@ test "tail call: one allocation failure anywhere in the answer to a held call gi
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Promise exports and pipelined calls the host resolves (two Peer crashes
+// that the v0.28.0 H13 review found)
+// ---------------------------------------------------------------------------
+
+/// A and B connected both ways: A holds B's bootstrap `ib`, B holds A's
+/// bootstrap `ia` (both tag 100).
+const Both = struct { ib: Cap, ia: Cap };
+
+fn connectBoth(a: *Conn, ra: *Rec, b: *Conn, rb: *Rec) !Both {
+    const ib = try connectPair(a, ra, b, rb);
+    return .{ .ib = ib, .ia = try connectPair(b, rb, a, ra) };
+}
+
+/// The one Call in `rec.frames` with method `method_id`: it targets
+/// `question_id`'s answer through `path` (getPointerField ops).
+fn expectPromisedCallFrame(rec: *Rec, method_id: u16, question_id: u32, path: []const u16) !void {
+    var found: usize = 0;
+    for (rec.frames.items) |bytes| {
+        var d = try protocol.DecodedMessage.init(testing.allocator, bytes);
+        defer d.deinit();
+        if (d.tag != .call) continue;
+        const call = try d.asCall();
+        if (call.method_id != method_id) continue;
+        found += 1;
+        const promised = call.target.promised_answer orelse return error.TestNotPromisedTarget;
+        try testing.expectEqual(question_id, promised.question_id);
+        try testing.expectEqual(path.len, promised.transform.len());
+        for (path, 0..) |index, i| {
+            const op = try promised.transform.get(@intCast(i));
+            try testing.expectEqual(protocol.PromisedAnswerOpTag.getPointerField, op.tag);
+            try testing.expectEqual(index, op.pointer_index);
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), found);
+}
+
+/// Push the OUT_FRAMEs that `rec` kept into `to`, then drop them.
+fn deliverKept(rec: *Rec, to: *Conn) !void {
+    defer {
+        for (rec.frames.items) |f| rec.a.free(f);
+        rec.frames.clearRetainingCapacity();
+    }
+    for (rec.frames.items) |f| try to.pushBytes(f);
+}
+
+test "pipelined call: an answer whose capability is a promise on the host's own question forwards the call" {
+    // B calls A (qb1) and pipelines qb2 on qb1's pointer 0. A's host answers
+    // qb1 with a PROMISED capability: pointer 0 of A's own open question qa
+    // to B. A's core must forward qb2 to B as a call on qa's answer. Before,
+    // the target's transform pointed into a message that was already freed,
+    // and the forward panicked "index out of bounds" (or read freed memory
+    // in ReleaseFast), both when qb2 was parked on qb1 and replayed by
+    // capnp_return_results, and when qb2 arrived after the answer.
+    const alloc = testing.allocator;
+    for ([_]bool{ true, false }) |parked| {
+        const a = try Conn.init(alloc, .{ .now_ns = 0 });
+        defer a.deinit();
+        const b = try Conn.init(alloc, .{ .now_ns = 0 });
+        defer b.deinit();
+        var ra = Rec.init(alloc);
+        defer ra.deinit();
+        var rb = Rec.init(alloc);
+        defer rb.deinit();
+        const both = try connectBoth(a, &ra, b, &rb);
+
+        const p = try msgU64(alloc, 1);
+        defer alloc.free(p);
+        // qa: A asks B; B's host holds it.
+        const qa = try a.call(both.ib, iface, 0, p, &.{}, 0);
+        try pump(a, &ra, b, &rb);
+        const ca = rb.lastCall();
+        // qb1: B asks A.
+        const qb1 = try b.call(both.ia, iface, 1, p, &.{}, 0);
+        try pump(a, &ra, b, &rb);
+        const c1 = ra.lastCall();
+        try testing.expectEqual(@as(u16, 1), c1.method_id);
+
+        const path = [_]u16{0};
+        const on_qb1: Cap = .{ .kind = .promised, .id = qb1, .ops = &path, .nops = 1 };
+        const results = try msgCap(alloc, 7, 0);
+        defer alloc.free(results);
+        const on_qa: Cap = .{ .kind = .promised, .id = qa, .ops = &path, .nops = 1 };
+        var qb2: u32 = undefined;
+        if (parked) {
+            qb2 = try b.call(on_qb1, iface, 2, p, &.{}, 0);
+            try pump(a, &ra, b, &rb); // qb2 parks in A's core on qb1's answer
+            try a.returnResults(c1.answer_id, results, &.{on_qa}); // replays qb2
+        } else {
+            try a.returnResults(c1.answer_id, results, &.{on_qa});
+            try drainAll(a, &ra); // A's Return for qb1 waits in ra.frames
+            qb2 = try b.call(on_qb1, iface, 2, p, &.{}, 0);
+            while (try drainOne(b, &rb, a)) {} // qb2 reaches A after the answer
+        }
+        try drainAll(a, &ra);
+        try expectPromisedCallFrame(&ra, 2, qa, &path);
+        try deliverKept(&ra, b);
+        try pump(a, &ra, b, &rb);
+
+        // B's host answers qa with its export eb; the forwarded call, which
+        // B's core kept on qa's answer, reaches eb.
+        const eb = try b.exportCap(400);
+        try b.returnResults(ca.answer_id, results, &.{.{ .kind = .@"export", .id = eb }});
+        try pump(a, &ra, b, &rb);
+        const c2 = rb.lastCall();
+        try testing.expectEqual(eb, c2.export_id);
+        try testing.expectEqual(@as(u64, 400), c2.host_tag);
+        try testing.expectEqual(@as(u16, 2), c2.method_id);
+        const r42 = try msgU64(alloc, 42);
+        defer alloc.free(r42);
+        try b.returnResults(c2.answer_id, r42, &.{});
+        try pump(a, &ra, b, &rb);
+
+        // A answers qb2 with a redirect to that forwarded call. B's core
+        // held the call when the redirect came, so qb2 gets the documented
+        // "unsupported Return variant" (native-abi.md, "Tail calls").
+        try testing.expectEqual(@as(usize, 1), rb.countReturns(qb2));
+        try testing.expectEqual(@as(usize, 1), rb.countReturns(qb1));
+        _ = try expectOneReturn(&ra, qa, .results);
+        try testing.expectEqual(@as(usize, 0), rb.close_requested);
+        try testing.expectEqual(@as(usize, 0), ra.close_requested);
+    }
+}
+
+test "pipelined call: an allocation failure anywhere in the answer that replays the call: no crash, no leak, never two Returns" {
+    // For every allocation of A's capnp_return_results that replays qb2
+    // onto qa's answer (the test above, parked): fail it, and every later
+    // one until the call returns. A refused answer is answered again with
+    // capnp_return_exception. qb2 gets at most one RETURN, and exactly one
+    // once B's transport closes. It can get none before that: when the
+    // replay drain cannot decode the parked call, or cannot send its
+    // exception, it drops the call (`pending_calls.drainPendingPromises`;
+    // an open Peer issue under OOM, older than this test).
+    const alloc = testing.allocator;
+    const path = [_]u16{0};
+    var k: usize = 0;
+    while (true) : (k += 1) {
+        var failing = std.testing.FailingAllocator.init(testing.allocator, .{});
+        const a = try Conn.init(failing.allocator(), .{ .now_ns = 0 });
+        defer a.deinit();
+        const b = try Conn.init(alloc, .{ .now_ns = 0 });
+        defer b.deinit();
+        var ra = Rec.init(alloc);
+        defer ra.deinit();
+        var rb = Rec.init(alloc);
+        defer rb.deinit();
+        const both = try connectBoth(a, &ra, b, &rb);
+
+        const p = try msgU64(alloc, 1);
+        defer alloc.free(p);
+        const qa = try a.call(both.ib, iface, 0, p, &.{}, 0);
+        try pump(a, &ra, b, &rb);
+        const ca = rb.lastCall();
+        const qb1 = try b.call(both.ia, iface, 1, p, &.{}, 0);
+        try pump(a, &ra, b, &rb);
+        const c1 = ra.lastCall();
+        const qb2 = try b.call(.{ .kind = .promised, .id = qb1, .ops = &path, .nops = 1 }, iface, 2, p, &.{}, 0);
+        try pump(a, &ra, b, &rb);
+
+        const results = try msgCap(alloc, 7, 0);
+        defer alloc.free(results);
+        failing.fail_index = failing.alloc_index + k;
+        const answered = a.returnResults(c1.answer_id, results, &.{.{ .kind = .promised, .id = qa, .ops = &path, .nops = 1 }});
+        failing.fail_index = std.math.maxInt(usize);
+        const induced = failing.has_induced_failure;
+        if (answered) |_| {} else |_| try a.returnException(c1.answer_id, 0, "fallback");
+        try pump(a, &ra, b, &rb);
+        try testing.expectEqual(@as(usize, 1), rb.countReturns(qb1));
+
+        // B's host answers qa; a forwarded call, if A sent one, reaches eb
+        // and is answered.
+        const eb = try b.exportCap(400);
+        const calls_before = rb.calls.items.len;
+        try b.returnResults(ca.answer_id, results, &.{.{ .kind = .@"export", .id = eb }});
+        try pump(a, &ra, b, &rb);
+        if (rb.calls.items.len > calls_before) {
+            const c2 = rb.lastCall();
+            try testing.expectEqual(eb, c2.export_id);
+            try b.returnResults(c2.answer_id, p, &.{});
+            try pump(a, &ra, b, &rb);
+        }
+        _ = try expectOneReturn(&ra, qa, .results);
+        try testing.expect(rb.countReturns(qb2) <= 1);
+        try testing.expectEqual(@as(usize, 0), ra.close_requested + rb.close_requested);
+        b.transportClosed();
+        try drainAll(b, &rb);
+        try testing.expectEqual(@as(usize, 1), rb.countReturns(qb2));
+        if (!induced) break;
+    }
+}

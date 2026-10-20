@@ -136,6 +136,27 @@ pub fn ExportEntry(comptime ExportType: type) type {
 
 pub const ResolvedAnswer = struct {
     frame: []u8,
+    /// `frame`, decoded on the first pipelined call that resolves through
+    /// this answer and kept until the record goes
+    /// (`Peer.resolvePromisedAnswer`). A promise the results name (a
+    /// `receiverAnswer` capability) resolves to a `.promised` target whose
+    /// transform reads from this message, so the message must outlive that
+    /// call; a message decoded on the resolver's stack did not.
+    decoded: ?*protocol.DecodedMessage = null,
+
+    pub fn deinit(self: *ResolvedAnswer, allocator: std.mem.Allocator) void {
+        allocator.free(self.takeFrame(allocator));
+    }
+
+    /// Free the decoded message and give the frame to the caller.
+    pub fn takeFrame(self: *ResolvedAnswer, allocator: std.mem.Allocator) []u8 {
+        if (self.decoded) |decoded| {
+            decoded.deinit();
+            allocator.destroy(decoded);
+            self.decoded = null;
+        }
+        return self.frame;
+    }
 };
 
 /// The exception a Return already delivered for an inbound answer, kept until

@@ -153,6 +153,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RPC: a call pipelined on an answer whose results name a promise on
+  another answer no longer reads freed memory.** An answer's results can
+  name a promise on one of this vat's own questions (a `receiverAnswer`
+  capability). A call pipelined on that capability is forwarded to the
+  promise. `Peer.resolvePromisedAnswer` decoded the recorded Return on its
+  own stack and returned a `.promised` target whose transform pointed into
+  that message, which was gone when the forward read it. Debug and
+  ReleaseSafe builds panicked with "index out of bounds: index 0, len 0" in
+  `PromisedAnswerTransform.get`; ReleaseFast read freed stack memory. This
+  happened for a call parked on the answer and replayed when the answer
+  came (`replayQueuedPromisedCall`), and for a call that arrived after the
+  answer. Through the native C ABI, a host reached it with
+  `capnp_return_results` and a `CAPNP_CAP_PROMISED` entry.
+  `Peer.resolveProvidePromisedOps` had the same defect. Now the Peer
+  decodes a recorded answer once, on first use, and keeps the decoded
+  message with the record until the answer's Finish
+  (`state.ResolvedAnswer.decoded`, Experimental). Tests in
+  `src/native/conn_test.zig`: "pipelined call: an answer whose capability
+  is a promise on the host's own question forwards the call" (parked, and
+  arriving after the answer), and an allocation-failure sweep over the
+  answer that replays the call.
 - **RPC: a late exception Return that fails after the caller's Finish now
   fails, and the answer stays owed.** When the caller sends Finish before
   the host answers, the Peer keeps a tombstone for the id until a Return

@@ -596,9 +596,7 @@ pub fn ExportRelease(comptime Peer: type) type {
         /// resolved-answer table — the id is consumed only on the peer whose
         /// answer space it names; nothing reader-backed is constructed from ops.
         pub fn resolveProvidePromisedOps(self: *Peer, question_id: u32, ops: []const protocol.PromisedAnswerOp) !cap_table.ResolvedCap {
-            const entry = self.resolved_answers.get(question_id) orelse return error.PromiseUnresolved;
-            var decoded = try protocol.DecodedMessage.init(self.allocator, entry.frame);
-            defer decoded.deinit();
+            const decoded = try decodedResolvedAnswer(self, question_id);
             const ret = try decoded.asReturn();
             if (ret.tag != .results or ret.results == null) return error.PromisedAnswerMissing;
             return switch (try promises_promised_answer.resolvePromisedAnswerOps(ret.results.?, ops)) {
@@ -609,13 +607,26 @@ pub fn ExportRelease(comptime Peer: type) type {
             };
         }
 
+        /// A `.promised` result reads its transform from the answer's
+        /// decoded message, which lives as long as the answer's record
+        /// (until its Finish): use it before anything can end that record.
         pub fn resolvePromisedAnswer(self: *Peer, promised: protocol.PromisedAnswer) !cap_table.ResolvedCap {
-            const entry = self.resolved_answers.get(promised.question_id) orelse return error.PromiseUnresolved;
-            var decoded = try protocol.DecodedMessage.init(self.allocator, entry.frame);
-            defer decoded.deinit();
+            const decoded = try decodedResolvedAnswer(self, promised.question_id);
             const ret = try decoded.asReturn();
             if (ret.tag != .results or ret.results == null) return error.PromisedAnswerMissing;
             return cap_table.resolvePromisedAnswer(ret.results.?, promised.transform);
+        }
+
+        /// The recorded Return of answer `question_id`, decoded once and
+        /// kept with the record (`ResolvedAnswer.decoded`).
+        fn decodedResolvedAnswer(self: *Peer, question_id: u32) !*const protocol.DecodedMessage {
+            const entry = self.resolved_answers.getPtr(question_id) orelse return error.PromiseUnresolved;
+            if (entry.decoded) |decoded| return decoded;
+            const decoded = try self.allocator.create(protocol.DecodedMessage);
+            errdefer self.allocator.destroy(decoded);
+            decoded.* = try protocol.DecodedMessage.init(self.allocator, entry.frame);
+            entry.decoded = decoded;
+            return decoded;
         }
 
         pub fn releaseResultCaps(self: *Peer, frame: []const u8) !void {

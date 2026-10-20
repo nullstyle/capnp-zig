@@ -631,6 +631,11 @@ test "peer bootstrap rolls back the export ref when delivery fails" {
 test "peer finish frame helper factories take and free resolved answer frame" {
     const FakeResolvedAnswer = struct {
         frame: []u8,
+
+        pub fn takeFrame(self: *@This(), allocator: std.mem.Allocator) []u8 {
+            _ = allocator;
+            return self.frame;
+        }
     };
 
     const FakePeer = struct {

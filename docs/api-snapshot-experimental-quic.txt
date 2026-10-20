@@ -3101,7 +3101,10 @@ capnpc-zig.rpc.peer.state.ProvideTarget.promised: variant rpc.promises.promised_
 capnpc-zig.rpc.peer.state.ProvideTarget: union
 capnpc-zig.rpc.peer.state.Question: fn (comptime type) type
 capnpc-zig.rpc.peer.state.QuestionDeinitCtxFn: type = *const fn (mem.Allocator, *anyopaque) void
+capnpc-zig.rpc.peer.state.ResolvedAnswer.decoded: field ?*rpc.wire.protocol.DecodedMessage = null
+capnpc-zig.rpc.peer.state.ResolvedAnswer.deinit: fn (*rpc.peer.state.ResolvedAnswer, mem.Allocator) void
 capnpc-zig.rpc.peer.state.ResolvedAnswer.frame: field []u8
+capnpc-zig.rpc.peer.state.ResolvedAnswer.takeFrame: fn (*rpc.peer.state.ResolvedAnswer, mem.Allocator) []u8
 capnpc-zig.rpc.peer.state.ResolvedAnswer: struct
 capnpc-zig.rpc.peer.state.ResolvedImport.cap: field ?rpc.caps.descriptors.ResolvedCap
 capnpc-zig.rpc.peer.state.ResolvedImport.embargo_id: field ?u32 = null

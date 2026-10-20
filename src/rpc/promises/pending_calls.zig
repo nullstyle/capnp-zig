@@ -183,7 +183,7 @@ fn storeResolvedFrame(
 ) void {
     if (resolved_entry.found_existing) {
         log.debug("duplicate resolved answer for question_id={d}, replacing", .{question_id});
-        allocator.free(resolved_entry.value_ptr.frame);
+        resolved_entry.value_ptr.deinit(allocator);
     }
     resolved_entry.value_ptr.* = ResolvedAnswerType{ .frame = frame };
 }

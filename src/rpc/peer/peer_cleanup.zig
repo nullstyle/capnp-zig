@@ -38,7 +38,7 @@ pub fn deinitResolvedAnswerMap(
 ) void {
     var it = map.valueIterator();
     while (it.next()) |value| {
-        allocator.free(value.frame);
+        value.deinit(allocator);
     }
     map.deinit();
 }

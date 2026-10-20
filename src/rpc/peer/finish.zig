@@ -147,7 +147,8 @@ pub fn handleFinishWithOps(
 
 pub fn takeResolvedAnswerFrameForPeer(comptime PeerType: type, peer: *PeerType, question_id: u32) ?[]u8 {
     if (peer.resolved_answers.fetchRemove(question_id)) |entry| {
-        return entry.value.frame;
+        var answer = entry.value;
+        return answer.takeFrame(peer.allocator);
     }
     return null;
 }
