@@ -2,7 +2,7 @@
 
 A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serialization framework and RPC system. Includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime built on `std.Io` with a concurrent read/write transport. Targets tagged Zig 0.17.
 
-> **Status (v0.27.0):** serialization, codegen, the `capnpc-zig` plugin, and the
+> **Status (v0.28.0):** serialization, codegen, the `capnpc-zig` plugin, and the
 > **two-party RPC core** are **Stable** on a **frozen, CI-gated** public surface
 > (`docs/api-snapshot.txt`). The L3/L4 three-party arc, the reflected-cap resolver,
 > QUIC, persistence vat-restore, events, binary schema reflection, and the demoted transport/ctor variants
@@ -34,7 +34,7 @@ Fetch a tagged release into your `build.zig.zon` (`zig fetch --save` records the
 `.hash`):
 
 ```bash
-zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.27.0
+zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.28.0
 ```
 
 Then import `capnpc-zig` (full: serialization + codegen + RPC) or
@@ -44,10 +44,12 @@ Then import `capnpc-zig` (full: serialization + codegen + RPC) or
 from the same pinned package (`dep.artifact("capnpc-zig")`, never a PATH
 binary). That codegen recipe needs v0.19.0 or later.
 
-Upgrading from v0.26.x? [docs/upgrading-to-0.27.0.md](docs/upgrading-to-0.27.0.md)
-lists who should take the RPC tail-call fixes, the QUIC stream-0 rule and
-the Windows TCP fixes; the coordinated set does not change (quic-zig
-v0.38.0, http3-zig v0.5.7). From older releases, also read
+Upgrading from v0.27.x? [docs/upgrading-to-0.28.0.md](docs/upgrading-to-0.28.0.md)
+lists who should take the native C ABI changes (ANSWER_FINISHED,
+`capnp_finish` BUSY, the reused-id rule) and the Peer crash fixes; the
+coordinated set does not change (quic-zig v0.38.0, http3-zig v0.5.7). From
+older releases, also read
+[docs/upgrading-to-0.27.0.md](docs/upgrading-to-0.27.0.md),
 [docs/upgrading-to-0.26.0.md](docs/upgrading-to-0.26.0.md),
 [docs/upgrading-to-0.25.0.md](docs/upgrading-to-0.25.0.md),
 [docs/upgrading-to-0.24.0.md](docs/upgrading-to-0.24.0.md),

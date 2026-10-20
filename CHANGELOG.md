@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-21
+
+This is a native C ABI release, and most of it comes from capnp-swift's
+asks. A native host can now learn that the caller finished a call that the
+host still owes (handoff H13). With the opt-in `answer_finished`, the core
+queues `CAPNP_EFFECT_ANSWER_FINISHED`, and the host can answer with
+`capnp_return_canceled`. The first native feature bit,
+`CAPNP_FEATURE_ANSWER_FINISHED`, says that the core has it. `capnp_finish`
+on a question with no RETURN yet now returns `CAPNP_E_BUSY`, as
+`capnp_core.h` says. A new call that reuses an id the host still owes now
+closes the connection, and the host owes at most
+`max_active_inbound_questions` answers. With u32_le framing, a failed frame
+now sends one Abort, and a remote Abort is an orderly close again. The
+release also fixes two Peer crashes and one out-of-memory defect. A call
+pipelined on an answer whose results name a promise on another answer read
+freed memory. A promise export resolved into a cycle overflowed the stack.
+When a late exception Return after the caller's Finish could not be sent,
+the Peer reported success, and no Return went out. A native host reached
+all three through the C ABI. The e2e runner now records known limits as
+XFAIL. The new `pipelined_params_deferred` schema shows the H9-pending
+limit for the C++, Go, Python and Rust clients. quic-zig (v0.38.0) and the
+http3-zig pair (v0.5.7) do not change. No Stable API line changes. The two
+Experimental API snapshots each gain 27 lines, change 1 (the type of
+`native.conn.Conn.pending_answers`) and lose 1
+(`native.conn.tail_call_reused_reason`). There are five `### Breaking`
+entries, all Experimental: the reused-id rule, the owed-answer limit, the
+`capnp_finish` code, the `pending_answers` type and the new effect kind.
+docs/upgrading-to-0.28.0.md walks through the upgrade.
+
 ### Breaking
 
 - **native: a new call that reuses an id the host still owes now closes
@@ -27,7 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CAPNP_OK`, and the Return, the Abort and CLOSE_REQUESTED follow in the
   effects. A held question now ends at transport close, with RETURN
   DISCONNECTED. The constant `native.conn.tail_call_reused_reason` is
-  removed. This applies to every host. The core sees only the calls that
+  removed. The `Conn` field `owed_id_reused` (internal state of the shim)
+  is new. This applies to every host. The core sees only the calls that
   reach a host export. With full records, a reused id on a Bootstrap, or on
   a Call that the core answers itself (for example, to an export id that
   does not exist), still gets the core's own answer, and the host's late
@@ -92,7 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   additive in C ABI v1, and a host must opt in, so a host built against
   the 0.27.0 header sees no change. The first native feature bit,
   `CAPNP_FEATURE_ANSWER_FINISHED` (bit 0), says that this core has the
-  three parts:
+  three parts. The header spells it `(1ULL << 0)` so that Swift imports
+  it as a `UInt64` constant. The three parts are:
   - the opt-in `uint32_t answer_finished`, appended to `capnp_conn_opts`
     at offset 56 (the struct grows from 56 to 60 bytes). 1 is on, 0 is
     off, and any other value makes `capnp_conn_new` return
@@ -116,7 +147,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   host applies effects in drain order and ignores it then. When the Peer
   cannot record the Finish (its records are full), no effect comes and the
   host's ordinary answer goes out. "Answer finished" in docs/native-abi.md
-  gives every rule. Tests: `src/native/conn_test.zig` ("answer finished:
+  gives every rule. The Zig API of the shim gains Experimental
+  declarations: `Options.answer_finished`, `Conn.returnCanceled`, the
+  effect payload `native.effects.AnswerFinished`, `native.conn.PendingAnswer`
+  and `FinishState` (see Breaking), and the `Conn` field `answer_finished`
+  (internal state). Tests: `src/native/conn_test.zig` ("answer finished:
   ...", including an allocation-failure sweep over the whole lifecycle),
   `src/native/abi_test.zig` (through `capnp_core.h`), and
   `fuzz-native-abi`, which now opts in on a random side, calls
@@ -136,10 +171,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   XPASS fails the gate like FAIL, so a fix must also change the list and
   the docs. The summary JSON counts `xfailed` and `xpassed`. The logic is in
   `tools/e2e_outcome.zig`, and `zig build test` runs its tests (also
-  `zig build test-e2e-outcome`). The first limit uses the new schema: the
-  Zig e2e server with `--schema pipelined_params_deferred` answers `mint()`
-  and `mintFail()` after the `check()` that names them, as a native-ABI
-  host does. The C++, Go, Python and Rust clients each fail the same two
+  `zig build test-e2e-outcome`). The runner takes its gate verdict from
+  `Tally.gate` in that module, and a test checks that the runner calls it.
+  The first limit uses the new schema: the Zig e2e server with
+  `--schema pipelined_params_deferred` answers `mint()` and `mintFail()`
+  after the `check()` that names them, as a native-ABI host does. The C++, Go, Python and Rust clients each fail the same two
   `check()` lines with `PromiseUnresolved` (TCP, and C++ over a Unix
   socket). These rows are the limit `h9-pending-answer`: a param that names
   a pending answer stays `.promised`. A client that waits for `mint()`
@@ -169,7 +205,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Peer.resolveProvidePromisedOps` had the same defect. Now the Peer
   decodes a recorded answer once, on first use, and keeps the decoded
   message with the record until the answer's Finish
-  (`state.ResolvedAnswer.decoded`, Experimental). Tests in
+  (`state.ResolvedAnswer.decoded`, with `ResolvedAnswer.deinit` and
+  `takeFrame`, Experimental). Tests in
   `src/native/conn_test.zig`: "pipelined call: an answer whose capability
   is a promise on the host's own question forwards the call" (parked, and
   arriving after the answer), and an allocation-failure sweep over the
@@ -232,6 +269,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the old comment it fails on both. The comment of `capnp_return_results`
   said that an answer after the remote's early Finish gets
   `CAPNP_E_BAD_ID`. The core accepts that answer, once.
+
+### Documentation
+
+- `docs/upgrading-to-0.28.0.md` (new): who should take the native C ABI
+  changes, the five Breaking entries, the unchanged coordinated set
+  (quic-zig v0.38.0, http3-zig v0.5.7), and a checklist.
+- The package hash of v0.27.0 is recorded in docs/upgrading-to-0.27.0.md.
+  The install snippets in docs/build-integration.md and
+  docs/getting-started-serialization.md held it until this release moved
+  them to v0.28.0.
 
 ## [0.27.0] - 2026-10-18
 
@@ -7810,7 +7857,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/nullstyle/capnp-zig/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/nullstyle/capnp-zig/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/nullstyle/capnp-zig/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/nullstyle/capnp-zig/compare/v0.24.0...v0.25.0
