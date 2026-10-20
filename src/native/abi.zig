@@ -307,6 +307,8 @@ fn handleOf(c: ?*capnp_conn) ?*Handle {
 fn codeFor(err: anyerror) i32 {
     return switch (err) {
         error.Busy,
+        // capnp_finish on a question with no RETURN yet: retry after it.
+        error.RetainedQuestionPending,
         error.RetainedQuestionFinishInProgress,
         error.RetainedQuestionTransferInProgress,
         => CAPNP_E_BUSY,
@@ -333,7 +335,6 @@ fn codeFor(err: anyerror) i32 {
         error.Invalid,
         error.ExportIsNotPromise,
         error.PromiseAlreadyResolved,
-        error.RetainedQuestionPending,
         error.RetainedLoopbackQuestion,
         => CAPNP_E_INVAL,
         error.OutOfMemory => CAPNP_E_NOMEM,
@@ -748,6 +749,8 @@ test "debug selftest export: 0 and no failure name" {
 
 test "codeFor: the plan's error map" {
     try testing.expectEqual(CAPNP_E_BUSY, codeFor(error.Busy));
+    // capnp_finish on a question with no RETURN yet (capnp_core.h).
+    try testing.expectEqual(CAPNP_E_BUSY, codeFor(error.RetainedQuestionPending));
     try testing.expectEqual(CAPNP_E_CLOSED, codeFor(error.Closed));
     try testing.expectEqual(CAPNP_E_CLOSED, codeFor(error.RemoteAbort));
     try testing.expectEqual(CAPNP_E_BAD_ID, codeFor(error.BadId));

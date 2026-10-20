@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Finish, ..."). Tests also pin that `sendReturnCanceled` and the
   `HostPeer` (WASM host ABI) exception answer keep the tombstone when
   their send fails.
+- **native: `capnp_finish` on a question with no RETURN yet now returns
+  `CAPNP_E_BUSY`, as `capnp_core.h` says.** It returned `CAPNP_E_INVAL`
+  (-1). Now it returns `CAPNP_E_BUSY` (-3), as it already did for a
+  question held on a tail call. This is so before the Call reaches the
+  callee and after. The refused call still sends nothing and queues no
+  effect, and `capnp_finish` works after the RETURN. A host that checked
+  for -1 here must check for -3. The C-level test is in
+  `src/native/abi_test.zig` ("finish: an in-flight question is
+  CAPNP_E_BUSY, ...").
 
 ## [0.27.0] - 2026-10-18
 

@@ -61,7 +61,8 @@ While a question waits, it is an open question with no RETURN yet:
 - `capnp_cancel` sends its Finish and ends it with RETURN CANCELED.
 - Its deadline ends it on a tick with RETURN EXCEPTION (overloaded), after
   its Finish.
-- `capnp_finish` returns `CAPNP_E_BUSY`.
+- `capnp_finish` returns `CAPNP_E_BUSY`, as for any question with no
+  RETURN yet.
 - `capnp_conn_transport_closed` ends it with RETURN DISCONNECTED.
 - `capnp_conn_shutdown` waits for it, as for any open question, and
   `shutdown_drain_timeout_ms` ends it with RETURN DISCONNECTED, after its

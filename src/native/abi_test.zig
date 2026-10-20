@@ -634,6 +634,38 @@ test "errors: stale ids and bad arguments map to CAPNP_E_BAD_ID / CAPNP_E_INVAL"
     try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_finish(sa.conn, q, 0));
 }
 
+test "finish: an in-flight question is CAPNP_E_BUSY, before and after the call reaches the callee" {
+    const a = testing.allocator;
+    var sa = try newSide(a);
+    defer sa.deinit();
+    var sb = try newSide(a);
+    defer sb.deinit();
+    const ib = try connectPair(&sa, &sb, 100);
+    const p = try msgU64(a, 1);
+    defer a.free(p);
+
+    // The Call is still in A's queue: refused, and nothing is queued.
+    const q = try call(&sa, ib, 0, p, &.{});
+    try testing.expectEqual(@as(i32, c.CAPNP_E_BUSY), c.capnp_finish(sa.conn, q, 0));
+    try drainAll(&sa);
+    try testing.expectEqual(@as(usize, 1), sa.frames.items.len);
+    for (sa.frames.items) |f| try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_conn_push_bytes(sb.conn, f.ptr, f.len));
+    try drainAll(&sb);
+    try testing.expectEqual(@as(usize, 1), sb.calls.items.len);
+
+    // B's host has the call and has not answered: still refused.
+    try testing.expectEqual(@as(i32, c.CAPNP_E_BUSY), c.capnp_finish(sa.conn, q, 0));
+    var e = freshEffect();
+    try testing.expectEqual(@as(i32, 0), c.capnp_conn_next_effect(sa.conn, &e));
+
+    // After the RETURN: the first finish is OK, a second is a stale id.
+    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_results(sb.conn, sb.lastCall().answer_id, p.ptr, p.len, null, 0));
+    try pump(&sa, &sb);
+    try testing.expectEqual(@as(usize, 1), sa.countReturns(q));
+    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_finish(sa.conn, q, 0));
+    try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_finish(sa.conn, q, 0));
+}
+
 fn takeError(s: *Side, name_buf: *[64]u8, detail_buf: *[64]u8) !struct { code: i32, name: []const u8, detail: []const u8 } {
     var code: i32 = 0;
     var name: [*c]const u8 = null;

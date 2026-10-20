@@ -553,7 +553,9 @@ pub const Conn = struct {
     }
 
     /// Finish a retained question (the host dropped its last handle on it).
-    /// `error.Busy` for a question held on a tail call: it has no RETURN yet.
+    /// A question with no RETURN yet is refused: `error.Busy` when it is held
+    /// on a tail call, else the Peer's `error.RetainedQuestionPending`. The
+    /// C ABI maps both to `CAPNP_E_BUSY`.
     pub fn finish(self: *Conn, qid: u32, release_result_caps: bool) !void {
         // Once closed nothing more may be sent; the Peer frees its retained
         // records at deinit.
