@@ -32,9 +32,11 @@ uint32_t capnp_core_abi_version(void);
 
 /* Feature bits. A host checks a bit before it uses what the bit names; a
  * core reports 0 for each bit it does not know. */
-#define CAPNP_FEATURE_ANSWER_FINISHED (UINT64_C(1) << 0) /* capnp_conn_opts.answer_finished,
-                                                            CAPNP_EFFECT_ANSWER_FINISHED and
-                                                            capnp_return_canceled */
+/* Plain integer literals, not UINT64_C(): Swift imports a macro that is a
+ * plain constant expression, but not one that calls a function-like macro. */
+#define CAPNP_FEATURE_ANSWER_FINISHED (1ULL << 0) /* capnp_conn_opts.answer_finished,
+                                                     CAPNP_EFFECT_ANSWER_FINISHED and
+                                                     capnp_return_canceled */
 uint64_t capnp_core_features(void);
 
 /* "core <version> / capnp-zig <pinned version> / <pinned package hash>".
