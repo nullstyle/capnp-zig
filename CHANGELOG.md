@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **RPC: a late exception Return that fails after the caller's Finish now
+  fails, and the answer stays owed.** When the caller sends Finish before
+  the host answers, the Peer keeps a tombstone for the id until a Return
+  goes out. If the late exception Return then could not be built or sent
+  (out of memory, or a failed send), `Peer.sendReturnException` removed the
+  tombstone and returned success. No Return reached the wire, so the
+  caller's question id leaked. Through the native C ABI,
+  `capnp_return_exception` returned `CAPNP_OK` and dropped the pending
+  answer. Now the call fails with the send's error, keeps the tombstone,
+  and fails no pipelined call. The host can answer again, with an
+  exception or with `sendReturnCanceled`, and that answer is the one
+  Return. A Finish that arrives during the send still settles the answer,
+  as before, because it proves that the Return arrived. The results path
+  already worked this way. New tests are in
+  `tests/rpc/peer/rpc_answer_lifecycle_test.zig` ("a late exception
+  Return ...") and `src/native/conn_test.zig` ("errors: after the remote's
+  Finish, ..."). Tests also pin that `sendReturnCanceled` and the
+  `HostPeer` (WASM host ABI) exception answer keep the tombstone when
+  their send fails.
+
 ## [0.27.0] - 2026-10-18
 
 This is an RPC tail-call and reliability release. In the Peer, a tail

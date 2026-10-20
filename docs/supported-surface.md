@@ -321,7 +321,11 @@ the results descriptors' wire references, reusing a question id whose
 early-Finish tombstone is still undischarged is rejected as
 `DuplicateQuestionId`, and nested resolved-answer reservations (a reentrant
 transport delivering a new Call/Bootstrap mid-send) are counted so an outer
-post-send commit cannot underflow the answer map's reserved capacity.
+post-send commit cannot underflow the answer map's reserved capacity. A late
+`Return` after an early `Finish` that cannot be built or sent (out of memory,
+or a failed send) fails and keeps the tombstone, for results, exceptions and
+`canceled` alike, so the answer stays owed and the host's next answer is its
+one `Return`.
 
 **Param-capability release.** capnpc-zig settles the capabilities a caller
 passes in a Call's params with explicit `Release` frames — from the

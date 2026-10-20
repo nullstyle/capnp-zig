@@ -682,6 +682,56 @@ test "errors: stale handles fail cleanly; a failed return can be replaced by an 
     try testing.expectError(error.BadId, b.returnException(c.answer_id, 0, "again"));
 }
 
+test "errors: after the remote's Finish, an answer that runs out of memory sends nothing and stays owed" {
+    // The remote finishes call 10 before the host answers it. Then fail each
+    // allocation of capnp_return_exception (then of capnp_return_results)
+    // in turn. A refused answer queues no Return and keeps the answer, so
+    // the host's next answer is the call's one Return.
+    const alloc = testing.allocator;
+    for ([_]bool{ false, true }) |with_results| {
+        var k: usize = 0;
+        while (true) : (k += 1) {
+            var failing = std.testing.FailingAllocator.init(alloc, .{});
+            const a = try Conn.init(failing.allocator(), .{ .now_ns = 0 });
+            defer a.deinit();
+            const b = try Conn.init(alloc, .{ .now_ns = 0 });
+            defer b.deinit();
+            var ra = Rec.init(alloc);
+            defer ra.deinit();
+            var rb = Rec.init(alloc);
+            defer rb.deinit();
+            _ = try connectPair(a, &ra, b, &rb);
+            const ea = try a.exportCap(200);
+            try pushFrame(alloc, a, plainCallFrame(alloc, 10, ea));
+            try pushFrame(alloc, a, finishFrame(alloc, 10));
+            try drainAll(a, &ra);
+            try testing.expectEqual(@as(u32, 10), ra.lastCall().answer_id);
+
+            const res = try msgU64(alloc, 1);
+            defer alloc.free(res);
+            failing.fail_index = failing.alloc_index + k;
+            const answered = if (with_results)
+                a.returnResults(10, res, &.{})
+            else
+                a.returnException(10, 0, "late");
+            failing.fail_index = std.math.maxInt(usize);
+            const induced = failing.has_induced_failure;
+            try drainAll(a, &ra);
+
+            if (answered) |_| {} else |err| {
+                try testing.expectEqual(error.OutOfMemory, err);
+                try testing.expectEqual(@as(usize, 0), try countReturnFrames(&ra, 10, null));
+                try testing.expect(a.pending_answers.contains(10));
+                try a.returnException(10, 0, "retry");
+                try drainAll(a, &ra);
+            }
+            try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, 10, null));
+            try testing.expect(!a.pending_answers.contains(10));
+            if (!induced) break;
+        }
+    }
+}
+
 test "tick: a call deadline ends the question once; the late Return is absorbed" {
     const alloc = testing.allocator;
     const ms = std.time.ns_per_ms;

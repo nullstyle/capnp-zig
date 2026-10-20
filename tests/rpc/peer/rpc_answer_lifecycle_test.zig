@@ -2511,6 +2511,188 @@ test "answer-finished hook stays quiet once the peer stops tracking finished ans
     try std.testing.expectEqual(@as(usize, 1), capture.countReturns(40, .canceled));
 }
 
+// A late Return that does not reach the wire leaves the answer owed. When
+// the caller's Finish came first, its tombstone is the peer's only record
+// that a Return is still owed for the id. A late Return that fails must keep
+// that tombstone and report the failure, so the host can answer again and a
+// reuse of the id is still refused.
+
+/// Records outbound frames, and fails every send while `fail` is set.
+const FailingSend = struct {
+    capture: ReturnCapture,
+    fail: bool = false,
+
+    fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        if (self.fail) return error.TestSendFailed;
+        try ReturnCapture.onFrame(&self.capture, frame);
+    }
+};
+
+test "a late exception Return whose send fails after Finish keeps the answer owed" {
+    const allocator = std.testing.allocator;
+    // The host answers again with an exception, then with sendReturnCanceled.
+    for ([_]bool{ false, true }) |retry_with_cancel| {
+        var peer = Peer.initDetached(allocator);
+        peer.disableThreadAffinity();
+        defer peer.deinit();
+        var sink = FailingSend{ .capture = newCapture(allocator) };
+        defer sink.capture.deinit();
+        peer.setSendFrameOverride(&sink, FailingSend.onFrame);
+        var rec = FinishedRecorder{};
+        peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+
+        var host_ctx: u8 = 0;
+        const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+        try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 10, export_id));
+        try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 42, 10));
+        try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 10, false));
+        try std.testing.expectEqual(@as(usize, 1), rec.count);
+
+        sink.fail = true;
+        try std.testing.expectError(error.TestSendFailed, peer.sendReturnException(10, "late"));
+        sink.fail = false;
+
+        // Nothing reached the wire. The id is still owed: a reuse is refused,
+        // and the call pipelined on the answer still waits for it.
+        try std.testing.expectEqual(@as(usize, 0), sink.capture.countTag(.@"return"));
+        try std.testing.expect(peer.finished_early_answers.contains(10));
+        try std.testing.expect(try peer.inboundAnswerQuestionIdInUse(10));
+        try std.testing.expect(!peer.failed_answers.contains(10));
+
+        if (retry_with_cancel) {
+            try peer.sendReturnCanceled(10);
+            try std.testing.expectEqual(@as(usize, 1), sink.capture.countReturns(10, .canceled));
+        } else {
+            try peer.sendReturnException(10, "late");
+            try std.testing.expectEqual(@as(usize, 1), sink.capture.countReturns(10, .exception));
+        }
+        // Each call got exactly one Return, and the id is free again.
+        try std.testing.expectEqual(@as(usize, 2), sink.capture.countTag(.@"return"));
+        try std.testing.expectEqual(@as(usize, 1), sink.capture.countReturns(42, .exception));
+        try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(10)));
+        try std.testing.expectEqual(@as(usize, 1), rec.count);
+    }
+}
+
+test "a late exception Return that runs out of memory after Finish keeps the answer owed" {
+    // Fail each allocation of the late exception Return in turn. A refused
+    // answer sends nothing and keeps the tombstone; the host's next answer
+    // is the one Return.
+    const allocator = std.testing.allocator;
+    var k: usize = 0;
+    while (true) : (k += 1) {
+        var failing = std.testing.FailingAllocator.init(allocator, .{});
+        var peer = Peer.initDetached(failing.allocator());
+        peer.disableThreadAffinity();
+        defer peer.deinit();
+        var capture = newCapture(allocator);
+        defer capture.deinit();
+        peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+        var host_ctx: u8 = 0;
+        const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+        try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 10, export_id));
+        try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 10, false));
+        try std.testing.expect(peer.finished_early_answers.contains(10));
+
+        failing.fail_index = failing.alloc_index + k;
+        const answered = peer.sendReturnException(10, "late");
+        failing.fail_index = std.math.maxInt(usize);
+        const induced = failing.has_induced_failure;
+
+        if (answered) |_| {} else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expectEqual(@as(usize, 0), capture.countTag(.@"return"));
+            try std.testing.expect(peer.finished_early_answers.contains(10));
+            try std.testing.expect(try peer.inboundAnswerQuestionIdInUse(10));
+            try peer.sendReturnException(10, "late");
+        }
+        try std.testing.expectEqual(@as(usize, 1), capture.countTag(.@"return"));
+        try std.testing.expectEqual(@as(usize, 1), capture.countReturns(10, .exception));
+        try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(10)));
+        if (!induced) break;
+    }
+}
+
+test "a Finish that arrives while an exception Return is sent consumes it, even when the send then fails" {
+    // A synchronous transport can deliver the whole Return, take the
+    // caller's Finish inside the same send, and then report an error. That
+    // Finish proves the Return arrived, so the answer is settled: no error,
+    // no second Return, and the id is free.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    const finish_frame = try buildFinishFrame(allocator, 10, false);
+    defer allocator.free(finish_frame);
+
+    const FinishThenFail = struct {
+        capture: ReturnCapture,
+        peer: *Peer,
+        finish_frame: []const u8,
+        injected: bool = false,
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            try ReturnCapture.onFrame(&self.capture, frame);
+            if (self.injected) return;
+            var decoded = try protocol.DecodedMessage.init(std.testing.allocator, frame);
+            defer decoded.deinit();
+            if (decoded.tag != .@"return") return;
+            if ((try decoded.asReturn()).answer_id != 10) return;
+            self.injected = true;
+            try self.peer.handleFrame(self.finish_frame);
+            return error.TestSendFailed;
+        }
+    };
+
+    var sink = FinishThenFail{ .capture = newCapture(allocator), .peer = &peer, .finish_frame = finish_frame };
+    defer sink.capture.deinit();
+    peer.setSendFrameOverride(&sink, FinishThenFail.onFrame);
+
+    var host_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 10, export_id));
+
+    try peer.sendReturnException(10, "failed");
+    try std.testing.expect(sink.injected);
+    try std.testing.expectEqual(@as(usize, 1), sink.capture.countReturns(10, .exception));
+    try std.testing.expect(!peer.finished_early_answers.contains(10));
+    try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(10)));
+}
+
+test "a Return{canceled} whose send fails keeps the answer owed" {
+    // sendReturnCanceled answers only a finished answer, so its tombstone is
+    // always there before the send. A failed send keeps it.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var sink = FailingSend{ .capture = newCapture(allocator) };
+    defer sink.capture.deinit();
+    peer.setSendFrameOverride(&sink, FailingSend.onFrame);
+
+    var host_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 10, export_id));
+    try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 42, 10));
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 10, false));
+
+    sink.fail = true;
+    try std.testing.expectError(error.TestSendFailed, peer.sendReturnCanceled(10));
+    sink.fail = false;
+    try std.testing.expectEqual(@as(usize, 0), sink.capture.countTag(.@"return"));
+    try std.testing.expect(peer.finished_early_answers.contains(10));
+
+    try peer.sendReturnCanceled(10);
+    try std.testing.expectEqual(@as(usize, 1), sink.capture.countReturns(10, .canceled));
+    try std.testing.expectEqual(@as(usize, 1), sink.capture.countReturns(42, .exception));
+    try std.testing.expectEqual(@as(usize, 2), sink.capture.countTag(.@"return"));
+    try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(10)));
+}
+
 const CapturedResolveException = struct {
     kind: protocol.ExceptionType,
     reason_matches: bool,

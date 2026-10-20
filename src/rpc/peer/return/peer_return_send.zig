@@ -320,6 +320,10 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// drains those queued calls, failing each with its own Return so the
         /// exactly-one-Return-per-call invariant holds and the caller's question
         /// table can drain (a compliant peer otherwise hangs forever).
+        ///
+        /// When the Return cannot be built or sent, this fails, drains
+        /// nothing, and the answer stays owed: also after the caller's
+        /// Finish, whose tombstone stays until a Return goes out.
         pub fn sendReturnException(self: *Peer, answer_id: u32, reason: []const u8) !void {
             return sendReturnExceptionTyped(self, answer_id, reason, .failed);
         }
@@ -390,6 +394,12 @@ pub fn ReturnSend(comptime Peer: type) type {
                 if (resolving_owned) _ = self.resolving_answers.remove(answer_id);
             }
 
+            // Capture before the send, as sendReturnResults does. Only a
+            // Finish that arrives during the send proves that the Return was
+            // delivered. A tombstone that was here before the send means the
+            // caller finished first and still waits for this Return.
+            const finished_before_send = self.finished_early_answers.contains(answer_id) or
+                completingJoinFinished(self, answer_id);
             const sent = if (yourself)
                 peer_return_dispatch.sendReturnTagForPeer(
                     Peer,
@@ -416,12 +426,13 @@ pub fn ReturnSend(comptime Peer: type) type {
                     _ = self.resolving_answers.remove(answer_id);
                     resolving_owned = false;
                 }
-                // A synchronous Finish consumed the logical answer even if the
-                // transport callback returned a trailing error.
-                const completing_finished = if (self.completing_join_answers.get(answer_id)) |completing|
-                    completing.finished
-                else
-                    false;
+                // A synchronous Finish that came during the send consumed the
+                // logical answer, even if the transport callback returned a
+                // trailing error. A Finish from before the send proves
+                // nothing: keep its tombstone, so the answer stays owed and
+                // the host can answer again.
+                if (finished_before_send) return err;
+                const completing_finished = completingJoinFinished(self, answer_id);
                 if (self.finished_early_answers.remove(answer_id) or completing_finished) return;
                 return err;
             };
@@ -429,10 +440,7 @@ pub fn ReturnSend(comptime Peer: type) type {
                 _ = self.resolving_answers.remove(answer_id);
                 resolving_owned = false;
             }
-            const completing_finished = if (self.completing_join_answers.get(answer_id)) |completing|
-                completing.finished
-            else
-                false;
+            const completing_finished = completingJoinFinished(self, answer_id);
             const finished_early = self.finished_early_answers.remove(answer_id) or completing_finished;
             // Record AFTER a successful send, mirroring resolved_answers' gates:
             // never for loopback answers (no Finish will clear the record and the
@@ -445,6 +453,12 @@ pub fn ReturnSend(comptime Peer: type) type {
             if (!is_loopback and !finished_early) {
                 recordFailedAnswer(self, answer_id, reason, ex_type);
             }
+        }
+
+        /// True when a completing Join answer `answer_id` has had its Finish.
+        fn completingJoinFinished(self: *Peer, answer_id: u32) bool {
+            const completing = self.completing_join_answers.get(answer_id) orelse return false;
+            return completing.finished;
         }
 
         /// Keep the exception of a failed `sendResultsTo = yourself` call for

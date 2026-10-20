@@ -746,6 +746,92 @@ test "host peer host-call bridge queues call and allows exception response" {
     try std.testing.expect(client_ctx.saw_expected_exception);
 }
 
+test "host peer host-call exception that fails after the caller's Finish keeps the answer owed" {
+    // The caller finishes a host call before the host answers. The host's
+    // exception answer then fails, because no memory is left for the
+    // outgoing frame. Nothing is queued, the call stays answerable, and the
+    // host's next answer is the caller's one Return.
+    const allocator = std.testing.allocator;
+
+    const ClientCtx = struct {
+        bootstrap_import_id: ?u32 = null,
+        returns: usize = 0,
+    };
+    const Handlers = struct {
+        fn onBootstrapReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            const payload = ret.results orelse return error.MissingPayload;
+            const resolved = try caps.resolveCapability(try payload.content.getCapability());
+            switch (resolved) {
+                .imported => |imported| state.bootstrap_import_id = imported.id,
+                else => return error.UnexpectedResolvedCapability,
+            }
+        }
+
+        fn onCallReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            state.returns += 1;
+            try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+        }
+
+        fn buildEmptyCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+            _ = try call.initCapTableTyped(0);
+        }
+    };
+
+    var client = HostPeer.init(allocator);
+    defer client.deinit();
+    client.start(null, null, null);
+
+    var failing = std.testing.FailingAllocator.init(allocator, .{});
+    var server = HostPeer.initWithOutgoingAllocator(allocator, failing.allocator());
+    defer server.deinit();
+    server.start(null, null, null);
+    try server.enableHostCallBridge();
+
+    var client_ctx = ClientCtx{};
+    _ = try client.peer.sendBootstrap(&client_ctx, Handlers.onBootstrapReturn);
+    try pumpAll(&client, &server);
+    try pumpAll(&server, &client);
+    try pumpAll(&client, &server);
+
+    const bootstrap_import_id = client_ctx.bootstrap_import_id orelse return error.MissingBootstrapImport;
+    _ = try client.peer.sendCallResolved(
+        .{ .imported = .{ .id = bootstrap_import_id } },
+        0x1234,
+        9,
+        &client_ctx,
+        Handlers.buildEmptyCall,
+        Handlers.onCallReturn,
+    );
+    try pumpAll(&client, &server);
+    const call = server.popHostCall() orelse return error.MissingHostCall;
+    server.freeHostCallFrame(call.frame);
+
+    var finish_builder = protocol.MessageBuilder.init(allocator);
+    defer finish_builder.deinit();
+    try finish_builder.buildFinish(call.question_id, false, false);
+    const finish_frame = try finish_builder.finish();
+    defer allocator.free(finish_frame);
+    try server.pushFrame(finish_frame);
+    try std.testing.expect(server.peer.finished_early_answers.contains(call.question_id));
+
+    const outgoing_before = server.pendingOutgoingCount();
+    failing.fail_index = failing.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, server.respondHostCallException(call.question_id, "late"));
+    failing.fail_index = std.math.maxInt(usize);
+    try std.testing.expectEqual(outgoing_before, server.pendingOutgoingCount());
+    try std.testing.expect(server.peer.finished_early_answers.contains(call.question_id));
+
+    try server.respondHostCallException(call.question_id, "late");
+    try std.testing.expectEqual(outgoing_before + 1, server.pendingOutgoingCount());
+    try std.testing.expect(!server.peer.finished_early_answers.contains(call.question_id));
+    try std.testing.expectError(error.UnknownQuestion, server.respondHostCallException(call.question_id, "again"));
+
+    try pumpAll(&server, &client);
+    try std.testing.expectEqual(@as(usize, 1), client_ctx.returns);
+}
+
 test "host peer host-call bridge redacts prebuilt exception returns" {
     const allocator = std.testing.allocator;
 
