@@ -1471,31 +1471,19 @@ fn runUnixLane(
 }
 
 fn writeSummary(allocator: Allocator, io: std.Io, paths: Paths, results: []const CaseResult, summary_name: []const u8) !void {
-    var passed: usize = 0;
-    var failed: usize = 0;
-    var skipped: usize = 0;
-    var xfailed: usize = 0;
-    var xpassed: usize = 0;
-
-    for (results) |item| {
-        switch (outcome.bucket(item.status)) {
-            .pass => passed += 1,
-            .skip => skipped += 1,
-            .xfail => xfailed += 1,
-            .xpass => xpassed += 1,
-            .fail => failed += 1,
-        }
-    }
+    // tools/e2e_outcome.zig counts the statuses and decides the gate.
+    var tally: outcome.Tally = .{};
+    for (results) |item| tally.add(item.status);
 
     std.debug.print("\n======================================================================\n", .{});
     std.debug.print("  Zig Interop E2E Summary\n", .{});
     std.debug.print("======================================================================\n\n", .{});
     std.debug.print("  Total cases: {d}\n", .{results.len});
-    std.debug.print("  Passed:      {d}\n", .{passed});
-    std.debug.print("  Failed:      {d}\n", .{failed});
-    std.debug.print("  Skipped:     {d}\n", .{skipped});
-    std.debug.print("  XFAIL:       {d} (known limits, tools/e2e_known_limits.zig)\n", .{xfailed});
-    std.debug.print("  XPASS:       {d} (a known limit passed: update its rows and docs)\n\n", .{xpassed});
+    std.debug.print("  Passed:      {d}\n", .{tally.pass});
+    std.debug.print("  Failed:      {d}\n", .{tally.fail});
+    std.debug.print("  Skipped:     {d}\n", .{tally.skip});
+    std.debug.print("  XFAIL:       {d} (known limits, tools/e2e_known_limits.zig)\n", .{tally.xfail});
+    std.debug.print("  XPASS:       {d} (a known limit passed: update its rows and docs)\n\n", .{tally.xpass});
 
     std.debug.print("{s: <50} {s}\n", .{ "case", "status" });
     std.debug.print("{s: <50} {s}\n", .{ "----", "------" });
@@ -1509,11 +1497,11 @@ fn writeSummary(allocator: Allocator, io: std.Io, paths: Paths, results: []const
 
     try appendFmt(allocator, &content, "{{\n", .{});
     try appendFmt(allocator, &content, "  \"total\": {d},\n", .{results.len});
-    try appendFmt(allocator, &content, "  \"passed\": {d},\n", .{passed});
-    try appendFmt(allocator, &content, "  \"failed\": {d},\n", .{failed});
-    try appendFmt(allocator, &content, "  \"skipped\": {d},\n", .{skipped});
-    try appendFmt(allocator, &content, "  \"xfailed\": {d},\n", .{xfailed});
-    try appendFmt(allocator, &content, "  \"xpassed\": {d},\n", .{xpassed});
+    try appendFmt(allocator, &content, "  \"passed\": {d},\n", .{tally.pass});
+    try appendFmt(allocator, &content, "  \"failed\": {d},\n", .{tally.fail});
+    try appendFmt(allocator, &content, "  \"skipped\": {d},\n", .{tally.skip});
+    try appendFmt(allocator, &content, "  \"xfailed\": {d},\n", .{tally.xfail});
+    try appendFmt(allocator, &content, "  \"xpassed\": {d},\n", .{tally.xpass});
     try appendFmt(allocator, &content, "  \"results\": {{\n", .{});
 
     for (results, 0..) |item, idx| {
@@ -1533,7 +1521,8 @@ fn writeSummary(allocator: Allocator, io: std.Io, paths: Paths, results: []const
     defer file.close(io);
     try file.writeStreamingAll(io, content.items);
 
-    if (failed + xpassed > 0) return error.E2EFailed;
+    // FAIL and XPASS fail the run.
+    try tally.gate();
 }
 
 fn appendFmt(allocator: Allocator, list: *std.ArrayList(u8), comptime fmt: []const u8, args: anytype) !void {

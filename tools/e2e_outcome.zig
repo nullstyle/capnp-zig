@@ -10,6 +10,9 @@
 //!   fails the gate, so a fix must also remove its rows and update the docs.
 //! - `FAIL(...)`: anything else.
 //!
+//! `Tally` counts a run's statuses and decides its gate: FAIL and XPASS
+//! fail it. The runner takes its verdict only from `Tally.gate`.
+//!
 //! The runner's own tests live here: `zig build test` runs this file as a
 //! test root (step `test-e2e-outcome`).
 
@@ -193,6 +196,37 @@ pub fn bucket(status_text: []const u8) Bucket {
     return .fail;
 }
 
+/// The statuses of one run, counted by bucket. The runner prints these
+/// counts, writes them to its summary JSON, and takes its gate verdict from
+/// `gate`.
+pub const Tally = struct {
+    pass: usize = 0,
+    skip: usize = 0,
+    xfail: usize = 0,
+    xpass: usize = 0,
+    fail: usize = 0,
+    /// Statuses whose bucket fails the gate (`Bucket.failsGate`).
+    gate_failures: usize = 0,
+
+    pub fn add(self: *Tally, status_text: []const u8) void {
+        const b = bucket(status_text);
+        switch (b) {
+            .pass => self.pass += 1,
+            .skip => self.skip += 1,
+            .xfail => self.xfail += 1,
+            .xpass => self.xpass += 1,
+            .fail => self.fail += 1,
+        }
+        if (b.failsGate()) self.gate_failures += 1;
+    }
+
+    /// The run's gate: error.E2EFailed when any status fails it (FAIL or
+    /// XPASS).
+    pub fn gate(self: Tally) error{E2EFailed}!void {
+        if (self.gate_failures > 0) return error.E2EFailed;
+    }
+};
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -369,6 +403,50 @@ test "bucket sorts every status the runner writes" {
     try testing.expect(!Bucket.pass.failsGate());
     try testing.expect(!Bucket.skip.failsGate());
     try testing.expect(Bucket.fail.failsGate());
+}
+
+fn tallyOf(statuses: []const []const u8) Tally {
+    var tally: Tally = .{};
+    for (statuses) |status_text| tally.add(status_text);
+    return tally;
+}
+
+test "the gate fails on FAIL or XPASS, and passes PASS, SKIP and XFAIL" {
+    // Known limits that still fail, with passes and skips: the gate passes.
+    const green = tallyOf(&.{
+        "PASS(5)",
+        "SKIP(unix: reference harness TCP-only)",
+        "XFAIL(h9-pending-answer,2/4)",
+        "XFAIL(h9-pending-answer,2/4)",
+    });
+    try green.gate();
+    try testing.expectEqual(@as(usize, 1), green.pass);
+    try testing.expectEqual(@as(usize, 1), green.skip);
+    try testing.expectEqual(@as(usize, 2), green.xfail);
+    try testing.expectEqual(@as(usize, 0), green.xpass);
+    try testing.expectEqual(@as(usize, 0), green.fail);
+    // Nothing ran, so nothing failed.
+    try tallyOf(&.{}).gate();
+
+    // A fixed known limit fails the gate on its own.
+    const fixed = tallyOf(&.{"XPASS(h9-pending-answer: " ++ check_mint ++ ")"});
+    try testing.expectEqual(@as(usize, 1), fixed.xpass);
+    try testing.expectError(error.E2EFailed, fixed.gate());
+    try testing.expectError(error.E2EFailed, tallyOf(&.{ "PASS(5)", "XFAIL(h9-pending-answer,2/4)", "XPASS(h9-pending-answer: x)" }).gate());
+    // So does a FAIL, and a status the runner does not know.
+    const failed = tallyOf(&.{ "PASS(5)", "FAIL(exit=1,1/5)" });
+    try testing.expectEqual(@as(usize, 1), failed.fail);
+    try testing.expectError(error.E2EFailed, failed.gate());
+    try testing.expectError(error.E2EFailed, tallyOf(&.{"PASSED"}).gate());
+}
+
+test "the runner takes its gate verdict only from Tally.gate" {
+    // The gate tests above prove nothing if the runner decides on its own.
+    // writeSummary ends with this one call, and no other runner code
+    // returns the gate error.
+    const runner = @embedFile("e2e_runner.zig");
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, runner, "try tally.gate();"));
+    try testing.expectEqual(@as(usize, 0), std.mem.count(u8, runner, "E2EFailed"));
 }
 
 test "findLimit matches the whole case" {
