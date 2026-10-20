@@ -1,7 +1,8 @@
 {
   "target": "capnp-zig",
   "reference_backends": ["cpp", "go", "python", "rust"],
-  "scenarios": ["game_world", "chat", "inventory", "matchmaking", "resolve_disembargo", "l3_l4_interop", "pass_back", "pipelined_params"],
+  "scenarios": ["game_world", "chat", "inventory", "matchmaking", "resolve_disembargo", "l3_l4_interop", "pass_back", "pipelined_params", "pipelined_params_deferred"],
+  "known_limits": "tools/e2e_known_limits.zig lists the cases that fail on purpose, with their exact failing checks. tools/e2e_runner.zig records them as XFAIL; a listed check that passes is XPASS and fails the gate.",
   "directions": [
     "zig-client_to_reference-server",
     "reference-client_to_zig-server"
@@ -27,6 +28,17 @@
       "reference-client_to_zig-server": {
         "excluded_backends": ["cpp", "go", "python", "rust"],
         "reason": "The current l3_l4_interop orchestrator is Zig-client-only: vats A/B are capnp-zig and the reference backend hosts vat C."
+      }
+    },
+    "pipelined_params_deferred": {
+      "note": "The pipelined_params reference clients against a Zig server that answers mint() and mintFail() after the check() that names them. Every reference client fails the two check() lines: the known limit h9-pending-answer (tools/e2e_known_limits.zig), recorded as XFAIL.",
+      "zig-client_to_reference-server": {
+        "excluded_backends": ["cpp", "go", "python", "rust"],
+        "reason": "A Zig-server variant: a reference server answers mint() at once, so this direction would only repeat pipelined_params."
+      },
+      "reference-client_to_zig-server": {
+        "excluded_backends": [],
+        "reason": "All four reference clients run; each row is XFAIL."
       }
     }
   },

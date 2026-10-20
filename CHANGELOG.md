@@ -125,6 +125,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   calls reach the hosts: a 10-second Debug run with seed 1 now sees 7074
   INBOUND_CALLs and 1128 ANSWER_FINISHED effects; before, the same run saw
   6 INBOUND_CALLs.
+- **e2e: known limits, recorded as XFAIL, and the `pipelined_params_deferred`
+  schema (capnp-swift H9-pending).** The cross-implementation runner
+  (`tools/e2e_runner.zig`) had only PASS, FAIL and SKIP. It now reads a
+  committed list, `tools/e2e_known_limits.zig`: each row names a client,
+  server, transport and schema, the exact checks that fail, a reason and a
+  link. A case is XFAIL when exactly those checks fail and the rest pass.
+  Any other failure stays FAIL. A listed check that passes is XPASS, and
+  XPASS fails the gate like FAIL, so a fix must also change the list and
+  the docs. The summary JSON counts `xfailed` and `xpassed`. The logic is in
+  `tools/e2e_outcome.zig`, and `zig build test` runs its tests (also
+  `zig build test-e2e-outcome`). The first limit uses the new schema: the
+  Zig e2e server with `--schema pipelined_params_deferred` answers `mint()`
+  and `mintFail()` after the `check()` that names them, as a native-ABI
+  host does. The C++, Go, Python and Rust clients each fail the same two
+  `check()` lines with `PromiseUnresolved` (TCP, and C++ over a Unix
+  socket). These rows are the limit `h9-pending-answer`: a param that names
+  a pending answer stays `.promised`. A client that waits for `mint()`
+  before it sends `check()` still passes: the server also answers a call
+  that it has held for 500 ms, on its next loop tick.
+  `docs/supported-surface.md` and `docs/native-abi.md` now say that a
+  native-ABI host always hits this limit when both calls arrive in one
+  `capnp_conn_push_bytes`.
 
 ### Fixed
 

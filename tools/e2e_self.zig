@@ -35,7 +35,9 @@ const builtin = @import("builtin");
 
 /// The TCP and Unix lanes. They do not run `resolve_disembargo` yet.
 const schemas = [_][]const u8{ "game_world", "chat", "inventory", "matchmaking", "pass_back", "pipelined_params" };
-/// The QUIC lane: every schema the e2e server serves (its `Schema` enum).
+/// The QUIC lane: every schema the e2e server serves (its `Schema` enum),
+/// except pipelined_params_deferred, whose checks fail by design (a known
+/// limit of tools/e2e_runner.zig, listed in tools/e2e_known_limits.zig).
 const quic_schemas = [_][]const u8{ "game_world", "chat", "inventory", "matchmaking", "resolve_disembargo", "pass_back", "pipelined_params" };
 const server_ready_timeout_ms: i64 = 30_000;
 const client_timeout_ms: i64 = 60_000;

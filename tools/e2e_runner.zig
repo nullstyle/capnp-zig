@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const outcome = @import("e2e_outcome.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -29,6 +30,10 @@ const Schema = enum {
     // same TokenHost for both, and its client picks the flow.
     pass_back,
     pipelined_params,
+    // The pipelined_params client against a Zig server that answers mint()
+    // and mintFail() late. Zig-server direction only; its failing checks are
+    // a known limit (tools/e2e_known_limits.zig).
+    pipelined_params_deferred,
 };
 
 const Direction = enum {
@@ -53,12 +58,6 @@ const RunResult = struct {
     exit_code: i32,
     stdout: []u8,
     stderr: []u8,
-};
-
-const TapEval = struct {
-    pass_count: usize,
-    fail_count: usize,
-    bailed: bool,
 };
 
 const Config = struct {
@@ -87,7 +86,9 @@ const all_backends = [_]Backend{ .cpp, .go, .python, .rust };
 // the C++-first Zig-client runtime lane only. Go has a separate source-backed
 // `just e2e-l3-go` recon gate because vendored go-capnp exposes Network3PH
 // names but its runtime still TODO/panics on the required 3PH paths.
-const all_schemas = [_]Schema{ .game_world, .chat, .inventory, .matchmaking, .resolve_disembargo, .l3_l4_interop, .pass_back, .pipelined_params };
+// pipelined_params_deferred runs in the Zig-server direction only, and its
+// rows are XFAIL: tools/e2e_known_limits.zig lists them.
+const all_schemas = [_]Schema{ .game_world, .chat, .inventory, .matchmaking, .resolve_disembargo, .l3_l4_interop, .pass_back, .pipelined_params, .pipelined_params_deferred };
 
 /// resolve_disembargo is the only scenario with per-direction reference-impl
 /// gaps — all in the reference libraries, not capnp-zig. Returns a SKIP status
@@ -133,9 +134,18 @@ fn l3L4InteropSkip(schema: Schema, backend: Backend, zig_is_client: bool) ?[]con
     return null;
 }
 
+/// pipelined_params_deferred is a Zig-server variant. A reference server
+/// answers mint() at once, so the Zig-client direction would only repeat
+/// pipelined_params.
+fn deferredServerSkip(schema: Schema, zig_is_client: bool) ?[]const u8 {
+    if (schema != .pipelined_params_deferred or !zig_is_client) return null;
+    return "SKIP(pipelined_params_deferred: Zig-server only)";
+}
+
 fn caseSkip(schema: Schema, backend: Backend, zig_is_client: bool) ?[]const u8 {
     if (resolveDisembargoSkip(schema, backend, zig_is_client)) |reason| return reason;
     if (l3L4InteropSkip(schema, backend, zig_is_client)) |reason| return reason;
+    if (deferredServerSkip(schema, zig_is_client)) |reason| return reason;
     return null;
 }
 
@@ -179,10 +189,14 @@ fn usage() void {
         \\      over an AF_UNIX socket. Only the cpp backend runs; go, python and
         \\      rust record SKIP(unix: reference harness TCP-only).
         \\  --backend=cpp|go|python|rust (repeatable)
-        \\  --schema=game_world|chat|inventory|matchmaking|resolve_disembargo|l3_l4_interop|pass_back|pipelined_params (repeatable)
+        \\  --schema=game_world|chat|inventory|matchmaking|resolve_disembargo|l3_l4_interop|pass_back|pipelined_params|pipelined_params_deferred (repeatable)
         \\  --allow-missing-hooks
         \\  --verbose
         \\  --help
+        \\
+        \\Each case gets PASS, FAIL, SKIP (not run), XFAIL (a known limit in
+        \\tools/e2e_known_limits.zig: exactly its listed checks failed) or XPASS
+        \\(a listed check passed). FAIL and XPASS fail the run.
         \\
         \\Optional hook env vars:
         \\  E2E_ZIG_GLOBAL_CACHE_DIR
@@ -232,11 +246,15 @@ fn schemaName(s: Schema) []const u8 {
         .l3_l4_interop => "l3_l4_interop",
         .pass_back => "pass_back",
         .pipelined_params => "pipelined_params",
+        .pipelined_params_deferred => "pipelined_params_deferred",
     };
 }
 
+/// The schema a reference backend runs for a case.
 fn schemaNameForBackend(b: Backend, s: Schema) []const u8 {
     if (b == .go and s == .game_world) return "gameworld";
+    // The reference client runs the plain flow; only the Zig server differs.
+    if (s == .pipelined_params_deferred) return "pipelined_params";
     return schemaName(s);
 }
 
@@ -250,6 +268,7 @@ fn zigSchemaPort(s: Schema) u16 {
         .l3_l4_interop => 4706,
         .pass_back => 4708,
         .pipelined_params => 4709,
+        .pipelined_params_deferred => 4710,
     };
 }
 
@@ -439,6 +458,7 @@ fn parseSchema(text: []const u8) !Schema {
     if (std.mem.eql(u8, text, "l3_l4_interop")) return .l3_l4_interop;
     if (std.mem.eql(u8, text, "pass_back")) return .pass_back;
     if (std.mem.eql(u8, text, "pipelined_params")) return .pipelined_params;
+    if (std.mem.eql(u8, text, "pipelined_params_deferred")) return .pipelined_params_deferred;
     return error.InvalidSchema;
 }
 
@@ -834,45 +854,22 @@ fn stopRefServer(allocator: Allocator, io: std.Io, backend: Backend, schema: Sch
     try dockerRmForce(allocator, io, container_name);
 }
 
-fn evalTap(output: []const u8) TapEval {
-    var pass_count: usize = 0;
-    var fail_count: usize = 0;
-    var bailed = false;
-
-    var it = std.mem.splitScalar(u8, output, '\n');
-    while (it.next()) |line| {
-        if (std.mem.startsWith(u8, line, "Bail out!")) {
-            bailed = true;
-        } else if (std.mem.startsWith(u8, line, "ok ")) {
-            pass_count += 1;
-        } else if (std.mem.startsWith(u8, line, "not ok ")) {
-            fail_count += 1;
-        }
-    }
-
-    return .{ .pass_count = pass_count, .fail_count = fail_count, .bailed = bailed };
+/// The status of one finished case, from the client's combined output and
+/// exit code, and the case's known limit if it has one (tools/e2e_outcome.zig).
+fn caseStatus(allocator: Allocator, case: outcome.Case, exit_code: i32, combined: []const u8) ![]u8 {
+    var tap = try outcome.evalTap(allocator, combined);
+    defer tap.deinit(allocator);
+    return outcome.status(allocator, exit_code, &tap, outcome.findLimit(&outcome.known_limits.list, case));
 }
 
-fn statusFromRun(allocator: Allocator, exit_code: i32, tap: TapEval) ![]u8 {
-    if (exit_code == 0 and tap.fail_count == 0 and tap.pass_count > 0 and !tap.bailed) {
-        return std.fmt.allocPrint(allocator, "PASS({d})", .{tap.pass_count});
-    }
-
-    if (tap.bailed) {
-        if (exit_code == 0) return allocator.dupe(u8, "FAIL(BAIL)");
-        return std.fmt.allocPrint(allocator, "FAIL(exit={d},BAIL)", .{exit_code});
-    }
-
-    if (tap.pass_count + tap.fail_count == 0) {
-        if (exit_code == 0) return allocator.dupe(u8, "FAIL(NO_TESTS)");
-        return std.fmt.allocPrint(allocator, "FAIL(exit={d},NO_TESTS)", .{exit_code});
-    }
-
-    if (exit_code == 0) {
-        return std.fmt.allocPrint(allocator, "FAIL({d}/{d})", .{ tap.fail_count, tap.pass_count + tap.fail_count });
-    }
-
-    return std.fmt.allocPrint(allocator, "FAIL(exit={d},{d}/{d})", .{ exit_code, tap.fail_count, tap.pass_count + tap.fail_count });
+/// The matrix place of a case: Zig on one side, `backend` on the other.
+fn matrixCase(schema: Schema, backend: Backend, zig_is_client: bool, transport: Transport) outcome.Case {
+    return .{
+        .client = if (zig_is_client) "zig" else backendName(backend),
+        .server = if (zig_is_client) backendName(backend) else "zig",
+        .transport = @tagName(transport),
+        .schema = schemaName(schema),
+    };
 }
 
 fn appendResult(allocator: Allocator, list: *std.ArrayList(CaseResult), key: []const u8, status: []const u8) !void {
@@ -1099,8 +1096,7 @@ fn runZigClientPhase(
             const combined = try std.mem.concat(allocator, u8, &.{ run.stdout, "\n", run.stderr });
             defer allocator.free(combined);
 
-            const tap = evalTap(combined);
-            const status = try statusFromRun(allocator, run.exit_code, tap);
+            const status = try caseStatus(allocator, matrixCase(schema, backend, true, .tcp), run.exit_code, combined);
             defer allocator.free(status);
             try appendResult(allocator, results, key, status);
 
@@ -1178,8 +1174,7 @@ fn runZigServerPhase(
             const combined = try std.mem.concat(allocator, u8, &.{ run.stdout, "\n", run.stderr });
             defer allocator.free(combined);
 
-            const tap = evalTap(combined);
-            const status = try statusFromRun(allocator, run.exit_code, tap);
+            const status = try caseStatus(allocator, matrixCase(schema, backend, false, .tcp), run.exit_code, combined);
             defer allocator.free(status);
             try appendResult(allocator, results, key, status);
 
@@ -1214,8 +1209,9 @@ fn runZigServerPhase(
 // it gets 1. The Zig binaries take `--host unix:<path>`.
 //
 // Status comes from the client's TAP output and exit code exactly as in the
-// TCP lane (`statusFromRun`): a client that never connects prints no TAP, so a
-// broken lane reads FAIL, never SKIP.
+// TCP lane (`caseStatus`, with transport "unix" for the known limits): a
+// client that never connects prints no TAP, so a broken lane reads FAIL,
+// never SKIP.
 
 /// The one reference backend the Unix lane runs.
 const unix_backend: Backend = .cpp;
@@ -1228,10 +1224,11 @@ const unix_default_image = "e2e-cpp-rpc";
 /// client (`case_timeout_ms`) and container start.
 const unix_case_timeout_ms: i64 = 90 * 1000;
 
-fn unixCaseSkip(schema: Schema, backend: Backend) ?[]const u8 {
+fn unixCaseSkip(schema: Schema, backend: Backend, role: Direction) ?[]const u8 {
     if (backend != unix_backend) return "SKIP(unix: reference harness TCP-only)";
     // The L3/L4 driver (tools/e2e_l3_cpp.zig) dials TCP only.
     if (schema == .l3_l4_interop) return "SKIP(unix: l3_l4_interop driver is TCP-only)";
+    if (deferredServerSkip(schema, role == .zig_client)) |reason| return reason;
     return null;
 }
 
@@ -1333,12 +1330,15 @@ fn unixCaseScript(allocator: Allocator, role: Direction, schema: Schema) ![]u8 {
     // zig_client: the C++ reference serves, the Zig client calls it.
     const server_cmd = if (role == .zig_server) "/zig/e2e-zig-server" else "/app/bin/server --port 0";
     const client_cmd = if (role == .zig_server) "/app/bin/client --port 1" else "/zig/e2e-zig-client";
+    // The Zig binary takes the matrix schema; the reference takes its own name.
+    const zig_schema = schemaName(schema);
+    const ref_schema = schemaNameForBackend(unix_backend, schema);
     return std.fmt.allocPrint(allocator,
         \\set -u
         \\dir=$(mktemp -d /tmp/capnp-unix.XXXXXX)
         \\chmod 700 "$dir"
         \\sock="$dir/rpc.sock"
-        \\{[server]s} --host "unix:$sock" --schema {[schema]s} >"$dir/server.log" 2>&1 &
+        \\{[server]s} --host "unix:$sock" --schema {[server_schema]s} >"$dir/server.log" 2>&1 &
         \\spid=$!
         \\ready=0
         \\for _ in $(seq 1 300); do
@@ -1352,7 +1352,7 @@ fn unixCaseScript(allocator: Allocator, role: Direction, schema: Schema) ![]u8 {
         \\  kill -9 "$spid" 2>/dev/null
         \\  exit 3
         \\fi
-        \\timeout --signal=TERM --kill-after=5 {[client_timeout_s]d} {[client]s} --host "unix:$sock" --schema {[schema]s}
+        \\timeout --signal=TERM --kill-after=5 {[client_timeout_s]d} {[client]s} --host "unix:$sock" --schema {[client_schema]s}
         \\rc=$?
         \\kill "$spid" 2>/dev/null
         \\wait "$spid" 2>/dev/null
@@ -1362,7 +1362,8 @@ fn unixCaseScript(allocator: Allocator, role: Direction, schema: Schema) ![]u8 {
     , .{
         .server = server_cmd,
         .client = client_cmd,
-        .schema = schemaNameForBackend(unix_backend, schema),
+        .server_schema = if (role == .zig_server) zig_schema else ref_schema,
+        .client_schema = if (role == .zig_server) ref_schema else zig_schema,
         .client_timeout_s = @divTrunc(case_timeout_ms, 1000),
     });
 }
@@ -1434,7 +1435,7 @@ fn runUnixLane(
                 defer allocator.free(key);
                 std.debug.print("    case {s}\n", .{key});
 
-                if (unixCaseSkip(schema, backend)) |reason| {
+                if (unixCaseSkip(schema, backend, role)) |reason| {
                     std.debug.print("      {s}\n", .{reason});
                     try appendResult(allocator, results, key, reason);
                     continue;
@@ -1456,8 +1457,8 @@ fn runUnixLane(
                 const combined = try std.mem.concat(allocator, u8, &.{ run.stdout, "\n", run.stderr });
                 defer allocator.free(combined);
 
-                const tap = evalTap(combined);
-                const status = try statusFromRun(allocator, run.exit_code, tap);
+                const case = matrixCase(schema, backend, role == .zig_client, .unix);
+                const status = try caseStatus(allocator, case, run.exit_code, combined);
                 defer allocator.free(status);
                 try appendResult(allocator, results, key, status);
 
@@ -1473,14 +1474,16 @@ fn writeSummary(allocator: Allocator, io: std.Io, paths: Paths, results: []const
     var passed: usize = 0;
     var failed: usize = 0;
     var skipped: usize = 0;
+    var xfailed: usize = 0;
+    var xpassed: usize = 0;
 
     for (results) |item| {
-        if (std.mem.startsWith(u8, item.status, "PASS")) {
-            passed += 1;
-        } else if (std.mem.startsWith(u8, item.status, "SKIP")) {
-            skipped += 1;
-        } else {
-            failed += 1;
+        switch (outcome.bucket(item.status)) {
+            .pass => passed += 1,
+            .skip => skipped += 1,
+            .xfail => xfailed += 1,
+            .xpass => xpassed += 1,
+            .fail => failed += 1,
         }
     }
 
@@ -1490,12 +1493,14 @@ fn writeSummary(allocator: Allocator, io: std.Io, paths: Paths, results: []const
     std.debug.print("  Total cases: {d}\n", .{results.len});
     std.debug.print("  Passed:      {d}\n", .{passed});
     std.debug.print("  Failed:      {d}\n", .{failed});
-    std.debug.print("  Skipped:     {d}\n\n", .{skipped});
+    std.debug.print("  Skipped:     {d}\n", .{skipped});
+    std.debug.print("  XFAIL:       {d} (known limits, tools/e2e_known_limits.zig)\n", .{xfailed});
+    std.debug.print("  XPASS:       {d} (a known limit passed: update its rows and docs)\n\n", .{xpassed});
 
-    std.debug.print("{s: <44} {s}\n", .{ "case", "status" });
-    std.debug.print("{s: <44} {s}\n", .{ "----", "------" });
+    std.debug.print("{s: <50} {s}\n", .{ "case", "status" });
+    std.debug.print("{s: <50} {s}\n", .{ "----", "------" });
     for (results) |item| {
-        std.debug.print("{s: <44} {s}\n", .{ item.key, item.status });
+        std.debug.print("{s: <50} {s}\n", .{ item.key, item.status });
     }
 
     // Build summary JSON in memory
@@ -1507,11 +1512,14 @@ fn writeSummary(allocator: Allocator, io: std.Io, paths: Paths, results: []const
     try appendFmt(allocator, &content, "  \"passed\": {d},\n", .{passed});
     try appendFmt(allocator, &content, "  \"failed\": {d},\n", .{failed});
     try appendFmt(allocator, &content, "  \"skipped\": {d},\n", .{skipped});
+    try appendFmt(allocator, &content, "  \"xfailed\": {d},\n", .{xfailed});
+    try appendFmt(allocator, &content, "  \"xpassed\": {d},\n", .{xpassed});
     try appendFmt(allocator, &content, "  \"results\": {{\n", .{});
 
     for (results, 0..) |item, idx| {
         const comma = if (idx + 1 == results.len) "" else ",";
-        try appendFmt(allocator, &content, "    \"{s}\": \"{s}\"{s}\n", .{ item.key, item.status, comma });
+        // Statuses can carry check descriptions: escape them.
+        try appendFmt(allocator, &content, "    {f}: {f}{s}\n", .{ std.json.fmt(item.key, .{}), std.json.fmt(item.status, .{}), comma });
     }
 
     try appendFmt(allocator, &content, "  }}\n", .{});
@@ -1525,7 +1533,7 @@ fn writeSummary(allocator: Allocator, io: std.Io, paths: Paths, results: []const
     defer file.close(io);
     try file.writeStreamingAll(io, content.items);
 
-    if (failed > 0) return error.E2EFailed;
+    if (failed + xpassed > 0) return error.E2EFailed;
 }
 
 fn appendFmt(allocator: Allocator, list: *std.ArrayList(u8), comptime fmt: []const u8, args: anytype) !void {

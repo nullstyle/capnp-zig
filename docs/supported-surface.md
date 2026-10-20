@@ -423,6 +423,19 @@ passes the result of an unanswered question as a call param
 (`receiverAnswer`): the server must resolve it to its own capability, and a
 param pipelined on a question that failed must fail with that question's
 exception. Both share `tests/e2e/schemas/cap_passing.capnp`.
+`pipelined_params` passes against the Zig server only because that server
+answers `mint()` before it reads the next call. A third schema,
+`pipelined_params_deferred`, runs the same reference clients against a Zig
+server that answers `mint()` and `mintFail()` after the `check()` that
+names them. All four reference clients send the param as `receiverAnswer`,
+and each fails the same two `check()` lines (TCP, and C++ over a Unix
+socket). The runner records these rows as XFAIL, not FAIL: they are the
+known limit `h9-pending-answer` in `tools/e2e_known_limits.zig`, which lists
+the exact failing lines (see "A pipelined capability in call params
+resolves only once its answer has returned" below). If one of those lines
+passes, the row is XPASS, and XPASS fails the gate like FAIL. The
+Zig-client direction of this schema is a SKIP: a reference server answers
+`mint()` at once.
 
 Note this cross-implementation matrix runs **per push on the Linux CI tier**
 (the `e2e-zig` job), alongside the Zig↔Zig self-interop e2e
@@ -850,7 +863,13 @@ cooperating peer.
   The entry stays `.promised` in three cases. First, when the answer is still
   pending (a deferred handler or a forwarded call): the call is not delayed,
   because a delayed call could be overtaken by later calls on the same
-  target and would need `Disembargo` reflections held behind it. Second,
+  target and would need `Disembargo` reflections held behind it.
+  A native-ABI host answers every call after its dispatch, so a pipelined
+  param fails whenever the host has not answered the named call when the
+  pipelined call arrives; this is always so when both arrive in one
+  `capnp_conn_push_bytes`. The e2e schema `pipelined_params_deferred`
+  shows this case against all four reference clients (the known limit
+  `h9-pending-answer` in `tools/e2e_known_limits.zig`). Second,
   when the answer resolved to a capability the caller itself hosts: the
   descriptor grants no wire reference, and an `.imported` entry would
   promise the handler one. Third, when the call was parked behind another

@@ -315,6 +315,21 @@ pub fn buildImpl(b: *std.Build) !void {
     const run_package_preflight_tests = &b.addRunArtifact(package_preflight_tests).step;
     package_preflight_step.dependOn(run_package_preflight_tests);
 
+    // The e2e runner's verdict logic (tools/e2e_outcome.zig): TAP reading,
+    // the known-limits list, XFAIL and XPASS. The runner needs docker, so
+    // `test` runs this root on its own. It imports only std.
+    const e2e_outcome_tests = b.addTest(.{
+        .name = "e2e-outcome-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/e2e_outcome.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &e2e_outcome_tests.step) catch @panic("OOM");
+    const run_e2e_outcome_tests = &b.addRunArtifact(e2e_outcome_tests).step;
+    b.step("test-e2e-outcome", "Run the e2e runner's outcome tests (TAP, known limits, XFAIL/XPASS)").dependOn(run_e2e_outcome_tests);
+
     const docs_examples_smoke = b.addExecutable(.{
         .name = "docs-examples-smoke",
         .root_module = b.createModule(.{
@@ -2044,6 +2059,7 @@ pub fn buildImpl(b: *std.Build) !void {
     test_step.dependOn(test_oom_step);
     test_step.dependOn(test_soak_harness_step);
     test_step.dependOn(run_package_preflight_tests);
+    test_step.dependOn(run_e2e_outcome_tests);
     test_step.dependOn(run_quic_test_evidence_tests);
     test_step.dependOn(test_snapshot_render_step);
     test_step.dependOn(test_release_drift_step);

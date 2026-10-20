@@ -35,12 +35,40 @@ Protocol scenarios:
 both, and the client picks the flow. Both also run Zig to Zig in
 `zig build e2e-self` and `e2e-self-unix`.
 
-`zig build -Dquic=true e2e-quic` runs all seven schemas of the Zig e2e server
+- `pipelined_params_deferred`: the `pipelined_params` reference clients
+  against a Zig server that answers `mint()` and `mintFail()` after the
+  `check()` that names them, as a native-ABI host does. The param names an
+  answer that is still pending, so both `check()` lines fail. These rows are
+  a known limit (XFAIL, see below). The Zig-client direction is a SKIP, and
+  `e2e-self` does not run this schema.
+
+`zig build -Dquic=true e2e-quic` runs seven schemas of the Zig e2e server
 Zig to Zig over the QUIC baseline wire (`--transport quic` on both binaries),
-`resolve_disembargo` too. It uses the
+`resolve_disembargo` too (all but `pipelined_params_deferred`). It uses the
 committed loopback certificate (`tests/rpc/transport/quic/loopback_cert.pem`),
 and the client verifies the server against it. The CI job `e2e-quic` runs it
 on Linux.
+
+## Outcomes and known limits
+
+Each case gets one status:
+
+- `PASS`: the client exited 0 and printed no `not ok` line.
+- `FAIL`: anything else that ran. It fails the run.
+- `SKIP`: not run, for a reason the runner states (a reference-library gap,
+  or a direction that the scenario does not have).
+- `XFAIL`: a known limit. `tools/e2e_known_limits.zig` lists each such case
+  (client, server, transport, schema) with the exact descriptions of the
+  checks that fail, a reason and a link. A case is XFAIL only when exactly
+  those checks fail, every other check passes, the `1..N` plan line
+  matches, and the client exits 1.
+- `XPASS`: a listed check passed. It fails the run like `FAIL`: when a fix
+  lands, remove its rows from the list and update the docs that the row
+  links.
+
+`tools/e2e_outcome.zig` holds this logic. `zig build test` runs its tests
+(also `zig build test-e2e-outcome`). The summary JSON counts `xfailed` and
+`xpassed` next to `passed`, `failed` and `skipped`.
 
 ## Reference Backends
 
@@ -132,6 +160,7 @@ The Zig-to-Zig lane over a socket file needs no docker:
 ## Notes
 
 - Go backend schema name uses `gameworld`; the harness maps `game_world -> gameworld` automatically.
+- For `pipelined_params_deferred`, the reference client runs `pipelined_params`; only the Zig server gets the deferred schema.
 - If Python backend behavior changes, rebuild images to avoid stale schema/parser state:
   `just --justfile tests/e2e/python/Justfile docker-build`.
 - Dockerized reference clients are time-bounded (`E2E_TIMEOUT_SEC`, default `20`) to prevent stuck e2e runs.

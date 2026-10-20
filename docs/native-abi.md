@@ -37,6 +37,18 @@ Params and results cross the ABI as standalone messages whose capability
 pointers index a `caps[]` table of imports, exports, promised answers and
 null caps. One caller at a time per connection, from any thread.
 
+A native-ABI host answers every call after its dispatch, so a pipelined
+param fails whenever the host has not answered the named call when the
+pipelined call arrives; this is always so when both arrive in one
+`capnp_conn_push_bytes`. Such a param names a question of the caller that
+the host has not answered yet (a `receiverAnswer` descriptor). The core
+refuses the call with an exception, reason `PromisedCapUnsupported`, and
+the host never sees it. In the `pipelined_params` e2e flow, the C++, Go,
+Rust and Python reference clients in `tests/e2e` all send the param this
+way. See the pending-answer limit in docs/supported-surface.md ("A
+pipelined capability in call params resolves only once its answer has
+returned").
+
 ## Answer ids
 
 The host answers each INBOUND_CALL once, with `capnp_return_results`,

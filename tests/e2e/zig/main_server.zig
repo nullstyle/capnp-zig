@@ -18,6 +18,8 @@ const Allocator = std.mem.Allocator;
 
 // tools/e2e_self.zig lists these names by hand (`quic_schemas` runs all of
 // them over QUIC): add a new schema there too, or `e2e-quic` skips it.
+// pipelined_params_deferred is the one exception: its checks fail by design
+// (a known limit), and only tools/e2e_runner.zig runs it.
 const Schema = enum {
     game_world,
     chat,
@@ -28,6 +30,9 @@ const Schema = enum {
     // the client picks the flow.
     pass_back,
     pipelined_params,
+    // The same TokenHost for the pipelined_params client, but mint() and
+    // mintFail() answer late (see `HeldAnswer`).
+    pipelined_params_deferred,
 };
 
 const Transport = enum { tcp, quic };
@@ -53,7 +58,7 @@ const App = struct {
     reflect_service: ReflectorService,
     token_host_service: TokenHostService,
 
-    fn init(allocator: Allocator, schema: Schema) !App {
+    fn init(allocator: Allocator, io: std.Io, schema: Schema) !App {
         return .{
             .allocator = allocator,
             .schema = schema,
@@ -62,7 +67,7 @@ const App = struct {
             .inventory_service = InventoryService.init(allocator),
             .matchmaking_service = MatchmakingService.init(allocator),
             .reflect_service = ReflectorService.init(),
-            .token_host_service = TokenHostService.init(allocator),
+            .token_host_service = TokenHostService.init(allocator, io, schema == .pipelined_params_deferred),
         };
     }
 
@@ -704,6 +709,13 @@ fn onDisconnectNow(
 //   it before check() dispatches, because mint() answered synchronously. When
 //   the named answer failed (mintFail()), the Peer fails check() with a copy
 //   of that answer's exception and check() never runs.
+// - pipelined_params_deferred: the pipelined_params client against a host
+//   that answers mint() and mintFail() late, as every native-ABI host does
+//   (see `HeldAnswer`). The named answer is still pending when check()
+//   dispatches, so the param stays `.promised` and resolveToken fails with
+//   error.PromiseUnresolved: the "pending answer" limit in
+//   docs/supported-surface.md. tools/e2e_known_limits.zig records the
+//   checks that fail.
 //
 // `token_calls` counts every tag() call that reaches one of our HostTokens,
 // so check() can report whether its call reached our own object.
@@ -722,15 +734,106 @@ const HostToken = struct {
 /// that check() returns for a Token pipelined on mintFail().
 const mint_fail_reason = "pipelined_params: deliberate mint failure";
 
+/// pipelined_params_deferred: a mint() or mintFail() call that the host has
+/// not answered yet. The host answers it at the first of:
+/// - the end of the next check() handler on the same connection, after
+///   check() has tried to resolve its param. Every pipelined_params client
+///   sends check() right after the call that it names, so check() always
+///   finds that answer pending, however the client splits its writes;
+/// - a loop tick on that connection once the call has been held for
+///   `held_answer_idle_ms`. This serves a client that waits for mint()
+///   before it sends check() (that check() carries `receiverHosted` and
+///   passes). It also lets a future Peer that queues the pipelined call
+///   until its answer returns pass, instead of deadlocking.
+/// Only a client that waits `held_answer_idle_ms` between mint() and its
+/// pipelined check() could see the answer first.
+const HeldAnswer = struct {
+    peer: *rpc.peer.Peer,
+    since_ms: i64,
+    call: union(enum) {
+        mint: struct { sender: cap_passing.TokenHost.Mint.ReturnSender, tag: u32 },
+        mint_fail: cap_passing.TokenHost.MintFail.ReturnSender,
+    },
+};
+
+/// How long a call is held before a tick answers it. A TCP tick fires only
+/// after 100 ms with no input (`WorkerPool`'s tick interval); a QUIC tick
+/// fires on every loop step. This age bounds both.
+const held_answer_idle_ms: i64 = 500;
+
+/// The pipelined_params_deferred host, for the tick and close callbacks,
+/// which get no context pointer. Set once in main; null for other schemas.
+var deferred_token_host: ?*TokenHostService = null;
+
 const TokenHostService = struct {
     allocator: Allocator,
+    io: std.Io,
     tokens: std.ArrayList(*HostToken) = .empty,
     token_calls: u64 = 0,
+    /// pipelined_params_deferred only: calls not answered yet, oldest first.
+    held: std.ArrayList(HeldAnswer) = .empty,
     server: cap_passing.TokenHost.Server,
 
-    fn init(allocator: Allocator) TokenHostService {
+    fn init(allocator: Allocator, io: std.Io, hold_answers: bool) TokenHostService {
+        var service = initAnswerAtOnce(allocator, io);
+        if (hold_answers) {
+            service.server.vtable.mint_deferred = onTokenHostMintHeld;
+            service.server.vtable.mintFail_deferred = onTokenHostMintFailHeld;
+        }
+        return service;
+    }
+
+    fn nowMs(self: *const TokenHostService) i64 {
+        return std.Io.Timestamp.now(self.io, .awake).toMilliseconds();
+    }
+
+    fn hold(self: *TokenHostService, peer: *rpc.peer.Peer, call: @FieldType(HeldAnswer, "call")) !void {
+        try self.held.append(self.allocator, .{ .peer = peer, .since_ms = self.nowMs(), .call = call });
+    }
+
+    /// Answer the held calls of `peer`; with `min_age_ms`, only those held
+    /// that long. One at a time, removed before it is answered, so an answer
+    /// that dispatches more calls finds the list consistent.
+    fn answerHeld(self: *TokenHostService, peer: *rpc.peer.Peer, min_age_ms: ?i64) void {
+        const now = self.nowMs();
+        var i: usize = 0;
+        while (i < self.held.items.len) {
+            const item = self.held.items[i];
+            const old_enough = if (min_age_ms) |age| now - item.since_ms >= age else true;
+            if (item.peer != peer or !old_enough) {
+                i += 1;
+                continue;
+            }
+            _ = self.held.orderedRemove(i);
+            switch (item.call) {
+                .mint => |m| {
+                    var ctx = MintHeldCtx{ .service = self, .peer = peer, .tag = m.tag };
+                    m.sender.sendResults(&ctx, MintHeldCtx.build) catch |err| {
+                        std.log.err("held mint(): sendResults failed: {s}", .{@errorName(err)});
+                        m.sender.sendException(@errorName(err)) catch {};
+                    };
+                },
+                .mint_fail => |sender| sender.sendException(mint_fail_reason) catch |err| {
+                    std.log.err("held mintFail(): sendException failed: {s}", .{@errorName(err)});
+                },
+            }
+        }
+    }
+
+    /// The connection of `peer` closed: its held calls get no answer.
+    fn dropHeld(self: *TokenHostService, peer: *rpc.peer.Peer) void {
+        var i: usize = 0;
+        while (i < self.held.items.len) {
+            if (self.held.items[i].peer == peer) {
+                _ = self.held.orderedRemove(i);
+            } else i += 1;
+        }
+    }
+
+    fn initAnswerAtOnce(allocator: Allocator, io: std.Io) TokenHostService {
         return .{
             .allocator = allocator,
+            .io = io,
             .server = .{
                 .ctx = undefined,
                 .vtable = .{
@@ -757,8 +860,82 @@ const TokenHostService = struct {
     fn deinit(self: *TokenHostService) void {
         for (self.tokens.items) |token| self.allocator.destroy(token);
         self.tokens.deinit(self.allocator);
+        self.held.deinit(self.allocator);
+    }
+
+    /// Create a HostToken with `tag` and write it as the `token` result.
+    fn mintInto(self: *TokenHostService, peer: *rpc.peer.Peer, tag: u32, results: *cap_passing.TokenHost.MintResults.Builder) !void {
+        // The list owns the token from its creation on, so a failed export
+        // below leaves nothing to free here and nothing freed twice at deinit.
+        try self.tokens.ensureUnusedCapacity(self.allocator, 1);
+        const token = try self.allocator.create(HostToken);
+        self.tokens.appendAssumeCapacity(token);
+        token.* = .{
+            .host = self,
+            .tag = tag,
+            .server = .{ .ctx = token, .vtable = .{ .tag = onHostTokenTag } },
+        };
+        try results.setTokenServer(peer, &token.server);
     }
 };
+
+/// A held mint(): builds the results that the direct handler would have.
+const MintHeldCtx = struct {
+    service: *TokenHostService,
+    peer: *rpc.peer.Peer,
+    tag: u32,
+
+    fn build(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
+        const self: *const MintHeldCtx = @ptrCast(@alignCast(ctx_ptr));
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        var results = cap_passing.TokenHost.MintResults.Builder.wrap(try any.initStruct(0, 1));
+        try self.service.mintInto(self.peer, self.tag, &results);
+    }
+};
+
+fn onTokenHostMintHeld(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    params: cap_passing.TokenHost.MintParams.Reader,
+    _: *const rpc.caps.table.InboundCapTable,
+    sender: cap_passing.TokenHost.Mint.ReturnSender,
+) !void {
+    const service: *TokenHostService = @ptrCast(@alignCast(ctx_ptr));
+    try service.hold(peer, .{ .mint = .{ .sender = sender, .tag = try params.getTag() } });
+}
+
+fn onTokenHostMintFailHeld(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    _: cap_passing.TokenHost.MintFailParams.Reader,
+    _: *const rpc.caps.table.InboundCapTable,
+    sender: cap_passing.TokenHost.MintFail.ReturnSender,
+) !void {
+    const service: *TokenHostService = @ptrCast(@alignCast(ctx_ptr));
+    try service.hold(peer, .{ .mint_fail = sender });
+}
+
+/// Chains a held-answer pass after the Peer's own tick (its deadline sweep)
+/// on one transport type. `Peer.init` sets `on_tick` to the same function
+/// for every connection of a type, so one saved pointer serves them all.
+fn HeldAnswerTick(comptime Conn: type) type {
+    return struct {
+        var peer_tick: ?*const fn (conn: *Conn) void = null;
+
+        fn install(conn: *Conn) void {
+            if (conn.on_tick != tick) peer_tick = conn.on_tick;
+            conn.on_tick = tick;
+        }
+
+        fn tick(conn: *Conn) void {
+            if (peer_tick) |cb| cb(conn);
+            const host = deferred_token_host orelse return;
+            const ctx = conn.context() orelse return;
+            host.answerHeld(@ptrCast(@alignCast(ctx)), held_answer_idle_ms);
+        }
+    };
+}
 
 fn onHostTokenTag(
     ctx_ptr: *anyopaque,
@@ -780,18 +957,7 @@ fn onTokenHostMint(
     _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *TokenHostService = @ptrCast(@alignCast(ctx_ptr));
-    const tag = try params.getTag();
-    // The list owns the token from its creation on, so a failed export below
-    // leaves nothing to free here and nothing freed twice at deinit.
-    try service.tokens.ensureUnusedCapacity(service.allocator, 1);
-    const token = try service.allocator.create(HostToken);
-    service.tokens.appendAssumeCapacity(token);
-    token.* = .{
-        .host = service,
-        .tag = tag,
-        .server = .{ .ctx = token, .vtable = .{ .tag = onHostTokenTag } },
-    };
-    try results.setTokenServer(peer, &token.server);
+    try service.mintInto(peer, try params.getTag(), results);
 }
 
 /// check(): carried from the handler into the tag() callback.
@@ -825,9 +991,15 @@ fn onTokenHostCheck(
     sender: cap_passing.TokenHost.Check.ReturnSender,
 ) !void {
     const service: *TokenHostService = @ptrCast(@alignCast(ctx_ptr));
+    // pipelined_params_deferred: answer the held mint() or mintFail() now
+    // that this check() has tried to resolve its param.
+    defer service.answerHeld(peer, null);
     // One of our own Tokens comes back as a local Client (origin `.exported`,
     // owns no import); a Token the caller hosts comes back as an import.
-    const token = try params.resolveToken(peer, caps);
+    const token = params.resolveToken(peer, caps) catch |err| {
+        std.debug.print("e2e-zig-server: check(): resolveToken failed: {s}\n", .{@errorName(err)});
+        return err;
+    };
     const ctx = peer.allocator.create(CheckCtx) catch |err| {
         token.release();
         return err;
@@ -926,6 +1098,7 @@ fn parseSchema(text: []const u8) !Schema {
     if (std.mem.eql(u8, text, "resolve_disembargo")) return .resolve_disembargo;
     if (std.mem.eql(u8, text, "pass_back")) return .pass_back;
     if (std.mem.eql(u8, text, "pipelined_params")) return .pipelined_params;
+    if (std.mem.eql(u8, text, "pipelined_params_deferred")) return .pipelined_params_deferred;
     return error.InvalidSchema;
 }
 
@@ -2204,10 +2377,11 @@ fn onPeerError(_: ?*anyopaque, peer: *rpc.peer.Peer, err: anyerror) void {
 }
 
 fn onPeerClose(_: ?*anyopaque, peer: *rpc.peer.Peer) void {
-    _ = peer;
+    // A later Peer can get the same address: drop what this one still holds.
+    if (deferred_token_host) |host| host.dropHeld(peer);
 }
 
-fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, _: *rpc.transport.tcp.Connection, _: u32) anyerror!rpc.integration.worker_pool.WorkerPool.AcceptDecision {
+fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.transport.tcp.Connection, _: u32) anyerror!rpc.integration.worker_pool.WorkerPool.AcceptDecision {
     const app: *App = @ptrCast(@alignCast(ctx_ptr));
 
     const bootstrap_result = switch (app.schema) {
@@ -2216,7 +2390,10 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, _: *rpc.transport.tcp.Con
         .inventory => inventory.InventoryService.setBootstrap(peer, &app.inventory_service.server),
         .matchmaking => matchmaking.MatchmakingService.setBootstrap(peer, &app.matchmaking_service.server),
         .resolve_disembargo => resolve_disembargo.Reflector.setBootstrap(peer, &app.reflect_service.server),
-        .pass_back, .pipelined_params => cap_passing.TokenHost.setBootstrap(peer, &app.token_host_service.server),
+        .pass_back,
+        .pipelined_params,
+        .pipelined_params_deferred,
+        => cap_passing.TokenHost.setBootstrap(peer, &app.token_host_service.server),
     };
 
     _ = bootstrap_result catch |err| {
@@ -2224,13 +2401,14 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, _: *rpc.transport.tcp.Con
         return err;
     };
 
+    if (app.schema == .pipelined_params_deferred) HeldAnswerTick(rpc.transport.tcp.Connection).install(conn);
     peer.start(null, onPeerError, onPeerClose);
     return .accept;
 }
 
 fn usage() void {
     std.debug.print(
-        \\Usage: e2e-zig-server [--host 0.0.0.0|unix:/path] [--port 4700] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo|pass_back|pipelined_params]
+        \\Usage: e2e-zig-server [--host 0.0.0.0|unix:/path] [--port 4700] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo|pass_back|pipelined_params|pipelined_params_deferred]
         \\  --host unix:/path serves on an AF_UNIX socket at /path (Linux and macOS; --port is ignored)
         \\  --transport quic serves over the QUIC baseline wire (needs -Dquic=true; also --cert-pem F --key-pem F)
         \\
@@ -2347,9 +2525,11 @@ pub fn main(init: std.process.Init) !void {
     defer if (args.cert_pem) |path| allocator.free(path);
     defer if (args.key_pem) |path| allocator.free(path);
 
-    var app = try App.init(allocator, args.schema);
+    var app = try App.init(allocator, io, args.schema);
     defer app.deinit();
     app.bind();
+    if (args.schema == .pipelined_params_deferred) deferred_token_host = &app.token_host_service;
+    defer deferred_token_host = null;
 
     if (unixPathFromHost(args.host)) |path| return serveUnix(allocator, io, path, &app);
 
@@ -2378,7 +2558,7 @@ pub fn main(init: std.process.Init) !void {
     try pool.run();
 }
 
-/// `--transport quic`: the same seven schemas over the QUIC baseline wire
+/// `--transport quic`: every schema over the QUIC baseline wire
 /// (ALPN "capnp-rpc/1", stream 0, u32-LE length-prefixed frames) through
 /// `rpc.transport.quic.PeerServer`. Only compiled with `-Dquic=true`; the
 /// comptime gate keeps this body unanalyzed for the non-QUIC package root.
@@ -2428,11 +2608,19 @@ fn onQuicAccept(ctx: ?*anyopaque, session: *rpc.transport.quic.PeerServer.Sessio
         .inventory => inventory.InventoryService.setBootstrap(&session.peer, &app.inventory_service.server),
         .matchmaking => matchmaking.MatchmakingService.setBootstrap(&session.peer, &app.matchmaking_service.server),
         .resolve_disembargo => resolve_disembargo.Reflector.setBootstrap(&session.peer, &app.reflect_service.server),
-        .pass_back, .pipelined_params => cap_passing.TokenHost.setBootstrap(&session.peer, &app.token_host_service.server),
+        .pass_back,
+        .pipelined_params,
+        .pipelined_params_deferred,
+        => cap_passing.TokenHost.setBootstrap(&session.peer, &app.token_host_service.server),
     };
+    if (app.schema == .pipelined_params_deferred) {
+        const transport = session.transport orelse return;
+        HeldAnswerTick(@TypeOf(transport.*)).install(transport);
+    }
 }
 
 fn onQuicSessionClose(_: ?*anyopaque, session: *rpc.transport.quic.PeerServer.Session) void {
+    if (deferred_token_host) |host| host.dropHeld(&session.peer);
     std.debug.print("e2e-zig-server: quic session closed close_cause={s}\n", .{@tagName(session.closeCause())});
 }
 
