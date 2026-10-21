@@ -87,7 +87,9 @@ pub const PendingAnswer = struct {
 
 /// What the host has been told about the remote's Finish of a call it owes.
 pub const FinishState = enum {
-    /// No Finish reported (none came, or the opt-in is off).
+    /// No Finish reported: none came, the opt-in is off, or the core did
+    /// not report the Finish (no record of it, or the call was still queued
+    /// in the core).
     none,
     /// The remote finished the call while a question held on a tail call
     /// waits for its answer: ANSWER_FINISHED is withheld until that hold
@@ -727,13 +729,16 @@ pub const Conn = struct {
         self.endHeld(answer_id, reason, @fromBackingInt(exception_type), false);
     }
 
-    /// Answer an INBOUND_CALL that the remote finished with `Return{canceled}`
-    /// (handoff H13). `error.BadId` when the host does not owe the answer;
+    /// Answer with `Return{canceled}` (handoff H13) an INBOUND_CALL for
+    /// which an ANSWER_FINISHED came (its caller finished it; see that
+    /// effect). `error.BadId` when the host does not owe the answer;
     /// `error.Invalid` unless ANSWER_FINISHED was queued for it (the opt-in
-    /// is off, no Finish came, or a tail-call hold withholds it). A Peer
-    /// error (out of memory, a failed send) sends nothing and leaves the
-    /// answer owed. After ANSWER_FINISHED the host may also answer with
-    /// `returnResults` or `returnException`; it answers once.
+    /// is off, no Finish came, a tail-call hold withholds it, or the core
+    /// did not report the Finish: it kept no record of it, or the call was
+    /// still queued in the core). A Peer error (out of memory, a failed
+    /// send) sends nothing and leaves the answer owed. After ANSWER_FINISHED
+    /// the host may also answer with `returnResults` or `returnException`;
+    /// it answers once.
     pub fn returnCanceled(self: *Conn, answer_id: u32) !void {
         const owed = self.pending_answers.get(answer_id) orelse return error.BadId;
         if (owed.finish != .reported) return error.Invalid;

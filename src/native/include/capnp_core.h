@@ -380,10 +380,11 @@ int32_t capnp_return_results(capnp_conn *conn, uint32_t answer_id, const uint8_t
 int32_t capnp_return_exception(capnp_conn *conn, uint32_t answer_id, uint16_t exception_type,
                                const char *reason, size_t reason_len);
 
-/* Answer an INBOUND_CALL that the remote finished with Return{canceled}
- * (CAPNP_FEATURE_ANSWER_FINISHED). CAPNP_E_BAD_ID for an answer the host does
- * not owe; CAPNP_E_INVAL unless a CAPNP_EFFECT_ANSWER_FINISHED was queued for
- * it (opts.answer_finished off, no Finish yet, a tail-call hold withholds it,
+/* Answer with Return{canceled} (CAPNP_FEATURE_ANSWER_FINISHED) an INBOUND_CALL
+ * for which a CAPNP_EFFECT_ANSWER_FINISHED came (its caller finished it; see
+ * that effect). CAPNP_E_BAD_ID for an answer the host does not owe;
+ * CAPNP_E_INVAL unless a CAPNP_EFFECT_ANSWER_FINISHED was queued for it
+ * (opts.answer_finished off, no Finish yet, a tail-call hold withholds it,
  * or the core did not report the Finish: its records were full or out of
  * memory, or the call was still queued in the core when the Finish came). On
  * another error nothing is sent and the answer stays owed. Instead of this,

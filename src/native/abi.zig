@@ -730,8 +730,9 @@ pub export fn capnp_return_exception(
     return CAPNP_OK;
 }
 
-/// Answer an INBOUND_CALL that the remote finished (after its
-/// `CAPNP_EFFECT_ANSWER_FINISHED`) with `Return{canceled}` (H13).
+/// Answer with `Return{canceled}` (H13) an INBOUND_CALL for which a
+/// `CAPNP_EFFECT_ANSWER_FINISHED` came (its caller finished it; see that
+/// effect).
 pub export fn capnp_return_canceled(c: ?*capnp_conn, answer_id: u32) callconv(.c) i32 {
     const h = handleOf(c) orelse return CAPNP_E_INVAL;
     h.enter();

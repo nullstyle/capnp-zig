@@ -78,7 +78,7 @@ shim owns X. A held X waits on exactly one thing: the host's answer to Y.
 |---|---|---|
 | The host answers Y with results, and the Peer accepts them | `returnResults` | cap-free: a copy of Y's results, with NONE caps made null as the Peer encodes them (`cap_remap.copyCapFreeHostContent`); results that point at a capability: one EXCEPTION (documented limit); copy out of memory: one EXCEPTION with a static reason |
 | The host answers Y with an exception, and the Peer accepts it | `returnException` | one EXCEPTION with Y's type and reason (static reason if the copy fails) |
-| A new call with Y's id reaches the host (the remote reused the id after its Finish of Y; possible when the finished-early records are full) | `onExportCall` | one EXCEPTION, before the new call is recorded |
+| A new call with Y's id reaches `onExportCall` (the remote reused the id after its Finish of Y; possible when the Peer keeps no record of that Finish) | `onExportCall`, then `failOnOwedIdReuse` | nothing then: the connection fails, and X gets one RETURN DISCONNECTED at transport close (`sweepOpenQuestions`) |
 
 `pending_answers` loses Y only in `returnResults` and `returnException`,
 after the Peer accepted the answer, and at `deinit`. A refused answer keeps
@@ -169,9 +169,11 @@ Differences from C++, all deliberate:
 2. C++ sends `Return(Y, resultsSentElsewhere)` at the take. We send it when
    the host answers Y, as today. The remote's question Y stays open until
    then.
-3. C++ cancels Y's work when X is cancelled. The C ABI has no effect that
-   tells the host to stop a call (that needs an ANSWER_FINISHED effect, ABI
-   v2 territory), so the host's answer is still sent and only X ends.
+3. C++ cancels Y's work when X is cancelled. The 0.27.0 C ABI had no
+   effect that told the host to stop a call. Since 0.28.0, with the
+   `answer_finished` opt-in, the host gets ANSWER_FINISHED for Y when the
+   remote finished Y and the hold ends without Y's answer. The host's
+   answer is still sent, and only X ends.
 4. C++ delivers results with capabilities. The shim gives one RETURN
    EXCEPTION for them (the Peer cannot re-deliver those results locally
    either).

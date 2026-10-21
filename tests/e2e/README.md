@@ -66,8 +66,9 @@ Each case gets one status:
   XFAIL only when exactly those checks fail, every other check passes, the
   `1..N` plan line matches, the client exits 1, and its output contains
   that text.
-- `XPASS`: a listed check passed, and no check that the limit does not
-  list failed (such a failure makes the case `FAIL`). It fails the run
+- `XPASS`: a listed check passed, the client printed no `Bail out!` line,
+  and each failed check is a listed one that failed once (any other
+  failure makes the case `FAIL`). It fails the run
   like `FAIL`: when a fix lands, remove its rows from the list and update
   the docs that the row links.
 
