@@ -524,6 +524,42 @@ pub fn ReturnSend(comptime Peer: type) type {
             return .{ .reason = failed.reason, .ex_type = failed.ex_type };
         }
 
+        /// `failQueuedPromisedCalls`' worklist: a LIFO of answer ids whose
+        /// first `local.len` entries live on the stack and the rest in `spill`.
+        const Worklist = struct {
+            local: [32]u32 = undefined,
+            local_len: usize = 0,
+            spill: std.ArrayList(u32) = .empty,
+
+            /// Holds `first` alone, on the stack.
+            fn init(first: u32) Worklist {
+                var worklist = Worklist{ .local_len = 1 };
+                worklist.local[0] = first;
+                return worklist;
+            }
+
+            fn deinit(self: *Worklist, allocator: std.mem.Allocator) void {
+                self.spill.deinit(allocator);
+            }
+
+            /// Fails only past the stack entries, when `spill` cannot grow.
+            fn push(self: *Worklist, allocator: std.mem.Allocator, id: u32) !void {
+                if (self.local_len < self.local.len) {
+                    self.local[self.local_len] = id;
+                    self.local_len += 1;
+                    return;
+                }
+                try self.spill.append(allocator, id);
+            }
+
+            fn pop(self: *Worklist) ?u32 {
+                if (self.spill.pop()) |id| return id;
+                if (self.local_len == 0) return null;
+                self.local_len -= 1;
+                return self.local[self.local_len];
+            }
+        };
+
         /// Fail and drain every pipelined call queued against `answer_id` (and,
         /// transitively, calls pipelined on those). Each queued call is sent a
         /// Return(exception) and has its inbound caps released; a queued
@@ -541,14 +577,12 @@ pub fn ReturnSend(comptime Peer: type) type {
             reason: []const u8,
             ex_type: protocol.ExceptionType,
         ) void {
-            var worklist = std.ArrayList(u32).empty;
+            // The first ids wait on the stack, so a failed allocation cannot
+            // drop the calls queued on `answer_id` or on its first children:
+            // before, seeding a heap worklist was the first allocation here,
+            // and its failure left every queued call with no Return.
+            var worklist = Worklist.init(answer_id);
             defer worklist.deinit(self.allocator);
-            // Best-effort under OOM: if we cannot even seed the worklist the
-            // queued children leak rather than crash; report and bail.
-            worklist.append(self.allocator, answer_id) catch |err| {
-                reportNonfatalError(self, err);
-                return;
-            };
             while (worklist.pop()) |aid| {
                 var pending = self.pending_promises.fetchRemove(aid) orelse continue;
                 defer pending.value.deinit(self.allocator);
@@ -580,9 +614,10 @@ pub fn ReturnSend(comptime Peer: type) type {
                     self.releaseInboundCaps(&pending_call.caps) catch |err| {
                         reportNonfatalError(self, err);
                     };
-                    worklist.append(self.allocator, child_qid) catch |err| {
-                        // Cannot enqueue this child's descendants for draining;
-                        // they leak under memory pressure. Report and continue.
+                    worklist.push(self.allocator, child_qid) catch |err| {
+                        // Cannot enqueue this child's descendants for draining
+                        // (past the stack ids, out of memory); they leak under
+                        // memory pressure. Report and continue.
                         reportNonfatalError(self, err);
                     };
                 }

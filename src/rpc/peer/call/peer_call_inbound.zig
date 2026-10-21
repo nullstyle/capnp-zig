@@ -389,7 +389,7 @@ pub fn CallInbound(comptime Peer: type) type {
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
                 replayQueuedPromisedCall,
-                markYourselfCallForException,
+                markParkedYourselfCall,
             );
         }
 
@@ -414,7 +414,7 @@ pub fn CallInbound(comptime Peer: type) type {
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
                 replayQueuedPromisedCall,
-                markYourselfCallForException,
+                markParkedYourselfCall,
             );
         }
 
@@ -494,12 +494,22 @@ pub fn CallInbound(comptime Peer: type) type {
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
                 replayQueuedExportCall,
-                markYourselfCallForException,
+                markParkedYourselfCall,
             );
         }
 
+        /// `peer_call_orchestration.markYourselfCallForException` for a
+        /// parked call, by question id: the replay drains read the flag the
+        /// queue recorded (`PendingCall.send_results_to_yourself`), so they
+        /// mark a call even when they cannot decode its frame again.
+        fn markParkedYourselfCall(self: *Peer, question_id: u32) void {
+            self.noteSendResultsToYourself(question_id) catch |err| {
+                log.debug("yourself call {} not marked for its exception: {}", .{ question_id, err });
+            };
+        }
+
         /// `peer_call_orchestration.markYourselfCallForException` for this
-        /// peer, the hook the replay drains take.
+        /// peer, the hook the forward path takes.
         fn markYourselfCallForException(self: *Peer, call: protocol.Call) void {
             peer_call_orchestration.markYourselfCallForException(Peer, self, call, noteCallSendResults);
         }

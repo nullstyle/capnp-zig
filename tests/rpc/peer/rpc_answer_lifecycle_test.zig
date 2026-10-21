@@ -2027,6 +2027,37 @@ test "a call queued under a transient OOM still gets exactly one Return when its
     try std.testing.expect(fail_at > 1);
 }
 
+test "one failed allocation in the failure drain loses at most the Return it was building" {
+    // Three calls are queued on answer 5. Fail the first allocation of the
+    // failure drain: it can cost the Return the drain was building, never
+    // the other calls'. Before, the drain seeded its worklist on the heap,
+    // so that one failure left every queued call with no Return.
+    var capture = newCapture(std.testing.allocator);
+    defer capture.deinit();
+    var one_shot = OneShotFailingAllocator{ .backing = std.testing.allocator };
+    var peer = Peer.initDetached(one_shot.allocator());
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const children = [_]u32{ 100, 101, 102 };
+    for (children) |qid| {
+        const frame = try buildCallFrame(std.testing.allocator, qid);
+        defer std.testing.allocator.free(frame);
+        const inbound = try cap_table.InboundCapTable.init(one_shot.allocator(), null, &peer.caps);
+        try peer_test_hooks.queuePromisedCall(&peer, 5, frame, inbound);
+    }
+
+    one_shot.arm(0);
+    peer.failQueuedPromisedCalls(5, "boom", .failed);
+    try std.testing.expect(one_shot.induced);
+    one_shot.remaining = null;
+
+    var answered: usize = 0;
+    for (children) |qid| answered += capture.countReturns(qid, .exception);
+    try std.testing.expectEqual(@as(usize, children.len - 1), answered);
+}
+
 /// A finished results Return for `answer_id` with an empty struct payload.
 fn buildEmptyResultsReturnFrame(allocator: std.mem.Allocator, answer_id: u32) ![]const u8 {
     var builder = protocol.MessageBuilder.init(allocator);

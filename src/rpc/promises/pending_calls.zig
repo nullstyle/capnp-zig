@@ -111,7 +111,7 @@ pub fn recordResolvedAnswer(
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
     replay_promised_call: ReplayPromisedCallFn(PeerType, InboundCapsType),
-    mark_yourself_call: *const fn (*PeerType, protocol.Call) void,
+    mark_yourself: *const fn (*PeerType, u32) void,
 ) !void {
     const resolved_entry = try resolved_answers.getOrPut(question_id);
     storeResolvedFrame(ResolvedAnswerType, allocator, question_id, resolved_entry, frame);
@@ -128,7 +128,7 @@ pub fn recordResolvedAnswer(
         release_inbound_caps,
         report_nonfatal_error,
         replay_promised_call,
-        mark_yourself_call,
+        mark_yourself,
     );
 }
 
@@ -153,7 +153,7 @@ pub fn recordResolvedAnswerAssumeCapacity(
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
     replay_promised_call: ReplayPromisedCallFn(PeerType, InboundCapsType),
-    mark_yourself_call: *const fn (*PeerType, protocol.Call) void,
+    mark_yourself: *const fn (*PeerType, u32) void,
 ) void {
     const resolved_entry = resolved_answers.getOrPutAssumeCapacity(question_id);
     storeResolvedFrame(ResolvedAnswerType, allocator, question_id, resolved_entry, frame);
@@ -170,7 +170,7 @@ pub fn recordResolvedAnswerAssumeCapacity(
         release_inbound_caps,
         report_nonfatal_error,
         replay_promised_call,
-        mark_yourself_call,
+        mark_yourself,
     );
 }
 
@@ -204,11 +204,10 @@ fn drainPendingPromises(
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
     replay_promised_call: ReplayPromisedCallFn(PeerType, InboundCapsType),
-    /// Runs before a replayed call is answered with an exception here (the
-    /// replay failed, for example it could not park again): the Peer marks a
-    /// `sendResultsTo = yourself` call, so its exception Return is
+    /// Marks a parked `sendResultsTo = yourself` call (by question id)
+    /// before the drain answers it with an exception here, so its Return is
     /// `resultsSentElsewhere` (`peer_call_orchestration.markYourselfCallForException`).
-    mark_yourself_call: *const fn (*PeerType, protocol.Call) void,
+    mark_yourself: *const fn (*PeerType, u32) void,
 ) void {
     var pending = pending_promises.fetchRemove(question_id) orelse return;
     defer pending.value.deinit(allocator);
@@ -218,23 +217,22 @@ fn drainPendingPromises(
         defer if (caps_owned) pending_call.caps.deinit();
         defer allocator.free(pending_call.frame);
 
-        var decoded = protocol.DecodedMessage.init(allocator, pending_call.frame) catch |err| {
-            report_nonfatal_error(peer, err);
-            continue;
-        };
-        defer decoded.deinit();
-        if (decoded.tag != .call) continue;
-        const call = decoded.asCall() catch |err| {
-            report_nonfatal_error(peer, err);
-            continue;
-        };
-        if (call.target.promised_answer == null) continue;
-        const requeued = replay_promised_call(peer, pending_call.frame, call, &pending_call.caps) catch |err| blk: {
-            mark_yourself_call(peer, call);
-            send_return_exception(peer, call.question_id, @errorName(err)) catch |send_err| {
-                report_nonfatal_error(peer, send_err);
+        const requeued = replay: {
+            var decoded = protocol.DecodedMessage.init(allocator, pending_call.frame) catch |err| {
+                failParkedCall(PeerType, PendingCallType, peer, pending_call, @errorName(err), send_return_exception, report_nonfatal_error, mark_yourself);
+                break :replay false;
             };
-            break :blk false;
+            defer decoded.deinit();
+            if (decoded.tag != .call) break :replay false;
+            const call = decoded.asCall() catch |err| {
+                failParkedCall(PeerType, PendingCallType, peer, pending_call, @errorName(err), send_return_exception, report_nonfatal_error, mark_yourself);
+                break :replay false;
+            };
+            if (call.target.promised_answer == null) break :replay false;
+            break :replay replay_promised_call(peer, pending_call.frame, call, &pending_call.caps) catch |err| {
+                failParkedCall(PeerType, PendingCallType, peer, pending_call, @errorName(err), send_return_exception, report_nonfatal_error, mark_yourself);
+                break :replay false;
+            };
         };
         if (requeued) {
             caps_owned = false;
@@ -244,6 +242,29 @@ fn drainPendingPromises(
             report_nonfatal_error(peer, err);
         };
     }
+}
+
+/// Answer a parked call that cannot be replayed with an exception. It uses
+/// what the queue recorded when the call parked (`queuePendingCall`): its
+/// question id and its `sendResultsTo = yourself` flag. So a frame that
+/// cannot be decoded again (out of memory) still gets its Return; before,
+/// the drain dropped the call. A frame recorded without an id was not a
+/// call, and gets nothing.
+fn failParkedCall(
+    comptime PeerType: type,
+    comptime PendingCallType: type,
+    peer: *PeerType,
+    pending_call: *const PendingCallType,
+    reason: []const u8,
+    send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+    mark_yourself: *const fn (*PeerType, u32) void,
+) void {
+    const question_id = pending_call.question_id orelse return;
+    if (pending_call.send_results_to_yourself) mark_yourself(peer, question_id);
+    send_return_exception(peer, question_id, reason) catch |err| {
+        report_nonfatal_error(peer, err);
+    };
 }
 
 pub fn replayResolvedPromiseExport(
@@ -259,11 +280,11 @@ pub fn replayResolvedPromiseExport(
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
     replay_export_call: ReplayExportCallFn(PeerType, InboundCapsType),
-    /// Runs before a parked call is answered with an exception here (the
-    /// promise was rejected, or the replay failed): the Peer marks a
-    /// `sendResultsTo = yourself` call, so its exception Return is
+    /// Marks a parked `sendResultsTo = yourself` call (by question id)
+    /// before it is answered with an exception here (the promise was
+    /// rejected, or the replay failed), so its Return is
     /// `resultsSentElsewhere` (`peer_call_orchestration.markYourselfCallForException`).
-    mark_yourself_call: *const fn (*PeerType, protocol.Call) void,
+    mark_yourself: *const fn (*PeerType, u32) void,
 ) !void {
     var pending = pending_export_promises.fetchRemove(export_id) orelse return;
     defer pending.value.deinit(allocator);
@@ -273,36 +294,30 @@ pub fn replayResolvedPromiseExport(
         defer if (caps_owned) pending_call.caps.deinit();
         defer allocator.free(pending_call.frame);
 
-        var decoded = protocol.DecodedMessage.init(allocator, pending_call.frame) catch |err| {
-            report_nonfatal_error(peer, err);
-            continue;
-        };
-        defer decoded.deinit();
-        if (decoded.tag != .call) continue;
-        const call = decoded.asCall() catch |err| {
-            report_nonfatal_error(peer, err);
-            continue;
-        };
-
-        if (resolved == .none) {
-            mark_yourself_call(peer, call);
-            send_return_exception(peer, call.question_id, "promise broken") catch |err| {
-                report_nonfatal_error(peer, err);
-            };
-        } else {
-            const requeued = replay_export_call(peer, pending_call.frame, call, &pending_call.caps, resolved) catch |err| blk: {
-                mark_yourself_call(peer, call);
-                send_return_exception(peer, call.question_id, @errorName(err)) catch |send_err| {
-                    report_nonfatal_error(peer, send_err);
-                };
-                break :blk false;
-            };
-            if (requeued) {
-                caps_owned = false;
-                continue;
+        const requeued = replay: {
+            if (resolved == .none) {
+                failParkedCall(PeerType, PendingCallType, peer, pending_call, "promise broken", send_return_exception, report_nonfatal_error, mark_yourself);
+                break :replay false;
             }
+            var decoded = protocol.DecodedMessage.init(allocator, pending_call.frame) catch |err| {
+                failParkedCall(PeerType, PendingCallType, peer, pending_call, @errorName(err), send_return_exception, report_nonfatal_error, mark_yourself);
+                break :replay false;
+            };
+            defer decoded.deinit();
+            if (decoded.tag != .call) break :replay false;
+            const call = decoded.asCall() catch |err| {
+                failParkedCall(PeerType, PendingCallType, peer, pending_call, @errorName(err), send_return_exception, report_nonfatal_error, mark_yourself);
+                break :replay false;
+            };
+            break :replay replay_export_call(peer, pending_call.frame, call, &pending_call.caps, resolved) catch |err| {
+                failParkedCall(PeerType, PendingCallType, peer, pending_call, @errorName(err), send_return_exception, report_nonfatal_error, mark_yourself);
+                break :replay false;
+            };
+        };
+        if (requeued) {
+            caps_owned = false;
+            continue;
         }
-
         release_inbound_caps(peer, &pending_call.caps) catch |err| {
             report_nonfatal_error(peer, err);
         };
@@ -432,16 +447,16 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
         }
 
         fn sendReturnException(peer: *FakePeer, question_id: u32, reason: []const u8) !void {
-            // The call is marked before its exception is sent.
+            // The `yourself` call is marked before its exception is sent.
             if (peer.marked_count != peer.exception_count + 1) return error.TestCallNotMarked;
             peer.exception_count += 1;
             peer.last_question_id = question_id;
             peer.last_reason = reason;
         }
 
-        fn markYourselfCall(peer: *FakePeer, call: protocol.Call) void {
+        fn markYourselfCall(peer: *FakePeer, question_id: u32) void {
             peer.marked_count += 1;
-            peer.last_question_id = call.question_id;
+            peer.last_question_id = question_id;
         }
 
         fn releaseInboundCaps(peer: *FakePeer, inbound_caps: *DummyCaps) !void {
@@ -467,6 +482,8 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
     defer call_builder.deinit();
     var call = try call_builder.beginCall(41, 0xAA, 2);
     try call.setTargetImportedCap(7);
+    // A `yourself` call: the drain marks it from the flag the queue recorded.
+    call.setSendResultsToYourself();
     _ = try call.initCapTableTyped(0);
 
     const call_frame = try call_builder.finish();

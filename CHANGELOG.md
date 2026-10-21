@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **RPC: a parked call now gets its Return when the Peer cannot decode it
+  again.** A call pipelined on an answer, or made on a promise export, waits
+  in the Peer until that answer or promise resolves. The replay drains
+  (`drainPendingPromises` and `replayResolvedPromiseExport` in
+  `src/rpc/promises/pending_calls.zig`) decode each waiting call again.
+  When that decode failed (out of memory), they dropped the call with no
+  Return, and the remote's question waited until the connection ended.
+  Through the native C ABI, one failed allocation in `capnp_return_results`
+  or `capnp_resolve_promise` was enough. Now the drains answer such a call
+  with an exception, from what the queue recorded when the call parked: its
+  question id and its `sendResultsTo = yourself` flag. The failure drain
+  (`failQueuedPromisedCalls`) also changed: one failed allocation at its
+  start used to leave every call queued on the failed answer with no
+  Return, because it seeded its worklist on the heap. Now the first 32 ids
+  wait on the stack, so a failed allocation can lose only the Return that
+  the drain was building. That last case stays best effort, as for every
+  Return that the Peer sends itself. Tests: the one-shot allocation-failure
+  sweeps "pipelined call: one transient allocation failure ..." and
+  "promise export: one transient allocation failure ..." in
+  `src/native/conn_test.zig`, and "one failed allocation in the failure
+  drain ..." in `tests/rpc/peer/rpc_answer_lifecycle_test.zig`.
+
 ## [0.28.0] - 2026-10-21
 
 This is a native C ABI release, and most of it comes from capnp-swift's

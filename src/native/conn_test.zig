@@ -3516,10 +3516,10 @@ test "pipelined call: an allocation failure anywhere in the answer that replays 
     // onto qa's answer (the test above, parked): fail it, and every later
     // one until the call returns. A refused answer is answered again with
     // capnp_return_exception. qb2 gets at most one RETURN, and exactly one
-    // once B's transport closes. It can get none before that: when the
-    // replay drain cannot decode the parked call, or cannot send its
-    // exception, it drops the call (`pending_calls.drainPendingPromises`;
-    // an open Peer issue under OOM, older than this test).
+    // once B's transport closes. It can get none before that: with no
+    // memory left, A's core cannot send qb2's exception Return either (best
+    // effort, as for every Return the core itself sends). One failure that
+    // passes always leaves qb2 its Return (the one-shot sweep below).
     const alloc = testing.allocator;
     const path = [_]u16{0};
     var k: usize = 0;
@@ -3658,4 +3658,186 @@ test "promise export: a cycle that got past the resolve check answers a call wit
     try drainAll(a, &ra);
     try testing.expectEqual(@as(usize, 0), ra.calls.items.len);
     try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, 10, .exception));
+}
+
+// ---------------------------------------------------------------------------
+// Parked calls under a transient allocation failure
+// ---------------------------------------------------------------------------
+
+/// Fails exactly one allocation, the `fail_at`-th from arming, and lets the
+/// ones after it through: a transient OOM. `std.testing.FailingAllocator`
+/// fails every allocation after its index, which hides a swallowed failure
+/// whenever a later allocation in the same operation fails too.
+const OneShotFailingAllocator = struct {
+    backing: std.mem.Allocator,
+    remaining: ?usize = null,
+    induced: bool = false,
+
+    fn arm(self: *OneShotFailingAllocator, fail_at: usize) void {
+        self.remaining = fail_at;
+        self.induced = false;
+    }
+
+    fn allocator(self: *OneShotFailingAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = alloc,
+            .resize = resize,
+            .remap = remap,
+            .free = free,
+        } };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *OneShotFailingAllocator = @ptrCast(@alignCast(ctx));
+        if (self.remaining) |remaining| {
+            if (remaining == 0) {
+                self.remaining = null;
+                self.induced = true;
+                return null;
+            }
+            self.remaining = remaining - 1;
+        }
+        return self.backing.rawAlloc(len, alignment, ra);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+        const self: *OneShotFailingAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawResize(memory, alignment, new_len, ra);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+        const self: *OneShotFailingAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawRemap(memory, alignment, new_len, ra);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        const self: *OneShotFailingAllocator = @ptrCast(@alignCast(ctx));
+        self.backing.rawFree(memory, alignment, ra);
+    }
+};
+
+test "pipelined call: one transient allocation failure in the answer that replays a parked call still gives it one Return" {
+    // B pipelines qb2 on qb1's pointer 0, and qb2 parks in A's core. Fail
+    // each allocation of A's answer to qb1 in turn, once: results that name
+    // A's export ea, or a promise on A's own question qa, or an exception.
+    // A refused answer is answered again with capnp_return_exception. Every
+    // call the replay dispatches is answered. qb2 must get exactly one
+    // RETURN before the connection ends. Before, when the replay drain could
+    // not decode qb2's parked frame, it dropped qb2 with no Return at all.
+    // After an exception, the failure drain answers qb2 with a copy of it;
+    // a failure while it builds that Return loses it (best effort, as for
+    // every Return the core sends itself), and qb2 ends at the close.
+    const alloc = testing.allocator;
+    const path = [_]u16{0};
+    const Answer = enum { @"export", promise, exception };
+    for ([_]Answer{ .@"export", .promise, .exception }) |answer| {
+        var fail_at: usize = 0;
+        var finished = false;
+        while (!finished) : (fail_at += 1) {
+            var one_shot = OneShotFailingAllocator{ .backing = testing.allocator };
+            const a = try Conn.init(one_shot.allocator(), .{ .now_ns = 0 });
+            defer a.deinit();
+            const b = try Conn.init(alloc, .{ .now_ns = 0 });
+            defer b.deinit();
+            var ra = Rec.init(alloc);
+            defer ra.deinit();
+            var rb = Rec.init(alloc);
+            defer rb.deinit();
+            const both = try connectBoth(a, &ra, b, &rb);
+
+            const p = try msgU64(alloc, 1);
+            defer alloc.free(p);
+            const qa = try a.call(both.ib, iface, 0, p, &.{}, 0);
+            try pump(a, &ra, b, &rb);
+            const ca = rb.lastCall();
+            const qb1 = try b.call(both.ia, iface, 1, p, &.{}, 0);
+            try pump(a, &ra, b, &rb);
+            const c1 = ra.lastCall();
+            const qb2 = try b.call(.{ .kind = .promised, .id = qb1, .ops = &path, .nops = 1 }, iface, 2, p, &.{}, 0);
+            try pump(a, &ra, b, &rb);
+            const ea = try a.exportCap(300);
+
+            const results = try msgCap(alloc, 7, 0);
+            defer alloc.free(results);
+            const target: Cap = if (answer == .promise)
+                .{ .kind = .promised, .id = qa, .ops = &path, .nops = 1 }
+            else
+                .{ .kind = .@"export", .id = ea };
+            one_shot.arm(fail_at);
+            const answered = if (answer == .exception)
+                a.returnException(c1.answer_id, 0, "no")
+            else
+                a.returnResults(c1.answer_id, results, &.{target});
+            finished = !one_shot.induced;
+            one_shot.remaining = null;
+            if (answered) |_| {} else |_| try a.returnException(c1.answer_id, 0, "fallback");
+            try pump(a, &ra, b, &rb);
+
+            // B answers qa; then each host answers the qb2 it got (at ea,
+            // or forwarded to B's eb).
+            const eb = try b.exportCap(400);
+            try b.returnResults(ca.answer_id, results, &.{.{ .kind = .@"export", .id = eb }});
+            try pump(a, &ra, b, &rb);
+            for (ra.calls.items) |c| {
+                if (c.method_id == 2) try a.returnResults(c.answer_id, p, &.{});
+            }
+            for (rb.calls.items) |c| {
+                if (c.method_id == 2) try b.returnResults(c.answer_id, p, &.{});
+            }
+            try pump(a, &ra, b, &rb);
+
+            const want_before_close: usize = if (answer == .exception) @min(rb.countReturns(qb2), 1) else 1;
+            if (rb.countReturns(qb2) != want_before_close) {
+                std.debug.print("answer={s} fail_at={d}: qb2 got {d} RETURN(s)\n", .{ @tagName(answer), fail_at, rb.countReturns(qb2) });
+                return error.TestWrongReturnCount;
+            }
+            try testing.expectEqual(@as(usize, 1), rb.countReturns(qb1));
+            try testing.expectEqual(@as(usize, 0), ra.close_requested + rb.close_requested);
+            b.transportClosed();
+            try drainAll(b, &rb);
+            try testing.expectEqual(@as(usize, 1), rb.countReturns(qb2));
+        }
+        try testing.expect(fail_at > 1);
+    }
+}
+
+test "promise export: one transient allocation failure in the resolve that replays a parked call still gives it one Return" {
+    // A call parks on promise export p. Fail each allocation of
+    // capnp_resolve_promise(p, ea) in turn, once; a refused resolution is
+    // retried. The call must get exactly one Return. Before, when the
+    // replay could not decode the parked frame, it dropped the call.
+    const alloc = testing.allocator;
+    var fail_at: usize = 0;
+    var finished = false;
+    while (!finished) : (fail_at += 1) {
+        var one_shot = OneShotFailingAllocator{ .backing = testing.allocator };
+        const a = try Conn.init(one_shot.allocator(), .{ .now_ns = 0 });
+        defer a.deinit();
+        var ra = Rec.init(alloc);
+        defer ra.deinit();
+
+        const p = try a.promiseExport();
+        const ea = try a.exportCap(300);
+        try pushFrame(alloc, a, plainCallFrame(alloc, 10, p));
+        try drainAll(a, &ra);
+        try testing.expectEqual(@as(usize, 0), ra.calls.items.len);
+
+        one_shot.arm(fail_at);
+        const resolved = a.resolvePromise(p, .{ .kind = .@"export", .id = ea });
+        finished = !one_shot.induced;
+        one_shot.remaining = null;
+        if (resolved) |_| {} else |_| try a.resolvePromise(p, .{ .kind = .@"export", .id = ea });
+        try drainAll(a, &ra);
+        const r = try msgU64(alloc, 1);
+        defer alloc.free(r);
+        for (ra.calls.items) |c| try a.returnResults(c.answer_id, r, &.{});
+        try drainAll(a, &ra);
+
+        const n = try countReturnFrames(&ra, 10, null);
+        if (n != 1) {
+            std.debug.print("fail_at={d}: call 10 got {d} Return(s)\n", .{ fail_at, n });
+            return error.TestWrongReturnCount;
+        }
+    }
+    try testing.expect(fail_at > 1);
 }
