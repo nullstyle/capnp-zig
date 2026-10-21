@@ -55,7 +55,8 @@ Each case gets one status:
 
 - `PASS`: the client exited 0 and printed at least one `ok` line, no
   `not ok` line and no `Bail out!` line, and the case has no known limit.
-  A known-limit case that passes every check is `XPASS`.
+  A known-limit case that passes every check, with no `Bail out!` line, is
+  `XPASS`. A `Bail out!` line makes any case `FAIL`.
 - `FAIL`: anything else that ran. It fails the run.
 - `SKIP`: not run, for a reason the runner states (a reference-library gap,
   or a direction that the scenario does not have).
