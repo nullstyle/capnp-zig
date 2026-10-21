@@ -44,6 +44,8 @@ Fix both Nightly failures at their cause, close two capnp-swift correctness asks
 
 **Released (2026-10-18):** v0.27.0 is tagged at `71ddc46` (tag object `0c45a00`). Its CI run and 3 ceremony Nightlies were green, and `just check-nightly-gate` passed. The first 3 ceremony Nightlies, on `37c226a`, found the Windows 8-worker soak out of ports; `71ddc46` fixed that. Package hash: `capnpc_zig-0.27.0-nUduFW1bUAADj3Z26dHIY_B2smK41Np9lQFxke3GcAWN`.
 
+**After the sprint (2026-10-21):** v0.28.0 is tagged at `73416c7` (tag object `6550c73`). It ships capnp-swift's H13 (`ANSWER_FINISHED`) and H9-pending, `capnp_finish` BUSY, an out-of-memory fix and two Peer crash fixes. Its CI run and 3 ceremony Nightlies were green. Package hash: `capnpc_zig-0.28.0-nUduFX-xUQD3zoI5en-lnfY679kQQg3OfT9MV5vOrfpP`.
+
 **Notes for the owner to relay to capnp-swift**
 
 - **QUIC stream 0 (H11 check 9).** capnp-zig main (`1fdc029`, for v0.27.0) ends the RPC session when stream 0 ends, in baseline and native mode, for `connect`, `serve` and `EmbeddedSession`. After a clean FIN, capnp-zig dispatches every whole frame that came before it, then closes with code 0 (normal) and cause `peer_close`. Waiting questions end `Disconnected` in under 1 s. A partial frame at the FIN closes with `frame_error` (0x434e5001). A RESET_STREAM closes at once with code 0 and cause `transport_error`. The ALPN stays `capnp-rpc/1`. Send every frame you want delivered before your FIN. Do not send a FIN while you still expect replies. After you pin v0.27.0, run H11 check 9 again. CI now runs the Zig e2e over QUIC (`zig build -Dquic=true e2e-quic`). No Swift cross-implementation test exists yet.
