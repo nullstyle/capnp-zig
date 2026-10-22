@@ -101,6 +101,21 @@ The host owes at most `max_active_inbound_questions` answers (default 4096).
 A call beyond that gets an exception Return (`OwedAnswerLimitExceeded`) and
 never reaches the host. The connection stays up.
 
+**After close.** The connection is closed after a protocol failure, a remote
+Abort, or `capnp_conn_transport_closed`. Then the three answer functions are
+no-ops, as `capnp_cancel`, `capnp_finish`, `capnp_release`,
+`capnp_resolve_promise` and `capnp_reject_promise` are:
+
+- For an answer the host owes, each one returns `CAPNP_OK` and sends
+  nothing. The host owes that answer no more. `capnp_return_canceled` needs
+  no ANSWER_FINISHED then.
+- For an answer the host does not owe, each one returns `CAPNP_E_BAD_ID`.
+- No call that is pipelined on the answer reaches the host.
+- A question held on the call ("Tail calls") still ends at transport close,
+  with RETURN DISCONNECTED.
+
+So a late answer from a handler that started before the close is safe.
+
 ## Answer finished
 
 A host can learn that the caller finished a call that the host has not
@@ -361,7 +376,8 @@ lists. Zig code can skip the C ABI and use `native.conn.Conn` directly.
 - `zig build fuzz-native-abi -- --seconds N [--seed S]` drives the ABI with
   random operation sequences and checks its invariants (one RETURN per
   question, well-formed payloads, no INBOUND_CALL for an id the host still
-  owes, ANSWER_FINISHED only as described above, 0 live bytes after free).
+  owes, ANSWER_FINISHED only as described above, no effect from an answer
+  after a refused push, 0 live bytes after free).
   One session in 4 is clean: no junk bytes and no forged capability kinds,
   so calls reach the hosts, through promise exports and PROMISED
   capabilities too. A seeded

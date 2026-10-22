@@ -707,7 +707,9 @@ pub const Conn = struct {
     }
 
     /// Answer an INBOUND_CALL with results (`msg` + `caps`, as for `call`).
+    /// A no-op once closed (`dropAnswerOnceClosed`).
     pub fn returnResults(self: *Conn, answer_id: u32, msg: []const u8, caps: []const Cap) !void {
+        if (self.isClosed()) return self.dropAnswerOnceClosed(answer_id);
         if (!self.pending_answers.contains(answer_id)) return error.BadId;
         for (caps) |cap| {
             if (cap.kind == .promised and !self.questions.contains(cap.id)) return error.BadId;
@@ -721,8 +723,10 @@ pub const Conn = struct {
         if (self.takeHold(answer_id)) |qc| self.endHeldWithResults(qc, msg, caps);
     }
 
-    /// Answer an INBOUND_CALL with an exception.
+    /// Answer an INBOUND_CALL with an exception. A no-op once closed
+    /// (`dropAnswerOnceClosed`).
     pub fn returnException(self: *Conn, answer_id: u32, exception_type: u16, reason: []const u8) !void {
+        if (self.isClosed()) return self.dropAnswerOnceClosed(answer_id);
         if (!self.pending_answers.contains(answer_id)) return error.BadId;
         try self.peer.sendReturnExceptionTyped(answer_id, reason, @fromBackingInt(exception_type));
         self.removePendingAnswer(answer_id);
@@ -741,13 +745,28 @@ pub const Conn = struct {
     /// forbids, gets an exception Return at once and does not change this.
     /// A Peer error (out of memory, a failed send) sends nothing and leaves
     /// the answer owed. After ANSWER_FINISHED the host may also answer with
-    /// `returnResults` or `returnException`; it answers once.
+    /// `returnResults` or `returnException`; it answers once. A no-op once
+    /// closed (`dropAnswerOnceClosed`), with or without ANSWER_FINISHED.
     pub fn returnCanceled(self: *Conn, answer_id: u32) !void {
+        if (self.isClosed()) return self.dropAnswerOnceClosed(answer_id);
         const owed = self.pending_answers.get(answer_id) orelse return error.BadId;
         if (owed.finish != .reported) return error.Invalid;
         // `reported` means no question is held on this call (`holdTailCall`).
         std.debug.assert(!self.held_tail_calls.contains(answer_id));
         try self.peer.sendReturnCanceled(answer_id);
+        self.removePendingAnswer(answer_id);
+    }
+
+    /// An answer once the connection is closed (a protocol failure, a remote
+    /// Abort, or the transport is gone). Nothing more may be sent, and the
+    /// Peer must not replay the calls pipelined on the answer: it would hand
+    /// them to the host after CLOSE_REQUESTED. So the answer is consumed,
+    /// with no Return: the host owes nothing more for `answer_id`, and a
+    /// question held on it ends at transport close (`sweepOpenQuestions`).
+    /// `error.BadId` when the host does not owe it. The Peer frees its own
+    /// record of the call at deinit.
+    fn dropAnswerOnceClosed(self: *Conn, answer_id: u32) error{BadId}!void {
+        if (!self.pending_answers.contains(answer_id)) return error.BadId;
         self.removePendingAnswer(answer_id);
     }
 

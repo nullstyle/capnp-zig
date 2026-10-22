@@ -772,6 +772,49 @@ test "take_error: a malformed frame is PROTOCOL with the cause; a remote Abort i
     try testing.expectEqual(@as(usize, 1), sc.countReturns(q));
 }
 
+test "answers after close: each answer function consumes its answer with CAPNP_OK and queues nothing" {
+    // A remote Abort closes the callee while it owes three calls. Each
+    // answer function then returns CAPNP_OK and sends nothing (also
+    // capnp_return_canceled, which needs no ANSWER_FINISHED once closed). A
+    // second answer, or one for an id never owed, is CAPNP_E_BAD_ID.
+    const a = testing.allocator;
+    var sa = try newSide(a);
+    defer sa.deinit();
+    var sb = try newSide(a);
+    defer sb.deinit();
+    const ib = try connectPair(&sa, &sb, 100);
+    const p = try msgU64(a, 1);
+    defer a.free(p);
+    for (0..3) |m| _ = try call(&sa, ib, @intCast(m), p, &.{});
+    try pump(&sa, &sb);
+    try testing.expectEqual(@as(usize, 3), sb.calls.items.len);
+
+    const abort = blk: {
+        var mb = protocol.MessageBuilder.init(a);
+        defer mb.deinit();
+        try mb.buildAbort("server shutting down");
+        break :blk try mb.finish();
+    };
+    defer a.free(abort);
+    testing.log_level = .err;
+    try testing.expectEqual(@as(i32, c.CAPNP_E_CLOSED), c.capnp_conn_push_bytes(sb.conn, abort.ptr, abort.len));
+    try drainAll(&sb);
+    try testing.expectEqual(@as(usize, 1), sb.close_requested);
+    const at_close = sb.kinds.items.len;
+
+    const ids = [_]u32{ sb.calls.items[0].answer_id, sb.calls.items[1].answer_id, sb.calls.items[2].answer_id };
+    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_results(sb.conn, ids[0], p.ptr, p.len, null, 0));
+    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_exception(sb.conn, ids[1], 0, "late", 4));
+    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_canceled(sb.conn, ids[2]));
+    try drainAll(&sb);
+    try testing.expectEqual(at_close, sb.kinds.items.len);
+    for (ids ++ [_]u32{999}) |id| {
+        try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_results(sb.conn, id, p.ptr, p.len, null, 0));
+        try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_exception(sb.conn, id, 0, "late", 4));
+        try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_canceled(sb.conn, id));
+    }
+}
+
 test "tick: a call deadline ends the question with RETURN EXCEPTION and is counted" {
     const a = testing.allocator;
     const ms = std.time.ns_per_ms;

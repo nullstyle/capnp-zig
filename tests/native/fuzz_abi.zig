@@ -35,7 +35,9 @@
 //!   - an INBOUND_CALL never reuses an id the host still owes;
 //!   - ANSWER_FINISHED (H13) comes only to a side that opted in, for an
 //!     answer the host still owes, at most once per INBOUND_CALL, and
-//!     `capnp_return_canceled` succeeds only for an answer it reported;
+//!     `capnp_return_canceled` succeeds only for an answer it reported,
+//!     or once the side may be closed (a refused push or CLOSE_REQUESTED);
+//!   - after a refused push, an accepted answer queues no effect;
 //!   - in a clean session, ANSWER_FINISHED never comes for an answer that
 //!     the other side still has a call pipelined on (an open question whose
 //!     target is that question, with no Return for it in flight);
@@ -432,9 +434,9 @@ const Fuzz = struct {
                     for (caps_buf[0..ncaps]) |*cap| cap.* = self.randomCap(side);
                     const results = try self.randomPayload(ncaps);
                     defer self.a.free(results);
-                    if (abi.capnp_return_results(conn, answer, results.ptr, results.len, if (ncaps == 0) null else &caps_buf, ncaps) == abi.CAPNP_OK) answered(side, answer);
+                    if (abi.capnp_return_results(conn, answer, results.ptr, results.len, if (ncaps == 0) null else &caps_buf, ncaps) == abi.CAPNP_OK) try self.accepted(side, answer);
                 } else {
-                    if (abi.capnp_return_exception(conn, answer, self.rand.int(u16) % 5, "boom", 4) == abi.CAPNP_OK) answered(side, answer);
+                    if (abi.capnp_return_exception(conn, answer, self.rand.int(u16) % 5, "boom", 4) == abi.CAPNP_OK) try self.accepted(side, answer);
                 }
             },
             19 => _ = abi.capnp_conn_tick(conn, @intCast(self.step * 7_000_000)),
@@ -470,8 +472,14 @@ const Fuzz = struct {
                 }
                 const answer = if (n > 0 and self.rand.boolean()) keys[self.rand.uintLessThan(usize, n)] else self.pickOrRandom(side.answers.items);
                 if (abi.capnp_return_canceled(conn, answer) == abi.CAPNP_OK) {
-                    if (!side.finished.contains(answer)) return self.fail("capnp_return_canceled({d}) OK without ANSWER_FINISHED", .{answer});
-                    answered(side, answer);
+                    // Once closed, every owed answer is consumed, with or
+                    // without ANSWER_FINISHED. The host learns of the close
+                    // from a refused push or a CLOSE_REQUESTED. A graceful
+                    // shutdown also queues CLOSE_REQUESTED, so after one
+                    // this check is loose.
+                    const maybe_closed = side.closed or side.close_requested != 0;
+                    if (!side.finished.contains(answer) and !maybe_closed) return self.fail("capnp_return_canceled({d}) OK without ANSWER_FINISHED", .{answer});
+                    try self.accepted(side, answer);
                     self.canceled_answers += 1;
                 }
             },
@@ -480,7 +488,21 @@ const Fuzz = struct {
         try self.drainAll(side);
     }
 
-    /// The host's answer for `id` was accepted.
+    /// The host's answer for `id` was accepted. After a refused push the
+    /// connection is closed, so the answer must queue nothing: no Return
+    /// after the Abort, and no pipelined call replayed to the host.
+    fn accepted(self: *Fuzz, side: *Side, id: u32) !void {
+        if (side.closed) {
+            const conn = side.conn orelse return;
+            var e: abi.capnp_effect = std.mem.zeroes(abi.capnp_effect);
+            e.struct_size = effectSize();
+            const rc = abi.capnp_conn_next_effect(conn, &e);
+            if (rc != 0) return self.fail("an answer to {d} after close queued effect kind {d} (next_effect {d})", .{ id, e.kind, rc });
+        }
+        answered(side, id);
+    }
+
+    /// Forget the answer for `id`: the host owes it no more.
     fn answered(side: *Side, id: u32) void {
         removeId(&side.answers, id);
         _ = side.finished.remove(id);

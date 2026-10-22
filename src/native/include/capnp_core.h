@@ -371,7 +371,10 @@ int32_t capnp_reject_promise(capnp_conn *conn, uint32_t promise_id, const char *
  * refused payload (a bad caps[] entry) or a failed send nothing is sent and
  * the answer stays owed. The host answers each INBOUND_CALL once: after that
  * the remote may reuse the id at once, and a second answer then goes to the
- * new call. */
+ * new call. A no-op once the connection is closed (a protocol failure, a
+ * remote Abort, or the transport is gone): for an answer the host owes it
+ * returns CAPNP_OK and sends nothing, the host owes that answer no more, and
+ * no call pipelined on it reaches the host. */
 int32_t capnp_return_results(capnp_conn *conn, uint32_t answer_id, const uint8_t *msg, size_t msg_len,
                              const capnp_cap *caps, size_t ncaps);
 
@@ -380,7 +383,8 @@ int32_t capnp_return_results(capnp_conn *conn, uint32_t answer_id, const uint8_t
  * NUL-terminated and may be empty). CAPNP_E_BAD_ID for an answer the host
  * does not owe. An answer after the remote's Finish of the call is still
  * accepted, once. On a failed send (for example CAPNP_E_NOMEM) nothing is
- * sent and the answer stays owed: answer it again. */
+ * sent and the answer stays owed: answer it again. A no-op once the
+ * connection is closed, as for capnp_return_results. */
 int32_t capnp_return_exception(capnp_conn *conn, uint32_t answer_id, uint16_t exception_type,
                                const char *reason, size_t reason_len);
 
@@ -395,7 +399,9 @@ int32_t capnp_return_exception(capnp_conn *conn, uint32_t answer_id, uint16_t ex
  * its Finish, which the protocol forbids, gets an exception RETURN at once
  * and does not change this. On CAPNP_E_INVAL or another error, nothing is
  * sent and the answer stays owed. Instead of this, the host may answer with
- * capnp_return_results or capnp_return_exception; it answers once. */
+ * capnp_return_results or capnp_return_exception; it answers once. A no-op
+ * once the connection is closed, as for capnp_return_results, with or
+ * without an ANSWER_FINISHED. */
 int32_t capnp_return_canceled(capnp_conn *conn, uint32_t answer_id);
 
 #ifdef __cplusplus

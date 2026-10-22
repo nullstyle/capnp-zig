@@ -1184,6 +1184,151 @@ test "remote abort: no Abort back, CLOSE_REQUESTED, error.Closed; open questions
 }
 
 // ---------------------------------------------------------------------------
+// Answers after close
+// ---------------------------------------------------------------------------
+
+/// What closes the connection before the host answers.
+const CloseCause = enum { remote_abort, protocol_failure };
+
+/// Close `c` with a remote Abort (an orderly close: no Abort goes back), or
+/// with a frame whose root pointer points past its segment (the Peer's
+/// Abort goes back). Either way CLOSE_REQUESTED is queued.
+fn closeBy(alloc: std.mem.Allocator, c: *Conn, cause: CloseCause) !void {
+    // The Peer logs both at warn; here they are expected.
+    testing.log_level = .err;
+    switch (cause) {
+        .remote_abort => {
+            var mb = protocol.MessageBuilder.init(alloc);
+            defer mb.deinit();
+            try mb.buildAbort("server shutting down");
+            try testing.expectError(error.Closed, pushFrame(alloc, c, mb.finish()));
+        },
+        .protocol_failure => {
+            var bad: [16]u8 = undefined;
+            std.mem.writeInt(u32, bad[0..4], 0, .little);
+            std.mem.writeInt(u32, bad[4..8], 1, .little);
+            std.mem.writeInt(u64, bad[8..16], (@as(u64, 1) << 32) | (1000 << 2), .little);
+            try testing.expectError(error.Protocol, pushFrame(alloc, c, alloc.dupe(u8, &bad)));
+        },
+    }
+}
+
+/// The three ways the host answers an INBOUND_CALL.
+const AnswerKind = enum { results, exception, canceled };
+
+/// Answer `answer_id` with `kind`. The results carry `cap` at pointer 0.
+fn answerWith(alloc: std.mem.Allocator, c: *Conn, answer_id: u32, kind: AnswerKind, cap: Cap) !void {
+    switch (kind) {
+        .results => {
+            const res = try msgCap(alloc, 1, 0);
+            defer alloc.free(res);
+            try c.returnResults(answer_id, res, &.{cap});
+        },
+        .exception => try c.returnException(answer_id, 0, "late"),
+        .canceled => try c.returnCanceled(answer_id),
+    }
+}
+
+/// The host owes call 30 (call 40 is pipelined on its results), call 31
+/// (the remote finished it, and ANSWER_FINISHED came) and call 32. Then
+/// `cause` closes the connection, and the host answers all three with
+/// `kind`. Each answer returns OK and queues nothing: no Return goes out
+/// after the Abort, and call 40 never reaches the host. The answers are
+/// consumed: a second one, or one for an id never owed, is error.BadId.
+fn expectAnswersAfterCloseQueueNothing(alloc: std.mem.Allocator, cause: CloseCause, kind: AnswerKind) !void {
+    var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+    defer f.deinit();
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 30, f.ea));
+    try pushFrame(alloc, f.a, pipelinedCallFrame(alloc, 40, 30));
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 31, f.ea));
+    try pushFrame(alloc, f.a, finishFrame(alloc, 31));
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 32, f.ea));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 3), f.ra.calls.items.len);
+    try testing.expectEqual(@as(usize, 1), f.ra.countFinished(31));
+
+    try closeBy(alloc, f.a, cause);
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), f.ra.close_requested);
+    const at_close = f.ra.order.items.len;
+    try testing.expectEqual(effects.Kind.close_requested, f.ra.order.items[at_close - 1]);
+
+    const cap: Cap = .{ .kind = .@"export", .id = f.ea };
+    var bad = false;
+    for ([_]u32{ 30, 31, 32 }) |id| {
+        const frames_before = f.ra.frames.items.len;
+        const calls_before = f.ra.calls.items.len;
+        answerWith(alloc, f.a, id, kind, cap) catch |err| {
+            std.debug.print("after a {s}, {s} answer {d}: {s}; want OK\n", .{ @tagName(cause), @tagName(kind), id, @errorName(err) });
+            bad = true;
+            continue;
+        };
+        try drainAll(f.a, &f.ra);
+        if (f.ra.order.items.len != at_close) {
+            std.debug.print("after a {s}, {s} answer {d}: {d} OUT_FRAME(s) and {d} INBOUND_CALL(s) after CLOSE_REQUESTED; want none\n", .{
+                @tagName(cause),                       @tagName(kind),                      id,
+                f.ra.frames.items.len - frames_before, f.ra.calls.items.len - calls_before,
+            });
+            bad = true;
+        }
+    }
+    if (bad) return error.TestAnswerAfterClose;
+    try testing.expectEqual(@as(usize, 0), countCalls(&f.ra, 40));
+
+    for ([_]u32{ 30, 31, 32, 99 }) |id| {
+        for ([_]AnswerKind{ .results, .exception, .canceled }) |again| {
+            try testing.expectError(error.BadId, answerWith(alloc, f.a, id, again, cap));
+        }
+    }
+    // The transport closes: still nothing for the answers.
+    f.a.transportClosed();
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(at_close, f.ra.order.items.len);
+}
+
+test "answers after close: after a remote Abort, each answer returns OK and queues nothing" {
+    // OK, not error.Closed: `cancel`, `finish` and `release` are no-ops
+    // once closed too, and capnp-swift counts OK and BAD_ID as consumed.
+    for ([_]AnswerKind{ .results, .exception, .canceled }) |kind| {
+        try expectAnswersAfterCloseQueueNothing(testing.allocator, .remote_abort, kind);
+    }
+}
+
+test "answers after close: after a protocol failure, each answer returns OK and queues nothing" {
+    for ([_]AnswerKind{ .results, .exception, .canceled }) |kind| {
+        try expectAnswersAfterCloseQueueNothing(testing.allocator, .protocol_failure, kind);
+    }
+}
+
+test "answers after close: a question held on the answered call still ends once, DISCONNECTED, at transport close" {
+    // A question of the host's is held on call 77, a tail call the host
+    // owes. A remote Abort closes the connection, then the host answers 77.
+    // The answer ends nothing and sends nothing. The held question ends at
+    // transport close, as every open question does: RETURN DISCONNECTED,
+    // with the Abort's reason.
+    const alloc = testing.allocator;
+    for ([_]AnswerKind{ .results, .exception, .canceled }) |kind| {
+        var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+        defer p.deinit();
+        const t = try p.start(alloc);
+        try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+        try closeBy(alloc, p.a, .remote_abort);
+        try drainAll(p.a, &p.ra);
+        const at_close = p.ra.order.items.len;
+
+        try answerWith(alloc, p.a, tail_answer, kind, .{ .kind = .none });
+        try drainAll(p.a, &p.ra);
+        try expectNoReturnYet(&p.ra, t.q);
+        try testing.expectEqual(at_close, p.ra.order.items.len);
+
+        p.a.transportClosed();
+        try drainAll(p.a, &p.ra);
+        const r = try expectOneReturn(&p.ra, t.q, .disconnected);
+        try testing.expectEqualStrings("server shutting down", r.reason);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Clock (review finding: questions sent before the first tick)
 // ---------------------------------------------------------------------------
 
@@ -2509,11 +2654,13 @@ test "answer finished: freeing the connection while the host owes answers leaks 
 /// through `failing`, with the allocations of one host call failing from
 /// its `k`-th on (the failure ends with that host call): a call, the
 /// remote's Finish, the host's answer `answer` (or, without an
-/// ANSWER_FINISHED, an exception), retried until it is accepted.
+/// ANSWER_FINISHED, an exception), retried until it is accepted. Once the
+/// connection failed, the answer is `answer` and is accepted at once.
 /// Checks: the host sees the call at most once, at most one ANSWER_FINISHED
 /// and only for a call it saw, and exactly one when the Peer recorded the
 /// Finish; the wire carries exactly one Return for the call while the
-/// connection is up, and at most one after it failed.
+/// connection is up, and at most one after it failed; an answer after the
+/// failure queues nothing.
 /// Returns whether the failure was induced (the sweep's end condition).
 const FinishedAnswer = enum { canceled, results, exception };
 
@@ -2544,7 +2691,19 @@ fn finishedLifecycleUnderOom(k: usize, answer: FinishedAnswer) !bool {
                     try testing.expectEqual(@as(usize, 1), ra.countFinished(10));
                 }
             },
-            .answer => if (a.pending_answers.contains(10)) {
+            .answer => if (a.pending_answers.contains(10) and a.failed) {
+                // Closed: every answer is consumed, and queues nothing.
+                try drainAll(a, &ra);
+                const effects_before = ra.order.items.len;
+                try switch (answer) {
+                    .canceled => a.returnCanceled(10),
+                    .results => a.returnResults(10, res, &.{}),
+                    .exception => a.returnException(10, 0, "stopped"),
+                };
+                answered = true;
+                try drainAll(a, &ra);
+                try testing.expectEqual(effects_before, ra.order.items.len);
+            } else if (a.pending_answers.contains(10)) {
                 const reported = ra.countFinished(10) == 1;
                 if (!reported) try testing.expectError(error.Invalid, a.returnCanceled(10));
                 // Retry after a failure: the failure ends with the host call.

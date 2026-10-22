@@ -74,6 +74,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `src/native/conn_test.zig`, and "one failed allocation in the failure
   drain ..." in `tests/rpc/peer/rpc_answer_lifecycle_test.zig`.
 
+- **native: an answer after the connection closed now sends nothing.**
+  `capnp_return_results`, `capnp_return_exception` and
+  `capnp_return_canceled` had no closed check. After a protocol failure or
+  a remote Abort, an answer still queued its Return OUT_FRAME after the
+  Abort. A call pipelined on the answer then replayed, and reached the host
+  as a new INBOUND_CALL after CLOSE_REQUESTED. Now, once the connection is
+  closed (a protocol failure, a remote Abort, or
+  `capnp_conn_transport_closed`), the three functions are no-ops, as
+  `capnp_cancel`, `capnp_finish` and `capnp_release` already were. For an
+  answer the host owes, each one returns `CAPNP_OK` and sends nothing, and
+  the host owes that answer no more. For any other id, each one returns
+  `CAPNP_E_BAD_ID`. So `capnp_return_canceled` no longer returns
+  `CAPNP_E_INVAL` after the close: it needs no ANSWER_FINISHED then. A
+  question held on the call (a tail call) no longer gets that late answer.
+  It ends at transport close with RETURN DISCONNECTED, as every open
+  question does. "After close" in docs/native-abi.md has the rule. The
+  `Conn` functions (`returnResults`, `returnException`, `returnCanceled`)
+  behave the same. Tests: the three "answers after close: ..." tests in
+  `src/native/conn_test.zig`, and the C-level one in
+  `src/native/abi_test.zig`. `fuzz-native-abi` checks a new invariant:
+  after a refused push, an accepted answer queues no effect.
+
 ## [0.28.0] - 2026-10-21
 
 This is a native C ABI release, and most of it comes from capnp-swift's
