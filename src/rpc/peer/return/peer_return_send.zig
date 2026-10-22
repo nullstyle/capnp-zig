@@ -617,10 +617,12 @@ pub fn ReturnSend(comptime Peer: type) type {
                         reportNonfatalError(self, err);
                     };
                     worklist.push(self.allocator, child_qid) catch |err| {
-                        // Cannot enqueue this child's descendants for draining
-                        // (past the stack ids, out of memory); they leak under
-                        // memory pressure. Report and continue.
-                        reportNonfatalError(self, err);
+                        // Past the stack ids, out of memory: the calls
+                        // pipelined on this child cannot be drained, and
+                        // nothing else answers them (the child has its
+                        // Return). As for a lost Return above, the
+                        // connection ends; they end at disconnect.
+                        peer_return_dispatch.loseReturnForPeer(Peer, self, child_qid, err);
                     };
                 }
             }

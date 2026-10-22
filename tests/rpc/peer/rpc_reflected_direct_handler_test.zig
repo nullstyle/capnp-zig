@@ -2130,6 +2130,76 @@ test "go-capnp Finish flags: an allocation failure anywhere in a forward after t
     }
 }
 
+/// One run of an exception Return for call 600 whose drain is wider than
+/// the drain's stack worklist: `width` calls 700.. pipelined on 600, and
+/// one call 800.. pipelined on each of them. One allocation fails, the
+/// `k`-th of the Return (`OneShotFailure`). A Return the host could not
+/// send is sent again. Every call gets at most one Return. Either the
+/// peer asks its transport to close, or every call has its one Return,
+/// no id stays in use, and the remote's reuse of an id reaches the host.
+/// Returns whether a failure was induced.
+fn wideDrainUnderOneShotOom(k: usize, width: u32) !bool {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{});
+    var one_shot = OneShotFailure{ .failing = &failing };
+    var h: TailHarness = undefined;
+    try h.startWith(allocator, one_shot.allocator());
+    defer h.deinit();
+    var transport = CloseRecorder{};
+    transport.attach(&h.client_peer);
+    h.client_peer.limits.max_active_inbound_questions = 2 * width + 2;
+    try h.pushPlainCall(allocator, 600, h.target_export_id);
+    var i: u32 = 0;
+    while (i < width) : (i += 1) try h.pushPipelinedPlainCall(allocator, 700 + i, 600);
+    i = 0;
+    while (i < width) : (i += 1) try h.pushPipelinedPlainCall(allocator, 800 + i, 700 + i);
+
+    failing.fail_index = failing.alloc_index + k;
+    const sent = if (h.client_peer.sendReturnException(600, "answer failed")) true else |_| false;
+    const induced = failing.has_induced_failure;
+    failing.fail_index = std.math.maxInt(usize);
+    if (!sent and !transport.closed) try h.client_peer.sendReturnException(600, "answer failed");
+
+    try std.testing.expect(h.wire.countReturns(.client_to_server, 600, null) <= 1);
+    i = 0;
+    while (i < width) : (i += 1) {
+        for ([_]u32{ 700 + i, 800 + i }) |id| try std.testing.expect(h.wire.countReturns(.client_to_server, id, null) <= 1);
+    }
+    if (transport.closed) {
+        h.client_peer.notifyTransportClosed();
+        return induced;
+    }
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, null));
+    i = 0;
+    while (i < width) : (i += 1) {
+        for ([_]u32{ 700 + i, 800 + i }) |id| {
+            try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, id, .exception));
+            try h.pushFinish(allocator, id);
+            try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(id)));
+        }
+    }
+    try h.pushFinish(allocator, 600);
+    for ([_]u32{ 800 + width - 1, 700 + width - 1, 600 }) |id| {
+        h.target.answer_id = null;
+        try h.pushPlainCall(allocator, id, h.target_export_id);
+        try std.testing.expectEqual(@as(?u32, id), h.target.answer_id);
+    }
+    return induced;
+}
+
+test "an exception Return whose drain is wider than its stack worklist: under an allocation failure, one Return per call or the connection ends" {
+    // The drain that fails the calls pipelined on a failed answer keeps
+    // its first 32 answer ids on the stack, and more in a list that
+    // grows. Before, when that list could not grow, the calls pipelined on
+    // the 33rd call and later got no Return, and the connection stayed up.
+    // Now the peer ends the connection there.
+    var k: usize = 0;
+    while (try wideDrainUnderOneShotOom(k, 34)) : (k += 1) {
+        if (k > 5000) return error.TestSweepRunaway;
+    }
+    try std.testing.expect(k > 40);
+}
+
 test "a yourself call whose param names a failed answer: the remote gets resultsSentElsewhere, the tail call that failure" {
     const allocator = std.testing.allocator;
     var h: TailHarness = undefined;
