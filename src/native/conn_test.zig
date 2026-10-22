@@ -2431,6 +2431,51 @@ test "answer finished: a call pipelined on the answer after its Finish gets an e
     }
 }
 
+test "answer finished: a queued call that calls are pipelined on stays queued at its Finish; each call reaches the host" {
+    // Call(foo), Call(bar on foo), Call(baz on bar), Finish(foo),
+    // Finish(bar): what a C++ caller sends when it keeps only baz in
+    // `foo().getSub().bar().getX().baz()`. baz needs bar's results, so the
+    // core may not cancel bar while it is queued on foo (rpc.capnp, Finish).
+    const alloc = testing.allocator;
+    for ([_]bool{ false, true }) |release_result_caps| {
+        var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+        defer f.deinit();
+
+        try pushFrame(alloc, f.a, plainCallFrame(alloc, 30, f.ea));
+        try pushFrame(alloc, f.a, pipelinedCallFrame(alloc, 40, 30));
+        try pushFrame(alloc, f.a, pipelinedCallFrame(alloc, 50, 40));
+        try pushFrame(alloc, f.a, finishFrameFull(alloc, 30, release_result_caps, false));
+        try pushFrame(alloc, f.a, finishFrameFull(alloc, 40, release_result_caps, false));
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqualSlices(effects.Kind, &.{.inbound_call}, f.ra.order.items);
+
+        const res = try msgCap(alloc, 1, 0);
+        defer alloc.free(res);
+        try f.a.returnResults(30, res, &.{.{ .kind = .@"export", .id = f.ea }});
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 40));
+        try testing.expectEqual(@as(usize, 0), countCalls(&f.ra, 50));
+        // With releaseResultCaps the remote dropped `ea` after bar reached
+        // it, so bar's answer names a second export.
+        const eb = try f.a.exportCap(201);
+        try f.a.returnResults(40, res, &.{.{ .kind = .@"export", .id = eb }});
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 50));
+        try testing.expectEqual(eb, f.ra.lastCall().export_id);
+        const done = try msgU64(alloc, 2);
+        defer alloc.free(done);
+        try f.a.returnResults(50, done, &.{});
+        try drainAll(f.a, &f.ra);
+        for ([_]u32{ 30, 40, 50 }) |answer_id| {
+            try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, answer_id, .results));
+            try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, answer_id, null));
+        }
+        try testing.expectEqual(@as(usize, 0), f.ra.finished.items.len);
+        try testing.expectEqual(@as(usize, 0), f.ra.close_requested);
+        try testing.expect(f.a.last_error == null);
+    }
+}
+
 test "answer finished: after ANSWER_FINISHED the host may answer with results or an exception instead, once" {
     const alloc = testing.allocator;
     const res = try msgU64(alloc, 1);
@@ -2694,19 +2739,21 @@ fn countCallFrames(rec: *Rec) !usize {
 
 test "answer finished: a queued call with a call pipelined on it, finished, then routed back to the remote; the remote reuses both ids" {
     // C++ sends Call(foo), Call(bar on foo), Call(baz on bar), Finish(bar)
-    // with requireEarlyCancellationWorkaround = false. bar is still queued on
-    // foo, so the core cancels it at its Finish and fails baz, as v0.28.0
-    // does. foo's answer then names the remote's own capability. No call is
-    // left to forward there, so no question stays open for an id that the
-    // remote finished. The remote reuses bar's and baz's ids at once
-    // (rpc.capnp Call.questionId), and the connection stays up.
+    // with requireEarlyCancellationWorkaround = false. baz still needs bar's
+    // results (rpc.capnp, Finish: cancel only when nothing else cares about
+    // the result), so bar stays queued and the host is not told of the
+    // Finish. foo's answer then names the remote's own capability, so bar
+    // routes back there; its Finish came before that forward, so the forward
+    // finishes on its own Return. bar gets its one Return, relayed from it,
+    // and baz gets its own. The remote reuses both ids at once (rpc.capnp
+    // Call.questionId), and the connection stays up.
     const alloc = testing.allocator;
     for ([_]bool{ false, true }) |answer_finished| {
         var p = try TailPair.init(alloc, .{ .now_ns = 0, .answer_finished = answer_finished });
         defer p.deinit();
         const t = try p.start(alloc);
         try drainAll(p.a, &p.ra);
-        const calls_out = try countCallFrames(&p.ra);
+        const last_call_before = try lastCallFrameQid(&p.ra);
 
         try pushFrame(alloc, p.a, plainCallFrame(alloc, 30, t.ea));
         try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 40, 30));
@@ -2714,17 +2761,27 @@ test "answer finished: a queued call with a call pipelined on it, finished, then
         try pushFrame(alloc, p.a, finishFrame(alloc, 40));
         try drainAll(p.a, &p.ra);
         try testing.expectEqual(@as(usize, 1), countCalls(&p.ra, 30));
-        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, .canceled));
-        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 50, .exception));
+        try testing.expectEqual(@as(usize, 0), try countReturnFrames(&p.ra, 40, null));
+        try testing.expectEqual(@as(usize, 0), try countReturnFrames(&p.ra, 50, null));
+        try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
 
         const res = try msgCap(alloc, 1, 0);
         defer alloc.free(res);
         try p.a.returnResults(30, res, &.{t.boot});
         try drainAll(p.a, &p.ra);
         try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 30, .results));
-        try testing.expectEqual(calls_out, try countCallFrames(&p.ra));
-        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, null));
-        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 50, null));
+
+        // bar routed back to the remote, which answers it.
+        const last_call = try lastCallFrameQid(&p.ra);
+        try testing.expect(last_call != null and !std.meta.eql(last_call, last_call_before));
+        try pushFrame(alloc, p.a, resultsReturnFrame(alloc, last_call.?));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, .results));
+        // Those results hold no capability, so baz fails on them, not at
+        // bar's Finish. bar's own Finish came early and its Return has now
+        // discharged it, so only foo and baz are left to finish.
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 50, .exception));
+        try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
 
         try pushFrame(alloc, p.a, finishFrame(alloc, 30));
         try pushFrame(alloc, p.a, finishFrame(alloc, 50));
@@ -2743,7 +2800,7 @@ test "answer finished: a queued call with a call pipelined on it, finished, then
             try p.a.returnResults(id, r, &.{});
         }
         try drainAll(p.a, &p.ra);
-        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, .results));
+        try testing.expectEqual(@as(usize, 2), try countReturnFrames(&p.ra, 40, .results));
         try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 50, .results));
         try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
     }

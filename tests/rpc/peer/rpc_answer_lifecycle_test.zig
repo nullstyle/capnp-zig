@@ -157,14 +157,12 @@ test "Finish cancelling a queued pipelined call sends Return(canceled)" {
     try std.testing.expectEqual(@as(usize, 0), peer.pending_promises.count());
 }
 
-test "Finish cancelling a queued call drains calls pipelined on it" {
+test "Finish of a queued call keeps it queued while a call is pipelined on it" {
     // A queued call (100) is pipelined on unresolved answer 10; a grandchild
-    // (200) is in turn pipelined on 100's own answer. When Finish(100) cancels
-    // the queued call, 100's answer will never be produced — so 200 can never
-    // be satisfied and must also receive a Return. Before the fix the cancel
-    // sent Return(canceled) for 100 but left pending_promises[100] untouched:
-    // 200 hung forever and its orphan bucket could later replay against an
-    // unrelated answer if the remote reused id 100.
+    // (200) is in turn pipelined on 100's own answer. rpc.capnp (Finish): the
+    // callee may cancel 100 only when nothing else cares about its result,
+    // and 200 needs it. So Finish(100) leaves 100 queued, as if it asked for
+    // delivery first. Finish(200) then cancels 200, which nothing needs.
     const allocator = std.testing.allocator;
     var peer = Peer.initDetached(allocator);
     peer.disableThreadAffinity();
@@ -174,31 +172,22 @@ test "Finish cancelling a queued call drains calls pipelined on it" {
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
 
-    // Queue call 100 against unresolved answer 10.
-    const call_100 = try buildCallFrame(allocator, 100);
-    defer allocator.free(call_100);
-    const inbound_100 = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
-    try peer_test_hooks.queuePromisedCall(&peer, 10, call_100, inbound_100);
-
-    // Queue grandchild 200 pipelined on 100's own (future) answer.
-    const call_200 = try buildPipelinedCallFrame(allocator, 200, 100);
-    defer allocator.free(call_200);
-    const inbound_200 = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
-    try peer_test_hooks.queuePromisedCall(&peer, 100, call_200, inbound_200);
+    var host_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 10, export_id));
+    try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 100, 10));
+    try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 200, 100));
     try std.testing.expectEqual(@as(usize, 2), peer.pending_promises.count());
 
-    // Cancel the queued call 100.
-    try peer_test_hooks.handleFinish(&peer, .{
-        .question_id = 100,
-        .release_result_caps = true,
-        .require_early_cancellation = false,
-    });
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 100, true));
+    try std.testing.expectEqual(@as(usize, 0), capture.countTag(.@"return"));
+    try std.testing.expectEqual(@as(usize, 2), peer.pending_promises.count());
 
-    // 100 gets its Return(canceled); 200 gets an exception Return (its target
-    // was cancelled); both buckets are drained.
-    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(100, .canceled));
-    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(200, .exception));
-    try std.testing.expectEqual(@as(usize, 0), peer.pending_promises.count());
+    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 200, true));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(200, .canceled));
+    try std.testing.expectEqual(@as(usize, 1), capture.countTag(.@"return"));
+    try std.testing.expectEqual(@as(usize, 1), peer.pending_promises.count());
+    try std.testing.expect(peer.pending_promises.contains(10));
 }
 
 test "loopback answer with results is not recorded in resolved_answers" {
@@ -2529,12 +2518,13 @@ test "a call the caller finished does not keep the answer-finished hook quiet; o
     }
 }
 
-test "a call pipelined on a finished queued call does not keep the answer-finished hook quiet (P0-1)" {
+test "a call pipelined on a finished queued call keeps the answer-finished hook quiet (P0-1)" {
     // `foo().bar().baz()` from a go-capnp caller: Call 12, Call 44 on 12,
     // Call 45 on 44, then Finish(44) and Finish(12), both with
     // requireEarlyCancellationWorkaround = true. 44 stays queued, and 45
-    // waits for 44's results, not for 12's: the hook runs at 12's Finish.
-    // The cancel of 12 then fails 44, and so 45 too, each once.
+    // waits for 44's results, which come from 12's: a cancel of 12 would
+    // fail 45, a call the caller still wants. So the hook stays quiet and
+    // the cancel is refused; the host's ordinary answer runs the chain.
     const allocator = std.testing.allocator;
     var peer = Peer.initDetached(allocator);
     peer.disableThreadAffinity();
@@ -2545,6 +2535,8 @@ test "a call pipelined on a finished queued call does not keep the answer-finish
     var rec = FinishedRecorder{};
     peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
 
+    var chain = ChainService{};
+    chain.export_id = try peer.addExport(.{ .ctx = &chain, .on_call = ChainService.onCall });
     var host_ctx: u8 = 0;
     const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
     try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 12, export_id));
@@ -2552,16 +2544,20 @@ test "a call pipelined on a finished queued call does not keep the answer-finish
     try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 45, 44));
     try deliverFrame(&peer, allocator, buildFinishFrameWith(allocator, 44, false, true));
     try deliverFrame(&peer, allocator, buildFinishFrameWith(allocator, 12, false, true));
-    try std.testing.expectEqual(@as(usize, 1), rec.count);
-    try std.testing.expectEqual(@as(u32, 12), rec.last_answer);
+    try std.testing.expectEqual(@as(usize, 0), rec.count);
+    try std.testing.expectError(error.AnswerHasPipelinedCalls, peer.sendReturnCanceled(12));
     try std.testing.expectEqual(@as(usize, 0), capture.countTag(.@"return"));
 
-    try peer.sendReturnCanceled(12);
-    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(12, .canceled));
-    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(44, .exception));
-    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(45, .exception));
+    // 12's answer names the chain service: 44 runs, and its answer names it
+    // again, so 45 runs. Each call gets one Return.
+    try peer.sendReturnResults(12, &chain, ChainService.buildResults);
+    try std.testing.expectEqual(@as(u32, 2), chain.calls);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(12, .results));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(44, .results));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(45, .results));
     try std.testing.expectEqual(@as(usize, 3), capture.countTag(.@"return"));
-    try std.testing.expectEqual(@as(usize, 1), rec.count);
+    try std.testing.expectEqual(@as(usize, 0), rec.count);
+    for ([_]u32{ 12, 44 }) |id| try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(id)));
 }
 
 test "answer-finished hook stays quiet while a call is pipelined on the answer (P0-1)" {
@@ -2657,6 +2653,72 @@ test "a call pipelined on an answer after its Finish gets an exception Return at
             try std.testing.expectEqual(reported, rec.count);
             try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(31)));
         }
+    }
+}
+
+/// A service whose every answer names itself in results pointer 0, so
+/// calls can be pipelined on its answers in a chain.
+const ChainService = struct {
+    calls: u32 = 0,
+    export_id: u32 = 0,
+
+    fn onCall(ctx_ptr: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        self.calls += 1;
+        try p.sendReturnResults(call.question_id, ctx_ptr, buildResults);
+    }
+
+    fn buildResults(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        const results = try any.initStruct(0, 1);
+        var slot = try results.getAnyPointer(0);
+        try slot.setCapability(.{ .id = self.export_id });
+    }
+};
+
+test "a queued call that calls are pipelined on stays queued at its Finish (P0-1)" {
+    // A C++ caller that keeps only baz in `foo().getSub().bar().getX().baz()`
+    // sends Call(foo), Call(bar on foo), Call(baz on bar), Finish(foo),
+    // Finish(bar). bar is still queued on foo here. rpc.capnp (Finish): the
+    // callee may cancel only when nothing else cares about the result, and
+    // baz needs bar's. So bar stays queued, as if its Finish asked for
+    // delivery first, and each call gets one Return.
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |release_result_caps| {
+        var peer = Peer.initDetached(allocator);
+        peer.disableThreadAffinity();
+        defer peer.deinit();
+        var capture = newCapture(allocator);
+        defer capture.deinit();
+        peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+        var rec = FinishedRecorder{};
+        peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+
+        var chain = ChainService{};
+        chain.export_id = try peer.addExport(.{ .ctx = &chain, .on_call = ChainService.onCall });
+        var host_ctx: u8 = 0;
+        const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+        try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 30, export_id));
+        try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 40, 30));
+        try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 50, 40));
+        try deliverFrame(&peer, allocator, buildFinishFrameWith(allocator, 30, release_result_caps, false));
+        try deliverFrame(&peer, allocator, buildFinishFrameWith(allocator, 40, release_result_caps, false));
+        try std.testing.expectEqual(@as(usize, 0), capture.countTag(.@"return"));
+        try std.testing.expectEqual(@as(usize, 0), rec.count);
+
+        // foo's answer names the chain service: bar runs, and bar's answer
+        // names it again, so baz runs.
+        try peer.sendReturnResults(30, &chain, ChainService.buildResults);
+        try std.testing.expectEqual(@as(u32, 2), chain.calls);
+        try std.testing.expectEqual(@as(usize, 1), capture.countReturns(30, .results));
+        try std.testing.expectEqual(@as(usize, 1), capture.countReturns(40, .results));
+        try std.testing.expectEqual(@as(usize, 1), capture.countReturns(50, .results));
+        try std.testing.expectEqual(@as(usize, 3), capture.countTag(.@"return"));
+        try std.testing.expectEqual(@as(usize, 0), rec.count);
+        try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(30)));
+        try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(40)));
     }
 }
 

@@ -123,6 +123,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once; ..." and "answer cancellation: with go-capnp's Finish flags, ..."
   in `tests/wasm_host_abi_test.zig`.
 
+- **RPC: a Finish no longer cancels a queued call that other calls are
+  pipelined on.** A call pipelined on an answer that has not returned waits
+  in the Peer. When the caller sent Finish for such a waiting call (with
+  `requireEarlyCancellationWorkaround = false`, as the C++ reference
+  sends), the Peer answered it `canceled` and failed every call pipelined
+  on it ("pipelined on a cancelled call"). A C++ caller that keeps only
+  baz in `foo().getSub().bar().getX().baz()` sends Call(foo), Call(bar on
+  foo), Call(baz on bar), Finish(foo), Finish(bar), so baz failed.
+  rpc.capnp lets a callee cancel only when nothing else cares about the
+  result. Now the waiting call stays queued, as if its Finish asked for
+  delivery first: it reaches its target when the answer comes, and the
+  calls pipelined on it then follow. The host gets no ANSWER_FINISHED for
+  it (native) and the answer-finished hook does not run. No answer
+  outlives its Finish: the Return that replays the kept call consumes its
+  Finish record, and every call is admitted with room for that record
+  (`peer_call_inbound.reserveFinishedEarlyRecord`), so the Finish cannot
+  lose it.
+
+  "Does a call the caller still wants need this answer's results?" is now
+  asked down the whole chain. Before, a queued call that the caller had
+  finished never counted, so a cancel of the answer above it still failed
+  the calls pipelined on it, which the caller does want. A finished queued
+  call now counts while calls the caller wants are pipelined on it, in
+  turn, whether it stays queued for this fix or for go-capnp's
+  `requireEarlyCancellationWorkaround`. The walk stops after 64 links and
+  calls the answer wanted, which only delays a cancel.
+
+  A kept call whose target later resolves to a capability the caller hosts
+  routes back to the caller. Its Finish came before that forward, so no
+  tail mapping holds the answer open and the forward finishes on its own
+  Return (`registerForwardedQuestion`, `upstream_finished`): the kept call
+  gets its one Return, relayed from the forward, and the caller may reuse
+  both ids.
+
+  Tests: "a queued call that calls are pipelined on stays queued at its
+  Finish (P0-1)", "Finish of a queued call keeps it queued while a call is
+  pipelined on it" (which replaces "Finish cancelling a queued call drains
+  calls pipelined on it") and "a call pipelined on a finished queued call
+  keeps the answer-finished hook quiet (P0-1)" (which replaces "a call
+  pipelined on a finished queued call does not keep the answer-finished
+  hook quiet (P0-1)") in
+  `tests/rpc/peer/rpc_answer_lifecycle_test.zig`; "a call parked on a
+  promise export with a call pipelined on it, finished, then routed back to
+  the remote: the remote reuses both ids" and "a yourself call queued on a
+  call the remote finishes: the call stays queued, and the remote gets
+  resultsSentElsewhere" (which replaces "a yourself call queued on a call
+  the remote cancels: the remote gets resultsSentElsewhere") in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`; "answer
+  finished: a queued call that calls are pipelined on stays queued at its
+  Finish; each call reaches the host" and "answer finished: a queued call
+  with a call pipelined on it, finished, then routed back to the remote;
+  the remote reuses both ids" in `src/native/conn_test.zig`.
+
 - **RPC: a call that the caller finished and the Peer then forwarded back
   to the caller is now finished, and its id is free again.** go-capnp
   sends Finish with `requireEarlyCancellationWorkaround = true` (the
@@ -409,6 +462,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- `docs/supported-surface.md`: the known limit "A Finish of a queued call
+  fails the calls pipelined on it" is gone. The Fixed entry above closes
+  both of its cases. The v0.29.0 relay draft for capnp-swift in
+  `docs/downstreams.md` says so too, and `docs/native-abi.md` records what
+  the core now does with a queued call that other calls are pipelined on.
 - `docs/supported-surface.md`: new known limits. A tail-call forward
   to go-capnp ends the connection (go-capnp answers the `sendResultsTo =
   yourself` call with Unimplemented, then fails on the Peer's Finish for

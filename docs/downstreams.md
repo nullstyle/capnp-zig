@@ -191,15 +191,17 @@ The owner sends this text after the v0.29.0 tag exists.
 > both waited with no RETURN until disconnect. The C++ reference delivers
 > both calls; capnp-zig does not yet.
 >
-> Some calls that the caller wants still fail. For `foo().bar().baz()`,
-> when the caller finishes bar while bar waits on foo, the core cancels
-> bar at that Finish and fails baz (the C++ flag), or your cancel of foo
-> fails bar and baz (go-capnp's flag). The first case does not depend on
-> `cancelHandlersOnFinish`. ANSWER_FINISHED does not wait for a call whose
-> params carry the answer's results (`receiverAnswer`), so your cancel
-> then fails that param. See "A Finish of a queued call fails the calls
-> pipelined on it" and "The answer-finished hook does not wait for a call
-> whose params name the answer" in capnp-zig's
+> **A chain of pipelined calls survives a Finish in the middle.** For
+> `foo().bar().baz()`, a Finish of bar while bar waits on foo no longer
+> cancels bar, and your cancel of foo is refused while baz wants bar's
+> results. Both calls run when you answer foo. Before, the first case
+> failed baz (and did not depend on `cancelHandlersOnFinish`) and the
+> second failed bar and baz.
+>
+> One call the caller wants can still fail. ANSWER_FINISHED does not wait
+> for a call whose params carry the answer's results (`receiverAnswer`),
+> so your cancel then fails that param. See "The answer-finished hook does
+> not wait for a call whose params name the answer" in capnp-zig's
 > `docs/supported-surface.md`.
 >
 > **Answers after close.** Once a connection is closed,

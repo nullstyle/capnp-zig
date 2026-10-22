@@ -1284,35 +1284,50 @@ test "a call parked on a promise export with a call pipelined on it, finished, t
 
     // Call 600 waits on a promise export, call 700 is pipelined on it, and
     // the remote finishes 600 with requireEarlyCancellationWorkaround =
-    // false (what the C++ reference sends). The Peer cancels the waiting
-    // call at its Finish and fails 700, as v0.28.0 does.
+    // false (what the C++ reference sends). 700 still needs 600's results
+    // (rpc.capnp, Finish: cancel only when nothing else cares about the
+    // result), so 600 stays parked and nothing is answered at that Finish.
     const promise_id = try h.client_peer.addPromiseExport();
     try h.pushPlainCall(allocator, 600, promise_id);
     try h.pushPipelinedPlainCall(allocator, 700, 600);
+    const finish_mark = h.wire.events.items.len;
     try h.pushFinish(allocator, 600);
-    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, .canceled));
-    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 700, .exception));
+    try std.testing.expectEqual(finish_mark, h.wire.events.items.len);
 
-    // The host resolves the promise to the remote's own capability. Nothing
-    // is left to forward there, so no question stays open for 600.
+    // The host resolves the promise to the remote's own capability, so the
+    // parked call routes back there. Its Finish came before that forward, so
+    // no tail mapping holds 600 open: the forward finishes on its own Return
+    // (`registerForwardedQuestion`, `upstream_finished`).
     const wire_mark = h.wire.events.items.len;
     try h.client_peer.resolvePromiseExportToImport(promise_id, h.server_import_id);
-    for (h.wire.events.items[wire_mark..]) |event| try std.testing.expect(event.tag != .call);
     try std.testing.expect(!h.client_peer.forwarded_tail_questions.contains(600));
+    var forwarded: ?u32 = null;
+    for (h.wire.events.items[wire_mark..]) |event| {
+        if (event.dir == .client_to_server and event.tag == .call) forwarded = event.id;
+    }
+
+    // The remote answers that forward. 600 gets its one Return, relayed from
+    // it, and 700 gets its own: those results carry no capability, so the
+    // call pipelined into them fails there, not at 600's Finish.
+    try h.pushResults(allocator, forwarded.?);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, .results));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 700, .exception));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, forwarded.?));
+    try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(600)));
 
     // The remote has both Returns and finishes 700 too. It may now reuse
     // both ids at once (rpc.capnp Call.questionId), and both calls reach
     // the host.
     try h.pushFinish(allocator, 700);
-    try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(600)));
     try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(700)));
     var result = ResultN{ .n = 7 };
     for ([_]u32{ 600, 700 }) |id| {
+        const before = h.wire.countReturns(.client_to_server, id, .results);
         h.target.answer_id = null;
         try h.pushPlainCall(allocator, id, h.target_export_id);
         try std.testing.expectEqual(@as(?u32, id), h.target.answer_id);
         try h.client_peer.sendReturnResults(id, &result, ResultN.build);
-        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, id, .results));
+        try std.testing.expectEqual(before + 1, h.wire.countReturns(.client_to_server, id, .results));
     }
 }
 
@@ -2972,22 +2987,28 @@ test "a yourself call queued on an answer whose replay cannot park again: the re
     try h.pushFinish(allocator, 500);
 }
 
-test "a yourself call queued on a call the remote cancels: the remote gets resultsSentElsewhere" {
+test "a yourself call queued on a call the remote finishes: the call stays queued, and the remote gets resultsSentElsewhere" {
     const allocator = std.testing.allocator;
     var h: TailHarness = undefined;
     try h.start(allocator);
     defer h.deinit();
 
     // Call 600 parks on a promise export, and the tail call queues on 600.
-    // The remote's Finish of 600 cancels it, and the calls queued on it fail.
+    // The remote's Finish of 600 does not cancel it: the tail call still
+    // needs its results (rpc.capnp, Finish). The host then rejects the
+    // promise, and the calls queued on 600 fail with 600's exception.
     const promise_id = try h.client_peer.addPromiseExport();
     try h.pushPlainCall(allocator, 600, promise_id);
     try h.pushPipelinedYourselfCall(allocator, tail_answer_id, 600, &.{});
     try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, tail_answer_id, null));
     try h.pushFinish(allocator, 600);
-    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, .canceled));
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, 600, null));
+    try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, tail_answer_id, null));
+    try h.client_peer.resolvePromiseExportToException(promise_id, "rejected by host");
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, .exception));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, null));
     try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
-    try expectRedirectGetsException(&h, allocator, "pipelined on a cancelled call");
+    try expectRedirectGetsException(&h, allocator, "promise broken");
 }
 
 test "a yourself call pipelined on an answer that holds no capability: the remote gets resultsSentElsewhere" {

@@ -220,6 +220,13 @@ the promise is rejected), the call counts in `max_active_inbound_questions`
 that the host does not answer, those calls can fill the bound, and then
 new calls get an exception Return (`OwedAnswerLimitExceeded`).
 
+A queued call that other calls are pipelined on stays queued at its Finish
+too, whatever that flag says, because those calls still need its results
+(see the next paragraph). It also reaches the host later, with no
+ANSWER_FINISHED then: answer it as usual. The Return that follows
+discharges its Finish, and the core reserves room for that Finish record
+when it admits the call, so no answer outlives its Finish.
+
 The core also waits while calls are pipelined on the answer. A pipelined
 call targets the results of a call that has not returned yet. Such a call
 still needs the results: rpc.capnp lets the callee cancel a finished call
@@ -232,12 +239,16 @@ for foo's results, and ANSWER_FINISHED comes for foo then, if the host
 still owes foo. If the remote never finishes bar, no ANSWER_FINISHED comes
 for foo, and the host's ordinary answer settles it.
 
-A call that the remote has already finished does not make the core wait.
-With `requireEarlyCancellationWorkaround` (go-capnp's Finish), such a call
-stays queued until foo returns. `capnp_return_canceled` of foo gives it
-its one exception RETURN. A call pipelined on such a call does not make
-the core wait either: for `foo().bar().baz()` with bar finished, the
-cancel of foo also fails baz.
+A call that the remote has already finished, and that nothing else wants,
+does not make the core wait. With `requireEarlyCancellationWorkaround`
+(go-capnp's Finish), such a call stays queued until foo returns.
+`capnp_return_canceled` of foo gives it its one exception RETURN. A
+finished call that calls the remote still wants are pipelined on does make
+the core wait: for `foo().bar().baz()` with bar finished and baz
+outstanding, baz needs bar's results, which come from foo's, so no
+ANSWER_FINISHED comes for foo and the host answers it as usual. The core
+asks this down the whole chain. It stops after 64 links and treats the
+answer as wanted there, which only delays a cancel.
 
 When the host answers foo as usual and foo's answer names one of the
 remote's own capabilities, the core forwards the queued calls there, as

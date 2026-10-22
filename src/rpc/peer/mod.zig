@@ -61,6 +61,12 @@ const promises_promised_answer = @import("../promises/promised_answer.zig");
 const peer_fds = @import("./peer_fds.zig");
 const fd_passing = @import("../transport/fd_passing.zig");
 
+/// How far `hasCallsPipelinedOnAnswer` reads down a chain of calls
+/// pipelined on one another before it calls the answer wanted without
+/// reading further. The remote sets the chain's depth, so the walk needs a
+/// bound; the conservative answer only delays a cancel.
+const max_pipelined_want_depth: usize = 64;
+
 /// Experimental (fd passing). A POSIX file descriptor attached to a
 /// capability on an AF_UNIX connection (`Peer.setExportFd`,
 /// `Peer.importFd`). Its `fd` is `void` where fd passing is compiled out
@@ -1684,9 +1690,9 @@ pub const Peer = struct {
     /// for a call the peer still holds queued, or for a call the peer
     /// forwarded on the host's behalf; the peer settles those itself (it
     /// answers a forwarded call `canceled` when the Finish comes before the
-    /// forwarded call's Return). A
-    /// queued call whose Finish set `requireEarlyCancellationWorkaround` is
-    /// delivered later, and that Finish is not reported when it is
+    /// forwarded call's Return). A queued call whose Finish set
+    /// `requireEarlyCancellationWorkaround`, or that calls are pipelined on,
+    /// is delivered later, and that Finish is not reported when it is
     /// delivered; answer it as usual. The handler runs for it later only as
     /// below, when calls pipelined on it go.
     ///
@@ -1695,10 +1701,12 @@ pub const Peer = struct {
     /// needs them (rpc.capnp, Finish: cancel only when nothing else cares
     /// about the result), and `sendReturnCanceled` refuses the id with
     /// `error.AnswerHasPipelinedCalls`. A queued call that the caller
-    /// finished does not count: with `requireEarlyCancellationWorkaround`
-    /// (go-capnp's flag) it stays queued, but nobody waits for it. A call
-    /// pipelined on such a call does not count either. When the caller
-    /// finishes the last call that waits, the handler runs then, inside
+    /// finished and nothing else wants does not count: it stays queued
+    /// (go-capnp's `requireEarlyCancellationWorkaround`), but nobody waits
+    /// for it, and a cancel gives it its one Return. It does count while
+    /// calls the caller wants are pipelined on it, in turn: their results
+    /// come from this answer's (`hasCallsPipelinedOnAnswer`). When the
+    /// caller finishes the last call that waits, the handler runs then, inside
     /// that Finish, if the host still owes the answer. A call pipelined on
     /// the answer after its Finish breaks rpc.capnp ("no further pipelined
     /// requests"). The peer answers such a call at once with an exception
@@ -4013,15 +4021,18 @@ pub const Peer = struct {
     /// already got its Return, the id was never an inbound question, the
     /// peer settles the answer itself (a forwarded or still-queued call), or
     /// the peer stopped tracking it (see `setAnswerFinishedHandler`). Errors
-    /// with `error.AnswerHasPipelinedCalls` while a call pipelined on the
-    /// answer, which the caller has not finished, waits for its results: a
-    /// cancel would fail it, and rpc.capnp allows a cancel only when nothing
-    /// else cares about the result. Answer such a call with an ordinary
-    /// Return, or wait for the handler: it runs when the caller finishes the
-    /// last such call. Only calls pipelined before the Finish wait: the peer
-    /// fails a later one at once, so this error never follows the handler.
-    /// A queued call that the caller finished gets an exception Return from
-    /// the cancel. Body in `return/peer_return_send.zig`.
+    /// with `error.AnswerHasPipelinedCalls` while a call that the caller
+    /// still wants needs the answer's results: one pipelined on the answer
+    /// that the caller has not finished, or one further down a chain of
+    /// pipelined calls (`hasCallsPipelinedOnAnswer`). A cancel would fail
+    /// it, and rpc.capnp allows a cancel only when nothing else cares about
+    /// the result. Answer the answer with an ordinary Return, or wait for
+    /// the handler: it runs when the caller finishes the last call that
+    /// waits. Only calls pipelined before the Finish wait: the peer fails a
+    /// later one at once, so this error never follows the handler. A queued
+    /// call that the caller finished and nothing else wants gets an
+    /// exception Return from the cancel. Body in
+    /// `return/peer_return_send.zig`.
     pub fn sendReturnCanceled(self: *Peer, answer_id: u32) !void {
         self.assertThreadAffinity();
         if (self.active_inbound_questions.contains(answer_id)) return error.AnswerNotFinished;
@@ -4922,7 +4933,18 @@ pub const Peer = struct {
             self.answerQueuedOn(qid)
         else
             null;
-        if (!finish_msg.require_early_cancellation) {
+        // Calls pipelined on a queued call still need its results (rpc.capnp,
+        // Finish: cancel only when nothing else cares about the result), so
+        // the call stays queued, as if its Finish had asked for delivery
+        // first. It reaches its target when the answer comes, its own
+        // pipelined calls follow, and the host is not told of the Finish.
+        // No answer outlives its Finish: the Return that replays it consumes
+        // the record `recordFinishedEarly` just put, and every call is
+        // admitted with room for that record
+        // (`peer_call_inbound.reserveFinishedEarlyRecord`), so the put above
+        // cannot lose it.
+        const keep_queued = self.hasCallsPipelinedOnAnswer(qid);
+        if (!finish_msg.require_early_cancellation and !keep_queued) {
             // Default behavior: if Finish arrives before a promised-target call is
             // deliverable, cancel the queued call immediately.
             _ = try self.cancelQueuedPendingQuestion(finish_msg.question_id);
@@ -5096,20 +5118,36 @@ pub const Peer = struct {
     }
 
     /// True when a call that the remote pipelined on inbound answer
-    /// `answer_id` waits in the peer for its Return (`pending_promises`) and
-    /// the remote has not finished that call. Such a call still needs the
-    /// answer's results, so the host may not cancel it. A queued call that
-    /// the remote finished does not count: with
-    /// `requireEarlyCancellationWorkaround` (go-capnp's flag) it stays
-    /// queued, but nobody waits for its results, and a cancel of the answer
-    /// gives it its one Return. A call pipelined on that call does not count
-    /// either. The gate of the answer-finished hook and of
-    /// `sendReturnCanceled`.
+    /// `answer_id` still needs that answer's results, so the host may not
+    /// cancel it (rpc.capnp, Finish: cancel only when nothing else cares
+    /// about the result). A queued call counts while the remote has not
+    /// finished it. A queued call the remote finished counts only while
+    /// calls that the remote wants are pipelined on it, in turn: such a
+    /// call stays queued (`keep_queued` in `handleFinish`, or go-capnp's
+    /// `requireEarlyCancellationWorkaround`), its own results come from
+    /// this answer's, and a cancel of this answer would fail every call
+    /// down the chain. A finished queued call with nothing left on it does
+    /// not count: a cancel gives it its one Return. The gate of the
+    /// answer-finished hook, of `sendReturnCanceled` and of the tail-call
+    /// forward's Finish relay.
+    ///
+    /// Past `max_pipelined_want_depth` links the answer counts as wanted.
+    /// The chain is as deep as the remote makes it, and that answer is the
+    /// one the recursion has not finished reading: calling it wanted only
+    /// delays a cancel, while calling it unwanted would fail calls the
+    /// remote wants.
     fn hasCallsPipelinedOnAnswer(self: *const Peer, answer_id: u32) bool {
+        return self.hasWantedCallsPipelinedOnAnswer(answer_id, 0);
+    }
+
+    /// `hasCallsPipelinedOnAnswer`, `depth` links down the chain.
+    fn hasWantedCallsPipelinedOnAnswer(self: *const Peer, answer_id: u32, depth: usize) bool {
+        if (depth >= max_pipelined_want_depth) return true;
         const queued = self.pending_promises.getPtr(answer_id) orelse return false;
         for (queued.items) |pending| {
             const id = pending.question_id orelse return true;
             if (self.active_inbound_questions.contains(id)) return true;
+            if (self.hasWantedCallsPipelinedOnAnswer(id, depth + 1)) return true;
         }
         return false;
     }
