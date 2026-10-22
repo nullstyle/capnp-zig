@@ -2529,6 +2529,41 @@ test "a call the caller finished does not keep the answer-finished hook quiet; o
     }
 }
 
+test "a call pipelined on a finished queued call does not keep the answer-finished hook quiet (P0-1)" {
+    // `foo().bar().baz()` from a go-capnp caller: Call 12, Call 44 on 12,
+    // Call 45 on 44, then Finish(44) and Finish(12), both with
+    // requireEarlyCancellationWorkaround = true. 44 stays queued, and 45
+    // waits for 44's results, not for 12's: the hook runs at 12's Finish.
+    // The cancel of 12 then fails 44, and so 45 too, each once.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    var rec = FinishedRecorder{};
+    peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+
+    var host_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 12, export_id));
+    try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 44, 12));
+    try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 45, 44));
+    try deliverFrame(&peer, allocator, buildFinishFrameWith(allocator, 44, false, true));
+    try deliverFrame(&peer, allocator, buildFinishFrameWith(allocator, 12, false, true));
+    try std.testing.expectEqual(@as(usize, 1), rec.count);
+    try std.testing.expectEqual(@as(u32, 12), rec.last_answer);
+    try std.testing.expectEqual(@as(usize, 0), capture.countTag(.@"return"));
+
+    try peer.sendReturnCanceled(12);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(12, .canceled));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(44, .exception));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(45, .exception));
+    try std.testing.expectEqual(@as(usize, 3), capture.countTag(.@"return"));
+    try std.testing.expectEqual(@as(usize, 1), rec.count);
+}
+
 test "answer-finished hook stays quiet while a call is pipelined on the answer (P0-1)" {
     // rpc.capnp (Finish): the callee may cancel a finished call only when
     // nothing else cares about its result, "e.g. there are no other

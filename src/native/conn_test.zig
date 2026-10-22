@@ -2464,6 +2464,44 @@ test "answer finished: after ANSWER_FINISHED a Call or Bootstrap that reuses the
     }
 }
 
+test "answer finished: a queued call that reaches the host after its Finish is reported once the remote finishes the call pipelined on it" {
+    // Call 30 waits on a promise export, call 40 is pipelined on 30, and
+    // the remote finishes 30 with go-capnp's flag
+    // (requireEarlyCancellationWorkaround), so the core keeps 30 queued. The
+    // promise resolves, and 30 reaches the host after its Finish, with no
+    // ANSWER_FINISHED: 40 still waits for its results. When the remote
+    // finishes 40 too, nothing waits, and ANSWER_FINISHED comes for 30.
+    const alloc = testing.allocator;
+    for ([_]bool{ false, true }) |require_early_cancellation| {
+        var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+        defer f.deinit();
+        const pe = try f.a.promiseExport();
+        try pushFrame(alloc, f.a, plainCallFrame(alloc, 30, pe));
+        try pushFrame(alloc, f.a, pipelinedCallFrame(alloc, 40, 30));
+        try pushFrame(alloc, f.a, finishFrameWith(alloc, 30, true));
+        try f.a.resolvePromise(pe, .{ .kind = .@"export", .id = f.ea });
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 30));
+        try testing.expectEqual(@as(usize, 0), countCalls(&f.ra, 40));
+        try testing.expectEqual(@as(usize, 0), f.ra.finished.items.len);
+
+        try pushFrame(alloc, f.a, finishFrameWith(alloc, 40, require_early_cancellation));
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqual(@as(usize, 1), f.ra.countFinished(30));
+        try testing.expectEqual(@as(usize, 1), f.ra.finished.items.len);
+
+        try f.a.returnCanceled(30);
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 30, .canceled));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 30, null));
+        const tag: protocol.ReturnTag = if (require_early_cancellation) .exception else .canceled;
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 40, tag));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 40, null));
+        try testing.expectEqual(@as(usize, 0), countCalls(&f.ra, 40));
+        try testing.expectEqual(@as(usize, 0), f.ra.close_requested);
+    }
+}
+
 test "answer finished: with the Peer's finished-early records full, no effect; the ordinary answer goes out" {
     // Records held by calls queued on a promise export (2 of 2). The Peer
     // cannot record call 10's Finish, so it does not report it, and the
@@ -2513,6 +2551,55 @@ test "answer finished: a held call that a call is pipelined on gets no ANSWER_FI
     try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, tail_answer, null));
     try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 88, .exception));
     try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
+}
+
+test "answer finished: a held call whose pipelined call the remote finishes too is reported once, after the hold" {
+    // Question X waits for the answer to Y (77). The remote pipelines call
+    // 88 on Y, then finishes Y, then 88. After 88's Finish, no call waits
+    // for Y's results, but X still waits for Y's answer: ANSWER_FINISHED is
+    // withheld until X ends without it, and then comes before X's RETURN.
+    // When X ended first, it comes at 88's Finish.
+    const alloc = testing.allocator;
+    for ([_]bool{ false, true }) |hold_ends_first| {
+        var p = try TailPair.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+        defer p.deinit();
+        const t = try p.start(alloc);
+        try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+        try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 88, tail_answer));
+        try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
+        if (hold_ends_first) {
+            try p.a.cancel(t.q);
+            try drainAll(p.a, &p.ra);
+            _ = try expectOneReturn(&p.ra, t.q, .canceled);
+            try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
+        }
+
+        try pushFrame(alloc, p.a, finishFrame(alloc, 88));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 88, .canceled));
+        if (!hold_ends_first) {
+            try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
+            const order_before = p.ra.order.items.len;
+            try p.a.cancel(t.q);
+            try drainAll(p.a, &p.ra);
+            const after = p.ra.order.items[order_before..];
+            const finished_at = std.mem.indexOfScalar(effects.Kind, after, .answer_finished) orelse return error.TestNoAnswerFinished;
+            const return_at = std.mem.indexOfScalar(effects.Kind, after, .@"return") orelse return error.TestNoReturn;
+            try testing.expect(finished_at < return_at);
+            _ = try expectOneReturn(&p.ra, t.q, .canceled);
+        }
+        try testing.expectEqual(@as(usize, 1), p.ra.countFinished(tail_answer));
+        try testing.expectEqual(@as(usize, 1), p.ra.finished.items.len);
+
+        try p.a.returnCanceled(tail_answer);
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, tail_answer, .canceled));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, tail_answer, null));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 88, null));
+        try testing.expectEqual(@as(usize, 1), p.ra.countReturns(t.q));
+    }
 }
 
 /// Call OUT_FRAMEs that `rec` kept: questions this side sent to the remote.
@@ -2673,6 +2760,76 @@ test "answer finished: with go-capnp's Finish flags, the remote finishes an answ
         try testing.expectEqual(@as(usize, 2), try countReturnFrames(&p.ra, 40, null));
         try testing.expectEqual(@as(usize, 0), p.ra.close_requested);
         try testing.expect(p.a.last_error == null);
+    }
+}
+
+test "known limit: a finished queued call that the core forwards to the remote keeps its id in use" {
+    // "A call finished with go-capnp's Finish flag can close the
+    // connection" in docs/supported-surface.md. go-capnp sends
+    // requireEarlyCancellationWorkaround = true, so a call that it finished
+    // stays queued until the answer it is pipelined on returns. Here call 45
+    // (finished) and, in two cases, call 40 (still wanted) are pipelined on
+    // 30, and the remote finishes 30. The host is not told: 40 still waits
+    // for 30's results, or answer_finished is off. The host's answer names
+    // the remote's own capability, so the core forwards the queued calls
+    // there, and 40 gets its results. Nothing finishes the forwarded copy
+    // of 45, so the remote's reuse of id 45 closes the connection
+    // (DuplicateQuestionId). A fix finishes that forwarded question: then
+    // change this test, the known limit and the capnp-swift relay in
+    // docs/downstreams.md together.
+    const alloc = testing.allocator;
+    const Case = struct { answer_finished: bool, wanted_call: bool };
+    for ([_]Case{
+        .{ .answer_finished = true, .wanted_call = true },
+        .{ .answer_finished = false, .wanted_call = true },
+        .{ .answer_finished = false, .wanted_call = false },
+    }) |case| {
+        var p = try TailPair.init(alloc, .{ .now_ns = 0, .answer_finished = case.answer_finished });
+        defer p.deinit();
+        const t = try p.start(alloc);
+        try drainAll(p.a, &p.ra);
+        const calls_out = try countCallFrames(&p.ra);
+
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, 30, t.ea));
+        if (case.wanted_call) try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 40, 30));
+        try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 45, 30));
+        try pushFrame(alloc, p.a, finishFrameWith(alloc, 45, true));
+        try pushFrame(alloc, p.a, finishFrameWith(alloc, 30, true));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
+        try testing.expectError(error.Invalid, p.a.returnCanceled(30));
+
+        const res = try msgCap(alloc, 1, 0);
+        defer alloc.free(res);
+        try p.a.returnResults(30, res, &.{t.boot});
+        try drainAll(p.a, &p.ra);
+        const n_forwarded: usize = if (case.wanted_call) 2 else 1;
+        try testing.expectEqual(calls_out + n_forwarded, try countCallFrames(&p.ra));
+        var forwarded: [2]u32 = undefined;
+        var n: usize = 0;
+        var seen: usize = 0;
+        for (p.ra.frames.items) |bytes| {
+            var d = try protocol.DecodedMessage.init(testing.allocator, bytes);
+            defer d.deinit();
+            if (d.tag != .call) continue;
+            seen += 1;
+            if (seen <= calls_out) continue;
+            forwarded[n] = (try d.asCall()).question_id;
+            n += 1;
+        }
+        for (forwarded[0..n]) |qid| try pushFrame(alloc, p.a, resultsReturnFrame(alloc, qid));
+        try drainAll(p.a, &p.ra);
+        if (case.wanted_call) try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, .results));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 45, .results));
+        // No forwarded question is finished. 40's waits for the remote's
+        // Finish of 40. 45's never gets one: that Finish came first.
+        for (forwarded[0..n]) |qid| try testing.expectEqual(@as(usize, 0), try countFinishFrames(&p.ra, qid));
+
+        testing.log_level = .err;
+        try testing.expectError(error.Protocol, pushFrame(alloc, p.a, plainCallFrame(alloc, 45, t.ea)));
+        try testing.expectEqual(@as(?anyerror, error.DuplicateQuestionId), p.a.last_error);
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), p.ra.close_requested);
     }
 }
 
