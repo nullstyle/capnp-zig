@@ -934,9 +934,9 @@ cooperating peer.
   sanitized from `error.MissingHostInboundFrame`). The call still gets
   exactly one Return. The `Peer` API and the native C ABI deliver such a
   call. capnp-deno answers its calls through `HostPeer`, so for it every
-  call pipelined on a host call fails. Pinned by "answer cancellation: no
-  event while a call is pipelined on the answer; ..." in
-  `tests/wasm_host_abi_test.zig`.
+  call pipelined on a host call fails. Pinned by "known limit: HostPeer
+  fails a call pipelined on a host call that the host answers with a
+  results frame" in `tests/wasm_host_abi_test.zig`.
 
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Of the items above, only the

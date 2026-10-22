@@ -209,8 +209,10 @@ Do not send this text yet. Through `HostPeer`, a call pipelined on a host
 call that the host answers with `capnp_peer_respond_host_call_return_frame`
 still fails ("host call failed"; see the known limit in
 [supported-surface.md](supported-surface.md)). So moving the pin to
-v0.28.1 alone does not let bar run. Send the text once a tag also fixes
-that limit, and put that tag in place of `vX.Y.Z` in it.
+v0.28.1 alone does not let bar run. The test "known limit: HostPeer fails
+a call pipelined on a host call that the host answers with a results
+frame" in `tests/wasm_host_abi_test.zig` pins that limit. Send the text
+once a tag also fixes it, and put that tag in place of `vX.Y.Z` in it.
 
 > **Answer-finished and pipelined calls (feature bit 12).** Up to
 > v0.28.0, a Finish of a host call that other calls were pipelined on

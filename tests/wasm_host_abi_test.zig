@@ -2135,6 +2135,79 @@ test "answer cancellation: no event while a call is pipelined on the answer; sen
     ));
 }
 
+test "known limit: HostPeer fails a call pipelined on a host call that the host answers with a results frame" {
+    // "HostPeer fails a call that is pipelined on an unanswered host call"
+    // in docs/supported-surface.md, with no Finish at all. While this test
+    // passes, the capnp-deno relay in docs/downstreams.md stays held: a pin
+    // move alone does not let a call pipelined on a host call run. A fix
+    // makes call 40 a new host call. Then change this test, the known limit
+    // and the relay together.
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const server = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(server);
+    try std.testing.expect(server != 0);
+
+    const pending = try queuePendingHostCall(std.testing.allocator, server, 30, 0xA100, 3);
+    defer {
+        std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_free_host_call_frame(
+            server,
+            pending.frame_ptr,
+            pending.frame_len,
+        )) catch unreachable;
+    }
+    const pipelined = try encodePipelinedCallFrame(std.testing.allocator, 40, pending.question_id);
+    defer std.testing.allocator.free(pipelined);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+        server,
+        toAbiPtr(pipelined.ptr),
+        @intCast(pipelined.len),
+    ));
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_outbound_count(server));
+
+    const return_frame = try encodeReturnResultsFrameWithCap(
+        std.testing.allocator,
+        pending.question_id,
+        pending.bootstrap_export_id,
+    );
+    defer std.testing.allocator.free(return_frame);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_respond_host_call_return_frame(
+        server,
+        toAbiPtr(return_frame.ptr),
+        @intCast(return_frame.len),
+    ));
+
+    // Call 40 never reaches the host: it gets an exception Return instead.
+    var call_q: u32 = 0;
+    var call_iface: u64 = 0;
+    var call_method: u16 = 0;
+    var call_ptr: abi.AbiPtr = 0;
+    var call_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_pop_host_call(
+        server,
+        toAbiPtr(&call_q),
+        toAbiPtr(&call_iface),
+        toAbiPtr(&call_method),
+        toAbiPtr(&call_ptr),
+        toAbiPtr(&call_len),
+    ));
+    try std.testing.expectEqual(@as(u32, 2), abi.capnp_peer_outbound_count(server));
+    for ([_]u32{ pending.question_id, 40 }, [_]protocol.ReturnTag{ .results, .exception }) |answer_id, tag| {
+        const frame = try popOutFrameCopy(std.testing.allocator, server);
+        defer std.testing.allocator.free(frame);
+        var decoded = try protocol.DecodedMessage.init(std.testing.allocator, frame);
+        defer decoded.deinit();
+        const ret = try decoded.asReturn();
+        try std.testing.expectEqual(answer_id, ret.answer_id);
+        try std.testing.expectEqual(tag, ret.tag);
+        if (tag == .exception) {
+            const exception = ret.exception orelse return error.MissingException;
+            try std.testing.expectEqualStrings("host call failed", exception.reason);
+        }
+    }
+}
+
 test "answer cancellation: a call pipelined after the Finish fails at once; sendReturnCanceled still answers" {
     // rpc.capnp forbids pipelined calls after Finish, and the C++ reference
     // fails one that comes anyway at once. capnp-deno answers every kind-4
