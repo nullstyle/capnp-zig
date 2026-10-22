@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CI: a job headroom check (`just check-job-headroom`).** The new
+  `tools/ci_gates.ts job-headroom` reads the 10 most recent green main
+  runs of a workflow and the time that each job took. It prints each job's
+  peak duration and its run id. It refuses when a peak is over 75% of the
+  job's `timeout-minutes`. A job's name carries its runner label, so the
+  check counts a job named with `ubuntu-latest` as the same job with
+  `ubuntu-24.04`, and the history of each job carries across the rename.
+  `release-preflight` runs the check on `ci.yml` and `nightly.yml`. Its
+  tests use recorded API responses: the 10 green main CI runs up to
+  `bdc656f`, and branch run 39537367357. On the live main runs of
+  2026-10-21, it refused the old 30-min cap of QUIC targeted transport
+  (the Windows leg peaked at 23.0 min, 76.5% of the cap). It passes at the
+  new 40-min cap (57.4%).
+
+### Changed
+
+- **CI: the Linux jobs pin `ubuntu-24.04`.** GitHub moves `ubuntu-latest`
+  to Ubuntu 26 from 2026-10-19. `ci.yml`, `nightly.yml` and `release.yml`
+  now name `ubuntu-24.04`, so the move does not change our runners. Job
+  names change with the label, for example "Test (ubuntu-24.04)". `.actrc`
+  and the `just act-*` recipes use the new label. The header of
+  `.github/known-flakes.txt` says that Linux job names carry it. GitHub
+  still updates the 24.04 image, its kernel included (CONTRIBUTING.md,
+  "Toolchain").
+- **CI: QUIC targeted transport gets 40 min, not 30.** In the 40 green main
+  runs from 10-07 to 10-21, its Windows leg took 21.6 min at the median and
+  23.8 min at most. Branch run 39537367357 took 24.8 min, and run
+  37248467342 was cancelled at the 30-min cap.
+
 ### Fixed
 
 - **RPC: a parked call now gets its Return when the Peer cannot decode it

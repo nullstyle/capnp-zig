@@ -442,6 +442,7 @@ check-release-drift PREV_TAG VERSION="":
 release-preflight VERSION="":
     just check-toolchain
     just check-release-drift "$(git describe --tags --abbrev=0 --match 'v[0-9]*')" {{ VERSION }}
+    just check-job-headroom
     just ci
     just test-release-safe-full
     just wasm-build
@@ -468,6 +469,22 @@ check-nightly-gate SHA *ARGS:
 # Fail when a workflow job has no job-level timeout-minutes
 check-job-timeouts:
     deno run --allow-read --no-config tools/ci_gates.ts job-timeouts
+
+# Reads the 10 most recent green main runs of ci.yml and of nightly.yml with
+# `gh api` (read-only) and prints each job's peak duration and its run id.
+# Exit 1 refuses: a job peaked above 75% of its job-level timeout-minutes,
+# or there are fewer than 10 green runs. Exit 2: the check could not run.
+# Both workflows are checked even when the first one fails. Extra flags go
+# to tools/ci_gates.ts job-headroom (--runs, --branch).
+# Fail when a CI or Nightly job peaked above 75% of its timeout-minutes
+check-job-headroom *ARGS:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    status=0
+    for workflow in ci.yml nightly.yml; do
+      deno run --allow-run=gh --allow-read --allow-write --no-config tools/ci_gates.ts job-headroom --workflow-file ".github/workflows/${workflow}" {{ ARGS }} || status=$?
+    done
+    exit "$status"
 
 # Create and push an annotated release tag — but refuse when the commit being
 # tagged does not already have a green CI run, or does not pass the Nightly
@@ -515,24 +532,24 @@ act-list:
 
 # Excludes benchmark regression job by default since host/container timing is not comparable to CI baseline.
 act-ci event="pull_request":
-    act {{ event }} --matrix os:ubuntu-latest -j fmt-check
-    act {{ event }} --matrix os:ubuntu-latest -j test
-    act {{ event }} --matrix os:ubuntu-latest -j evented-check
-    act {{ event }} --matrix os:ubuntu-latest -j quic-transport
-    act {{ event }} --matrix os:ubuntu-latest -j docs-smoke
-    act {{ event }} --matrix os:ubuntu-latest -j hardening
-    act {{ event }} --matrix os:ubuntu-latest -j e2e-zig
-    act {{ event }} --matrix os:ubuntu-latest -j wasm-build
-    act {{ event }} --matrix os:ubuntu-latest -j release-build
-    act {{ event }} --matrix os:ubuntu-latest -j release-safe-tests
+    act {{ event }} --matrix os:ubuntu-24.04 -j fmt-check
+    act {{ event }} --matrix os:ubuntu-24.04 -j test
+    act {{ event }} --matrix os:ubuntu-24.04 -j evented-check
+    act {{ event }} --matrix os:ubuntu-24.04 -j quic-transport
+    act {{ event }} --matrix os:ubuntu-24.04 -j docs-smoke
+    act {{ event }} --matrix os:ubuntu-24.04 -j hardening
+    act {{ event }} --matrix os:ubuntu-24.04 -j e2e-zig
+    act {{ event }} --matrix os:ubuntu-24.04 -j wasm-build
+    act {{ event }} --matrix os:ubuntu-24.04 -j release-build
+    act {{ event }} --matrix os:ubuntu-24.04 -j release-safe-tests
 
 # Run a single CI job locally with `act` (example: `just act-ci-job test`)
-act-ci-job job event="pull_request" matrix="os:ubuntu-latest":
+act-ci-job job event="pull_request" matrix="os:ubuntu-24.04":
     act {{ event }} --matrix {{ matrix }} -j {{ job }}
 
 # Run benchmark regression check locally under `act` (optional; often noisy on laptops/containers)
 act-bench event="pull_request":
-    act {{ event }} --matrix os:ubuntu-latest -j bench-check
+    act {{ event }} --matrix os:ubuntu-24.04 -j bench-check
 
 # Install to a local bin path (defaults to ~/.local/bin)
 install dest="${HOME}/.local/bin": release

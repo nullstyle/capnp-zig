@@ -1,7 +1,7 @@
 -W .github/workflows/ci.yml
--P ubuntu-latest=catthehacker/ubuntu:act-latest
+-P ubuntu-24.04=catthehacker/ubuntu:act-latest
 -P macos-latest=catthehacker/ubuntu:act-latest
 -P windows-latest=catthehacker/ubuntu:act-latest
 --container-architecture linux/arm64
 --concurrent-jobs 1
---matrix os:ubuntu-latest
+--matrix os:ubuntu-24.04

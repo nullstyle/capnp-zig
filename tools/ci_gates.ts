@@ -1,5 +1,6 @@
 // CI gate tools: the Nightly tag gate, the Nightly failure annotations it
-// reads, and the job-timeout check for the workflow files.
+// reads, the job-timeout check for the workflow files, and the job headroom
+// check.
 //
 //   deno run --allow-run=gh,git --allow-read --allow-write --allow-env --no-config \
 //     tools/ci_gates.ts nightly-gate <sha> [--flakes FILE] [--repo OWNER/REPO]
@@ -8,6 +9,9 @@
 //     tools/ci_gates.ts annotate --log-dir DIR [--expect NAME]
 //   deno run --allow-read --no-config \
 //     tools/ci_gates.ts job-timeouts [WORKFLOW.yml...]
+//   deno run --allow-run=gh --allow-read --allow-write --no-config \
+//     tools/ci_gates.ts job-headroom [--workflow-file FILE] [--branch NAME]
+//       [--runs N] [--repo OWNER/REPO] [--record FILE] [--fixture FILE]
 //
 // nightly-gate (`just check-nightly-gate SHA`; `just release-tag` runs it)
 //   Reads the 3 most recent completed Nightly runs whose head_sha is SHA, with
@@ -60,6 +64,25 @@
 //   unusual file is a failure, not a silent pass. With no file, it checks
 //   every .yml and .yaml file in .github/workflows, so a new workflow is
 //   checked too.
+//
+// job-headroom (`just check-job-headroom`; `just release-preflight` runs it)
+//   Reads the 10 most recent green runs (--runs, 10 to 100) of a workflow
+//   (default .github/workflows/ci.yml) on main (--branch), and the latest
+//   attempt of each job in them. For each job that succeeded, it takes the
+//   time from start to end. It prints each job's peak and its run id, the
+//   job-level timeout-minutes of the job in the workflow file, and the peak
+//   as a share of that cap. It refuses when a peak is over 75% of its cap,
+//   when a job has no usable cap, or when there are fewer than 10 green
+//   runs. Exit 0: pass. Exit 1: refused. Exit 2: it could not evaluate.
+//
+//   A run's job name comes from the job's `name:` in the workflow file;
+//   each `${{ ... }}` in it stands for any text, such as a matrix value.
+//   The matrix value is part of the name, so a runner label change renames
+//   the job. RUNNER_RENAMES maps each old label to its new one
+//   (ubuntu-latest to ubuntu-24.04), so a job's history does not start over
+//   at the change. A job name that matches no job of the file, and a job
+//   with no successful run, are listed as notes and not checked.
+//   --record and --fixture work as for nightly-gate.
 
 export const REQUIRED_RUNS = 3;
 export const ROW_MAX_DAYS = 30;
@@ -591,12 +614,26 @@ export interface JobTimeout {
   id: string;
   line: number;
   timeout: string | null;
+  // The job-level `name:`, or null when the job has none (GitHub then shows
+  // the job id).
+  name: string | null;
 }
 
 const KEY_LINE = /^([A-Za-z0-9_-]+):(?:[ \t]+(.*))?$/;
 
 function stripComment(value: string): string {
   return value.replace(/(^|\s)#.*$/, "").trim();
+}
+
+// A YAML scalar on one line: a quoted value keeps a " #" inside the quotes.
+function scalar(value: string): string {
+  const v = value.trim();
+  const quote = v[0];
+  if (quote === '"' || quote === "'") {
+    const end = v.indexOf(quote, 1);
+    if (end > 0) return v.slice(1, end);
+  }
+  return stripComment(v);
 }
 
 // Lists each job of a workflow file with its job-level timeout-minutes.
@@ -645,7 +682,7 @@ export function jobTimeouts(text: string, file = "workflow"): JobTimeout[] {
           `${file}:${l.n}: expected a job id, got ${JSON.stringify(l.body)}`,
         );
       }
-      current = { id: m[1], line: l.n, timeout: null };
+      current = { id: m[1], line: l.n, timeout: null, name: null };
       jobs.push(current);
       propIndent = -1;
       continue;
@@ -672,6 +709,7 @@ export function jobTimeouts(text: string, file = "workflow"): JobTimeout[] {
         "$2",
       );
     }
+    if (key[1] === "name") current.name = scalar(key[2] ?? "");
   }
   return jobs;
 }
@@ -695,6 +733,309 @@ export function timeoutProblems(file: string, jobs: JobTimeout[]): string[] {
     }
   }
   return problems;
+}
+
+// ---------------------------------------------------------------------------
+// Job headroom
+
+export const HEADROOM_RUNS = 10;
+export const HEADROOM_MAX_RUNS = 100;
+export const HEADROOM_SHARE = 0.75;
+export const DEFAULT_HEADROOM_WORKFLOW = `${WORKFLOW_DIR}/ci.yml`;
+
+// Runner labels that a job name used to carry, and the label that replaced
+// each one. A matrix job's name embeds its runner label ("Test
+// (ubuntu-latest)"), so a label change renames the job. The gate counts a
+// run under the old name as a run of the new name, so the history of a job
+// does not start over at the change.
+export const RUNNER_RENAMES: readonly (readonly [string, string])[] = [
+  // GitHub moves ubuntu-latest to Ubuntu 26 from 2026-10-19, so the
+  // workflows pin ubuntu-24.04 (v0.29.0).
+  ["ubuntu-latest", "ubuntu-24.04"],
+];
+
+export interface HeadroomRun {
+  id: number;
+  sha: string;
+  event: string;
+  createdAt: string;
+  attempt: number;
+}
+
+export interface HeadroomSample {
+  run: number;
+  job: number;
+  name: string;
+  seconds: number;
+}
+
+export interface HeadroomEvidence {
+  workflow: string;
+  branch: string;
+  runs: HeadroomRun[];
+  samples: HeadroomSample[];
+}
+
+interface RawTimedJob extends RawJob {
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export function headroomRunsPath(
+  repo: string,
+  workflow: string,
+  branch: string,
+  count: number,
+): string {
+  return `repos/${repo}/actions/workflows/${workflow}/runs?branch=${
+    encodeURIComponent(branch)
+  }&status=success&per_page=${count}`;
+}
+
+// The latest attempt of each job: a job that a re-run replaced is not a
+// healthy run of that job.
+export function latestJobsPath(repo: string, runId: number): string {
+  return `repos/${repo}/actions/runs/${runId}/jobs?filter=latest&per_page=100`;
+}
+
+// Reads the `count` most recent green runs of `workflow` (a file name in
+// .github/workflows, such as ci.yml) on `branch`, and the duration of each
+// job in them that succeeded.
+export async function collectHeadroom(
+  api: Api,
+  repo: string,
+  workflow: string,
+  branch: string,
+  count: number,
+): Promise<HeadroomEvidence> {
+  if (!(Number.isInteger(count) && count >= 1 && count <= HEADROOM_MAX_RUNS)) {
+    throw new GateError(
+      `--runs ${count}: use a whole number from 1 to ${HEADROOM_MAX_RUNS}`,
+    );
+  }
+  const listing = await api.get(
+    headroomRunsPath(repo, workflow, branch, count),
+  );
+  const raw = field<(RawRun & { head_branch?: string })[]>(
+    listing,
+    "workflow_runs",
+    `the ${workflow} runs`,
+  );
+  const green = raw
+    .filter((r) =>
+      r.status === "completed" && r.conclusion === "success" &&
+      (r.head_branch === undefined || r.head_branch === branch)
+    )
+    .sort((a, b) =>
+      Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id
+    )
+    .slice(0, count);
+  const runs: HeadroomRun[] = [];
+  const samples: HeadroomSample[] = [];
+  for (const run of green) {
+    runs.push({
+      id: run.id,
+      sha: run.head_sha,
+      event: run.event,
+      createdAt: run.created_at,
+      attempt: run.run_attempt,
+    });
+    const jobListing = await api.get(latestJobsPath(repo, run.id));
+    const jobs = field<RawTimedJob[]>(
+      jobListing,
+      "jobs",
+      `the jobs of run ${run.id}`,
+    );
+    const total = field<number>(
+      jobListing,
+      "total_count",
+      `the jobs of run ${run.id}`,
+    );
+    if (total > jobs.length) {
+      throw new GateError(
+        `run ${run.id} has ${total} jobs, more than one page; the gate reads only ${jobs.length}`,
+      );
+    }
+    for (const job of jobs) {
+      if (job.conclusion !== "success") continue;
+      if (job.started_at === null || job.completed_at === null) continue;
+      const seconds =
+        (Date.parse(job.completed_at) - Date.parse(job.started_at)) / 1000;
+      if (!(seconds >= 0)) {
+        throw new GateError(
+          `job ${job.id} of run ${run.id} has no usable start and end time`,
+        );
+      }
+      samples.push({ run: run.id, job: job.id, name: job.name, seconds });
+    }
+  }
+  return { workflow, branch, runs, samples };
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Replaces each old runner label of RUNNER_RENAMES that stands as a whole
+// token of the name: "Test (ubuntu-latest)", but not "ubuntu-latest-arm".
+export function normalizeJobName(name: string): string {
+  let out = name;
+  for (const [from, to] of RUNNER_RENAMES) {
+    out = out.replace(
+      new RegExp(`(^|[ (,])${escapeRegExp(from)}(?=$|[ ),])`, "g"),
+      `$1${to}`,
+    );
+  }
+  return out;
+}
+
+// The names GitHub gives the runs of a workflow job. Each `${{ ... }}` in
+// the job's `name:` stands for any text, such as a matrix value. A job with
+// no `name:` is shown as its id, with the matrix values in parentheses.
+export function jobNamePattern(job: JobTimeout): RegExp {
+  if (job.name === null || job.name === "") {
+    return new RegExp(`^${escapeRegExp(job.id)}(?: \\(.+\\))?$`);
+  }
+  const parts = job.name.split(/\$\{\{.*?\}\}/);
+  return new RegExp(`^${parts.map(escapeRegExp).join(".+?")}$`);
+}
+
+function minutes(seconds: number): string {
+  return (Math.round(seconds / 6) / 10).toFixed(1);
+}
+
+function percent(part: number, whole: number): string {
+  return (Math.round((1000 * part) / whole) / 10).toFixed(1);
+}
+
+export function evaluateHeadroom(
+  evidence: HeadroomEvidence,
+  jobs: JobTimeout[],
+  options: { file?: string; minRuns?: number; share?: number } = {},
+): GateResult {
+  const file = options.file ?? evidence.workflow;
+  const minRuns = options.minRuns ?? HEADROOM_RUNS;
+  const share = options.share ?? HEADROOM_SHARE;
+  const limit = `${Math.round(share * 100)}%`;
+  const lines: string[] = [];
+  const problems: string[] = [];
+  const runs = evidence.runs;
+  lines.push(
+    runs.length === 0
+      ? `Job headroom for ${file} on ${evidence.branch}: no green run`
+      : `Job headroom for ${file} on ${evidence.branch}: ${runs.length} green runs, ${
+        runs.at(-1)!.id
+      } (${runs.at(-1)!.createdAt}) to ${runs[0].id} (${runs[0].createdAt})`,
+  );
+  lines.push(
+    `A job may run for at most ${limit} of its job-level timeout-minutes. ${
+      RUNNER_RENAMES.map(([from, to]) => `A name with ${from} counts as ${to}.`)
+        .join(" ")
+    }`,
+  );
+  if (runs.length < minRuns) {
+    problems.push(
+      `${runs.length} green runs of ${evidence.workflow} on ${evidence.branch}; the gate needs ${minRuns}`,
+    );
+  }
+
+  const patterns = jobs.map((job) => ({
+    job,
+    pattern: jobNamePattern(job),
+    literal: job.name !== null && !job.name.includes("${{"),
+  }));
+  interface Group {
+    job: JobTimeout;
+    name: string;
+    peak: HeadroomSample;
+    runs: number;
+  }
+  const groups = new Map<string, Group>();
+  const unmatched = new Map<string, number>();
+  for (const sample of evidence.samples) {
+    const name = normalizeJobName(sample.name);
+    let found = patterns.filter((p) => p.pattern.test(name));
+    if (found.length > 1 && found.some((p) => p.literal)) {
+      found = found.filter((p) => p.literal);
+    }
+    if (found.length > 1) {
+      throw new GateError(
+        `job "${sample.name}" matches ${found.length} jobs of ${file}: ${
+          found.map((p) => p.job.id).join(", ")
+        }`,
+      );
+    }
+    if (found.length === 0) {
+      unmatched.set(name, (unmatched.get(name) ?? 0) + 1);
+      continue;
+    }
+    const group = groups.get(name);
+    if (group === undefined) {
+      groups.set(name, { job: found[0].job, name, peak: sample, runs: 1 });
+      continue;
+    }
+    group.runs++;
+    if (sample.seconds > group.peak.seconds) group.peak = sample;
+  }
+
+  const ordered = [...groups.values()].sort((a, b) =>
+    a.job.line - b.job.line || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+  );
+  for (const g of ordered) {
+    const cap = g.job.timeout !== null && /^[1-9]\d*$/.test(g.job.timeout)
+      ? Number(g.job.timeout)
+      : NaN;
+    if (!(cap >= 1 && cap <= MAX_TIMEOUT_MINUTES)) {
+      lines.push(
+        `  ${g.name}: peak ${
+          minutes(g.peak.seconds)
+        } min (run ${g.peak.run}), no usable cap, ${g.runs} runs`,
+      );
+      problems.push(
+        `${g.name}: job "${g.job.id}" (${file}:${g.job.line}) has no job-level timeout-minutes from 1 to ${MAX_TIMEOUT_MINUTES}`,
+      );
+      continue;
+    }
+    const over = g.peak.seconds > share * cap * 60;
+    lines.push(
+      `  ${g.name}: peak ${
+        minutes(g.peak.seconds)
+      } min (run ${g.peak.run}), cap ${cap} min, ${
+        percent(g.peak.seconds, cap * 60)
+      }%, ${g.runs} runs${over ? `: OVER ${limit}` : ""}`,
+    );
+    if (over) {
+      problems.push(
+        `${g.name} peaked at ${
+          minutes(g.peak.seconds)
+        } min in run ${g.peak.run}, ${
+          percent(g.peak.seconds, cap * 60)
+        }% of its ${cap}-min cap; the limit is ${limit} (${
+          minutes(share * cap * 60)
+        } min)`,
+      );
+    }
+  }
+  for (const [name, count] of unmatched) {
+    lines.push(
+      `note: job "${name}" matches no job of ${file} (${count} runs); it is not checked`,
+    );
+  }
+  const seen = new Set(ordered.map((g) => g.job));
+  for (const job of jobs) {
+    if (seen.has(job)) continue;
+    lines.push(
+      `note: job "${job.id}" (${file}:${job.line}) has no successful run in these runs; it is not checked`,
+    );
+  }
+
+  const pass = problems.length === 0;
+  if (pass) {
+    lines.push(
+      `PASS: every job peaked at or below ${limit} of its cap in ${runs.length} green runs`,
+    );
+  } else for (const p of problems) lines.push(`REFUSED: ${p}`);
+  return { pass, lines };
 }
 
 // ---------------------------------------------------------------------------
@@ -756,7 +1097,15 @@ export function trimResponse(path: string, value: unknown): unknown {
     return {
       total_count: v.total_count,
       jobs: (v.jobs as Record<string, unknown>[]).map((j) =>
-        pick(j, ["id", "name", "status", "conclusion", "run_attempt"])
+        pick(j, [
+          "id",
+          "name",
+          "status",
+          "conclusion",
+          "run_attempt",
+          "started_at",
+          "completed_at",
+        ])
       ),
     };
   }
@@ -764,6 +1113,7 @@ export function trimResponse(path: string, value: unknown): unknown {
     const keys = [
       "id",
       "name",
+      "head_branch",
       "head_sha",
       "status",
       "conclusion",
@@ -955,6 +1305,56 @@ async function jobTimeoutsCommand(args: string[]): Promise<number> {
   return problems.length === 0 ? 0 : 1;
 }
 
+async function jobHeadroomCommand(args: string[]): Promise<number> {
+  const { positional, flags } = parseFlags(args, [
+    "workflow-file",
+    "branch",
+    "runs",
+    "repo",
+    "record",
+    "fixture",
+  ]);
+  if (positional.length !== 0) {
+    throw new GateError(
+      "usage: job-headroom [--workflow-file FILE] [--branch NAME] [--runs N] [--repo OWNER/REPO] [--record FILE] [--fixture FILE]",
+    );
+  }
+  const file = flags["workflow-file"] ?? DEFAULT_HEADROOM_WORKFLOW;
+  const workflow = file.replace(/^.*[\\/]/, "");
+  const runsText = flags.runs ?? String(HEADROOM_RUNS);
+  const count = /^[1-9]\d*$/.test(runsText) ? Number(runsText) : NaN;
+  if (!(count >= HEADROOM_RUNS && count <= HEADROOM_MAX_RUNS)) {
+    throw new GateError(
+      `--runs ${runsText}: use a whole number from ${HEADROOM_RUNS} to ${HEADROOM_MAX_RUNS}`,
+    );
+  }
+  const jobs = jobTimeouts(await Deno.readTextFile(file), file);
+  let api: Api;
+  if (flags.fixture !== undefined) {
+    api = new FixtureApi(JSON.parse(await Deno.readTextFile(flags.fixture)));
+  } else api = new GhApi();
+  const recorder = flags.record !== undefined ? new RecordingApi(api) : null;
+  const evidence = await collectHeadroom(
+    recorder ?? api,
+    flags.repo ?? ":owner/:repo",
+    workflow,
+    flags.branch ?? "main",
+    count,
+  );
+  if (recorder) {
+    await Deno.writeTextFile(
+      flags.record,
+      JSON.stringify(recorder.seen, null, 2) + "\n",
+    );
+  }
+  const result = evaluateHeadroom(evidence, jobs, {
+    file,
+    minRuns: HEADROOM_RUNS,
+  });
+  console.log(result.lines.join("\n"));
+  return result.pass ? 0 : 1;
+}
+
 export async function main(args: string[]): Promise<number> {
   const [command, ...rest] = args;
   try {
@@ -965,9 +1365,11 @@ export async function main(args: string[]): Promise<number> {
         return annotateCommand(rest);
       case "job-timeouts":
         return await jobTimeoutsCommand(rest);
+      case "job-headroom":
+        return await jobHeadroomCommand(rest);
       default:
         console.error(
-          "usage: ci_gates.ts nightly-gate|annotate|job-timeouts ...",
+          "usage: ci_gates.ts nightly-gate|annotate|job-timeouts|job-headroom ...",
         );
         return 2;
     }

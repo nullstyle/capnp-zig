@@ -1,0 +1,2877 @@
+{
+  "repos/:owner/:repo/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=10": {
+    "total_count": 201,
+    "workflow_runs": [
+      {
+        "id": 39541793776,
+        "name": "CI",
+        "head_branch": "main",
+        "head_sha": "bdc656fd527a4891db755fc8a5d32d05c125352f",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-21T04:01:57Z",
+        "event": "push",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/39541793776"
+      },
+      {
+        "id": 39530075877,
+        "name": "CI",
+        "head_branch": "main",
+        "head_sha": "784348501197e718052a55547f85f18bde9e34ea",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-21T01:55:20Z",
+        "event": "push",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/39530075877"
+      },
+      {
+        "id": 39522707768,
+        "name": "CI",
+        "head_branch": "main",
+        "head_sha": "73416c7956322534702d1b06d039287f88b7947a",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-21T00:40:13Z",
+        "event": "push",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/39522707768"
+      },
+      {
+        "id": 39511977861,
+        "name": "CI",
+        "head_branch": "main",
+        "head_sha": "58612dc6b8c8e2a0e8cde69d1c7a4104f7db8926",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-20T22:59:33Z",
+        "event": "push",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/39511977861"
+      },
+      {
+        "id": 39496021351,
+        "name": "CI",
+        "head_branch": "main",
+        "head_sha": "fc0533d39800a7edd83f92da4304a098ae578dcb",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-20T20:54:48Z",
+        "event": "push",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/39496021351"
+      },
+      {
+        "id": 39463860445,
+        "name": "CI",
+        "head_branch": "main",
+        "head_sha": "f6ee364b359095032b0d0fb58f3c04abe8486838",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-20T17:11:16Z",
+        "event": "push",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/39463860445"
+      },
+      {
+        "id": 39168006388,
+        "name": "CI",
+        "head_branch": "main",
+        "head_sha": "ea84099c9d07fe76e46377e64e6837d73356d61e",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-18T21:28:43Z",
+        "event": "push",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/39168006388"
+      },
+      {
+        "id": 39090886364,
+        "name": "CI",
+        "head_branch": "main",
+        "head_sha": "71ddc4697139549122e9c74bb8a9969b1917f9b5",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-18T02:39:48Z",
+        "event": "push",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/39090886364"
+      },
+      {
+        "id": 39087817769,
+        "name": "CI",
+        "head_branch": "main",
+        "head_sha": "37c226a1b7e833bb32648da565d0bf9b71214cc5",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-18T01:48:37Z",
+        "event": "push",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/39087817769"
+      },
+      {
+        "id": 39070979687,
+        "name": "CI",
+        "head_branch": "main",
+        "head_sha": "e1d736de2f56735f6e7ea01ee9cbdb027818174c",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-17T21:26:55Z",
+        "event": "push",
+        "run_attempt": 1,
+        "html_url": "https://github.com/nullstyle/capnp-zig/actions/runs/39070979687"
+      }
+    ]
+  },
+  "repos/:owner/:repo/actions/runs/39541793776/jobs?filter=latest&per_page=100": {
+    "total_count": 30,
+    "jobs": [
+      {
+        "id": 119030978570,
+        "name": "Evented backend check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:01:59Z",
+        "completed_at": "2026-10-21T04:03:44Z"
+      },
+      {
+        "id": 119030978715,
+        "name": "QUIC targeted transport (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:06Z",
+        "completed_at": "2026-10-21T04:15:28Z"
+      },
+      {
+        "id": 119030978741,
+        "name": "Test (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:23:53Z"
+      },
+      {
+        "id": 119030978764,
+        "name": "Format check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:02:14Z"
+      },
+      {
+        "id": 119030978773,
+        "name": "Test (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:04Z",
+        "completed_at": "2026-10-21T04:16:56Z"
+      },
+      {
+        "id": 119030978801,
+        "name": "iOS cross-compile (static libraries, no SDK)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:05:05Z"
+      },
+      {
+        "id": 119030978818,
+        "name": "ReleaseSafe hardening tests (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:44:31Z"
+      },
+      {
+        "id": 119030978833,
+        "name": "Docs smoke and snippets",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:06:10Z"
+      },
+      {
+        "id": 119030978835,
+        "name": "QUIC targeted transport (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:24:57Z"
+      },
+      {
+        "id": 119030978849,
+        "name": "Fd passing compiled out (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:07:03Z"
+      },
+      {
+        "id": 119030978892,
+        "name": "QUIC targeted transport (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:15:25Z"
+      },
+      {
+        "id": 119030978893,
+        "name": "Reflection and generated RPC conformance",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:06:29Z"
+      },
+      {
+        "id": 119030978932,
+        "name": "Test (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:14:43Z"
+      },
+      {
+        "id": 119030978943,
+        "name": "Cross-target compile (x86_64-windows)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:19:20Z"
+      },
+      {
+        "id": 119030978945,
+        "name": "WASM build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:04:05Z"
+      },
+      {
+        "id": 119030978953,
+        "name": "Hardening gate (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:12Z",
+        "completed_at": "2026-10-21T04:07:53Z"
+      },
+      {
+        "id": 119030978999,
+        "name": "ThreadSanitizer lane",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:06:26Z"
+      },
+      {
+        "id": 119030979000,
+        "name": "ReleaseSafe hardening tests (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:06Z",
+        "completed_at": "2026-10-21T04:44:21Z"
+      },
+      {
+        "id": 119030979003,
+        "name": "Cross-target compile (powerpc64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:18:45Z"
+      },
+      {
+        "id": 119030979007,
+        "name": "Hardening gate (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:04:54Z"
+      },
+      {
+        "id": 119030979008,
+        "name": "Fd passing compiled out (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:06Z",
+        "completed_at": "2026-10-21T04:12:15Z"
+      },
+      {
+        "id": 119030979030,
+        "name": "ReleaseSafe hardening tests (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:50:07Z"
+      },
+      {
+        "id": 119030979066,
+        "name": "Benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:05:16Z"
+      },
+      {
+        "id": 119030979079,
+        "name": "Cross-target compile (x86-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:35:22Z"
+      },
+      {
+        "id": 119030979096,
+        "name": "Cross-target compile (aarch64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:18:43Z"
+      },
+      {
+        "id": 119030979171,
+        "name": "Zig e2e over QUIC",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:05:27Z"
+      },
+      {
+        "id": 119030979225,
+        "name": "CI gate tools",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:02:08Z"
+      },
+      {
+        "id": 119030979239,
+        "name": "Release build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:05:00Z"
+      },
+      {
+        "id": 119030979296,
+        "name": "Zig e2e interop",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:08:40Z"
+      },
+      {
+        "id": 119030979433,
+        "name": "Hardening gate (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T04:02:00Z",
+        "completed_at": "2026-10-21T04:06:30Z"
+      }
+    ]
+  },
+  "repos/:owner/:repo/actions/runs/39530075877/jobs?filter=latest&per_page=100": {
+    "total_count": 30,
+    "jobs": [
+      {
+        "id": 118993692534,
+        "name": "Reflection and generated RPC conformance",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:22Z",
+        "completed_at": "2026-10-21T02:01:58Z"
+      },
+      {
+        "id": 118993692726,
+        "name": "Cross-target compile (powerpc64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:22Z",
+        "completed_at": "2026-10-21T02:05:47Z"
+      },
+      {
+        "id": 118993692746,
+        "name": "Cross-target compile (x86-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:22Z",
+        "completed_at": "2026-10-21T02:17:56Z"
+      },
+      {
+        "id": 118993692826,
+        "name": "QUIC targeted transport (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:22Z",
+        "completed_at": "2026-10-21T02:09:26Z"
+      },
+      {
+        "id": 118993692838,
+        "name": "Format check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:22Z",
+        "completed_at": "2026-10-21T01:55:35Z"
+      },
+      {
+        "id": 118993692848,
+        "name": "WASM build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T01:56:46Z"
+      },
+      {
+        "id": 118993692872,
+        "name": "ReleaseSafe hardening tests (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:26Z",
+        "completed_at": "2026-10-21T02:35:28Z"
+      },
+      {
+        "id": 118993692893,
+        "name": "Test (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:22Z",
+        "completed_at": "2026-10-21T02:16:40Z"
+      },
+      {
+        "id": 118993692904,
+        "name": "ReleaseSafe hardening tests (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:22Z",
+        "completed_at": "2026-10-21T02:27:29Z"
+      },
+      {
+        "id": 118993692907,
+        "name": "QUIC targeted transport (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:22Z",
+        "completed_at": "2026-10-21T02:06:20Z"
+      },
+      {
+        "id": 118993692910,
+        "name": "iOS cross-compile (static libraries, no SDK)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T01:57:45Z"
+      },
+      {
+        "id": 118993692912,
+        "name": "Cross-target compile (x86_64-windows)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:22Z",
+        "completed_at": "2026-10-21T02:10:27Z"
+      },
+      {
+        "id": 118993692920,
+        "name": "ReleaseSafe hardening tests (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T02:40:02Z"
+      },
+      {
+        "id": 118993692922,
+        "name": "Zig e2e interop",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T02:00:34Z"
+      },
+      {
+        "id": 118993692935,
+        "name": "Evented backend check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T01:56:52Z"
+      },
+      {
+        "id": 118993692940,
+        "name": "Docs smoke and snippets",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:22Z",
+        "completed_at": "2026-10-21T01:59:41Z"
+      },
+      {
+        "id": 118993692968,
+        "name": "CI gate tools",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T01:55:32Z"
+      },
+      {
+        "id": 118993692979,
+        "name": "Test (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:22Z",
+        "completed_at": "2026-10-21T02:13:58Z"
+      },
+      {
+        "id": 118993692980,
+        "name": "Test (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:26Z",
+        "completed_at": "2026-10-21T02:07:37Z"
+      },
+      {
+        "id": 118993693005,
+        "name": "Benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T01:57:51Z"
+      },
+      {
+        "id": 118993693030,
+        "name": "ThreadSanitizer lane",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T01:58:52Z"
+      },
+      {
+        "id": 118993693031,
+        "name": "QUIC targeted transport (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:30Z",
+        "completed_at": "2026-10-21T02:07:53Z"
+      },
+      {
+        "id": 118993693050,
+        "name": "Fd passing compiled out (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T01:58:53Z"
+      },
+      {
+        "id": 118993693062,
+        "name": "Fd passing compiled out (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:28Z",
+        "completed_at": "2026-10-21T02:06:05Z"
+      },
+      {
+        "id": 118993693072,
+        "name": "Zig e2e over QUIC",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T02:00:40Z"
+      },
+      {
+        "id": 118993693108,
+        "name": "Hardening gate (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T01:57:22Z"
+      },
+      {
+        "id": 118993693112,
+        "name": "Hardening gate (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:26Z",
+        "completed_at": "2026-10-21T01:59:54Z"
+      },
+      {
+        "id": 118993693152,
+        "name": "Cross-target compile (aarch64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T02:13:01Z"
+      },
+      {
+        "id": 118993693160,
+        "name": "Release build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T01:57:21Z"
+      },
+      {
+        "id": 118993693182,
+        "name": "Hardening gate (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T01:55:23Z",
+        "completed_at": "2026-10-21T02:00:32Z"
+      }
+    ]
+  },
+  "repos/:owner/:repo/actions/runs/39522707768/jobs?filter=latest&per_page=100": {
+    "total_count": 30,
+    "jobs": [
+      {
+        "id": 118970093190,
+        "name": "Test (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T01:01:09Z"
+      },
+      {
+        "id": 118970093328,
+        "name": "Test (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T01:00:41Z"
+      },
+      {
+        "id": 118970093386,
+        "name": "Format check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:40:31Z"
+      },
+      {
+        "id": 118970093438,
+        "name": "QUIC targeted transport (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:20Z",
+        "completed_at": "2026-10-21T00:52:17Z"
+      },
+      {
+        "id": 118970093440,
+        "name": "Evented backend check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:42:32Z"
+      },
+      {
+        "id": 118970093496,
+        "name": "QUIC targeted transport (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:56:51Z"
+      },
+      {
+        "id": 118970093513,
+        "name": "Reflection and generated RPC conformance",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:44:28Z"
+      },
+      {
+        "id": 118970093516,
+        "name": "Hardening gate (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:43:43Z"
+      },
+      {
+        "id": 118970093527,
+        "name": "Release build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:43:10Z"
+      },
+      {
+        "id": 118970093530,
+        "name": "ThreadSanitizer lane",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:42:58Z"
+      },
+      {
+        "id": 118970093535,
+        "name": "Cross-target compile (aarch64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:58:21Z"
+      },
+      {
+        "id": 118970093564,
+        "name": "Zig e2e over QUIC",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:21Z",
+        "completed_at": "2026-10-21T00:46:08Z"
+      },
+      {
+        "id": 118970093572,
+        "name": "Cross-target compile (x86_64-windows)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:53:51Z"
+      },
+      {
+        "id": 118970093575,
+        "name": "Hardening gate (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:44:29Z"
+      },
+      {
+        "id": 118970093578,
+        "name": "ReleaseSafe hardening tests (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:20Z",
+        "completed_at": "2026-10-21T01:14:29Z"
+      },
+      {
+        "id": 118970093580,
+        "name": "iOS cross-compile (static libraries, no SDK)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:43:04Z"
+      },
+      {
+        "id": 118970093588,
+        "name": "Test (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:21Z",
+        "completed_at": "2026-10-21T00:52:53Z"
+      },
+      {
+        "id": 118970093589,
+        "name": "WASM build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:42:23Z"
+      },
+      {
+        "id": 118970093591,
+        "name": "Hardening gate (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:20Z",
+        "completed_at": "2026-10-21T00:45:45Z"
+      },
+      {
+        "id": 118970093592,
+        "name": "Cross-target compile (powerpc64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:51:15Z"
+      },
+      {
+        "id": 118970093596,
+        "name": "Docs smoke and snippets",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:42:46Z"
+      },
+      {
+        "id": 118970093604,
+        "name": "ReleaseSafe hardening tests (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T01:20:01Z"
+      },
+      {
+        "id": 118970093605,
+        "name": "ReleaseSafe hardening tests (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T01:23:32Z"
+      },
+      {
+        "id": 118970093623,
+        "name": "QUIC targeted transport (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T01:02:30Z"
+      },
+      {
+        "id": 118970093648,
+        "name": "CI gate tools",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:40:26Z"
+      },
+      {
+        "id": 118970093656,
+        "name": "Zig e2e interop",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:46:41Z"
+      },
+      {
+        "id": 118970093669,
+        "name": "Cross-target compile (x86-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T01:14:40Z"
+      },
+      {
+        "id": 118970093677,
+        "name": "Benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:42:18Z"
+      },
+      {
+        "id": 118970093682,
+        "name": "Fd passing compiled out (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:16Z",
+        "completed_at": "2026-10-21T00:43:52Z"
+      },
+      {
+        "id": 118970093787,
+        "name": "Fd passing compiled out (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-21T00:40:22Z",
+        "completed_at": "2026-10-21T00:52:48Z"
+      }
+    ]
+  },
+  "repos/:owner/:repo/actions/runs/39511977861/jobs?filter=latest&per_page=100": {
+    "total_count": 30,
+    "jobs": [
+      {
+        "id": 118934975755,
+        "name": "CI gate tools",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T22:59:46Z"
+      },
+      {
+        "id": 118934976071,
+        "name": "WASM build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:00:59Z"
+      },
+      {
+        "id": 118934976089,
+        "name": "Reflection and generated RPC conformance",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:05:26Z"
+      },
+      {
+        "id": 118934976090,
+        "name": "QUIC targeted transport (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:37Z",
+        "completed_at": "2026-10-20T23:16:34Z"
+      },
+      {
+        "id": 118934976111,
+        "name": "QUIC targeted transport (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:11:02Z"
+      },
+      {
+        "id": 118934976127,
+        "name": "Format check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T22:59:48Z"
+      },
+      {
+        "id": 118934976131,
+        "name": "Test (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:38Z",
+        "completed_at": "2026-10-20T23:19:15Z"
+      },
+      {
+        "id": 118934976149,
+        "name": "Hardening gate (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:37Z",
+        "completed_at": "2026-10-20T23:06:34Z"
+      },
+      {
+        "id": 118934976199,
+        "name": "ReleaseSafe hardening tests (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:43:36Z"
+      },
+      {
+        "id": 118934976208,
+        "name": "Cross-target compile (powerpc64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:12:14Z"
+      },
+      {
+        "id": 118934976231,
+        "name": "ReleaseSafe hardening tests (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:43Z",
+        "completed_at": "2026-10-20T23:50:35Z"
+      },
+      {
+        "id": 118934976257,
+        "name": "Fd passing compiled out (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:39Z",
+        "completed_at": "2026-10-20T23:06:18Z"
+      },
+      {
+        "id": 118934976272,
+        "name": "Test (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:44Z",
+        "completed_at": "2026-10-20T23:16:19Z"
+      },
+      {
+        "id": 118934976276,
+        "name": "Hardening gate (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:01:54Z"
+      },
+      {
+        "id": 118934976292,
+        "name": "Fd passing compiled out (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:03:36Z"
+      },
+      {
+        "id": 118934976306,
+        "name": "Benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:02:50Z"
+      },
+      {
+        "id": 118934976319,
+        "name": "Docs smoke and snippets",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:03:54Z"
+      },
+      {
+        "id": 118934976334,
+        "name": "Release build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:02:35Z"
+      },
+      {
+        "id": 118934976345,
+        "name": "Cross-target compile (x86_64-windows)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:16:49Z"
+      },
+      {
+        "id": 118934976346,
+        "name": "QUIC targeted transport (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:43Z",
+        "completed_at": "2026-10-20T23:12:51Z"
+      },
+      {
+        "id": 118934976349,
+        "name": "Evented backend check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:01:37Z"
+      },
+      {
+        "id": 118934976367,
+        "name": "Test (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:14:45Z"
+      },
+      {
+        "id": 118934976400,
+        "name": "ReleaseSafe hardening tests (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:33:52Z"
+      },
+      {
+        "id": 118934976401,
+        "name": "Hardening gate (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:41Z",
+        "completed_at": "2026-10-20T23:05:50Z"
+      },
+      {
+        "id": 118934976426,
+        "name": "Cross-target compile (aarch64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:13:02Z"
+      },
+      {
+        "id": 118934976434,
+        "name": "ThreadSanitizer lane",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:03:40Z"
+      },
+      {
+        "id": 118934976453,
+        "name": "Cross-target compile (x86-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:35:59Z"
+      },
+      {
+        "id": 118934976491,
+        "name": "Zig e2e over QUIC",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:03:15Z"
+      },
+      {
+        "id": 118934976493,
+        "name": "Zig e2e interop",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:06:35Z"
+      },
+      {
+        "id": 118934976499,
+        "name": "iOS cross-compile (static libraries, no SDK)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T22:59:36Z",
+        "completed_at": "2026-10-20T23:02:36Z"
+      }
+    ]
+  },
+  "repos/:owner/:repo/actions/runs/39496021351/jobs?filter=latest&per_page=100": {
+    "total_count": 30,
+    "jobs": [
+      {
+        "id": 118881154016,
+        "name": "Docs smoke and snippets",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T20:59:03Z"
+      },
+      {
+        "id": 118881154025,
+        "name": "Format check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T20:55:07Z"
+      },
+      {
+        "id": 118881154075,
+        "name": "ThreadSanitizer lane",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T20:58:03Z"
+      },
+      {
+        "id": 118881154097,
+        "name": "CI gate tools",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T20:55:02Z"
+      },
+      {
+        "id": 118881154117,
+        "name": "Fd passing compiled out (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:56Z",
+        "completed_at": "2026-10-20T21:07:10Z"
+      },
+      {
+        "id": 118881154135,
+        "name": "Release build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T20:57:13Z"
+      },
+      {
+        "id": 118881154137,
+        "name": "Test (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:14:27Z"
+      },
+      {
+        "id": 118881154167,
+        "name": "Zig e2e over QUIC",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T20:59:44Z"
+      },
+      {
+        "id": 118881154178,
+        "name": "Reflection and generated RPC conformance",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:01:40Z"
+      },
+      {
+        "id": 118881154217,
+        "name": "Cross-target compile (powerpc64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:08:25Z"
+      },
+      {
+        "id": 118881154241,
+        "name": "Test (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:15:55Z"
+      },
+      {
+        "id": 118881154245,
+        "name": "Hardening gate (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:57Z",
+        "completed_at": "2026-10-20T21:03:19Z"
+      },
+      {
+        "id": 118881154257,
+        "name": "Cross-target compile (x86_64-windows)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:09:40Z"
+      },
+      {
+        "id": 118881154273,
+        "name": "Evented backend check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T20:56:26Z"
+      },
+      {
+        "id": 118881154285,
+        "name": "QUIC targeted transport (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:54Z",
+        "completed_at": "2026-10-20T21:06:44Z"
+      },
+      {
+        "id": 118881154340,
+        "name": "QUIC targeted transport (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:10:58Z"
+      },
+      {
+        "id": 118881154357,
+        "name": "Cross-target compile (x86-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:28:34Z"
+      },
+      {
+        "id": 118881154372,
+        "name": "Test (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:55Z",
+        "completed_at": "2026-10-20T21:07:17Z"
+      },
+      {
+        "id": 118881154373,
+        "name": "Cross-target compile (aarch64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:11:38Z"
+      },
+      {
+        "id": 118881154435,
+        "name": "Fd passing compiled out (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:00:16Z"
+      },
+      {
+        "id": 118881154474,
+        "name": "Zig e2e interop",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:01:47Z"
+      },
+      {
+        "id": 118881154498,
+        "name": "ReleaseSafe hardening tests (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:58Z",
+        "completed_at": "2026-10-20T21:34:54Z"
+      },
+      {
+        "id": 118881154555,
+        "name": "Benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T20:57:55Z"
+      },
+      {
+        "id": 118881154595,
+        "name": "QUIC targeted transport (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:10:58Z"
+      },
+      {
+        "id": 118881154611,
+        "name": "ReleaseSafe hardening tests (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:36:05Z"
+      },
+      {
+        "id": 118881154621,
+        "name": "WASM build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T20:56:57Z"
+      },
+      {
+        "id": 118881154636,
+        "name": "ReleaseSafe hardening tests (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:42:45Z"
+      },
+      {
+        "id": 118881154666,
+        "name": "Hardening gate (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T20:58:13Z"
+      },
+      {
+        "id": 118881154755,
+        "name": "iOS cross-compile (static libraries, no SDK)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T20:56:41Z"
+      },
+      {
+        "id": 118881154811,
+        "name": "Hardening gate (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T20:54:51Z",
+        "completed_at": "2026-10-20T21:01:37Z"
+      }
+    ]
+  },
+  "repos/:owner/:repo/actions/runs/39463860445/jobs?filter=latest&per_page=100": {
+    "total_count": 30,
+    "jobs": [
+      {
+        "id": 118769991148,
+        "name": "Docs smoke and snippets",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:20Z",
+        "completed_at": "2026-10-20T17:15:25Z"
+      },
+      {
+        "id": 118769991384,
+        "name": "iOS cross-compile (static libraries, no SDK)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:21Z",
+        "completed_at": "2026-10-20T17:13:38Z"
+      },
+      {
+        "id": 118769991403,
+        "name": "Reflection and generated RPC conformance",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:20Z",
+        "completed_at": "2026-10-20T17:17:50Z"
+      },
+      {
+        "id": 118769991427,
+        "name": "Fd passing compiled out (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:28Z",
+        "completed_at": "2026-10-20T17:25:39Z"
+      },
+      {
+        "id": 118769991467,
+        "name": "Zig e2e over QUIC",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:21Z",
+        "completed_at": "2026-10-20T17:16:01Z"
+      },
+      {
+        "id": 118769991468,
+        "name": "Benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:20Z",
+        "completed_at": "2026-10-20T17:14:22Z"
+      },
+      {
+        "id": 118769991492,
+        "name": "ReleaseSafe hardening tests (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:27Z",
+        "completed_at": "2026-10-20T17:56:24Z"
+      },
+      {
+        "id": 118769991535,
+        "name": "Test (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:20Z",
+        "completed_at": "2026-10-20T17:27:33Z"
+      },
+      {
+        "id": 118769991555,
+        "name": "Cross-target compile (aarch64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:21Z",
+        "completed_at": "2026-10-20T17:30:23Z"
+      },
+      {
+        "id": 118769991562,
+        "name": "Cross-target compile (powerpc64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:21Z",
+        "completed_at": "2026-10-20T17:28:54Z"
+      },
+      {
+        "id": 118769991580,
+        "name": "Cross-target compile (x86-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:20Z",
+        "completed_at": "2026-10-20T17:39:57Z"
+      },
+      {
+        "id": 118769991642,
+        "name": "QUIC targeted transport (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:20Z",
+        "completed_at": "2026-10-20T17:27:53Z"
+      },
+      {
+        "id": 118769991658,
+        "name": "CI gate tools",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:20Z",
+        "completed_at": "2026-10-20T17:11:29Z"
+      },
+      {
+        "id": 118769991667,
+        "name": "ReleaseSafe hardening tests (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:21Z",
+        "completed_at": "2026-10-20T17:51:52Z"
+      },
+      {
+        "id": 118769991682,
+        "name": "Test (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:25Z",
+        "completed_at": "2026-10-20T17:23:43Z"
+      },
+      {
+        "id": 118769991687,
+        "name": "Cross-target compile (x86_64-windows)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:21Z",
+        "completed_at": "2026-10-20T17:26:03Z"
+      },
+      {
+        "id": 118769991693,
+        "name": "Hardening gate (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:20Z",
+        "completed_at": "2026-10-20T17:14:39Z"
+      },
+      {
+        "id": 118769991712,
+        "name": "QUIC targeted transport (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:20Z",
+        "completed_at": "2026-10-20T17:28:11Z"
+      },
+      {
+        "id": 118769991730,
+        "name": "Fd passing compiled out (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:21Z",
+        "completed_at": "2026-10-20T17:16:38Z"
+      },
+      {
+        "id": 118769991734,
+        "name": "Release build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:20Z",
+        "completed_at": "2026-10-20T17:14:03Z"
+      },
+      {
+        "id": 118769991869,
+        "name": "WASM build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:21Z",
+        "completed_at": "2026-10-20T17:13:26Z"
+      },
+      {
+        "id": 118769991938,
+        "name": "ReleaseSafe hardening tests (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:21Z",
+        "completed_at": "2026-10-20T17:44:06Z"
+      },
+      {
+        "id": 118769991941,
+        "name": "QUIC targeted transport (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:28Z",
+        "completed_at": "2026-10-20T17:24:14Z"
+      },
+      {
+        "id": 118769991958,
+        "name": "Test (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:20Z",
+        "completed_at": "2026-10-20T17:27:25Z"
+      },
+      {
+        "id": 118769991977,
+        "name": "Format check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:21Z",
+        "completed_at": "2026-10-20T17:11:37Z"
+      },
+      {
+        "id": 118769991983,
+        "name": "Evented backend check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:21Z",
+        "completed_at": "2026-10-20T17:13:18Z"
+      },
+      {
+        "id": 118769992040,
+        "name": "Hardening gate (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:26Z",
+        "completed_at": "2026-10-20T17:17:43Z"
+      },
+      {
+        "id": 118769992071,
+        "name": "Hardening gate (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:22Z",
+        "completed_at": "2026-10-20T17:18:22Z"
+      },
+      {
+        "id": 118769992114,
+        "name": "ThreadSanitizer lane",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:21Z",
+        "completed_at": "2026-10-20T17:14:06Z"
+      },
+      {
+        "id": 118769992614,
+        "name": "Zig e2e interop",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-20T17:11:21Z",
+        "completed_at": "2026-10-20T17:16:36Z"
+      }
+    ]
+  },
+  "repos/:owner/:repo/actions/runs/39168006388/jobs?filter=latest&per_page=100": {
+    "total_count": 30,
+    "jobs": [
+      {
+        "id": 117794951292,
+        "name": "Reflection and generated RPC conformance",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:33:48Z"
+      },
+      {
+        "id": 117794951356,
+        "name": "Format check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:29:00Z"
+      },
+      {
+        "id": 117794951377,
+        "name": "CI gate tools",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:28:58Z"
+      },
+      {
+        "id": 117794951414,
+        "name": "Hardening gate (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:35:37Z"
+      },
+      {
+        "id": 117794951437,
+        "name": "Test (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:45:18Z"
+      },
+      {
+        "id": 117794951451,
+        "name": "Test (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:49:28Z"
+      },
+      {
+        "id": 117794951454,
+        "name": "QUIC targeted transport (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:47Z",
+        "completed_at": "2026-10-18T21:45:39Z"
+      },
+      {
+        "id": 117794951455,
+        "name": "Test (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:51Z",
+        "completed_at": "2026-10-18T21:45:11Z"
+      },
+      {
+        "id": 117794951462,
+        "name": "Fd passing compiled out (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:33:54Z"
+      },
+      {
+        "id": 117794951469,
+        "name": "Cross-target compile (powerpc64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:43:53Z"
+      },
+      {
+        "id": 117794951477,
+        "name": "Docs smoke and snippets",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:32:51Z"
+      },
+      {
+        "id": 117794951478,
+        "name": "Zig e2e over QUIC",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:47Z",
+        "completed_at": "2026-10-18T21:33:57Z"
+      },
+      {
+        "id": 117794951481,
+        "name": "Zig e2e interop",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:35:39Z"
+      },
+      {
+        "id": 117794951483,
+        "name": "WASM build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:30:54Z"
+      },
+      {
+        "id": 117794951486,
+        "name": "Evented backend check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:47Z",
+        "completed_at": "2026-10-18T21:31:08Z"
+      },
+      {
+        "id": 117794951489,
+        "name": "Cross-target compile (aarch64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:45:01Z"
+      },
+      {
+        "id": 117794951499,
+        "name": "Fd passing compiled out (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:50Z",
+        "completed_at": "2026-10-18T21:40:12Z"
+      },
+      {
+        "id": 117794951504,
+        "name": "ThreadSanitizer lane",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:31:29Z"
+      },
+      {
+        "id": 117794951505,
+        "name": "Hardening gate (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:47Z",
+        "completed_at": "2026-10-18T21:31:36Z"
+      },
+      {
+        "id": 117794951507,
+        "name": "ReleaseSafe hardening tests (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:47Z",
+        "completed_at": "2026-10-18T22:17:13Z"
+      },
+      {
+        "id": 117794951517,
+        "name": "Cross-target compile (x86_64-windows)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:41:02Z"
+      },
+      {
+        "id": 117794951522,
+        "name": "Benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:31:04Z"
+      },
+      {
+        "id": 117794951532,
+        "name": "QUIC targeted transport (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:50:30Z"
+      },
+      {
+        "id": 117794951534,
+        "name": "ReleaseSafe hardening tests (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T22:03:35Z"
+      },
+      {
+        "id": 117794951553,
+        "name": "Cross-target compile (x86-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:50:36Z"
+      },
+      {
+        "id": 117794951571,
+        "name": "Hardening gate (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:54Z",
+        "completed_at": "2026-10-18T21:35:14Z"
+      },
+      {
+        "id": 117794951586,
+        "name": "iOS cross-compile (static libraries, no SDK)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:31:46Z"
+      },
+      {
+        "id": 117794951613,
+        "name": "ReleaseSafe hardening tests (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:52Z",
+        "completed_at": "2026-10-18T22:05:16Z"
+      },
+      {
+        "id": 117794951627,
+        "name": "Release build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:46Z",
+        "completed_at": "2026-10-18T21:31:40Z"
+      },
+      {
+        "id": 117794951725,
+        "name": "QUIC targeted transport (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T21:28:53Z",
+        "completed_at": "2026-10-18T21:41:50Z"
+      }
+    ]
+  },
+  "repos/:owner/:repo/actions/runs/39090886364/jobs?filter=latest&per_page=100": {
+    "total_count": 30,
+    "jobs": [
+      {
+        "id": 117567209432,
+        "name": "Reflection and generated RPC conformance",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:44:08Z"
+      },
+      {
+        "id": 117567209584,
+        "name": "Hardening gate (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:53Z",
+        "completed_at": "2026-10-18T02:45:09Z"
+      },
+      {
+        "id": 117567209621,
+        "name": "Format check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:40:01Z"
+      },
+      {
+        "id": 117567209670,
+        "name": "Test (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:56Z",
+        "completed_at": "2026-10-18T02:54:54Z"
+      },
+      {
+        "id": 117567209678,
+        "name": "Zig e2e over QUIC",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:45:02Z"
+      },
+      {
+        "id": 117567209682,
+        "name": "WASM build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:41:54Z"
+      },
+      {
+        "id": 117567209685,
+        "name": "Test (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:59:27Z"
+      },
+      {
+        "id": 117567209687,
+        "name": "CI gate tools",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:39:58Z"
+      },
+      {
+        "id": 117567209698,
+        "name": "Zig e2e interop",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:45:50Z"
+      },
+      {
+        "id": 117567209731,
+        "name": "Test (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:57:50Z"
+      },
+      {
+        "id": 117567209743,
+        "name": "Cross-target compile (aarch64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:58:38Z"
+      },
+      {
+        "id": 117567209778,
+        "name": "Evented backend check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:41:52Z"
+      },
+      {
+        "id": 117567209784,
+        "name": "ThreadSanitizer lane",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:43:32Z"
+      },
+      {
+        "id": 117567209788,
+        "name": "iOS cross-compile (static libraries, no SDK)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:41:58Z"
+      },
+      {
+        "id": 117567209792,
+        "name": "QUIC targeted transport (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:53:24Z"
+      },
+      {
+        "id": 117567209793,
+        "name": "Docs smoke and snippets",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:51Z",
+        "completed_at": "2026-10-18T02:43:07Z"
+      },
+      {
+        "id": 117567209797,
+        "name": "Cross-target compile (x86_64-windows)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:55:00Z"
+      },
+      {
+        "id": 117567209810,
+        "name": "Cross-target compile (x86-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T03:14:49Z"
+      },
+      {
+        "id": 117567209817,
+        "name": "Hardening gate (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:42:20Z"
+      },
+      {
+        "id": 117567209820,
+        "name": "ReleaseSafe hardening tests (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T03:20:20Z"
+      },
+      {
+        "id": 117567209824,
+        "name": "Benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:43:04Z"
+      },
+      {
+        "id": 117567209831,
+        "name": "Hardening gate (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:51Z",
+        "completed_at": "2026-10-18T02:46:37Z"
+      },
+      {
+        "id": 117567209833,
+        "name": "Fd passing compiled out (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:54Z",
+        "completed_at": "2026-10-18T02:53:21Z"
+      },
+      {
+        "id": 117567209837,
+        "name": "Cross-target compile (powerpc64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:57:39Z"
+      },
+      {
+        "id": 117567209848,
+        "name": "Fd passing compiled out (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:45:06Z"
+      },
+      {
+        "id": 117567209850,
+        "name": "QUIC targeted transport (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:54Z",
+        "completed_at": "2026-10-18T02:50:38Z"
+      },
+      {
+        "id": 117567209856,
+        "name": "QUIC targeted transport (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T02:53:27Z"
+      },
+      {
+        "id": 117567209863,
+        "name": "ReleaseSafe hardening tests (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:50Z",
+        "completed_at": "2026-10-18T03:15:40Z"
+      },
+      {
+        "id": 117567209876,
+        "name": "Release build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:51Z",
+        "completed_at": "2026-10-18T02:42:51Z"
+      },
+      {
+        "id": 117567209892,
+        "name": "ReleaseSafe hardening tests (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T02:39:58Z",
+        "completed_at": "2026-10-18T03:20:04Z"
+      }
+    ]
+  },
+  "repos/:owner/:repo/actions/runs/39087817769/jobs?filter=latest&per_page=100": {
+    "total_count": 30,
+    "jobs": [
+      {
+        "id": 117557977974,
+        "name": "Format check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:48:51Z"
+      },
+      {
+        "id": 117557978096,
+        "name": "Test (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T02:02:59Z"
+      },
+      {
+        "id": 117557978109,
+        "name": "Zig e2e interop",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:56:00Z"
+      },
+      {
+        "id": 117557978124,
+        "name": "Benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:51:45Z"
+      },
+      {
+        "id": 117557978131,
+        "name": "ThreadSanitizer lane",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:53:16Z"
+      },
+      {
+        "id": 117557978137,
+        "name": "Test (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T02:05:11Z"
+      },
+      {
+        "id": 117557978152,
+        "name": "Hardening gate (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:55:54Z"
+      },
+      {
+        "id": 117557978153,
+        "name": "iOS cross-compile (static libraries, no SDK)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:51:25Z"
+      },
+      {
+        "id": 117557978179,
+        "name": "Evented backend check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:50:57Z"
+      },
+      {
+        "id": 117557978198,
+        "name": "Test (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:46Z",
+        "completed_at": "2026-10-18T02:03:11Z"
+      },
+      {
+        "id": 117557978208,
+        "name": "QUIC targeted transport (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:46Z",
+        "completed_at": "2026-10-18T02:00:41Z"
+      },
+      {
+        "id": 117557978212,
+        "name": "Fd passing compiled out (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:48Z",
+        "completed_at": "2026-10-18T02:00:49Z"
+      },
+      {
+        "id": 117557978222,
+        "name": "Docs smoke and snippets",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:53:01Z"
+      },
+      {
+        "id": 117557978223,
+        "name": "QUIC targeted transport (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T02:04:57Z"
+      },
+      {
+        "id": 117557978237,
+        "name": "Reflection and generated RPC conformance",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:53:55Z"
+      },
+      {
+        "id": 117557978239,
+        "name": "Hardening gate (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:51:59Z"
+      },
+      {
+        "id": 117557978242,
+        "name": "CI gate tools",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:48:48Z"
+      },
+      {
+        "id": 117557978243,
+        "name": "QUIC targeted transport (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T02:11:07Z"
+      },
+      {
+        "id": 117557978266,
+        "name": "Zig e2e over QUIC",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:52:51Z"
+      },
+      {
+        "id": 117557978272,
+        "name": "Fd passing compiled out (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:53:57Z"
+      },
+      {
+        "id": 117557978280,
+        "name": "Cross-target compile (x86_64-windows)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:58:37Z"
+      },
+      {
+        "id": 117557978302,
+        "name": "Cross-target compile (aarch64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T02:08:22Z"
+      },
+      {
+        "id": 117557978308,
+        "name": "WASM build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:50:00Z"
+      },
+      {
+        "id": 117557978336,
+        "name": "ReleaseSafe hardening tests (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T02:32:55Z"
+      },
+      {
+        "id": 117557978375,
+        "name": "Release build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T01:51:03Z"
+      },
+      {
+        "id": 117557978383,
+        "name": "ReleaseSafe hardening tests (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:45Z",
+        "completed_at": "2026-10-18T02:27:20Z"
+      },
+      {
+        "id": 117557978410,
+        "name": "ReleaseSafe hardening tests (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T02:25:00Z"
+      },
+      {
+        "id": 117557978472,
+        "name": "Hardening gate (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:47Z",
+        "completed_at": "2026-10-18T01:54:33Z"
+      },
+      {
+        "id": 117557978481,
+        "name": "Cross-target compile (powerpc64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T02:05:09Z"
+      },
+      {
+        "id": 117557978687,
+        "name": "Cross-target compile (x86-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-18T01:48:40Z",
+        "completed_at": "2026-10-18T02:14:40Z"
+      }
+    ]
+  },
+  "repos/:owner/:repo/actions/runs/39070979687/jobs?filter=latest&per_page=100": {
+    "total_count": 30,
+    "jobs": [
+      {
+        "id": 117508345636,
+        "name": "CI gate tools",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:27:09Z"
+      },
+      {
+        "id": 117508345736,
+        "name": "Test (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:44:33Z"
+      },
+      {
+        "id": 117508345739,
+        "name": "Test (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:27:03Z",
+        "completed_at": "2026-10-17T21:39:06Z"
+      },
+      {
+        "id": 117508345763,
+        "name": "Benchmark regression check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:28:59Z"
+      },
+      {
+        "id": 117508345787,
+        "name": "QUIC targeted transport (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:58Z",
+        "completed_at": "2026-10-17T21:48:41Z"
+      },
+      {
+        "id": 117508345798,
+        "name": "Format check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:27:09Z"
+      },
+      {
+        "id": 117508345835,
+        "name": "WASM build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:58Z",
+        "completed_at": "2026-10-17T21:29:05Z"
+      },
+      {
+        "id": 117508345842,
+        "name": "QUIC targeted transport (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:27:02Z",
+        "completed_at": "2026-10-17T21:37:35Z"
+      },
+      {
+        "id": 117508345849,
+        "name": "QUIC targeted transport (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:36:49Z"
+      },
+      {
+        "id": 117508345856,
+        "name": "Hardening gate (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:58Z",
+        "completed_at": "2026-10-17T21:34:01Z"
+      },
+      {
+        "id": 117508345862,
+        "name": "Reflection and generated RPC conformance",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:33:17Z"
+      },
+      {
+        "id": 117508345864,
+        "name": "Evented backend check",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:58Z",
+        "completed_at": "2026-10-17T21:29:02Z"
+      },
+      {
+        "id": 117508345877,
+        "name": "Docs smoke and snippets",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:29:37Z"
+      },
+      {
+        "id": 117508345878,
+        "name": "ReleaseSafe hardening tests (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:58Z",
+        "completed_at": "2026-10-17T22:11:14Z"
+      },
+      {
+        "id": 117508345896,
+        "name": "Test (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:43:02Z"
+      },
+      {
+        "id": 117508345902,
+        "name": "Cross-target compile (aarch64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:58Z",
+        "completed_at": "2026-10-17T21:39:46Z"
+      },
+      {
+        "id": 117508345914,
+        "name": "Zig e2e interop",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:32:27Z"
+      },
+      {
+        "id": 117508345920,
+        "name": "Cross-target compile (powerpc64-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:37:09Z"
+      },
+      {
+        "id": 117508345922,
+        "name": "ReleaseSafe hardening tests (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:27:00Z",
+        "completed_at": "2026-10-17T22:13:18Z"
+      },
+      {
+        "id": 117508345929,
+        "name": "Cross-target compile (x86_64-windows)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:58Z",
+        "completed_at": "2026-10-17T21:39:51Z"
+      },
+      {
+        "id": 117508345935,
+        "name": "Hardening gate (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:30:13Z"
+      },
+      {
+        "id": 117508345943,
+        "name": "Release build",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:29:53Z"
+      },
+      {
+        "id": 117508345952,
+        "name": "ThreadSanitizer lane",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:29:40Z"
+      },
+      {
+        "id": 117508345963,
+        "name": "Zig e2e over QUIC",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:30:49Z"
+      },
+      {
+        "id": 117508345964,
+        "name": "Cross-target compile (x86-linux-gnu)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T22:00:00Z"
+      },
+      {
+        "id": 117508345968,
+        "name": "ReleaseSafe hardening tests (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:27:06Z",
+        "completed_at": "2026-10-17T22:13:05Z"
+      },
+      {
+        "id": 117508345971,
+        "name": "Fd passing compiled out (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:27:06Z",
+        "completed_at": "2026-10-17T21:37:31Z"
+      },
+      {
+        "id": 117508345978,
+        "name": "Hardening gate (macos-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:27:03Z",
+        "completed_at": "2026-10-17T21:34:02Z"
+      },
+      {
+        "id": 117508345981,
+        "name": "iOS cross-compile (static libraries, no SDK)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:29:34Z"
+      },
+      {
+        "id": 117508345992,
+        "name": "Fd passing compiled out (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "started_at": "2026-10-17T21:26:57Z",
+        "completed_at": "2026-10-17T21:31:04Z"
+      }
+    ]
+  }
+}

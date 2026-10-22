@@ -8,6 +8,8 @@
 #
 #   job      The Nightly job name as GitHub shows it, with its matrix value,
 #            for example "RPC soak (chaos + deadlines, windows-latest)".
+#            Linux jobs carry the label ubuntu-24.04, for example
+#            "Package preflight (ubuntu-24.04)".
 #   run id   The Nightly run that showed the flake. This is the evidence.
 #   owner    The person who watches the flake and removes the row.
 #   added    The date the row was added, YYYY-MM-DD (UTC).
