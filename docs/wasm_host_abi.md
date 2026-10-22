@@ -601,6 +601,15 @@ once with an exception Return, as the C++ reference does. So after a
 kind-4 record, `capnp_peer_send_return_canceled` is never refused for
 this reason.
 
+Known limit: a call pipelined on a host call that the host has not
+answered fails when the host answers with
+`capnp_peer_respond_host_call_return_frame`. The peer replays it from
+inside that answer, and the host-call path reads a call's frame only inside
+`capnp_peer_push_frame`, so the replayed call gets an exception Return
+("host call failed"). It still gets exactly one Return. See
+[supported-surface.md](supported-surface.md) ("HostPeer fails a call that
+is pipelined on an unanswered host call").
+
 ```c
 u32 capnp_peer_set_answer_finished_handler(u32 peer, u32 enabled);
 u32 capnp_peer_send_return_canceled(u32 peer, u32 answer_id);

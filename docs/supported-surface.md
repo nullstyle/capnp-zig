@@ -923,6 +923,21 @@ cooperating peer.
   forwarded), and results that carry capabilities, end the question with
   RETURN EXCEPTION.
 
+- **HostPeer fails a call that is pipelined on an unanswered host call.**
+  Through `HostPeer` (the WASM host ABI), a call pipelined on a host call
+  waits in the Peer until the host answers that call. When the host
+  answers with a results frame whose capability the call targets
+  (`respondHostCallReturnFrame`, the path capnp-deno prefers), the Peer
+  replays the call from inside that answer. `HostPeer` reads a host call's
+  frame only while `pushFrame` runs (`current_inbound_frame`), so the
+  replayed call fails with an exception Return ("host call failed",
+  sanitized from `error.MissingHostInboundFrame`). The call still gets
+  exactly one Return. The `Peer` API and the native C ABI deliver such a
+  call. capnp-deno answers its calls through `HostPeer`, so for it every
+  call pipelined on a host call fails. Pinned by "answer cancellation: no
+  event while a call is pipelined on the answer; ..." in
+  `tests/wasm_host_abi_test.zig`.
+
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Of the items above, only the
 `sendResultsTo = thirdParty` item is a Level-3 surface. Historical

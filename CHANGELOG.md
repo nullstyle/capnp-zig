@@ -31,7 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an exception Return ("pipelined on a finished call"), as the C++
   reference does; before, the call waited on the answer. So it never
   makes the cancel refuse, and after the report the host's cancel is
-  still accepted. The `capnp_core.h` changes are comments only. The
+  still accepted. Through `HostPeer` (the WASM host ABI, which capnp-deno
+  uses), a call pipelined on a host call still fails when the host
+  answers it with a results frame
+  (`capnp_peer_respond_host_call_return_frame`), now with "host call
+  failed" instead of "call canceled":
+  that is a separate known limit ("HostPeer fails a call that is
+  pipelined on an unanswered host call" in `docs/supported-surface.md`).
+  The `capnp_core.h` changes are comments only. The
   native fuzz (`zig build fuzz-native-abi`) now checks the rule in clean
   sessions. Tests: "answer-finished hook stays quiet while a call is
   pipelined on the answer (P0-1)", "a call pipelined on an answer after

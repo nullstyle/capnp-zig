@@ -168,16 +168,21 @@ The owner sends this text after the v0.27.0 tag exists.
 | Feature bit 10 | Level-3 handoff origination over the WASM host ABI. | `docs/rpc_l3_wasm_abi_proposal.md` | delivered in v0.22.0 | capnp-deno uses it (`@nullstyle/capnp/advanced`). | 2026-10-17 |
 | Feature bit 11 | Level-3 vat hosting over the WASM host ABI. | `docs/CHANGELOG.md` ("The VatC gap is closed") | delivered in v0.23.0 | capnp-deno uses it. | 2026-10-17 |
 | Feature bit 12 | Host answer cancellation over the WASM host ABI: the answer-finished event and `Return{canceled}`. | `docs/CHANGELOG.md` ("Host answer cancellation") | delivered in v0.24.0 | Its pin `fe6634d` has it, and its artifact advertises bits 0-12. | 2026-10-17 |
-| Answer-finished with pipelined calls | No ask: a capnp-zig defect in feature bit 12. A Finish of a call that other calls are pipelined on queued the kind-4 event, and `capnp_peer_send_return_canceled` then failed those calls. | none (sprint plan 2026-10-21, P0-1) | on main for v0.28.1 | Now no kind-4 event comes while calls are pipelined on the answer, and none comes later when they go; `capnp_peer_send_return_canceled` refuses such an answer (`AnswerHasPipelinedCalls`) and sends nothing. capnp-deno's RpcServerBridge (`640d8a4`, `src/rpc/server/bridge.ts:1237-1262`) answers every kind-4 event with `sendReturnCanceled`, so its pin `fe6634d` has the defect. The fix comes with a pin move to v0.28.1 or later. Until then, the mitigation is to not answer canceled on answer-finished events: let the handler's answer go out. See the relay text below. | 2026-10-21 |
+| Answer-finished with pipelined calls | No ask: a capnp-zig defect in feature bit 12. A Finish of a call that other calls are pipelined on queued the kind-4 event, and `capnp_peer_send_return_canceled` then failed those calls. | none (sprint plan 2026-10-21, P0-1) | on main for v0.28.1 | Now no kind-4 event comes while calls are pipelined on the answer, and none comes later when they go; `capnp_peer_send_return_canceled` refuses such an answer (`AnswerHasPipelinedCalls`) and sends nothing. capnp-deno's RpcServerBridge (`640d8a4`, `src/rpc/server/bridge.ts:1237-1262`) answers every kind-4 event with `sendReturnCanceled`, so its pin `fe6634d` has the defect. v0.28.1 stops the cancel, but bar still fails through `HostPeer`: a call pipelined on a host call that the host answers with `capnp_peer_respond_host_call_return_frame` gets "host call failed" ("HostPeer fails a call that is pipelined on an unanswered host call" in [supported-surface.md](supported-surface.md); not fixed yet). So the relay below is held until a tag also fixes that limit. At `fe6634d`, the mitigation is to not answer canceled on answer-finished events: let the handler's answer go out. | 2026-10-21 |
 | Feature bit 10 follow-ups | The WASM pickup-handler export, `sendProvide` with a retained-answer or promised-answer target, and `sendThirdPartyAnswer` with a caller-chosen id. | `docs/rpc_l3_wasm_abi_proposal.md` ("Implementation deltas") | deferred | capnp-deno deferred them itself. It uses the host-driven Accept path, `importedCap` targets and auto-allocated answer ids. The two `sendProvide` target forms need no new feature bit. | 2026-10-17 |
 | Upgrade note | The L2, L3 and L4 upgrade guidance for capnp-deno (this repository's old upgrade note, last changed in `31a2ec3`). | none | closed | capnp-deno has moved past it (v0.21.0, v0.22.0, v0.23.0, then `fe6634d`). The tier rules it gave are in [stability.md](stability.md). The note is deleted. | 2026-10-17 |
 
 capnp-deno has no open ask. Its deferred feature-bit-10 follow-ups are in
 the table.
 
-### Relay to capnp-deno for v0.28.1
+### Relay to capnp-deno for v0.28.1 (held)
 
-The owner sends this text after the v0.28.1 tag exists.
+Do not send this text yet. Through `HostPeer`, a call pipelined on a host
+call that the host answers with `capnp_peer_respond_host_call_return_frame`
+still fails ("host call failed"; see the known limit in
+[supported-surface.md](supported-surface.md)). So moving the pin to
+v0.28.1 alone does not let bar run. Send the text once a tag also fixes
+that limit, and name that tag in it.
 
 > **Answer-finished and pipelined calls (feature bit 12).** Up to
 > v0.28.0, a Finish of a host call that other calls were pipelined on
@@ -191,9 +196,12 @@ The owner sends this text after the v0.28.1 tag exists.
 > and none later when they go: the handler's ordinary answer settles the
 > call. `capnp_peer_send_return_canceled` refuses such an answer with
 > `AnswerHasPipelinedCalls` and sends nothing; after that refusal, answer
-> the call as usual. Your pin `fe6634d` has the defect. Move the pin to
-> v0.28.1 or later. Until then, do not answer canceled on answer-finished
-> events: let the handler's answer go out.
+> the call as usual. A call pipelined on an answer after its Finish breaks
+> the protocol. The peer now answers such a call at once with an exception
+> Return, as the C++ reference does, so after a kind-4 event
+> `capnp_peer_send_return_canceled` still answers. Your pin `fe6634d` has
+> the defect. Move the pin to v0.28.1 or later. Until then, do not answer
+> canceled on answer-finished events: let the handler's answer go out.
 
 ## slcp-zig
 

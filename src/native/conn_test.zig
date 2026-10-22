@@ -2236,6 +2236,36 @@ test "answer finished: with the Peer's finished-early records full, no effect; t
     try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 10, null));
 }
 
+test "answer finished: a held call that a call is pipelined on gets no ANSWER_FINISHED when the hold ends" {
+    // Question X waits for the answer to Y (77), the remote pipelines call
+    // 88 on Y, then finishes Y. 88 still needs Y's results, so the core
+    // never reports Y's Finish: not at the Finish, and not when X ends
+    // without Y's answer. The host's answer to Y then settles both.
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+    defer p.deinit();
+    const t = try p.start(alloc);
+    try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+    try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 88, tail_answer));
+    try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
+
+    const order_before = p.ra.order.items.len;
+    try p.a.cancel(t.q);
+    try drainAll(p.a, &p.ra);
+    for (p.ra.order.items[order_before..]) |kind| try testing.expect(kind != .answer_finished);
+    _ = try expectOneReturn(&p.ra, t.q, .canceled);
+    try testing.expectEqual(@as(usize, 0), p.ra.countFinished(tail_answer));
+    try testing.expectError(error.Invalid, p.a.returnCanceled(tail_answer));
+
+    try p.a.returnException(tail_answer, 0, "late");
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, tail_answer, null));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 88, .exception));
+    try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
+}
+
 test "answer finished: a Finish of a held call is withheld; each end of the hold without the answer reports it once" {
     // The remote finishes Y (77) while question X waits for Y's answer: X
     // still wants it, so the host is not told. When X ends without Y's

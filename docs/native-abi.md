@@ -194,7 +194,9 @@ correct.
 calls" below), a Finish of Y does not queue ANSWER_FINISHED: X still wants
 Y's answer. If the wait ends without Y's answer (`capnp_cancel` of X, X's
 deadline, or the shutdown drain bound), the core queues ANSWER_FINISHED for
-Y then, before X's RETURN. A transport close queues none. The core never
+Y then, before X's RETURN. It does not when calls were pipelined on Y when
+Y's Finish came: those calls still need Y's results, so no ANSWER_FINISHED
+comes for Y at all. A transport close queues none. The core never
 makes X wait for a Y that it already reported: X then gets RETURN EXCEPTION
 (`unimplemented`).
 

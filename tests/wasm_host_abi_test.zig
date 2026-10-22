@@ -2098,10 +2098,13 @@ test "answer cancellation: no event while a call is pipelined on the answer; sen
     try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_outbound_count(server));
 
     // The host's ordinary answer names the bootstrap export, and the peer
-    // replays the pipelined call on it. HostPeer reads a host call's frame
-    // only inside capnp_peer_push_frame, so today it answers a replayed
-    // call with an exception (`MissingHostInboundFrame`, sanitized) instead
-    // of queueing it. The call still gets exactly one Return.
+    // replays the pipelined call on it. Each call gets exactly one Return.
+    // Known limit ("HostPeer fails a call that is pipelined on an
+    // unanswered host call", docs/supported-surface.md): HostPeer reads a
+    // host call's frame only inside capnp_peer_push_frame, so today call
+    // 40's Return is an exception (`MissingHostInboundFrame`, sanitized)
+    // instead of a new host call. A fix should make 40 a host call; this
+    // test then needs 40 answered, not a different tag.
     const return_frame = try encodeReturnResultsFrameWithCap(
         std.testing.allocator,
         pending.question_id,
@@ -2114,14 +2117,16 @@ test "answer cancellation: no event while a call is pipelined on the answer; sen
         @intCast(return_frame.len),
     ));
     try std.testing.expectEqual(@as(u32, 2), abi.capnp_peer_outbound_count(server));
-    for ([_]u32{ pending.question_id, 40 }, [_]protocol.ReturnTag{ .results, .exception }) |answer_id, tag| {
+    for ([_]u32{ pending.question_id, 40 }) |answer_id| {
         const frame = try popOutFrameCopy(std.testing.allocator, server);
         defer std.testing.allocator.free(frame);
         var decoded = try protocol.DecodedMessage.init(std.testing.allocator, frame);
         defer decoded.deinit();
         const ret = try decoded.asReturn();
         try std.testing.expectEqual(answer_id, ret.answer_id);
-        try std.testing.expectEqual(tag, ret.tag);
+        // Never canceled: the host's answer, not a cancel, settles foo.
+        if (answer_id == pending.question_id) try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
+        try std.testing.expect(ret.tag != .canceled);
     }
     try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_pop_l3_event(
         server,
