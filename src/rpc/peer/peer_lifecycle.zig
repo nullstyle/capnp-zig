@@ -551,6 +551,12 @@ pub fn Lifecycle(
             entry.cancelled = true;
             entry.deadline_ns = null;
             entry.deinit_ctx = null;
+            // This cancel sends the question's Finish (below). A forward that
+            // waited for the caller's Finish to relay one must not send a
+            // second: the caller finishes the call once it has the Return
+            // this cancel relays, and go-capnp ends the connection on a
+            // second Finish of one question.
+            self.dropForwardedTailRelay(wire_answer_id);
 
             if (question.is_loopback) {
                 // The Finish below runs the host's callbacks (the

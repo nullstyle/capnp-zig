@@ -2315,6 +2315,84 @@ test "a forward the caller still wants: when its relayed Return cannot be sent, 
     }
 }
 
+/// A test clock the test moves by hand (`Peer.setClock`).
+const ManualClock = struct {
+    now: i64 = 0,
+
+    fn nowFn(ctx: *anyopaque) i64 {
+        return castCtx(*ManualClock, ctx).now;
+    }
+};
+
+test "a forwarded question that the peer cancels itself gets one Finish; the call's id comes free" {
+    // A forwarded question has a call deadline like any question
+    // (default_call_timeout_ms). When it passes, the peer sends Finish for
+    // the forwarded question qf and relays the deadline's exception as the
+    // call's Return. A compliant caller then finishes the call. Before, a
+    // forward the caller still wanted kept its tail mapping, so that
+    // Finish sent Finish(qf) a second time; go-capnp fails on a second
+    // Finish and ends the connection. Cases: W1 (600 on a promise export
+    // resolved to the remote's capability), a wanted call 700 pipelined on
+    // 600, and one the caller finished first (go-capnp's flags); the
+    // remote's late Return for qf before or after the caller's Finish.
+    const allocator = std.testing.allocator;
+    const Shape = enum { wanted_promise_export, wanted_pipelined, finished_pipelined };
+    for (std.enums.values(Shape)) |shape| {
+        for ([_]bool{ false, true }) |late_return_first| {
+            var h: TailHarness = undefined;
+            try h.start(allocator);
+            defer h.deinit();
+            var clock = ManualClock{};
+            h.client_peer.setClock(.{ .ctx = &clock, .now_fn = ManualClock.nowFn });
+            h.client_peer.setTimeouts(.{ .default_call_timeout_ms = 1000 });
+            const wire_mark = h.wire.events.items.len;
+            const fwd_id: u32 = if (shape == .wanted_promise_export) 600 else 700;
+            switch (shape) {
+                .wanted_promise_export => {
+                    const promise_id = try h.client_peer.addPromiseExport();
+                    try h.pushPlainCall(allocator, 600, promise_id);
+                    try h.client_peer.resolvePromiseExportToImport(promise_id, h.server_import_id);
+                },
+                .wanted_pipelined, .finished_pipelined => {
+                    try h.pushPlainCall(allocator, 600, h.target_export_id);
+                    try h.pushPipelinedPlainCall(allocator, 700, 600);
+                    if (shape == .finished_pipelined) try h.pushFinishWith(allocator, 700, true);
+                    var result = ResultImport{ .import_id = h.server_import_id };
+                    try h.client_peer.sendReturnResults(600, &result, ResultImport.build);
+                    try h.pushFinish(allocator, 600);
+                },
+            }
+            var qfs: [2]u32 = undefined;
+            try std.testing.expectEqual(@as(usize, 1), try clientCallsSince(&h, wire_mark, &qfs));
+            const qf = qfs[0];
+
+            clock.now = 2 * std.time.ns_per_s;
+            try std.testing.expect(h.client_peer.checkDeadlines() >= 1);
+            try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, qf));
+            try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, fwd_id, .exception));
+            // The remote's late Return for qf (it got the Finish), and the
+            // caller's Finish of the call it has a Return for.
+            if (late_return_first) try h.pushResults(allocator, qf);
+            if (shape != .finished_pipelined) try h.pushFinish(allocator, fwd_id);
+            if (!late_return_first) try h.pushResults(allocator, qf);
+
+            try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, qf));
+            try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, fwd_id, null));
+            try expectForwardGone(&h, fwd_id, qf);
+            for ([_]u32{ fwd_id, 600 }) |id| {
+                try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(id)));
+                h.target.answer_id = null;
+                try h.pushPlainCall(allocator, id, h.target_export_id);
+                try std.testing.expectEqual(@as(?u32, id), h.target.answer_id);
+                var reply = ResultN{ .n = 1 };
+                try h.client_peer.sendReturnResults(id, &reply, ResultN.build);
+                try h.pushFinish(allocator, id);
+            }
+            try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, qf));
+        }
+    }
+}
+
 test "a yourself call whose param names a failed answer: the remote gets resultsSentElsewhere, the tail call that failure" {
     const allocator = std.testing.allocator;
     var h: TailHarness = undefined;

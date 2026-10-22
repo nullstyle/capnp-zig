@@ -3472,6 +3472,20 @@ pub const Peer = struct {
         }
     }
 
+    /// Drop the tail mapping that would relay the caller's Finish to
+    /// forwarded question `question_id` (`forwarded_tail_questions`), for a
+    /// question whose Finish is sent another way: the peer cancels it
+    /// itself (`cancelQuestion`, a call deadline, the shutdown drain). The
+    /// mapping lives only while that Finish is still to be sent.
+    pub fn dropForwardedTailRelay(self: *Peer, question_id: u32) void {
+        var it = self.forwarded_tail_questions.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* != question_id) continue;
+            _ = self.forwarded_tail_questions.remove(entry.key_ptr.*);
+            return;
+        }
+    }
+
     pub fn neutralizeJoinRelayQuestion(self: *Peer, question_id: u32) void {
         if (self.questions.getPtr(question_id)) |question| {
             if (question.deinit_ctx) |deinit_ctx| {
