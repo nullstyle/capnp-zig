@@ -1585,6 +1585,69 @@ test "go-capnp Finish flags: a finished call forwarded back to the remote ends a
     }
 }
 
+test "a remote call with the id of the peer's forwarded question reaches the host while the forward waits" {
+    // Question ids are per direction: the remote's questions and the
+    // peer's own questions are counted apart, both up from 0, and go-capnp
+    // and C++ take the lowest free id. The forwarded question qf is one of
+    // the peer's own. Before, the peer also took qf as one of the remote's
+    // ids while the forward waited, and the remote's new call with that id
+    // failed with DuplicateQuestionId. Cases: a forward the caller still
+    // wants (call 600 parked on a promise export), and one it finished
+    // first with go-capnp's Finish flags (call 700 pipelined on 600).
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |finished| {
+        var h: TailHarness = undefined;
+        try h.start(allocator);
+        defer h.deinit();
+
+        const wire_mark = h.wire.events.items.len;
+        const fwd_id: u32 = if (finished) 700 else 600;
+        if (finished) {
+            try h.pushPlainCall(allocator, 600, h.target_export_id);
+            try h.pushPipelinedPlainCall(allocator, 700, 600);
+            try h.pushFinishWith(allocator, 700, true);
+            var result = ResultImport{ .import_id = h.server_import_id };
+            try h.client_peer.sendReturnResults(600, &result, ResultImport.build);
+        } else {
+            const promise_id = try h.client_peer.addPromiseExport();
+            try h.pushPlainCall(allocator, 600, promise_id);
+            try h.client_peer.resolvePromiseExportToImport(promise_id, h.server_import_id);
+        }
+        var qfs: [2]u32 = undefined;
+        try std.testing.expectEqual(@as(usize, 1), try clientCallsSince(&h, wire_mark, &qfs));
+        const qf = qfs[0];
+        try std.testing.expect(qf != 600 and qf != 700);
+        try std.testing.expect(try h.client_peer.inboundAnswerQuestionIdInUse(fwd_id));
+        try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(qf)));
+
+        // While the forward waits, the remote calls with id qf.
+        h.target.answer_id = null;
+        try h.pushPlainCall(allocator, qf, h.target_export_id);
+        try std.testing.expectEqual(@as(?u32, qf), h.target.answer_id);
+        var reply = ResultN{ .n = 5 };
+        try h.client_peer.sendReturnResults(qf, &reply, ResultN.build);
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, qf, .results));
+        try h.pushFinish(allocator, qf);
+
+        // The forward ends as it does without that call.
+        try h.pushResults(allocator, qf);
+        if (!finished) try h.pushFinish(allocator, fwd_id);
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, fwd_id, .results));
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, fwd_id, null));
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, qf));
+        try expectForwardGone(&h, fwd_id, qf);
+        if (finished) try h.pushFinishWith(allocator, 600, true);
+
+        // Every id is free again, and the remote reuses each.
+        for ([_]u32{ qf, 700, 600 }) |id| {
+            try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(id)));
+            h.target.answer_id = null;
+            try h.pushPlainCall(allocator, id, h.target_export_id);
+            try std.testing.expectEqual(@as(?u32, id), h.target.answer_id);
+        }
+    }
+}
+
 /// One run of the forward-after-Finish case above with one allocation of
 /// the client peer failing: the `k`-th after setup, and every later one in
 /// the same step. A frame the peer fails to handle ends the connection

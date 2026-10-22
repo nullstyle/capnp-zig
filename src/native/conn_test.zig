@@ -3063,6 +3063,70 @@ test "forwarded call: a call that go-capnp finished and the core forwarded ends 
     }
 }
 
+test "forwarded call: the remote's own call with the id of the forwarded question reaches the host while the forward waits" {
+    // Question ids are per direction: the remote's questions and the
+    // core's own questions are counted apart, both up from 0, and go-capnp
+    // and C++ take the lowest free id. The forwarded question qf is one of
+    // the core's own. Before, the core also took qf as one of the remote's
+    // ids while the forward waited, and the remote's new call with that id
+    // closed the connection (DuplicateQuestionId). Cases: a forward of a
+    // call the remote still wants, and of one it finished first with
+    // go-capnp's Finish flags.
+    const alloc = testing.allocator;
+    for ([_]bool{ false, true }) |finished| {
+        var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+        defer p.deinit();
+        const t = try p.start(alloc);
+        try drainAll(p.a, &p.ra);
+        const calls_out = try countCallFrames(&p.ra);
+
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, 30, t.ea));
+        try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 40, 30));
+        if (finished) try pushFrame(alloc, p.a, finishFrameFull(alloc, 40, true, true));
+        const res = try msgCap(alloc, 1, 0);
+        defer alloc.free(res);
+        try p.a.returnResults(30, res, &.{t.boot});
+        try drainAll(p.a, &p.ra);
+        var qfs: [2]u32 = undefined;
+        try testing.expectEqual(@as(usize, 1), try callFrameQidsAfter(&p.ra, calls_out, &qfs));
+        const qf = qfs[0];
+        try testing.expect(qf != 30 and qf != 40);
+
+        // While the forward waits, the remote calls with id qf.
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, qf, t.ea));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), countCalls(&p.ra, qf));
+        const r = try msgU64(alloc, qf);
+        defer alloc.free(r);
+        try p.a.returnResults(qf, r, &.{});
+        try pushFrame(alloc, p.a, finishFrame(alloc, qf));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, qf, .results));
+
+        // The forward ends as it does without that call.
+        try pushFrame(alloc, p.a, resultsReturnFrame(alloc, qf));
+        if (!finished) try pushFrame(alloc, p.a, finishFrame(alloc, 40));
+        try pushFrame(alloc, p.a, finishFrame(alloc, 30));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, .results));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, null));
+        try testing.expectEqual(@as(usize, 1), try countFinishFrames(&p.ra, qf));
+        try expectForwardGone(p.a, 40, qf);
+
+        // Every id is free again, the remote reuses each, and each call
+        // reaches the host.
+        for ([_]u32{ qf, 40, 30 }) |id| {
+            try testing.expect(!(try p.a.peer.inboundAnswerQuestionIdInUse(id)));
+            const before = countCalls(&p.ra, id);
+            try pushFrame(alloc, p.a, plainCallFrame(alloc, id, t.ea));
+            try drainAll(p.a, &p.ra);
+            try testing.expectEqual(before + 1, countCalls(&p.ra, id));
+        }
+        try testing.expectEqual(@as(usize, 0), p.ra.close_requested);
+        try testing.expect(p.a.last_error == null);
+    }
+}
+
 test "answer finished: a Finish of a held call is withheld; each end of the hold without the answer reports it once" {
     // The remote finishes Y (77) while question X waits for Y's answer: X
     // still wants it, so the host is not told. When X ends without Y's

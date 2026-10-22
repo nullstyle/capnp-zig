@@ -5036,6 +5036,16 @@ pub const Peer = struct {
         for (self.forward_vine_relay_links.items) |relay| {
             if (relay.recipient_answer_id == answer_id) return true;
         }
+        return self.forwardRelaysAnswer(answer_id);
+    }
+
+    /// True when one of the peer's forwarded questions still carries
+    /// inbound answer `answer_id`: the peer relays its Return when the
+    /// forwarded question's Return comes. `forwarded_questions` is keyed by
+    /// the peer's own question ids, which the remote's question ids do not
+    /// share: both sides count from 0. So the values are searched, never
+    /// the keys.
+    fn forwardRelaysAnswer(self: *const Peer, answer_id: u32) bool {
         var it = self.forwarded_questions.valueIterator();
         while (it.next()) |upstream_answer_id| {
             if (upstream_answer_id.* == answer_id) return true;
@@ -5999,7 +6009,7 @@ pub const Peer = struct {
             self.finished_early_answers.contains(question_id) or
             self.send_results_to_yourself.contains(question_id) or
             self.send_results_to_third_party.contains(question_id) or
-            self.forwarded_questions.contains(question_id) or
+            self.forwardRelaysAnswer(question_id) or
             self.forwarded_tail_questions.contains(question_id) or
             self.completing_join_answers.contains(question_id) or
             self.pending_join_result_answers.contains(question_id) or
