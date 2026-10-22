@@ -594,7 +594,12 @@ either, when those calls go (their caller finished them), so the host's
 ordinary answer settles the call. That wastes the host's work, but it is
 correct. The C++ reference makes this sequence for `foo().getSub().bar()`
 when the caller drops foo's promise: Call(foo), Call(bar on foo),
-Finish(foo).
+Finish(foo). The `AnswerHasPipelinedCalls` refusal lasts only while those
+calls wait. Only calls pipelined before the Finish wait: rpc.capnp forbids
+a call pipelined after it, and the peer answers one that comes anyway at
+once with an exception Return, as the C++ reference does. So after a
+kind-4 record, `capnp_peer_send_return_canceled` is never refused for
+this reason.
 
 ```c
 u32 capnp_peer_set_answer_finished_handler(u32 peer, u32 enabled);

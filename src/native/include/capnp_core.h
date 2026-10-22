@@ -391,11 +391,11 @@ int32_t capnp_return_exception(capnp_conn *conn, uint32_t answer_id, uint16_t ex
  * (opts.answer_finished off, no Finish yet, a tail-call hold withholds it,
  * or the core did not report the Finish: its records were full or out of
  * memory, the call was still queued in the core when the Finish came, or
- * calls were pipelined on the answer). It is CAPNP_E_INVAL too when a call
- * is pipelined on the answer after the effect, which the protocol forbids.
- * On CAPNP_E_INVAL or another error, nothing is sent and the answer stays
- * owed. Instead of this, the host may answer with capnp_return_results or
- * capnp_return_exception; it answers once. */
+ * calls were pipelined on the answer). A call pipelined on the answer after
+ * its Finish, which the protocol forbids, gets an exception RETURN at once
+ * and does not change this. On CAPNP_E_INVAL or another error, nothing is
+ * sent and the answer stays owed. Instead of this, the host may answer with
+ * capnp_return_results or capnp_return_exception; it answers once. */
 int32_t capnp_return_canceled(capnp_conn *conn, uint32_t answer_id);
 
 #ifdef __cplusplus

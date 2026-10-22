@@ -737,11 +737,11 @@ pub const Conn = struct {
     /// is off, no Finish came, a tail-call hold withholds it, or the core
     /// did not report the Finish: it kept no record of it, the call was
     /// still queued in the core, or calls were pipelined on the answer). A
-    /// Peer error sends nothing and leaves the answer owed: out of memory, a
-    /// failed send, or `error.AnswerHasPipelinedCalls` (a call pipelined on
-    /// the answer after its Finish, which rpc.capnp forbids; the C ABI maps
-    /// it to `CAPNP_E_INVAL`). After ANSWER_FINISHED the host may also
-    /// answer with `returnResults` or `returnException`; it answers once.
+    /// call pipelined on the answer after its Finish, which rpc.capnp
+    /// forbids, gets an exception Return at once and does not change this.
+    /// A Peer error (out of memory, a failed send) sends nothing and leaves
+    /// the answer owed. After ANSWER_FINISHED the host may also answer with
+    /// `returnResults` or `returnException`; it answers once.
     pub fn returnCanceled(self: *Conn, answer_id: u32) !void {
         const owed = self.pending_answers.get(answer_id) orelse return error.BadId;
         if (owed.finish != .reported) return error.Invalid;

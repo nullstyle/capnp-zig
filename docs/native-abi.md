@@ -115,10 +115,11 @@ answered, and stop the work (capnp-swift handoff H13). It is an opt-in:
 When the remote sends Finish for an INBOUND_CALL that the host owes, and
 no call is pipelined on that answer, the core queues one
 `CAPNP_EFFECT_ANSWER_FINISHED` (6). Its `id` is the answer id, `export_id`
-and `host_tag` are those of the INBOUND_CALL, and every other field is 0. The core queues it at most once per call. Its node is
-reserved when the INBOUND_CALL is queued, so after the core records the
-Finish, a lack of memory cannot lose the effect. The record itself can fail
-for lack of memory. Then no effect comes (see "When no effect comes").
+and `host_tag` are those of the INBOUND_CALL, and every other field is 0.
+The core queues it at most once per call. Its node is reserved when the
+INBOUND_CALL is queued, so after the core records the Finish, a lack of
+memory cannot lose the effect. The record itself can fail for lack of
+memory. Then no effect comes (see "When no effect comes").
 
 The host stops the work and answers once. Normally it calls
 `capnp_return_canceled(conn, answer_id)`: the core sends `Return{canceled}`,
@@ -126,14 +127,18 @@ and the caller can reuse its question id. That call returns
 `CAPNP_E_BAD_ID` for an answer the host does not owe. It returns
 `CAPNP_E_INVAL` when no ANSWER_FINISHED was queued for the answer: the
 opt-in is off, no Finish came, a tail-call hold withholds it, or the core
-did not report the Finish (see "When no effect comes"). It also returns
-`CAPNP_E_INVAL` when a call is pipelined on the answer after the effect,
-which rpc.capnp forbids ("no further pipelined requests"). On
+did not report the Finish (see "When no effect comes"). On
 `CAPNP_E_INVAL` or any other error it sends nothing, and the host still
-owes the answer. Instead of
-`capnp_return_canceled`, the host may answer with `capnp_return_results` or
-`capnp_return_exception`. A `sendResultsTo = yourself` call also gets
-`Return{canceled}`, not `resultsSentElsewhere`.
+owes the answer. Instead of `capnp_return_canceled`, the host may answer
+with `capnp_return_results` or `capnp_return_exception`. A
+`sendResultsTo = yourself` call also gets `Return{canceled}`, not
+`resultsSentElsewhere`.
+
+**Calls pipelined after the Finish.** rpc.capnp forbids them ("no further
+pipelined requests"). The core answers such a call at once with an
+exception RETURN OUT_FRAME, as the C++ reference does, and the host never
+sees it. So it never waits on the answer, and after ANSWER_FINISHED,
+`capnp_return_canceled` still answers.
 
 **Drain order.** Apply effects in drain order. An ANSWER_FINISHED can be
 stale: the host answered the call after the Finish came, but before it

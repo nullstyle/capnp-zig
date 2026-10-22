@@ -2130,6 +2130,60 @@ test "answer cancellation: no event while a call is pipelined on the answer; sen
     ));
 }
 
+test "answer cancellation: a call pipelined after the Finish fails at once; sendReturnCanceled still answers" {
+    // rpc.capnp forbids pipelined calls after Finish, and the C++ reference
+    // fails one that comes anyway at once. capnp-deno answers every kind-4
+    // event with sendReturnCanceled, so such a call must not make that
+    // cancel refuse: it gets its exception Return at once.
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const server = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(server);
+    try std.testing.expect(server != 0);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_set_answer_finished_handler(server, 1));
+
+    const question_id = try queuePlainCall(std.testing.allocator, server, 31);
+    const finish = try encodeFinishFrame(std.testing.allocator, question_id, true);
+    defer std.testing.allocator.free(finish);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+        server,
+        toAbiPtr(finish.ptr),
+        @intCast(finish.len),
+    ));
+    var event_ptr: abi.AbiPtr = 0;
+    var event_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_pop_l3_event(
+        server,
+        toAbiPtr(&event_ptr),
+        toAbiPtr(&event_len),
+    ));
+    const event = AbiBuffer{ .ptr = event_ptr, .len = event_len };
+    defer event.free();
+    try std.testing.expectEqual(question_id, readAbiInt(u32, event.ptr + 12));
+
+    const pipelined = try encodePipelinedCallFrame(std.testing.allocator, 41, question_id);
+    defer std.testing.allocator.free(pipelined);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+        server,
+        toAbiPtr(pipelined.ptr),
+        @intCast(pipelined.len),
+    ));
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_outbound_count(server));
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_send_return_canceled(server, question_id));
+    try std.testing.expectEqual(@as(u32, 2), abi.capnp_peer_outbound_count(server));
+    for ([_]u32{ 41, question_id }, [_]protocol.ReturnTag{ .exception, .canceled }) |answer_id, tag| {
+        const frame = try popOutFrameCopy(std.testing.allocator, server);
+        defer std.testing.allocator.free(frame);
+        var decoded = try protocol.DecodedMessage.init(std.testing.allocator, frame);
+        defer decoded.deinit();
+        const ret = try decoded.asReturn();
+        try std.testing.expectEqual(answer_id, ret.answer_id);
+        try std.testing.expectEqual(tag, ret.tag);
+    }
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_outbound_count(server));
+}
+
 test "answer cancellation: sendReturnCanceled refuses before the caller finishes" {
     abi.capnp_clear_error();
     defer abi.capnp_clear_error();

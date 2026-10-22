@@ -167,7 +167,7 @@ pub fn CallInbound(comptime Peer: type) type {
                     cap_table.InboundCapTable,
                     Peer.resolvePromisedAnswer,
                     peer_call_targets.promiseExportToParkOnForPeerFn(Peer),
-                    Peer.lookupFailedAnswer,
+                    lookupPipelineTargetFailure,
                     queuePromisedCall,
                     queuePromiseExportCall,
                     Peer.sendReturnException,
@@ -418,6 +418,29 @@ pub fn CallInbound(comptime Peer: type) type {
             );
         }
 
+        /// The planner hook (`planPromisedTarget`) for a call pipelined on
+        /// inbound answer `answer_id` while that answer has no recorded
+        /// results: the exception the call gets at once, or null to queue it
+        /// until the answer's Return. A failed answer gives its own recorded
+        /// exception. An answer the caller already finished gives
+        /// `pipelined_on_finished_answer_reason`: rpc.capnp (Finish) says the
+        /// caller sends no more calls pipelined on the question after it, and
+        /// the C++ reference fails such a call at once (its Finish drops the
+        /// answer's pipeline). Queued, the call would keep the answer's
+        /// results wanted, and a host the answer-finished hook told could no
+        /// longer cancel the answer (`Peer.sendReturnCanceled`).
+        fn lookupPipelineTargetFailure(self: *Peer, answer_id: u32) ?peer_call_targets.FailedAnswerView {
+            if (self.lookupFailedAnswer(answer_id)) |failed| return failed;
+            if (self.finished_early_answers.contains(answer_id) and
+                !self.active_inbound_questions.contains(answer_id))
+            {
+                return .{ .reason = pipelined_on_finished_answer_reason, .ex_type = .failed };
+            }
+            return null;
+        }
+
+        const pipelined_on_finished_answer_reason = "pipelined on a finished call";
+
         pub fn queuePromisedCall(self: *Peer, question_id: u32, frame: []const u8, inbound_caps: cap_table.InboundCapTable) !void {
             try self.ensurePendingQueuedCallBudget(
                 &self.pending_promises,
@@ -552,7 +575,7 @@ pub fn CallInbound(comptime Peer: type) type {
                 inbound_caps,
                 Peer.resolvePromisedAnswer,
                 peer_call_targets.promiseExportToParkOnForPeerFn(Peer),
-                Peer.lookupFailedAnswer,
+                lookupPipelineTargetFailure,
                 queuePromisedCall,
                 queuePromiseExportCall,
                 Peer.sendReturnException,

@@ -2041,69 +2041,80 @@ test "answer finished: no ANSWER_FINISHED while a call is pipelined on the answe
     // rpc.capnp (Finish): cancel only when nothing else cares about the
     // result, "e.g. there are no other outstanding calls pipelined on" it.
     // A C++ caller that drops foo's promise in `foo().getSub().bar()` sends
-    // Call(foo), Call(bar on foo), Finish(foo), and expects bar to run.
+    // Call(foo), Call(bar on foo), Finish(foo), and expects bar to run. Its
+    // Finish sets releaseResultCaps while foo awaits its Return; both values
+    // are covered.
     const alloc = testing.allocator;
-    var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
-    defer f.deinit();
+    for ([_]bool{ false, true }) |release_result_caps| {
+        var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+        defer f.deinit();
 
-    try pushFrame(alloc, f.a, plainCallFrame(alloc, 30, f.ea));
-    try pushFrame(alloc, f.a, pipelinedCallFrame(alloc, 40, 30));
-    try pushFrame(alloc, f.a, finishFrameWith(alloc, 30, false));
-    try drainAll(f.a, &f.ra);
-    try testing.expectEqualSlices(effects.Kind, &.{.inbound_call}, f.ra.order.items);
-    // No effect was queued, so capnp_return_canceled is CAPNP_E_INVAL, and
-    // nothing is sent.
-    try testing.expectError(error.Invalid, f.a.returnCanceled(30));
-    try drainAll(f.a, &f.ra);
-    try testing.expectEqual(@as(usize, 0), f.ra.frames.items.len);
+        try pushFrame(alloc, f.a, plainCallFrame(alloc, 30, f.ea));
+        try pushFrame(alloc, f.a, pipelinedCallFrame(alloc, 40, 30));
+        try pushFrame(alloc, f.a, finishFrameFull(alloc, 30, release_result_caps, false));
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqualSlices(effects.Kind, &.{.inbound_call}, f.ra.order.items);
+        // No effect was queued, so capnp_return_canceled is CAPNP_E_INVAL, and
+        // nothing is sent.
+        try testing.expectError(error.Invalid, f.a.returnCanceled(30));
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqual(@as(usize, 0), f.ra.frames.items.len);
 
-    // The host's answer names its export: the pipelined call reaches it.
-    const res = try msgCap(alloc, 1, 0);
-    defer alloc.free(res);
-    try f.a.returnResults(30, res, &.{.{ .kind = .@"export", .id = f.ea }});
-    try drainAll(f.a, &f.ra);
-    try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 30));
-    try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 40));
-    try testing.expectEqual(f.ea, f.ra.lastCall().export_id);
-    const done = try msgU64(alloc, 2);
-    defer alloc.free(done);
-    try f.a.returnResults(40, done, &.{});
-    try drainAll(f.a, &f.ra);
-    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 30, .results));
-    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 30, null));
-    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 40, .results));
-    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 40, null));
-    try testing.expectEqual(@as(usize, 0), f.ra.finished.items.len);
-    try testing.expectEqual(@as(usize, 0), f.ra.close_requested);
-    try testing.expect(f.a.last_error == null);
+        // The host's answer names its export: the pipelined call reaches it.
+        // With releaseResultCaps the export goes after that call.
+        const res = try msgCap(alloc, 1, 0);
+        defer alloc.free(res);
+        try f.a.returnResults(30, res, &.{.{ .kind = .@"export", .id = f.ea }});
+        try drainAll(f.a, &f.ra);
+        const after_answer: []const effects.Kind = if (release_result_caps)
+            &.{ .inbound_call, .out_frame, .inbound_call, .export_dropped }
+        else
+            &.{ .inbound_call, .out_frame, .inbound_call };
+        try testing.expectEqualSlices(effects.Kind, after_answer, f.ra.order.items);
+        try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 30));
+        try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 40));
+        try testing.expectEqual(f.ea, f.ra.lastCall().export_id);
+        const done = try msgU64(alloc, 2);
+        defer alloc.free(done);
+        try f.a.returnResults(40, done, &.{});
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 30, .results));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 30, null));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 40, .results));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 40, null));
+        try testing.expectEqual(@as(usize, 0), f.ra.finished.items.len);
+        try testing.expectEqual(@as(usize, 0), f.ra.close_requested);
+        try testing.expect(f.a.last_error == null);
+    }
 }
 
-test "answer finished: a call pipelined on the answer after ANSWER_FINISHED makes returnCanceled refuse; the answer delivers it" {
-    // rpc.capnp forbids pipelined calls after Finish. One that comes anyway
-    // still gets its target: the cancel is refused (CAPNP_E_INVAL through
-    // the C ABI), nothing is sent, and the host's answer delivers it.
+test "answer finished: a call pipelined on the answer after its Finish gets an exception RETURN at once; returnCanceled still answers" {
+    // rpc.capnp forbids pipelined calls after Finish, and the C++ reference
+    // fails one that comes anyway at once. So does the core: the late call
+    // never waits on the answer, and the host that got ANSWER_FINISHED can
+    // still answer it canceled.
     const alloc = testing.allocator;
-    var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
-    defer f.deinit();
+    for ([_]bool{ false, true }) |release_result_caps| {
+        var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+        defer f.deinit();
 
-    try pushFrame(alloc, f.a, plainCallFrame(alloc, 31, f.ea));
-    try pushFrame(alloc, f.a, finishFrameWith(alloc, 31, false));
-    try pushFrame(alloc, f.a, pipelinedCallFrame(alloc, 41, 31));
-    try drainAll(f.a, &f.ra);
-    try testing.expectEqualSlices(effects.Kind, &.{ .inbound_call, .answer_finished }, f.ra.order.items);
-    try testing.expectError(error.AnswerHasPipelinedCalls, f.a.returnCanceled(31));
-    try drainAll(f.a, &f.ra);
-    try testing.expectEqual(@as(usize, 0), f.ra.frames.items.len);
+        try pushFrame(alloc, f.a, plainCallFrame(alloc, 31, f.ea));
+        try pushFrame(alloc, f.a, finishFrameFull(alloc, 31, release_result_caps, false));
+        try pushFrame(alloc, f.a, pipelinedCallFrame(alloc, 41, 31));
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqualSlices(effects.Kind, &.{ .inbound_call, .answer_finished, .out_frame }, f.ra.order.items);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 41, .exception));
+        try testing.expectEqual(@as(usize, 0), countCalls(&f.ra, 41));
 
-    const res = try msgCap(alloc, 1, 0);
-    defer alloc.free(res);
-    try f.a.returnResults(31, res, &.{.{ .kind = .@"export", .id = f.ea }});
-    try drainAll(f.a, &f.ra);
-    try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 41));
-    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 31, .results));
-    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 31, null));
-    try testing.expectError(error.BadId, f.a.returnCanceled(31));
-    try testing.expectEqual(@as(usize, 1), f.ra.finished.items.len);
+        try f.a.returnCanceled(31);
+        try drainAll(f.a, &f.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 31, .canceled));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 31, null));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 41, null));
+        try testing.expectError(error.BadId, f.a.returnCanceled(31));
+        try testing.expectEqual(@as(usize, 1), f.ra.finished.items.len);
+        try testing.expectEqual(@as(usize, 0), f.ra.close_requested);
+    }
 }
 
 test "answer finished: after ANSWER_FINISHED the host may answer with results or an exception instead, once" {
@@ -2593,6 +2604,14 @@ fn finishFrameWith(alloc: std.mem.Allocator, qid: u32, require_early_cancellatio
     var mb = protocol.MessageBuilder.init(alloc);
     defer mb.deinit();
     try mb.buildFinish(qid, false, require_early_cancellation);
+    return mb.finish();
+}
+
+/// A Finish with both flags as given.
+fn finishFrameFull(alloc: std.mem.Allocator, qid: u32, release_result_caps: bool, require_early_cancellation: bool) ![]const u8 {
+    var mb = protocol.MessageBuilder.init(alloc);
+    defer mb.deinit();
+    try mb.buildFinish(qid, release_result_caps, require_early_cancellation);
     return mb.finish();
 }
 

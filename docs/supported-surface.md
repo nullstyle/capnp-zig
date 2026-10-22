@@ -479,8 +479,10 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   an answer the caller has not finished (`error.AnswerNotFinished`), one
   the host does not owe a Return for (`error.AnswerNotOwed`: it already got
   a Return, the id is unknown, or the Peer settles it itself), and one that
-  calls are pipelined on (`error.AnswerHasPipelinedCalls`). The Peer
-  remembers at most `limits.max_active_inbound_questions` finished,
+  calls are pipelined on (`error.AnswerHasPipelinedCalls`). A call
+  pipelined on an answer after its Finish breaks rpc.capnp; the Peer
+  answers it at once with an exception Return, as the C++ reference does.
+  The Peer remembers at most `limits.max_active_inbound_questions` finished,
   unanswered calls; past that the handler does not run. Any other late
   Return is still accepted, and it keeps
   `releaseParamCaps = false` when the call's params granted capabilities

@@ -2048,7 +2048,8 @@ pub export fn capnp_peer_set_answer_finished_handler(peer: u32, enabled: u32) u3
 /// the peer settles itself), or while calls pipelined on the answer wait
 /// for its results (`AnswerHasPipelinedCalls`; no kind-4 record comes for
 /// such an answer). After `AnswerHasPipelinedCalls`, answer the call as
-/// usual.
+/// usual. A call pipelined on the answer after its Finish gets an
+/// exception Return at once, so it never causes that refusal.
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_send_return_canceled(peer: u32, answer_id: u32) u32 {
     global_mutex.lock();

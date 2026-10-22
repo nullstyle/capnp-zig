@@ -1687,9 +1687,10 @@ pub const Peer = struct {
     /// later either, when those calls go (their caller finished them): the
     /// host's ordinary Return answers the call. That wastes the host's
     /// work, but it is correct. A call pipelined on the answer after its
-    /// Finish breaks rpc.capnp ("no further pipelined requests"); after
-    /// the handler ran, it makes `sendReturnCanceled` refuse the id in the
-    /// same way.
+    /// Finish breaks rpc.capnp ("no further pipelined requests"). The peer
+    /// answers such a call at once with an exception Return, as the C++
+    /// reference does, so it never waits on the answer: after the handler
+    /// ran, `sendReturnCanceled` still answers the id.
     ///
     /// The peer remembers a finished, unanswered call in a record bounded by
     /// `limits.max_active_inbound_questions`. When those records are full,
@@ -3939,8 +3940,9 @@ pub const Peer = struct {
     /// with `error.AnswerHasPipelinedCalls` while calls pipelined on the
     /// answer wait for its results: a cancel would fail them, and rpc.capnp
     /// allows a cancel only when nothing else cares about the result. Answer
-    /// such a call with an ordinary Return. Body in
-    /// `return/peer_return_send.zig`.
+    /// such a call with an ordinary Return. Only calls pipelined before the
+    /// Finish wait: the peer fails a later one at once, so this error never
+    /// follows the handler. Body in `return/peer_return_send.zig`.
     pub fn sendReturnCanceled(self: *Peer, answer_id: u32) !void {
         self.assertThreadAffinity();
         if (self.active_inbound_questions.contains(answer_id)) return error.AnswerNotFinished;
@@ -4894,8 +4896,8 @@ pub const Peer = struct {
         // either, and it is not told later when they go: the host's ordinary
         // Return answers the call.
         if (host_owes_return and !canceled_automatic_target and
-            self.hostOwesFinishedReturn(qid) and
-            !self.hasCallsPipelinedOnAnswer(qid))
+            !self.hasCallsPipelinedOnAnswer(qid) and
+            self.hostOwesFinishedReturn(qid))
         {
             if (self.answer_finished_fn) |notify| {
                 if (self.answer_finished_ctx) |ctx| notify(ctx, self, qid, finish_msg.release_result_caps);

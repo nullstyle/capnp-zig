@@ -75,9 +75,10 @@ The owner sends this text after the v0.28.1 tag exists.
 > comes later when they go: your handler's ordinary answer settles the
 > call. `capnp_return_canceled` returns `CAPNP_E_INVAL` for such an
 > answer, as for any answer without the effect. A call pipelined on an
-> answer after its Finish breaks the protocol; it also makes
-> `capnp_return_canceled` return `CAPNP_E_INVAL` after the effect, and then
-> you still owe the answer. Bump the pin to v0.28.1. Its `capnp_core.h`
+> answer after its Finish breaks the protocol. The core now answers such a
+> call at once with an exception RETURN, as the C++ reference does, so
+> after the effect `capnp_return_canceled` still answers. Bump the pin to
+> v0.28.1. Its `capnp_core.h`
 > changes are comments only, but they trip your header snapshot gate:
 > update the snapshot. Until the bump, set `cancelHandlersOnFinish =
 > false`: the core then sends no ANSWER_FINISHED, and handlers run to the
