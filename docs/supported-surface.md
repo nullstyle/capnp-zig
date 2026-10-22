@@ -941,26 +941,6 @@ cooperating peer.
   fails a call pipelined on a host call that the host answers with a
   results frame" in `tests/wasm_host_abi_test.zig`.
 
-- **A call finished with go-capnp's Finish flag can close the
-  connection.** go-capnp sends Finish with
-  `requireEarlyCancellationWorkaround = true` (the schema default). So a
-  call that it finished while the call waits, pipelined, on an answer
-  stays queued until that answer returns. When the answer names one of
-  the caller's own capabilities, the Peer forwards the queued call there.
-  It never finishes that forwarded question, because the caller's Finish
-  already came. When the caller then reuses the call's id, which it may
-  once it has the call's Return, the connection closes
-  (`DuplicateQuestionId`). An answer-finished host that cancels avoids
-  this only when no call that the caller still wants is pipelined on the
-  answer: then the host is told, and the cancel fails the queued calls
-  first. When a wanted call is pipelined there too, the host is not told,
-  and its ordinary answer reaches this case. The C++ reference sends
-  `false`, and then the Peer cancels the queued call at its Finish. Pinned
-  by "known limit: a finished queued call that the core forwards to the
-  remote keeps its id in use" in `src/native/conn_test.zig`, through the
-  native C ABI. The `Peer` API and the WASM host ABI are not tested for
-  it.
-
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Of the items above, only the
 `sendResultsTo = thirdParty` item is a Level-3 surface. Historical

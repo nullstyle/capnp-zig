@@ -2816,6 +2816,9 @@ test "reflected caller call forwards with sendResultsTo=caller and translates re
     defer decoded_call.deinit();
     const parsed = try decoded_call.asCall();
 
+    // The upstream call is live, as `handleCall` leaves it: its Finish
+    // has not come.
+    try peer.active_inbound_questions.put(upstream_question_id, false);
     try peer_test_hooks.handleResolvedCall(&peer, parsed, &inbound, .{ .imported = .{ .id = target_import_id } });
 
     // Only the forwarded CALL is emitted; no eager `takeFromOtherQuestion`
@@ -2949,6 +2952,9 @@ test "reflected caller call: upstream finish before forwarded return cancels and
     defer decoded_call.deinit();
     const parsed = try decoded_call.asCall();
 
+    // The upstream call is live, as `handleCall` leaves it: its Finish
+    // has not come.
+    try peer.active_inbound_questions.put(upstream_question_id, false);
     try peer_test_hooks.handleResolvedCall(&peer, parsed, &inbound, .{ .imported = .{ .id = 222 } });
     // Only the forwarded CALL (sendResultsTo=caller); no eager tail return.
     try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
@@ -3067,6 +3073,9 @@ test "reflected caller call: translate-to-caller stays stable under finish/retur
         defer decoded_call.deinit();
         const parsed = try decoded_call.asCall();
 
+        // The upstream call is live, as `handleCall` leaves it: its Finish
+        // has not come.
+        try peer.active_inbound_questions.put(upstream_question_id, false);
         try peer_test_hooks.handleResolvedCall(&peer, parsed, &inbound, .{ .imported = .{ .id = 222 } });
         // Only the forwarded call (sendResultsTo=caller); no eager tail return.
         try std.testing.expectEqual(frame_start + 1, capture.frames.items.len);
@@ -3201,6 +3210,9 @@ test "tail-call forward: upstream finish before forwarded return sends no second
     const parsed = try decoded_call.asCall();
 
     // A promise resolved to a promised answer: the spec tail call.
+    // The upstream call is live, as `handleCall` leaves it: its Finish
+    // has not come.
+    try peer.active_inbound_questions.put(upstream_question_id, false);
     try peer_test_hooks.handleResolvedCall(&peer, parsed, &inbound, .{
         .promised = .{
             .question_id = 1,

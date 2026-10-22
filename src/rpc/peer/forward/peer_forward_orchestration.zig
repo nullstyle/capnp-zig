@@ -156,11 +156,24 @@ pub fn buildForwardCallPlan(
 /// forwarded return) also cancels the forwarded question cleanly when the
 /// caller Finishes before the forwarded return arrives (ordering race).
 ///
+/// `upstream_finished`: the caller's Finish of the upstream question came
+/// before this forward. That happens when go-capnp's
+/// `requireEarlyCancellationWorkaround` (the schema default) kept a call
+/// queued past its Finish, and its target resolved later to a capability
+/// on the same connection. No upstream Finish is left to relay, so neither
+/// mode registers the tail mapping or suppresses the auto-finish: the
+/// forwarded question gets its Finish once its own Return is relayed (the
+/// auto-finish after `onForwardedReturn`). Held for an upstream Finish that
+/// already came, it was never finished, and the tail mapping kept the
+/// upstream id in use, so the caller's legal reuse of that id closed the
+/// connection.
+///
 /// On failure nothing stays registered. A send that fails after this undoes
 /// it with `unregisterForwardedQuestion`.
 pub fn registerForwardedQuestion(
     comptime QuestionType: type,
     mode: ForwardReturnMode,
+    upstream_finished: bool,
     upstream_question_id: u32,
     forwarded_question_id: u32,
     forwarded_questions: *std.AutoHashMap(u32, u32),
@@ -170,6 +183,7 @@ pub fn registerForwardedQuestion(
     try forwarded_questions.put(forwarded_question_id, upstream_question_id);
     errdefer _ = forwarded_questions.remove(forwarded_question_id);
 
+    if (upstream_finished) return;
     if (mode == .sent_elsewhere or mode == .translate_to_caller) {
         try forwarded_tail_questions.put(upstream_question_id, forwarded_question_id);
         if (questions.getEntry(forwarded_question_id)) |question| {
@@ -359,6 +373,7 @@ test "peer_forward_orchestration registerForwardedQuestion records forwarding an
     try registerForwardedQuestion(
         Question,
         .propagate_results_sent_elsewhere,
+        false,
         10,
         20,
         &forwarded_questions,
@@ -375,6 +390,7 @@ test "peer_forward_orchestration registerForwardedQuestion records forwarding an
     try registerForwardedQuestion(
         Question,
         .sent_elsewhere,
+        false,
         11,
         21,
         &forwarded_questions,
@@ -393,6 +409,7 @@ test "peer_forward_orchestration registerForwardedQuestion records forwarding an
     try registerForwardedQuestion(
         Question,
         .translate_to_caller,
+        false,
         12,
         22,
         &forwarded_questions,
@@ -403,6 +420,26 @@ test "peer_forward_orchestration registerForwardedQuestion records forwarding an
     try std.testing.expectEqual(@as(u32, 12), forwarded_questions.get(22).?);
     try std.testing.expectEqual(@as(u32, 22), forwarded_tail_questions.get(12).?);
     try std.testing.expect(questions.get(22).?.suppress_auto_finish);
+
+    // An upstream question whose Finish already came: neither holding mode
+    // registers the tail mapping or suppresses the auto-finish, so the
+    // forwarded question is finished on its own Return.
+    for ([_]ForwardReturnMode{ .sent_elsewhere, .translate_to_caller }, [_]u32{ 23, 24 }) |mode, forwarded| {
+        try questions.put(forwarded, .{});
+        try registerForwardedQuestion(
+            Question,
+            mode,
+            true,
+            forwarded - 10,
+            forwarded,
+            &forwarded_questions,
+            &forwarded_tail_questions,
+            &questions,
+        );
+        try std.testing.expectEqual(forwarded - 10, forwarded_questions.get(forwarded).?);
+        try std.testing.expect(!forwarded_tail_questions.contains(forwarded - 10));
+        try std.testing.expect(!questions.get(forwarded).?.suppress_auto_finish);
+    }
 
     // A send that failed: the registration is undone, and only its own.
     unregisterForwardedQuestion(11, 21, &forwarded_questions, &forwarded_tail_questions);

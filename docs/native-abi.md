@@ -237,15 +237,15 @@ its one exception RETURN. A call pipelined on such a call does not make
 the core wait either: for `foo().bar().baz()` with bar finished, the
 cancel of foo also fails baz.
 
-Known limit, with that flag: when a call that the remote still wants
-makes the core wait, the host answers foo as usual. If foo's answer names
-one of the remote's own capabilities, the core forwards the queued calls
-there. It never finishes the forwarded copy of a call that the remote had
-already finished. So when the remote reuses that call's id, the
-connection closes (`DuplicateQuestionId`). Without `answer_finished`, the
-same happens whenever foo's answer names such a capability. See "A call
-finished with go-capnp's Finish flag can close the connection" in
-[supported-surface.md](supported-surface.md).
+When the host answers foo as usual and foo's answer names one of the
+remote's own capabilities, the core forwards the queued calls there, as
+new questions to the remote. That includes a call that the remote already
+finished: its flag asks the callee to deliver the call anyway. The core
+finishes the forwarded copy of such a call once it has relayed that
+copy's Return to the remote. The forwarded copy of a call that the remote
+still wants gets its Finish when the remote finishes that call. Either
+way, the remote can reuse the call's id once it has the call's Return and
+has finished it.
 
 **Tail calls.** While a question X waits for the answer to a call Y ("Tail
 calls" below), a Finish of Y does not queue ANSWER_FINISHED: X still wants

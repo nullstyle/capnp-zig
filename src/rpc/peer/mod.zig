@@ -334,8 +334,8 @@ fn msToNs(ms: u64) i64 {
 /// | `failed_answers` | question ID | `FailedAnswer` | The exception already returned for a failed answer (results-only `resolved_answers` never records it). Lets a call pipelined on that answer arriving after the Return be failed with a copy of the same exception instead of queueing forever. Removed on Finish. |
 /// | `pending_promises` | question ID | `ArrayList(PendingCall)` | Calls targeting a PromisedAnswer whose Return has not yet arrived. Replayed once the answer resolves. |
 /// | `pending_export_promises` | export ID | `ArrayList(PendingCall)` | Calls targeting a promise export not yet resolved. Replayed on `resolvePromiseExportToExport`. |
-/// | `forwarded_questions` | original answer ID | forwarded question ID | Maps an inbound call's answer ID to the question ID of the forwarded outbound call. |
-/// | `forwarded_tail_questions` | original answer ID | forwarded question ID | Like `forwarded_questions` but for tail-call forwarding (takeFromOtherQuestion). |
+/// | `forwarded_questions` | forwarded question ID | original answer ID | Maps the question ID of a forwarded outbound call back to the answer ID of the inbound call it carries. Removed when its Return is relayed, or when the relayed Finish neutralizes it or a failed send undoes it. |
+/// | `forwarded_tail_questions` | original answer ID | forwarded question ID | Like `forwarded_questions` but for a forward that waits for the caller's Finish of the original call (tail call and reflected loopback): that Finish is relayed to the forwarded question. Not registered when that Finish came before the forward; the forwarded question then finishes on its own Return. |
 /// | `provides_by_question` | question ID | `ProvideEntry` | Active Provide operations indexed by their answer question ID. |
 /// | `provides_by_key` | recipient key (bytes) | question ID | Active Provide operations indexed by their recipient key for Accept lookup. |
 /// | `pending_joins` | join ID | `JoinState` | In-progress Join operations collecting parts from multiple peers. |
@@ -744,7 +744,10 @@ pub const Peer = struct {
     /// redirect right after the call, and capnp-zig's `.sent_elsewhere`
     /// forwarder relays the Finish only at the question's Finish, also on a
     /// synchronous transport, since `forwardResolvedCall` suppresses the
-    /// forwarded call's own Finish before it sends the call). So an
+    /// forwarded call's own Finish before it sends the call; a forwarder
+    /// whose question was finished before the forward finishes the
+    /// forwarded call after its Return instead, and then nobody takes the
+    /// results: the question is finished). So an
     /// answer given after its redirect came, or after the question was
     /// cancelled, is not kept past that Finish, and never reaches a later
     /// call that reuses the id (the C++ reference reuses the lowest free
@@ -3370,11 +3373,21 @@ pub const Peer = struct {
     /// comes inside the send. Its `deinit_ctx` frees the context at teardown;
     /// `forwardResolvedCall` frees it itself when the send fails, since
     /// removing the question does not.
+    ///
+    /// A call that is no longer active had its Finish already: no Return
+    /// has gone out for it (it is being forwarded), so only a Finish took
+    /// it out of `active_inbound_questions`. go-capnp's
+    /// `requireEarlyCancellationWorkaround` keeps such a call queued, and
+    /// the forward happens when its target resolves. Then no upstream
+    /// Finish is left to finish the forwarded question, so it finishes on
+    /// its own Return. The test is the active set, not the finished-early
+    /// tombstone, which the bounded map may have dropped.
     fn registerForwardedQuestion(self: *Peer, question_id: u32, ctx_ptr: *anyopaque) !void {
         const ctx: *ForwardCallContext = castCtx(*ForwardCallContext, ctx_ptr);
         try peer_forward_orchestration.registerForwardedQuestion(
             Question,
             ctx.mode,
+            !self.active_inbound_questions.contains(ctx.answer_id),
             ctx.answer_id,
             question_id,
             &self.forwarded_questions,

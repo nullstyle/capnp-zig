@@ -79,14 +79,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   finishes the last such call, if the host still owes the answer. A
   queued call that the caller already finished does not count: go-capnp's
   Finish (`requireEarlyCancellationWorkaround = true`) keeps it queued,
-  and the host's cancel gives it its one exception Return. One case with
-  that flag is a known limit ("A call finished with go-capnp's Finish flag
-  can close the connection" in `docs/supported-surface.md`). When a wanted
-  call is pipelined beside the finished one, the host is not told. If its
-  answer names one of the caller's own capabilities, the Peer forwards the
-  finished call there and never finishes it, so the caller's reuse of its
-  id closes the connection. Here v0.28.0 told the host, and its cancel
-  failed the wanted call too. Without the report, this happens as before.
+  and the host's cancel gives it its one exception Return. When a wanted
+  call is pipelined beside the finished one, the host is not told, and its
+  ordinary answer delivers both calls. When that answer names one of the
+  caller's own capabilities, the Peer forwards both there (see the next
+  entry). Here v0.28.0 told the host, and its cancel failed the wanted
+  call too.
   `Peer.sendReturnCanceled` (Experimental) refuses an answer that a
   wanted call is pipelined on with the new `error.AnswerHasPipelinedCalls`
   and sends nothing. The
@@ -118,14 +116,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gets an exception RETURN at once; ...", "answer finished: with
   go-capnp's Finish flags, ...", "answer finished: a held call whose
   pipelined call the remote finishes too is reported once, after the
-  hold", "answer finished: a queued call that reaches the host after its
-  Finish is reported once ..." and "known limit: a finished queued call
-  that the core forwards to the remote keeps its id in use" in
-  `src/native/conn_test.zig`; and "answer cancellation: no event while a
-  call is pipelined on the answer; ...", "answer cancellation: a call
-  pipelined after the Finish fails at once; ..." and "answer
-  cancellation: with go-capnp's Finish flags, ..." in
-  `tests/wasm_host_abi_test.zig`.
+  hold" and "answer finished: a queued call that reaches the host after
+  its Finish is reported once ..." in `src/native/conn_test.zig`; and
+  "answer cancellation: no event while a call is pipelined on the answer;
+  ...", "answer cancellation: a call pipelined after the Finish fails at
+  once; ..." and "answer cancellation: with go-capnp's Finish flags, ..."
+  in `tests/wasm_host_abi_test.zig`.
+
+- **RPC: a call that the caller finished and the Peer then forwarded back
+  to the caller is now finished, and its id is free again.** go-capnp
+  sends Finish with `requireEarlyCancellationWorkaround = true` (the
+  schema default), and its handleCancel never sets it to false. So a call
+  that it finishes while the call waits in the Peer, pipelined on an
+  answer or made on a promise export, stays queued: the flag asks the
+  callee to deliver the call anyway. When that answer or promise then
+  names one of the caller's own capabilities, the Peer forwards the call
+  there as a new question, and turns that question's Return into the
+  call's Return. The Peer held the forwarded question open for the
+  caller's Finish of the call, to relay it. That Finish had already come,
+  so nothing ever finished the forwarded question, the caller kept its
+  answer, and the Peer's tail mapping kept the call's id in use. When the
+  caller reused the id, which it may once it has the call's Return, the
+  Peer closed the connection (`DuplicateQuestionId`). Now a call whose
+  Finish came before the forward registers no tail mapping, and the Peer
+  finishes the forwarded question once it has relayed that question's
+  Return. A call that the caller still wants is forwarded as before, and
+  its Finish relays one Finish. v0.28.0 has this defect for any host that
+  does not cancel on the answer-finished report, the review's probe
+  "nfwd2". The P0-1 fix above made it reachable for hosts that do
+  cancel: with a wanted call beside the finished one, the host is not
+  told, and its ordinary answer forwards the finished call. That was the
+  regression found in the held v0.28.1 patch. The known limit "A call
+  finished with go-capnp's Finish flag can close the connection" is
+  removed. The C++ reference sends the flag as false, and then the Peer
+  cancels a queued call at its Finish, as before. Tests: "forwarded call:
+  a call that go-capnp finished, forwarded back to it, ...", "forwarded
+  call: a finished queued call that the core forwards to the remote ...",
+  "forwarded call: a call that go-capnp finished, forwarded as a tail call
+  on the host's own question, ..." and "forwarded call: a call that
+  go-capnp finished and the core forwarded ends at transport close or at
+  free, ..." in `src/native/conn_test.zig`; "go-capnp Finish flags: a
+  finished call forwarded back to the remote ...", "go-capnp Finish flags:
+  a finished call parked on a promise export, forwarded back ...",
+  "go-capnp Finish flags: a finished call forwarded back to the remote
+  ends at transport close or at deinit, ..." and "go-capnp Finish flags:
+  an allocation failure anywhere in a forward after the Finish: ..." in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`.
 
 - **RPC: a parked call now gets its Return when the Peer cannot decode it
   again.** A call pipelined on an answer, or made on a promise export, waits

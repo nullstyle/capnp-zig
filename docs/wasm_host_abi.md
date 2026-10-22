@@ -604,9 +604,7 @@ waits. Only calls pipelined before the Finish wait: rpc.capnp forbids a
 call pipelined after it, and the peer answers one that comes anyway at
 once with an exception Return, as the C++ reference does. So after a
 kind-4 record, `capnp_peer_send_return_canceled` is never refused for
-this reason. The known limit "A call finished with go-capnp's Finish flag
-can close the connection" in [supported-surface.md](supported-surface.md)
-is in the Peer code. It is tested through the native C ABI only.
+this reason.
 
 Known limit: a call pipelined on a host call that the host has not
 answered fails when the host answers with

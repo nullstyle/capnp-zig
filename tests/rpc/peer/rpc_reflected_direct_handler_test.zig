@@ -748,10 +748,15 @@ const TailHarness = struct {
     /// The client asks the server's bootstrap a question, which the server
     /// keeps. Then the wire stops forwarding: the test plays the server.
     fn start(self: *TailHarness, allocator: std.mem.Allocator) !void {
+        try self.startWith(allocator, allocator);
+    }
+
+    /// `start`, with the client peer on `client_allocator`.
+    fn startWith(self: *TailHarness, allocator: std.mem.Allocator, client_allocator: std.mem.Allocator) !void {
         self.* = .{
             .wire = .{ .allocator = allocator },
             .server_peer = Peer.initDetached(allocator),
-            .client_peer = Peer.initDetached(allocator),
+            .client_peer = Peer.initDetached(client_allocator),
         };
         self.server_peer.disableThreadAffinity();
         self.client_peer.disableThreadAffinity();
@@ -1386,6 +1391,269 @@ test "go-capnp Finish flags: the remote finishes an answer and the call pipeline
         try std.testing.expectEqual(@as(usize, 1), hook.count);
         try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(600)));
     }
+}
+
+/// The ids of the Calls the client sent from wire event `mark` on, into
+/// `out`. Returns how many.
+fn clientCallsSince(h: *const TailHarness, mark: usize, out: []u32) !usize {
+    var n: usize = 0;
+    for (h.wire.events.items[mark..]) |event| {
+        if (event.dir != .client_to_server or event.tag != .call) continue;
+        if (n == out.len) return error.TestTooManyCalls;
+        out[n] = event.id;
+        n += 1;
+    }
+    return n;
+}
+
+/// The client peer keeps no record of forwarded question `qf` for answer
+/// `answer_id`: no question, no forward mapping, no tail mapping.
+fn expectForwardGone(h: *TailHarness, answer_id: u32, qf: u32) !void {
+    try std.testing.expect(!h.client_peer.questions.contains(qf));
+    try std.testing.expect(!h.client_peer.forwarded_questions.contains(qf));
+    try std.testing.expect(!h.client_peer.forwarded_tail_questions.contains(answer_id));
+}
+
+/// The remote answers the client's question `question_id` with an
+/// exception.
+fn pushExceptionReturn(h: *TailHarness, allocator: std.mem.Allocator, question_id: u32) !void {
+    var mb = protocol.MessageBuilder.init(allocator);
+    defer mb.deinit();
+    var ret = try mb.beginReturn(question_id, .exception);
+    ret.setReleaseParamCaps(false);
+    try ret.setException("remote failed");
+    const frame = try mb.finish();
+    defer allocator.free(frame);
+    try h.client_peer.handleFrame(frame);
+}
+
+test "go-capnp Finish flags: a finished call forwarded back to the remote is finished once its Return is relayed; the remote reuses its id" {
+    // go-capnp sends Finish with requireEarlyCancellationWorkaround = true
+    // (the schema default), so call 700, pipelined on 600, stays queued
+    // after its Finish. The host's answer to 600 names the remote's own
+    // capability, so the Peer forwards 700 to the remote and turns that
+    // question's Return into 700's. The remote's Finish of 700 came before
+    // the forward, so no later Finish can end the forwarded question.
+    // Before, the Peer held it for one: it was never finished, 700's tail
+    // mapping stayed, and the remote's reuse of 700 failed with
+    // DuplicateQuestionId. Now the Peer finishes the forwarded question
+    // once its Return is relayed. Cases: the two Finish orders, 600
+    // finished after the host's answer, an exception from the remote, and
+    // a host that answers after the answer-finished hook ran.
+    const allocator = std.testing.allocator;
+    const Order = enum { pipelined_call_first, answer_first, answer_after_reply };
+    const Case = struct { order: Order, hook: bool = false, reply: protocol.ReturnTag = .results };
+    for ([_]Case{
+        .{ .order = .pipelined_call_first },
+        .{ .order = .answer_first },
+        .{ .order = .answer_after_reply },
+        .{ .order = .pipelined_call_first, .hook = true },
+        .{ .order = .answer_after_reply, .hook = true },
+        .{ .order = .answer_first, .reply = .exception },
+    }) |case| {
+        var h: TailHarness = undefined;
+        try h.start(allocator);
+        defer h.deinit();
+        var hook = FinishedHook{};
+        if (case.hook) h.client_peer.setAnswerFinishedHandler(&hook, FinishedHook.onFinished);
+
+        try h.pushPlainCall(allocator, 600, h.target_export_id);
+        try std.testing.expectEqual(@as(?u32, 600), h.target.answer_id);
+        try h.pushPipelinedPlainCall(allocator, 700, 600);
+        switch (case.order) {
+            .pipelined_call_first => {
+                try h.pushFinishWith(allocator, 700, true);
+                try h.pushFinishWith(allocator, 600, true);
+            },
+            .answer_first => {
+                try h.pushFinishWith(allocator, 600, true);
+                try h.pushFinishWith(allocator, 700, true);
+            },
+            .answer_after_reply => try h.pushFinishWith(allocator, 700, true),
+        }
+        const told: usize = if (case.hook and case.order != .answer_after_reply) 1 else 0;
+        try std.testing.expectEqual(told, hook.count);
+
+        // The host answers with the remote's own capability, also after
+        // the hook ran (a host may answer then instead of canceling).
+        const wire_mark = h.wire.events.items.len;
+        var result = ResultImport{ .import_id = h.server_import_id };
+        try h.client_peer.sendReturnResults(600, &result, ResultImport.build);
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, .results));
+        var qfs: [2]u32 = undefined;
+        try std.testing.expectEqual(@as(usize, 1), try clientCallsSince(&h, wire_mark, &qfs));
+        const qf = qfs[0];
+        try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, 700, null));
+        try std.testing.expectEqual(@as(usize, 0), h.wire.countFinishes(.client_to_server, qf));
+
+        switch (case.reply) {
+            .results => try h.pushResults(allocator, qf),
+            else => try pushExceptionReturn(&h, allocator, qf),
+        }
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 700, case.reply));
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 700, null));
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, qf));
+        try expectForwardGone(&h, 700, qf);
+        if (case.order == .answer_after_reply) try h.pushFinishWith(allocator, 600, true);
+        try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(700)));
+        try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(600)));
+
+        // The remote has Returns for both and finished both: it reuses
+        // both ids, and both calls reach the host.
+        var reuse = ResultN{ .n = 7 };
+        for ([_]u32{ 700, 600 }) |id| {
+            h.target.answer_id = null;
+            try h.pushPlainCall(allocator, id, h.target_export_id);
+            try std.testing.expectEqual(@as(?u32, id), h.target.answer_id);
+            try h.client_peer.sendReturnResults(id, &reuse, ResultN.build);
+            try std.testing.expectEqual(@as(usize, 2), h.wire.countReturns(.client_to_server, id, null));
+        }
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, qf));
+        try std.testing.expectEqual(told, hook.count);
+    }
+}
+
+test "go-capnp Finish flags: a finished call parked on a promise export, forwarded back to the remote, is finished once its Return is relayed" {
+    // The pending_export_promises twin of the test above: call 600 waits
+    // on a promise export, the remote finishes it with go-capnp's flag, so
+    // it stays parked, and the host resolves the promise to the remote's
+    // own capability. The Peer forwards 600 there and finishes that
+    // question once its Return is relayed. Before, it was never finished,
+    // and the remote's reuse of 600 failed with DuplicateQuestionId.
+    const allocator = std.testing.allocator;
+    for ([_]protocol.ReturnTag{ .results, .exception }) |reply| {
+        var h: TailHarness = undefined;
+        try h.start(allocator);
+        defer h.deinit();
+
+        const promise_id = try h.client_peer.addPromiseExport();
+        try h.pushPlainCall(allocator, 600, promise_id);
+        try h.pushFinishWith(allocator, 600, true);
+        try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, 600, null));
+
+        const wire_mark = h.wire.events.items.len;
+        try h.client_peer.resolvePromiseExportToImport(promise_id, h.server_import_id);
+        var qfs: [2]u32 = undefined;
+        try std.testing.expectEqual(@as(usize, 1), try clientCallsSince(&h, wire_mark, &qfs));
+        const qf = qfs[0];
+        try std.testing.expectEqual(@as(usize, 0), h.wire.countFinishes(.client_to_server, qf));
+
+        switch (reply) {
+            .results => try h.pushResults(allocator, qf),
+            else => try pushExceptionReturn(&h, allocator, qf),
+        }
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, reply));
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, null));
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, qf));
+        try expectForwardGone(&h, 600, qf);
+        try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(600)));
+
+        h.target.answer_id = null;
+        try h.pushPlainCall(allocator, 600, h.target_export_id);
+        try std.testing.expectEqual(@as(?u32, 600), h.target.answer_id);
+    }
+}
+
+test "go-capnp Finish flags: a finished call forwarded back to the remote ends at transport close or at deinit, with no leak" {
+    // The forwarded question waits for the remote's Return. A transport
+    // close ends it, and 700 gets its one Return (an exception, which the
+    // closed transport drops). Freeing the peer with it open leaks nothing
+    // (testing.allocator checks).
+    const allocator = std.testing.allocator;
+    for ([_]bool{ true, false }) |close_transport| {
+        var h: TailHarness = undefined;
+        try h.start(allocator);
+        defer h.deinit();
+
+        try h.pushPlainCall(allocator, 600, h.target_export_id);
+        try h.pushPipelinedPlainCall(allocator, 700, 600);
+        try h.pushFinishWith(allocator, 700, true);
+        try h.pushFinishWith(allocator, 600, true);
+        const wire_mark = h.wire.events.items.len;
+        var result = ResultImport{ .import_id = h.server_import_id };
+        try h.client_peer.sendReturnResults(600, &result, ResultImport.build);
+        var qfs: [2]u32 = undefined;
+        try std.testing.expectEqual(@as(usize, 1), try clientCallsSince(&h, wire_mark, &qfs));
+        try std.testing.expect(h.client_peer.questions.contains(qfs[0]));
+        if (!close_transport) continue;
+        h.client_peer.notifyTransportClosed();
+        // The close pass sends a best-effort Finish for each open question
+        // (the closed transport drops it), and ends the forward.
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, qfs[0]));
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 700, .exception));
+        try expectForwardGone(&h, 700, qfs[0]);
+    }
+}
+
+/// One run of the forward-after-Finish case above with one allocation of
+/// the client peer failing: the `k`-th after setup, and every later one in
+/// the same step. A frame the peer fails to handle ends the connection
+/// there, as a transport does (`notifyTransportClosed`). Whatever fails: at
+/// most one Return for 600 and for 700, at most one Finish for the
+/// forwarded question, and no tail mapping for 700 once its Finish is
+/// applied. With no failure, the full outcome. testing.allocator checks
+/// for leaks at deinit. Returns whether a failure was induced (the sweep's
+/// end condition).
+fn forwardAfterFinishUnderOom(k: usize) !bool {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{});
+    var h: TailHarness = undefined;
+    try h.startWith(allocator, failing.allocator());
+    defer h.deinit();
+    failing.fail_index = failing.alloc_index + k;
+
+    const Step = enum { call, pipelined, finish_pipelined, finish_answer, answer, reply };
+    var qf: ?u32 = null;
+    for (std.enums.values(Step)) |step| {
+        const frame_ok: bool = switch (step) {
+            .call => if (h.pushPlainCall(allocator, 600, h.target_export_id)) true else |_| false,
+            .pipelined => if (h.pushPipelinedPlainCall(allocator, 700, 600)) true else |_| false,
+            .finish_pipelined => if (h.pushFinishWith(allocator, 700, true)) true else |_| false,
+            .finish_answer => if (h.pushFinishWith(allocator, 600, true)) true else |_| false,
+            .answer => blk: {
+                const wire_mark = h.wire.events.items.len;
+                if (h.target.answer_id != null) {
+                    var result = ResultImport{ .import_id = h.server_import_id };
+                    h.client_peer.sendReturnResults(600, &result, ResultImport.build) catch {
+                        failing.fail_index = std.math.maxInt(usize);
+                        h.client_peer.sendReturnException(600, "answer failed") catch {};
+                    };
+                }
+                var qfs: [2]u32 = undefined;
+                const n = try clientCallsSince(&h, wire_mark, &qfs);
+                try std.testing.expect(n <= 1);
+                if (n == 1) qf = qfs[0];
+                break :blk true;
+            },
+            .reply => if (qf) |id| (if (h.pushResults(allocator, id)) true else |_| false) else true,
+        };
+        if (failing.has_induced_failure) failing.fail_index = std.math.maxInt(usize);
+        if (!h.client_peer.active_inbound_questions.contains(700)) {
+            try std.testing.expect(!h.client_peer.forwarded_tail_questions.contains(700));
+        }
+        if (!frame_ok) {
+            h.client_peer.notifyTransportClosed();
+            break;
+        }
+    }
+    try std.testing.expect(h.wire.countReturns(.client_to_server, 700, null) <= 1);
+    try std.testing.expect(h.wire.countReturns(.client_to_server, 600, null) <= 1);
+    if (qf) |id| try std.testing.expect(h.wire.countFinishes(.client_to_server, id) <= 1);
+    if (!failing.has_induced_failure) {
+        const id = qf orelse return error.TestNoForward;
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 700, .results));
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, id));
+        try expectForwardGone(&h, 700, id);
+    }
+    return failing.has_induced_failure;
+}
+
+test "go-capnp Finish flags: an allocation failure anywhere in a forward after the Finish: never two Returns or two Finishes, no tail mapping, no leak" {
+    var k: usize = 0;
+    while (try forwardAfterFinishUnderOom(k)) : (k += 1) {
+        if (k > 10_000) return error.TestSweepRunaway;
+    }
+    try std.testing.expect(k > 10);
 }
 
 test "a yourself call whose param names a failed answer: the remote gets resultsSentElsewhere, the tail call that failure" {
