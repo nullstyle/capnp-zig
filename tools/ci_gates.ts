@@ -11,7 +11,8 @@
 //     tools/ci_gates.ts job-timeouts [WORKFLOW.yml...]
 //   deno run --allow-run=gh --allow-read --allow-write --no-config \
 //     tools/ci_gates.ts job-headroom [--workflow-file FILE] [--branch NAME]
-//       [--runs N] [--repo OWNER/REPO] [--record FILE] [--fixture FILE]
+//       [--runs N] [--allow-few-runs JOB_ID]... [--repo OWNER/REPO]
+//       [--record FILE] [--fixture FILE]
 //
 // nightly-gate (`just check-nightly-gate SHA`; `just release-tag` runs it)
 //   Reads the 3 most recent completed Nightly runs whose head_sha is SHA, with
@@ -68,21 +69,34 @@
 // job-headroom (`just check-job-headroom`; `just release-preflight` runs it)
 //   Reads the 10 most recent green runs (--runs, 10 to 100) of a workflow
 //   (default .github/workflows/ci.yml) on main (--branch), and the latest
-//   attempt of each job in them. For each job that succeeded, it takes the
-//   time from start to end. It prints each job's peak and its run id, the
-//   job-level timeout-minutes of the job in the workflow file, and the peak
-//   as a share of that cap. It refuses when a peak is over 75% of its cap,
-//   when a job has no usable cap, or when there are fewer than 10 green
-//   runs. Exit 0: pass. Exit 1: refused. Exit 2: it could not evaluate.
+//   attempt of each job in them. A run counts only when its event is push,
+//   schedule or workflow_dispatch: a pull request from a fork's own main
+//   branch is not a main run. For each job that succeeded, it takes the
+//   time from start to end. It prints the peak and its run id for each job
+//   name, the job-level timeout-minutes of the job in the workflow file,
+//   and the peak as a share of that cap. It refuses when:
+//     - a peak is over 75% of its cap;
+//     - a job has no usable cap;
+//     - there are fewer than 10 green runs;
+//     - a job name succeeded in fewer than 10 of the runs, or a job of the
+//       file has no job name in them (a new job, or a job whose `name:`
+//       changed);
+//     - no job in the runs matches a job of the file.
+//   Exit 0: pass. Exit 1: refused. Exit 2: it could not evaluate.
 //
 //   A run's job name comes from the job's `name:` in the workflow file;
-//   each `${{ ... }}` in it stands for any text, such as a matrix value.
-//   The matrix value is part of the name, so a runner label change renames
-//   the job. RUNNER_RENAMES maps each old label to its new one
-//   (ubuntu-latest to ubuntu-24.04), so a job's history does not start over
-//   at the change. A job name that matches no job of the file, and a job
-//   with no successful run, are listed as notes and not checked.
-//   --record and --fixture work as for nightly-gate.
+//   each `${{ ... }}` in it stands for any text, such as a matrix value, so
+//   a matrix job has one job name per leg. The matrix value is part of the
+//   name, so a runner label change renames the job. RUNNER_RENAMES maps
+//   each old label to its new one (ubuntu-latest to ubuntu-24.04), so a
+//   job's history does not start over at the change: without the map, each
+//   leg would have too few runs under each name. A job name that matches no
+//   job of the file (a job that was removed or renamed) is listed as a note.
+//
+//   --allow-few-runs JOB_ID (repeatable) passes that job with fewer than 10
+//   runs, for example a new job or a matrix leg that was added or removed.
+//   The peaks it has are still checked. --record and --fixture work as for
+//   nightly-gate.
 
 export const REQUIRED_RUNS = 3;
 export const ROW_MAX_DAYS = 30;
@@ -626,12 +640,25 @@ function stripComment(value: string): string {
 }
 
 // A YAML scalar on one line: a quoted value keeps a " #" inside the quotes.
-function scalar(value: string): string {
+// The scan does not read escapes (\" in double quotes, '' in single
+// quotes), so it stops on one instead of cutting the value short.
+function scalar(value: string, where: string): string {
   const v = value.trim();
   const quote = v[0];
   if (quote === '"' || quote === "'") {
     const end = v.indexOf(quote, 1);
-    if (end > 0) return v.slice(1, end);
+    if (end > 0) {
+      const inner = v.slice(1, end);
+      if (
+        (quote === '"' && inner.includes("\\")) ||
+        (quote === "'" && v[end + 1] === "'")
+      ) {
+        throw new GateError(
+          `${where}: a quoted value with an escape; write it without one`,
+        );
+      }
+      return inner;
+    }
   }
   return stripComment(v);
 }
@@ -709,7 +736,9 @@ export function jobTimeouts(text: string, file = "workflow"): JobTimeout[] {
         "$2",
       );
     }
-    if (key[1] === "name") current.name = scalar(key[2] ?? "");
+    if (key[1] === "name") {
+      current.name = scalar(key[2] ?? "", `${file}:${l.n}`);
+    }
   }
   return jobs;
 }
@@ -753,6 +782,14 @@ export const RUNNER_RENAMES: readonly (readonly [string, string])[] = [
   // workflows pin ubuntu-24.04 (v0.29.0).
   ["ubuntu-latest", "ubuntu-24.04"],
 ];
+
+// The events of a main run. A pull request from a fork's own main branch is
+// listed under branch=main too, but it is not a main run.
+export const HEADROOM_EVENTS: ReadonlySet<string> = new Set([
+  "push",
+  "schedule",
+  "workflow_dispatch",
+]);
 
 export interface HeadroomRun {
   id: number;
@@ -800,7 +837,9 @@ export function latestJobsPath(repo: string, runId: number): string {
 
 // Reads the `count` most recent green runs of `workflow` (a file name in
 // .github/workflows, such as ci.yml) on `branch`, and the duration of each
-// job in them that succeeded.
+// job in them that succeeded. A run from another branch or from an event
+// that HEADROOM_EVENTS does not name is dropped, so the gate can then have
+// fewer runs than it asked for.
 export async function collectHeadroom(
   api: Api,
   repo: string,
@@ -824,7 +863,8 @@ export async function collectHeadroom(
   const green = raw
     .filter((r) =>
       r.status === "completed" && r.conclusion === "success" &&
-      (r.head_branch === undefined || r.head_branch === branch)
+      (r.head_branch === undefined || r.head_branch === branch) &&
+      HEADROOM_EVENTS.has(r.event)
     )
     .sort((a, b) =>
       Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id
@@ -878,9 +918,12 @@ function escapeRegExp(text: string): string {
 
 // Replaces each old runner label of RUNNER_RENAMES that stands as a whole
 // token of the name: "Test (ubuntu-latest)", but not "ubuntu-latest-arm".
-export function normalizeJobName(name: string): string {
+export function normalizeJobName(
+  name: string,
+  renames: readonly (readonly [string, string])[] = RUNNER_RENAMES,
+): string {
   let out = name;
-  for (const [from, to] of RUNNER_RENAMES) {
+  for (const [from, to] of renames) {
     out = out.replace(
       new RegExp(`(^|[ (,])${escapeRegExp(from)}(?=$|[ ),])`, "g"),
       `$1${to}`,
@@ -908,14 +951,36 @@ function percent(part: number, whole: number): string {
   return (Math.round((1000 * part) / whole) / 10).toFixed(1);
 }
 
+function plural(count: number, word: string): string {
+  return `${count} ${word}${count === 1 ? "" : "s"}`;
+}
+
+export interface HeadroomOptions {
+  // The workflow file named in the output (default: evidence.workflow).
+  file?: string;
+  // The fewest green runs, and the fewest of them that each job name of the
+  // file must have succeeded in (default HEADROOM_RUNS).
+  minRuns?: number;
+  // The largest share of its cap that a peak may reach (default
+  // HEADROOM_SHARE).
+  share?: number;
+  // Old and new runner labels (default RUNNER_RENAMES).
+  renames?: readonly (readonly [string, string])[];
+  // Job ids that may have fewer than minRuns runs (--allow-few-runs). Their
+  // peaks are still checked.
+  allowFewRuns?: readonly string[];
+}
+
 export function evaluateHeadroom(
   evidence: HeadroomEvidence,
   jobs: JobTimeout[],
-  options: { file?: string; minRuns?: number; share?: number } = {},
+  options: HeadroomOptions = {},
 ): GateResult {
   const file = options.file ?? evidence.workflow;
   const minRuns = options.minRuns ?? HEADROOM_RUNS;
   const share = options.share ?? HEADROOM_SHARE;
+  const renames = options.renames ?? RUNNER_RENAMES;
+  const allowed = [...new Set(options.allowFewRuns ?? [])];
   const limit = `${Math.round(share * 100)}%`;
   const lines: string[] = [];
   const problems: string[] = [];
@@ -928,12 +993,14 @@ export function evaluateHeadroom(
       } (${runs.at(-1)!.createdAt}) to ${runs[0].id} (${runs[0].createdAt})`,
   );
   lines.push(
-    `A job may run for at most ${limit} of its job-level timeout-minutes. ${
-      RUNNER_RENAMES.map(([from, to]) => `A name with ${from} counts as ${to}.`)
+    `A job may run for at most ${limit} of its job-level timeout-minutes. Each job name of a job must have succeeded in at least ${minRuns} of the runs. ${
+      renames.map(([from, to]) => `A name with ${from} counts as ${to}.`)
         .join(" ")
-    }`,
+    }`.trimEnd(),
   );
-  if (runs.length < minRuns) {
+  // With too few runs, every job has too few runs: refuse once, for the runs.
+  const enoughRuns = runs.length >= minRuns;
+  if (!enoughRuns) {
     problems.push(
       `${runs.length} green runs of ${evidence.workflow} on ${evidence.branch}; the gate needs ${minRuns}`,
     );
@@ -948,12 +1015,12 @@ export function evaluateHeadroom(
     job: JobTimeout;
     name: string;
     peak: HeadroomSample;
-    runs: number;
+    runs: Set<number>;
   }
   const groups = new Map<string, Group>();
   const unmatched = new Map<string, number>();
   for (const sample of evidence.samples) {
-    const name = normalizeJobName(sample.name);
+    const name = normalizeJobName(sample.name, renames);
     let found = patterns.filter((p) => p.pattern.test(name));
     if (found.length > 1 && found.some((p) => p.literal)) {
       found = found.filter((p) => p.literal);
@@ -971,17 +1038,34 @@ export function evaluateHeadroom(
     }
     const group = groups.get(name);
     if (group === undefined) {
-      groups.set(name, { job: found[0].job, name, peak: sample, runs: 1 });
+      groups.set(name, {
+        job: found[0].job,
+        name,
+        peak: sample,
+        runs: new Set([sample.run]),
+      });
       continue;
     }
-    group.runs++;
+    group.runs.add(sample.run);
     if (sample.seconds > group.peak.seconds) group.peak = sample;
   }
 
   const ordered = [...groups.values()].sort((a, b) =>
     a.job.line - b.job.line || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
   );
+  const namesOf = new Map<JobTimeout, Group[]>();
   for (const g of ordered) {
+    namesOf.set(g.job, [...(namesOf.get(g.job) ?? []), g]);
+  }
+  // A job is fully checked when it has a job name and each of its job
+  // names succeeded in at least minRuns runs.
+  const full = (job: JobTimeout) =>
+    (namesOf.get(job) ?? []).length > 0 &&
+    namesOf.get(job)!.every((g) => g.runs.size >= minRuns);
+  for (const g of ordered) {
+    const count = g.runs.size;
+    const few = count < minRuns;
+    const fewMark = few ? `FEWER THAN ${minRuns} RUNS` : null;
     const cap = g.job.timeout !== null && /^[1-9]\d*$/.test(g.job.timeout)
       ? Number(g.job.timeout)
       : NaN;
@@ -989,7 +1073,9 @@ export function evaluateHeadroom(
       lines.push(
         `  ${g.name}: peak ${
           minutes(g.peak.seconds)
-        } min (run ${g.peak.run}), no usable cap, ${g.runs} runs`,
+        } min (run ${g.peak.run}), no usable cap, ${plural(count, "run")}${
+          fewMark ? `: ${fewMark}` : ""
+        }`,
       );
       problems.push(
         `${g.name}: job "${g.job.id}" (${file}:${g.job.line}) has no job-level timeout-minutes from 1 to ${MAX_TIMEOUT_MINUTES}`,
@@ -997,12 +1083,17 @@ export function evaluateHeadroom(
       continue;
     }
     const over = g.peak.seconds > share * cap * 60;
+    const marks = [over ? `OVER ${limit}` : null, fewMark].filter((m) =>
+      m !== null
+    );
     lines.push(
       `  ${g.name}: peak ${
         minutes(g.peak.seconds)
       } min (run ${g.peak.run}), cap ${cap} min, ${
         percent(g.peak.seconds, cap * 60)
-      }%, ${g.runs} runs${over ? `: OVER ${limit}` : ""}`,
+      }%, ${plural(count, "run")}${
+        marks.length > 0 ? `: ${marks.join(", ")}` : ""
+      }`,
     );
     if (over) {
       problems.push(
@@ -1015,24 +1106,64 @@ export function evaluateHeadroom(
         } min)`,
       );
     }
+    if (few && enoughRuns && !allowed.includes(g.job.id)) {
+      problems.push(
+        `${g.name} succeeded in ${count} of the ${runs.length} green runs; the gate needs ${minRuns} (job "${g.job.id}", ${file}:${g.job.line}). Wait for more green runs, or pass --allow-few-runs ${g.job.id}`,
+      );
+    }
   }
   for (const [name, count] of unmatched) {
     lines.push(
-      `note: job "${name}" matches no job of ${file} (${count} runs); it is not checked`,
+      `note: job "${name}" matches no job of ${file} (${
+        plural(count, "run")
+      }); it is not checked`,
     );
   }
-  const seen = new Set(ordered.map((g) => g.job));
   for (const job of jobs) {
-    if (seen.has(job)) continue;
-    lines.push(
-      `note: job "${job.id}" (${file}:${job.line}) has no successful run in these runs; it is not checked`,
+    if (namesOf.has(job)) continue;
+    if (allowed.includes(job.id)) {
+      lines.push(
+        `note: job "${job.id}" (${file}:${job.line}) has no successful run in these runs; it passed with --allow-few-runs`,
+      );
+    } else if (enoughRuns) {
+      problems.push(
+        `job "${job.id}" (${file}:${job.line}) has no successful run in the ${runs.length} green runs, so its cap is not checked. Wait for ${minRuns} green runs, or pass --allow-few-runs ${job.id}`,
+      );
+    }
+  }
+  // An opt-out cannot excuse this one: with no sample, nothing is checked.
+  if (runs.length > 0 && groups.size === 0) {
+    problems.push(
+      `no successful job in the ${runs.length} green runs matches a job of ${file}`,
     );
+  }
+  const excused: string[] = [];
+  for (const id of allowed) {
+    const job = jobs.find((j) => j.id === id);
+    if (job === undefined) {
+      lines.push(`note: --allow-few-runs ${id}: ${file} has no job "${id}"`);
+    } else if (full(job)) {
+      lines.push(
+        `note: --allow-few-runs ${id}: the job ran in at least ${minRuns} green runs; it is checked as usual`,
+      );
+    } else excused.push(id);
   }
 
   const pass = problems.length === 0;
   if (pass) {
+    const fullJobs = jobs.filter(full).length;
     lines.push(
-      `PASS: every job peaked at or below ${limit} of its cap in ${runs.length} green runs`,
+      `PASS: ${plural(jobs.length, "job")} of ${file} (${
+        plural(ordered.length, "job name")
+      }) peaked at or below ${limit} of ${
+        jobs.length === 1 ? "its cap" : "their caps"
+      }; ${fullJobs} of ${jobs.length} ran in at least ${minRuns} of the ${runs.length} green runs${
+        excused.length > 0
+          ? `; ${excused.length} passed with --allow-few-runs: ${
+            excused.join(", ")
+          }`
+          : ""
+      }`,
     );
   } else for (const p of problems) lines.push(`REFUSED: ${p}`);
   return { pass, lines };
@@ -1154,12 +1285,20 @@ export class FixtureApi implements Api {
   }
 }
 
+// An option in `repeated` can be given more than once; its values go to
+// `lists`. Any other option keeps its last value.
 function parseFlags(
   args: string[],
   known: string[],
-): { positional: string[]; flags: Record<string, string> } {
+  repeated: string[] = [],
+): {
+  positional: string[];
+  flags: Record<string, string>;
+  lists: Record<string, string[]>;
+} {
   const positional: string[] = [];
   const flags: Record<string, string> = {};
+  const lists: Record<string, string[]> = {};
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (!arg.startsWith("--")) {
@@ -1168,12 +1307,15 @@ function parseFlags(
     }
     const eq = arg.indexOf("=");
     const name = eq < 0 ? arg.slice(2) : arg.slice(2, eq);
-    if (!known.includes(name)) throw new GateError(`unknown option --${name}`);
+    if (!known.includes(name) && !repeated.includes(name)) {
+      throw new GateError(`unknown option --${name}`);
+    }
     const value = eq < 0 ? args[++i] : arg.slice(eq + 1);
     if (value === undefined) throw new GateError(`--${name} needs a value`);
-    flags[name] = value;
+    if (repeated.includes(name)) (lists[name] ??= []).push(value);
+    else flags[name] = value;
   }
-  return { positional, flags };
+  return { positional, flags, lists };
 }
 
 async function resolveSha(ref: string): Promise<string> {
@@ -1306,18 +1448,28 @@ async function jobTimeoutsCommand(args: string[]): Promise<number> {
 }
 
 async function jobHeadroomCommand(args: string[]): Promise<number> {
-  const { positional, flags } = parseFlags(args, [
+  const { positional, flags, lists } = parseFlags(args, [
     "workflow-file",
     "branch",
     "runs",
     "repo",
     "record",
     "fixture",
-  ]);
+  ], ["allow-few-runs"]);
   if (positional.length !== 0) {
     throw new GateError(
-      "usage: job-headroom [--workflow-file FILE] [--branch NAME] [--runs N] [--repo OWNER/REPO] [--record FILE] [--fixture FILE]",
+      "usage: job-headroom [--workflow-file FILE] [--branch NAME] [--runs N] [--allow-few-runs JOB_ID]... [--repo OWNER/REPO] [--record FILE] [--fixture FILE]",
     );
+  }
+  const allowFewRuns = lists["allow-few-runs"] ?? [];
+  for (const id of allowFewRuns) {
+    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(id)) {
+      throw new GateError(
+        `--allow-few-runs ${
+          JSON.stringify(id)
+        }: give a job id, such as quic-transport`,
+      );
+    }
   }
   const file = flags["workflow-file"] ?? DEFAULT_HEADROOM_WORKFLOW;
   const workflow = file.replace(/^.*[\\/]/, "");
@@ -1350,6 +1502,7 @@ async function jobHeadroomCommand(args: string[]): Promise<number> {
   const result = evaluateHeadroom(evidence, jobs, {
     file,
     minRuns: HEADROOM_RUNS,
+    allowFewRuns,
   });
   console.log(result.lines.join("\n"));
   return result.pass ? 0 : 1;

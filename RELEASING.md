@@ -157,8 +157,16 @@ the drift needs.
 
 Then it runs `check-job-headroom`. It reads the last 10 green main runs of
 `ci.yml` and `nightly.yml` and refuses when a job's peak duration is over
-75% of its job-level `timeout-minutes`. If it refuses, raise that job's cap
-with the measured peak and run id in its comment, or make the job faster.
+75% of its job-level `timeout-minutes`. If it refuses for that reason,
+raise that job's cap with the measured peak and run id in its comment, or
+make the job faster.
+
+It also refuses a job that ran in fewer than 10 of those runs: a new job, a
+job whose `name:` changed, or a matrix leg that was added or removed. Wait
+for 10 green main runs. If the release cannot wait, give the job id after
+the version, for example
+`just release-preflight X.Y.Z --allow-few-runs new-job`. The check still
+refuses a peak over 75% for that job, and its PASS line names the job.
 
 `release-preflight` includes `package-preflight`. Do not use
 `--skip-quic` here; that switch exists only for constrained local diagnosis.

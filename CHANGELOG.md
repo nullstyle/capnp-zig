@@ -13,9 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tools/ci_gates.ts job-headroom` reads the 10 most recent green main
   runs of a workflow and the time that each job took. It prints each job's
   peak duration and its run id. It refuses when a peak is over 75% of the
-  job's `timeout-minutes`. A job's name carries its runner label, so the
+  job's `timeout-minutes`. It also refuses a job that ran in fewer than 10
+  of the runs, so a job with no history does not pass unchecked. This
+  covers a new job, a job whose `name:` changed, and a matrix leg that was
+  added or removed. `--allow-few-runs JOB_ID` lets such a job pass, and its
+  peaks are still checked. A job's name carries its runner label, so the
   check counts a job named with `ubuntu-latest` as the same job with
-  `ubuntu-24.04`, and the history of each job carries across the rename.
+  `ubuntu-24.04`. Without that, each Linux leg would start over and be
+  refused. Only main runs from push, schedule and workflow_dispatch count.
   `release-preflight` runs the check on `ci.yml` and `nightly.yml`. Its
   tests use recorded API responses: the 10 green main CI runs up to
   `bdc656f`, and branch run 39537367357. On the live main runs of

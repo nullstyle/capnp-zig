@@ -438,11 +438,13 @@ check-release-drift PREV_TAG VERSION="":
 
 # Complete local release preflight, including heavier CI build/regression jobs.
 # Pass the version you are about to cut, so the drift hook checks the bump
-# before the version sweep: `just release-preflight 0.20.0`.
-release-preflight VERSION="":
+# before the version sweep: `just release-preflight 0.20.0`. Flags after the
+# version go to check-job-headroom, for example
+# `just release-preflight 0.20.0 --allow-few-runs new-job`.
+release-preflight VERSION="" *HEADROOM_ARGS:
     just check-toolchain
     just check-release-drift "$(git describe --tags --abbrev=0 --match 'v[0-9]*')" {{ VERSION }}
-    just check-job-headroom
+    just check-job-headroom {{ HEADROOM_ARGS }}
     just ci
     just test-release-safe-full
     just wasm-build
@@ -473,18 +475,24 @@ check-job-timeouts:
 # Reads the 10 most recent green main runs of ci.yml and of nightly.yml with
 # `gh api` (read-only) and prints each job's peak duration and its run id.
 # Exit 1 refuses: a job peaked above 75% of its job-level timeout-minutes,
-# or there are fewer than 10 green runs. Exit 2: the check could not run.
-# Both workflows are checked even when the first one fails. Extra flags go
-# to tools/ci_gates.ts job-headroom (--runs, --branch).
+# a job ran in fewer than 10 of the runs, or there are fewer than 10 green
+# runs. Exit 2: the check could not run. Both workflows are checked even
+# when the first one fails; when one refuses, the exit is 1. Extra flags go
+# to tools/ci_gates.ts job-headroom (--runs, --branch, --allow-few-runs
+# JOB_ID for a new job or a changed matrix; its peaks are still checked).
 # Fail when a CI or Nightly job peaked above 75% of its timeout-minutes
 check-job-headroom *ARGS:
     #!/usr/bin/env bash
     set -uo pipefail
-    status=0
+    refused=0
+    failed=0
     for workflow in ci.yml nightly.yml; do
+      status=0
       deno run --allow-run=gh --allow-read --allow-write --no-config tools/ci_gates.ts job-headroom --workflow-file ".github/workflows/${workflow}" {{ ARGS }} || status=$?
+      if [ "$status" -eq 1 ]; then refused=1; elif [ "$status" -ne 0 ]; then failed="$status"; fi
     done
-    exit "$status"
+    if [ "$refused" -ne 0 ]; then exit 1; fi
+    exit "$failed"
 
 # Create and push an annotated release tag — but refuse when the commit being
 # tagged does not already have a green CI run, or does not pass the Nightly

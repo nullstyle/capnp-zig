@@ -27,6 +27,7 @@ on:
 # Linux jobs pin ubuntu-24.04, as ci.yml does (see the comment above its
 # jobs). Their names carry the label, for example
 # "RPC soak (chaos + deadlines, ubuntu-24.04)".
+
 jobs:
   soak:
     name: RPC soak (chaos + deadlines, ${{ matrix.os }})
@@ -271,12 +272,12 @@ jobs:
     # arm64, not the x86_64 ubuntu-24.04 runner: on x86_64 the zig fuzzer's
     # maker dies with "start index 1 is larger than end index 0" right after
     # the fuzz phase starts, before any coverage-guided signal — reproduced
-    # on CI with both
-    # dev.813 (run 30533131144) and dev.1252 (run 30562797754), i.e. on both
-    # sides of the dev.1190 maker restructure. The same snapshot + command on
-    # aarch64-linux fuzzes a full 10-minute window cleanly (probed 2026-07-30,
-    # native ubuntu-24.04 container: 626s, zero infra panics, growing corpus).
-    # arm runners are free for public repos.
+    # on CI with both dev.813 (run 30533131144) and dev.1252 (run
+    # 30562797754), i.e. on both sides of the dev.1190 maker restructure.
+    # The same snapshot + command on aarch64-linux fuzzes a full 10-minute
+    # window cleanly (probed 2026-07-30, native ubuntu-24.04 container: 626s,
+    # zero infra panics, growing corpus). arm runners are free for public
+    # repos.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     steps:
