@@ -520,6 +520,8 @@ pub const Conn = struct {
     /// standalone message whose root is the params struct; its capability
     /// pointers index `caps` (IMPORT, EXPORT, NONE or PROMISED entries). The
     /// question is `.retained`: the host must `finish` it after its RETURN.
+    /// A PROMISED target or entry must name an open question that is not a
+    /// loopback question (`checkPipelineQuestion`).
     pub fn call(
         self: *Conn,
         target: Cap,
@@ -535,11 +537,11 @@ pub const Conn = struct {
         if (flags != 0) return error.Unsupported; // STREAMING: later
         switch (target.kind) {
             .import => if (cap_remap.importRefCount(&self.peer.caps, target.id) == 0) return error.BadId,
-            .promised => if (!self.questions.contains(target.id)) return error.BadId,
+            .promised => try self.checkPipelineQuestion(target.id),
             .none, .@"export" => return error.Unsupported,
         }
         for (caps) |cap| {
-            if (cap.kind == .promised and !self.questions.contains(cap.id)) return error.BadId;
+            if (cap.kind == .promised) try self.checkPipelineQuestion(cap.id);
         }
         const qc = try self.newQuestionCtx();
         qc.msg = msg;
@@ -578,6 +580,26 @@ pub const Conn = struct {
             return err;
         };
         return self.adoptQuestion(qc, qid);
+    }
+
+    /// A PROMISED target or cap of `call` names `qid`: it must be one of
+    /// this side's open questions (`error.BadId`), and not a loopback
+    /// question, a call this side made to one of its own exports
+    /// (`error.Unsupported`). The remote never saw a loopback question's
+    /// id, so a call pipelined on it would go to the remote under an id it
+    /// does not know and get no RETURN until disconnect. Generated clients
+    /// refuse the same (`error.LocalCapabilityPipelineUnsupported`).
+    fn checkPipelineQuestion(self: *Conn, qid: u32) !void {
+        if (!self.questions.contains(qid)) return error.BadId;
+        if (self.isLoopbackQuestion(qid)) return error.Unsupported;
+    }
+
+    /// The Peer marks a loopback question on the question while it waits.
+    /// An open question here that the Peer no longer holds is held on a
+    /// tail call, and `holdTailCall` never holds a loopback question.
+    fn isLoopbackQuestion(self: *Conn, qid: u32) bool {
+        const question = self.peer.questions.get(qid) orelse return false;
+        return question.is_loopback;
     }
 
     /// Cancel an open question. The Peer sends Finish and ends the question

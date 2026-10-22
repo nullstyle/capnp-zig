@@ -57,6 +57,14 @@ to the host's bootstrap capability. See the pending-answer limit in
 docs/supported-surface.md ("A pipelined capability in call params resolves
 only once its answer has returned").
 
+A question whose call loops back to one of the host's own exports (the
+remote resolved its target there; see "Loopback calls") is never seen by
+the remote. So `capnp_call` returns `CAPNP_E_INVAL` for a PROMISED target
+or caps entry that names such a question while it waits: the call would
+reach the remote under an id it does not know. Wait for the question's
+RETURN and call the capability in it. Generated Zig clients refuse the same
+call (`error.LocalCapabilityPipelineUnsupported`).
+
 ## Answer ids
 
 The host answers each INBOUND_CALL once, with `capnp_return_results`,
@@ -264,7 +272,9 @@ makes X wait for a Y that it already reported: X then gets RETURN EXCEPTION
 is an INBOUND_CALL too. When the host cancels the question of such a call,
 or the question's deadline passes, the core queues ANSWER_FINISHED for the
 call before the question's RETURN (CANCELED or EXCEPTION). Answer it as any
-other; the ended question absorbs the answer.
+other; the ended question absorbs the answer. No call can be pipelined on
+such a question (`capnp_call` refuses it, see "The model"), so pipelined
+calls never hold this effect back.
 
 ## Tail calls
 

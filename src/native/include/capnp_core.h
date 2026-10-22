@@ -311,7 +311,9 @@ int32_t capnp_bootstrap(capnp_conn *conn, uint32_t *out_qid);
  * or PROMISED entries). flags must be 0 (streaming lands later). The question
  * is retained: after its RETURN the host must capnp_finish it (or
  * capnp_cancel it before). CAPNP_E_BAD_ID for a PROMISED id that is not an
- * open question. */
+ * open question. CAPNP_E_INVAL for a PROMISED id that names a question whose
+ * call loops back to one of this connection's own exports: the remote never
+ * saw that id, so wait for its RETURN instead. */
 int32_t capnp_call(capnp_conn *conn, capnp_cap target, uint64_t interface_id, uint16_t method_id,
                    const uint8_t *msg, size_t msg_len, const capnp_cap *caps, size_t ncaps,
                    uint32_t flags, uint32_t *out_qid);

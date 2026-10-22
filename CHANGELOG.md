@@ -163,6 +163,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an allocation failure anywhere in a forward after the Finish: ..." in
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`.
 
+- **Native: `capnp_call` refuses to pipeline on a loopback question.** A
+  question whose call loops back to one of the host's own exports (the
+  remote resolved its target there) is never seen by the remote. A
+  `capnp_call` with a PROMISED target or caps entry that named such a
+  question went to the remote under that unknown id. The remote queued it
+  forever, the host's question got no RETURN until disconnect, and the
+  core's P0-1 check never saw the pipelined call. Now `capnp_call` returns
+  `CAPNP_E_INVAL` for it and sends nothing, as generated clients refuse
+  the same call (`error.LocalCapabilityPipelineUnsupported`). The
+  `capnp_core.h` change is a comment only. Test: "call: a PROMISED target
+  or cap that names the host's own loopback question is refused" in
+  `src/native/conn_test.zig`.
+
 - **RPC: a parked call now gets its Return when the Peer cannot decode it
   again.** A call pipelined on an answer, or made on a promise export, waits
   in the Peer until that answer or promise resolves. The replay drains

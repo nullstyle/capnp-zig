@@ -3236,6 +3236,69 @@ test "answer finished: the end of the host's own loopback question reports its c
     }
 }
 
+test "call: a PROMISED target or cap that names the host's own loopback question is refused" {
+    // B resolves a promise it gave A to A's own export, so A's call q2 on
+    // that import loops back to A's host. The remote never saw q2's id: a
+    // call pipelined on q2, or a PROMISED cap that names it, would go to B
+    // under an id B does not know, and wait there with no RETURN until
+    // disconnect. capnp_call refuses both, as generated clients refuse a
+    // pipelined call on a local capability.
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+    const ib = try connectPair(a, &ra, b, &rb);
+    const ea = try a.exportCap(200);
+    const pe = try b.promiseExport();
+    const pc = try msgCap(alloc, 1, 0);
+    defer alloc.free(pc);
+    // A passes ea to B; B answers with the promise, then resolves it to ea.
+    const q1 = try a.call(ib, iface, 0, pc, &.{.{ .kind = .@"export", .id = ea }}, 0);
+    try pump(a, &ra, b, &rb);
+    const c1 = rb.lastCall();
+    const ia = try rootCap(alloc, c1.msg, c1.caps);
+    try b.returnResults(c1.answer_id, pc, &.{.{ .kind = .@"export", .id = pe }});
+    try pump(a, &ra, b, &rb);
+    const r1 = ra.returnFor(q1) orelse return error.TestNoReturn;
+    const ip = try rootCap(alloc, r1.msg, r1.caps);
+    try a.finish(q1, false);
+    try b.resolvePromise(pe, ia);
+    try pump(a, &ra, b, &rb);
+
+    const p = try msgU64(alloc, 5);
+    defer alloc.free(p);
+    const q2 = try a.call(ip, iface, 7, p, &.{}, 0);
+    try pump(a, &ra, b, &rb);
+    const loop = ra.lastCall();
+    try testing.expectEqual(ea, loop.export_id);
+    const b_calls = rb.calls.items.len;
+
+    // While q2 waits for its answer. Nothing goes to B.
+    try testing.expectError(error.Unsupported, a.call(.{ .kind = .promised, .id = q2 }, iface, 7, p, &.{}, 0));
+    try testing.expectError(error.Unsupported, a.call(ib, iface, 0, pc, &.{.{ .kind = .promised, .id = q2 }}, 0));
+    try pump(a, &ra, b, &rb);
+    try testing.expectEqual(b_calls, rb.calls.items.len);
+    try testing.expectEqual(@as(usize, 0), b.peer.pending_promises.count());
+
+    // After its RETURN, q2 is no open question: CAPNP_E_BAD_ID, as for any.
+    const done = try msgU64(alloc, 6);
+    defer alloc.free(done);
+    try a.returnResults(loop.answer_id, done, &.{});
+    try pump(a, &ra, b, &rb);
+    _ = try expectOneReturn(&ra, q2, .results);
+    try testing.expectError(error.BadId, a.call(.{ .kind = .promised, .id = q2 }, iface, 7, p, &.{}, 0));
+    try testing.expectError(error.BadId, a.call(ib, iface, 0, pc, &.{.{ .kind = .promised, .id = q2 }}, 0));
+    try a.finish(q2, false);
+    try pump(a, &ra, b, &rb);
+    try testing.expect(a.last_error == null);
+    try testing.expect(b.last_error == null);
+}
+
 test "answer finished: the effect can come after EXPORT_DROPPED for its export; the answer id names the work" {
     // B releases its import of A's export, then cancels its call on it: A
     // drains EXPORT_DROPPED first, then ANSWER_FINISHED with the dropped
