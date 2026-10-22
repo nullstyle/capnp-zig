@@ -16,6 +16,25 @@ const message = @import("../../../serialization/message.zig");
 const peer_forward_orchestration = @import("../forward/peer_forward_orchestration.zig");
 const peer_return_dispatch = @import("../return/peer_return_dispatch.zig");
 
+/// The inbound calls of `peer` that owe a Return: those the caller has not
+/// finished (`active_inbound_questions`), and those it finished first whose
+/// Return has not gone out (`finished_early_answers`). Both count in
+/// `limits.max_active_inbound_questions`: a call the caller finished still
+/// holds its id, and the work for it may still run.
+pub fn inboundCallsOwingReturn(peer: anytype) usize {
+    return peer.active_inbound_questions.count() + peer.finished_early_answers.count();
+}
+
+/// Make room in `finished_early_answers` for a record of every inbound call
+/// that owes a Return, plus one for a call about to be admitted. Every call
+/// is admitted with this room, and a Finish only moves a call from the
+/// active set to the records, so the put at its Finish finds room and
+/// allocates nothing (`Peer.handleFinish`). The map never gives capacity
+/// back while the peer lives.
+pub fn reserveFinishedEarlyRecord(peer: anytype) error{OutOfMemory}!void {
+    try peer.finished_early_answers.ensureTotalCapacity(@intCast(inboundCallsOwingReturn(peer) + 1));
+}
+
 /// The inbound Call path and resolved-answer bookkeeping, extracted from
 /// `peer/mod.zig` and made generic over the peer type (the JoinCoordinator
 /// extraction contract): handleCall dispatch, resolved-target dispatch,
@@ -70,6 +89,9 @@ pub fn CallInbound(comptime Peer: type) type {
         }
         const third_party_results_unsupported =
             "sendResultsTo.thirdParty unsupported: this vat cannot route results to a third party";
+        /// The reason of the exception Return for a call past
+        /// `max_active_inbound_questions` calls that owe a Return.
+        const owed_answer_limit_reason = "OwedAnswerLimitExceeded";
         /// Records a call's `sendResultsTo` routing (the `yourself` mark, or
         /// the third-party target) before it is answered.
         const noteCallSendResults = third_party.noteCallSendResultsForPeerFn(
@@ -122,6 +144,20 @@ pub fn CallInbound(comptime Peer: type) type {
 
             const inbound_before = self.active_inbound_questions.count();
             try ensureCountLimit(false, inbound_before, self.limits.max_active_inbound_questions);
+            // A call the remote finished still owes its Return, and keeps its
+            // place in the same bound (`inboundCallsOwingReturn`). A
+            // call past it gets one exception Return at once, before any
+            // bookkeeping and before its params take any capability, and the
+            // connection stays up. The native core refuses with the same
+            // reason when the host owes too many answers.
+            if (inboundCallsOwingReturn(self) >= self.limits.max_active_inbound_questions) {
+                markYourselfCallForException(self, call);
+                try self.sendReturnException(call.question_id, owed_answer_limit_reason);
+                return;
+            }
+            // The record that this call's Finish puts is reserved now, so
+            // that Finish never allocates and never loses it.
+            try reserveFinishedEarlyRecord(self);
             // Decide the answering Return's `releaseParamCaps` up front, from the
             // frame the caller actually sent: a `senderHosted`/`senderPromise` param
             // descriptor is a wire reference the caller recorded and this vat is

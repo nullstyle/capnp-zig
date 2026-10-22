@@ -1954,6 +1954,15 @@ fn fillFinishedRecords(alloc: std.mem.Allocator, c: *Conn, ids: []const u32) !vo
     try testing.expectEqual(before + ids.len, c.peer.finished_early_answers.count());
 }
 
+/// Drop the Peer's record of the caller's Finish of call `id`. The Peer
+/// keeps that record until the call's Return goes out (finished calls
+/// count in `max_active_inbound_questions`), so only a test can take it
+/// away. These tests do, to reach the core's own check for a reused id
+/// the host owes, which stays for a Peer that has no record.
+fn dropFinishedRecord(c: *Conn, id: u32) !void {
+    try testing.expect(c.peer.finished_early_answers.remove(id));
+}
+
 fn countCalls(rec: *Rec, answer_id: u32) usize {
     var n: usize = 0;
     for (rec.calls.items) |c| {
@@ -1999,14 +2008,14 @@ fn expectAbortClose(c: *Conn) !void {
 test "inbound: a new call that reuses an id the host still owes closes the connection" {
     // The host owes call 10, and the remote sends a new call 10. While the
     // Peer has a record of the old call (no Finish yet, or a recorded
-    // Finish), it refuses the id itself: Abort, no Return. With its
-    // finished-early records full (2 of 2, held by calls queued on a promise
-    // export), the Peer accepts the id after the Finish; the core answers
-    // the new call with an exception, sends Abort and asks to close. In
-    // every case the host sees one INBOUND_CALL 10, the push fails once,
-    // and `last_error` names DuplicateQuestionId, in both framings.
+    // Finish), it refuses the id itself: Abort, no Return. With no record
+    // of the Finish (`dropFinishedRecord`), the Peer accepts the id; the
+    // core answers the new call with an exception, sends Abort and asks to
+    // close. In every case the host sees one INBOUND_CALL 10, the push
+    // fails once, and `last_error` names DuplicateQuestionId, in both
+    // framings.
     const alloc = testing.allocator;
-    const Case = enum { no_finish, finish_recorded, records_full };
+    const Case = enum { no_finish, finish_recorded, no_record };
     for ([_]conn_mod.Framing{ .segment_table, .u32_le }) |framing| {
         for (std.enums.values(Case)) |case| {
             const a = try Conn.init(alloc, .{
@@ -2018,15 +2027,15 @@ test "inbound: a new call that reuses an id the host still owes closes the conne
             var ra = Rec.init(alloc);
             defer ra.deinit();
             const ea = try a.exportCap(200);
-            if (case == .records_full) try fillFinishedRecords(alloc, a, &.{ 20, 21 });
             try pushFrame(alloc, a, plainCallFrame(alloc, 10, ea));
             if (case != .no_finish) try pushFrame(alloc, a, finishFrame(alloc, 10));
+            if (case == .no_record) try dropFinishedRecord(a, 10);
             try drainAll(a, &ra);
             try testing.expectEqual(@as(usize, 1), countCalls(&ra, 10));
 
             try testing.expectError(error.Protocol, pushFrame(alloc, a, plainCallFrame(alloc, 10, ea)));
             try testing.expectEqual(@as(?anyerror, error.DuplicateQuestionId), a.last_error);
-            if (case == .records_full) {
+            if (case == .no_record) {
                 try expectReturnAbortClose(a, 10, "DuplicateQuestionId");
             } else {
                 try expectAbortClose(a);
@@ -2037,31 +2046,28 @@ test "inbound: a new call that reuses an id the host still owes closes the conne
     }
 }
 
-test "inbound: with the Peer's records full, a reused id on a call the core answers itself is not caught" {
-    // The documented limit of the rule above ("Answer ids" in
-    // docs/native-abi.md): the core sees only calls that reach a host
-    // export. A new call 10 on an unknown export gets the Peer's own
-    // exception Return, the connection stays up, and the host's late
-    // answer for the old call 10 is a second Return with that id.
+test "inbound: a reused id on a call the core answers itself closes the connection" {
+    // The host owes call 10, which the remote finished. The remote sends a
+    // new call 10 on an export that does not exist, so the call would never
+    // reach the host. The Peer keeps the record of the old call's Finish
+    // until its Return, so it refuses the id itself: Abort, no Return, and
+    // the host sees one INBOUND_CALL 10. Before, when those records were
+    // full, the Peer answered the new call itself, the connection stayed
+    // up, and the host's late answer was a second Return with the id.
     const alloc = testing.allocator;
     const a = try Conn.init(alloc, .{ .now_ns = 0, .limits = .{ .max_active_inbound_questions = 2 } });
     defer a.deinit();
     var ra = Rec.init(alloc);
     defer ra.deinit();
     const ea = try a.exportCap(200);
-    try fillFinishedRecords(alloc, a, &.{ 20, 21 });
     try pushFrame(alloc, a, plainCallFrame(alloc, 10, ea));
     try pushFrame(alloc, a, finishFrame(alloc, 10));
-    try pushFrame(alloc, a, plainCallFrame(alloc, 10, 999));
-    const res = try msgU64(alloc, 1);
-    defer alloc.free(res);
-    try a.returnResults(10, res, &.{});
     try drainAll(a, &ra);
+    try testing.expectError(error.Protocol, pushFrame(alloc, a, plainCallFrame(alloc, 10, 999)));
+    try testing.expectEqual(@as(?anyerror, error.DuplicateQuestionId), a.last_error);
+    try expectAbortClose(a);
     try testing.expectEqual(@as(usize, 1), countCalls(&ra, 10));
-    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, 10, .exception));
-    try testing.expectEqual(@as(usize, 2), try countReturnFrames(&ra, 10, null));
-    try testing.expect(!a.failed);
-    try testing.expectEqual(@as(usize, 0), ra.close_requested);
+    try testing.expectEqual(@as(usize, 0), try countReturnFrames(&ra, 10, null));
 }
 
 test "u32_le: a bad frame or a remote Abort ends the connection once, as in segment-table framing" {
@@ -2119,17 +2125,18 @@ test "u32_le: a bad frame or a remote Abort ends the connection once, as in segm
 }
 
 test "inbound: a queued call that reuses an id the host still owes closes the connection when it is delivered" {
-    // As above, records full, but the new call 10 waits on a promise export
-    // and reaches the core only when the host resolves the promise.
+    // As above with no record of the Finish, but the new call 10 waits on
+    // a promise export and reaches the core only when the host resolves
+    // the promise.
     const alloc = testing.allocator;
     const a = try Conn.init(alloc, .{ .now_ns = 0, .limits = .{ .max_active_inbound_questions = 2 } });
     defer a.deinit();
     var ra = Rec.init(alloc);
     defer ra.deinit();
     const ea = try a.exportCap(200);
-    try fillFinishedRecords(alloc, a, &.{ 20, 21 });
     try pushFrame(alloc, a, plainCallFrame(alloc, 10, ea));
     try pushFrame(alloc, a, finishFrame(alloc, 10));
+    try dropFinishedRecord(a, 10);
     const pe = try a.promiseExport();
     try pushFrame(alloc, a, plainCallFrame(alloc, 10, pe));
     try drainAll(a, &ra);
@@ -2152,18 +2159,19 @@ test "inbound: a queued call that reuses an id the host still owes closes the co
 }
 
 test "inbound: a pipelined call that reuses an id the host still owes closes the connection when the host's answer releases it" {
-    // Records full; the host owes 10. The new call 10 is pipelined on the
-    // host's answer 30, so the Peer queues it until the host answers 30
-    // with one of its exports; then the call reaches the core.
+    // No record of the Finish; the host owes 10. The new call 10 is
+    // pipelined on the host's answer 30, so the Peer queues it until the
+    // host answers 30 with one of its exports; then the call reaches the
+    // core.
     const alloc = testing.allocator;
     const a = try Conn.init(alloc, .{ .now_ns = 0, .limits = .{ .max_active_inbound_questions = 2 } });
     defer a.deinit();
     var ra = Rec.init(alloc);
     defer ra.deinit();
     const ea = try a.exportCap(200);
-    try fillFinishedRecords(alloc, a, &.{ 20, 21 });
     try pushFrame(alloc, a, plainCallFrame(alloc, 10, ea));
     try pushFrame(alloc, a, finishFrame(alloc, 10));
+    try dropFinishedRecord(a, 10);
     try pushFrame(alloc, a, plainCallFrame(alloc, 30, ea));
     {
         var mb = protocol.MessageBuilder.init(alloc);
@@ -2224,6 +2232,63 @@ test "inbound: a call beyond max_active_inbound_questions owed answers is refuse
     try testing.expectEqual(@as(usize, 1), countCalls(&ra, 13));
     try testing.expectEqual(@as(usize, 0), ra.close_requested);
     try testing.expect(a.last_error == null);
+}
+
+test "inbound: finished calls that the core keeps queued count in max_active_inbound_questions; a call past it is refused, and every id comes free" {
+    // The host owes call 30, and call 40, pipelined on 30, waits in the
+    // core. The remote finishes both with go-capnp's flags, so 40 stays
+    // queued. Before, the core's records of finished calls had a bound of
+    // their own: they were full now, but the core still admitted call 50,
+    // and the Finish of 50 left no record. The host's answer to 50 was then
+    // recorded as an answer that no Finish clears, and the remote's
+    // compliant reuse of id 50 closed the connection (DuplicateQuestionId).
+    // Now every call that owes a Return counts in the bound, finished or
+    // not, and 50 gets one exception Return at once.
+    const alloc = testing.allocator;
+    const a = try Conn.init(alloc, .{ .now_ns = 0, .limits = .{ .max_active_inbound_questions = 2 } });
+    defer a.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    const ea = try a.exportCap(200);
+    try pushFrame(alloc, a, plainCallFrame(alloc, 30, ea));
+    try pushFrame(alloc, a, pipelinedCallFrame(alloc, 40, 30));
+    try pushFrame(alloc, a, finishFrameFull(alloc, 40, true, true));
+    try pushFrame(alloc, a, finishFrameFull(alloc, 30, true, true));
+    try drainAll(a, &ra);
+
+    try pushFrame(alloc, a, plainCallFrame(alloc, 50, ea));
+    try pushFrame(alloc, a, finishFrameFull(alloc, 50, true, true));
+    try drainAll(a, &ra);
+    const reached_host = countCalls(&ra, 50) == 1;
+    if (reached_host) {
+        const r = try msgU64(alloc, 50);
+        defer alloc.free(r);
+        try a.returnResults(50, r, &.{});
+    }
+    // The host answers 30. Its results hold no capability, so 40 fails.
+    const res = try msgU64(alloc, 30);
+    defer alloc.free(res);
+    try a.returnResults(30, res, &.{});
+    try drainAll(a, &ra);
+    for ([_]u32{ 30, 40, 50 }) |id| try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, id, null));
+
+    // The remote has a Return for every call and finished each: it reuses
+    // every id, and each call reaches the host.
+    for ([_]u32{ 50, 40, 30 }) |id| {
+        try testing.expect(!(try a.peer.inboundAnswerQuestionIdInUse(id)));
+        const before = countCalls(&ra, id);
+        try pushFrame(alloc, a, plainCallFrame(alloc, id, ea));
+        try drainAll(a, &ra);
+        try testing.expectEqual(before + 1, countCalls(&ra, id));
+        try a.returnResults(id, res, &.{});
+        try pushFrame(alloc, a, finishFrame(alloc, id));
+        try drainAll(a, &ra);
+    }
+    try testing.expectEqual(@as(usize, 0), ra.close_requested);
+    try testing.expect(a.last_error == null);
+    // 50 came past the bound: its first Return was the refusal.
+    try testing.expect(!reached_host);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, 50, .exception));
 }
 
 // ---------------------------------------------------------------------------
@@ -2502,25 +2567,39 @@ test "answer finished: a queued call that reaches the host after its Finish is r
     }
 }
 
-test "answer finished: with the Peer's finished-early records full, no effect; the ordinary answer goes out" {
-    // Records held by calls queued on a promise export (2 of 2). The Peer
-    // cannot record call 10's Finish, so it does not report it, and the
-    // core never learns of it.
+test "answer finished: a call past max_active_inbound_questions calls that owe a Return is refused; a call the core admits gets its ANSWER_FINISHED" {
+    // Calls 20 and 21, queued on a promise export and finished with
+    // go-capnp's flags, owe a Return, and so does call 10 once the host has
+    // it. Before, the Peer's records of finished calls had a bound of their
+    // own: with them full, the Finish of 10 left no record, and no
+    // ANSWER_FINISHED came. Now finished calls count in the same bound as
+    // other inbound calls: the Finish of an admitted call always has its
+    // record, and a call past the bound is refused.
     const alloc = testing.allocator;
-    var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true, .limits = .{ .max_active_inbound_questions = 2 } });
+    var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true, .limits = .{ .max_active_inbound_questions = 3 } });
     defer f.deinit();
     try fillFinishedRecords(alloc, f.a, &.{ 20, 21 });
     try pushFrame(alloc, f.a, plainCallFrame(alloc, 10, f.ea));
     try pushFrame(alloc, f.a, finishFrame(alloc, 10));
     try drainAll(f.a, &f.ra);
     try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 10));
-    try testing.expectEqual(@as(usize, 0), f.ra.finished.items.len);
-    try testing.expectError(error.Invalid, f.a.returnCanceled(10));
-    const res = try msgU64(alloc, 1);
-    defer alloc.free(res);
-    try f.a.returnResults(10, res, &.{});
+    try testing.expectEqual(@as(usize, 1), f.ra.countFinished(10));
+
+    // Three calls owe a Return: call 11 gets an exception at once.
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 11, f.ea));
     try drainAll(f.a, &f.ra);
-    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 10, null));
+    try testing.expectEqual(@as(usize, 0), countCalls(&f.ra, 11));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 11, .exception));
+    try testing.expectError(error.BadId, f.a.returnCanceled(11));
+
+    // The host cancels 10, and the next call has room.
+    try f.a.returnCanceled(10);
+    try pushFrame(alloc, f.a, finishFrame(alloc, 11));
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 12, f.ea));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 10, .canceled));
+    try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 12));
+    try testing.expectEqual(@as(usize, 0), f.ra.close_requested);
 }
 
 test "answer finished: a held call that a call is pipelined on gets no ANSWER_FINISHED when the hold ends" {
@@ -4327,19 +4406,18 @@ test "tail call: the remote's Finish of the named call keeps the hold; the host'
 
 test "tail call: a new call that reuses a held call's id closes the connection; the held question ends once" {
     // The remote finishes the held call, then reuses its id before the host
-    // answered. The Peer allows that only when its finished-early records
-    // are full (here: 2 of 2, held by calls queued on a promise export).
-    // The core never hands the host a second call with an id it owes: the
-    // connection closes, and the held question ends once, at transport
-    // close.
+    // answered. The Peer allows that only when it has no record of the
+    // Finish (`dropFinishedRecord`). The core never hands the host a
+    // second call with an id it owes: the connection closes, and the held
+    // question ends once, at transport close.
     const alloc = testing.allocator;
     var p = try TailPair.init(alloc, .{ .now_ns = 0, .limits = .{ .max_active_inbound_questions = 2 } });
     defer p.deinit();
     const t = try p.start(alloc);
 
-    try fillFinishedRecords(alloc, p.a, &.{ 20, 21 });
     try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
     try pushFrame(alloc, p.a, finishFrame(alloc, tail_answer));
+    try dropFinishedRecord(p.a, tail_answer);
     try drainAll(p.a, &p.ra);
     try expectNoReturnYet(&p.ra, t.q);
 

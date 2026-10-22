@@ -2719,11 +2719,14 @@ test "sendReturnCanceled refuses an id that was never an inbound question (H5)" 
     try std.testing.expectEqual(@as(usize, 0), capture.countTag(.@"return"));
 }
 
-test "answer-finished hook stays quiet once the peer stops tracking finished answers (H5)" {
-    // The early-Finish tombstones share `max_active_inbound_questions`. When
-    // they are full, the peer no longer knows that a Return is owed, so it
-    // does not tell the host, and `sendReturnCanceled` refuses the id. The
-    // host's ordinary Return is still accepted.
+test "a call past max_active_inbound_questions calls that owe a Return is refused; the hook ran for the call the host owes (H5)" {
+    // A call the caller finished still owes its Return and counts in
+    // `max_active_inbound_questions`. Before, the records of such calls had
+    // a bound of their own: when they were full, the peer admitted the
+    // next call, did not record its Finish, did not run the hook, and
+    // refused `sendReturnCanceled` for it. Now the next call is refused
+    // with one exception Return and never reaches the host, so every call
+    // the host has keeps its record.
     const allocator = std.testing.allocator;
     var limits = peer_impl.PeerLimits{};
     limits.max_active_inbound_questions = 1;
@@ -2743,14 +2746,18 @@ test "answer-finished hook stays quiet once the peer stops tracking finished ans
     try std.testing.expectEqual(@as(usize, 1), rec.count);
 
     try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 41, export_id));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(41, .exception));
     try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 41, false));
     try std.testing.expectEqual(@as(usize, 1), rec.count);
     try std.testing.expectError(error.AnswerNotOwed, peer.sendReturnCanceled(41));
     try std.testing.expectEqual(@as(usize, 0), capture.countReturns(41, .canceled));
 
-    try peer.sendReturnException(41, "done");
     try peer.sendReturnCanceled(40);
     try std.testing.expectEqual(@as(usize, 1), capture.countReturns(40, .canceled));
+    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 41, export_id));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(41, .exception));
+    try peer.sendReturnException(41, "done");
+    try std.testing.expectEqual(@as(usize, 2), capture.countReturns(41, .exception));
 }
 
 // A late Return that does not reach the wire leaves the answer owed. When

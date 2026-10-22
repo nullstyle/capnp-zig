@@ -569,8 +569,12 @@ pub const Peer = struct {
     /// Inbound question ids whose Finish arrived before their (async) Return.
     /// A late Return for one of these must NOT be recorded in resolved_answers:
     /// no further Finish will ever clear it, and a stale entry poisons legal
-    /// reuse of the id (DuplicateQuestionId against a compliant peer). Bounded
-    /// by max_active_inbound_questions.
+    /// reuse of the id (DuplicateQuestionId against a compliant peer). A call
+    /// in here still owes its Return, so it counts in
+    /// max_active_inbound_questions with the active calls, and every call is
+    /// admitted with room for its record
+    /// (`peer_call_inbound.reserveFinishedEarlyRecord`): a Finish never
+    /// loses it.
     /// The bool records Finish.releaseResultCaps so the later Return sender can
     /// apply the Finish after delivery. If the sender already reserved a
     /// resolved answer, it commits first to drain queued promised calls, then
@@ -580,10 +584,10 @@ pub const Peer = struct {
     /// the `true` that `handleFinish` took out of `active_inbound_questions`.
     /// This vat settles those refs with explicit `Release` frames whether or
     /// not the caller finished first, so the late Return must still say
-    /// `releaseParamCaps = false` (`returnReleasesParamCaps`). Recorded even
-    /// when the tombstone map is full, under its own bound of
-    /// `max_active_inbound_questions`; the Return, or a new call that reuses
-    /// the id, consumes it.
+    /// `releaseParamCaps = false` (`returnReleasesParamCaps`). Recorded under
+    /// its own bound of `max_active_inbound_questions`, apart from the
+    /// tombstones; the Return, or a new call that reuses the id, consumes
+    /// it.
     finished_early_param_grants: std.AutoHashMap(u32, void),
     /// Inbound answers that already returned an EXCEPTION, kept until Finish
     /// (the mirror of `resolved_answers`, which records results only). A call
@@ -1700,10 +1704,11 @@ pub const Peer = struct {
     /// Return, as the C++ reference does, so it never waits on the answer:
     /// after the handler ran, `sendReturnCanceled` still answers the id.
     ///
-    /// The peer remembers a finished, unanswered call in a record bounded by
-    /// `limits.max_active_inbound_questions`. When those records are full,
-    /// it does not run the handler for the next one, and the host's ordinary
-    /// Return answers it.
+    /// A finished call that the host has not answered still counts in
+    /// `limits.max_active_inbound_questions`, and the peer reserved its
+    /// record when it admitted the call, so the handler runs for every
+    /// such call. A new call past that bound gets one exception Return
+    /// (`OwedAnswerLimitExceeded`) and never reaches the host.
     ///
     /// Pass `null` for either argument to clear the handler.
     pub fn setAnswerFinishedHandler(self: *Peer, ctx: ?*anyopaque, handler: ?AnswerFinishedFn) void {
@@ -3380,8 +3385,8 @@ pub const Peer = struct {
     /// `requireEarlyCancellationWorkaround` keeps such a call queued, and
     /// the forward happens when its target resolves. Then no upstream
     /// Finish is left to finish the forwarded question, so it finishes on
-    /// its own Return. The test is the active set, not the finished-early
-    /// tombstone, which the bounded map may have dropped.
+    /// its own Return. The test is the active set: every forwarded call came
+    /// in through `handleCall`, which put it there.
     fn registerForwardedQuestion(self: *Peer, question_id: u32, ctx_ptr: *anyopaque) !void {
         const ctx: *ForwardCallContext = castCtx(*ForwardCallContext, ctx_ptr);
         try peer_forward_orchestration.registerForwardedQuestion(
@@ -4844,10 +4849,9 @@ pub const Peer = struct {
         // so it can either roll back a late async Return or commit+cleanup a
         // synchronous Return after replaying queued promised calls.
         if ((was_active or was_resolving or finished_completing_join) and
-            !self.resolved_answers.contains(qid) and
-            self.finished_early_answers.count() < self.limits.max_active_inbound_questions)
+            !self.resolved_answers.contains(qid))
         {
-            self.finished_early_answers.put(qid, finish_msg.release_result_caps) catch |err| self.reportNonfatalError(err);
+            self.recordFinishedEarly(qid, finish_msg.release_result_caps, was_active);
         }
         // The grant outlives the Finish whether or not the tombstone fit: this
         // vat settles it with explicit Release frames, so a late Return must
@@ -4934,6 +4938,24 @@ pub const Peer = struct {
             }
         }
         if (queued_on_answer) |answer_id| self.reportFinishedAnswerOnceUnwanted(answer_id);
+    }
+
+    /// Record that the caller finished inbound answer `qid` before its
+    /// Return (`finished_early_answers`). A call the peer admitted
+    /// (`was_active`) has its record reserved and keeps its place in
+    /// `max_active_inbound_questions` (`peer_call_inbound.reserveFinishedEarlyRecord`):
+    /// the put finds room and allocates nothing. Another answer, one whose
+    /// Return is being sent or a completing Join, gets a record only while
+    /// that bound has room and the room can be reserved.
+    fn recordFinishedEarly(self: *Peer, qid: u32, release_result_caps: bool, was_active: bool) void {
+        if (!was_active) {
+            if (peer_call_inbound.inboundCallsOwingReturn(self) >= self.limits.max_active_inbound_questions) return;
+            peer_call_inbound.reserveFinishedEarlyRecord(self) catch |err| {
+                self.reportNonfatalError(err);
+                return;
+            };
+        }
+        self.finished_early_answers.put(qid, release_result_caps) catch |err| self.reportNonfatalError(err);
     }
 
     /// The caller just finished a call that was queued, pipelined, on

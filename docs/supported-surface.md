@@ -485,11 +485,14 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   (`error.AnswerHasPipelinedCalls`). A call
   pipelined on an answer after its Finish breaks rpc.capnp; the Peer
   answers it at once with an exception Return, as the C++ reference does.
-  The Peer remembers at most `limits.max_active_inbound_questions` finished,
-  unanswered calls; past that the handler does not run. Any other late
-  Return is still accepted, and it keeps
-  `releaseParamCaps = false` when the call's params granted capabilities
-  (for up to `limits.max_active_inbound_questions` such unanswered calls).
+  A finished call that still owes its Return counts in
+  `limits.max_active_inbound_questions`, with the calls the caller has not
+  finished. A call past that bound gets one exception Return
+  (`OwedAnswerLimitExceeded`) before its params are read, and the
+  connection stays up. So the Peer keeps a record of every Finish until
+  the call's Return, and the handler runs for each. A late Return is
+  still accepted, and it keeps `releaseParamCaps = false` when the call's
+  params granted capabilities.
   `Peer.resolvePromiseExportToExceptionTyped` rejects a promise export with an
   explicit `Exception.Type`. Experimental.
 - **Level 2 (persistence):** Save/Restore SturdyRef hooks are present

@@ -78,27 +78,22 @@ sends Abort and queues CLOSE_REQUESTED, in either framing.
 `capnp_conn_take_error` names `DuplicateQuestionId`. What comes before the
 Abort depends on what the core still knows of the old call:
 
-- The remote has not sent Finish for the old call, or it has and the core
-  keeps a record of that Finish. Then the Peer refuses the new call itself,
-  and no Return for it goes out. A record of the Finish also refuses a
-  Bootstrap with the id.
-- The core keeps no record of the old call's Finish, because its records
-  were full or the record got no memory (see below). Then the core answers
-  the new call with an exception Return (`DuplicateQuestionId`) before the
-  Abort.
+- The Peer refuses the new call itself, and no Return for it goes out. It
+  knows the old call until the old call's Return goes out: before the
+  remote's Finish of it, and after that Finish by a record of it. The
+  record is reserved when the call is admitted (see below), so a Finish
+  never loses it. The record also refuses a Bootstrap with the id, and a
+  Call that the core would answer itself because it never reaches a host
+  export (for example, a call to an export id that does not exist).
+- The core checks the id again when a call reaches a host export. With no
+  record in the Peer, it answers the new call with an exception Return
+  (`DuplicateQuestionId`) before the Abort. Only a test reaches this case:
+  it drops the Peer's record.
 
 A call that the core kept queued (on a promise export, or on an answer) can
-reach this check later: in `capnp_resolve_promise` or
+reach the core's check later: in `capnp_resolve_promise` or
 `capnp_return_results`. That call returns `CAPNP_OK`, and the exception
 Return, the Abort and CLOSE_REQUESTED follow in the effects.
-
-The records of finished calls are bounded by `max_active_inbound_questions`.
-When they are full, the core can promise only that no second INBOUND_CALL
-reaches the host. It does not catch a reused id on a Bootstrap, or on a Call
-that it answers itself because the call never reaches a host export (for
-example, a call to an export id that does not exist). The core answers such
-a call, the connection stays up, and the host's late answer for the old call
-then goes out with the same id.
 
 After the host's answer, the remote may reuse the id at once (the C++
 reference hands out the lowest free question id). So a second answer for one
@@ -106,8 +101,13 @@ INBOUND_CALL is a host bug: it gets `CAPNP_E_BAD_ID` only until the remote
 reuses the id, and after that it answers the new call.
 
 The host owes at most `max_active_inbound_questions` answers (default 4096).
-A call beyond that gets an exception Return (`OwedAnswerLimitExceeded`) and
-never reaches the host. The connection stays up.
+A call that the remote finished counts in that bound until its Return goes
+out, with the calls the remote has not finished: the calls the host owes,
+and the calls the core keeps queued (on a promise export, or on an answer).
+A call beyond the bound gets an exception Return (`OwedAnswerLimitExceeded`)
+and never reaches the host. The connection stays up. (When the calls that
+the remote has not finished alone reach the bound, the Peer closes the
+connection, as before.)
 
 **After close.** The connection is closed after a protocol failure, a remote
 Abort, or `capnp_conn_transport_closed`. Then the three answer functions are
@@ -161,9 +161,8 @@ queues the effect when the remote finishes the last such call (see "When
 no effect comes"). Its `id` is the answer id, `export_id`
 and `host_tag` are those of the INBOUND_CALL, and every other field is 0.
 The core queues it at most once per call. Its node is reserved when the
-INBOUND_CALL is queued, so after the core records the Finish, a lack of
-memory cannot lose the effect. The record itself can fail for lack of
-memory. Then no effect comes (see "When no effect comes").
+INBOUND_CALL is queued, and the Peer's record of the Finish when the call
+is admitted, so a lack of memory cannot lose the effect.
 
 The host stops the work and answers once. Normally it calls
 `capnp_return_canceled(conn, answer_id)`: the core sends `Return{canceled}`,
@@ -206,25 +205,18 @@ reuses the id closes the connection before any Return for it ("Answer ids").
 So after ANSWER_FINISHED, the host's late answer can never reach another
 call.
 
-**When no effect comes.** The core reports a Finish only when it can record
-it. The records are bounded by `max_active_inbound_questions`. When they are
-full, or when the record cannot get memory, no ANSWER_FINISHED comes,
-`capnp_return_canceled` returns `CAPNP_E_INVAL` while the connection is
-open, and the host's ordinary answer goes out. The bound on owed answers
-("Answer ids") does not keep a record free for each of them: other inbound
-calls use the same records. A call that the core still holds queued (on
-a promise export, or on an answer) takes one when the remote finishes it with
-`requireEarlyCancellationWorkaround` set. It keeps that record until a
-Return for the call goes out: the host's answer after the core delivers the
-call, or the core's own exception Return (for example, when the promise is
-rejected). So with promises that never settle, or delivered calls that the
-host does not answer, the records can stay full for the life of the
-connection, and then no call gets ANSWER_FINISHED. That flag defaults to
-true. The C++ reference (1.0 and
-later) sends false, but go-capnp never sets it, so with a go-capnp caller,
-each Finish of a queued call takes a record. Such a queued call reaches the
-host after its Finish and gets no ANSWER_FINISHED then: answer it as usual.
-If calls are pipelined on it, one can come later, as below.
+**When no effect comes.** A call that the core still holds queued (on a
+promise export, or on an answer) stays queued when the remote finishes it
+with `requireEarlyCancellationWorkaround` set. That flag defaults to true.
+The C++ reference (1.0 and later) sends false, but go-capnp never sets it.
+Such a call reaches the host after its Finish and gets no ANSWER_FINISHED
+then: answer it as usual. If calls are pipelined on it, one can come later,
+as below. Until its Return goes out (the host's answer after the core
+delivers the call, or the core's own exception Return, for example when
+the promise is rejected), the call counts in `max_active_inbound_questions`
+("Answer ids"). So with promises that never settle, or delivered calls
+that the host does not answer, those calls can fill the bound, and then
+new calls get an exception Return (`OwedAnswerLimitExceeded`).
 
 The core also waits while calls are pipelined on the answer. A pipelined
 call targets the results of a call that has not returned yet. Such a call

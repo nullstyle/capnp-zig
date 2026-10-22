@@ -7,6 +7,7 @@ const protocol = @import("../../wire/protocol.zig");
 const state = @import("../state.zig");
 const third_party = @import("../third_party.zig");
 const return_routing = @import("../../promises/return_routing.zig");
+const peer_call_inbound = @import("../call/peer_call_inbound.zig");
 
 /// The automatic third-party (sendResultsTo.thirdParty) routing family,
 /// extracted from `peer/mod.zig` and made generic over the peer type (the
@@ -554,11 +555,15 @@ pub fn ThirdPartyRoutes(comptime Peer: type) type {
             target.enterAutomaticThirdPartyOperation();
             defer target.leaveAutomaticThirdPartyOperation();
 
+            // The synthetic answer is an inbound call on `target`: it counts
+            // with the calls there that owe a Return, and its Finish record is
+            // reserved (`peer_call_inbound.reserveFinishedEarlyRecord`).
             try ensureCountLimit(
                 false,
-                target.active_inbound_questions.count(),
+                peer_call_inbound.inboundCallsOwingReturn(target),
                 target.limits.max_active_inbound_questions,
             );
+            try peer_call_inbound.reserveFinishedEarlyRecord(target);
             const target_answer_id = try target.allocateUnusedThirdPartyAnswerId();
 
             // Parse the completion before publishing any cross-peer state. The

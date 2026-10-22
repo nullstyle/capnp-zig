@@ -1479,19 +1479,18 @@ fn onExportCall(
     const self = ec.conn;
     if (self.discarding) return error.ConnectionClosing;
     // The host still owes an answer for this id: the remote reused it
-    // before our Return (the Peer refuses that itself while it keeps a
-    // record of the finished call; without one it cannot). The host's
-    // late answer could reach either call, so never hand it a second one:
-    // the Peer answers this call with an exception, then the connection
-    // fails (`failOnOwedIdReuse`).
+    // before our Return. The Peer refuses that itself, as it keeps a record
+    // of a finished call until its Return; this is a second guard. The
+    // host's late answer could reach either call, so never hand it a second
+    // one: the Peer answers this call with an exception, then the
+    // connection fails (`failOnOwedIdReuse`).
     if (self.pending_answers.contains(call_msg.question_id)) {
         self.owed_id_reused = true;
         return error.DuplicateQuestionId;
     }
-    // Bound the answers the host owes: the Peer's own limit counts only the
-    // calls the remote has not finished. The Peer's finished-early records
-    // are bounded the same, but other inbound calls (calls it keeps queued)
-    // use them too, so this keeps no record free for an owed answer.
+    // Bound the answers the host owes. The Peer's own bound counts every
+    // inbound call that owes a Return, finished or not, so it refuses such
+    // a call first; this is a second guard.
     if (self.pending_answers.count() >= self.peer.limits.max_active_inbound_questions) {
         return error.OwedAnswerLimitExceeded;
     }

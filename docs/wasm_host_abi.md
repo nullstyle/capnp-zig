@@ -622,9 +622,9 @@ u32 capnp_peer_send_return_canceled(u32 peer, u32 answer_id);
 
 The handler does not run for answers the host already replied to, calls
 the peer still holds queued, or forwarded calls — the peer settles those
-itself. Records for finished-but-unanswered calls are bounded by the
-peer's `max_active_inbound_questions`; when full, the handler is skipped
-and the host's ordinary Return answers the call.
+itself. A finished call that the host has not answered counts in the
+peer's `max_active_inbound_questions`; a call past that bound gets one
+exception Return (`OwedAnswerLimitExceeded`) and never reaches the host.
 
 ## Level-3 vat hosting exports (experimental)
 

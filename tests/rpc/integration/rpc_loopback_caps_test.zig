@@ -1398,15 +1398,12 @@ test "a cancelled loopback call's id stays reserved by its loopback marker alone
     defer fx.deinit();
     const solo_id = try fx.server.addExport(fx.solo.exported());
     const refs = DeferredCall.lateResults(&fx, solo_id);
-    // Fill the bounded finished-early record, so the cancel's Finish leaves
-    // no tombstone to reserve the answer id.
-    fx.server.limits.max_active_inbound_questions = 1;
-    try fx.server.finished_early_answers.put(12345, false);
-
     var call = DeferredCall{};
     try call.start(&fx);
     try fx.server.cancelQuestion(call.answer_id, "caller gave up");
-    try std.testing.expect(!fx.server.finished_early_answers.contains(call.answer_id));
+    // The peer keeps a record of the cancel's Finish until the late
+    // Return. Drop it, so that only the loopback marker names the id.
+    try std.testing.expect(fx.server.finished_early_answers.remove(call.answer_id));
     // Closing the transport settles every question, the cancelled one too.
     // The handler still holds the answer, and only the loopback marker
     // still names its id.

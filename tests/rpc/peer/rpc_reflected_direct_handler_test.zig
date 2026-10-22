@@ -1648,6 +1648,166 @@ test "a remote call with the id of the peer's forwarded question reaches the hos
     }
 }
 
+test "finished calls that owe a Return count in max_active_inbound_questions: a call past it is refused, and every id comes free" {
+    // A call the remote finished keeps its record while its Return is
+    // owed. Before, those records had a bound of their own, and the peer
+    // kept admitting calls while they were full. The Finish of such a call
+    // then left no record, so its late Return was recorded as an answer
+    // that no Finish clears: the id stayed in use, and the remote's
+    // compliant reuse failed with DuplicateQuestionId. That held for the
+    // host's answer and for a finished call that the peer forwards back to
+    // the remote. Now a finished call that owes a Return counts in the
+    // bound on inbound calls, and a call past it gets one exception Return
+    // (OwedAnswerLimitExceeded) at once.
+    const allocator = std.testing.allocator;
+    const Shape = enum { host_answer, forward };
+    for ([_]Shape{ .host_answer, .forward }) |shape| {
+        var h: TailHarness = undefined;
+        try h.start(allocator);
+        defer h.deinit();
+        h.client_peer.limits.max_active_inbound_questions = 2;
+        // The host owes calls 10 and 11, which the remote finished.
+        for ([_]u32{ 10, 11 }) |id| {
+            try h.pushPlainCall(allocator, id, h.target_export_id);
+            try h.pushFinishWith(allocator, id, false);
+        }
+
+        h.target.answer_id = null;
+        const wire_mark = h.wire.events.items.len;
+        try h.pushPlainCall(allocator, 600, h.target_export_id);
+        if (shape == .forward) {
+            try h.pushPipelinedPlainCall(allocator, 700, 600);
+            try h.pushFinishWith(allocator, 700, true);
+        }
+        try h.pushFinishWith(allocator, 600, true);
+        const reached_host = h.target.answer_id != null;
+        if (reached_host) {
+            // The host answers 600. In the forward shape the answer names
+            // the remote's own capability, so 700 goes back to the remote.
+            if (shape == .forward) {
+                var result = ResultImport{ .import_id = h.server_import_id };
+                try h.client_peer.sendReturnResults(600, &result, ResultImport.build);
+            } else {
+                var result = ResultN{ .n = 1 };
+                try h.client_peer.sendReturnResults(600, &result, ResultN.build);
+            }
+        }
+        var qfs: [2]u32 = undefined;
+        const n = try clientCallsSince(&h, wire_mark, &qfs);
+        for (qfs[0..n]) |qf| try h.pushResults(allocator, qf);
+        const ids: []const u32 = if (shape == .forward) &.{ 600, 700 } else &.{600};
+        for (ids) |id| try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, id, null));
+
+        // The host answers 10 and 11. The remote has a Return for every
+        // call and finished each, so it reuses every id.
+        var answer = ResultN{ .n = 2 };
+        for ([_]u32{ 10, 11 }) |id| try h.client_peer.sendReturnResults(id, &answer, ResultN.build);
+        for ([_]u32{ 10, 11 } ++ [_]u32{ 600, 700 }) |id| {
+            if (id == 700 and shape != .forward) continue;
+            try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(id)));
+            h.target.answer_id = null;
+            try h.pushPlainCall(allocator, id, h.target_export_id);
+            try std.testing.expectEqual(@as(?u32, id), h.target.answer_id);
+            try h.client_peer.sendReturnResults(id, &answer, ResultN.build);
+            try h.pushFinish(allocator, id);
+        }
+        // 600 came past the bound: it never reached the host the first
+        // time, and its one Return then was the refusal.
+        try std.testing.expect(!reached_host);
+        try std.testing.expectEqual(@as(usize, 0), n);
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, .exception));
+    }
+}
+
+/// An allocator over a `std.testing.FailingAllocator` whose induced
+/// failure is one-shot: the allocation after the failed one succeeds.
+/// (`FailingAllocator` alone fails every later one too.)
+const OneShotFailure = struct {
+    failing: *std.testing.FailingAllocator,
+
+    fn allocator(self: *OneShotFailure) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *OneShotFailure = castCtx(*OneShotFailure, ctx);
+        const result = self.failing.allocator().rawAlloc(len, alignment, ret_addr);
+        if (result == null and self.failing.has_induced_failure) self.failing.fail_index = std.math.maxInt(usize);
+        return result;
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *OneShotFailure = castCtx(*OneShotFailure, ctx);
+        return self.failing.allocator().rawResize(memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *OneShotFailure = castCtx(*OneShotFailure, ctx);
+        return self.failing.allocator().rawRemap(memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *OneShotFailure = castCtx(*OneShotFailure, ctx);
+        self.failing.allocator().rawFree(memory, alignment, ret_addr);
+    }
+};
+
+test "an allocation failure in a Finish keeps the record of the finished call: its id comes free after its Return" {
+    // Before, the record of a call that the remote finished first was put
+    // at the Finish, and a failed allocation dropped it. The call's late
+    // Return was then recorded as an answer that no Finish clears, and the
+    // remote's compliant reuse of the id failed with DuplicateQuestionId.
+    // Now the call reserves its record when the peer admits it. One
+    // allocation fails, at each index of the Finish. Cases: a call the
+    // host answers (the C++ and go-capnp Finish flags), and a call
+    // pipelined on it that the peer forwards back to the remote (go-capnp's
+    // flags: with the C++ flags the Finish cancels the queued call).
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |forward| {
+        for ([_]bool{ false, true }) |go_flags| {
+            if (forward and !go_flags) continue;
+            const id: u32 = if (forward) 700 else 600;
+            var k: usize = 0;
+            while (true) : (k += 1) {
+                if (k > 1000) return error.TestSweepRunaway;
+                var failing = std.testing.FailingAllocator.init(allocator, .{});
+                var one_shot = OneShotFailure{ .failing = &failing };
+                var h: TailHarness = undefined;
+                try h.startWith(allocator, one_shot.allocator());
+                defer h.deinit();
+                try h.pushPlainCall(allocator, 600, h.target_export_id);
+                if (forward) try h.pushPipelinedPlainCall(allocator, 700, 600);
+                failing.fail_index = failing.alloc_index + k;
+                const finish_ok = if (h.pushFinishWith(allocator, id, go_flags)) true else |_| false;
+                const induced = failing.has_induced_failure;
+                failing.fail_index = std.math.maxInt(usize);
+                // A frame that fails ends the connection: nothing to check.
+                if (finish_ok and h.wire.countReturns(.client_to_server, id, null) == 0) {
+                    const wire_mark = h.wire.events.items.len;
+                    if (forward) {
+                        var result = ResultImport{ .import_id = h.server_import_id };
+                        try h.client_peer.sendReturnResults(600, &result, ResultImport.build);
+                        var qfs: [2]u32 = undefined;
+                        const n = try clientCallsSince(&h, wire_mark, &qfs);
+                        for (qfs[0..n]) |qf| try h.pushResults(allocator, qf);
+                        try h.pushFinish(allocator, 600);
+                    } else {
+                        var result = ResultN{ .n = 1 };
+                        try h.client_peer.sendReturnResults(600, &result, ResultN.build);
+                    }
+                    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, id, null));
+                    try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(id)));
+                    h.target.answer_id = null;
+                    try h.pushPlainCall(allocator, id, h.target_export_id);
+                    try std.testing.expectEqual(@as(?u32, id), h.target.answer_id);
+                }
+                if (!induced) break;
+            }
+            try std.testing.expect(k > 0);
+        }
+    }
+}
+
 /// One run of the forward-after-Finish case above with one allocation of
 /// the client peer failing: the `k`-th after setup, and every later one in
 /// the same step. A frame the peer fails to handle ends the connection
