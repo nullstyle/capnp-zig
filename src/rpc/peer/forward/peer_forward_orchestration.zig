@@ -170,11 +170,11 @@ pub fn buildForwardCallPlan(
 ///
 /// `forwarded_questions` holds a forward only while it owes the upstream
 /// question its Return (the relay in `onForwardedReturn`). A tail call
-/// (`.sent_elsewhere`) owes none: the upstream question gets
-/// `takeFromOtherQuestion` right after the send. So a tail call is not
-/// recorded there. Before, it stayed there until the forwarded Return, and
-/// the upstream id counted as in use after its Return and Finish: the
-/// caller's legal reuse of the id closed the connection.
+/// (`.sent_elsewhere`) owes it until the `takeFromOtherQuestion` Return
+/// that follows the send, and `Peer.forwardResolvedCall` drops it then
+/// (`dropForwardedQuestion`). Before, it stayed there until the forwarded
+/// Return, and the upstream id counted as in use after its Return and
+/// Finish: the caller's legal reuse of the id closed the connection.
 ///
 /// On failure nothing stays registered. A send that fails after this undoes
 /// it with `unregisterForwardedQuestion`.
@@ -188,11 +188,8 @@ pub fn registerForwardedQuestion(
     forwarded_tail_questions: *std.AutoHashMap(u32, u32),
     questions: *std.AutoHashMap(u32, QuestionType),
 ) !void {
-    const relays_return = mode != .sent_elsewhere;
-    if (relays_return) try forwarded_questions.put(forwarded_question_id, upstream_question_id);
-    errdefer if (relays_return) {
-        _ = forwarded_questions.remove(forwarded_question_id);
-    };
+    try forwarded_questions.put(forwarded_question_id, upstream_question_id);
+    errdefer _ = forwarded_questions.remove(forwarded_question_id);
 
     if (upstream_finished) return;
     if (mode == .sent_elsewhere or mode == .translate_to_caller) {
@@ -201,6 +198,21 @@ pub fn registerForwardedQuestion(
             question.value_ptr.suppress_auto_finish = true;
         }
     }
+}
+
+/// Drop forwarded question `forwarded_question_id` from
+/// `forwarded_questions` once it owes upstream answer `upstream_question_id`
+/// no Return: a tail call after its `takeFromOtherQuestion` Return (or
+/// after that Return failed, and the call got an exception instead). Only
+/// that pairing is dropped: on a synchronous transport the forwarded
+/// question can have ended inside the send.
+pub fn dropForwardedQuestion(
+    upstream_question_id: u32,
+    forwarded_question_id: u32,
+    forwarded_questions: *std.AutoHashMap(u32, u32),
+) void {
+    const upstream = forwarded_questions.get(forwarded_question_id) orelse return;
+    if (upstream == upstream_question_id) _ = forwarded_questions.remove(forwarded_question_id);
 }
 
 /// Undo `registerForwardedQuestion` for a forwarded call whose Call was not
@@ -397,8 +409,8 @@ test "peer_forward_orchestration registerForwardedQuestion records forwarding an
     try std.testing.expect(!questions.get(20).?.suppress_auto_finish);
 
     // The spec-canonical tail-call mode: tail mapping + suppressed
-    // auto-finish. It relays no Return, so it has no forwarded_questions
-    // mapping.
+    // auto-finish. Its forwarded_questions mapping lasts until the
+    // takeFromOtherQuestion Return (`dropForwardedQuestion`).
     try questions.put(21, .{});
     try registerForwardedQuestion(
         Question,
@@ -411,7 +423,7 @@ test "peer_forward_orchestration registerForwardedQuestion records forwarding an
         &questions,
     );
 
-    try std.testing.expect(!forwarded_questions.contains(21));
+    try std.testing.expectEqual(@as(u32, 11), forwarded_questions.get(21).?);
     try std.testing.expectEqual(@as(u32, 21), forwarded_tail_questions.get(11).?);
     try std.testing.expect(questions.get(21).?.suppress_auto_finish);
 
@@ -449,18 +461,25 @@ test "peer_forward_orchestration registerForwardedQuestion records forwarding an
             &forwarded_tail_questions,
             &questions,
         );
-        try std.testing.expectEqual(mode != .sent_elsewhere, forwarded_questions.contains(forwarded));
+        try std.testing.expectEqual(forwarded - 10, forwarded_questions.get(forwarded).?);
         try std.testing.expect(!forwarded_tail_questions.contains(forwarded - 10));
         try std.testing.expect(!questions.get(forwarded).?.suppress_auto_finish);
     }
 
     // A send that failed: the registration is undone, and only its own.
     unregisterForwardedQuestion(11, 21, &forwarded_questions, &forwarded_tail_questions);
+    try std.testing.expect(!forwarded_questions.contains(21));
     try std.testing.expect(!forwarded_tail_questions.contains(11));
     try std.testing.expectEqual(@as(u32, 12), forwarded_questions.get(22).?);
     try std.testing.expectEqual(@as(u32, 22), forwarded_tail_questions.get(12).?);
     unregisterForwardedQuestion(12, 99, &forwarded_questions, &forwarded_tail_questions);
     try std.testing.expectEqual(@as(u32, 22), forwarded_tail_questions.get(12).?);
+
+    // A tail call's Return went out: only its own pairing is dropped.
+    dropForwardedQuestion(13, 23, &forwarded_questions);
+    try std.testing.expect(!forwarded_questions.contains(23));
+    dropForwardedQuestion(99, 24, &forwarded_questions);
+    try std.testing.expectEqual(@as(u32, 14), forwarded_questions.get(24).?);
 }
 
 test "peer_forward_orchestration peer-map helpers lookup/remove/take/remove-send-results" {

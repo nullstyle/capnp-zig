@@ -334,7 +334,7 @@ fn msToNs(ms: u64) i64 {
 /// | `failed_answers` | question ID | `FailedAnswer` | The exception already returned for a failed answer (results-only `resolved_answers` never records it). Lets a call pipelined on that answer arriving after the Return be failed with a copy of the same exception instead of queueing forever. Removed on Finish. |
 /// | `pending_promises` | question ID | `ArrayList(PendingCall)` | Calls targeting a PromisedAnswer whose Return has not yet arrived. Replayed once the answer resolves. |
 /// | `pending_export_promises` | export ID | `ArrayList(PendingCall)` | Calls targeting a promise export not yet resolved. Replayed on `resolvePromiseExportToExport`. |
-/// | `forwarded_questions` | forwarded question ID | original answer ID | Maps the question ID of a forwarded outbound call back to the answer ID of the inbound call it carries, while the forward owes that call its Return. A tail call (`takeFromOtherQuestion`) owes none and is not recorded. Removed when its Return is relayed, or when the relayed Finish neutralizes it or a failed send undoes it. |
+/// | `forwarded_questions` | forwarded question ID | original answer ID | Maps the question ID of a forwarded outbound call back to the answer ID of the inbound call it carries, while the forward owes that call its Return. Removed when its Return is relayed, when the relayed Finish neutralizes it, when a failed send undoes it, or, for a tail call, once its `takeFromOtherQuestion` Return is sent. |
 /// | `forwarded_tail_questions` | original answer ID | forwarded question ID | Like `forwarded_questions` but for a forward that waits for the caller's Finish of the original call (tail call and reflected loopback): that Finish is relayed to the forwarded question. Not registered when that Finish came before the forward; the forwarded question then finishes on its own Return. |
 /// | `provides_by_question` | question ID | `ProvideEntry` | Active Provide operations indexed by their answer question ID. |
 /// | `provides_by_key` | recipient key (bytes) | question ID | Active Provide operations indexed by their recipient key for Accept lookup. |
@@ -3352,6 +3352,17 @@ pub const Peer = struct {
         // synchronous transport its return callback may have freed it.
         ctx_owned = false;
         if (mode == .sent_elsewhere) {
+            // After this Return (or its failure, and the exception Return
+            // the caller sends then), the tail call owes the call nothing:
+            // the call's id must not stay taken by the forward until the
+            // forwarded question's own Return. Until it, the record keeps
+            // the call the Peer's own, so no answer-finished report runs
+            // for it inside the send.
+            defer peer_forward_orchestration.dropForwardedQuestion(
+                call.question_id,
+                forwarded_question_id,
+                &self.forwarded_questions,
+            );
             try self.sendReturnTakeFromOtherQuestion(call.question_id, forwarded_question_id);
         }
     }
