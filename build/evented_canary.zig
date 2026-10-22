@@ -7,8 +7,10 @@
 //! the backend, and SUCCEEDS ONLY WHILE that compile fails with the known
 //! std defect. It goes red when:
 //!
-//!  - `std.Io.Evented` compiles: flip `evented_available` (and re-check the
-//!    socket vtable, see docs/stability.md) and retarget this canary; or
+//!  - `std.Io.Evented` compiles: that alone does not make it usable (at
+//!    0.17.0 its net operations are `...Unavailable` stubs or TODO panics;
+//!    see docs/stability.md). Run a net_read behavior probe, flip
+//!    `evented_available` only when it passes, and retarget this canary; or
 //!  - it still fails, but for a different reason: read the new error, update
 //!    `expected_error` and the fork handoff, and keep the flag off.
 //!

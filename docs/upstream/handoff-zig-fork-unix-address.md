@@ -1,5 +1,21 @@
 # HANDOFF — zig fork change branch: AF_UNIX addresses in `std.Io.net`
 
+**Status (2026-10-21): defects 1 and 2 are fixed in the fork. Send only
+defects 3 and 4.**
+
+- The fork's `03263c1c44` (2026-10-10, on `build/stable` and
+  `feat/evented-0.17`) takes `UnixAddress.max_len` from `sockaddr.un`
+  (`lib/std/Io/net.zig:881-884` on `build/stable`), and it adds no NUL
+  after a Linux abstract name. That fixes defects 1 and 2. capnp-zig read
+  the diff; it did not build or test it.
+- Defect 3 is open in the fork and upstream: `CreatePairOptions.family` is
+  still `IpAddress.Family` (`net.zig:1293` on `build/stable`, `:1268` on
+  upstream `0.17.x`).
+- Defect 4 is open in the fork and upstream: Darwin `OPNOTSUPP` is still 45
+  (`lib/std/c/darwin.zig:1392`), and 102 has no name.
+- Upstream `0.17.x` still has all four defects (`max_len` is 108,
+  `net.zig:860-863`).
+
 Paste this into a session working on the nullstyle zig fork. It is
 self-contained. It joins the fork's change-branch list (see the other
 `handoff-zig-fork-*.md` files beside this one). Suggested branch:

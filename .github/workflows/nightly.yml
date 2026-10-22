@@ -446,15 +446,20 @@ jobs:
 
       # Heads-up for the owner, never a failure: ci.yml's evented canary is
       # green only while std.Io.Evented fails to compile with the known std
-      # defect. When it stops failing that way, say so on the run summary so
-      # `evented_available` in src/io_backend.zig gets re-checked.
+      # defect. When it stops failing that way, say so on the run summary.
+      # A compile alone does not make Evented usable: at Zig 0.17.0 both
+      # backends refuse listen, accept and connect, Uring panics on
+      # net_write (lib/std/Io/Uring.zig:2120), and Dispatch panics on
+      # net_receive, net_send, net_read and net_write (Dispatch.zig:1713-1716).
+      # So the notice asks for a net_read behavior probe, not for a flip of
+      # `evented_available` in src/io_backend.zig.
       - name: Evented canary notice
         if: ${{ !cancelled() }}
         run: |
           if zig build check-evented-canary --summary none; then
             echo "std.Io.Evented still fails to compile with the known defect; evented_available stays false."
           else
-            echo "::notice title=std.Io.Evented canary changed::check-evented-canary no longer sees the expected processReplacePath error. If std.Io.Evented now compiles, flip evented_available in src/io_backend.zig and retarget build/evented_canary.zig; otherwise update its expected error and the fork handoff."
+            echo "::notice title=std.Io.Evented canary changed::check-evented-canary no longer sees the expected processReplacePath error. A compile alone does not make Evented usable, so keep evented_available false in src/io_backend.zig. If std.Io.Evented now compiles, run a net_read behavior probe (connect, write and read over std.Io.Evented) on Linux and macOS, and flip the flag only when the probe passes. If it fails with another error, update expected_error in build/evented_canary.zig and docs/upstream/handoff-zig-fork-evented-processreplacepath.md."
           fi
 
       # The tag gate reads these annotations. See "Failure names" at the top

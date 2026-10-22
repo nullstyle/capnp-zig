@@ -1,10 +1,12 @@
 # HANDOFF — zig fork change branch: netAcceptWindows CANCELLED abort
 
-**Status (2026-10-17): open in std. capnp-zig no longer goes through std's
-`netAcceptWindows` for its TCP accepts.**
+**Status (2026-10-21): open in std and in the fork. Send it. capnp-zig no
+longer goes through std's `netAcceptWindows` for its TCP accepts.**
 
-- Tagged 0.17.0 and the fork checkout (`feat/evented-0.17`) still have all
-  three `.CANCELLED => unreachable` arms.
+- Tagged 0.17.0, upstream `0.17.x` (`c99f5c98c5`), upstream `master`
+  (`6817928c37`) and the fork's `build/stable` (`d80d6d31bf`) still have
+  all three `.CANCELLED => unreachable` arms. On upstream `0.17.x` they are
+  at `Threaded.zig:12941`, `:12965` and `:12986`.
 - Since capnp-zig `8c36f35` (for v0.27.0), capnp-zig accepts TCP
   connections on Windows with its own AFD accept (`windows_accept.accept`
   in `src/rpc/transport/tcp/windows_accept.zig`). `Listener.accept`,

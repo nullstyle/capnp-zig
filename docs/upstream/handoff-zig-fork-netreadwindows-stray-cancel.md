@@ -1,11 +1,19 @@
 # HANDOFF — zig fork change branch: Windows socket reads and writes (stray CANCELLED, unmapped disconnects)
 
-**Status (2026-10-17): open.** Tagged 0.17.0 and the fork checkout
-(`feat/evented-0.17`) have every defect that this handoff names. capnp-zig
+**Status (2026-10-21): open, partly fixed upstream. Send it.** Tagged
+0.17.0 and the fork's `build/stable` (`d80d6d31bf`) have every defect that
+this handoff names. Upstream `0.17.x` `c9f7ad0e57` (2026-10-10, "map
+LOCAL_DISCONNECT to ConnectionResetByPeer on Windows", a partial fix of
+upstream issue 31956) adds `LOCAL_DISCONNECT` to the reset arm of
+`netReadWindows` and `netWriteWindows`. Everything else is still open on
+upstream `0.17.x` and `master`: the stray `CANCELLED` in `netReadWindows`
+(`Threaded.zig:13115` on `0.17.x`) and `netWriteWindows` (`:13629`), the
+`batchApc` path, `CONNECTION_ABORTED`, `PIPE_DISCONNECTED` and
+`INVALID_DEVICE_STATE`, and `CONNECTION_RESET` on shutdown. capnp-zig
 works around the read side: its own AFD receive since v0.26.0, and its
-own disconnect arms on main (for v0.27.0). The write and shutdown sides
-have no workaround, so their stack traces stay in capnp-zig's Windows soak
-logs until std maps the statuses.
+own disconnect arms since v0.27.0. The write and shutdown sides have no
+workaround, so their stack traces stay in capnp-zig's Windows soak logs
+until std maps the statuses.
 
 Paste this into a session that works on the nullstyle zig fork. It is
 self-contained. The fix lands as a maintained change branch on the fork.

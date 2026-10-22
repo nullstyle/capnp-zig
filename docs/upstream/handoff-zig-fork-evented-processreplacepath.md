@@ -1,5 +1,23 @@
 # HANDOFF — zig fork change branch: evented backends set dropped `Io.VTable` fields
 
+**Status (2026-10-21): fixed upstream and in the fork, in no Zig tag. Do
+not send it.**
+
+- Upstream `0.17.x` fixed Uring in `6080247206` (2026-10-10, "Io.Uring
+  fixes & updates") and Dispatch in `ff08725400` (2026-10-21, "fix(Io.Dispatch):
+  synchronize with updates to VTable"). No Zig tag after 0.17.0 exists yet.
+- The fork's `build/stable` and `feat/evented-0.17` fixed both in
+  `b98ef17f06` (2026-10-10).
+- capnp-zig pins tagged 0.17.0, so `zig build check-evented-canary` still
+  passes. It goes red when capnp-zig pins a Zig with the upstream fix.
+- A red canary does not mean that Evented carries sockets. At 0.17.0 and
+  on upstream `0.17.x`, both backends answer listen, accept and connect
+  with `...Unavailable`, Uring panics on `net_write`, and Dispatch panics
+  on `net_receive`, `net_send`, `net_read` and `net_write`
+  (`Dispatch.zig:1713-1716`). So capnp-zig runs a net_read behavior probe
+  before it sets `evented_available`. The text below says to flip the flag
+  when the canary goes red; that advice is out of date.
+
 Paste this into a session working on the nullstyle zig fork. Self-contained.
 It joins the fork's change-branch list (see the other
 `handoff-zig-fork-*.md` files beside this one). Suggested branch:

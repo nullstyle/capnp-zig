@@ -42,6 +42,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs from 10-07 to 10-21, its Windows leg took 21.6 min at the median and
   23.8 min at most. Branch run 39537367357 took 24.8 min, and run
   37248467342 was cancelled at the 30-min cap.
+- **CI: the evented-canary advice no longer says to flip
+  `evented_available` when Evented compiles.** The Nightly notice
+  (`nightly.yml`, "Evented canary notice") said that a red canary means
+  "flip evented_available". But a compile does not prove that Evented
+  carries a socket: at Zig 0.17.0 both evented backends refuse listen,
+  accept and connect, Uring panics on `net_write`
+  (`lib/std/Io/Uring.zig:2120`), and Dispatch panics on `net_receive`,
+  `net_send`, `net_read` and `net_write` (`lib/std/Io/Dispatch.zig:1713-1716`).
+  The notice now says to keep the flag off, run a net_read behavior probe
+  on Linux and macOS, and flip the flag only when the probe passes. The
+  comments in `ci.yml` and `build/evented_canary.zig` say the same.
+  Upstream `0.17.x` already has the fix for the compile error (Uring in
+  `6080247206`, Dispatch in `ff08725400`), and no Zig tag has it yet.
 
 ### Fixed
 
@@ -66,6 +79,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "promise export: one transient allocation failure ..." in
   `src/native/conn_test.zig`, and "one failed allocation in the failure
   drain ..." in `tests/rpc/peer/rpc_answer_lifecycle_test.zig`.
+
+### Documentation
+
+- `docs/upstream/handoff-quic-zig-tag-hardening.md` (new): it asks quic-zig
+  for a tag at `b0d7d78` or later that contains `021591e`, with CHANGELOG
+  and DOWNSTREAM-NOTE entries. It names the duplicate-ID scan in
+  `TransportParams.decode`, which a peer reaches before the application
+  knows who it is, and it says that nobody measured a DoS. capnp-zig stays
+  on quic-zig v0.38.0 in v0.29.0 and moves in its own release after the
+  tag exists.
+- `docs/upstream/README.md` is read again against upstream Zig `0.17.x`
+  and `master`, the fork's `build/stable`, and quic-zig `main` (2026-10-21).
+  The "Where fixed" column gives commits: upstream `0.17.x` fixes the
+  evented compile, `Stream.read` and the iOS `Io.Threaded` defects, and
+  maps `LOCAL_DISCONNECT` on Windows reads and writes; the fork fixes
+  SCM_RIGHTS and Unix address defects 1 and 2. Two new rows record std
+  workarounds with no handoff: the raw `setsockopt` call and the Windows
+  `TCP_NODELAY` no-op in `setTcpNoDelay`. A new list names the four
+  handoffs to send, and says why the others need no message. The status
+  lines of seven handoff files changed to match.
+- `docs/downstreams.md`: capnp-swift pins v0.28.0 for its core (0.1.4 and
+  0.2.0), and 0.2.0 verified H13. New rows: tail-call results with
+  capabilities (deferred) and the cancel e2e scenario (open, P1-3). Draft
+  relay texts for v0.28.1 and v0.29.0 go to capnp-swift, capnp-deno (P0-1
+  and P1-1 affect its pin `fe6634d`) and slcp-zig.
 
 ## [0.28.0] - 2026-10-21
 

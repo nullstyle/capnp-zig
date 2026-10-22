@@ -1,5 +1,18 @@
 # HANDOFF — zig fork change branch: SCM_RIGHTS in `std.Io.net`
 
+**Status (2026-10-21): fixed in the fork, not upstream. Do not send it.**
+The fork's `03263c1c44` (2026-10-10, "Fix Unix address bounds and
+ancillary descriptor ownership") is on `build/stable` and
+`feat/evented-0.17`, and in the fork tag `stable/20261011-0550-d80d6d3`.
+It covers all four defects below, in its own shape: it captures the Darwin
+rights message before truncation and closes the descriptors that it does
+not deliver (1), names EMFILE and ENFILE (2), returns
+`error.InvalidControlMessage` for EBADF and EINVAL when control data is
+present (3), and sets CLOEXEC on Darwin after `recvmsg` (4). capnp-zig read
+the diff; it did not build or test it. Upstream `0.17.x` and `master` have
+none of it. capnp-zig pins stock Zig 0.17.0, so `fd_io` keeps its own
+`recvmsg` and `sendmsg` path.
+
 Paste this into a session working on the nullstyle zig fork. It is
 self-contained. It joins the fork's change-branch list (see the other
 `handoff-zig-fork-*.md` files beside this one). Suggested branch:
