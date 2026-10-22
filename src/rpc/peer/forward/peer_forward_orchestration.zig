@@ -168,6 +168,14 @@ pub fn buildForwardCallPlan(
 /// upstream id in use, so the caller's legal reuse of that id closed the
 /// connection.
 ///
+/// `forwarded_questions` holds a forward only while it owes the upstream
+/// question its Return (the relay in `onForwardedReturn`). A tail call
+/// (`.sent_elsewhere`) owes none: the upstream question gets
+/// `takeFromOtherQuestion` right after the send. So a tail call is not
+/// recorded there. Before, it stayed there until the forwarded Return, and
+/// the upstream id counted as in use after its Return and Finish: the
+/// caller's legal reuse of the id closed the connection.
+///
 /// On failure nothing stays registered. A send that fails after this undoes
 /// it with `unregisterForwardedQuestion`.
 pub fn registerForwardedQuestion(
@@ -180,8 +188,11 @@ pub fn registerForwardedQuestion(
     forwarded_tail_questions: *std.AutoHashMap(u32, u32),
     questions: *std.AutoHashMap(u32, QuestionType),
 ) !void {
-    try forwarded_questions.put(forwarded_question_id, upstream_question_id);
-    errdefer _ = forwarded_questions.remove(forwarded_question_id);
+    const relays_return = mode != .sent_elsewhere;
+    if (relays_return) try forwarded_questions.put(forwarded_question_id, upstream_question_id);
+    errdefer if (relays_return) {
+        _ = forwarded_questions.remove(forwarded_question_id);
+    };
 
     if (upstream_finished) return;
     if (mode == .sent_elsewhere or mode == .translate_to_caller) {
@@ -385,7 +396,9 @@ test "peer_forward_orchestration registerForwardedQuestion records forwarding an
     try std.testing.expectEqual(@as(usize, 0), forwarded_tail_questions.count());
     try std.testing.expect(!questions.get(20).?.suppress_auto_finish);
 
-    // The spec-canonical tail-call mode: tail mapping + suppressed auto-finish.
+    // The spec-canonical tail-call mode: tail mapping + suppressed
+    // auto-finish. It relays no Return, so it has no forwarded_questions
+    // mapping.
     try questions.put(21, .{});
     try registerForwardedQuestion(
         Question,
@@ -398,7 +411,7 @@ test "peer_forward_orchestration registerForwardedQuestion records forwarding an
         &questions,
     );
 
-    try std.testing.expectEqual(@as(u32, 11), forwarded_questions.get(21).?);
+    try std.testing.expect(!forwarded_questions.contains(21));
     try std.testing.expectEqual(@as(u32, 21), forwarded_tail_questions.get(11).?);
     try std.testing.expect(questions.get(21).?.suppress_auto_finish);
 
@@ -436,14 +449,13 @@ test "peer_forward_orchestration registerForwardedQuestion records forwarding an
             &forwarded_tail_questions,
             &questions,
         );
-        try std.testing.expectEqual(forwarded - 10, forwarded_questions.get(forwarded).?);
+        try std.testing.expectEqual(mode != .sent_elsewhere, forwarded_questions.contains(forwarded));
         try std.testing.expect(!forwarded_tail_questions.contains(forwarded - 10));
         try std.testing.expect(!questions.get(forwarded).?.suppress_auto_finish);
     }
 
     // A send that failed: the registration is undone, and only its own.
     unregisterForwardedQuestion(11, 21, &forwarded_questions, &forwarded_tail_questions);
-    try std.testing.expect(!forwarded_questions.contains(21));
     try std.testing.expect(!forwarded_tail_questions.contains(11));
     try std.testing.expectEqual(@as(u32, 12), forwarded_questions.get(22).?);
     try std.testing.expectEqual(@as(u32, 22), forwarded_tail_questions.get(12).?);

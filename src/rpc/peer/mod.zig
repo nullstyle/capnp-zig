@@ -334,7 +334,7 @@ fn msToNs(ms: u64) i64 {
 /// | `failed_answers` | question ID | `FailedAnswer` | The exception already returned for a failed answer (results-only `resolved_answers` never records it). Lets a call pipelined on that answer arriving after the Return be failed with a copy of the same exception instead of queueing forever. Removed on Finish. |
 /// | `pending_promises` | question ID | `ArrayList(PendingCall)` | Calls targeting a PromisedAnswer whose Return has not yet arrived. Replayed once the answer resolves. |
 /// | `pending_export_promises` | export ID | `ArrayList(PendingCall)` | Calls targeting a promise export not yet resolved. Replayed on `resolvePromiseExportToExport`. |
-/// | `forwarded_questions` | forwarded question ID | original answer ID | Maps the question ID of a forwarded outbound call back to the answer ID of the inbound call it carries. Removed when its Return is relayed, or when the relayed Finish neutralizes it or a failed send undoes it. |
+/// | `forwarded_questions` | forwarded question ID | original answer ID | Maps the question ID of a forwarded outbound call back to the answer ID of the inbound call it carries, while the forward owes that call its Return. A tail call (`takeFromOtherQuestion`) owes none and is not recorded. Removed when its Return is relayed, or when the relayed Finish neutralizes it or a failed send undoes it. |
 /// | `forwarded_tail_questions` | original answer ID | forwarded question ID | Like `forwarded_questions` but for a forward that waits for the caller's Finish of the original call (tail call and reflected loopback): that Finish is relayed to the forwarded question. Not registered when that Finish came before the forward; the forwarded question then finishes on its own Return. |
 /// | `provides_by_question` | question ID | `ProvideEntry` | Active Provide operations indexed by their answer question ID. |
 /// | `provides_by_key` | recipient key (bytes) | question ID | Active Provide operations indexed by their recipient key for Accept lookup. |
@@ -608,7 +608,8 @@ pub const Peer = struct {
 
     // -- Forwarding ---------------------------------------------------------
 
-    /// Maps an inbound answer ID to the outbound question ID it was forwarded to.
+    /// Maps a forwarded outbound question ID to the inbound answer ID it
+    /// carries, while the forward owes that answer its Return.
     forwarded_questions: std.AutoHashMap(u32, u32),
     /// Same as `forwarded_questions` but for tail-call (takeFromOtherQuestion) forwarding.
     forwarded_tail_questions: std.AutoHashMap(u32, u32),
@@ -6028,6 +6029,14 @@ pub const Peer = struct {
     /// fetchRemove the STALE tombstone — skipping the record and applying the
     /// old Finish's releaseResultCaps flag to the new answer's result caps, a
     /// remote-forceable premature export release.
+    ///
+    /// A forwarded call needs no term of its own: while a forward owes the
+    /// call its Return, the call is active, or has its finished-early
+    /// record; a forward that waits for the call's Finish has its tail
+    /// mapping. `forwarded_questions` is keyed by the peer's own question
+    /// ids, which the remote's ids do not share, and once a tail call is
+    /// answered (`takeFromOtherQuestion`) and finished, its id is free even
+    /// while the forwarded question waits for its own Return.
     pub fn inboundAnswerQuestionIdInUse(self: *Peer, question_id: u32) !bool {
         return self.resolved_answers.contains(question_id) or
             self.failed_answers.contains(question_id) or
@@ -6036,7 +6045,6 @@ pub const Peer = struct {
             self.finished_early_answers.contains(question_id) or
             self.send_results_to_yourself.contains(question_id) or
             self.send_results_to_third_party.contains(question_id) or
-            self.forwardRelaysAnswer(question_id) or
             self.forwarded_tail_questions.contains(question_id) or
             self.completing_join_answers.contains(question_id) or
             self.pending_join_result_answers.contains(question_id) or

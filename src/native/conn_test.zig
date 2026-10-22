@@ -3110,6 +3110,78 @@ test "forwarded call: a call that go-capnp finished, forwarded as a tail call on
     }
 }
 
+test "forwarded call: after a tail-call forward's takeFromOtherQuestion Return and the call's Finish, the remote's reuse of the id reaches the host before the forwarded Return" {
+    // The core forwards 40 as a tail call (the host's answer to 30 names a
+    // PROMISED capability on its own question q) and answers 40 at once
+    // with takeFromOtherQuestion. Once the remote has that Return and has
+    // finished 40, rpc.capnp lets it reuse id 40, and the forwarded
+    // question qf may still wait for its own Return. Before, the core took
+    // 40 as in use until qf's Return (it searched the forwarded question's
+    // upstream id), so the reuse closed the connection
+    // (DuplicateQuestionId), and the new call got no ANSWER_FINISHED and
+    // no returnCanceled. Cases: 40 finished before the forward (go-capnp's
+    // flags, as an old C++ or Rust caller sends them) and after its Return.
+    const alloc = testing.allocator;
+    for ([_]bool{ true, false }) |finished_first| {
+        var p = try TailPair.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+        defer p.deinit();
+        const t = try p.start(alloc);
+        try drainAll(p.a, &p.ra);
+        const calls_out = try countCallFrames(&p.ra);
+
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, 30, t.ea));
+        try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 40, 30));
+        if (finished_first) try pushFrame(alloc, p.a, finishFrameFull(alloc, 40, true, true));
+        try drainAll(p.a, &p.ra);
+        const path = [_]u16{0};
+        const on_q: Cap = .{ .kind = .promised, .id = t.q, .ops = &path, .nops = 1 };
+        const res = try msgCap(alloc, 1, 0);
+        defer alloc.free(res);
+        try p.a.returnResults(30, res, &.{on_q});
+        try drainAll(p.a, &p.ra);
+        var qfs: [2]u32 = undefined;
+        try testing.expectEqual(@as(usize, 1), try callFrameQidsAfter(&p.ra, calls_out, &qfs));
+        const qf = qfs[0];
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, .takeFromOtherQuestion));
+        // The remote finishes 30, and 40 if it had not.
+        try pushFrame(alloc, p.a, finishFrameFull(alloc, 30, true, true));
+        if (!finished_first) try pushFrame(alloc, p.a, finishFrame(alloc, 40));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, if (finished_first) 0 else 1), try countFinishFrames(&p.ra, qf));
+        try testing.expect(!(try p.a.peer.inboundAnswerQuestionIdInUse(40)));
+
+        // The remote reuses 40 while qf still waits for its Return.
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, 40, t.ea));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), countCalls(&p.ra, 40));
+        try testing.expectEqual(@as(usize, 0), p.ra.close_requested);
+        // The new call is the host's: its Finish is reported, and the host
+        // can cancel it.
+        try pushFrame(alloc, p.a, finishFrame(alloc, 40));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), p.ra.countFinished(40));
+        try p.a.returnCanceled(40);
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, .canceled));
+
+        // qf's Return comes: the forward ends with one Finish for qf.
+        try pushFrame(alloc, p.a, tagReturnFrame(alloc, qf, .resultsSentElsewhere));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countFinishFrames(&p.ra, qf));
+        try testing.expectEqual(@as(usize, 2), try countReturnFrames(&p.ra, 40, null));
+        try expectForwardGone(p.a, 40, qf);
+        for ([_]u32{ 40, 30 }) |id| {
+            try testing.expect(!(try p.a.peer.inboundAnswerQuestionIdInUse(id)));
+            try pushFrame(alloc, p.a, plainCallFrame(alloc, id, t.ea));
+        }
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 2), countCalls(&p.ra, 40));
+        try testing.expectEqual(@as(usize, 2), countCalls(&p.ra, 30));
+        try testing.expectEqual(@as(usize, 0), p.ra.close_requested);
+        try testing.expect(p.a.last_error == null);
+    }
+}
+
 /// An Unimplemented that echoes the Call OUT_FRAME with question id
 /// `qid` that `rec` kept, as go-capnp answers a Call whose
 /// `sendResultsTo` is not `caller` (rpc/rpc.go, handleCall).
