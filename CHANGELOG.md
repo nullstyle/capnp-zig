@@ -108,9 +108,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lines of seven handoff files changed to match.
 - `docs/downstreams.md`: capnp-swift pins v0.28.0 for its core (0.1.4 and
   0.2.0), and 0.2.0 verified H13. New rows: tail-call results with
-  capabilities (deferred) and the cancel e2e scenario (open, P1-3). Draft
-  relay texts for v0.28.1 and v0.29.0 go to capnp-swift, capnp-deno (P0-1
-  and P1-1 affect its pin `fe6634d`) and slcp-zig.
+  capabilities (deferred) and the cancel e2e scenario (open, P1-3). Two
+  relay texts for now give capnp-swift and capnp-deno a workaround for the
+  P0-1 defect (turn off cancel on the answer-finished event until v0.29.0),
+  because the owner held the v0.28.1 patch. Draft relay texts for v0.29.0
+  go to capnp-swift, capnp-deno (P0-1 and P1-1 affect its pin `fe6634d`)
+  and slcp-zig.
 
 ## [0.28.0] - 2026-10-21
 
