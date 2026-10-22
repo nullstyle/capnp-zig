@@ -199,7 +199,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   finished: a queued call that calls are pipelined on stays queued at its
   Finish; each call reaches the host" and "answer finished: a queued call
   with a call pipelined on it, finished, then routed back to the remote;
-  the remote reuses both ids" in `src/native/conn_test.zig`.
+  the remote reuses both ids" in `src/native/conn_test.zig`. The e2e
+  scenario `cancel_pipelined` is the cross-implementation guard for the
+  one-link case, and it covers this change as well as the one above it:
+  the C++ reference client drops `getSub()` with a `bar()` pipelined on
+  it, and the Zig e2e server cancels every reported Finish, so a cancel of
+  `getSub()` would fail `bar()`.
 
 - **RPC: a call that the caller finished and the Peer then forwarded back
   to the caller is now finished, and its id is free again.** go-capnp
@@ -489,9 +494,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `docs/supported-surface.md`: the known limit "A Finish of a queued call
   fails the calls pipelined on it" is gone. The Fixed entry above closes
-  both of its cases. The v0.29.0 relay draft for capnp-swift in
-  `docs/downstreams.md` says so too, and `docs/native-abi.md` records what
-  the core now does with a queued call that other calls are pipelined on.
+  both of its cases, and the e2e scenario `cancel_pipelined` guards the
+  one-link case. The v0.29.0 relay draft for capnp-swift in
+  `docs/downstreams.md` says so too, and names that scenario;
+  `docs/native-abi.md` records what the core now does with a queued call
+  that other calls are pipelined on.
 - `docs/supported-surface.md`: new known limits. A tail-call forward
   to go-capnp ends the connection (go-capnp answers the `sendResultsTo =
   yourself` call with Unimplemented, then fails on the Peer's Finish for

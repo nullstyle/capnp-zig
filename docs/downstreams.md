@@ -196,7 +196,10 @@ The owner sends this text after the v0.29.0 tag exists.
 > cancels bar, and your cancel of foo is refused while baz wants bar's
 > results. Both calls run when you answer foo. Before, the first case
 > failed baz (and did not depend on `cancelHandlersOnFinish`) and the
-> second failed bar and baz.
+> second failed bar and baz. The one-link case is now a CI gate: the e2e
+> scenario `cancel_pipelined` runs the C++ reference client against the
+> Zig e2e server, whose answer-finished hook cancels every reported
+> Finish as your runtime does, and `bar()` must return its results.
 >
 > One call the caller wants can still fail. ANSWER_FINISHED does not wait
 > for a call whose params carry the answer's results (`receiverAnswer`),
