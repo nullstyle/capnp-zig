@@ -2515,6 +2515,74 @@ test "answer finished: a held call that a call is pipelined on gets no ANSWER_FI
     try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
 }
 
+/// Call OUT_FRAMEs that `rec` kept: questions this side sent to the remote.
+fn countCallFrames(rec: *Rec) !usize {
+    var n: usize = 0;
+    for (rec.frames.items) |bytes| {
+        var d = try protocol.DecodedMessage.init(testing.allocator, bytes);
+        defer d.deinit();
+        if (d.tag == .call) n += 1;
+    }
+    return n;
+}
+
+test "answer finished: a queued call with a call pipelined on it, finished, then routed back to the remote; the remote reuses both ids" {
+    // C++ sends Call(foo), Call(bar on foo), Call(baz on bar), Finish(bar)
+    // with requireEarlyCancellationWorkaround = false. bar is still queued on
+    // foo, so the core cancels it at its Finish and fails baz, as v0.28.0
+    // does. foo's answer then names the remote's own capability. No call is
+    // left to forward there, so no question stays open for an id that the
+    // remote finished. The remote reuses bar's and baz's ids at once
+    // (rpc.capnp Call.questionId), and the connection stays up.
+    const alloc = testing.allocator;
+    for ([_]bool{ false, true }) |answer_finished| {
+        var p = try TailPair.init(alloc, .{ .now_ns = 0, .answer_finished = answer_finished });
+        defer p.deinit();
+        const t = try p.start(alloc);
+        try drainAll(p.a, &p.ra);
+        const calls_out = try countCallFrames(&p.ra);
+
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, 30, t.ea));
+        try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 40, 30));
+        try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 50, 40));
+        try pushFrame(alloc, p.a, finishFrame(alloc, 40));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), countCalls(&p.ra, 30));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, .canceled));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 50, .exception));
+
+        const res = try msgCap(alloc, 1, 0);
+        defer alloc.free(res);
+        try p.a.returnResults(30, res, &.{t.boot});
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 30, .results));
+        try testing.expectEqual(calls_out, try countCallFrames(&p.ra));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, null));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 50, null));
+
+        try pushFrame(alloc, p.a, finishFrame(alloc, 30));
+        try pushFrame(alloc, p.a, finishFrame(alloc, 50));
+        try drainAll(p.a, &p.ra);
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, 40, t.ea));
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, 50, t.ea));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), countCalls(&p.ra, 40));
+        try testing.expectEqual(@as(usize, 1), countCalls(&p.ra, 50));
+        try testing.expectEqual(@as(usize, 0), p.ra.close_requested);
+        try testing.expect(p.a.last_error == null);
+
+        for ([_]u32{ 40, 50 }) |id| {
+            const r = try msgU64(alloc, id);
+            defer alloc.free(r);
+            try p.a.returnResults(id, r, &.{});
+        }
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, .results));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 50, .results));
+        try testing.expectEqual(@as(usize, 0), p.ra.finished.items.len);
+    }
+}
+
 test "answer finished: a Finish of a held call is withheld; each end of the hold without the answer reports it once" {
     // The remote finishes Y (77) while question X waits for Y's answer: X
     // still wants it, so the host is not told. When X ends without Y's

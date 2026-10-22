@@ -834,6 +834,21 @@ const TailHarness = struct {
         try self.client_peer.handleFrame(frame);
     }
 
+    /// The remote calls the client's answer `promised` (a call pipelined on
+    /// it, no transform) with question `answer_id`; the results go to the
+    /// remote (`sendResultsTo = caller`).
+    fn pushPipelinedPlainCall(self: *TailHarness, allocator: std.mem.Allocator, answer_id: u32, promised: u32) !void {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var call = try mb.beginCall(answer_id, CALL_INTERFACE_ID, CALL_METHOD_ID);
+        try call.setTargetPromisedAnswerWithOps(promised, &.{});
+        var payload = try call.payloadTyped();
+        _ = try (try payload.initContent()).initStruct(0, 0);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try self.client_peer.handleFrame(frame);
+    }
+
     /// `pushYourselfCall` whose params are one `receiverAnswer` capability:
     /// the result of the client's answer `promised`, pipelined into the
     /// call's arguments.
@@ -1216,6 +1231,46 @@ test "a yourself call whose queueing is refused: the remote gets resultsSentElse
     try h.pushYourselfCall(allocator, tail_answer_id, promise_id);
     try expectOnlyResultsSentElsewhere(&h, tail_answer_id);
     try expectRedirectGetsException(&h, allocator, "PeerLimitExceeded");
+}
+
+test "a call parked on a promise export with a call pipelined on it, finished, then routed back to the remote: the remote reuses both ids" {
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+
+    // Call 600 waits on a promise export, call 700 is pipelined on it, and
+    // the remote finishes 600 with requireEarlyCancellationWorkaround =
+    // false (what the C++ reference sends). The Peer cancels the waiting
+    // call at its Finish and fails 700, as v0.28.0 does.
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushPlainCall(allocator, 600, promise_id);
+    try h.pushPipelinedPlainCall(allocator, 700, 600);
+    try h.pushFinish(allocator, 600);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, .canceled));
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 700, .exception));
+
+    // The host resolves the promise to the remote's own capability. Nothing
+    // is left to forward there, so no question stays open for 600.
+    const wire_mark = h.wire.events.items.len;
+    try h.client_peer.resolvePromiseExportToImport(promise_id, h.server_import_id);
+    for (h.wire.events.items[wire_mark..]) |event| try std.testing.expect(event.tag != .call);
+    try std.testing.expect(!h.client_peer.forwarded_tail_questions.contains(600));
+
+    // The remote has both Returns and finishes 700 too. It may now reuse
+    // both ids at once (rpc.capnp Call.questionId), and both calls reach
+    // the host.
+    try h.pushFinish(allocator, 700);
+    try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(600)));
+    try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(700)));
+    var result = ResultN{ .n = 7 };
+    for ([_]u32{ 600, 700 }) |id| {
+        h.target.answer_id = null;
+        try h.pushPlainCall(allocator, id, h.target_export_id);
+        try std.testing.expectEqual(@as(?u32, id), h.target.answer_id);
+        try h.client_peer.sendReturnResults(id, &result, ResultN.build);
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, id, .results));
+    }
 }
 
 test "a yourself call whose param names a failed answer: the remote gets resultsSentElsewhere, the tail call that failure" {
