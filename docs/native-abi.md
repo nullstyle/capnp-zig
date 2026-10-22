@@ -112,10 +112,10 @@ answered, and stop the work (capnp-swift handoff H13). It is an opt-in:
   makes `capnp_conn_new` return `CAPNP_E_INVAL`. A host built against an
   older header passes a smaller `struct_size`, so it gets 0.
 
-When the remote sends Finish for an INBOUND_CALL that the host owes, the
-core queues one `CAPNP_EFFECT_ANSWER_FINISHED` (6). Its `id` is the answer
-id, `export_id` and `host_tag` are those of the INBOUND_CALL, and every
-other field is 0. The core queues it at most once per call. Its node is
+When the remote sends Finish for an INBOUND_CALL that the host owes, and
+no call is pipelined on that answer, the core queues one
+`CAPNP_EFFECT_ANSWER_FINISHED` (6). Its `id` is the answer id, `export_id`
+and `host_tag` are those of the INBOUND_CALL, and every other field is 0. The core queues it at most once per call. Its node is
 reserved when the INBOUND_CALL is queued, so after the core records the
 Finish, a lack of memory cannot lose the effect. The record itself can fail
 for lack of memory. Then no effect comes (see "When no effect comes").
@@ -126,8 +126,11 @@ and the caller can reuse its question id. That call returns
 `CAPNP_E_BAD_ID` for an answer the host does not owe. It returns
 `CAPNP_E_INVAL` when no ANSWER_FINISHED was queued for the answer: the
 opt-in is off, no Finish came, a tail-call hold withholds it, or the core
-did not report the Finish (see "When no effect comes"). On any
-other error it sends nothing, and the host still owes the answer. Instead of
+did not report the Finish (see "When no effect comes"). It also returns
+`CAPNP_E_INVAL` when a call is pipelined on the answer after the effect,
+which rpc.capnp forbids ("no further pipelined requests"). On
+`CAPNP_E_INVAL` or any other error it sends nothing, and the host still
+owes the answer. Instead of
 `capnp_return_canceled`, the host may answer with `capnp_return_results` or
 `capnp_return_exception`. A `sendResultsTo = yourself` call also gets
 `Return{canceled}`, not `resultsSentElsewhere`.
@@ -168,6 +171,19 @@ true. The C++ reference (1.0 and
 later) sends false, but go-capnp never sets it, so with a go-capnp caller,
 each Finish of a queued call takes a record. Such a queued call reaches the
 host after its Finish and gets no ANSWER_FINISHED: answer it as usual.
+
+The core also does not report a Finish while calls are pipelined on the
+answer. A pipelined call targets the results of a call that has not
+returned yet. Those calls still need the results: rpc.capnp lets the
+callee cancel a finished call only when nothing else cares about the
+result, "e.g. there are no other outstanding calls pipelined on the
+result". The C++ reference makes this sequence for
+`foo().getSub().bar()` when the caller drops foo's promise: Call(foo),
+Call(bar on foo), Finish(foo). The host's ordinary answer to foo then
+delivers bar. The core does not report the Finish later either, when the
+pipelined calls go (their caller finished them): the host's ordinary
+answer still settles the call. That wastes the host's work, but it is
+correct.
 
 **Tail calls.** While a question X waits for the answer to a call Y ("Tail
 calls" below), a Finish of Y does not queue ANSWER_FINISHED: X still wants

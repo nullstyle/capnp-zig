@@ -36,6 +36,9 @@
 //!   - ANSWER_FINISHED (H13) comes only to a side that opted in, for an
 //!     answer the host still owes, at most once per INBOUND_CALL, and
 //!     `capnp_return_canceled` succeeds only for an answer it reported;
+//!   - in a clean session, ANSWER_FINISHED never comes for an answer that
+//!     the other side still has a call pipelined on (an open question whose
+//!     target is that question, with no Return for it in flight);
 //!   - a second `next_effect` before `commit` is BUSY;
 //!   - 0 live bytes after both connections are freed (and the
 //!     DebugAllocator reports no leak at exit).
@@ -50,6 +53,7 @@ const abi = capnp.native.abi;
 const effects = capnp.native.effects;
 
 const message = capnp.message;
+const protocol = capnp.rpc.wire.protocol;
 
 /// capnp-zig logs every refused frame and failed Finish at debug/warn level;
 /// the fuzzer provokes thousands, so only errors reach stderr.
@@ -66,6 +70,11 @@ const Side = struct {
     conn: ?*conn_t,
     /// Questions this host opened and has not seen a RETURN for.
     open: std.AutoHashMap(u32, void),
+    /// Open questions whose target is a PROMISED capability: the question
+    /// that each is pipelined on (clean sessions only).
+    pipelined: std.AutoHashMap(u32, u32),
+    /// The other side of the connection.
+    peer: ?*Side = null,
     /// Imports this host received (and may release).
     imports: std.ArrayList(u32),
     /// Export ids this host created (incl. promises).
@@ -88,6 +97,7 @@ const Side = struct {
         return .{
             .conn = conn,
             .open = std.AutoHashMap(u32, void).init(a),
+            .pipelined = std.AutoHashMap(u32, u32).init(a),
             .imports = .empty,
             .exports = .empty,
             .promises = .empty,
@@ -99,6 +109,7 @@ const Side = struct {
 
     fn deinit(self: *Side, a: std.mem.Allocator) void {
         self.open.deinit();
+        self.pipelined.deinit();
         self.imports.deinit(a);
         self.exports.deinit(a);
         self.promises.deinit(a);
@@ -229,6 +240,7 @@ const Fuzz = struct {
             @backingInt(effects.Kind.close_requested) => side.close_requested += 1,
             @backingInt(effects.Kind.@"return") => {
                 if (!side.open.remove(e.id)) return self.fail("RETURN for question {d} that is not open", .{e.id});
+                _ = side.pipelined.remove(e.id);
                 side.returns += 1;
                 self.returns += 1;
                 if (e.return_kind == @backingInt(effects.ReturnKind.results)) {
@@ -253,11 +265,45 @@ const Fuzz = struct {
                     if (owed == e.id) break;
                 } else return self.fail("ANSWER_FINISHED {d} for an answer the host does not owe", .{e.id});
                 if ((try side.finished.fetchPut(e.id, {})) != null) return self.fail("second ANSWER_FINISHED {d}", .{e.id});
+                // rpc.capnp (Finish): cancel only when no call is pipelined
+                // on the result. The caller's frames arrive in order and
+                // unchanged in a clean session, so a call pipelined on this
+                // answer before its Finish is still queued in the core,
+                // unless the core already answered it (a Return in flight).
+                if (self.clean) {
+                    if (side.peer) |caller| {
+                        if (self.callPipelinedOn(caller, side, e.id)) |q| return self.fail("ANSWER_FINISHED {d} while question {d} is pipelined on it", .{ e.id, q });
+                    }
+                }
                 self.finished_seen += 1;
             },
             else => return self.fail("unknown effect kind {d}", .{e.kind}),
         }
         return true;
+    }
+
+    /// An open question of `caller` pipelined on `answer_id`, with no Return
+    /// for it waiting in `callee`'s outbox.
+    fn callPipelinedOn(self: *Fuzz, caller: *Side, callee: *Side, answer_id: u32) ?u32 {
+        var it = caller.pipelined.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* != answer_id) continue;
+            if (!caller.open.contains(entry.key_ptr.*)) continue;
+            if (self.returnInFlight(callee, entry.key_ptr.*)) continue;
+            return entry.key_ptr.*;
+        }
+        return null;
+    }
+
+    fn returnInFlight(self: *Fuzz, callee: *Side, answer_id: u32) bool {
+        for (callee.outbox.items) |frame| {
+            var d = protocol.DecodedMessage.init(self.a, frame) catch continue;
+            defer d.deinit();
+            if (d.tag != .@"return") continue;
+            const ret = d.asReturn() catch continue;
+            if (ret.answer_id == answer_id) return true;
+        }
+        return false;
     }
 
     fn checkPayload(self: *Fuzz, msg: ?[*]const u8, len: usize, caps: ?[*]const Cap, ncaps: usize, side: *Side) !void {
@@ -342,7 +388,11 @@ const Fuzz = struct {
                 defer self.a.free(params);
                 const flags: u32 = if (self.rand.uintLessThan(u8, 16) == 0) 1 else 0;
                 const rc = abi.capnp_call(conn, target, self.rand.int(u64), self.rand.int(u16), params.ptr, params.len, if (ncaps == 0) null else &caps_buf, ncaps, flags, &out);
-                if (rc == abi.CAPNP_OK) try side.open.put(out, {});
+                if (rc == abi.CAPNP_OK) {
+                    try side.open.put(out, {});
+                    // A clean session forges no kind, so `kind` is valid.
+                    if (self.clean and target.kind == .promised) try side.pipelined.put(out, target.id);
+                }
             },
             5, 6 => {
                 var keys: [16]u32 = undefined;
@@ -471,6 +521,8 @@ const Fuzz = struct {
         var b = Side.init(self.a, cb.?);
         defer b.deinit(self.a);
         b.answer_finished = opts_b.answer_finished == 1;
+        a.peer = &b;
+        b.peer = &a;
         var eid: u32 = 0;
         _ = abi.capnp_set_bootstrap(cb.?, 100, &eid);
         try b.exports.append(self.a, eid);

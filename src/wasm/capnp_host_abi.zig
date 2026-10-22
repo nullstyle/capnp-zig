@@ -1996,11 +1996,13 @@ pub export fn capnp_peer_attach_provision_index(peer: u32, index: u32) u32 {
 
 /// Enable or disable answer-finished notifications for a peer (feature bit
 /// 12). When enabled, a Finish from the caller of a host-handed call that
-/// has not been answered delivers a kind-4 record through
-/// `capnp_peer_pop_l3_event` (payload: 4-byte little-endian answer id); the
-/// host should stop the work and answer with
-/// `capnp_peer_send_return_canceled`. Disabling clears the handler; queued
-/// events remain drainable.
+/// has not been answered, and that no call is pipelined on, delivers a
+/// kind-4 record through `capnp_peer_pop_l3_event` (payload: 4-byte
+/// little-endian answer id); the host should stop the work and answer with
+/// `capnp_peer_send_return_canceled`. While calls are pipelined on the
+/// answer, no record comes, then or later: those calls still need the
+/// results, so the host answers as usual. Disabling clears the handler;
+/// queued events remain drainable.
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_set_answer_finished_handler(peer: u32, enabled: u32) u32 {
     global_mutex.lock();
@@ -2039,11 +2041,14 @@ pub export fn capnp_peer_set_answer_finished_handler(peer: u32, enabled: u32) u3
 }
 
 /// Answer a call whose caller sent Finish first with `Return{canceled}` and
-/// free the caller's question id (feature bit 12); calls pipelined on that
-/// answer fail with their own Return. Refuses with an error while the
-/// caller has not finished the answer (`AnswerNotFinished`) or when no
-/// Return is owed for the id (`AnswerNotOwed`: already answered, never an
-/// inbound question, or a call the peer settles itself).
+/// free the caller's question id (feature bit 12). Refuses with an error,
+/// and sends nothing, while the caller has not finished the answer
+/// (`AnswerNotFinished`), when no Return is owed for the id
+/// (`AnswerNotOwed`: already answered, never an inbound question, or a call
+/// the peer settles itself), or while calls pipelined on the answer wait
+/// for its results (`AnswerHasPipelinedCalls`; no kind-4 record comes for
+/// such an answer). After `AnswerHasPipelinedCalls`, answer the call as
+/// usual.
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_send_return_canceled(peer: u32, answer_id: u32) u32 {
     global_mutex.lock();

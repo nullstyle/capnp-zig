@@ -470,12 +470,16 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   install `Peer.setAnswerFinishedHandler`. It runs, at most once per answer and
   inside `handleFrame`, when the remote sends Finish for a call the host was
   handed and has not answered; not for an answer the host already replied to,
-  a call the Peer still holds queued, or a call the Peer forwarded. The host
-  then answers with `Peer.sendReturnCanceled`, which sends `Return{canceled}`
-  and fails the calls pipelined on that answer. It refuses, sending nothing,
-  an answer the caller has not finished (`error.AnswerNotFinished`) and one
-  the host does not owe a Return for (`error.AnswerNotOwed`): it already got
-  a Return, the id is unknown, or the Peer settles it itself. The Peer
+  a call the Peer still holds queued, or a call the Peer forwarded. It does
+  not run while calls are pipelined on the answer, then or later: those
+  calls still need its results (rpc.capnp, Finish), so the host's ordinary
+  Return settles the call. The host
+  then answers with `Peer.sendReturnCanceled`, which sends `Return{canceled}`.
+  It refuses, sending nothing,
+  an answer the caller has not finished (`error.AnswerNotFinished`), one
+  the host does not owe a Return for (`error.AnswerNotOwed`: it already got
+  a Return, the id is unknown, or the Peer settles it itself), and one that
+  calls are pipelined on (`error.AnswerHasPipelinedCalls`). The Peer
   remembers at most `limits.max_active_inbound_questions` finished,
   unanswered calls; past that the handler does not run. Any other late
   Return is still accepted, and it keeps

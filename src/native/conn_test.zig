@@ -2037,6 +2037,75 @@ test "answer finished: the remote's Finish of an unanswered call queues one ANSW
     try testing.expectEqual(@as(usize, 0), f.ra.close_requested);
 }
 
+test "answer finished: no ANSWER_FINISHED while a call is pipelined on the answer; the answer delivers that call once" {
+    // rpc.capnp (Finish): cancel only when nothing else cares about the
+    // result, "e.g. there are no other outstanding calls pipelined on" it.
+    // A C++ caller that drops foo's promise in `foo().getSub().bar()` sends
+    // Call(foo), Call(bar on foo), Finish(foo), and expects bar to run.
+    const alloc = testing.allocator;
+    var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+    defer f.deinit();
+
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 30, f.ea));
+    try pushFrame(alloc, f.a, pipelinedCallFrame(alloc, 40, 30));
+    try pushFrame(alloc, f.a, finishFrameWith(alloc, 30, false));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqualSlices(effects.Kind, &.{.inbound_call}, f.ra.order.items);
+    // No effect was queued, so capnp_return_canceled is CAPNP_E_INVAL, and
+    // nothing is sent.
+    try testing.expectError(error.Invalid, f.a.returnCanceled(30));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 0), f.ra.frames.items.len);
+
+    // The host's answer names its export: the pipelined call reaches it.
+    const res = try msgCap(alloc, 1, 0);
+    defer alloc.free(res);
+    try f.a.returnResults(30, res, &.{.{ .kind = .@"export", .id = f.ea }});
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 30));
+    try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 40));
+    try testing.expectEqual(f.ea, f.ra.lastCall().export_id);
+    const done = try msgU64(alloc, 2);
+    defer alloc.free(done);
+    try f.a.returnResults(40, done, &.{});
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 30, .results));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 30, null));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 40, .results));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 40, null));
+    try testing.expectEqual(@as(usize, 0), f.ra.finished.items.len);
+    try testing.expectEqual(@as(usize, 0), f.ra.close_requested);
+    try testing.expect(f.a.last_error == null);
+}
+
+test "answer finished: a call pipelined on the answer after ANSWER_FINISHED makes returnCanceled refuse; the answer delivers it" {
+    // rpc.capnp forbids pipelined calls after Finish. One that comes anyway
+    // still gets its target: the cancel is refused (CAPNP_E_INVAL through
+    // the C ABI), nothing is sent, and the host's answer delivers it.
+    const alloc = testing.allocator;
+    var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+    defer f.deinit();
+
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 31, f.ea));
+    try pushFrame(alloc, f.a, finishFrameWith(alloc, 31, false));
+    try pushFrame(alloc, f.a, pipelinedCallFrame(alloc, 41, 31));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqualSlices(effects.Kind, &.{ .inbound_call, .answer_finished }, f.ra.order.items);
+    try testing.expectError(error.AnswerHasPipelinedCalls, f.a.returnCanceled(31));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 0), f.ra.frames.items.len);
+
+    const res = try msgCap(alloc, 1, 0);
+    defer alloc.free(res);
+    try f.a.returnResults(31, res, &.{.{ .kind = .@"export", .id = f.ea }});
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 41));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 31, .results));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 31, null));
+    try testing.expectError(error.BadId, f.a.returnCanceled(31));
+    try testing.expectEqual(@as(usize, 1), f.ra.finished.items.len);
+}
+
 test "answer finished: after ANSWER_FINISHED the host may answer with results or an exception instead, once" {
     const alloc = testing.allocator;
     const res = try msgU64(alloc, 1);
@@ -2652,6 +2721,18 @@ fn plainCallFrame(alloc: std.mem.Allocator, answer_id: u32, target_export: u32) 
     defer mb.deinit();
     var call = try mb.beginCall(answer_id, iface, 4);
     try call.setTargetImportedCap(target_export);
+    var payload = try call.payloadTyped();
+    _ = try (try payload.initContent()).initStruct(0, 0);
+    return mb.finish();
+}
+
+/// A Call `answer_id` pipelined on the remote's question `on_answer` (our
+/// answer): its target is that answer's results pointer field 0.
+fn pipelinedCallFrame(alloc: std.mem.Allocator, answer_id: u32, on_answer: u32) ![]const u8 {
+    var mb = protocol.MessageBuilder.init(alloc);
+    defer mb.deinit();
+    var call = try mb.beginCall(answer_id, iface, 4);
+    try call.setTargetPromisedAnswerWithOps(on_answer, &.{.{ .tag = .getPointerField, .pointer_index = 0 }});
     var payload = try call.payloadTyped();
     _ = try (try payload.initContent()).initStruct(0, 0);
     return mb.finish();

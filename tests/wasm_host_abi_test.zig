@@ -2049,6 +2049,87 @@ test "answer cancellation: Finish for an unanswered host call delivers a kind-4 
     try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_set_answer_finished_handler(server, 0));
 }
 
+test "answer cancellation: no event while a call is pipelined on the answer; sendReturnCanceled refuses" {
+    // rpc.capnp (Finish): cancel only when nothing else cares about the
+    // result, "e.g. there are no other outstanding calls pipelined on" it.
+    // capnp-deno answers every kind-4 event with sendReturnCanceled, so the
+    // event must not come while a call waits on the answer.
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const server = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(server);
+    try std.testing.expect(server != 0);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_set_answer_finished_handler(server, 1));
+
+    const pending = try queuePendingHostCall(std.testing.allocator, server, 30, 0xA100, 3);
+    defer {
+        std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_free_host_call_frame(
+            server,
+            pending.frame_ptr,
+            pending.frame_len,
+        )) catch unreachable;
+    }
+    const pipelined = try encodePipelinedCallFrame(std.testing.allocator, 40, pending.question_id);
+    defer std.testing.allocator.free(pipelined);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+        server,
+        toAbiPtr(pipelined.ptr),
+        @intCast(pipelined.len),
+    ));
+    const finish = try encodeFinishFrame(std.testing.allocator, pending.question_id, false);
+    defer std.testing.allocator.free(finish);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+        server,
+        toAbiPtr(finish.ptr),
+        @intCast(finish.len),
+    ));
+
+    var event_ptr: abi.AbiPtr = 0;
+    var event_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_pop_l3_event(
+        server,
+        toAbiPtr(&event_ptr),
+        toAbiPtr(&event_len),
+    ));
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_send_return_canceled(server, pending.question_id));
+    const snap = try takeErrorSnapshot();
+    try std.testing.expect(std.mem.indexOf(u8, snap.msg, "AnswerHasPipelinedCalls") != null);
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_outbound_count(server));
+
+    // The host's ordinary answer names the bootstrap export, and the peer
+    // replays the pipelined call on it. HostPeer reads a host call's frame
+    // only inside capnp_peer_push_frame, so today it answers a replayed
+    // call with an exception (`MissingHostInboundFrame`, sanitized) instead
+    // of queueing it. The call still gets exactly one Return.
+    const return_frame = try encodeReturnResultsFrameWithCap(
+        std.testing.allocator,
+        pending.question_id,
+        pending.bootstrap_export_id,
+    );
+    defer std.testing.allocator.free(return_frame);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_respond_host_call_return_frame(
+        server,
+        toAbiPtr(return_frame.ptr),
+        @intCast(return_frame.len),
+    ));
+    try std.testing.expectEqual(@as(u32, 2), abi.capnp_peer_outbound_count(server));
+    for ([_]u32{ pending.question_id, 40 }, [_]protocol.ReturnTag{ .results, .exception }) |answer_id, tag| {
+        const frame = try popOutFrameCopy(std.testing.allocator, server);
+        defer std.testing.allocator.free(frame);
+        var decoded = try protocol.DecodedMessage.init(std.testing.allocator, frame);
+        defer decoded.deinit();
+        const ret = try decoded.asReturn();
+        try std.testing.expectEqual(answer_id, ret.answer_id);
+        try std.testing.expectEqual(tag, ret.tag);
+    }
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_pop_l3_event(
+        server,
+        toAbiPtr(&event_ptr),
+        toAbiPtr(&event_len),
+    ));
+}
+
 test "answer cancellation: sendReturnCanceled refuses before the caller finishes" {
     abi.capnp_clear_error();
     defer abi.capnp_clear_error();
@@ -2076,6 +2157,36 @@ fn queuePlainCall(allocator: std.mem.Allocator, peer: u32, question_id: u32) !u3
         )) catch unreachable;
     }
     return pending.question_id;
+}
+
+/// A Call `question_id` pipelined on answer `on_answer`: its target is that
+/// answer's results pointer field 0.
+fn encodePipelinedCallFrame(allocator: std.mem.Allocator, question_id: u32, on_answer: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var call = try builder.beginCall(question_id, 0xA100, 5);
+    try call.setTargetPromisedAnswerWithOps(on_answer, &[_]protocol.PromisedAnswerOp{
+        .{ .tag = .getPointerField, .pointer_index = 0 },
+    });
+    _ = try call.initCapTableTyped(0);
+    return builder.finish();
+}
+
+/// A results Return for `answer_id` whose results pointer field 0 is the
+/// export `export_id`.
+fn encodeReturnResultsFrameWithCap(allocator: std.mem.Allocator, answer_id: u32, export_id: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var ret = try builder.beginReturn(answer_id, .results);
+    ret.setReleaseParamCaps(false);
+    var payload = try ret.payloadTyped();
+    var content = try payload.initContent();
+    const results = try content.initStruct(0, 1);
+    var slot = try results.getAnyPointer(0);
+    try slot.setCapability(.{ .id = 0 });
+    var cap_table = try ret.initCapTableTyped(1);
+    protocol.CapDescriptor.writeSenderHosted(try cap_table.get(0), export_id);
+    return builder.finish();
 }
 
 /// A Finish frame for `question_id`.

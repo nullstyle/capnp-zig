@@ -581,10 +581,20 @@ host-handed call that has not been answered delivers a kind-4 record
 through the event channel (`[0..4) kind=4, [4..8) answer_id,
 [8..12) payload_len=4, [12..16) answer_id little-endian`). The host should
 stop the work and answer with `capnp_peer_send_return_canceled`, which
-sends `Return{canceled}` and frees the caller's question id; calls
-pipelined on that answer fail with their own Return. It refuses with an
-error while the caller has not finished the answer (`AnswerNotFinished`)
-or when no Return is owed (`AnswerNotOwed`).
+sends `Return{canceled}` and frees the caller's question id. It refuses
+with an error, and sends nothing, while the caller has not finished the
+answer (`AnswerNotFinished`), when no Return is owed (`AnswerNotOwed`),
+or while calls pipelined on the answer wait for its results
+(`AnswerHasPipelinedCalls`).
+
+No kind-4 record comes while calls are pipelined on the answer. Those
+calls still need its results: rpc.capnp lets the callee cancel a finished
+call only when nothing else cares about the result. No record comes later
+either, when those calls go (their caller finished them), so the host's
+ordinary answer settles the call. That wastes the host's work, but it is
+correct. The C++ reference makes this sequence for `foo().getSub().bar()`
+when the caller drops foo's promise: Call(foo), Call(bar on foo),
+Finish(foo).
 
 ```c
 u32 capnp_peer_set_answer_finished_handler(u32 peer, u32 enabled);

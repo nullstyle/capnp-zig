@@ -91,8 +91,8 @@ pub const ExportDropped = struct {
 };
 
 /// The remote sent Finish for an INBOUND_CALL that the host has not
-/// answered (handoff H13; `Options.answer_finished`). The ids repeat the
-/// INBOUND_CALL's.
+/// answered and that no call is pipelined on (handoff H13;
+/// `Options.answer_finished`). The ids repeat the INBOUND_CALL's.
 pub const AnswerFinished = struct {
     answer_id: u32,
     export_id: u32,

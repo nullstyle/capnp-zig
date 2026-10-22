@@ -234,7 +234,9 @@ pub const ClientOrigin = enum {
 const QuestionDeinitCtxFn = state.QuestionDeinitCtxFn;
 const ExportDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;
 
-/// Experimental. The callback `Peer.setAnswerFinishedHandler` installs.
+/// Experimental. The callback `Peer.setAnswerFinishedHandler` installs. It
+/// runs when the caller finished an answer that the host owes and that no
+/// call is pipelined on.
 pub const AnswerFinishedFn = *const fn (ctx: *anyopaque, peer: *Peer, answer_id: u32, release_result_caps: bool) void;
 const Question = state.Question(QuestionCallback);
 const PendingThirdPartyAwait = state.PendingThirdPartyAwait(Question);
@@ -1677,6 +1679,17 @@ pub const Peer = struct {
     /// forwarded call's Return). A
     /// queued call whose Finish set `requireEarlyCancellationWorkaround` is
     /// delivered later and never reported; answer it as usual.
+    ///
+    /// It does not run while calls pipelined on the answer wait for its
+    /// results: they still need them (rpc.capnp, Finish: cancel only when
+    /// nothing else cares about the result), and `sendReturnCanceled`
+    /// refuses the id with `error.AnswerHasPipelinedCalls`. It does not run
+    /// later either, when those calls go (their caller finished them): the
+    /// host's ordinary Return answers the call. That wastes the host's
+    /// work, but it is correct. A call pipelined on the answer after its
+    /// Finish breaks rpc.capnp ("no further pipelined requests"); after
+    /// the handler ran, it makes `sendReturnCanceled` refuse the id in the
+    /// same way.
     ///
     /// The peer remembers a finished, unanswered call in a record bounded by
     /// `limits.max_active_inbound_questions`. When those records are full,
@@ -3916,19 +3929,23 @@ pub const Peer = struct {
     }
 
     /// Experimental. Answer a call whose caller sent Finish first (see
-    /// `setAnswerFinishedHandler`) with `Return{canceled}`, and fail the calls
-    /// pipelined on it with their own Return. Sends nothing and errors with
-    /// `error.AnswerNotFinished` while the caller has not finished the
-    /// answer, and with `error.AnswerNotOwed` when the peer does not know of
-    /// a Return the host still owes for it: the answer already got its
-    /// Return, the id was never an inbound question, the peer settles the
-    /// answer itself (a forwarded or still-queued call), or the peer stopped
-    /// tracking it (see `setAnswerFinishedHandler`). Body in
+    /// `setAnswerFinishedHandler`) with `Return{canceled}`. Sends nothing
+    /// and errors with `error.AnswerNotFinished` while the caller has not
+    /// finished the answer, and with `error.AnswerNotOwed` when the peer
+    /// does not know of a Return the host still owes for it: the answer
+    /// already got its Return, the id was never an inbound question, the
+    /// peer settles the answer itself (a forwarded or still-queued call), or
+    /// the peer stopped tracking it (see `setAnswerFinishedHandler`). Errors
+    /// with `error.AnswerHasPipelinedCalls` while calls pipelined on the
+    /// answer wait for its results: a cancel would fail them, and rpc.capnp
+    /// allows a cancel only when nothing else cares about the result. Answer
+    /// such a call with an ordinary Return. Body in
     /// `return/peer_return_send.zig`.
     pub fn sendReturnCanceled(self: *Peer, answer_id: u32) !void {
         self.assertThreadAffinity();
         if (self.active_inbound_questions.contains(answer_id)) return error.AnswerNotFinished;
         if (!self.hostOwesFinishedReturn(answer_id)) return error.AnswerNotOwed;
+        if (self.hasCallsPipelinedOnAnswer(answer_id)) return error.AnswerHasPipelinedCalls;
         return ReturnSendImpl.sendReturnCanceled(self, answer_id);
     }
 
@@ -4871,9 +4888,14 @@ pub const Peer = struct {
         // call still queued (the Finish asked for delivery first) has not
         // reached the host. With no tombstone (the bounded map was full) the
         // peer no longer tracks the owed Return, so the host is not told:
-        // `sendReturnCanceled` would refuse the id.
+        // `sendReturnCanceled` would refuse the id. Calls pipelined on the
+        // answer still need its results (rpc.capnp, Finish: cancel only
+        // when nothing else cares about the result), so the host is not told
+        // either, and it is not told later when they go: the host's ordinary
+        // Return answers the call.
         if (host_owes_return and !canceled_automatic_target and
-            self.hostOwesFinishedReturn(qid))
+            self.hostOwesFinishedReturn(qid) and
+            !self.hasCallsPipelinedOnAnswer(qid))
         {
             if (self.answer_finished_fn) |notify| {
                 if (self.answer_finished_ctx) |ctx| notify(ctx, self, qid, finish_msg.release_result_caps);
@@ -4920,6 +4942,15 @@ pub const Peer = struct {
             !self.completing_join_answers.contains(answer_id) and
             !self.isForwardedAnswer(answer_id) and
             !self.hasQueuedPendingQuestionId(answer_id);
+    }
+
+    /// True when calls that the remote pipelined on inbound answer
+    /// `answer_id` wait in the peer for its Return (`pending_promises`).
+    /// They still need the answer's results, so the host may not cancel it.
+    /// The gate of the answer-finished hook and of `sendReturnCanceled`.
+    fn hasCallsPipelinedOnAnswer(self: *const Peer, answer_id: u32) bool {
+        const queued = self.pending_promises.getPtr(answer_id) orelse return false;
+        return queued.items.len != 0;
     }
 
     /// True when the peer forwarded inbound answer `answer_id` to another

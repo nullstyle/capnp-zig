@@ -63,9 +63,10 @@ pub const Options = struct {
     /// in, matching capnp-zig's QUIC baseline `LengthDelimitedFramer`.
     framing: Framing = .segment_table,
     /// Queue one ANSWER_FINISHED effect when the remote sends Finish for an
-    /// INBOUND_CALL that the host has not answered (capnp-swift handoff
-    /// H13); the host may then answer it with `returnCanceled`. Off: no such
-    /// effect, and `returnCanceled` refuses every id.
+    /// INBOUND_CALL that the host has not answered and that no call is
+    /// pipelined on (capnp-swift handoff H13); the host may then answer it
+    /// with `returnCanceled`. Off: no such effect, and `returnCanceled`
+    /// refuses every id.
     answer_finished: bool = false,
 };
 
@@ -88,8 +89,8 @@ pub const PendingAnswer = struct {
 /// What the host has been told about the remote's Finish of a call it owes.
 pub const FinishState = enum {
     /// No Finish reported: none came, the opt-in is off, or the core did
-    /// not report the Finish (no record of it, or the call was still queued
-    /// in the core).
+    /// not report the Finish (no record of it, the call was still queued in
+    /// the core, or calls were pipelined on the answer).
     none,
     /// The remote finished the call while a question held on a tail call
     /// waits for its answer: ANSWER_FINISHED is withheld until that hold
@@ -734,11 +735,13 @@ pub const Conn = struct {
     /// effect). `error.BadId` when the host does not owe the answer;
     /// `error.Invalid` unless ANSWER_FINISHED was queued for it (the opt-in
     /// is off, no Finish came, a tail-call hold withholds it, or the core
-    /// did not report the Finish: it kept no record of it, or the call was
-    /// still queued in the core). A Peer error (out of memory, a failed
-    /// send) sends nothing and leaves the answer owed. After ANSWER_FINISHED
-    /// the host may also answer with `returnResults` or `returnException`;
-    /// it answers once.
+    /// did not report the Finish: it kept no record of it, the call was
+    /// still queued in the core, or calls were pipelined on the answer). A
+    /// Peer error sends nothing and leaves the answer owed: out of memory, a
+    /// failed send, or `error.AnswerHasPipelinedCalls` (a call pipelined on
+    /// the answer after its Finish, which rpc.capnp forbids; the C ABI maps
+    /// it to `CAPNP_E_INVAL`). After ANSWER_FINISHED the host may also
+    /// answer with `returnResults` or `returnException`; it answers once.
     pub fn returnCanceled(self: *Conn, answer_id: u32) !void {
         const owed = self.pending_answers.get(answer_id) orelse return error.BadId;
         if (owed.finish != .reported) return error.Invalid;

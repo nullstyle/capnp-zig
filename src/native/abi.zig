@@ -346,8 +346,10 @@ fn codeFor(err: anyerror) i32 {
         // capnp_resolve_promise to the promise itself, or into a cycle.
         error.PromiseResolutionCycle,
         error.RetainedLoopbackQuestion,
-        // capnp_return_canceled before the remote's Finish.
+        // capnp_return_canceled before the remote's Finish, or while calls
+        // are pipelined on the answer.
         error.AnswerNotFinished,
+        error.AnswerHasPipelinedCalls,
         => CAPNP_E_INVAL,
         error.OutOfMemory => CAPNP_E_NOMEM,
         error.PeerLimitExceeded,
@@ -785,6 +787,7 @@ test "codeFor: the plan's error map" {
     // capnp_return_canceled refused by the Peer.
     try testing.expectEqual(CAPNP_E_BAD_ID, codeFor(error.AnswerNotOwed));
     try testing.expectEqual(CAPNP_E_INVAL, codeFor(error.AnswerNotFinished));
+    try testing.expectEqual(CAPNP_E_INVAL, codeFor(error.AnswerHasPipelinedCalls));
     try testing.expectEqual(CAPNP_E_CLOSED, codeFor(error.Closed));
     try testing.expectEqual(CAPNP_E_CLOSED, codeFor(error.RemoteAbort));
     try testing.expectEqual(CAPNP_E_BAD_ID, codeFor(error.BadId));

@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RPC and native: the host is no longer told to cancel a call that other
+  calls are pipelined on.** rpc.capnp lets a callee cancel a finished call
+  only when nothing else cares about its result, "e.g. there are no other
+  outstanding calls pipelined on the result". A C++ caller that drops
+  foo's promise in `foo().getSub().bar()` sends Call(foo), Call(bar on
+  foo), Finish(foo). The Peer reported that Finish to the host anyway: the
+  `setAnswerFinishedHandler` hook ran, the native core queued
+  `CAPNP_EFFECT_ANSWER_FINISHED`, and the WASM host ABI queued its kind-4
+  event. The host's `Return{canceled}` then failed bar. capnp-swift 0.2.0
+  turns the report on by default (`cancelHandlersOnFinish`), and capnp-deno
+  answers every report with `capnp_peer_send_return_canceled`. Now the
+  Peer does not report a Finish while calls are pipelined on the answer.
+  It does not report it later either, when those calls go: the host's
+  ordinary answer settles the call. That wastes the host's work, but it is
+  correct. `Peer.sendReturnCanceled` (Experimental) refuses such an answer
+  with the new `error.AnswerHasPipelinedCalls` and sends nothing. The
+  native `capnp_return_canceled` returns `CAPNP_E_INVAL` for it, because
+  no effect was queued. A call that is pipelined on an answer after
+  its Finish breaks rpc.capnp; it makes the cancel refuse in the same way
+  (`CAPNP_E_INVAL` through the C ABI). The `capnp_core.h` changes are
+  comments only. The native fuzz (`zig build fuzz-native-abi`) now checks
+  the rule in clean sessions. Tests: "answer-finished hook stays quiet
+  while a call is pipelined on the answer (P0-1)" and two more P0-1 tests
+  in `tests/rpc/peer/rpc_answer_lifecycle_test.zig`; "answer finished: no
+  ANSWER_FINISHED while a call is pipelined on the answer; ..." and
+  "answer finished: a call pipelined on the answer after ANSWER_FINISHED
+  ..." in `src/native/conn_test.zig`; and "answer cancellation: no event
+  while a call is pipelined on the answer; ..." in
+  `tests/wasm_host_abi_test.zig`.
+
 - **RPC: a parked call now gets its Return when the Peer cannot decode it
   again.** A call pipelined on an answer, or made on a promise export, waits
   in the Peer until that answer or promise resolves. The replay drains
