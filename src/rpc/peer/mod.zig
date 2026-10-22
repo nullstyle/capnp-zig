@@ -3437,7 +3437,25 @@ pub const Peer = struct {
     /// here through `finishLoopbackAnswer`, and its cancelled question absorbs
     /// the Return. `.sent_elsewhere` answered the upstream question
     /// (`takeFromOtherQuestion`) when it forwarded, so it owes nothing.
+    ///
+    /// Not when a call that the caller still wants is pipelined on the
+    /// upstream answer (`hasCallsPipelinedOnAnswer`): that call needs the
+    /// forward's results (rpc.capnp, Finish: cancel only when nothing else
+    /// cares about the result). Then the forward goes on as one whose
+    /// Finish came first (`registerForwardedQuestion`, `upstream_finished`):
+    /// no Finish is relayed, the forwarded question finishes on its own
+    /// Return, and that Return, relayed as the upstream answer's, replays
+    /// the pipelined calls. Before, the relay cancelled the forward and
+    /// failed those calls.
     fn sendTailFinishAndNeutralize(self: *Peer, tail_question_id: u32, release_result_caps: bool) !void {
+        if (self.questions.getPtr(tail_question_id)) |question| {
+            if (self.forwardStillOwedUpstream(question.*)) |upstream_answer_id| {
+                if (self.hasCallsPipelinedOnAnswer(upstream_answer_id)) {
+                    question.suppress_auto_finish = false;
+                    return;
+                }
+            }
+        }
         try peer_outbound_control.sendFinishWithFlagsViaSendFrame(
             Peer,
             self,
@@ -3449,12 +3467,7 @@ pub const Peer = struct {
         var unanswered_upstream_id: ?u32 = null;
         if (self.questions.getPtr(tail_question_id)) |question| {
             if (question.deinit_ctx) |deinit_ctx| {
-                // Still pending and still owning its forward context: its
-                // Return has not been translated onto the upstream answer.
-                if (!question.cancelled and question.on_return == &onForwardedReturn) {
-                    const ctx: *const ForwardCallContext = castCtx(*const ForwardCallContext, question.ctx);
-                    if (ctx.mode == .translate_to_caller) unanswered_upstream_id = ctx.answer_id;
-                }
+                unanswered_upstream_id = self.forwardStillOwedUpstream(question.*);
                 deinit_ctx(self.allocator, question.ctx);
                 question.deinit_ctx = null;
             }
@@ -3484,6 +3497,19 @@ pub const Peer = struct {
             _ = self.forwarded_tail_questions.remove(entry.key_ptr.*);
             return;
         }
+    }
+
+    /// The upstream answer that forwarded question `question` still owes
+    /// its Return to: the question is pending, still owns its forward
+    /// context (its Return has not been translated onto the upstream
+    /// answer), and relays real results (`.translate_to_caller`).
+    fn forwardStillOwedUpstream(self: *const Peer, question: Question) ?u32 {
+        _ = self;
+        if (question.deinit_ctx == null or question.cancelled) return null;
+        if (question.on_return != &onForwardedReturn) return null;
+        const ctx: *const ForwardCallContext = castCtx(*const ForwardCallContext, question.ctx);
+        if (ctx.mode != .translate_to_caller) return null;
+        return ctx.answer_id;
     }
 
     pub fn neutralizeJoinRelayQuestion(self: *Peer, question_id: u32) void {

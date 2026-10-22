@@ -3110,6 +3110,85 @@ test "forwarded call: a call that go-capnp finished, forwarded as a tail call on
     }
 }
 
+/// The remote's Return for our question `qid`: results whose pointer 0 is
+/// A's own export `export_id` (receiverHosted).
+fn ownExportResultsReturnFrame(alloc: std.mem.Allocator, qid: u32, export_id: u32) ![]const u8 {
+    var mb = protocol.MessageBuilder.init(alloc);
+    defer mb.deinit();
+    var ret = try mb.beginReturn(qid, .results);
+    ret.setReleaseParamCaps(false);
+    var payload = try ret.payloadTyped();
+    const content = try (try payload.initContent()).initStruct(0, 1);
+    try (try content.getAnyPointer(0)).setCapability(.{ .id = 0 });
+    var cap_list = try ret.initCapTableTyped(1);
+    protocol.CapDescriptor.writeReceiverHosted((try cap_list.get(0))._builder, export_id);
+    return mb.finish();
+}
+
+test "forwarded call: the remote's Finish of a forwarded call that a wanted call is pipelined on keeps the forward; that call gets the results" {
+    // Call(foo), Call(bar on foo), Finish(foo): the caller still wants
+    // bar, so foo's results still matter (rpc.capnp, Finish). Here foo is
+    // 40, which the core forwards back to the remote as qf (the host
+    // answered 30 with the remote's own capability). Before, the Finish of
+    // 40 relayed Finish(qf), answered 40 canceled, and failed bar (50).
+    // Now the forward goes on: qf's Return is relayed as 40's, 50 runs on
+    // it, and qf gets one Finish then. Both Finish flags.
+    const alloc = testing.allocator;
+    for ([_]bool{ false, true }) |go_flags| {
+        var p = try TailPair.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+        defer p.deinit();
+        const t = try p.start(alloc);
+        try drainAll(p.a, &p.ra);
+        const calls_out = try countCallFrames(&p.ra);
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, 30, t.ea));
+        try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 40, 30));
+        const res = try msgCap(alloc, 1, 0);
+        defer alloc.free(res);
+        try p.a.returnResults(30, res, &.{t.boot});
+        try pushFrame(alloc, p.a, finishFrame(alloc, 30));
+        try drainAll(p.a, &p.ra);
+        var qfs: [2]u32 = undefined;
+        try testing.expectEqual(@as(usize, 1), try callFrameQidsAfter(&p.ra, calls_out, &qfs));
+        const qf = qfs[0];
+
+        try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 50, 40));
+        try pushFrame(alloc, p.a, finishFrameFull(alloc, 40, true, go_flags));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 0), try countFinishFrames(&p.ra, qf));
+        try testing.expectEqual(@as(usize, 0), try countReturnFrames(&p.ra, 40, null));
+        try testing.expectEqual(@as(usize, 0), try countReturnFrames(&p.ra, 50, null));
+
+        try pushFrame(alloc, p.a, ownExportResultsReturnFrame(alloc, qf, t.ea));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, .results));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, null));
+        try testing.expectEqual(@as(usize, 1), try countFinishFrames(&p.ra, qf));
+        try expectForwardGone(p.a, 40, qf);
+        try testing.expectEqual(@as(usize, 1), countCalls(&p.ra, 50));
+        const answer = try msgU64(alloc, 5);
+        defer alloc.free(answer);
+        try p.a.returnResults(50, answer, &.{});
+        try pushFrame(alloc, p.a, finishFrame(alloc, 50));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 50, null));
+        try testing.expectEqual(@as(usize, 0), p.ra.countFinished(40));
+        // The relayed Return gave the remote a reference to t.ea, and its
+        // Finish of 40 (releaseResultCaps) gave it back: t.ea is dropped.
+        // The remote reuses the ids on another export.
+        try testing.expectEqual(@as(usize, 1), p.ra.dropped.items.len);
+        try testing.expectEqual(t.ea, p.ra.dropped.items[0].export_id);
+        const eb = try p.a.exportCap(201);
+        for ([_]u32{ 50, 40, 30 }) |id| {
+            try testing.expect(!(try p.a.peer.inboundAnswerQuestionIdInUse(id)));
+            const before = countCalls(&p.ra, id);
+            try pushFrame(alloc, p.a, plainCallFrame(alloc, id, eb));
+            try drainAll(p.a, &p.ra);
+            try testing.expectEqual(before + 1, countCalls(&p.ra, id));
+        }
+        try testing.expectEqual(@as(usize, 0), p.ra.close_requested);
+    }
+}
+
 test "forwarded call: a tail-call forward whose deadline passes gets one Finish; the call's id comes free" {
     // The core forwards 40, which the remote still wants, as a tail call
     // (the host's answer to 30 names a PROMISED capability on its own
