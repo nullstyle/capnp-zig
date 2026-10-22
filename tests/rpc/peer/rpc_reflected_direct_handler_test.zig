@@ -2012,6 +2012,106 @@ test "a Finish that the peer answers canceled itself: under an allocation failur
     }
 }
 
+const HookFollow = enum { cancel, results };
+
+/// One run of the deferred answer-finished hook under an allocation
+/// failure: call 600, call 700 pipelined on it, both finished with
+/// go-capnp's flags (600 first, or 700 first), then the host answers 600:
+/// it cancels 600 once the hook ran (`cancel`), or answers with results.
+/// The client peer's allocations fail from the `k`-th after setup: every
+/// later one in the step, or only that one (`one_shot`). A refused cancel
+/// is sent again, as a host does. A frame that fails, or a close that the
+/// peer asks for, ends the connection. Whatever fails: the hook runs at
+/// most once, and each call gets at most one Return. While the connection
+/// is up: the hook ran exactly once, each call has exactly one Return, and
+/// the remote's reuse of both ids reaches the host. Returns whether a
+/// failure was induced.
+fn deferredHookUnderOom(k: usize, answer_finished_first: bool, follow: HookFollow, one_shot: bool) !bool {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{});
+    var one_shot_alloc = OneShotFailure{ .failing = &failing };
+    var h: TailHarness = undefined;
+    try h.startWith(allocator, if (one_shot) one_shot_alloc.allocator() else failing.allocator());
+    defer h.deinit();
+    var transport = CloseRecorder{};
+    transport.attach(&h.client_peer);
+    var hook = FinishedHook{};
+    h.client_peer.setAnswerFinishedHandler(&hook, FinishedHook.onFinished);
+    failing.fail_index = failing.alloc_index + k;
+
+    const Step = enum { call, pipelined, first_finish, second_finish, answer };
+    var closed = false;
+    for (std.enums.values(Step)) |step| {
+        const frame_ok: bool = switch (step) {
+            .call => if (h.pushPlainCall(allocator, 600, h.target_export_id)) true else |_| false,
+            .pipelined => if (h.pushPipelinedPlainCall(allocator, 700, 600)) true else |_| false,
+            .first_finish => if (h.pushFinishWith(allocator, if (answer_finished_first) 600 else 700, true)) true else |_| false,
+            .second_finish => if (h.pushFinishWith(allocator, if (answer_finished_first) 700 else 600, true)) true else |_| false,
+            .answer => blk: {
+                if (h.target.answer_id == null) break :blk true;
+                if (follow == .cancel and hook.count == 1) {
+                    h.client_peer.sendReturnCanceled(600) catch |err| {
+                        try std.testing.expectEqual(error.OutOfMemory, err);
+                        failing.fail_index = std.math.maxInt(usize);
+                        try h.client_peer.sendReturnCanceled(600);
+                    };
+                } else {
+                    var result = ResultN{ .n = 3 };
+                    h.client_peer.sendReturnResults(600, &result, ResultN.build) catch {
+                        failing.fail_index = std.math.maxInt(usize);
+                        try h.client_peer.sendReturnException(600, "answer failed");
+                    };
+                }
+                break :blk true;
+            },
+        };
+        if (failing.has_induced_failure) failing.fail_index = std.math.maxInt(usize);
+        if (!frame_ok or transport.closed) {
+            h.client_peer.notifyTransportClosed();
+            closed = true;
+            break;
+        }
+    }
+    failing.fail_index = std.math.maxInt(usize);
+    try std.testing.expect(hook.count <= 1);
+    for ([_]u32{ 600, 700 }) |id| try std.testing.expect(h.wire.countReturns(.client_to_server, id, null) <= 1);
+    if (!closed) {
+        try std.testing.expectEqual(@as(usize, 1), hook.count);
+        try std.testing.expectEqual(@as(u32, 600), hook.ids[0]);
+        for ([_]u32{ 600, 700 }) |id| {
+            try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, id, null));
+            try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(id)));
+            h.target.answer_id = null;
+            try h.pushPlainCall(allocator, id, h.target_export_id);
+            try std.testing.expectEqual(@as(?u32, id), h.target.answer_id);
+            var reply = ResultN{ .n = 1 };
+            try h.client_peer.sendReturnResults(id, &reply, ResultN.build);
+            try h.pushFinish(allocator, id);
+        }
+        if (follow == .cancel) try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, .canceled));
+    }
+    return failing.has_induced_failure;
+}
+
+test "go-capnp Finish flags: an allocation failure anywhere around the deferred answer-finished hook: the hook runs once, one Return per call" {
+    // The hook for answer 600 waits while call 700, pipelined on it, is
+    // still wanted, and runs at 700's Finish (P0-1). That path allocates
+    // nothing: the Finish records were reserved when the calls were
+    // admitted. Both Finish orders, a host that cancels and one that
+    // answers, sticky and one-shot failures.
+    for ([_]bool{ false, true }) |one_shot| {
+        for ([_]bool{ true, false }) |answer_finished_first| {
+            for (std.enums.values(HookFollow)) |follow| {
+                var k: usize = 0;
+                while (try deferredHookUnderOom(k, answer_finished_first, follow, one_shot)) : (k += 1) {
+                    if (k > 10_000) return error.TestSweepRunaway;
+                }
+                try std.testing.expect(k > 10);
+            }
+        }
+    }
+}
+
 test "go-capnp Finish flags: an allocation failure anywhere in a forward after the Finish: one Return per call or the connection ends, no leak" {
     // Before, a call that the peer replayed after its Finish could end
     // with no Return while the connection stayed up: its forward failed,
