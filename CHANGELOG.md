@@ -177,12 +177,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   question ids. So while any forward waited (W1 reflected loopback, a tail
   call, or the go-capnp finished-call forward above), a compliant call
   from the remote with that id failed with `DuplicateQuestionId`, and the
-  connection closed. Now the check looks at the upstream answer ids that a
-  forward still owes a Return for. This defect is older than v0.28.0.
-  Tests: "forwarded call: the remote's own call with the id of the
-  forwarded question reaches the host while the forward waits" in
-  `src/native/conn_test.zig` and "a remote call with the id of the peer's
-  forwarded question reaches the host while the forward waits" in
+  connection closed. Now the check has no forward term of its own: a call
+  that a forward still owes a Return is active or has its finished-early
+  record, and a forward that waits for the call's Finish has its tail
+  mapping. A tail call owes no Return after its `takeFromOtherQuestion`,
+  so `forwarded_questions` does not record it. Its id is free once the
+  caller has that Return and has finished the call, also while the
+  forwarded question waits for its own Return; and a new call with that
+  id gets its answer-finished report and `sendReturnCanceled`. This
+  defect is older than v0.28.0. Tests: "forwarded call: the remote's own
+  call with the id of the forwarded question reaches the host while the
+  forward waits" and "forwarded call: after a tail-call forward's
+  takeFromOtherQuestion Return and the call's Finish, the remote's reuse
+  of the id reaches the host before the forwarded Return" in
+  `src/native/conn_test.zig`, and "a remote call with the id of the
+  peer's forwarded question reaches the host while the forward waits" in
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`.
 
 - **RPC and native: a finished call that still owes its Return counts in
@@ -226,16 +235,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replay of a call that waited on an answer or a promise export (its
   forward, or the exception Return after a failed forward), the drains
   that fail parked or queued calls, the cancel of a queued call at its
-  Finish, and `Return{canceled}` when a Finish comes before a forwarded
+  Finish, `Return{canceled}` when a Finish comes before a forwarded
+  call's Return, and the relay of a forwarded question's Return as the
   call's Return. When that Return could not be built or sent (out of
-  memory, a failed send), the Peer only reported the error. Nothing
+  memory, a failed send such as a full QUIC outbound queue), the Peer
+  only reported the error. Nothing
   answered the call again, its id stayed in use, and the remote's question
   waited with the connection up. Now the Peer reports the error and asks
   its transport to close (`closeAttachedTransport`), so the question ends
-  at disconnect. The native core then queues CLOSE_REQUESTED. A Return
+  at disconnect. The native core then queues CLOSE_REQUESTED. The same
+  holds for the drain that fails queued calls when its list of answer ids
+  cannot grow past 32: the calls queued on the later ones had no Return.
+  A forward that the caller still wanted lost its relayed Return with the
+  connection up, and the call's Finish then left a record that took a
+  place in `max_active_inbound_questions` for good. A Return
   that the host sends (`sendReturnResults`, `capnp_return_*`) still
   returns its error to the host, which can answer again. A peer with no
   attached transport (`HostPeer`, the WASM host ABI) only reports. Tests:
+  "a forward the caller still wants: when its relayed Return cannot be
+  sent, the connection ends" (out of memory, and one and two failed
+  sends) and "an exception Return whose drain is wider than its stack
+  worklist: ..." in `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`;
+  "forwarded call: a forward the remote still wants whose relayed RETURN
+  cannot be sent ends the connection" in `src/native/conn_test.zig`;
   "go-capnp Finish flags: an allocation failure anywhere in a forward after
   the Finish: one Return per call or the connection ends, no leak" (four
   shapes, sticky and one-shot failures) and "a Finish that the peer
@@ -244,6 +266,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "forwarded call: an allocation failure anywhere in a forward after the
   Finish: one RETURN per call or the connection ends, no leak" in
   `src/native/conn_test.zig`.
+
+- **RPC: the caller's Finish of a forwarded call no longer fails a call
+  it still wants pipelined on it.** The P0-1 rule above holds for the
+  Peer's own forwards too. When foo is a forward that waits for the
+  caller's Finish (W1: a promise export resolved to the caller's own
+  capability, or a wanted call pipelined on an answer that names it),
+  Call(bar on foo) then Finish(foo) relayed Finish to the forwarded
+  question, answered foo canceled, and failed bar. Now, while a call that
+  the caller has not finished is pipelined on foo, the forward goes on:
+  the forwarded question gets its Finish once its Return comes, that
+  Return becomes foo's, and bar runs on it. This is older than v0.28.0.
+  Tests: "a forward that the caller finishes while a call it wants is
+  pipelined on it keeps running; that call gets the results", "a forward
+  kept for a call pipelined on it ends at an exception, a deadline or a
+  close: ..." and "a forward kept for a call pipelined on it: an
+  allocation failure in its Return ..." in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`; "forwarded call:
+  the remote's Finish of a forwarded call that a wanted call is pipelined
+  on keeps the forward; ..." in `src/native/conn_test.zig`.
+
+- **RPC: a forwarded question that the Peer cancels itself gets one
+  Finish.** A forwarded question has a call deadline like any question
+  (`default_call_timeout_ms`, 30 s on TCP by default). When the deadline,
+  `cancelQuestion` or the shutdown drain cancelled it, the Peer sent its
+  Finish, but a forward that the caller still wanted kept its tail
+  mapping. The caller's Finish of the call, which a compliant caller
+  sends once it has the Return that the cancel relays, then sent a second
+  Finish for the same question. go-capnp fails on that and ends the
+  connection. Now the cancel drops the tail mapping. This is older than
+  v0.28.0. Tests: "a forwarded question that the peer cancels itself gets
+  one Finish; the call's id comes free" in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`; "forwarded call:
+  a tail-call forward whose deadline passes gets one Finish; ..." in
+  `src/native/conn_test.zig`.
+
+- **RPC: a call pipelined on a call that the Peer forwarded as a tail call
+  gets its Return.** The Peer answers such a forward at once with
+  `takeFromOtherQuestion`: its results stay at the remote, so a call
+  pipelined on it can never be replayed here. Such a call waited with no
+  Return until disconnect, and kept its id in use and its place in
+  `max_active_inbound_questions`. Now it gets one exception Return: at the
+  forward when it waited before, and at once when it comes after, until
+  the caller's Finish of the forwarded call. And at a caller's Finish of a
+  call that already had its Return, every call still queued on it gets
+  its exception Return: the record that fails late calls at once has a
+  bound, and nothing can answer them after that Finish. Known limit: the
+  C++ reference sends such a call on to the tail call's answer. This is
+  older than v0.28.0. Tests: "forwarded call: a call pipelined on a call
+  that the core forwarded as a tail call gets one exception RETURN at
+  once" and "forwarded call: with no room to record a tail call's answer,
+  a call pipelined on it after the forward gets its RETURN at the remote's
+  Finish of the call" in `src/native/conn_test.zig`.
+
+- **RPC: a call queued on a promise export that the remote releases gets
+  its Return.** The remote got a promise export, called it before the
+  host resolved it, then released it: the C++ and go-capnp clients do not
+  keep a capability alive for a call in flight. The Peer dropped the
+  queued call with no Return and kept its param caps. Its Finish then
+  left a record that no Return consumed: the id stayed in use, the
+  answer-finished hook ran for a call the host never had, and with the
+  bound on finished calls above, a few such calls made the Peer refuse
+  every new call. Now the call gets one exception Return ("promise
+  released before it resolved") when the export goes, and its param caps
+  are released. Known limit: the C++ reference keeps such a call and
+  delivers it when the promise resolves. Tests: "a call queued on a
+  promise export that the remote releases gets one exception Return; ...",
+  "a call queued on a promise export: the remote's Finish, then its
+  Release, gives one Return" and "a call queued on a promise export that
+  the remote releases: an allocation failure ..." in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`; "promise export:
+  a call queued on a promise export that the remote releases gets one
+  exception RETURN; ..." in `src/native/conn_test.zig`.
 
 - **Native: `capnp_call` refuses to pipeline on a loopback question.** A
   question whose call loops back to one of the host's own exports (the
@@ -315,17 +409,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- `docs/supported-surface.md`: two new known limits. A tail-call forward
+- `docs/supported-surface.md`: new known limits. A tail-call forward
   to go-capnp ends the connection (go-capnp answers the `sendResultsTo =
   yourself` call with Unimplemented, then fails on the Peer's Finish for
-  it). And a Return that the Peer cannot send still keeps the connection
+  it). A Return that the Peer cannot send still keeps the connection
   up on a peer with no attached transport (`HostPeer`), and on the Join,
-  streaming, Level-3 provision and third-party paths.
+  streaming, Level-3 provision and third-party paths. A call pipelined on
+  a tail-call forward fails, and so does a call queued on a promise export
+  that the remote releases (the C++ reference delivers both). The
+  answer-finished hook does not wait for a call whose params name the
+  answer (`receiverAnswer`).
 - `docs/downstreams.md`: the v0.29.0 drafts for capnp-swift and capnp-deno
   name the question-id fix for forwards and the new bound on finished
   calls that owe a Return. The capnp-swift draft also names
   CLOSE_REQUESTED for a Return that the core cannot send, and the
-  go-capnp tail-call limit.
+  go-capnp tail-call limit. Both drafts name the forward fixes (a wanted
+  pipelined call keeps its forward, one Finish after a cancel) and the
+  calls that now get an exception Return (pipelined on a tail-call
+  forward, queued on a released promise export).
 - `docs/upstream/handoff-quic-zig-tag-hardening.md` (new): it asks quic-zig
   for a tag at `b0d7d78` or later that contains `021591e`, with CHANGELOG
   and DOWNSTREAM-NOTE entries. It names the duplicate-ID scan in

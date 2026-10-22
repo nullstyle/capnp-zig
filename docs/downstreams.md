@@ -154,7 +154,12 @@ The owner sends this text after the v0.29.0 tag exists.
 > Return, and the caller can reuse the id. This defect is why there was no
 > v0.28.1. Also, while a forward waits, the caller's own new call with the
 > same id as the forwarded question no longer closes the connection
-> (question ids are per direction). Nothing changes on your side. One
+> (question ids are per direction). When the caller finishes a forwarded
+> call while it still wants a call pipelined on it, the forward now goes
+> on and that call runs; before, the core failed it. When the core
+> cancels a forward itself (its call deadline), the caller's Finish of the
+> call no longer sends a second Finish, on which go-capnp ends the
+> connection. Nothing changes on your side. One
 > shape still fails with a go-capnp caller: when your answer names a
 > PROMISED capability on one of your own questions, the core forwards the
 > call as a tail call, go-capnp answers it Unimplemented, and the Finish
@@ -173,17 +178,29 @@ The owner sends this text after the v0.29.0 tag exists.
 >
 > **A Return that the core cannot send.** When the core answers a call
 > itself (a parked call that it replays or fails, a queued call that its
-> Finish cancels) and cannot send that RETURN, for example out of memory,
-> it now queues CLOSE_REQUESTED. Before, the call never got a RETURN and
-> the connection stayed up. Act on CLOSE_REQUESTED as usual.
+> Finish cancels, the relay of a forwarded call's Return) and cannot send
+> that RETURN, for example out of memory, it now queues CLOSE_REQUESTED.
+> Before, the call never got a RETURN and the connection stayed up. Act on
+> CLOSE_REQUESTED as usual.
 >
-> One case still fails a call that the caller wants: a call pipelined on a
-> call that the caller finished. For `foo().bar().baz()`, when the caller
-> finishes bar while bar waits on foo, the core cancels bar at that Finish
-> and fails baz (the C++ flag), or your cancel of foo fails bar and baz
-> (go-capnp's flag). The first case does not depend on
-> `cancelHandlersOnFinish`. See "A Finish of a queued call fails the calls
-> pipelined on it" in capnp-zig's `docs/supported-surface.md`.
+> **Calls that got no RETURN now get one.** A call pipelined on a call
+> that the core forwarded as a tail call (your answer names a PROMISED
+> capability on one of your own questions) gets an exception RETURN: its
+> results stay at the remote. A call on a promise export that the caller
+> released before you resolved it gets an exception RETURN too. Before,
+> both waited with no RETURN until disconnect. The C++ reference delivers
+> both calls; capnp-zig does not yet.
+>
+> Some calls that the caller wants still fail. For `foo().bar().baz()`,
+> when the caller finishes bar while bar waits on foo, the core cancels
+> bar at that Finish and fails baz (the C++ flag), or your cancel of foo
+> fails bar and baz (go-capnp's flag). The first case does not depend on
+> `cancelHandlersOnFinish`. ANSWER_FINISHED does not wait for a call whose
+> params carry the answer's results (`receiverAnswer`), so your cancel
+> then fails that param. See "A Finish of a queued call fails the calls
+> pipelined on it" and "The answer-finished hook does not wait for a call
+> whose params name the answer" in capnp-zig's
+> `docs/supported-surface.md`.
 >
 > **Answers after close.** Once a connection is closed,
 > `capnp_return_results`, `capnp_return_exception` and
@@ -359,7 +376,12 @@ paragraph.
 > also finishes a call that a go-capnp caller finished and the peer then
 > forwarded back to it, so the caller's reuse of that id no longer closes
 > the connection. While a forward waits, the caller's new call with the
-> id of the forwarded question no longer closes it either. A call that
+> id of the forwarded question no longer closes it either. The caller's
+> Finish of a forwarded call no longer fails a call that it still wants
+> pipelined on it. A call on a promise export that the caller released
+> before your host resolved it, and a call pipelined on a call that the
+> peer forwarded as a tail call, now get an exception Return; before,
+> they got none. A call that
 > the caller finished now counts in `max_active_inbound_questions` until
 > its Return goes out: a call past that bound gets an exception Return
 > (`OwedAnswerLimitExceeded`) and never reaches your host, and every

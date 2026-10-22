@@ -472,10 +472,14 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   handed and has not answered; not for an answer the host already replied to,
   a call the Peer still holds queued, or a call the Peer forwarded. It does
   not run while a call that the caller has not finished is pipelined on
-  the answer: that call still needs its results (rpc.capnp, Finish). It
-  runs when the caller finishes the last such call, if the host still owes
-  the answer; until then the host's ordinary Return settles the call. A
-  queued call that the caller finished does not count. The host
+  the answer: that call still needs its results (rpc.capnp, Finish). The
+  hook runs when the caller finishes the last such call, if the host still
+  owes the answer; until then the host's ordinary Return settles the call.
+  A queued call that the caller finished does not count. For the same
+  reason, the caller's Finish of a call that the Peer forwarded does not
+  cancel the forward while a call it still wants is pipelined on the
+  call: the forward's Return answers the call, and the pipelined call
+  runs on it. The host
   then answers with `Peer.sendReturnCanceled`, which sends `Return{canceled}`.
   It refuses, sending nothing,
   an answer the caller has not finished (`error.AnswerNotFinished`), one
@@ -975,14 +979,49 @@ cooperating peer.
 
 - **Some Returns that the Peer cannot send do not end the connection.**
   When the Peer cannot send the one Return of a call it answers itself in
-  a replay, a parked-call or queued-call drain, the cancel of a queued
-  call, or the cancel of a forwarded call, it closes the connection
-  (`peer_return_dispatch.loseReturnForPeer`). A peer with no attached
+  a replay, a parked-call or queued-call drain (also when the drain's list
+  cannot grow), the cancel of a queued call, the cancel of a forwarded
+  call, the relay of a forwarded question's Return, or the failure of a
+  call queued on a promise export that the remote released, it closes the
+  connection (`peer_return_dispatch.loseReturnForPeer`). A peer with no
+  attached
   transport (`HostPeer`, the WASM host ABI) only reports the error, and
   the remote's question then waits until the host closes the connection.
   The same holds for the Returns that the Join, streaming, Level-3
   provision and third-party paths send: they log or report a failed send
   and keep the connection up.
+
+- **A call pipelined on a tail-call forward fails.** When the Peer
+  forwards a call as a tail call (the host's answer names a PROMISED
+  capability on one of its own questions), it answers the call at once
+  with `takeFromOtherQuestion`, and the results stay at the remote. A call
+  pipelined on the forwarded call gets one exception Return ("results
+  taken from another question; ..."): at the forward, or at once when it
+  comes later. The C++ reference sends such a call on to the tail call's
+  answer instead. Pinned by "forwarded call: a call pipelined on a call
+  that the core forwarded as a tail call gets one exception RETURN at
+  once" in `src/native/conn_test.zig`.
+
+- **A call queued on a promise export that the remote releases fails.**
+  A call made on a promise export waits in the Peer until the host
+  resolves the promise. When the remote releases its last reference to
+  the promise first, the Peer drops the export and answers the call with
+  one exception Return ("promise released before it resolved"). The C++
+  reference keeps such a call and delivers it when the promise resolves.
+  Pinned by "a call queued on a promise export that the remote releases
+  gets one exception Return; ..." in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`.
+
+- **The answer-finished hook does not wait for a call whose params name
+  the answer.** A call can carry the results of another call in its
+  params (a `receiverAnswer` descriptor). The hook waits for calls
+  pipelined on an answer, but not for a call whose params name it: the
+  remote's Finish of the answer runs the hook, and `sendReturnCanceled`
+  accepts the answer, while such a call still holds a promise on its
+  results. In the C++ reference that param keeps the answer's pipeline,
+  so the answer is not cancelled. Pinned by "known limit: the
+  answer-finished hook does not wait for a call whose params name the
+  answer" in `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`.
 
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Of the items above, only the

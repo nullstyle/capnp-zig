@@ -2817,6 +2817,40 @@ test "a call queued on a promise export that the remote releases: an allocation 
     }
 }
 
+test "known limit: the answer-finished hook does not wait for a call whose params name the answer" {
+    // Call 800's one param is receiverAnswer{600}: the results of 600,
+    // pipelined into its arguments. The hook waits for calls pipelined on
+    // an answer, not for such a call: the remote's Finish of 600 runs it,
+    // and sendReturnCanceled accepts 600. The C++ reference keeps 600's
+    // pipeline for that param and does not cancel 600.
+    const allocator = std.testing.allocator;
+    var h: TailHarness = undefined;
+    try h.start(allocator);
+    defer h.deinit();
+    var hook = FinishedHook{};
+    h.client_peer.setAnswerFinishedHandler(&hook, FinishedHook.onFinished);
+    try h.pushPlainCall(allocator, 600, h.target_export_id);
+    {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var call = try mb.beginCall(800, CALL_INTERFACE_ID, CALL_METHOD_ID);
+        try call.setTargetImportedCap(h.target_export_id);
+        var payload = try call.payloadTyped();
+        try (try payload.initContent()).setCapability(.{ .id = 0 });
+        var cap_list = try call.initCapTableTyped(1);
+        try protocol.CapDescriptor.writeReceiverAnswer((try cap_list.get(0))._builder, 600, &.{});
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try h.client_peer.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(?u32, 800), h.target.answer_id);
+    try h.pushFinish(allocator, 600);
+    try std.testing.expectEqual(@as(usize, 1), hook.count);
+    try std.testing.expectEqual(@as(u32, 600), hook.ids[0]);
+    try h.client_peer.sendReturnCanceled(600);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, .canceled));
+}
+
 test "a call queued on a promise export: the remote's Finish, then its Release, gives one Return" {
     // The Finish first: with the C++ flag it cancels the queued call
     // (Return canceled), and the Release then finds nothing to fail. With

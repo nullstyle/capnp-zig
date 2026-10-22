@@ -207,7 +207,9 @@ call.
 
 **When no effect comes.** A call that the core still holds queued (on a
 promise export, or on an answer) stays queued when the remote finishes it
-with `requireEarlyCancellationWorkaround` set. That flag defaults to true.
+with `requireEarlyCancellationWorkaround` set. When the remote releases a
+promise export that calls are queued on, each of them gets one exception
+RETURN from the core, and no effect comes for it. That flag defaults to true.
 The C++ reference (1.0 and later) sends false, but go-capnp never sets it.
 Such a call reaches the host after its Finish and gets no ANSWER_FINISHED
 then: answer it as usual. If calls are pipelined on it, one can come later,
@@ -246,11 +248,20 @@ Return comes. The call itself gets one Return: the copy's results or
 exception, or `takeFromOtherQuestion` when foo's answer named a PROMISED
 capability on one of the host's own questions. The forwarded copy of a
 call that the remote
-still wants gets its Finish when the remote finishes that call. Either
-way, the remote can reuse the call's id once it has the call's Return and
-has finished it. While a forward waits, the remote's own new calls use
+still wants gets its Finish when the remote finishes that call. But when
+a call that the remote still wants is pipelined on the forwarded call,
+that Finish does not cancel the copy: the copy's Return becomes the
+call's Return, the pipelined call runs on it, and the copy gets its
+Finish then. When the core cancels a copy itself (its call deadline),
+it sends one Finish for it, and the remote's Finish of the call sends no
+second one. Either way, the remote can reuse the call's id once it has
+the call's Return and has finished it, also while the copy still waits
+for its own Return. While a forward waits, the remote's own new calls use
 their ids freely: question ids are per direction, so a call with the same
-id as a forwarded question is no reuse. A go-capnp remote answers the
+id as a forwarded question is no reuse. A call pipelined on a call that
+the core answered `takeFromOtherQuestion` gets one exception RETURN: its
+results stay at the remote ("A call pipelined on a tail-call forward
+fails" in [supported-surface.md](supported-surface.md)). A go-capnp remote answers the
 tail-call forward (a PROMISED capability on one of the host's own
 questions) with Unimplemented and then fails on its Finish, which ends
 the connection ("A tail-call forward to go-capnp ends the connection" in
