@@ -1,7 +1,7 @@
 {
   "target": "capnp-zig",
   "reference_backends": ["cpp", "go", "python", "rust"],
-  "scenarios": ["game_world", "chat", "inventory", "matchmaking", "resolve_disembargo", "l3_l4_interop", "pass_back", "pipelined_params", "pipelined_params_deferred"],
+  "scenarios": ["game_world", "chat", "inventory", "matchmaking", "resolve_disembargo", "l3_l4_interop", "pass_back", "pipelined_params", "pipelined_params_deferred", "cancel_id_reuse", "cancel_pipelined"],
   "known_limits": "tools/e2e_known_limits.zig lists the cases that fail on purpose, with their exact failing checks. tools/e2e_runner.zig records them as XFAIL; a listed check that passes is XPASS and fails the gate.",
   "directions": [
     "zig-client_to_reference-server",
@@ -39,6 +39,28 @@
       "reference-client_to_zig-server": {
         "excluded_backends": [],
         "reason": "All four reference clients run; each row is XFAIL."
+      }
+    },
+    "cancel_id_reuse": {
+      "note": "Cancellation (schemas/cancellation.capnp): the client drops slow(), the Zig server answers it Return{canceled}, and the client reuses its question id for fast(). The excluded cases are recorded as SKIP by tools/e2e_runner.zig (cancelSkip).",
+      "zig-client_to_reference-server": {
+        "excluded_backends": ["cpp", "go", "python", "rust"],
+        "reason": "reference servers come next sprint"
+      },
+      "reference-client_to_zig-server": {
+        "excluded_backends": ["go", "python", "rust"],
+        "reason": "Only the C++ client exists yet. The Go, Python and Rust clients come later in this sprint."
+      }
+    },
+    "cancel_pipelined": {
+      "note": "Cancellation (schemas/cancellation.capnp): the client sends bar() on getSub()'s pipelined Sub, then drops getSub(); bar() must return its results. It guards the ANSWER_FINISHED fix for pipelined calls: without it, the Zig server answers getSub() canceled and bar() gets the exception \"call canceled\". The excluded cases are recorded as SKIP by tools/e2e_runner.zig (cancelSkip).",
+      "zig-client_to_reference-server": {
+        "excluded_backends": ["cpp", "go", "python", "rust"],
+        "reason": "reference servers come next sprint"
+      },
+      "reference-client_to_zig-server": {
+        "excluded_backends": ["go", "python", "rust"],
+        "reason": "Only the C++ client exists yet. The Go, Python and Rust clients come later in this sprint."
       }
     }
   },

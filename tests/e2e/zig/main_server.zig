@@ -13,13 +13,16 @@ const inventory = @import("generated/inventory.zig");
 const matchmaking = @import("generated/matchmaking.zig");
 const resolve_disembargo = @import("generated/resolve_disembargo.zig");
 const cap_passing = @import("generated/cap_passing.zig");
+const cancellation = @import("generated/cancellation.zig");
 
 const Allocator = std.mem.Allocator;
 
 // tools/e2e_self.zig lists these names by hand (`quic_schemas` runs all of
 // them over QUIC): add a new schema there too, or `e2e-quic` skips it.
-// pipelined_params_deferred is the one exception: its checks fail by design
-// (a known limit), and only tools/e2e_runner.zig runs it.
+// pipelined_params_deferred is one exception: its checks fail by design
+// (a known limit), and only tools/e2e_runner.zig runs it. The cancellation
+// schemas are the others: they have no Zig client yet, and only
+// tools/e2e_runner.zig runs them.
 const Schema = enum {
     game_world,
     chat,
@@ -33,6 +36,10 @@ const Schema = enum {
     // The same TokenHost for the pipelined_params client, but mint() and
     // mintFail() answer late (see `HeldAnswer`).
     pipelined_params_deferred,
+    // Both serve the same CancelHost (tests/e2e/schemas/cancellation.capnp);
+    // the client picks the flow.
+    cancel_id_reuse,
+    cancel_pipelined,
 };
 
 const Transport = enum { tcp, quic };
@@ -57,6 +64,7 @@ const App = struct {
     matchmaking_service: MatchmakingService,
     reflect_service: ReflectorService,
     token_host_service: TokenHostService,
+    cancel_host_service: CancelHostService,
 
     fn init(allocator: Allocator, io: std.Io, schema: Schema) !App {
         return .{
@@ -68,6 +76,7 @@ const App = struct {
             .matchmaking_service = MatchmakingService.init(allocator),
             .reflect_service = ReflectorService.init(),
             .token_host_service = TokenHostService.init(allocator, io, schema == .pipelined_params_deferred),
+            .cancel_host_service = CancelHostService.init(allocator, io),
         };
     }
 
@@ -78,9 +87,11 @@ const App = struct {
         self.matchmaking_service.bind();
         self.reflect_service.bind();
         self.token_host_service.bind();
+        self.cancel_host_service.bind();
     }
 
     fn deinit(self: *App) void {
+        self.cancel_host_service.deinit();
         self.token_host_service.deinit();
         self.matchmaking_service.deinit();
         self.inventory_service.deinit();
@@ -930,9 +941,10 @@ fn HeldAnswerTick(comptime Conn: type) type {
 
         fn tick(conn: *Conn) void {
             if (peer_tick) |cb| cb(conn);
-            const host = deferred_token_host orelse return;
             const ctx = conn.context() orelse return;
-            host.answerHeld(@ptrCast(@alignCast(ctx)), held_answer_idle_ms);
+            const peer: *rpc.peer.Peer = @ptrCast(@alignCast(ctx));
+            if (deferred_token_host) |host| host.answerHeld(peer, held_answer_idle_ms);
+            if (cancel_host) |host| host.answerHeldGetSub(peer, held_answer_idle_ms);
         }
     };
 }
@@ -1090,6 +1102,339 @@ fn onTokenHostMintFail(
     try sender.sendException(mint_fail_reason);
 }
 
+// ---------------------------------------------------------------------------
+// CancelHost (tests/e2e/schemas/cancellation.capnp)
+//
+// Both cancellation schemas serve this one host; the client picks the flow.
+// The host answers the way capnp-swift does with its default
+// `cancelHandlersOnFinish = true`: the answer-finished hook
+// (`Peer.setAnswerFinishedHandler`) drops the held call and answers
+// `sendReturnCanceled`, with no other check.
+//
+// - cancel_id_reuse: slow() is held until the caller's Finish, then answered
+//   Return{canceled}. The caller can then reuse slow()'s question id, and
+//   fast() reports the id each call arrived on.
+// - cancel_pipelined: getSub() is held for `held_answer_idle_ms`, so the
+//   caller's Finish for it arrives first, while bar() is queued on the
+//   answer. The hook must not cancel an answer with calls pipelined on it:
+//   then the tick answers getSub() (only after that Finish, see
+//   `answerHeldGetSub`), and bar() runs on the Sub. A Peer that reports
+//   that Finish gets the answer canceled by this hook, and
+//   `sendReturnCanceled` fails bar() with "call canceled".
+//
+// cancel_id_reuse checks Return{canceled} and the id reuse only. The hook
+// drops slow()'s ReturnSender, so this host never sends slow() a late
+// answer, and the scenario does not test how the Peer handles one. A second
+// Return is a host error: see `Peer.setAnswerFinishedHandler`.
+// ---------------------------------------------------------------------------
+
+/// A slow() or getSub() call that the host has not answered yet.
+const HeldCancelCall = struct {
+    peer: *rpc.peer.Peer,
+    since_ms: i64,
+    call: union(enum) {
+        /// Answered only by the answer-finished hook.
+        slow: cancellation.CancelHost.Slow.ReturnSender,
+        /// Answered by the hook, or by a loop tick once held
+        /// `held_answer_idle_ms`.
+        get_sub: cancellation.CancelHost.GetSub.ReturnSender,
+    },
+
+    fn answerId(self: HeldCancelCall) u32 {
+        return switch (self.call) {
+            .slow => |sender| sender.question_id,
+            .get_sub => |sender| sender.question_id,
+        };
+    }
+
+    fn sendException(self: HeldCancelCall, reason: []const u8) !void {
+        return switch (self.call) {
+            .slow => |sender| sender.sendException(reason),
+            .get_sub => |sender| sender.sendException(reason),
+        };
+    }
+};
+
+/// How long a tick waits for the caller's Finish of a held getSub(). Past
+/// it, the tick answers getSub() with an exception: without that Finish,
+/// cancel_pipelined would pass without testing anything.
+const get_sub_finish_wait_ms: i64 = 5_000;
+
+/// What fast() reports for one connection.
+const CancelStats = struct {
+    peer: *rpc.peer.Peer,
+    canceled: u32 = 0,
+    last_canceled_id: u32 = 0,
+};
+
+/// The value Sub.bar() returns.
+const sub_bar_value: u32 = 4242;
+
+/// A Sub made by getSub(). Owned by `CancelHostService.subs` until deinit.
+const CancelSub = struct {
+    server: cancellation.Sub.Server,
+};
+
+/// The cancellation host, for the tick and close callbacks, which get no
+/// context pointer. Set once in main; null for other schemas.
+var cancel_host: ?*CancelHostService = null;
+
+const CancelHostService = struct {
+    allocator: Allocator,
+    io: std.Io,
+    held: std.ArrayList(HeldCancelCall) = .empty,
+    stats: std.ArrayList(CancelStats) = .empty,
+    subs: std.ArrayList(*CancelSub) = .empty,
+    server: cancellation.CancelHost.Server,
+
+    fn init(allocator: Allocator, io: std.Io) CancelHostService {
+        return .{
+            .allocator = allocator,
+            .io = io,
+            .server = .{
+                .ctx = undefined,
+                .vtable = .{
+                    // All three need the ReturnSender: slow() and getSub()
+                    // answer late, and fast() reports its question id.
+                    .slow = undefined,
+                    .slow_deferred = onCancelHostSlow,
+                    .fast = undefined,
+                    .fast_deferred = onCancelHostFast,
+                    .getSub = undefined,
+                    .getSub_deferred = onCancelHostGetSub,
+                },
+            },
+        };
+    }
+
+    fn bind(self: *CancelHostService) void {
+        self.server.ctx = self;
+    }
+
+    fn deinit(self: *CancelHostService) void {
+        for (self.subs.items) |sub| self.allocator.destroy(sub);
+        self.subs.deinit(self.allocator);
+        self.stats.deinit(self.allocator);
+        self.held.deinit(self.allocator);
+    }
+
+    fn nowMs(self: *const CancelHostService) i64 {
+        return std.Io.Timestamp.now(self.io, .awake).toMilliseconds();
+    }
+
+    fn hold(self: *CancelHostService, peer: *rpc.peer.Peer, call: @FieldType(HeldCancelCall, "call")) !void {
+        try self.held.append(self.allocator, .{ .peer = peer, .since_ms = self.nowMs(), .call = call });
+    }
+
+    /// The stats of `peer`, made on first use.
+    fn statsFor(self: *CancelHostService, peer: *rpc.peer.Peer) !*CancelStats {
+        for (self.stats.items) |*item| {
+            if (item.peer == peer) return item;
+        }
+        try self.stats.append(self.allocator, .{ .peer = peer });
+        return &self.stats.items[self.stats.items.len - 1];
+    }
+
+    /// The caller finished `answer_id` before its Return. Take the held call
+    /// out, so it gets no second Return, and answer it canceled.
+    ///
+    /// When the Peer refuses the cancel, answer the taken call with an
+    /// exception that names the refusal. The client then fails at once, with
+    /// that reason. Holding the call again instead would hide a hook that
+    /// runs when it must not.
+    fn answerFinished(self: *CancelHostService, peer: *rpc.peer.Peer, answer_id: u32) void {
+        var taken: ?HeldCancelCall = null;
+        var i: usize = 0;
+        while (i < self.held.items.len) {
+            const item = self.held.items[i];
+            if (item.peer == peer and item.answerId() == answer_id) {
+                taken = self.held.orderedRemove(i);
+            } else i += 1;
+        }
+        peer.sendReturnCanceled(answer_id) catch |err| {
+            std.log.err("answer {d}: sendReturnCanceled failed: {s}", .{ answer_id, @errorName(err) });
+            const item = taken orelse return;
+            var buf: [128]u8 = undefined;
+            const reason = std.fmt.bufPrint(&buf, "e2e-zig-server: sendReturnCanceled refused answer {d}: {s}", .{ answer_id, @errorName(err) }) catch "e2e-zig-server: sendReturnCanceled refused the answer";
+            item.sendException(reason) catch |send_err| {
+                std.log.err("answer {d}: sendException failed: {s}", .{ answer_id, @errorName(send_err) });
+            };
+            return;
+        };
+        std.debug.print("e2e-zig-server: answered {d} canceled after its Finish\n", .{answer_id});
+        const stats = self.statsFor(peer) catch |err| {
+            std.log.err("answer {d}: no stats: {s}", .{ answer_id, @errorName(err) });
+            return;
+        };
+        stats.canceled += 1;
+        stats.last_canceled_id = answer_id;
+    }
+
+    /// Answer the getSub() calls of `peer` held at least `min_age_ms` whose
+    /// caller has sent Finish. One at a time, removed before it is answered,
+    /// so an answer that dispatches more calls (the queued bar()) finds the
+    /// list consistent.
+    ///
+    /// cancel_pipelined tests something only when the Peer applies getSub()'s
+    /// Finish before this answer. So a call that is not finished yet waits,
+    /// up to `get_sub_finish_wait_ms`, and then gets an exception, which
+    /// fails bar(). The Peer removes an inbound call from
+    /// `active_inbound_questions` at its Finish or its Return. This host has
+    /// sent no Return, so a missing entry means the Finish came.
+    fn answerHeldGetSub(self: *CancelHostService, peer: *rpc.peer.Peer, min_age_ms: i64) void {
+        const now = self.nowMs();
+        var i: usize = 0;
+        while (i < self.held.items.len) {
+            const item = self.held.items[i];
+            const sender = switch (item.call) {
+                .get_sub => |s| s,
+                .slow => {
+                    i += 1;
+                    continue;
+                },
+            };
+            if (item.peer != peer or now - item.since_ms < min_age_ms) {
+                i += 1;
+                continue;
+            }
+            const finished = !peer.active_inbound_questions.contains(sender.question_id);
+            if (!finished and now - item.since_ms < get_sub_finish_wait_ms) {
+                i += 1;
+                continue;
+            }
+            _ = self.held.orderedRemove(i);
+            if (!finished) {
+                std.log.err("held getSub() {d}: no Finish from the caller within {d} ms", .{ sender.question_id, get_sub_finish_wait_ms });
+                sender.sendException("e2e-zig-server: the caller sent no Finish for getSub() in time, so this check tests nothing") catch |err| {
+                    std.log.err("held getSub(): sendException failed: {s}", .{@errorName(err)});
+                };
+                continue;
+            }
+            var ctx = GetSubCtx{ .service = self, .peer = peer };
+            sender.sendResults(&ctx, GetSubCtx.build) catch |err| {
+                std.log.err("held getSub(): sendResults failed: {s}", .{@errorName(err)});
+                sender.sendException(@errorName(err)) catch {};
+                continue;
+            };
+            std.debug.print("e2e-zig-server: answered held getSub() {d} after its Finish\n", .{sender.question_id});
+        }
+    }
+
+    /// The connection of `peer` closed: its held calls get no answer.
+    fn dropPeer(self: *CancelHostService, peer: *rpc.peer.Peer) void {
+        var i: usize = 0;
+        while (i < self.held.items.len) {
+            if (self.held.items[i].peer == peer) {
+                _ = self.held.orderedRemove(i);
+            } else i += 1;
+        }
+        i = 0;
+        while (i < self.stats.items.len) {
+            if (self.stats.items[i].peer == peer) {
+                _ = self.stats.orderedRemove(i);
+            } else i += 1;
+        }
+    }
+
+    /// Create a Sub and write it as the `sub` result.
+    fn makeSubInto(self: *CancelHostService, peer: *rpc.peer.Peer, results: *cancellation.CancelHost.GetSubResults.Builder) !void {
+        // The list owns the Sub from its creation on, as with HostToken.
+        try self.subs.ensureUnusedCapacity(self.allocator, 1);
+        const sub = try self.allocator.create(CancelSub);
+        self.subs.appendAssumeCapacity(sub);
+        sub.* = .{ .server = .{ .ctx = sub, .vtable = .{ .bar = onCancelSubBar } } };
+        try results.setSubServer(peer, &sub.server);
+    }
+};
+
+fn onCancelAnswerFinished(ctx: *anyopaque, peer: *rpc.peer.Peer, answer_id: u32, _: bool) void {
+    const service: *CancelHostService = @ptrCast(@alignCast(ctx));
+    service.answerFinished(peer, answer_id);
+}
+
+fn onCancelHostSlow(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    _: cancellation.CancelHost.SlowParams.Reader,
+    _: *const rpc.caps.table.InboundCapTable,
+    sender: cancellation.CancelHost.Slow.ReturnSender,
+) !void {
+    const service: *CancelHostService = @ptrCast(@alignCast(ctx_ptr));
+    try service.hold(peer, .{ .slow = sender });
+}
+
+fn onCancelHostGetSub(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    _: cancellation.CancelHost.GetSubParams.Reader,
+    _: *const rpc.caps.table.InboundCapTable,
+    sender: cancellation.CancelHost.GetSub.ReturnSender,
+) !void {
+    const service: *CancelHostService = @ptrCast(@alignCast(ctx_ptr));
+    try service.hold(peer, .{ .get_sub = sender });
+}
+
+/// fast(): its results, built from the ReturnSender's question id.
+const FastCtx = struct {
+    n: u32,
+    answer_id: u32,
+    canceled: u32,
+    last_canceled_id: u32,
+
+    fn build(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
+        const self: *const FastCtx = @ptrCast(@alignCast(ctx_ptr));
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        var results = cancellation.CancelHost.FastResults.Builder.wrap(try any.initStruct(2, 0));
+        try results.setN(self.n);
+        try results.setAnswerId(self.answer_id);
+        try results.setCanceled(self.canceled);
+        try results.setLastCanceledId(self.last_canceled_id);
+    }
+};
+
+fn onCancelHostFast(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    params: cancellation.CancelHost.FastParams.Reader,
+    _: *const rpc.caps.table.InboundCapTable,
+    sender: cancellation.CancelHost.Fast.ReturnSender,
+) !void {
+    const service: *CancelHostService = @ptrCast(@alignCast(ctx_ptr));
+    const stats = try service.statsFor(peer);
+    var ctx = FastCtx{
+        .n = try params.getN(),
+        .answer_id = sender.question_id,
+        .canceled = stats.canceled,
+        .last_canceled_id = stats.last_canceled_id,
+    };
+    try sender.sendResults(&ctx, FastCtx.build);
+}
+
+/// A held getSub(): builds the results that a direct handler would have.
+const GetSubCtx = struct {
+    service: *CancelHostService,
+    peer: *rpc.peer.Peer,
+
+    fn build(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
+        const self: *const GetSubCtx = @ptrCast(@alignCast(ctx_ptr));
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        var results = cancellation.CancelHost.GetSubResults.Builder.wrap(try any.initStruct(0, 1));
+        try self.service.makeSubInto(self.peer, &results);
+    }
+};
+
+fn onCancelSubBar(
+    _: *anyopaque,
+    _: *rpc.peer.Peer,
+    _: cancellation.Sub.BarParams.Reader,
+    results: *cancellation.Sub.BarResults.Builder,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    try results.setValue(sub_bar_value);
+}
+
 fn parseSchema(text: []const u8) !Schema {
     if (std.mem.eql(u8, text, "game_world")) return .game_world;
     if (std.mem.eql(u8, text, "chat")) return .chat;
@@ -1099,6 +1444,8 @@ fn parseSchema(text: []const u8) !Schema {
     if (std.mem.eql(u8, text, "pass_back")) return .pass_back;
     if (std.mem.eql(u8, text, "pipelined_params")) return .pipelined_params;
     if (std.mem.eql(u8, text, "pipelined_params_deferred")) return .pipelined_params_deferred;
+    if (std.mem.eql(u8, text, "cancel_id_reuse")) return .cancel_id_reuse;
+    if (std.mem.eql(u8, text, "cancel_pipelined")) return .cancel_pipelined;
     return error.InvalidSchema;
 }
 
@@ -2379,6 +2726,7 @@ fn onPeerError(_: ?*anyopaque, peer: *rpc.peer.Peer, err: anyerror) void {
 fn onPeerClose(_: ?*anyopaque, peer: *rpc.peer.Peer) void {
     // A later Peer can get the same address: drop what this one still holds.
     if (deferred_token_host) |host| host.dropHeld(peer);
+    if (cancel_host) |host| host.dropPeer(peer);
 }
 
 fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.transport.tcp.Connection, _: u32) anyerror!rpc.integration.worker_pool.WorkerPool.AcceptDecision {
@@ -2394,6 +2742,9 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.transport.tcp.
         .pipelined_params,
         .pipelined_params_deferred,
         => cap_passing.TokenHost.setBootstrap(peer, &app.token_host_service.server),
+        .cancel_id_reuse,
+        .cancel_pipelined,
+        => cancellation.CancelHost.setBootstrap(peer, &app.cancel_host_service.server),
     };
 
     _ = bootstrap_result catch |err| {
@@ -2401,14 +2752,21 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.transport.tcp.
         return err;
     };
 
-    if (app.schema == .pipelined_params_deferred) HeldAnswerTick(rpc.transport.tcp.Connection).install(conn);
+    switch (app.schema) {
+        .pipelined_params_deferred => HeldAnswerTick(rpc.transport.tcp.Connection).install(conn),
+        .cancel_id_reuse, .cancel_pipelined => {
+            peer.setAnswerFinishedHandler(&app.cancel_host_service, onCancelAnswerFinished);
+            HeldAnswerTick(rpc.transport.tcp.Connection).install(conn);
+        },
+        else => {},
+    }
     peer.start(null, onPeerError, onPeerClose);
     return .accept;
 }
 
 fn usage() void {
     std.debug.print(
-        \\Usage: e2e-zig-server [--host 0.0.0.0|unix:/path] [--port 4700] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo|pass_back|pipelined_params|pipelined_params_deferred]
+        \\Usage: e2e-zig-server [--host 0.0.0.0|unix:/path] [--port 4700] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo|pass_back|pipelined_params|pipelined_params_deferred|cancel_id_reuse|cancel_pipelined]
         \\  --host unix:/path serves on an AF_UNIX socket at /path (Linux and macOS; --port is ignored)
         \\  --transport quic serves over the QUIC baseline wire (needs -Dquic=true; also --cert-pem F --key-pem F)
         \\
@@ -2530,6 +2888,8 @@ pub fn main(init: std.process.Init) !void {
     app.bind();
     if (args.schema == .pipelined_params_deferred) deferred_token_host = &app.token_host_service;
     defer deferred_token_host = null;
+    if (args.schema == .cancel_id_reuse or args.schema == .cancel_pipelined) cancel_host = &app.cancel_host_service;
+    defer cancel_host = null;
 
     if (unixPathFromHost(args.host)) |path| return serveUnix(allocator, io, path, &app);
 
@@ -2612,15 +2972,22 @@ fn onQuicAccept(ctx: ?*anyopaque, session: *rpc.transport.quic.PeerServer.Sessio
         .pipelined_params,
         .pipelined_params_deferred,
         => cap_passing.TokenHost.setBootstrap(&session.peer, &app.token_host_service.server),
+        .cancel_id_reuse,
+        .cancel_pipelined,
+        => cancellation.CancelHost.setBootstrap(&session.peer, &app.cancel_host_service.server),
     };
-    if (app.schema == .pipelined_params_deferred) {
-        const transport = session.transport orelse return;
-        HeldAnswerTick(@TypeOf(transport.*)).install(transport);
+    switch (app.schema) {
+        .pipelined_params_deferred => {},
+        .cancel_id_reuse, .cancel_pipelined => session.peer.setAnswerFinishedHandler(&app.cancel_host_service, onCancelAnswerFinished),
+        else => return,
     }
+    const transport = session.transport orelse return;
+    HeldAnswerTick(@TypeOf(transport.*)).install(transport);
 }
 
 fn onQuicSessionClose(_: ?*anyopaque, session: *rpc.transport.quic.PeerServer.Session) void {
     if (deferred_token_host) |host| host.dropHeld(&session.peer);
+    if (cancel_host) |host| host.dropPeer(&session.peer);
     std.debug.print("e2e-zig-server: quic session closed close_cause={s}\n", .{@tagName(session.closeCause())});
 }
 

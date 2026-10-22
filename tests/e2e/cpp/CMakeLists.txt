@@ -20,6 +20,7 @@ set(SCHEMA_FILES
   resolve_disembargo.capnp
   l3_l4_interop.capnp
   cap_passing.capnp
+  cancellation.capnp
 )
 
 set(CAPNP_SRCS)

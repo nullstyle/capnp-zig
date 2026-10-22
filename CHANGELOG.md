@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **e2e: the cancellation scenarios `cancel_id_reuse` and
+  `cancel_pipelined`.** In both, the caller sends Finish before the callee
+  answers. The new schema `tests/e2e/schemas/cancellation.capnp` has a
+  `CancelHost` with `slow()`, `fast()` and `getSub()`, and a `Sub` with
+  `bar()`. The Zig e2e server answers as capnp-swift does with
+  `cancelHandlersOnFinish = true`: its answer-finished hook answers each
+  reported Finish with `sendReturnCanceled`. The server holds `slow()`
+  until that Finish. It holds `getSub()` for at least 500 ms, and answers
+  it only after the Peer applied its Finish. The C++ reference client runs
+  both flows, over TCP and over a Unix socket:
+  - `cancel_id_reuse`: the client drops `slow()`, then calls `fast()`. The
+    server answers `slow()` canceled, one `fast()` arrives on `slow()`'s
+    reused question id, and each `fast()` returns its own `n`.
+  - `cancel_pipelined`: the client sends `bar()` on `getSub()`'s pipelined
+    `Sub`, then drops `getSub()`. `bar()` must return its results, and the
+    server must answer no call canceled. This is the cross-implementation
+    guard for the Fixed entry "the host is no longer told to cancel a call
+    that other calls are pipelined on". Without that fix, the Peer reports
+    the Finish while `bar()` is queued on the answer, and `bar()` fails
+    with "call canceled".
+
+  Both pass and are in the default e2e run (the CI gate). Only the
+  reference-client-to-Zig-server direction runs, with the C++ client. The
+  other cases are SKIP.
+
 - **CI: a job headroom check (`just check-job-headroom`).** The new
   `tools/ci_gates.ts job-headroom` reads the 10 most recent green main
   runs of a workflow and the time that each job took. It prints each job's

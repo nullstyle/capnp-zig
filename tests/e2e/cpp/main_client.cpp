@@ -19,6 +19,7 @@
 #include "matchmaking.capnp.h"
 #include "resolve_disembargo.capnp.h"
 #include "cap_passing.capnp.h"
+#include "cancellation.capnp.h"
 
 // ---------------------------------------------------------------------------
 // TAP helpers
@@ -960,6 +961,129 @@ static void testPipelinedParams(kj::WaitScope& waitScope, TokenHost::Client host
 }
 
 // ---------------------------------------------------------------------------
+// cancel_id_reuse and cancel_pipelined (C++-client -> CancelHost-server).
+//
+// kj sends Finish when the last reference to a question goes away (here: the
+// dropped promise), with requireEarlyCancellationWorkaround = false. It
+// frees the question id only when the Return comes, and then hands out the
+// lowest free id first.
+// ---------------------------------------------------------------------------
+
+static const uint32_t kSubBarValue = 4242;
+
+static void printFast(const char* label, CancelHost::FastResults::Reader res) {
+  std::cout << "# " << label << ": n=" << res.getN() << " answerId=" << res.getAnswerId()
+            << " canceled=" << res.getCanceled() << " lastCanceledId=" << res.getLastCanceledId()
+            << std::endl;
+}
+
+static capnp::RemotePromise<CancelHost::FastResults> sendFast(CancelHost::Client& host, uint32_t n) {
+  auto req = host.fastRequest();
+  req.setN(n);
+  return req.send();
+}
+
+// cancel_id_reuse: start slow(), drop it (Finish), then call fast(). The
+// server answers slow() Return{canceled} after the Finish; fast() reports
+// the question id that each call arrived on and the last id answered
+// canceled.
+static void testCancelIdReuse(kj::WaitScope& waitScope, CancelHost::Client host) {
+  // Settle the bootstrap question first, so its id is free again.
+  printFast("fast(100)", sendFast(host, 100).wait(waitScope));
+
+  {
+    auto slowPromise = host.slowRequest().send();
+  }  // The promise is dropped here: kj sends slow()'s Finish.
+
+  bool allOwn = true;
+  bool reused = false;
+  uint32_t canceled = 0;
+  uint32_t lastCanceledId = 0;
+  kj::Vector<uint32_t> answerIds;
+  auto record = [&](uint32_t n, CancelHost::FastResults::Reader res) {
+    std::string label = "fast(" + std::to_string(n) + ")";
+    printFast(label.c_str(), res);
+    if (res.getN() != n) allOwn = false;
+    answerIds.add(res.getAnswerId());
+    canceled = res.getCanceled();
+    lastCanceledId = res.getLastCanceledId();
+  };
+
+  // The server applies slow()'s Finish before it reads this call, so its
+  // Return{canceled} comes before this call's Return.
+  try {
+    record(101, sendFast(host, 101).wait(waitScope));
+  } catch (kj::Exception& e) {
+    std::cout << "# fast(101) exception: " << e.getDescription().cStr() << std::endl;
+    allOwn = false;
+  }
+
+  // slow()'s id is free now. Four calls in flight take the four lowest
+  // free ids, so one of them takes slow()'s id.
+  kj::Vector<capnp::RemotePromise<CancelHost::FastResults>> inFlight;
+  for (uint32_t n = 102; n <= 105; ++n) inFlight.add(sendFast(host, n));
+  for (uint32_t i = 0; i < inFlight.size(); ++i) {
+    uint32_t n = 102 + i;
+    try {
+      record(n, inFlight[i].wait(waitScope));
+    } catch (kj::Exception& e) {
+      std::cout << "# fast(" << n << ") exception: " << e.getDescription().cStr() << std::endl;
+      allOwn = false;
+    }
+  }
+
+  if (canceled == 1) {
+    for (auto id : answerIds) {
+      if (id == lastCanceledId) reused = true;
+    }
+  }
+  ok(canceled == 1, "the server answered slow() Return{canceled} after its Finish");
+  ok(reused, "a later fast() arrived on slow()'s reused question id");
+  ok(allOwn, "each fast() returned its own n");
+}
+
+// cancel_pipelined: call getSub(), send bar() on the Sub that it will
+// return, then drop getSub() (Finish). The server holds getSub()'s answer
+// past that Finish, so bar() is still queued on the answer when the Finish
+// arrives. bar() must still return its results.
+static void testCancelPipelined(kj::WaitScope& waitScope, CancelHost::Client host) {
+  // Settle the bootstrap question first, so getSub() goes straight to the
+  // host.
+  printFast("fast(200)", sendFast(host, 200).wait(waitScope));
+
+  auto barPromise = [&]() {
+    auto subPromise = host.getSubRequest().send();
+    return subPromise.getSub().barRequest().send();
+  }();  // subPromise is dropped here: kj sends getSub()'s Finish after bar().
+
+  {
+    bool barOk = false;
+    try {
+      auto res = barPromise.wait(waitScope);
+      std::cout << "# bar(): value=" << res.getValue() << std::endl;
+      barOk = res.getValue() == kSubBarValue;
+    } catch (kj::Exception& e) {
+      std::cout << "# bar() exception: " << e.getDescription().cStr() << std::endl;
+    }
+    ok(barOk, "bar() pipelined on getSub() returns results after getSub()'s Finish");
+  }
+  {
+    bool fastOk = false;
+    bool noneCanceled = false;
+    try {
+      auto res = sendFast(host, 201).wait(waitScope);
+      printFast("fast(201)", res);
+      fastOk = res.getN() == 201;
+      noneCanceled = res.getCanceled() == 0;
+    } catch (kj::Exception& e) {
+      std::cout << "# fast(201) exception: " << e.getDescription().cStr() << std::endl;
+    }
+    ok(fastOk, "fast() after the dropped getSub() returns its own n");
+    ok(noneCanceled, "the server answered no call Return{canceled}: bar() was pipelined on getSub()");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -1012,6 +1136,10 @@ int main(int argc, char* argv[]) {
       testPassBack(waitScope, rpcClient.bootstrap().castAs<TokenHost>());
     } else if (schema == "pipelined_params") {
       testPipelinedParams(waitScope, rpcClient.bootstrap().castAs<TokenHost>());
+    } else if (schema == "cancel_id_reuse") {
+      testCancelIdReuse(waitScope, rpcClient.bootstrap().castAs<CancelHost>());
+    } else if (schema == "cancel_pipelined") {
+      testCancelPipelined(waitScope, rpcClient.bootstrap().castAs<CancelHost>());
     } else {
       std::cerr << "Unknown schema: " << schema << std::endl;
       return 1;
