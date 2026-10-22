@@ -3189,6 +3189,126 @@ test "forwarded call: the remote's Finish of a forwarded call that a wanted call
     }
 }
 
+test "forwarded call: a call pipelined on a call that the core forwarded as a tail call gets one exception RETURN at once" {
+    // The core answers 40 with takeFromOtherQuestion when it forwards it
+    // as a tail call: 40's results stay at the remote, so the core can
+    // never replay a call pipelined on 40. Before, such a call (50) waited
+    // in the core with no RETURN until disconnect, and its id stayed in
+    // use. Now it gets one exception RETURN: at the forward when it waited
+    // before, and at once when it comes after, until the remote's Finish
+    // of 40. Known limit: the C++ reference sends such a call on to the
+    // tail call's answer. Cases: 50 before the forward, 50 after it, and
+    // 50 before the forward of a 40 that go-capnp finished first.
+    const alloc = testing.allocator;
+    const Case = enum { before_forward, after_forward, before_forward_finished };
+    for (std.enums.values(Case)) |case| {
+        var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+        defer p.deinit();
+        const t = try p.start(alloc);
+        try drainAll(p.a, &p.ra);
+        const calls_out = try countCallFrames(&p.ra);
+
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, 30, t.ea));
+        try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 40, 30));
+        if (case != .after_forward) try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 50, 40));
+        if (case == .before_forward_finished) try pushFrame(alloc, p.a, finishFrameFull(alloc, 40, true, true));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 0), try countReturnFrames(&p.ra, 50, null));
+        const path = [_]u16{0};
+        const on_q: Cap = .{ .kind = .promised, .id = t.q, .ops = &path, .nops = 1 };
+        const res = try msgCap(alloc, 1, 0);
+        defer alloc.free(res);
+        try p.a.returnResults(30, res, &.{on_q});
+        try drainAll(p.a, &p.ra);
+        var qfs: [2]u32 = undefined;
+        try testing.expectEqual(@as(usize, 1), try callFrameQidsAfter(&p.ra, calls_out, &qfs));
+        const qf = qfs[0];
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, .takeFromOtherQuestion));
+        if (case == .after_forward) {
+            try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 50, 40));
+            try drainAll(p.a, &p.ra);
+        }
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 50, .exception));
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 50, null));
+        try testing.expectEqual(@as(usize, 0), countCalls(&p.ra, 50));
+        // No Call for 50 went to the remote.
+        try testing.expectEqual(@as(usize, 1), try callFrameQidsAfter(&p.ra, calls_out, &qfs));
+
+        try pushFrame(alloc, p.a, tagReturnFrame(alloc, qf, .resultsSentElsewhere));
+        if (case != .before_forward_finished) try pushFrame(alloc, p.a, finishFrame(alloc, 40));
+        try pushFrame(alloc, p.a, finishFrame(alloc, 50));
+        try pushFrame(alloc, p.a, finishFrame(alloc, 30));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countFinishFrames(&p.ra, qf));
+        try expectForwardGone(p.a, 40, qf);
+        for ([_]u32{ 50, 40, 30 }) |id| {
+            try testing.expect(!(try p.a.peer.inboundAnswerQuestionIdInUse(id)));
+            const before = countCalls(&p.ra, id);
+            try pushFrame(alloc, p.a, plainCallFrame(alloc, id, t.ea));
+            try drainAll(p.a, &p.ra);
+            try testing.expectEqual(before + 1, countCalls(&p.ra, id));
+        }
+        try testing.expectEqual(@as(usize, 0), p.ra.close_requested);
+    }
+}
+
+test "forwarded call: with no room to record a tail call's answer, a call pipelined on it after the forward gets its RETURN at the remote's Finish of the call" {
+    // The record that fails a late pipelined call at once
+    // (`failed_answers`) has a bound, max_active_inbound_questions, and
+    // is skipped past it or under memory pressure. Then a call pipelined
+    // on 40 after its takeFromOtherQuestion Return waits. The remote's
+    // Finish of 40 is the last point where anything can answer it: the
+    // core fails every call still waiting on an answered call there.
+    // Before, such a call waited with no RETURN until disconnect.
+    const alloc = testing.allocator;
+    var p = try TailPair.init(alloc, .{ .now_ns = 0, .limits = .{ .max_active_inbound_questions = 4 } });
+    defer p.deinit();
+    const t = try p.start(alloc);
+    try drainAll(p.a, &p.ra);
+    const calls_out = try countCallFrames(&p.ra);
+    // Four failed answers that the remote has not finished fill the bound.
+    for ([_]u32{ 10, 11, 12, 13 }) |id| {
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, id, t.ea));
+        try drainAll(p.a, &p.ra);
+        try p.a.returnException(id, 0, "failed");
+    }
+    try pushFrame(alloc, p.a, plainCallFrame(alloc, 30, t.ea));
+    try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 40, 30));
+    try drainAll(p.a, &p.ra);
+    const path = [_]u16{0};
+    const on_q: Cap = .{ .kind = .promised, .id = t.q, .ops = &path, .nops = 1 };
+    const res = try msgCap(alloc, 1, 0);
+    defer alloc.free(res);
+    try p.a.returnResults(30, res, &.{on_q});
+    try drainAll(p.a, &p.ra);
+    var qfs: [2]u32 = undefined;
+    try testing.expectEqual(@as(usize, 1), try callFrameQidsAfter(&p.ra, calls_out, &qfs));
+    const qf = qfs[0];
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, .takeFromOtherQuestion));
+    try testing.expect(!p.a.peer.failed_answers.contains(40));
+
+    try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 50, 40));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 0), try countReturnFrames(&p.ra, 50, null));
+    try pushFrame(alloc, p.a, finishFrame(alloc, 40));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 50, .exception));
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 50, null));
+
+    try pushFrame(alloc, p.a, tagReturnFrame(alloc, qf, .resultsSentElsewhere));
+    for ([_]u32{ 50, 30, 10, 11, 12, 13 }) |id| try pushFrame(alloc, p.a, finishFrame(alloc, id));
+    try drainAll(p.a, &p.ra);
+    try testing.expectEqual(@as(usize, 1), try countFinishFrames(&p.ra, qf));
+    for ([_]u32{ 50, 40, 30 }) |id| {
+        try testing.expect(!(try p.a.peer.inboundAnswerQuestionIdInUse(id)));
+        const before = countCalls(&p.ra, id);
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, id, t.ea));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(before + 1, countCalls(&p.ra, id));
+    }
+    try testing.expectEqual(@as(usize, 0), p.ra.close_requested);
+}
+
 test "forwarded call: a tail-call forward whose deadline passes gets one Finish; the call's id comes free" {
     // The core forwards 40, which the remote still wants, as a tail call
     // (the host's answer to 30 names a PROMISED capability on its own

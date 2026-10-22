@@ -16,6 +16,10 @@ const message = @import("../../../serialization/message.zig");
 const peer_forward_orchestration = @import("../forward/peer_forward_orchestration.zig");
 const peer_return_dispatch = @import("../return/peer_return_dispatch.zig");
 
+/// The exception a call pipelined on an answer gets once the caller has
+/// finished that answer: nothing can replay it any more.
+pub const pipelined_on_finished_answer_reason = "pipelined on a finished call";
+
 /// The inbound calls of `peer` that owe a Return: those the caller has not
 /// finished (`active_inbound_questions`), and those it finished first whose
 /// Return has not gone out (`finished_early_answers`). Both count in
@@ -474,8 +478,6 @@ pub fn CallInbound(comptime Peer: type) type {
             }
             return null;
         }
-
-        const pipelined_on_finished_answer_reason = "pipelined on a finished call";
 
         pub fn queuePromisedCall(self: *Peer, question_id: u32, frame: []const u8, inbound_caps: cap_table.InboundCapTable) !void {
             try self.ensurePendingQueuedCallBudget(

@@ -4968,6 +4968,19 @@ pub const Peer = struct {
             ops,
         );
         if (cleared_partial_join) self.refreshNextJoinDeadline();
+        // Calls still queued, pipelined, on an answer that has its Return
+        // and now its Finish can never be replayed: a Return with results
+        // here replays them when it commits, and the other Returns fail
+        // them then, and later ones at once while their record lasts
+        // (`failed_answers`). That record has a bound and is skipped under
+        // memory pressure; a call that came then waits here. Nothing can
+        // answer it after this Finish, so each gets its exception Return
+        // now, not at disconnect.
+        if (!was_active and !was_resolving and !finished_completing_join and
+            self.pending_promises.contains(qid))
+        {
+            self.failQueuedPromisedCalls(qid, peer_call_inbound.pipelined_on_finished_answer_reason, .failed);
+        }
         // No Return will follow for a synthetic answer canceled before result
         // delivery, so its ordinary finished-early tombstone must not reserve
         // the high-range id forever.

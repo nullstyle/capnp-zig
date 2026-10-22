@@ -29,6 +29,8 @@ pub fn ReturnSend(comptime Peer: type) type {
         const results_sent_elsewhere_no_pipelining =
             "results sent elsewhere; pipelining is not supported on a redirected answer";
         const answer_canceled_no_pipelining = "call canceled";
+        const tail_call_no_pipelining =
+            "results taken from another question; pipelining is not supported on a tail call";
 
         pub fn sendReturnResults(self: *Peer, answer_id: u32, ctx: *anyopaque, build: ReturnBuildFn) !void {
             self.assertThreadAffinity();
@@ -769,7 +771,17 @@ pub fn ReturnSend(comptime Peer: type) type {
             _ = self.finished_early_answers.remove(answer_id);
         }
 
+        /// A `takeFromOtherQuestion` Return: the answer's results are those
+        /// of question `other_question_id`, which this peer never sees (a
+        /// tail call it forwarded, or one it relays). So a call pipelined on
+        /// the answer can never be replayed here. Each one queued gets its
+        /// own exception Return, and, until the caller's Finish of the
+        /// answer, a later one gets it at once (`failed_answers`). Before,
+        /// such a call waited with no Return until disconnect. The C++
+        /// reference sends it on to the other question's answer instead.
         pub fn sendReturnTakeFromOtherQuestion(self: *Peer, answer_id: u32, other_question_id: u32) !void {
+            // Captured before delivery consumes the loopback marker.
+            const is_loopback = self.loopback_questions.contains(answer_id);
             try peer_return_dispatch.sendReturnTakeFromOtherQuestionForPeer(
                 Peer,
                 self,
@@ -779,7 +791,13 @@ pub fn ReturnSend(comptime Peer: type) type {
                 clearSendResultsRouting,
                 sendReturnFrameWithLoopback,
             );
-            _ = self.finished_early_answers.remove(answer_id);
+            const finished_early = self.finished_early_answers.remove(answer_id);
+            // As for an exception Return: no record when no Finish will clear
+            // it (a loopback answer) or the Finish already came.
+            if (!is_loopback and !finished_early) {
+                recordFailedAnswer(self, answer_id, tail_call_no_pipelining, .failed);
+            }
+            failQueuedPromisedCalls(self, answer_id, tail_call_no_pipelining, .failed);
         }
 
         pub fn sendReturnAcceptFromThirdParty(self: *Peer, answer_id: u32, await_payload: ?[]const u8) !void {
