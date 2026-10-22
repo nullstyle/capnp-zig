@@ -521,6 +521,21 @@ pub fn Lifecycle(
             events.emitCancelFailure(self.observer, .peer, .unknown, kind, question_id, err);
         }
 
+        /// Drop the tail mapping that would relay the caller's Finish to
+        /// forwarded question `question_id` (`forwarded_tail_questions`),
+        /// for a question whose Finish is sent another way: the peer
+        /// cancels it itself (`cancelQuestion`, a call deadline, the
+        /// shutdown drain). The mapping lives only while that Finish is
+        /// still to be sent.
+        fn dropForwardedTailRelay(self: *Peer, question_id: u32) void {
+            var it = self.forwarded_tail_questions.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.* != question_id) continue;
+                _ = self.forwarded_tail_questions.remove(entry.key_ptr.*);
+                return;
+            }
+        }
+
         fn cancelQuestionRouted(
             self: *Peer,
             question_id: u32,
@@ -556,7 +571,7 @@ pub fn Lifecycle(
             // second: the caller finishes the call once it has the Return
             // this cancel relays, and go-capnp ends the connection on a
             // second Finish of one question.
-            self.dropForwardedTailRelay(wire_answer_id);
+            dropForwardedTailRelay(self, wire_answer_id);
 
             if (question.is_loopback) {
                 // The Finish below runs the host's callbacks (the
