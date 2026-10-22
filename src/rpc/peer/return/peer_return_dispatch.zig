@@ -71,8 +71,14 @@ pub fn reportNonfatalErrorForPeer(comptime PeerType: type, peer: *PeerType, err:
 /// (`Peer.notifyTransportClosed`). A peer with no attached transport only
 /// reports.
 pub fn loseReturnForPeer(comptime PeerType: type, peer: *PeerType, answer_id: u32, err: anyerror) void {
-    log.warn("the Return for answer {} could not be sent ({}); closing the connection", .{ answer_id, err });
     reportNonfatalErrorForPeer(PeerType, peer, err);
+    closeForLostReturnForPeer(PeerType, peer, answer_id, err);
+}
+
+/// `loseReturnForPeer` without the report, for a site whose caller still
+/// gets `err` (and reports it or fails the frame with it).
+pub fn closeForLostReturnForPeer(comptime PeerType: type, peer: *PeerType, answer_id: u32, err: anyerror) void {
+    log.warn("the Return for answer {} could not be sent ({}); closing the connection", .{ answer_id, err });
     if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 }
 

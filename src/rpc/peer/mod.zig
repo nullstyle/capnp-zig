@@ -3527,7 +3527,15 @@ pub const Peer = struct {
             peer.allocator.destroy(ctx);
         }
         peer_forward_orchestration.removeForwardedQuestionForPeer(Peer, peer, ret.answer_id);
-        try peer_forward_return_callbacks.handleForwardedReturnWithPeerCallbacks(
+        // The relay below is the call's one Return: the forward alone
+        // answers it, and nothing answers it again. When it cannot be sent
+        // (the results, then the exception after them), the connection
+        // ends, as for the other Returns the peer settles itself
+        // (`peer_return_dispatch.loseReturnForPeer`). Before, a forward
+        // the caller still wanted only reported the error: the call had no
+        // Return with the connection up. A tail call (`.sent_elsewhere`)
+        // was answered when it was forwarded, so its errors lose nothing.
+        peer_forward_return_callbacks.handleForwardedReturnWithPeerCallbacks(
             Peer,
             cap_table.InboundCapTable,
             ForwardReturnBuildContext,
@@ -3544,7 +3552,12 @@ pub const Peer = struct {
             peer_forward_orchestration.lookupForwardedQuestionForPeerFn(Peer),
             sendReturnTakeFromOtherQuestion,
             sendReturnAcceptFromThirdParty,
-        );
+        ) catch |err| {
+            if (ctx.mode != .sent_elsewhere) {
+                peer_return_dispatch.closeForLostReturnForPeer(Peer, peer, ctx.answer_id, err);
+            }
+            return err;
+        };
     }
 
     fn buildForwardedReturn(ctx_ptr: *anyopaque, ret_builder: *protocol.ReturnBuilder) anyerror!void {

@@ -55,6 +55,9 @@ const Wire = struct {
     client_peer: ?*Peer = null,
     server_peer: ?*Peer = null,
     forwarding: bool = true,
+    /// The client's next sends that fail before they reach the wire, as a
+    /// full outbound queue fails them (QUIC's `error.OutboundQueueFull`).
+    fail_client_sends: usize = 0,
 
     fn deinit(self: *Wire) void {
         self.events.deinit(self.allocator);
@@ -81,6 +84,10 @@ const Wire = struct {
 
     fn clientSend(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
         const self: *Wire = castCtx(*Wire, ctx_ptr);
+        if (self.fail_client_sends > 0) {
+            self.fail_client_sends -= 1;
+            return error.OutboundQueueFull;
+        }
         try self.record(.client_to_server, frame);
         if (self.forwarding) {
             if (self.server_peer) |peer| try peer.handleFrame(frame);
@@ -2198,6 +2205,114 @@ test "an exception Return whose drain is wider than its stack worklist: under an
         if (k > 5000) return error.TestSweepRunaway;
     }
     try std.testing.expect(k > 40);
+}
+
+/// A forward that the caller still wants: call 600 on a promise export
+/// that the host resolves to the remote's capability (W1), or call 700
+/// pipelined on 600 when the host answers 600 with that capability.
+const WantedForward = enum { promise_export, pipelined };
+
+/// How the relay of the forwarded Return fails: every allocation from
+/// the `k`-th (`sticky`), only the `k`-th (`one_shot`), or the next one or
+/// two sends (`send`, `k` of them; a full outbound queue).
+const RelayFailure = enum { sticky, one_shot, send };
+
+/// One run of a wanted forward whose relayed Return meets a failure: the
+/// remote answers the forwarded question qf with results, and the peer
+/// relays them as the call's Return. The client peer may admit one call
+/// at a time (`max_active_inbound_questions`). Whatever fails: at most one
+/// Return for the call and one Finish for qf. Either the peer asks its
+/// transport to close, or the call has its one Return; the remote's Finish
+/// of the call then sends one Finish for qf, the id comes free, and a new
+/// call still reaches the host. Returns whether a failure was induced.
+fn wantedForwardRelayUnderFailure(k: usize, shape: WantedForward, failure: RelayFailure) !bool {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{});
+    var one_shot = OneShotFailure{ .failing = &failing };
+    var h: TailHarness = undefined;
+    try h.startWith(allocator, switch (failure) {
+        .sticky => failing.allocator(),
+        .one_shot => one_shot.allocator(),
+        .send => allocator,
+    });
+    defer h.deinit();
+    var transport = CloseRecorder{};
+    transport.attach(&h.client_peer);
+
+    const fwd_id: u32 = if (shape == .promise_export) 600 else 700;
+    const wire_mark = h.wire.events.items.len;
+    switch (shape) {
+        .promise_export => {
+            h.client_peer.limits.max_active_inbound_questions = 1;
+            const promise_id = try h.client_peer.addPromiseExport();
+            try h.pushPlainCall(allocator, 600, promise_id);
+            try h.client_peer.resolvePromiseExportToImport(promise_id, h.server_import_id);
+        },
+        .pipelined => {
+            h.client_peer.limits.max_active_inbound_questions = 2;
+            try h.pushPlainCall(allocator, 600, h.target_export_id);
+            try h.pushPipelinedPlainCall(allocator, 700, 600);
+            var result = ResultImport{ .import_id = h.server_import_id };
+            try h.client_peer.sendReturnResults(600, &result, ResultImport.build);
+            try h.pushFinish(allocator, 600);
+        },
+    }
+    var qfs: [2]u32 = undefined;
+    try std.testing.expectEqual(@as(usize, 1), try clientCallsSince(&h, wire_mark, &qfs));
+    const qf = qfs[0];
+
+    var induced = false;
+    switch (failure) {
+        .sticky, .one_shot => failing.fail_index = failing.alloc_index + k,
+        .send => h.wire.fail_client_sends = k,
+    }
+    const reply_ok = if (h.pushResults(allocator, qf)) true else |_| false;
+    switch (failure) {
+        .sticky, .one_shot => {
+            induced = failing.has_induced_failure;
+            failing.fail_index = std.math.maxInt(usize);
+        },
+        .send => {
+            induced = k > 0 and h.wire.fail_client_sends < k;
+            h.wire.fail_client_sends = 0;
+        },
+    }
+
+    try std.testing.expect(h.wire.countReturns(.client_to_server, fwd_id, null) <= 1);
+    if (!reply_ok or transport.closed) {
+        h.client_peer.notifyTransportClosed();
+        try std.testing.expect(h.wire.countFinishes(.client_to_server, qf) <= 1);
+        return induced;
+    }
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, fwd_id, null));
+    try h.pushFinish(allocator, fwd_id);
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, qf));
+    try expectForwardGone(&h, fwd_id, qf);
+    for ([_]u32{ fwd_id, 600 }) |id| try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(id)));
+    h.target.answer_id = null;
+    try h.pushPlainCall(allocator, fwd_id, h.target_export_id);
+    try std.testing.expectEqual(@as(?u32, fwd_id), h.target.answer_id);
+    return induced;
+}
+
+test "a forward the caller still wants: when its relayed Return cannot be sent, the connection ends" {
+    // The peer relays the forwarded question's Return as the call's
+    // Return, and it alone answers the call. Before, when that relay
+    // failed (out of memory, or two failed sends, such as a full outbound
+    // queue), the peer only reported it: the call had no Return, the
+    // connection stayed up, and the call's later Finish left a record
+    // that took a place in max_active_inbound_questions for good. Now the
+    // peer ends the connection there.
+    for (std.enums.values(WantedForward)) |shape| {
+        for ([_]RelayFailure{ .sticky, .one_shot }) |failure| {
+            var k: usize = 0;
+            while (try wantedForwardRelayUnderFailure(k, shape, failure)) : (k += 1) {
+                if (k > 5000) return error.TestSweepRunaway;
+            }
+            try std.testing.expect(k > 5);
+        }
+        for ([_]usize{ 1, 2 }) |sends| try std.testing.expect(try wantedForwardRelayUnderFailure(sends, shape, .send));
+    }
 }
 
 test "a yourself call whose param names a failed answer: the remote gets resultsSentElsewhere, the tail call that failure" {

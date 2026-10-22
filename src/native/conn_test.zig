@@ -3383,6 +3383,85 @@ test "forwarded call: an allocation failure anywhere in a forward after the Fini
     }
 }
 
+/// One run of a forward that the remote still wants: call 40 pipelined on
+/// 30, the host answers 30 with the remote's own capability, and the core
+/// forwards 40 to the remote as qf. A's allocations fail from the `k`-th
+/// in the remote's Return for qf: every later one in that step, or only
+/// that one (`one_shot`). Whatever fails: at most one RETURN for 40 and
+/// one Finish for qf. Either CLOSE_REQUESTED comes, or 40 has its one
+/// RETURN; then the remote's Finish of 40 sends one Finish for qf, and the
+/// remote's reuse of 40 and 30 reaches the host. Returns whether a
+/// failure was induced.
+fn wantedForwardRelayNativeUnderOom(k: usize, one_shot: bool) !bool {
+    const alloc = testing.allocator;
+    var failing = std.testing.FailingAllocator.init(alloc, .{});
+    var once = OneShotFailingAllocator{ .backing = alloc };
+    const a = try Conn.init(if (one_shot) once.allocator() else failing.allocator(), .{ .now_ns = 0 });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    try drainAll(a, &ra);
+    const calls_out = try countCallFrames(&ra);
+    try pushFrame(alloc, a, plainCallFrame(alloc, 30, t.ea));
+    try pushFrame(alloc, a, pipelinedCallFrame(alloc, 40, 30));
+    const res = try msgCap(alloc, 1, 0);
+    defer alloc.free(res);
+    try a.returnResults(30, res, &.{t.boot});
+    try drainAll(a, &ra);
+    var qfs: [2]u32 = undefined;
+    try testing.expectEqual(@as(usize, 1), try callFrameQidsAfter(&ra, calls_out, &qfs));
+    const qf = qfs[0];
+
+    if (one_shot) once.arm(k) else failing.fail_index = failing.alloc_index + k;
+    const ok = if (pushFrame(alloc, a, resultsReturnFrame(alloc, qf))) true else |_| false;
+    const induced = if (one_shot) once.induced else failing.has_induced_failure;
+    once.remaining = null;
+    failing.fail_index = std.math.maxInt(usize);
+    try drainAll(a, &ra);
+    try testing.expect(try countReturnFrames(&ra, 40, null) <= 1);
+    if (!ok or ra.close_requested != 0) {
+        a.transportClosed();
+        try drainAll(a, &ra);
+        try testing.expect(try countReturnFrames(&ra, 40, null) <= 1);
+        try testing.expect(try countFinishFrames(&ra, qf) <= 1);
+        return induced;
+    }
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, 40, null));
+    try pushFrame(alloc, a, finishFrame(alloc, 40));
+    try pushFrame(alloc, a, finishFrame(alloc, 30));
+    try drainAll(a, &ra);
+    try testing.expectEqual(@as(usize, 1), try countFinishFrames(&ra, qf));
+    try expectForwardGone(a, 40, qf);
+    for ([_]u32{ 40, 30 }) |id| {
+        try testing.expect(!(try a.peer.inboundAnswerQuestionIdInUse(id)));
+        const before = countCalls(&ra, id);
+        try pushFrame(alloc, a, plainCallFrame(alloc, id, t.ea));
+        try drainAll(a, &ra);
+        try testing.expectEqual(before + 1, countCalls(&ra, id));
+    }
+    try testing.expectEqual(@as(usize, 0), ra.close_requested);
+    return induced;
+}
+
+test "forwarded call: a forward the remote still wants whose relayed RETURN cannot be sent ends the connection" {
+    // The core relays the forwarded question's Return as 40's RETURN, and
+    // nothing else answers 40. Before, when that relay ran out of memory,
+    // the core only reported it: 40 had no RETURN, and the connection
+    // stayed up. Now CLOSE_REQUESTED comes.
+    for ([_]bool{ false, true }) |one_shot| {
+        var k: usize = 0;
+        while (try wantedForwardRelayNativeUnderOom(k, one_shot)) : (k += 1) {
+            if (k > 10_000) return error.TestSweepRunaway;
+        }
+        try testing.expect(k > 5);
+    }
+}
+
 test "forwarded call: the remote's own call with the id of the forwarded question reaches the host while the forward waits" {
     // Question ids are per direction: the remote's questions and the
     // core's own questions are counted apart, both up from 0, and go-capnp
