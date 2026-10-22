@@ -57,6 +57,7 @@ Status words:
 | Native feature bits | The native ABI v1 feature bits. `capnp_core_features()` reported 0. | none (sprint plan 2026-10-15, "Not in this sprint") | delivered in v0.28.0 | Bit 0 is H13's `CAPNP_FEATURE_ANSWER_FINISHED`; `capnp_core_features()` reports it. The header spells it `(1ULL << 0)`, so Swift imports it (`fc0533d`). The native bits are separate from the WASM host ABI's bits. | 2026-10-21 |
 | H13 | Tell a native host when the caller finishes a call that the host still owes (`ANSWER_FINISHED`), and let the host answer it canceled. | `docs/handoffs/H13-answer-finished-native.md` | delivered in v0.28.0 | The shape sent to capnp-swift on 2026-10-20: feature bit 0 `CAPNP_FEATURE_ANSWER_FINISHED`; opt-in `uint32_t answer_finished` at offset 56 of `capnp_conn_opts` (60 bytes now); effect `CAPNP_EFFECT_ANSWER_FINISHED` (6), withheld while a tail-call hold waits on the call; `capnp_return_canceled(conn, answer_id)`. One correction to the answer text: when the Peer keeps no record of the Finish (records full, or no memory for the record), no effect comes and `capnp_return_canceled` returns `CAPNP_E_INVAL` (no effect was queued), not `CAPNP_E_BAD_ID`. Also on main: the Peer fix for a late exception answer under out-of-memory; `capnp_finish` on an in-flight question returns `CAPNP_E_BUSY`; two header comments are fixed; a new call that reaches a host export with an id the host owes closes the connection, and the host owes at most `max_active_inbound_questions` answers ("Answer ids" in `native-abi.md`); with u32_le framing (capnp-swift's QUIC path), a failed frame now sends one Abort and keeps its cause in `capnp_conn_take_error`, and a remote Abort returns `CAPNP_E_CLOSED` with no Abort back; two Peer crashes that a host reached through the C ABI: a call pipelined on an answer whose results hold a `CAPNP_CAP_PROMISED` entry (`386d20f`), and `capnp_resolve_promise` into a cycle, now `CAPNP_E_INVAL` (`58612dc`). The header changes break capnp-swift's header snapshot gate at the pin bump; that is expected. See the relay text below. | 2026-10-21 |
 | ANSWER_FINISHED with pipelined calls | No ask: a capnp-zig defect in H13 that capnp-swift 0.2.0 hits by default. A Finish of a call that other calls are pipelined on (C++ sends Call(foo), Call(bar on foo), Finish(foo) for `foo().getSub().bar()`) queued `CAPNP_EFFECT_ANSWER_FINISHED`, and `capnp_return_canceled` then failed bar. | none (sprint plan 2026-10-21, P0-1) | on main for v0.28.1 | Now no effect comes while calls are pipelined on the answer, and none comes later when they go; `capnp_return_canceled` returns `CAPNP_E_INVAL` for such an answer. capnp-swift's `cancelHandlersOnFinish = true` (`RPCConnection.swift:57`) turns the effect on. Until its pin bump, the mitigation is `cancelHandlersOnFinish = false`: the core then sends no ANSWER_FINISHED, and handlers run to the end. The pin bump to v0.28.1 changes `capnp_core.h` comments only, and that trips capnp-swift's header snapshot gate; update the snapshot. Not run against a Swift server (unverified in practice). See the relay text below. | 2026-10-21 |
+| Answers after close | No ask: a capnp-zig gap in the native answer functions. After a protocol failure or a remote Abort, `capnp_return_results`, `capnp_return_exception` and `capnp_return_canceled` still queued a Return after the Abort, and a call pipelined on that answer reached the host as a new INBOUND_CALL after CLOSE_REQUESTED. | none (sprint plan 2026-10-21, P1-2) | on main for v0.28.1 | Now, once the connection is closed (a protocol failure, a remote Abort, or `capnp_conn_transport_closed`), the three functions are no-ops: `CAPNP_OK` for an answer the host owes (nothing is sent, and the host owes it no more), `CAPNP_E_BAD_ID` for any other id. Two return codes change once closed: `capnp_return_canceled` gives `CAPNP_OK` where it gave `CAPNP_E_INVAL`, and after `capnp_conn_transport_closed` all three give `CAPNP_OK` where they gave `CAPNP_E_CLOSED`. A graceful `capnp_conn_shutdown` is no close: until `capnp_conn_transport_closed`, answers still go out and calls still reach the host. The P1-2 review read capnp-swift's `answerFinished` (`RPCConnection.swift:847-857`) as treating OK and BAD_ID as consumed. Not run against a Swift server (unverified in practice). The `capnp_core.h` changes are comments only. See the relay text below. | 2026-10-21 |
 
 ### Relay to capnp-swift for v0.28.1
 
@@ -84,6 +85,33 @@ The owner sends this text after the v0.28.1 tag exists.
 > false`: the core then sends no ANSWER_FINISHED, and handlers run to the
 > end. With v0.28.1, cancel on by default is safe again. We did not run
 > this against a Swift server.
+>
+> **Answers after close.** Once a connection is closed,
+> `capnp_return_results`, `capnp_return_exception` and
+> `capnp_return_canceled` are no-ops. Closed means a protocol failure
+> (`capnp_conn_push_bytes` returned `CAPNP_E_PROTOCOL`), a remote Abort
+> (it returned `CAPNP_E_CLOSED`), or `capnp_conn_transport_closed`. For an
+> answer you owe, each one returns `CAPNP_OK` and sends nothing, and you
+> owe that answer no more. For any other id, each one returns
+> `CAPNP_E_BAD_ID`. The argument checks still apply: a NULL or empty msg,
+> or a malformed caps[] entry, is `CAPNP_E_INVAL`, and you still owe the
+> answer. Two return codes change once closed. `capnp_return_canceled`
+> returns `CAPNP_OK` where it returned `CAPNP_E_INVAL`. After
+> `capnp_conn_transport_closed`, all three return `CAPNP_OK` where they
+> returned `CAPNP_E_CLOSED`, so check any code that branches on
+> `CAPNP_E_CLOSED` from an answer. After a protocol failure or a remote
+> Abort, no call pipelined on the answer reaches you. Before, a late
+> answer queued a Return after the Abort and gave you the pipelined call
+> as a new INBOUND_CALL. A question held on a tail call to that answer no
+> longer gets your late answer. It ends with RETURN DISCONNECTED at
+> `capnp_conn_transport_closed`, or earlier on a `capnp_conn_tick`: RETURN
+> EXCEPTION at its deadline, RETURN DISCONNECTED at the shutdown drain
+> bound. A graceful `capnp_conn_shutdown` is no close. After its
+> CLOSE_REQUESTED and until `capnp_conn_transport_closed`, an answer still
+> sends its Return, a call pipelined on it still reaches you, and
+> `capnp_return_canceled` still needs an ANSWER_FINISHED. To close that
+> window, call `capnp_conn_transport_closed` when you act on
+> CLOSE_REQUESTED. "After close" in docs/native-abi.md has the rule.
 
 ### Relay to capnp-swift for v0.28.0
 
@@ -182,7 +210,7 @@ call that the host answers with `capnp_peer_respond_host_call_return_frame`
 still fails ("host call failed"; see the known limit in
 [supported-surface.md](supported-surface.md)). So moving the pin to
 v0.28.1 alone does not let bar run. Send the text once a tag also fixes
-that limit, and name that tag in it.
+that limit, and put that tag in place of `vX.Y.Z` in it.
 
 > **Answer-finished and pipelined calls (feature bit 12).** Up to
 > v0.28.0, a Finish of a host call that other calls were pipelined on
@@ -200,7 +228,7 @@ that limit, and name that tag in it.
 > the protocol. The peer now answers such a call at once with an exception
 > Return, as the C++ reference does, so after a kind-4 event
 > `capnp_peer_send_return_canceled` still answers. Your pin `fe6634d` has
-> the defect. Move the pin to v0.28.1 or later. Until then, do not answer
+> the defect. Move the pin to `vX.Y.Z` or later. Until then, do not answer
 > canceled on answer-finished events: let the handler's answer go out.
 
 ## slcp-zig
