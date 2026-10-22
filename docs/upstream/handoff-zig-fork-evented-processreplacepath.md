@@ -1,20 +1,39 @@
 # HANDOFF — zig fork change branch: evented backends set dropped `Io.VTable` fields
 
-**Status (2026-10-21): fixed upstream and in the fork, in no Zig tag. Do
-not send it.**
+**Status (2026-10-21): fixed in the fork, in no Zig tag. Upstream `0.17.x`
+still fails to compile, with a new error. Do not send it.**
 
-- Upstream `0.17.x` fixed Uring in `6080247206` (2026-10-10, "Io.Uring
-  fixes & updates") and Dispatch in `ff08725400` (2026-10-21, "fix(Io.Dispatch):
-  synchronize with updates to VTable"). No Zig tag after 0.17.0 exists yet.
-- The fork's `build/stable` and `feat/evented-0.17` fixed both in
+- The fork's `build/stable` and `feat/evented-0.17` fixed both backends in
   `b98ef17f06` (2026-10-10).
+- Upstream `0.17.x` dropped the old fields: Uring in `6080247206`
+  (2026-10-10, "Io.Uring fixes & updates") and Dispatch in `ff08725400`
+  (2026-10-21, "fix(Io.Dispatch): synchronize with updates to VTable").
+  But both commits switch on `Io.Operation.net_accept`, and the `0.17.x`
+  `Io.Operation` (`lib/std/Io.zig:246`) has no such member. Only `master`
+  has it (`71f6780c98`, "Move netAccept to an Operation"). So
+  `std.Io.Evented` still does not compile on `0.17.x`:
+  `error: enum '@typeInfo(Io.Operation).@"union".tag_type.?' has no member
+  named 'net_accept'` (`Uring.zig:2405` and `:2528`, `Dispatch.zig:2137`).
+- How this was checked (2026-10-21): Zig 0.17.0 compiled
+  `tools/evented_canary.zig` with `--zig-lib-dir` set to the `lib` of
+  0.17.0, of upstream `0.17.x` (`c99f5c98c5`) and of the fork's
+  `build/stable` (`d80d6d31bf`), for macOS, `x86_64-linux` and
+  `aarch64-linux`. Only the fork's lib compiles it.
 - capnp-zig pins tagged 0.17.0, so `zig build check-evented-canary` still
-  passes. It goes red when capnp-zig pins a Zig with the upstream fix.
+  passes. With the std lib of today's `0.17.x` (`ZIG_LIB_DIR`), the step
+  goes red for the `net_accept` error. If capnp-zig pins a Zig with that
+  std, that is the "fails with another error" case, not a fix: update
+  `expected_error` in `build/evented_canary.zig` and this status line,
+  and keep the flag off.
+- When the fork rebases onto a later 0.17 release, it must keep a version
+  that compiles. The upstream commits alone do not compile.
 - A red canary does not mean that Evented carries sockets. At 0.17.0 and
   on upstream `0.17.x`, both backends answer listen, accept and connect
-  with `...Unavailable`, Uring panics on `net_write`, and Dispatch panics
-  on `net_receive`, `net_send`, `net_read` and `net_write`
-  (`Dispatch.zig:1713-1716`). So capnp-zig runs a net_read behavior probe
+  with `...Unavailable`, Uring answers `net_send` and `net_read` with
+  `error.NetworkDown` and panics on `net_write`, and Dispatch panics on
+  `net_receive`, `net_send`, `net_read` and `net_write`
+  (`Dispatch.zig:1713-1716`). On the fork, Uring still answers `net_read`
+  with `error.NetworkDown`. So capnp-zig runs a net_read behavior probe
   before it sets `evented_available`. The text below says to flip the flag
   when the canary goes red; that advice is out of date.
 

@@ -52,9 +52,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `net_send`, `net_read` and `net_write` (`lib/std/Io/Dispatch.zig:1713-1716`).
   The notice now says to keep the flag off, run a net_read behavior probe
   on Linux and macOS, and flip the flag only when the probe passes. The
-  comments in `ci.yml` and `build/evented_canary.zig` say the same.
-  Upstream `0.17.x` already has the fix for the compile error (Uring in
-  `6080247206`, Dispatch in `ff08725400`), and no Zig tag has it yet.
+  comments in `ci.yml` and `build/evented_canary.zig` say the same. Only
+  the fork's `build/stable` (`b98ef17f06`) compiles `std.Io.Evented`.
+  Upstream `0.17.x` dropped the old VTable fields (Uring in `6080247206`,
+  Dispatch in `ff08725400`), but those commits switch on
+  `Io.Operation.net_accept`, which only `master` has. So on `0.17.x` the
+  compile still fails, with `no member named 'net_accept'`. With that std
+  lib, `zig build check-evented-canary` goes red for this new error, not
+  for a fix.
 
 ### Fixed
 
@@ -92,11 +97,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/upstream/README.md` is read again against upstream Zig `0.17.x`
   and `master`, the fork's `build/stable`, and quic-zig `main` (2026-10-21).
   The "Where fixed" column gives commits: upstream `0.17.x` fixes the
-  evented compile, `Stream.read` and the iOS `Io.Threaded` defects, and
-  maps `LOCAL_DISCONNECT` on Windows reads and writes; the fork fixes
-  SCM_RIGHTS and Unix address defects 1 and 2. Two new rows record std
-  workarounds with no handoff: the raw `setsockopt` call and the Windows
-  `TCP_NODELAY` no-op in `setTcpNoDelay`. A new list names the four
+  `Stream.read` and iOS `Io.Threaded` defects, and maps `LOCAL_DISCONNECT`
+  on Windows reads and writes; the fork fixes the evented compile,
+  `Stream.read`, SCM_RIGHTS and Unix address defects 1 and 2. Upstream
+  `0.17.x` does not fix the evented compile: it fails there with a new
+  error (`net_accept`). Two new rows record std workarounds with no
+  handoff: the raw `setsockopt` call and the Windows `TCP_NODELAY` no-op
+  in `setTcpNoDelay`. A new list names the four
   handoffs to send, and says why the others need no message. The status
   lines of seven handoff files changed to match.
 - `docs/downstreams.md`: capnp-swift pins v0.28.0 for its core (0.1.4 and
