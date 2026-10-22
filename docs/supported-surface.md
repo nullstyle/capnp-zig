@@ -941,6 +941,21 @@ cooperating peer.
   fails a call pipelined on a host call that the host answers with a
   results frame" in `tests/wasm_host_abi_test.zig`.
 
+- **A Finish of a queued call fails the calls pipelined on it.** For
+  `foo().bar().baz()`, bar waits in the Peer, pipelined on foo, and baz is
+  pipelined on bar. When the caller finishes bar while it waits, baz can
+  still want bar's results, and rpc.capnp lets a callee cancel only when
+  nothing else cares about the result. The Peer does not check for that.
+  With `requireEarlyCancellationWorkaround = false` (the C++ reference),
+  it cancels bar at its Finish and fails baz with an exception Return,
+  whether or not the host gets answer-finished reports. With `true`
+  (go-capnp), bar stays queued, but it does not keep foo's answer-finished
+  report back: a host that cancels foo then fails bar and baz. Each call
+  still gets exactly one Return. Pinned by "Finish cancelling a queued call
+  drains calls pipelined on it" and "a call pipelined on a finished queued
+  call does not keep the answer-finished hook quiet (P0-1)" in
+  `tests/rpc/peer/rpc_answer_lifecycle_test.zig`.
+
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Of the items above, only the
 `sendResultsTo = thirdParty` item is a Level-3 surface. Historical

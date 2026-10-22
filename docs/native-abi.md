@@ -249,8 +249,11 @@ When the host answers foo as usual and foo's answer names one of the
 remote's own capabilities, the core forwards the queued calls there, as
 new questions to the remote. That includes a call that the remote already
 finished: its flag asks the callee to deliver the call anyway. The core
-finishes the forwarded copy of such a call once it has relayed that
-copy's Return to the remote. The forwarded copy of a call that the remote
+sends the Finish for the forwarded copy of such a call when the copy's
+Return comes. The call itself gets one Return: the copy's results or
+exception, or `takeFromOtherQuestion` when foo's answer named a PROMISED
+capability on one of the host's own questions. The forwarded copy of a
+call that the remote
 still wants gets its Finish when the remote finishes that call. Either
 way, the remote can reuse the call's id once it has the call's Return and
 has finished it.

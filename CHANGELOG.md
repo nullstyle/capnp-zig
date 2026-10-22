@@ -141,11 +141,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Finish came before the forward registers no tail mapping, and the Peer
   finishes the forwarded question once it has relayed that question's
   Return. A call that the caller still wants is forwarded as before, and
-  its Finish relays one Finish. v0.28.0 has this defect for any host that
-  does not cancel on the answer-finished report, the review's probe
-  "nfwd2". The P0-1 fix above made it reachable for hosts that do
-  cancel: with a wanted call beside the finished one, the host is not
-  told, and its ordinary answer forwards the finished call. That was the
+  its Finish relays one Finish. v0.28.0 has this defect whenever the
+  host's answer goes out while such a call waits: with no answer-finished
+  report, or before the caller finished the answer (the review's probe
+  "nfwd2"). The P0-1 fix above made it reachable for hosts that cancel on
+  the report too: with a wanted call beside the finished one, the host is
+  not told, and its ordinary answer forwards the finished call. That was the
   regression found in the held v0.28.1 patch. The known limit "A call
   finished with go-capnp's Finish flag can close the connection" is
   removed. The C++ reference sends the flag as false, and then the Peer
@@ -260,6 +261,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because the owner held the v0.28.1 patch. Draft relay texts for v0.29.0
   go to capnp-swift, capnp-deno (P0-1 and P1-1 affect its pin `fe6634d`)
   and slcp-zig.
+- `docs/downstreams.md`: the v0.29.0 drafts for capnp-swift and capnp-deno
+  now say what landed: P0-1 with the forward-path fix, P1-2, `bdc656f` and
+  the `capnp_call` loopback refusal. The capnp-deno draft says that through
+  `HostPeer` a call pipelined on a host call still fails ("host call
+  failed"), so the pin move alone does not let bar run. The P0-1 and P1-2
+  rows say "on main for v0.29.0".
+- `docs/supported-surface.md`: a new known limit, "A Finish of a queued
+  call fails the calls pipelined on it" (`foo().bar().baz()` with bar
+  finished while it waits on foo). It is older than this release; two
+  existing tests pin it.
 
 ## [0.28.0] - 2026-10-21
 
