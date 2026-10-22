@@ -77,6 +77,7 @@ const Wire = struct {
             .resolve => event.id = (try decoded.asResolve()).promise_id,
             .disembargo => event.disembargo_context = (try decoded.asDisembargo()).context_tag,
             .finish => event.id = (try decoded.asFinish()).question_id,
+            .release => event.id = (try decoded.asRelease()).id,
             else => {},
         }
         try self.events.append(self.allocator, event);
@@ -119,6 +120,15 @@ const Wire = struct {
                 if (event.return_tag != want) continue;
             }
             n += 1;
+        }
+        return n;
+    }
+
+    /// Release frames sent in `dir` for capability `id`.
+    fn countReleases(self: *const Wire, dir: EventDir, id: u32) usize {
+        var n: usize = 0;
+        for (self.events.items) |event| {
+            if (event.dir == dir and event.tag == .release and event.id == id) n += 1;
         }
         return n;
     }
@@ -2650,6 +2660,188 @@ test "a forward kept for a call pipelined on it: an allocation failure in its Re
             }
             try std.testing.expect(k > 5);
         }
+    }
+}
+
+/// Results whose content is the client's export `export_id` (a promise
+/// export: its descriptor is senderPromise).
+const ResultExport = struct {
+    export_id: u32,
+
+    fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+        const self: *const ResultExport = castCtx(*const ResultExport, ctx_ptr);
+        ret.setReleaseParamCaps(false);
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        try any.setCapability(.{ .id = self.export_id });
+    }
+};
+
+/// The remote releases `count` references to the client's export `id`.
+fn pushRelease(h: *TailHarness, allocator: std.mem.Allocator, id: u32, count: u32) !void {
+    var mb = protocol.MessageBuilder.init(allocator);
+    defer mb.deinit();
+    try mb.buildRelease(id, count);
+    const frame = try mb.finish();
+    defer allocator.free(frame);
+    try h.client_peer.handleFrame(frame);
+}
+
+/// The remote calls the client's export `target_export` with question
+/// `answer_id`; its params are one capability the remote hosts,
+/// `remote_export` (senderHosted).
+fn pushCallWithRemoteCap(h: *TailHarness, allocator: std.mem.Allocator, answer_id: u32, target_export: u32, remote_export: u32) !void {
+    var mb = protocol.MessageBuilder.init(allocator);
+    defer mb.deinit();
+    var call = try mb.beginCall(answer_id, CALL_INTERFACE_ID, CALL_METHOD_ID);
+    try call.setTargetImportedCap(target_export);
+    var payload = try call.payloadTyped();
+    try (try payload.initContent()).setCapability(.{ .id = 0 });
+    var cap_list = try call.initCapTableTyped(1);
+    protocol.CapDescriptor.writeSenderHosted((try cap_list.get(0))._builder, remote_export);
+    const frame = try mb.finish();
+    defer allocator.free(frame);
+    try h.client_peer.handleFrame(frame);
+}
+
+test "a call queued on a promise export that the remote releases gets one exception Return; its id and its place in the bound come free" {
+    // The remote got promise export P in a Return, called P before the host
+    // resolved it (the call queues on P), then released P: the C++ and
+    // go-capnp clients do not keep a capability alive for a call in
+    // flight. Before, the peer dropped the queued call with no Return and
+    // kept its param caps. Its Finish then left a record that no Return
+    // consumed: the id stayed in use, the answer-finished hook ran for a
+    // call the host never had, and each such call took a place in
+    // max_active_inbound_questions for good, so that after a few every
+    // new call was refused. Now the call gets one exception Return when P
+    // goes, and its param caps are released. Known limit: the C++
+    // reference keeps such a call and delivers it when P resolves. Both
+    // Finish flags; three rounds with room for three calls.
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |go_flags| {
+        var h: TailHarness = undefined;
+        try h.start(allocator);
+        defer h.deinit();
+        h.client_peer.limits.max_active_inbound_questions = 3;
+        var hook = FinishedHook{};
+        h.client_peer.setAnswerFinishedHandler(&hook, FinishedHook.onFinished);
+        var round: u32 = 0;
+        while (round < 3) : (round += 1) {
+            const promise_id = try h.client_peer.addPromiseExport();
+            // The remote gets P in the Return for call `grant`.
+            const grant: u32 = 10 + round * 10;
+            h.target.answer_id = null;
+            try h.pushPlainCall(allocator, grant, h.target_export_id);
+            try std.testing.expectEqual(@as(?u32, grant), h.target.answer_id);
+            var res = ResultExport{ .export_id = promise_id };
+            try h.client_peer.sendReturnResults(grant, &res, ResultExport.build);
+            try h.pushFinish(allocator, grant);
+            // A call on P, with a capability the remote hosts in its params.
+            const id = grant + 1;
+            const remote_cap: u32 = 70 + round;
+            try pushCallWithRemoteCap(&h, allocator, id, promise_id, remote_cap);
+            try std.testing.expect(h.client_peer.caps.hasImport(remote_cap));
+            try std.testing.expectEqual(@as(usize, 0), h.wire.countReturns(.client_to_server, id, null));
+            try pushRelease(&h, allocator, promise_id, 1);
+            try std.testing.expect(!h.client_peer.exports.contains(promise_id));
+            try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, id, .exception));
+            try std.testing.expect(!h.client_peer.caps.hasImport(remote_cap));
+            try std.testing.expectEqual(@as(usize, 1), h.wire.countReleases(.client_to_server, remote_cap));
+            try h.pushFinishWith(allocator, id, go_flags);
+            try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, id, null));
+            try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(id)));
+        }
+        try std.testing.expectEqual(@as(usize, 0), hook.count);
+        // A new call still reaches the host.
+        h.target.answer_id = null;
+        try h.pushPlainCall(allocator, 99, h.target_export_id);
+        try std.testing.expectEqual(@as(?u32, 99), h.target.answer_id);
+        // The remote reuses an id of a failed call.
+        var reply = ResultN{ .n = 1 };
+        try h.client_peer.sendReturnResults(99, &reply, ResultN.build);
+        try h.pushFinish(allocator, 99);
+        h.target.answer_id = null;
+        try h.pushPlainCall(allocator, 11, h.target_export_id);
+        try std.testing.expectEqual(@as(?u32, 11), h.target.answer_id);
+    }
+}
+
+/// One run of the call above (queued on a promise export, with a param
+/// capability the remote hosts) whose Release of the promise meets an
+/// allocation failure, the `k`-th of that step: every later one too, or
+/// only that one (`one_shot`). At most one Return for the call. Either the
+/// peer asks its transport to close, or the call has its one Return, its
+/// param cap is released, and its id comes free. Returns whether a
+/// failure was induced.
+fn releasedPromiseCallUnderOom(k: usize, one_shot: bool) !bool {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{});
+    var one_shot_alloc = OneShotFailure{ .failing = &failing };
+    var h: TailHarness = undefined;
+    try h.startWith(allocator, if (one_shot) one_shot_alloc.allocator() else failing.allocator());
+    defer h.deinit();
+    var transport = CloseRecorder{};
+    transport.attach(&h.client_peer);
+    const promise_id = try h.client_peer.addPromiseExport();
+    try h.pushPlainCall(allocator, 10, h.target_export_id);
+    var res = ResultExport{ .export_id = promise_id };
+    try h.client_peer.sendReturnResults(10, &res, ResultExport.build);
+    try h.pushFinish(allocator, 10);
+    try pushCallWithRemoteCap(&h, allocator, 11, promise_id, 77);
+
+    failing.fail_index = failing.alloc_index + k;
+    const ok = if (pushRelease(&h, allocator, promise_id, 1)) true else |_| false;
+    const induced = failing.has_induced_failure;
+    failing.fail_index = std.math.maxInt(usize);
+    try std.testing.expect(h.wire.countReturns(.client_to_server, 11, null) <= 1);
+    if (!ok or transport.closed) {
+        h.client_peer.notifyTransportClosed();
+        return induced;
+    }
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 11, null));
+    try h.pushFinish(allocator, 11);
+    try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(11)));
+    h.target.answer_id = null;
+    try h.pushPlainCall(allocator, 11, h.target_export_id);
+    try std.testing.expectEqual(@as(?u32, 11), h.target.answer_id);
+    return induced;
+}
+
+test "a call queued on a promise export that the remote releases: an allocation failure gives one Return or ends the connection" {
+    for ([_]bool{ false, true }) |one_shot| {
+        var k: usize = 0;
+        while (try releasedPromiseCallUnderOom(k, one_shot)) : (k += 1) {
+            if (k > 5000) return error.TestSweepRunaway;
+        }
+        try std.testing.expect(k > 2);
+    }
+}
+
+test "a call queued on a promise export: the remote's Finish, then its Release, gives one Return" {
+    // The Finish first: with the C++ flag it cancels the queued call
+    // (Return canceled), and the Release then finds nothing to fail. With
+    // go-capnp's flag the call stays queued, and the Release gives it its
+    // one exception Return.
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |go_flags| {
+        var h: TailHarness = undefined;
+        try h.start(allocator);
+        defer h.deinit();
+        const promise_id = try h.client_peer.addPromiseExport();
+        h.target.answer_id = null;
+        try h.pushPlainCall(allocator, 10, h.target_export_id);
+        var res = ResultExport{ .export_id = promise_id };
+        try h.client_peer.sendReturnResults(10, &res, ResultExport.build);
+        try h.pushFinish(allocator, 10);
+        try h.pushPlainCall(allocator, 11, promise_id);
+        try h.pushFinishWith(allocator, 11, go_flags);
+        try pushRelease(&h, allocator, promise_id, 1);
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 11, null));
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 11, if (go_flags) .exception else .canceled));
+        try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(11)));
+        h.target.answer_id = null;
+        try h.pushPlainCall(allocator, 11, h.target_export_id);
+        try std.testing.expectEqual(@as(?u32, 11), h.target.answer_id);
     }
 }
 

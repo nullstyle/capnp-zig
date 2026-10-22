@@ -5566,3 +5566,59 @@ test "promise export: one transient allocation failure in the resolve that repla
     }
     try testing.expect(fail_at > 1);
 }
+
+fn releaseFrame(alloc: std.mem.Allocator, id: u32, count: u32) ![]const u8 {
+    var mb = protocol.MessageBuilder.init(alloc);
+    defer mb.deinit();
+    try mb.buildRelease(id, count);
+    return mb.finish();
+}
+
+test "promise export: a call queued on a promise export that the remote releases gets one exception RETURN; its id and its place in the bound come free" {
+    // The remote got promise export P in a RETURN, called P before the
+    // host resolved it, then released P. Before, the Peer dropped the
+    // queued call with no RETURN. Its Finish then left a record that no
+    // RETURN consumed, ANSWER_FINISHED came for a call the host never
+    // had, and after max_active_inbound_questions such calls every new
+    // call was refused. Now the call gets one exception RETURN when P
+    // goes. Both Finish flags; three rounds with room for three calls.
+    const alloc = testing.allocator;
+    for ([_]bool{ false, true }) |go_flags| {
+        const a = try Conn.init(alloc, .{ .now_ns = 0, .answer_finished = true, .limits = .{ .max_active_inbound_questions = 3 } });
+        defer a.deinit();
+        var ra = Rec.init(alloc);
+        defer ra.deinit();
+        const ea = try a.exportCap(200);
+        const res = try msgCap(alloc, 1, 0);
+        defer alloc.free(res);
+        var round: u32 = 0;
+        while (round < 3) : (round += 1) {
+            const pe = try a.promiseExport();
+            const grant: u32 = 10 + round * 10;
+            try pushFrame(alloc, a, plainCallFrame(alloc, grant, ea));
+            try drainAll(a, &ra);
+            try testing.expectEqual(@as(usize, 1), countCalls(&ra, grant));
+            try a.returnResults(grant, res, &.{.{ .kind = .@"export", .id = pe }});
+            try pushFrame(alloc, a, finishFrame(alloc, grant));
+            const id = grant + 1;
+            try pushFrame(alloc, a, plainCallFrame(alloc, id, pe));
+            try drainAll(a, &ra);
+            try testing.expectEqual(@as(usize, 0), try countReturnFrames(&ra, id, null));
+            try pushFrame(alloc, a, releaseFrame(alloc, pe, 1));
+            try drainAll(a, &ra);
+            try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, id, .exception));
+            try pushFrame(alloc, a, finishFrameWith(alloc, id, go_flags));
+            try drainAll(a, &ra);
+            try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, id, null));
+            try testing.expect(!(try a.peer.inboundAnswerQuestionIdInUse(id)));
+            try testing.expectEqual(@as(usize, 0), ra.countFinished(id));
+            try testing.expectEqual(@as(usize, 0), countCalls(&ra, id));
+        }
+        try pushFrame(alloc, a, plainCallFrame(alloc, 99, ea));
+        try pushFrame(alloc, a, plainCallFrame(alloc, 11, ea));
+        try drainAll(a, &ra);
+        try testing.expectEqual(@as(usize, 1), countCalls(&ra, 99));
+        try testing.expectEqual(@as(usize, 1), countCalls(&ra, 11));
+        try testing.expectEqual(@as(usize, 0), ra.close_requested);
+    }
+}

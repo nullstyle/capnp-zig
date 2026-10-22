@@ -11,6 +11,7 @@ const peer_cap_lifecycle = @import("./peer_cap_lifecycle.zig");
 const peer_inbound_release = @import("./peer_inbound_release.zig");
 const peer_fds = @import("./peer_fds.zig");
 const peer_outbound_control = @import("./peer_outbound_control.zig");
+const peer_return_dispatch = @import("./return/peer_return_dispatch.zig");
 const resolve = @import("./resolve.zig");
 const state = @import("./state.zig");
 const third_party = @import("./third_party.zig");
@@ -32,6 +33,35 @@ pub fn ExportRelease(comptime Peer: type) type {
         const ResolvedImport = state.ResolvedImport;
         const ensureCountLimit = Peer.ensureCountLimit;
         const ensureByteLimit = Peer.ensureByteLimit;
+
+        const promise_export_released_reason = "promise released before it resolved";
+
+        /// `destroyExportEntry`'s hook for a call queued on a promise export
+        /// that goes before it resolved (the remote released its last
+        /// reference: C++ and go-capnp clients do not keep a capability
+        /// alive for a call in flight). The call can never be delivered,
+        /// and nothing else answers it. It gets one exception Return (one
+        /// that cannot be sent ends the connection), and its param caps are
+        /// released. Before, it was dropped with no Return: its id stayed
+        /// in use, and its Finish left a record that took a place in
+        /// `max_active_inbound_questions` for good. At deinit nothing is
+        /// sent.
+        fn failCallQueuedOnDestroyedExport(self: *Peer, pending_call: *PendingCall, allocator: std.mem.Allocator) void {
+            defer pending_calls.deinitPendingCallOwnedFrame(PendingCall, pending_call, allocator);
+            if (self.in_deinit) return;
+            const question_id = pending_call.question_id orelse return;
+            if (pending_call.send_results_to_yourself) {
+                self.noteSendResultsToYourself(question_id) catch |err| {
+                    log.debug("yourself call {} not marked for its exception: {}", .{ question_id, err });
+                };
+            }
+            self.sendReturnException(question_id, promise_export_released_reason) catch |err| {
+                peer_return_dispatch.loseReturnForPeer(Peer, self, question_id, err);
+            };
+            self.releaseInboundCaps(&pending_call.caps) catch |err| {
+                peer_return_dispatch.reportNonfatalErrorForPeer(Peer, self, err);
+            };
+        }
 
         pub fn releaseImport(self: *Peer, import_id: u32, count: u32) anyerror!void {
             self.assertThreadAffinity();
@@ -270,7 +300,7 @@ pub fn ExportRelease(comptime Peer: type) type {
                 self.bootstrap_export_id,
                 id,
                 peer_cap_lifecycle.clearExportForPeerFn(Peer),
-                pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
+                failCallQueuedOnDestroyedExport,
             );
             finalizeExportRelease(self, id, promise_target, import_target);
         }
@@ -437,7 +467,7 @@ pub fn ExportRelease(comptime Peer: type) type {
                 self.bootstrap_export_id,
                 id,
                 peer_cap_lifecycle.clearExportForPeerFn(Peer),
-                pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
+                failCallQueuedOnDestroyedExport,
             );
             finalizeExportRelease(self, id, promise_target, import_target);
         }
@@ -459,7 +489,7 @@ pub fn ExportRelease(comptime Peer: type) type {
                 self.bootstrap_export_id,
                 id,
                 peer_cap_lifecycle.clearExportForPeerFn(Peer),
-                pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
+                failCallQueuedOnDestroyedExport,
             );
             finalizeExportRelease(self, id, promise_target, import_target);
         }
@@ -479,7 +509,7 @@ pub fn ExportRelease(comptime Peer: type) type {
                 id,
                 count,
                 peer_cap_lifecycle.clearExportForPeerFn(Peer),
-                pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
+                failCallQueuedOnDestroyedExport,
             );
             finalizeExportRelease(self, id, promise_target, import_target);
         }
