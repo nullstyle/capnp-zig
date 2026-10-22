@@ -1,7 +1,7 @@
 //! Self-interop e2e: drive the Zig e2e client against the Zig e2e server
 //! for each schema in `schemas` and `quic_schemas` below, with TAP
 //! accounting. It leaves out pipelined_params_deferred, whose checks fail
-//! by design.
+//! by design, and the cancellation schemas, which have no Zig client yet.
 //!
 //! This is the no-docker complement to tools/e2e_runner.zig: it needs no
 //! reference-implementation containers, builds on `std.Io` only, and runs
@@ -39,7 +39,8 @@ const builtin = @import("builtin");
 const schemas = [_][]const u8{ "game_world", "chat", "inventory", "matchmaking", "pass_back", "pipelined_params" };
 /// The QUIC lane: every schema the e2e server serves (its `Schema` enum),
 /// except pipelined_params_deferred, whose checks fail by design (a known
-/// limit of tools/e2e_runner.zig, listed in tools/e2e_known_limits.zig).
+/// limit of tools/e2e_runner.zig, listed in tools/e2e_known_limits.zig),
+/// and cancel_id_reuse and cancel_pipelined, which have no Zig client yet.
 const quic_schemas = [_][]const u8{ "game_world", "chat", "inventory", "matchmaking", "resolve_disembargo", "pass_back", "pipelined_params" };
 const server_ready_timeout_ms: i64 = 30_000;
 const client_timeout_ms: i64 = 60_000;

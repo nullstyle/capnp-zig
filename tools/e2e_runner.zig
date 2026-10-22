@@ -34,6 +34,11 @@ const Schema = enum {
     // and mintFail() late. Zig-server direction only; its failing checks are
     // a known limit (tools/e2e_known_limits.zig).
     pipelined_params_deferred,
+    // Both use tests/e2e/schemas/cancellation.capnp: the caller sends Finish
+    // before the callee answers. Zig-server direction and the C++ client
+    // only, for now (see `cancelSkip`).
+    cancel_id_reuse,
+    cancel_pipelined,
 };
 
 const Direction = enum {
@@ -87,8 +92,11 @@ const all_backends = [_]Backend{ .cpp, .go, .python, .rust };
 // `just e2e-l3-go` recon gate because vendored go-capnp exposes Network3PH
 // names but its runtime still TODO/panics on the required 3PH paths.
 // pipelined_params_deferred runs in the Zig-server direction only, and its
-// rows are XFAIL: tools/e2e_known_limits.zig lists them.
-const all_schemas = [_]Schema{ .game_world, .chat, .inventory, .matchmaking, .resolve_disembargo, .l3_l4_interop, .pass_back, .pipelined_params, .pipelined_params_deferred };
+// rows are XFAIL: tools/e2e_known_limits.zig lists them. cancel_id_reuse and
+// cancel_pipelined run with the C++ client in the Zig-server direction only.
+// cancel_pipelined guards the ANSWER_FINISHED fix for pipelined calls: without
+// it, bar() fails with "call canceled".
+const all_schemas = [_]Schema{ .game_world, .chat, .inventory, .matchmaking, .resolve_disembargo, .l3_l4_interop, .pass_back, .pipelined_params, .pipelined_params_deferred, .cancel_id_reuse, .cancel_pipelined };
 
 /// resolve_disembargo is the only scenario with per-direction reference-impl
 /// gaps — all in the reference libraries, not capnp-zig. Returns a SKIP status
@@ -142,10 +150,21 @@ fn deferredServerSkip(schema: Schema, zig_is_client: bool) ?[]const u8 {
     return "SKIP(pipelined_params_deferred: Zig-server only)";
 }
 
+/// The cancellation schemas run in the Zig-server direction, with the C++
+/// client only, for now. Reference servers come next sprint; the Go, Python
+/// and Rust clients come later in this one.
+fn cancelSkip(schema: Schema, backend: Backend, zig_is_client: bool) ?[]const u8 {
+    if (schema != .cancel_id_reuse and schema != .cancel_pipelined) return null;
+    if (zig_is_client) return "SKIP(cancellation: reference servers come next sprint)";
+    if (backend != .cpp) return "SKIP(cancellation: only the C++ client exists yet)";
+    return null;
+}
+
 fn caseSkip(schema: Schema, backend: Backend, zig_is_client: bool) ?[]const u8 {
     if (resolveDisembargoSkip(schema, backend, zig_is_client)) |reason| return reason;
     if (l3L4InteropSkip(schema, backend, zig_is_client)) |reason| return reason;
     if (deferredServerSkip(schema, zig_is_client)) |reason| return reason;
+    if (cancelSkip(schema, backend, zig_is_client)) |reason| return reason;
     return null;
 }
 
@@ -189,7 +208,7 @@ fn usage() void {
         \\      over an AF_UNIX socket. Only the cpp backend runs; go, python and
         \\      rust record SKIP(unix: reference harness TCP-only).
         \\  --backend=cpp|go|python|rust (repeatable)
-        \\  --schema=game_world|chat|inventory|matchmaking|resolve_disembargo|l3_l4_interop|pass_back|pipelined_params|pipelined_params_deferred (repeatable)
+        \\  --schema=game_world|chat|inventory|matchmaking|resolve_disembargo|l3_l4_interop|pass_back|pipelined_params|pipelined_params_deferred|cancel_id_reuse|cancel_pipelined (repeatable)
         \\  --allow-missing-hooks
         \\  --verbose
         \\  --help
@@ -247,6 +266,8 @@ fn schemaName(s: Schema) []const u8 {
         .pass_back => "pass_back",
         .pipelined_params => "pipelined_params",
         .pipelined_params_deferred => "pipelined_params_deferred",
+        .cancel_id_reuse => "cancel_id_reuse",
+        .cancel_pipelined => "cancel_pipelined",
     };
 }
 
@@ -269,6 +290,8 @@ fn zigSchemaPort(s: Schema) u16 {
         .pass_back => 4708,
         .pipelined_params => 4709,
         .pipelined_params_deferred => 4710,
+        .cancel_id_reuse => 4711,
+        .cancel_pipelined => 4712,
     };
 }
 
@@ -459,6 +482,8 @@ fn parseSchema(text: []const u8) !Schema {
     if (std.mem.eql(u8, text, "pass_back")) return .pass_back;
     if (std.mem.eql(u8, text, "pipelined_params")) return .pipelined_params;
     if (std.mem.eql(u8, text, "pipelined_params_deferred")) return .pipelined_params_deferred;
+    if (std.mem.eql(u8, text, "cancel_id_reuse")) return .cancel_id_reuse;
+    if (std.mem.eql(u8, text, "cancel_pipelined")) return .cancel_pipelined;
     return error.InvalidSchema;
 }
 
@@ -1227,6 +1252,7 @@ fn unixCaseSkip(schema: Schema, backend: Backend, role: Direction) ?[]const u8 {
     // The L3/L4 driver (tools/e2e_l3_cpp.zig) dials TCP only.
     if (schema == .l3_l4_interop) return "SKIP(unix: l3_l4_interop driver is TCP-only)";
     if (deferredServerSkip(schema, role == .zig_client)) |reason| return reason;
+    if (cancelSkip(schema, backend, role == .zig_client)) |reason| return reason;
     return null;
 }
 

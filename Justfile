@@ -312,9 +312,10 @@ gen:
     zig build
     cd src/rpc && just gen-rpc
     cd tests/e2e/schemas && deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/tests/e2e/zig/generated" -- game_types.capnp bootstrap.capnp game_world.capnp inventory.capnp chat.capnp matchmaking.capnp resolve_disembargo.capnp l3_l4_interop.capnp
-    # Its own request: every binding embeds its whole request, so adding a
+    # One request each: every binding embeds its whole request, so adding a
     # file to the request above would rewrite all eight of those bindings.
     cd tests/e2e/schemas && deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/tests/e2e/zig/generated" -- cap_passing.capnp
+    cd tests/e2e/schemas && deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/tests/e2e/zig/generated" -- cancellation.capnp
     deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}" -- examples/addressbook.capnp examples/pingpong.capnp
     cd examples/kvstore && deno run --allow-all --no-config "{{ capnp_tool }}" generate --plugin "{{justfile_directory()}}/zig-out/bin/capnpc-zig" --output "{{justfile_directory()}}/examples/kvstore/gen" -- kvstore.capnp
     mkdir -p zig-out/check-generated/tests/test_schemas

@@ -42,6 +42,29 @@ both, and the client picks the flow. Both also run Zig to Zig in
   a known limit (XFAIL, see below). The Zig-client direction is a SKIP, and
   `e2e-self` does not run this schema.
 
+Cancellation scenarios: the caller sends Finish before the callee answers.
+Both share `schemas/cancellation.capnp`. The Zig server answers a reported
+Finish with `sendReturnCanceled`, as capnp-swift does, and holds `slow()`
+and `getSub()` so that the Finish comes first.
+
+- `cancel_id_reuse`: the client drops `slow()`, then calls `fast()`. The
+  server answers `slow()` canceled, the client reuses its question id, and
+  each `fast()` must return its own `n`. The server never sends `slow()` a
+  late answer, so this scenario does not test how a late answer is handled.
+- `cancel_pipelined`: the client sends `bar()` on `getSub()`'s pipelined
+  `Sub`, then drops `getSub()`. `bar()` must still return its results, and
+  the server must answer no call canceled. The server answers `getSub()`
+  only after the Peer applied its Finish. With no Finish within 5 s, it
+  answers `getSub()` with an exception, so the check cannot pass without
+  testing anything. This scenario guards the ANSWER_FINISHED fix for
+  pipelined calls: without it, the Peer reports the Finish while `bar()` is
+  queued on the answer, and `bar()` gets the exception "call canceled".
+
+Both are in the default run (the CI gate). Only the C++ client and the
+Zig-server direction run; the other cases are SKIP. `just --justfile
+tests/e2e/Justfile test-cancel` runs only these two. `e2e-self` and
+`e2e-quic` do not run them, because there is no Zig client for them yet.
+
 `zig build -Dquic=true e2e-quic` runs seven schemas of the Zig e2e server
 Zig to Zig over the QUIC baseline wire (`--transport quic` on both binaries),
 `resolve_disembargo` too (all but `pipelined_params_deferred`). It uses the

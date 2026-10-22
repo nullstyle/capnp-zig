@@ -59,6 +59,14 @@ test-zig-server:
 test-zig-server-skip-build:
     {{runner}} --skip-build --direction=zig-server
 
+# Only the cancellation scenarios (C++ client -> Zig server). The default
+# run has them too; see README.md, "Cancellation scenarios".
+test-cancel:
+    {{runner}} --direction=zig-server --backend=cpp --schema=cancel_id_reuse --schema=cancel_pipelined
+
+test-cancel-skip-build:
+    {{runner}} --skip-build --direction=zig-server --backend=cpp --schema=cancel_id_reuse --schema=cancel_pipelined
+
 test-schema schema:
     {{runner}} --schema={{schema}}
 
