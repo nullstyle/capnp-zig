@@ -1808,34 +1808,76 @@ test "an allocation failure in a Finish keeps the record of the finished call: i
     }
 }
 
-/// One run of the forward-after-Finish case above with one allocation of
-/// the client peer failing: the `k`-th after setup, and every later one in
-/// the same step. A frame the peer fails to handle ends the connection
-/// there, as a transport does (`notifyTransportClosed`). Whatever fails: at
-/// most one Return for 600 and for 700, at most one Finish for the
-/// forwarded question, and no tail mapping for 700 once its Finish is
-/// applied. With no failure, the full outcome. testing.allocator checks
-/// for leaks at deinit. Returns whether a failure was induced (the sweep's
-/// end condition).
-fn forwardAfterFinishUnderOom(k: usize) !bool {
+/// A transport binding for the client peer of a `TailHarness` that only
+/// records a close request: the harness still sends through its wire
+/// (the send override comes first). The peer asks its transport to close
+/// when it cannot send a Return it owes and nothing else will.
+const CloseRecorder = struct {
+    closed: bool = false,
+
+    fn attach(self: *CloseRecorder, peer: *Peer) void {
+        peer.attachTransportBinding(.{ .ctx = self, .send = send, .close = close, .is_closing = isClosing });
+    }
+
+    fn send(_: *anyopaque, _: []const u8) anyerror!void {
+        return error.TestUnexpectedTransportSend;
+    }
+
+    fn close(ctx: *anyopaque) void {
+        castCtx(*CloseRecorder, ctx).closed = true;
+    }
+
+    fn isClosing(ctx: *anyopaque) bool {
+        return castCtx(*CloseRecorder, ctx).closed;
+    }
+};
+
+const ForwardSweep = enum { answer_import, answer_import_hook, reply_exception, promise_export };
+
+/// One run of a forward after the Finish (the cases above) with the
+/// client peer's allocations failing from the `k`-th after setup: every
+/// later one in the same step, or only that one (`one_shot`). A frame the
+/// peer fails to handle ends the connection there, and so does a close
+/// that the peer asks for: the test then tells the peer that the
+/// transport closed, as a transport does. Whatever fails: at most one
+/// Return per call and one Finish for the forwarded question. While the
+/// connection is up, every call gets its one Return, the forwarded
+/// question its one Finish, no record stays, and the remote's reuse of
+/// each id reaches the host. testing.allocator checks for leaks at deinit.
+/// Returns whether a failure was induced (the sweep's end condition).
+fn forwardAfterFinishUnderOom(k: usize, variant: ForwardSweep, one_shot: bool) !bool {
     const allocator = std.testing.allocator;
     var failing = std.testing.FailingAllocator.init(allocator, .{});
+    var one_shot_alloc = OneShotFailure{ .failing = &failing };
     var h: TailHarness = undefined;
-    try h.startWith(allocator, failing.allocator());
+    try h.startWith(allocator, if (one_shot) one_shot_alloc.allocator() else failing.allocator());
     defer h.deinit();
+    var transport = CloseRecorder{};
+    transport.attach(&h.client_peer);
+    var hook = FinishedHook{};
+    if (variant == .answer_import_hook) h.client_peer.setAnswerFinishedHandler(&hook, FinishedHook.onFinished);
+    const promise_id: u32 = if (variant == .promise_export) try h.client_peer.addPromiseExport() else 0;
+    // The forwarded call: 700 pipelined on 600, or 600 on the promise.
+    const fwd_id: u32 = if (variant == .promise_export) 600 else 700;
     failing.fail_index = failing.alloc_index + k;
 
     const Step = enum { call, pipelined, finish_pipelined, finish_answer, answer, reply };
     var qf: ?u32 = null;
+    var closed = false;
     for (std.enums.values(Step)) |step| {
         const frame_ok: bool = switch (step) {
-            .call => if (h.pushPlainCall(allocator, 600, h.target_export_id)) true else |_| false,
-            .pipelined => if (h.pushPipelinedPlainCall(allocator, 700, 600)) true else |_| false,
-            .finish_pipelined => if (h.pushFinishWith(allocator, 700, true)) true else |_| false,
+            .call => if (h.pushPlainCall(allocator, 600, if (variant == .promise_export) promise_id else h.target_export_id)) true else |_| false,
+            .pipelined => if (variant == .promise_export) true else (if (h.pushPipelinedPlainCall(allocator, 700, 600)) true else |_| false),
+            .finish_pipelined => if (variant == .promise_export) true else (if (h.pushFinishWith(allocator, 700, true)) true else |_| false),
             .finish_answer => if (h.pushFinishWith(allocator, 600, true)) true else |_| false,
             .answer => blk: {
                 const wire_mark = h.wire.events.items.len;
-                if (h.target.answer_id != null) {
+                if (variant == .promise_export) {
+                    h.client_peer.resolvePromiseExportToImport(promise_id, h.server_import_id) catch {
+                        failing.fail_index = std.math.maxInt(usize);
+                        h.client_peer.resolvePromiseExportToException(promise_id, "resolve failed") catch {};
+                    };
+                } else if (h.target.answer_id != null) {
                     var result = ResultImport{ .import_id = h.server_import_id };
                     h.client_peer.sendReturnResults(600, &result, ResultImport.build) catch {
                         failing.fail_index = std.math.maxInt(usize);
@@ -1848,35 +1890,144 @@ fn forwardAfterFinishUnderOom(k: usize) !bool {
                 if (n == 1) qf = qfs[0];
                 break :blk true;
             },
-            .reply => if (qf) |id| (if (h.pushResults(allocator, id)) true else |_| false) else true,
+            .reply => if (qf) |id| (if (variant == .reply_exception)
+                (if (pushExceptionReturn(&h, allocator, id)) true else |_| false)
+            else
+                (if (h.pushResults(allocator, id)) true else |_| false)) else true,
         };
         if (failing.has_induced_failure) failing.fail_index = std.math.maxInt(usize);
-        if (!h.client_peer.active_inbound_questions.contains(700)) {
-            try std.testing.expect(!h.client_peer.forwarded_tail_questions.contains(700));
+        if (!h.client_peer.active_inbound_questions.contains(fwd_id)) {
+            try std.testing.expect(!h.client_peer.forwarded_tail_questions.contains(fwd_id));
         }
-        if (!frame_ok) {
+        if (!frame_ok or transport.closed) {
             h.client_peer.notifyTransportClosed();
+            closed = true;
             break;
         }
     }
-    try std.testing.expect(h.wire.countReturns(.client_to_server, 700, null) <= 1);
-    try std.testing.expect(h.wire.countReturns(.client_to_server, 600, null) <= 1);
+    failing.fail_index = std.math.maxInt(usize);
+    for ([_]u32{ 600, fwd_id }) |id| try std.testing.expect(h.wire.countReturns(.client_to_server, id, null) <= 1);
     if (qf) |id| try std.testing.expect(h.wire.countFinishes(.client_to_server, id) <= 1);
-    if (!failing.has_induced_failure) {
-        const id = qf orelse return error.TestNoForward;
-        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 700, .results));
-        try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, id));
-        try expectForwardGone(&h, 700, id);
+    if (!closed) {
+        for ([_]u32{ 600, fwd_id }) |id| try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, id, null));
+        if (qf) |id| {
+            try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, id));
+            try expectForwardGone(&h, fwd_id, id);
+        }
+        if (!failing.has_induced_failure) {
+            _ = qf orelse return error.TestNoForward;
+            try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, fwd_id, if (variant == .reply_exception) .exception else .results));
+        }
+        for ([_]u32{ fwd_id, 600 }) |id| {
+            try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(id)));
+            h.target.answer_id = null;
+            try h.pushPlainCall(allocator, id, h.target_export_id);
+            try std.testing.expectEqual(@as(?u32, id), h.target.answer_id);
+            var reply = ResultN{ .n = 1 };
+            try h.client_peer.sendReturnResults(id, &reply, ResultN.build);
+            try h.pushFinish(allocator, id);
+        }
     }
     return failing.has_induced_failure;
 }
 
-test "go-capnp Finish flags: an allocation failure anywhere in a forward after the Finish: never two Returns or two Finishes, no tail mapping, no leak" {
-    var k: usize = 0;
-    while (try forwardAfterFinishUnderOom(k)) : (k += 1) {
-        if (k > 10_000) return error.TestSweepRunaway;
+const CancelShape = enum { queued_call, forwarded_call };
+
+/// One run of a Finish (C++ flags) that makes the peer answer a call
+/// `canceled` itself, with one allocation failing, the `k`-th of the
+/// Finish. `queued_call`: call 700 waits, pipelined on 600, and its Finish
+/// cancels it. `forwarded_call`: call 600, parked on a promise export, was
+/// forwarded to the remote as qf, and its Finish comes before qf's Return:
+/// the peer relays the Finish and answers 600 itself. Either the call gets
+/// one Return, or the peer asks its transport to close. While the
+/// connection is up, the id comes free and the remote's reuse reaches the
+/// host. Returns whether a failure was induced.
+fn cancelUnderOneShotOom(k: usize, shape: CancelShape) !bool {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{});
+    var one_shot = OneShotFailure{ .failing = &failing };
+    var h: TailHarness = undefined;
+    try h.startWith(allocator, one_shot.allocator());
+    defer h.deinit();
+    var transport = CloseRecorder{};
+    transport.attach(&h.client_peer);
+
+    const id: u32 = if (shape == .queued_call) 700 else 600;
+    var qf: ?u32 = null;
+    switch (shape) {
+        .queued_call => {
+            try h.pushPlainCall(allocator, 600, h.target_export_id);
+            try h.pushPipelinedPlainCall(allocator, 700, 600);
+        },
+        .forwarded_call => {
+            const promise_id = try h.client_peer.addPromiseExport();
+            try h.pushPlainCall(allocator, 600, promise_id);
+            const wire_mark = h.wire.events.items.len;
+            try h.client_peer.resolvePromiseExportToImport(promise_id, h.server_import_id);
+            var qfs: [2]u32 = undefined;
+            try std.testing.expectEqual(@as(usize, 1), try clientCallsSince(&h, wire_mark, &qfs));
+            qf = qfs[0];
+        },
     }
-    try std.testing.expect(k > 10);
+    failing.fail_index = failing.alloc_index + k;
+    const finish_ok = if (h.pushFinishWith(allocator, id, false)) true else |_| false;
+    const induced = failing.has_induced_failure;
+    failing.fail_index = std.math.maxInt(usize);
+    try std.testing.expect(h.wire.countReturns(.client_to_server, id, null) <= 1);
+    if (!finish_ok or transport.closed) {
+        h.client_peer.notifyTransportClosed();
+        return induced;
+    }
+    try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, id, .canceled));
+    if (qf) |q| {
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countFinishes(.client_to_server, q));
+        // The remote's late Return for the forwarded question is absorbed.
+        try h.pushResults(allocator, q);
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, id, null));
+        try expectForwardGone(&h, id, q);
+    }
+    if (shape == .queued_call) {
+        var result = ResultN{ .n = 1 };
+        try h.client_peer.sendReturnResults(600, &result, ResultN.build);
+        try h.pushFinish(allocator, 600);
+    }
+    try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(id)));
+    h.target.answer_id = null;
+    try h.pushPlainCall(allocator, id, h.target_export_id);
+    try std.testing.expectEqual(@as(?u32, id), h.target.answer_id);
+    return induced;
+}
+
+test "a Finish that the peer answers canceled itself: under an allocation failure, one Return or the connection ends" {
+    // The peer answers a call canceled itself when the caller's Finish
+    // cancels a queued call, or comes before the Return of a forward of
+    // that call. Before, a Return(canceled) that could not be sent was only
+    // reported: the call had no Return, and the connection stayed up.
+    for (std.enums.values(CancelShape)) |shape| {
+        var k: usize = 0;
+        while (try cancelUnderOneShotOom(k, shape)) : (k += 1) {
+            if (k > 1000) return error.TestSweepRunaway;
+        }
+        try std.testing.expect(k > 2);
+    }
+}
+
+test "go-capnp Finish flags: an allocation failure anywhere in a forward after the Finish: one Return per call or the connection ends, no leak" {
+    // Before, a call that the peer replayed after its Finish could end
+    // with no Return while the connection stayed up: its forward failed,
+    // and so did the exception Return after it (or a parked call's
+    // exception Return, or the cancel of a queued call). The replay only
+    // reported the error. Now a Return that the peer owes and cannot send
+    // ends the connection, so the remote's question ends at disconnect.
+    for ([_]bool{ false, true }) |one_shot| {
+        for (std.enums.values(ForwardSweep)) |variant| {
+            var k: usize = 0;
+            while (try forwardAfterFinishUnderOom(k, variant, one_shot)) : (k += 1) {
+                if (k > 10_000) return error.TestSweepRunaway;
+            }
+            try std.testing.expect(k > 10);
+        }
+    }
 }
 
 test "a yourself call whose param names a failed answer: the remote gets resultsSentElsewhere, the tail call that failure" {

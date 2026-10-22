@@ -3461,10 +3461,12 @@ pub const Peer = struct {
         }
         _ = self.forwarded_questions.remove(tail_question_id);
         if (unanswered_upstream_id) |upstream_answer_id| {
-            // Nonfatal like the queued-call cancel: the Finish itself is
-            // applied either way.
+            // The Finish itself is applied either way. The forward is gone,
+            // so nothing answers the upstream call again: as with the
+            // queued-call cancel, a Return that cannot be sent ends the
+            // connection.
             ReturnSendImpl.sendReturnCanceled(self, upstream_answer_id) catch |err| {
-                self.reportNonfatalError(err);
+                peer_return_dispatch.loseReturnForPeer(Peer, self, upstream_answer_id, err);
             };
         }
     }
@@ -5110,8 +5112,11 @@ pub const Peer = struct {
                 // until this arrives) and shutdown can complete. Non-draining
                 // by construction (sendReturnTag does not touch
                 // pending_promises), so it is safe while iterating that map.
+                // Nothing answers the call again, so a Return that cannot
+                // be sent ends the connection (closing only asks the
+                // transport, so the map is not touched here).
                 self.sendReturnTag(question_id, .canceled) catch |err| {
-                    self.reportNonfatalError(err);
+                    peer_return_dispatch.loseReturnForPeer(Peer, self, question_id, err);
                 };
                 canceled = true;
             }

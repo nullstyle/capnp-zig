@@ -421,7 +421,7 @@ pub fn CallInbound(comptime Peer: type) type {
                 reservation.frame_copy,
                 &self.resolved_answers,
                 &self.pending_promises,
-                Peer.sendReturnException,
+                sendParkedCallException,
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
                 replayQueuedPromisedCall,
@@ -446,7 +446,7 @@ pub fn CallInbound(comptime Peer: type) type {
                 frame,
                 &self.resolved_answers,
                 &self.pending_promises,
-                Peer.sendReturnException,
+                sendParkedCallException,
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
                 replayQueuedPromisedCall,
@@ -549,7 +549,7 @@ pub fn CallInbound(comptime Peer: type) type {
                 export_id,
                 resolved,
                 &self.pending_export_promises,
-                Peer.sendReturnException,
+                sendParkedCallException,
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
                 replayQueuedExportCall,
@@ -573,9 +573,15 @@ pub fn CallInbound(comptime Peer: type) type {
             peer_call_orchestration.markYourselfCallForException(Peer, self, call, noteCallSendResults);
         }
 
-        /// `handleResolvedCall` for a replayed call: a handler error is
-        /// reported, not answered, as the replay drains always did (the
-        /// handler may already have sent its Return).
+        /// `handleResolvedCall` for a replayed call. A handler error does
+        /// not come out of it: the dispatch answers the call with that
+        /// error. An error that does come out means that the call's Return
+        /// could not be sent: its forward failed and so did the exception
+        /// Return after it, or that exception Return alone. The replay is
+        /// the call's last chance, so the connection ends
+        /// (`peer_return_dispatch.loseReturnForPeer`). Before, the error was
+        /// only reported, and the call waited forever with the connection
+        /// up.
         fn handleResolvedCallReportingErrors(
             self: *Peer,
             call: protocol.Call,
@@ -583,7 +589,17 @@ pub fn CallInbound(comptime Peer: type) type {
             resolved: cap_table.ResolvedCap,
         ) anyerror!void {
             handleResolvedCall(self, call, inbound_caps, resolved) catch |err| {
-                peer_return_dispatch.reportNonfatalErrorForPeer(Peer, self, err);
+                peer_return_dispatch.loseReturnForPeer(Peer, self, call.question_id, err);
+            };
+        }
+
+        /// `Peer.sendReturnException` for a parked call that a replay drain
+        /// fails itself (`pending_calls.failParkedCall`): nothing answers
+        /// the call again, so a Return that cannot be sent ends the
+        /// connection (`peer_return_dispatch.loseReturnForPeer`).
+        fn sendParkedCallException(self: *Peer, question_id: u32, reason: []const u8) anyerror!void {
+            self.sendReturnException(question_id, reason) catch |err| {
+                peer_return_dispatch.loseReturnForPeer(Peer, self, question_id, err);
             };
         }
 

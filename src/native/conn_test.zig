@@ -3142,6 +3142,113 @@ test "forwarded call: a call that go-capnp finished and the core forwarded ends 
     }
 }
 
+/// One run of the forward above (40 pipelined on 30, both finished with
+/// go-capnp's flags, the host answers 30 with the remote's capability, the
+/// remote answers the forwarded question) with A's allocations failing
+/// from the `k`-th after setup: every later one in the step, or only that
+/// one (`one_shot`). A refused host answer is answered again with an
+/// exception. A frame that fails, or a CLOSE_REQUESTED, ends the
+/// connection: the host then reports the transport closed. Whatever fails:
+/// at most one RETURN for 30 and 40, at most one Finish for the forwarded
+/// question. While the connection is up: exactly one each, and the
+/// remote's reuse of 40 and 30 reaches the host. testing.allocator checks
+/// for leaks. Returns whether a failure was induced.
+fn forwardAfterFinishNativeUnderOom(k: usize, answer_finished: bool, one_shot: bool) !bool {
+    const alloc = testing.allocator;
+    var failing = std.testing.FailingAllocator.init(alloc, .{});
+    var once = OneShotFailingAllocator{ .backing = alloc };
+    const a = try Conn.init(if (one_shot) once.allocator() else failing.allocator(), .{ .now_ns = 0, .answer_finished = answer_finished });
+    defer a.deinit();
+    const b = try Conn.init(alloc, .{ .now_ns = 0 });
+    defer b.deinit();
+    var ra = Rec.init(alloc);
+    defer ra.deinit();
+    var rb = Rec.init(alloc);
+    defer rb.deinit();
+    const t = try startTailCall(alloc, a, &ra, b, &rb);
+    try drainAll(a, &ra);
+    const calls_out = try countCallFrames(&ra);
+    const res = try msgCap(alloc, 1, 0);
+    defer alloc.free(res);
+    if (one_shot) once.arm(k) else failing.fail_index = failing.alloc_index + k;
+
+    const Step = enum { call, pipelined, finish_pipelined, finish_answer, answer, reply };
+    var qf: ?u32 = null;
+    var closed = false;
+    for (std.enums.values(Step)) |step| {
+        const frame_ok = switch (step) {
+            .call => if (pushFrame(alloc, a, plainCallFrame(alloc, 30, t.ea))) true else |_| false,
+            .pipelined => if (pushFrame(alloc, a, pipelinedCallFrame(alloc, 40, 30))) true else |_| false,
+            .finish_pipelined => if (pushFrame(alloc, a, finishFrameFull(alloc, 40, true, true))) true else |_| false,
+            .finish_answer => if (pushFrame(alloc, a, finishFrameFull(alloc, 30, true, true))) true else |_| false,
+            .answer => blk: {
+                if (a.pending_answers.contains(30)) {
+                    a.returnResults(30, res, &.{t.boot}) catch {
+                        once.remaining = null;
+                        failing.fail_index = std.math.maxInt(usize);
+                        try a.returnException(30, 0, "answer failed");
+                    };
+                }
+                try drainAll(a, &ra);
+                var qfs: [2]u32 = undefined;
+                const n = try callFrameQidsAfter(&ra, calls_out, &qfs);
+                try testing.expect(n <= 1);
+                if (n == 1) qf = qfs[0];
+                break :blk true;
+            },
+            .reply => if (qf) |id| (if (pushFrame(alloc, a, resultsReturnFrame(alloc, id))) true else |_| false) else true,
+        };
+        // A one-shot failure lets the next allocations through by itself.
+        if (failing.has_induced_failure) failing.fail_index = std.math.maxInt(usize);
+        try drainAll(a, &ra);
+        if (!frame_ok or ra.close_requested != 0) {
+            a.transportClosed();
+            try drainAll(a, &ra);
+            closed = true;
+            break;
+        }
+    }
+    const induced = if (one_shot) once.induced else failing.has_induced_failure;
+    once.remaining = null;
+    failing.fail_index = std.math.maxInt(usize);
+    for ([_]u32{ 30, 40 }) |id| try testing.expect(try countReturnFrames(&ra, id, null) <= 1);
+    if (qf) |id| try testing.expect(try countFinishFrames(&ra, id) <= 1);
+    if (!closed) {
+        for ([_]u32{ 30, 40 }) |id| try testing.expectEqual(@as(usize, 1), try countReturnFrames(&ra, id, null));
+        if (qf) |id| {
+            try testing.expectEqual(@as(usize, 1), try countFinishFrames(&ra, id));
+            try expectForwardGone(a, 40, id);
+        } else if (!induced) return error.TestNoForward;
+        for ([_]u32{ 40, 30 }) |id| {
+            try testing.expect(!(try a.peer.inboundAnswerQuestionIdInUse(id)));
+            const before = countCalls(&ra, id);
+            try pushFrame(alloc, a, plainCallFrame(alloc, id, t.ea));
+            try drainAll(a, &ra);
+            try testing.expectEqual(before + 1, countCalls(&ra, id));
+        }
+        // A failure that the core got past is reported, not fatal.
+        if (!induced) try testing.expect(a.last_error == null);
+    }
+    return induced;
+}
+
+test "forwarded call: an allocation failure anywhere in a forward after the Finish: one RETURN per call or the connection ends, no leak" {
+    // Before, under memory pressure, the core could replay call 40 after
+    // its Finish, fail its forward and the exception RETURN after it, and
+    // only report the error: 40 then had no RETURN while the connection
+    // stayed up. Now a RETURN that the core owes and cannot send queues
+    // CLOSE_REQUESTED.
+    for ([_]bool{ false, true }) |one_shot| {
+        for ([_]bool{ false, true }) |answer_finished| {
+            var k: usize = 0;
+            while (try forwardAfterFinishNativeUnderOom(k, answer_finished, one_shot)) : (k += 1) {
+                if (k > 10_000) return error.TestSweepRunaway;
+            }
+            try testing.expect(k > 10);
+        }
+    }
+}
+
 test "forwarded call: the remote's own call with the id of the forwarded question reaches the host while the forward waits" {
     // Question ids are per direction: the remote's questions and the
     // core's own questions are counted apart, both up from 0, and go-capnp
@@ -4663,9 +4770,11 @@ test "pipelined call: an allocation failure anywhere in the answer that replays 
     // one until the call returns. A refused answer is answered again with
     // capnp_return_exception. qb2 gets at most one RETURN, and exactly one
     // once B's transport closes. It can get none before that: with no
-    // memory left, A's core cannot send qb2's exception Return either (best
-    // effort, as for every Return the core itself sends). One failure that
-    // passes always leaves qb2 its Return (the one-shot sweep below).
+    // memory left, A's core cannot send qb2's exception Return either. Then
+    // A's core asks to close the connection (CLOSE_REQUESTED), as nothing
+    // else would answer qb2; before, it only reported the error. One
+    // failure that passes always leaves qb2 its Return (the one-shot sweep
+    // below).
     const alloc = testing.allocator;
     const path = [_]u16{0};
     var k: usize = 0;
@@ -4716,7 +4825,9 @@ test "pipelined call: an allocation failure anywhere in the answer that replays 
         }
         _ = try expectOneReturn(&ra, qa, .results);
         try testing.expect(rb.countReturns(qb2) <= 1);
-        try testing.expectEqual(@as(usize, 0), ra.close_requested + rb.close_requested);
+        const lost = rb.countReturns(qb2) == 0;
+        try testing.expectEqual(@as(usize, @intFromBool(lost)), ra.close_requested);
+        try testing.expectEqual(@as(usize, 0), rb.close_requested);
         b.transportClosed();
         try drainAll(b, &rb);
         try testing.expectEqual(@as(usize, 1), rb.countReturns(qb2));
@@ -4871,8 +4982,8 @@ test "pipelined call: one transient allocation failure in the answer that replay
     // RETURN before the connection ends. Before, when the replay drain could
     // not decode qb2's parked frame, it dropped qb2 with no Return at all.
     // After an exception, the failure drain answers qb2 with a copy of it;
-    // a failure while it builds that Return loses it (best effort, as for
-    // every Return the core sends itself), and qb2 ends at the close.
+    // a failure while it builds that Return loses it, A's core asks to close
+    // the connection (CLOSE_REQUESTED), and qb2 ends at the close.
     const alloc = testing.allocator;
     const path = [_]u16{0};
     const Answer = enum { @"export", promise, exception };
@@ -4938,7 +5049,9 @@ test "pipelined call: one transient allocation failure in the answer that replay
                 return error.TestWrongReturnCount;
             }
             try testing.expectEqual(@as(usize, 1), rb.countReturns(qb1));
-            try testing.expectEqual(@as(usize, 0), ra.close_requested + rb.close_requested);
+            const lost = rb.countReturns(qb2) == 0;
+            try testing.expectEqual(@as(usize, @intFromBool(lost)), ra.close_requested);
+            try testing.expectEqual(@as(usize, 0), rb.close_requested);
             b.transportClosed();
             try drainAll(b, &rb);
             try testing.expectEqual(@as(usize, 1), rb.countReturns(qb2));

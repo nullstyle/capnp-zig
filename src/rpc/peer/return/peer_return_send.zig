@@ -607,9 +607,11 @@ pub fn ReturnSend(comptime Peer: type) type {
                         };
                     }
                     // Non-draining send: descendants are handled by the worklist,
-                    // not by re-entering this drain.
+                    // not by re-entering this drain. Nothing answers the
+                    // queued call again, so a Return that cannot be sent ends
+                    // the connection.
                     sendReturnExceptionNoDrain(self, child_qid, reason, ex_type) catch |err| {
-                        reportNonfatalError(self, err);
+                        peer_return_dispatch.loseReturnForPeer(Peer, self, child_qid, err);
                     };
                     self.releaseInboundCaps(&pending_call.caps) catch |err| {
                         reportNonfatalError(self, err);

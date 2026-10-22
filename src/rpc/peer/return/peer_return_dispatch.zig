@@ -63,6 +63,19 @@ pub fn reportNonfatalErrorForPeer(comptime PeerType: type, peer: *PeerType, err:
     if (peer.on_error) |cb| cb(peer.callback_ctx, peer, err);
 }
 
+/// The peer settles call `answer_id` itself (a replay, a drain, a cancel)
+/// and could not send its one Return: nothing answers the call again.
+/// Report the error, and close the connection, so the remote's question
+/// ends at disconnect and does not wait forever with the connection up.
+/// The transport's close then ends every other state as usual
+/// (`Peer.notifyTransportClosed`). A peer with no attached transport only
+/// reports.
+pub fn loseReturnForPeer(comptime PeerType: type, peer: *PeerType, answer_id: u32, err: anyerror) void {
+    log.warn("the Return for answer {} could not be sent ({}); closing the connection", .{ answer_id, err });
+    reportNonfatalErrorForPeer(PeerType, peer, err);
+    if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
+}
+
 pub fn reportNonfatalErrorForPeerFn(comptime PeerType: type) *const fn (*PeerType, anyerror) void {
     return struct {
         fn call(peer: *PeerType, err: anyerror) void {
