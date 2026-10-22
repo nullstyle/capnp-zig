@@ -168,15 +168,15 @@ with `capnp_return_results` or `capnp_return_exception`. A
 `sendResultsTo = yourself` call also gets `Return{canceled}`, not
 `resultsSentElsewhere`.
 
+These `CAPNP_E_INVAL` cases apply while the connection is open. Once it is
+closed, `capnp_return_canceled` accepts every answer the host owes, with or
+without ANSWER_FINISHED ("After close" in "Answer ids").
+
 **Calls pipelined after the Finish.** rpc.capnp forbids them ("no further
 pipelined requests"). The core answers such a call at once with an
 exception RETURN OUT_FRAME, as the C++ reference does, and the host never
 sees it. So it never waits on the answer, and after ANSWER_FINISHED,
 `capnp_return_canceled` still answers.
-
-These `CAPNP_E_INVAL` cases apply while the connection is open. Once it is
-closed, `capnp_return_canceled` accepts every answer the host owes, with or
-without ANSWER_FINISHED ("After close" in "Answer ids").
 
 **Drain order.** Apply effects in drain order. An ANSWER_FINISHED can be
 stale: the host answered the call after the Finish came, but before it
